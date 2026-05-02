@@ -90,20 +90,27 @@ function categorizeFetchError(err, vault, urlPath) {
   });
 }
 
+function makeCfAccessError(vault, urlPath, status = 302) {
+  return new RestApiError(
+    `[${vault.name}] blocked by Cloudflare Access at ${urlPath}`,
+    {
+      kind: 'cf_access',
+      vaultName: vault.name,
+      status,
+      urlPath,
+      hint:
+        'Add a Service Token policy at Cloudflare Zero Trust and set its Client ID + Secret in this vault\'s extraHeaders.',
+    },
+  );
+}
+
 function categorizeHttpStatus(status, statusText, body, vault, urlPath) {
-  // Cloudflare Access redirects to <team>.cloudflareaccess.com when policy denies.
-  if (status === 302 && /cloudflareaccess\.com/i.test(body || '')) {
-    return new RestApiError(
-      `[${vault.name}] blocked by Cloudflare Access at ${urlPath}`,
-      {
-        kind: 'cf_access',
-        vaultName: vault.name,
-        status,
-        urlPath,
-        hint:
-          'Add a Service Token policy at Cloudflare Zero Trust and set its Client ID + Secret in this vault\'s extraHeaders.',
-      },
-    );
+  // Cloudflare Access surface — fires on any status with cloudflareaccess.com
+  // in either the body (HTML login page) or the redirect Location header.
+  // Was previously gated on status === 302 which missed the case where fetch
+  // followed the redirect and surfaced as 200 OK at the IDP page.
+  if (/cloudflareaccess\.com/i.test(body || '')) {
+    return makeCfAccessError(vault, urlPath, status);
   }
 
   const truncated = body ? `: ${String(body).slice(0, 200)}` : '';
@@ -186,27 +193,91 @@ function encodePath(p) {
     .join('/');
 }
 
+/**
+ * Manual redirect follower that preserves auth headers across SAME-HOST
+ * redirects. We can't use `fetch`'s built-in `redirect: 'follow'` because
+ * undici (and the WHATWG fetch spec) strips `Authorization` and other auth
+ * headers on cross-origin redirects — even harmless ones like `http://x` →
+ * `https://x` (different origin per the spec). For Local REST API calls,
+ * losing the bearer key turns a normal proxy normalization into a 401.
+ *
+ * Strategy:
+ *  - Follow up to 3 redirects on the SAME host (auth preserved verbatim).
+ *  - Treat any redirect whose Location lands on *.cloudflareaccess.com as
+ *    a cf_access error immediately (don't follow — the IDP page would 200
+ *    with no body we care about).
+ *  - Refuse cross-host redirects to protect the API key from leaking.
+ *  - Method and body are preserved across redirects (we want consistent
+ *    semantics for an API client; spec-mandated 301/302→GET conversion is
+ *    inappropriate when the redirect is just URL normalization).
+ */
+async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
+  let currentUrl = `${vault.baseUrl}${urlPath}`;
+  let res;
+  for (let depth = 0; depth <= 3; depth++) {
+    res = await fetch(currentUrl, { ...fetchOpts, redirect: 'manual' });
+
+    if (res.status < 300 || res.status >= 400) return { res, currentUrl };
+
+    const location = res.headers.get('location');
+    if (!location) return { res, currentUrl }; // 3xx without Location — surface as is
+
+    const target = new URL(location, currentUrl);
+
+    // Cloudflare Access on the redirect target.
+    if (/cloudflareaccess\.com$/i.test(target.hostname)) {
+      throw makeCfAccessError(vault, urlPath, res.status);
+    }
+
+    // Block cross-host redirects — auth headers would be needed at a host
+    // we did not authenticate against, which is unsafe regardless of TLS.
+    const here = new URL(currentUrl).hostname;
+    if (target.hostname !== here) {
+      throw new RestApiError(
+        `[${vault.name}] refused cross-host redirect from ${here} to ${target.hostname}`,
+        {
+          kind: 'unknown',
+          vaultName: vault.name,
+          urlPath,
+          status: res.status,
+          hint:
+            'Cross-host redirects are blocked to keep the API key from being sent to a host you did not authenticate against. Configure your reverse proxy to keep redirects same-host.',
+        },
+      );
+    }
+
+    if (depth === 3) {
+      throw new RestApiError(
+        `[${vault.name}] too many redirects (>3) starting at ${urlPath}`,
+        { kind: 'unknown', vaultName: vault.name, urlPath, status: res.status },
+      );
+    }
+
+    currentUrl = target.toString();
+    // Same host → fall through, headers (incl. Authorization) preserved verbatim.
+  }
+  return { res, currentUrl };
+}
+
 async function request(vault, method, urlPath, { headers = {}, body, json = true } = {}) {
-  const url = `${vault.baseUrl}${urlPath}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), vault.timeoutMs);
 
   let res;
+  let finalUrl;
   try {
-    res = await fetch(url, {
+    const result = await fetchWithSafeRedirect(vault, urlPath, {
       method,
       dispatcher: agentFor(vault),
       headers: { ...authHeaders(vault), ...headers },
       body,
       signal: controller.signal,
-      // Follow ordinary redirects (canonical-host http→https, trailing-slash
-      // normalization, reverse-proxy redirects). Cloudflare Access redirects
-      // are detected after the chain via res.url ending up on
-      // cloudflareaccess.com (see the !res.ok branch below).
-      redirect: 'follow',
     });
+    res = result.res;
+    finalUrl = result.currentUrl;
   } catch (err) {
     clearTimeout(timeout);
+    if (err instanceof RestApiError) throw err;
     throw categorizeFetchError(err, vault, urlPath);
   } finally {
     clearTimeout(timeout);
@@ -214,21 +285,14 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // After redirect:'follow', a Cloudflare Access denial typically lands on
-    // *.cloudflareaccess.com (HTTP 200 with the login page) or returns the
-    // redirect chain in res.url. Both surface here as "not ok" only if the
-    // page itself returns non-2xx, OR we detect the cloudflareaccess.com
-    // hostname in res.url even when the body is 200 (rare but possible).
-    if (/cloudflareaccess\.com/i.test(res.url || '') || /cloudflareaccess\.com/i.test(text)) {
-      throw categorizeHttpStatus(res.status, res.statusText, 'cloudflareaccess.com redirect', vault, urlPath);
-    }
     throw categorizeHttpStatus(res.status, res.statusText, text, vault, urlPath);
   }
 
-  // Even with res.ok, if the final URL lives on cloudflareaccess.com, the
-  // request was hijacked by Access and we never reached the vault.
-  if (/cloudflareaccess\.com/i.test(res.url || '')) {
-    throw categorizeHttpStatus(200, 'OK', 'cloudflareaccess.com (auth page reached)', vault, urlPath);
+  // Defense in depth: if a same-host redirect chain somehow ends up on a
+  // cloudflareaccess.com URL with status 200 (page-served via custom domain
+  // mapping, etc.), surface it as cf_access too.
+  if (/cloudflareaccess\.com/i.test(finalUrl || '')) {
+    throw makeCfAccessError(vault, urlPath, res.status);
   }
 
   const contentType = res.headers.get('content-type') || '';
