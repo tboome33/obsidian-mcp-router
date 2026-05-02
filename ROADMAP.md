@@ -29,16 +29,31 @@ Quirks discovered and documented inline:
 
 Deferred to v0.4: `move_file` (no native REST endpoint — needs PATCH-rename or a Get+Put+Delete fallback) and frontmatter helpers (read-modify-write convenience around `patch_file`).
 
-## v0.4 — Quality of life
+## ✅ v0.4.0 — Frontmatter helpers + move_file + better errors (shipped)
 
-- [ ] `move_file(vault, from, to)` — likely PATCH-rename if Local REST API supports it, else GET → PUT → DELETE fallback
-- [ ] Frontmatter helpers — read/update single keys without remembering PATCH header semantics
+The CRUD surface is now feature-complete for everyday use. Errors are categorized so tools can react sensibly to "vault offline" vs "wrong API key" vs "file not found".
+
+- ✅ `move_file(vault, from, to, overwrite?)` — no native endpoint, fallback GET source → PUT destination → DELETE source. Refuses to overwrite by default; warns if source delete fails post-write.
+- ✅ `get_frontmatter(vault, path, key?)` — uses the `application/vnd.olrapi.note+json` content-negotiation of Local REST API to get parsed frontmatter (types preserved).
+- ✅ `set_frontmatter(vault, path, key, value)` — wraps `patch_file`. All scalar and structured types supported (string, number, bool, null, array, object).
+- ✅ `merge_frontmatter(vault, path, values)` — sequential set per key, returns per-key status (NOT atomic — documented).
+- ✅ `RestApiError` class with kinds: `unreachable | timeout | unauthorized | forbidden | cf_access | not_found | conflict | server_error | unknown`. Each kind comes with a `hint` field surfaced to MCP clients in the error response.
+- ✅ Manual redirect detection (`redirect: 'manual'` in fetch) so Cloudflare Access redirects are caught and reported as `cf_access` instead of leaking the redirect chain.
+
+Quirk fixed: `Content-Type: application/vnd.olrapi.note+json` wasn't recognized as JSON by the rest-client's content negotiation (was matching only literal `application/json`). Now matches `application/<vendor>+json` too.
+
+Quirk fixed: `patch_file` with `targetType: frontmatter` and a non-string non-object value (number, boolean, null) was sending it as `text/markdown` instead of `application/json`, so Obsidian stored it as a string. Now any non-string value goes through JSON, types preserved end-to-end.
+
+## v0.4.1 — Onboarding skills (next)
+
 - [ ] `obsidian-router-add-vault` skill — interactive flow to add a remote vault
 - [ ] `obsidian-router-status` skill — diagnostic ping of all vaults, surface which are offline
+
+## v0.4.2 — Hot reload + small DX
+
 - [ ] `--config <path>` CLI flag for non-default config locations
-- [ ] Friendlier errors when a vault is offline (current: 5s timeout then a verbose stack)
 - [ ] Per-vault `enabled: false` flag to hide a vault from `list_vaults` without removing it
-- [ ] Cache config reads with file-watcher so `list_vaults` reflects edits without restart
+- [ ] File-watcher on `config.json` so the registry reloads on edit (combo win with the future Obsidian Cloudflare Tunnel plugin auto-writing into config.json)
 
 ## v0.5 — Cloudflare Tunnel companion plugin
 

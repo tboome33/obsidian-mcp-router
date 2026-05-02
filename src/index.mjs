@@ -22,6 +22,10 @@ import { appendToFileTool } from './tools/append-to-file.mjs';
 import { deleteFileTool } from './tools/delete-file.mjs';
 import { patchFileTool } from './tools/patch-file.mjs';
 import { executeTemplateTool } from './tools/execute-template.mjs';
+import { moveFileTool } from './tools/move-file.mjs';
+import { getFrontmatterTool } from './tools/get-frontmatter.mjs';
+import { setFrontmatterTool } from './tools/set-frontmatter.mjs';
+import { mergeFrontmatterTool } from './tools/merge-frontmatter.mjs';
 
 const TOOLS = [
   {
@@ -132,6 +136,87 @@ const TOOLS = [
         },
       },
       required: ['path', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'move_file',
+    description:
+      'Move or rename a file. Implemented as GET source → PUT destination → DELETE source (no native endpoint exists on Local REST API). Pass overwrite: true to replace an existing destination.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        from: { type: 'string', description: 'Source path relative to vault root.' },
+        to: { type: 'string', description: 'Destination path relative to vault root.' },
+        overwrite: {
+          type: 'boolean',
+          description: 'If true, overwrite destination if it exists. Default: false (fails on conflict).',
+        },
+      },
+      required: ['from', 'to'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_frontmatter',
+    description:
+      'Read frontmatter from a file. Pass key to get a single property; omit it to get the full frontmatter object. Returns parsed values (numbers, booleans, arrays preserved — not just strings).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string' },
+        key: {
+          type: 'string',
+          description: 'Specific frontmatter key to retrieve. Omit for the whole frontmatter object.',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'set_frontmatter',
+    description:
+      'Set or replace a single frontmatter property. Convenience wrapper around patch_file with targetType: frontmatter. The value can be a string, number, boolean, array, or object — type is preserved.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string' },
+        key: { type: 'string', description: 'Frontmatter property name (e.g. "status", "tags").' },
+        value: {
+          description: 'New value. Strings, numbers, booleans, null, arrays, and objects all supported.',
+        },
+        createIfMissing: {
+          type: 'boolean',
+          description: 'Create the key if absent. Default: true.',
+        },
+      },
+      required: ['path', 'key', 'value'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'merge_frontmatter',
+    description:
+      'Apply multiple frontmatter updates in sequence (NOT atomic — partial failures possible). Returns a per-key result. For atomic multi-key updates, prefer get_frontmatter + modify + write_file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string' },
+        values: {
+          type: 'object',
+          description: 'Key/value map of frontmatter properties to set.',
+        },
+        createIfMissing: {
+          type: 'boolean',
+          description: 'Create absent keys. Default: true.',
+        },
+      },
+      required: ['path', 'values'],
       additionalProperties: false,
     },
   },
@@ -277,7 +362,7 @@ export async function startServer() {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.3.1',
+      version: '0.4.0',
     },
     {
       capabilities: {
@@ -315,15 +400,27 @@ export async function startServer() {
           return await wrapResult(patchFileTool(registry, args));
         case 'execute_template':
           return await wrapResult(executeTemplateTool(registry, args));
+        case 'move_file':
+          return await wrapResult(moveFileTool(registry, args));
+        case 'get_frontmatter':
+          return await wrapResult(getFrontmatterTool(registry, args));
+        case 'set_frontmatter':
+          return await wrapResult(setFrontmatterTool(registry, args));
+        case 'merge_frontmatter':
+          return await wrapResult(mergeFrontmatterTool(registry, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
     } catch (err) {
+      // Friendly errors when the underlying RestApiError carries a `hint`.
+      const lines = [`Error: ${err.message}`];
+      if (err.kind) lines.push(`Kind: ${err.kind}`);
+      if (err.hint) lines.push(`Hint: ${err.hint}`);
       return {
         content: [
           {
             type: 'text',
-            text: `Error: ${err.message}`,
+            text: lines.join('\n'),
           },
         ],
         isError: true,

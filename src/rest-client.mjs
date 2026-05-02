@@ -16,6 +16,153 @@ function agentFor(vault) {
   return vault.tlsInsecure ? insecureAgent : secureAgent;
 }
 
+/**
+ * Categorized error for REST API calls. Tools can branch on `kind` instead
+ * of string-matching error messages.
+ *
+ * Kinds:
+ *  - 'unreachable'   — network failure (ECONNREFUSED, ENOTFOUND)
+ *  - 'timeout'       — AbortError after vault.timeoutMs
+ *  - 'unauthorized'  — HTTP 401 (bad API key, expired)
+ *  - 'forbidden'     — HTTP 403 (incl. Cloudflare Access without service token)
+ *  - 'cf_access'     — redirect to *.cloudflareaccess.com (CF Access policy)
+ *  - 'not_found'     — HTTP 404
+ *  - 'conflict'      — HTTP 409 (Apply-If-Content-Preexists)
+ *  - 'server_error'  — HTTP 5xx
+ *  - 'unknown'       — anything else
+ */
+export class RestApiError extends Error {
+  constructor(message, { kind, vaultName, status, urlPath, hint } = {}) {
+    super(message);
+    this.name = 'RestApiError';
+    this.kind = kind || 'unknown';
+    this.vaultName = vaultName;
+    this.status = status;
+    this.urlPath = urlPath;
+    this.hint = hint;
+  }
+}
+
+function categorizeFetchError(err, vault, urlPath) {
+  // undici wraps node errors in a `cause` chain.
+  const cause = err?.cause;
+  const code = err?.code || cause?.code;
+
+  if (err.name === 'AbortError') {
+    return new RestApiError(
+      `[${vault.name}] timed out after ${vault.timeoutMs}ms calling ${urlPath}`,
+      {
+        kind: 'timeout',
+        vaultName: vault.name,
+        urlPath,
+        hint:
+          'Increase timeoutMs for this vault, or check whether the vault is reachable on the network.',
+      },
+    );
+  }
+
+  if (
+    code === 'ECONNREFUSED' ||
+    code === 'ENOTFOUND' ||
+    code === 'ECONNRESET' ||
+    code === 'EHOSTUNREACH' ||
+    code === 'UND_ERR_SOCKET' ||
+    /fetch failed/i.test(err.message)
+  ) {
+    const isLocal = vault.baseUrl.includes('127.0.0.1') || vault.baseUrl.includes('localhost');
+    return new RestApiError(
+      `[${vault.name}] unreachable at ${vault.baseUrl}${urlPath} (${code || 'fetch failed'})`,
+      {
+        kind: 'unreachable',
+        vaultName: vault.name,
+        urlPath,
+        hint: isLocal
+          ? 'Open Obsidian on this vault and confirm Local REST API plugin is enabled.'
+          : 'Check the host is online (try `curl -k <baseUrl>/`) and that the tunnel/VPN is up.',
+      },
+    );
+  }
+
+  return new RestApiError(`[${vault.name}] ${err.message}`, {
+    kind: 'unknown',
+    vaultName: vault.name,
+    urlPath,
+  });
+}
+
+function categorizeHttpStatus(status, statusText, body, vault, urlPath) {
+  // Cloudflare Access redirects to <team>.cloudflareaccess.com when policy denies.
+  if (status === 302 && /cloudflareaccess\.com/i.test(body || '')) {
+    return new RestApiError(
+      `[${vault.name}] blocked by Cloudflare Access at ${urlPath}`,
+      {
+        kind: 'cf_access',
+        vaultName: vault.name,
+        status,
+        urlPath,
+        hint:
+          'Add a Service Token policy at Cloudflare Zero Trust and set its Client ID + Secret in this vault\'s extraHeaders.',
+      },
+    );
+  }
+
+  const truncated = body ? `: ${String(body).slice(0, 200)}` : '';
+  const base = `[${vault.name}] HTTP ${status} ${statusText} on ${urlPath}${truncated}`;
+
+  if (status === 401) {
+    return new RestApiError(base, {
+      kind: 'unauthorized',
+      vaultName: vault.name,
+      status,
+      urlPath,
+      hint:
+        'API key is wrong or expired. Open the vault in Obsidian, copy the key from Settings → Local REST API → API Key, and update the router config.',
+    });
+  }
+  if (status === 403) {
+    return new RestApiError(base, {
+      kind: 'forbidden',
+      vaultName: vault.name,
+      status,
+      urlPath,
+      hint:
+        'The server accepted the API key but refused the operation. If you go through Cloudflare Access, check the service token headers.',
+    });
+  }
+  if (status === 404) {
+    return new RestApiError(base, {
+      kind: 'not_found',
+      vaultName: vault.name,
+      status,
+      urlPath,
+    });
+  }
+  if (status === 409) {
+    return new RestApiError(base, {
+      kind: 'conflict',
+      vaultName: vault.name,
+      status,
+      urlPath,
+      hint: 'Resource state conflicts with the request (e.g. file already exists with different content).',
+    });
+  }
+  if (status >= 500) {
+    return new RestApiError(base, {
+      kind: 'server_error',
+      vaultName: vault.name,
+      status,
+      urlPath,
+      hint: 'Obsidian or a plugin in the target vault threw an error. Check Obsidian dev console (Ctrl+Shift+I).',
+    });
+  }
+  return new RestApiError(base, {
+    kind: 'unknown',
+    vaultName: vault.name,
+    status,
+    urlPath,
+  });
+}
+
 function authHeaders(vault) {
   const headers = {
     Authorization: `Bearer ${vault.apiKey}`,
@@ -44,36 +191,41 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), vault.timeoutMs);
 
+  let res;
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       method,
       dispatcher: agentFor(vault),
       headers: { ...authHeaders(vault), ...headers },
       body,
       signal: controller.signal,
+      redirect: 'manual', // we want to detect CF Access redirects, not follow them
     });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(
-        `[${vault.name}] ${method} ${urlPath} → HTTP ${res.status} ${res.statusText}` +
-          (text ? `: ${text.slice(0, 200)}` : ''),
-      );
-    }
-
-    const contentType = res.headers.get('content-type') || '';
-    if (json && contentType.includes('application/json')) {
-      return await res.json();
-    }
-    return await res.text();
   } catch (err) {
-    if (err.name === 'AbortError') {
-      throw new Error(`[${vault.name}] ${method} ${urlPath} timed out after ${vault.timeoutMs}ms`);
-    }
-    throw err;
+    clearTimeout(timeout);
+    throw categorizeFetchError(err, vault, urlPath);
   } finally {
     clearTimeout(timeout);
   }
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    // Manual redirect detection (302/303/307/308 are not "ok" with redirect:'manual')
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get('location') || '';
+      throw categorizeHttpStatus(res.status, res.statusText, location, vault, urlPath);
+    }
+    throw categorizeHttpStatus(res.status, res.statusText, text, vault, urlPath);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  // Accept both "application/json" and any vendor-specific "+json" subtype
+  // (e.g. application/vnd.olrapi.note+json from Local REST API content
+  // negotiation).
+  if (json && /\bapplication\/(?:[a-z0-9.+-]+\+)?json\b/i.test(contentType)) {
+    return await res.json();
+  }
+  return await res.text();
 }
 
 // --- Public API ---
@@ -103,6 +255,68 @@ export function listFilesIn(vault, directory = '') {
 
 export function getFileContent(vault, filePath) {
   return request(vault, 'GET', `/vault/${encodePath(filePath)}`, { json: false });
+}
+
+/**
+ * Get a file with metadata (content + frontmatter parsed as object + tags +
+ * stat). Uses the Accept: application/vnd.olrapi.note+json content negotiation
+ * supported by Local REST API.
+ */
+export function getNote(vault, filePath) {
+  return request(vault, 'GET', `/vault/${encodePath(filePath)}`, {
+    headers: { Accept: 'application/vnd.olrapi.note+json' },
+  });
+}
+
+/**
+ * Move/rename a file. There is no native endpoint on Local REST API, so we
+ * fall back to GET source → PUT destination → DELETE source.
+ *
+ * If the destination already exists and `overwrite` is not true, we throw
+ * before writing anything (a non-atomic check, but acceptable for a single
+ * user). If DELETE source fails after PUT succeeds, the file is duplicated;
+ * the function returns sourceDeleted: false and a warning instead of throwing,
+ * so the caller can decide whether to clean up.
+ */
+export async function moveFileFromTo(vault, fromPath, toPath, opts = {}) {
+  if (fromPath === toPath) {
+    return { moved: false, sourceDeleted: false, warning: 'Source and destination are the same.' };
+  }
+
+  // 1. Read source (errors propagate — typically not_found if source missing)
+  const content = await getFileContent(vault, fromPath);
+
+  // 2. Refuse to overwrite if the user did not opt in
+  if (!opts.overwrite) {
+    try {
+      await getFileContent(vault, toPath);
+      // Got here = destination exists
+      throw new RestApiError(
+        `[${vault.name}] cannot move to "${toPath}": destination already exists. Pass overwrite: true to replace.`,
+        { kind: 'conflict', vaultName: vault.name, urlPath: `/vault/${encodePath(toPath)}` },
+      );
+    } catch (err) {
+      if (!(err instanceof RestApiError) || err.kind !== 'not_found') {
+        throw err;
+      }
+      // 404 → destination does not exist → we are good to write
+    }
+  }
+
+  // 3. Write at destination
+  await writeFile(vault, toPath, content);
+
+  // 4. Delete source — non-fatal failure
+  try {
+    await deleteFile(vault, fromPath);
+    return { moved: true, sourceDeleted: true };
+  } catch (err) {
+    return {
+      moved: true,
+      sourceDeleted: false,
+      warning: `Wrote ${toPath} but failed to delete source ${fromPath}: ${err.message}`,
+    };
+  }
 }
 
 /**
@@ -177,12 +391,16 @@ export function patchFile(vault, filePath, args) {
     trimTargetWhitespace,
   } = args;
 
-  const isFrontmatterObject = targetType === 'frontmatter' && typeof content === 'object';
+  // For frontmatter targets, anything that is not a string should be JSON-
+  // encoded so types are preserved (numbers stay numbers, booleans stay
+  // booleans, arrays/objects keep their structure). Strings still go through
+  // as plain text/markdown — the YAML parser on the server side handles them.
+  const isFrontmatterJson = targetType === 'frontmatter' && typeof content !== 'string';
   const headers = {
     Operation: operation,
     'Target-Type': targetType,
     Target: encodeURIComponent(target),
-    'Content-Type': isFrontmatterObject ? 'application/json' : 'text/markdown',
+    'Content-Type': isFrontmatterJson ? 'application/json' : 'text/markdown',
   };
   if (targetDelimiter) headers['Target-Delimiter'] = targetDelimiter;
   if (createTargetIfMissing != null) {
@@ -195,7 +413,7 @@ export function patchFile(vault, filePath, args) {
     headers['Trim-Target-Whitespace'] = String(trimTargetWhitespace);
   }
 
-  const body = isFrontmatterObject ? JSON.stringify(content) : content;
+  const body = isFrontmatterJson ? JSON.stringify(content) : content;
 
   return request(vault, 'PATCH', `/vault/${encodePath(filePath)}`, {
     headers,
