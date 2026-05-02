@@ -89,11 +89,24 @@ obsidian-mcp-router --no-watch     # disable hot-reload of the config file
 
 By default, the router watches the config file and reloads automatically when it changes — useful when paired with `setup-vault.mjs` adding new vaults, or with the future `Obsidian Cloudflare Tunnel` plugin auto-writing tunnel URLs into `remoteVaults`.
 
-### Building your own slash commands on top
+### Slash command wrappers (optional)
 
-The 14 MCP tools are domain-agnostic. If you want to streamline your *own* workflows (quick capture, daily notes, weekly rollups, semantic recall, etc.), build them as slash commands in `~/.claude/commands/` — not as PRs on this repo. The router stays neutral; the macros are yours.
+For users who prefer `/obsidian-...` invocation over natural language (or just want autocomplete-driven discoverability), the repo ships **14 slash command wrappers** under [`commands/`](./commands/) — one per MCP tool, grouped into 5 categories: `discover`, `read`, `write`, `manage`, `template`.
 
-See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative examples (quick capture, today's daily note, semantic recall) clearly labeled as starting points to adapt.
+Install:
+
+```bash
+ln -s "$(pwd)/commands"/obsidian-*.md ~/.claude/commands/    # Linux/macOS
+# Windows: see commands/README.md
+```
+
+Then type `/obsidian-` in any Claude Code session — the catalog autocompletes. Both slash commands and natural language coexist; pick whichever feels right.
+
+### Building your own slash commands on top (advanced)
+
+The 14 wrappers above are domain-agnostic. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them separately as your own slash commands in `~/.claude/commands/` — not as PRs on this repo. The router stays neutral; the macros are yours.
+
+See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
 ### Disabling a vault temporarily
 
@@ -397,11 +410,24 @@ obsidian-mcp-router --no-watch     # désactive le hot-reload du fichier de conf
 
 Par défaut, le router surveille le fichier de config et le recharge automatiquement à chaque modification — utile quand `setup-vault.mjs` ajoute de nouveaux vaults, ou quand le futur plugin `Obsidian Cloudflare Tunnel` écrit automatiquement des URLs de tunnel dans `remoteVaults`.
 
-### Construire tes propres slash commands par-dessus
+### Wrappers slash commands (optionnels)
 
-Les 14 outils MCP sont agnostiques du domaine. Si tu veux streamliner tes *propres* workflows (quick capture, daily notes, rollups hebdo, recall sémantique…), tu les construis comme slash commands dans `~/.claude/commands/` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Pour les utilisateurs qui préfèrent l'invocation `/obsidian-...` au langage naturel (ou qui veulent juste de la découvrabilité par autocomplete), le repo livre **14 wrappers slash command** sous [`commands/`](./commands/) — un par outil MCP, groupés en 5 catégories : `discover`, `read`, `write`, `manage`, `template`.
 
-Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs (quick capture, daily note du jour, recall sémantique) clairement étiquetés comme points de départ à adapter.
+Installation :
+
+```bash
+ln -s "$(pwd)/commands"/obsidian-*.md ~/.claude/commands/    # Linux/macOS
+# Windows : voir commands/README.md
+```
+
+Puis tape `/obsidian-` dans n'importe quelle session Claude Code — le catalogue s'auto-complète. Les slash commands et le langage naturel coexistent ; tu choisis selon le moment.
+
+### Construire tes propres slash commands par-dessus (avancé)
+
+Les 14 wrappers ci-dessus sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+
+Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 
 ### Désactiver un vault temporairement
 
