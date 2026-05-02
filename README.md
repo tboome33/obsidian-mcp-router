@@ -89,6 +89,12 @@ obsidian-mcp-router --no-watch     # disable hot-reload of the config file
 
 By default, the router watches the config file and reloads automatically when it changes — useful when paired with `setup-vault.mjs` adding new vaults, or with the future `Obsidian Cloudflare Tunnel` plugin auto-writing tunnel URLs into `remoteVaults`.
 
+### Building your own slash commands on top
+
+The 14 MCP tools are domain-agnostic. If you want to streamline your *own* workflows (quick capture, daily notes, weekly rollups, semantic recall, etc.), build them as slash commands in `~/.claude/commands/` — not as PRs on this repo. The router stays neutral; the macros are yours.
+
+See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative examples (quick capture, today's daily note, semantic recall) clearly labeled as starting points to adapt.
+
 ### Disabling a vault temporarily
 
 To hide a vault from `list_vaults` without removing it from the config, either:
@@ -390,6 +396,12 @@ obsidian-mcp-router --no-watch     # désactive le hot-reload du fichier de conf
 ```
 
 Par défaut, le router surveille le fichier de config et le recharge automatiquement à chaque modification — utile quand `setup-vault.mjs` ajoute de nouveaux vaults, ou quand le futur plugin `Obsidian Cloudflare Tunnel` écrit automatiquement des URLs de tunnel dans `remoteVaults`.
+
+### Construire tes propres slash commands par-dessus
+
+Les 14 outils MCP sont agnostiques du domaine. Si tu veux streamliner tes *propres* workflows (quick capture, daily notes, rollups hebdo, recall sémantique…), tu les construis comme slash commands dans `~/.claude/commands/` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+
+Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs (quick capture, daily note du jour, recall sémantique) clairement étiquetés comme points de départ à adapter.
 
 ### Désactiver un vault temporairement
 
