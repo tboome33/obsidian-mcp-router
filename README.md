@@ -28,7 +28,21 @@ This router replaces that with:
 | File writes (create / append / patch / delete) | yes | yes |
 | Cross-vault operations | no | yes (`search` with `vault: "*"`) |
 
-The router covers the **REST API surface only**. If you need semantic search or Templater execution, keep `mcp-tools` registered alongside for those use cases — both can coexist.
+The router talks to the same Local REST API endpoints that `mcp-tools` does — including the `mcp-tools` API extension's own routes (`/search/smart`, `/templates/execute`). So semantic search and Templater execution work natively without keeping the `mcp-tools` MCP registered alongside.
+
+## Prerequisites
+
+| Plugin (per vault) | Required for | Where to get it |
+|---|---|---|
+| **Local REST API** | All tools | Community plugins → "Local REST API" by Adam Coddington |
+| **MCP Tools** | `search_smart`, `execute_template` | Community plugins → "MCP Tools" by Jack Steam — provides the API extension routes the router calls |
+| **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — the embeddings backend |
+| **Templater** | `execute_template` | Community plugins → "Templater" by SilentVoid13 |
+
+You also need:
+
+- **Node.js ≥ 18**
+- At least one vault provisioned in `~/.claude/mcp-obsidian/config.json`. If you've never set this up, install [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md) (referenced from the router but lives in your local Claude home) or paste the schema by hand — see [`examples/config.example.json`](./examples/config.example.json).
 
 ## Install
 
@@ -104,6 +118,137 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 
 More tools (`move_file`, frontmatter helpers, file watchers) are on the roadmap — see [ROADMAP.md](./ROADMAP.md).
 
+## Usage examples
+
+Once the router is registered in Claude, you'd typically prompt Claude in natural language and let it pick the right tool. The shapes below show the JSON arguments each tool accepts — handy when authoring custom workflows or when reviewing what Claude actually called.
+
+### Discovery — start every session here
+
+```jsonc
+// list_vaults — no args. Returns every vault with online/latency/missingApiKey.
+{}
+```
+
+```jsonc
+// list_files — explore a directory.
+{ "vault": "tradingview", "directory": "Sessions" }
+// Or list root if you omit directory:
+{ "vault": "tradingview" }
+```
+
+### Read
+
+```jsonc
+// get_file — full markdown content + frontmatter as text.
+{ "vault": "tradingview", "path": "Sessions/2026-04-29.md" }
+```
+
+```jsonc
+// search — substring match, with surrounding context.
+{ "vault": "tradingview", "query": "AL2SI", "contextLength": 80 }
+// Cross-vault fan-out:
+{ "vault": "*",          "query": "money management" }
+```
+
+```jsonc
+// search_smart — semantic similarity (Smart Connections embeddings).
+// Returns chunks with cosine scores and breadcrumbs.
+{
+  "vault": "tradingview",
+  "query": "rules for breakeven and trailing stop",
+  "folders": ["Formations", "Indicators"],
+  "excludeFolders": [".trash"],
+  "limit": 10
+}
+// Cross-vault semantic fan-out:
+{ "vault": "*", "query": "what did I learn this week?" }
+```
+
+### Write
+
+```jsonc
+// write_file — create or replace.
+{
+  "vault": "tradingview",
+  "path": "Trades/2026-05-02 - GLE Long.md",
+  "content": "---\nstatus: open\nticker: GLE\n---\n\n# GLE Long\n\nEntry: ..."
+}
+// Refuse to overwrite if file exists:
+{ "vault": "tradingview", "path": "...", "content": "...", "ifNew": true }
+```
+
+```jsonc
+// append_to_file — useful for journals/logs.
+{
+  "vault": "tradingview",
+  "path": "Sessions/2026-05-02.md",
+  "content": "\n## 14:32 — TSLA breakout invalidé\n\nStop touché à 178.40\n"
+}
+```
+
+```jsonc
+// patch_file — surgical edit, no full rewrite.
+// Insert under a heading (use full heading path with :: delimiter):
+{
+  "vault": "tradingview",
+  "path": "Sessions/2026-05-02.md",
+  "operation": "append",
+  "targetType": "heading",
+  "target": "Session 2026-05-02::Trades du jour",
+  "content": "- TSLA: stopped out -1.2%\n"
+}
+// Update a single frontmatter key:
+{
+  "vault": "tradingview",
+  "path": "Trades/2026-05-02 - GLE Long.md",
+  "operation": "replace",
+  "targetType": "frontmatter",
+  "target": "status",
+  "content": "closed"
+}
+// Replace a block by id:
+{
+  "vault": "tradingview",
+  "path": "Indicators/ATP/notes.md",
+  "operation": "replace",
+  "targetType": "block",
+  "target": "atp-config",
+  "content": "Updated config for v2.3"
+}
+```
+
+```jsonc
+// delete_file — guarded. confirm: true is mandatory.
+{ "vault": "tradingview", "path": "_scratch/old.md", "confirm": true }
+```
+
+### Templater
+
+```jsonc
+// execute_template — render and optionally save.
+// Template file must exist in the vault. Args are accessible inside the
+// template via tp.mcpTools.prompt("key") — note: directly under tp,
+// NOT under tp.user.
+{
+  "vault": "tradingview",
+  "name": "Templates/Trade.md",
+  "arguments": {
+    "ticker": "AAPL",
+    "direction": "long",
+    "entry": "175.20",
+    "stop": "172.50"
+  },
+  "createFile": true,
+  "targetPath": "Trades/2026-05-02 - AAPL Long.md"
+}
+// Render only (preview), don't save:
+{
+  "vault": "tradingview",
+  "name": "Templates/Trade.md",
+  "arguments": { "ticker": "AAPL" }
+}
+```
+
 ## TLS
 
 The Local REST API plugin generates a self-signed certificate by default. For localhost vaults, set `tlsInsecure: true` (the default for vaults loaded from `portRegistry`). For remote vaults behind a real TLS cert (e.g., a reverse proxy with Let's Encrypt), set `tlsInsecure: false`.
@@ -142,7 +287,21 @@ Ce router remplace tout ça par :
 | Écritures (create / append / patch / delete) | oui | oui |
 | Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
 
-Le router couvre **uniquement la surface REST API**. Si tu as besoin de la recherche sémantique ou de l'exécution Templater, garde `mcp-tools` enregistré en parallèle pour ces cas — les deux peuvent coexister.
+Le router parle aux mêmes endpoints du Local REST API que `mcp-tools` — y compris les routes ajoutées par l'extension API du plugin `mcp-tools` (`/search/smart`, `/templates/execute`). La recherche sémantique et l'exécution Templater fonctionnent donc nativement sans avoir à conserver le MCP `mcp-tools` enregistré en parallèle.
+
+### Prérequis
+
+| Plugin (par vault) | Requis pour | Où l'obtenir |
+|---|---|---|
+| **Local REST API** | Tous les outils | Community plugins → "Local REST API" par Adam Coddington |
+| **MCP Tools** | `search_smart`, `execute_template` | Community plugins → "MCP Tools" par Jack Steam — fournit les extensions API que le router appelle |
+| **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — moteur d'embeddings |
+| **Templater** | `execute_template` | Community plugins → "Templater" par SilentVoid13 |
+
+Il te faut aussi :
+
+- **Node.js ≥ 18**
+- Au moins un vault provisionné dans `~/.claude/mcp-obsidian/config.json`. Si tu n'as jamais fait ce setup, installe [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md) (référencé par le router mais vit dans ton home Claude local) ou colle le schéma à la main — voir [`examples/config.example.json`](./examples/config.example.json).
 
 ### Installation
 
@@ -217,6 +376,137 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `execute_template` | Exécute un template Templater, écrit optionnellement le rendu dans un nouveau fichier. Les arguments sont accessibles dans le template via `tp.mcpTools.prompt("clé")`. |
 
 D'autres outils (`move_file`, helpers frontmatter, file watchers) sont sur la roadmap — voir [ROADMAP.md](./ROADMAP.md).
+
+### Exemples d'usage
+
+Une fois le router enregistré dans Claude, tu prompteras Claude en langage naturel et il choisira le bon outil. Les payloads ci-dessous montrent les arguments JSON que chaque outil accepte — utile pour écrire des workflows custom ou pour vérifier ce que Claude a réellement appelé.
+
+#### Découverte — à appeler au début de chaque session
+
+```jsonc
+// list_vaults — pas d'argument. Retourne chaque vault avec online/latency/missingApiKey.
+{}
+```
+
+```jsonc
+// list_files — explorer un répertoire.
+{ "vault": "tradingview", "directory": "Sessions" }
+// Ou la racine si tu omets directory :
+{ "vault": "tradingview" }
+```
+
+#### Lecture
+
+```jsonc
+// get_file — contenu markdown complet + frontmatter en texte brut.
+{ "vault": "tradingview", "path": "Sessions/2026-04-29.md" }
+```
+
+```jsonc
+// search — recherche substring avec contexte.
+{ "vault": "tradingview", "query": "AL2SI", "contextLength": 80 }
+// Fan-out cross-vaults :
+{ "vault": "*",          "query": "money management" }
+```
+
+```jsonc
+// search_smart — similarité sémantique (embeddings Smart Connections).
+// Retourne des chunks avec scores cosinus et breadcrumbs.
+{
+  "vault": "tradingview",
+  "query": "règles de breakeven et trailing stop",
+  "folders": ["Formations", "Indicators"],
+  "excludeFolders": [".trash"],
+  "limit": 10
+}
+// Fan-out sémantique cross-vaults :
+{ "vault": "*", "query": "qu'est-ce que j'ai appris cette semaine ?" }
+```
+
+#### Écriture
+
+```jsonc
+// write_file — crée ou remplace.
+{
+  "vault": "tradingview",
+  "path": "Trades/2026-05-02 - GLE Long.md",
+  "content": "---\nstatus: open\nticker: GLE\n---\n\n# GLE Long\n\nEntrée: ..."
+}
+// Refuser l'écrasement si le fichier existe :
+{ "vault": "tradingview", "path": "...", "content": "...", "ifNew": true }
+```
+
+```jsonc
+// append_to_file — utile pour journaux/logs.
+{
+  "vault": "tradingview",
+  "path": "Sessions/2026-05-02.md",
+  "content": "\n## 14:32 — TSLA breakout invalidé\n\nStop touché à 178.40\n"
+}
+```
+
+```jsonc
+// patch_file — édit chirurgicale, pas de réécriture intégrale.
+// Insertion sous un heading (chemin complet avec délimiteur ::) :
+{
+  "vault": "tradingview",
+  "path": "Sessions/2026-05-02.md",
+  "operation": "append",
+  "targetType": "heading",
+  "target": "Session 2026-05-02::Trades du jour",
+  "content": "- TSLA: stop touché -1.2%\n"
+}
+// Modifier une seule clé de frontmatter :
+{
+  "vault": "tradingview",
+  "path": "Trades/2026-05-02 - GLE Long.md",
+  "operation": "replace",
+  "targetType": "frontmatter",
+  "target": "status",
+  "content": "closed"
+}
+// Remplacer un bloc par id :
+{
+  "vault": "tradingview",
+  "path": "Indicators/ATP/notes.md",
+  "operation": "replace",
+  "targetType": "block",
+  "target": "atp-config",
+  "content": "Config mise à jour pour v2.3"
+}
+```
+
+```jsonc
+// delete_file — protégé. confirm: true obligatoire.
+{ "vault": "tradingview", "path": "_scratch/old.md", "confirm": true }
+```
+
+#### Templater
+
+```jsonc
+// execute_template — rend et sauvegarde optionnellement.
+// Le template doit exister dans le vault. Les arguments sont accessibles
+// dans le template via tp.mcpTools.prompt("clé") — note : directement sous
+// tp, PAS sous tp.user.
+{
+  "vault": "tradingview",
+  "name": "Templates/Trade.md",
+  "arguments": {
+    "ticker": "AAPL",
+    "direction": "long",
+    "entry": "175.20",
+    "stop": "172.50"
+  },
+  "createFile": true,
+  "targetPath": "Trades/2026-05-02 - AAPL Long.md"
+}
+// Rendu seul (preview), sans sauvegarder :
+{
+  "vault": "tradingview",
+  "name": "Templates/Trade.md",
+  "arguments": { "ticker": "AAPL" }
+}
+```
 
 ### TLS
 
