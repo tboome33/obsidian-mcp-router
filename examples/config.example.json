@@ -1,0 +1,37 @@
+{
+  "_comment": "This file documents the schema. The real config lives at ~/.claude/mcp-obsidian/config.json (created by setup-vault.mjs).",
+
+  "referenceVault": "C:\\VAULTS\\.template",
+  "portStart": 27124,
+
+  "portRegistry": {
+    "C:\\VAULTS\\.template": 27124,
+    "C:\\VAULTS\\TradingView": 27125
+  },
+
+  "vaultNames": {
+    "C:\\VAULTS\\.template": "template",
+    "C:\\VAULTS\\TradingView": "tradingview"
+  },
+
+  "remoteVaults": [
+    {
+      "name": "qnap",
+      "description": "Vault on QNAP NAS, accessible over LAN",
+      "baseUrl": "https://192.168.0.11:27125",
+      "apiKey": "<paste API key from that vault's data.json>",
+      "tlsInsecure": true,
+      "timeoutMs": 10000
+    },
+    {
+      "name": "vps",
+      "description": "Headless vault on a VPS behind a real TLS cert",
+      "baseUrl": "https://obsidian.example.com",
+      "apiKey": "<paste API key>",
+      "tlsInsecure": false,
+      "timeoutMs": 8000
+    }
+  ],
+
+  "defaultVault": "tradingview"
+}
