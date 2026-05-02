@@ -231,10 +231,10 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
 
     // Block cross-host redirects — auth headers would be needed at a host
     // we did not authenticate against, which is unsafe regardless of TLS.
-    const here = new URL(currentUrl).hostname;
-    if (target.hostname !== here) {
+    const here = new URL(currentUrl);
+    if (target.hostname !== here.hostname) {
       throw new RestApiError(
-        `[${vault.name}] refused cross-host redirect from ${here} to ${target.hostname}`,
+        `[${vault.name}] refused cross-host redirect from ${here.hostname} to ${target.hostname}`,
         {
           kind: 'unknown',
           vaultName: vault.name,
@@ -242,6 +242,26 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
           status: res.status,
           hint:
             'Cross-host redirects are blocked to keep the API key from being sent to a host you did not authenticate against. Configure your reverse proxy to keep redirects same-host.',
+        },
+      );
+    }
+
+    // Block HTTPS → HTTP downgrades on the same host. The redirect would
+    // re-send the bearer API key and any extraHeaders (incl. Cloudflare
+    // Access service tokens) in cleartext. http → https upgrades are fine
+    // and common, http → http stays unchanged. Only the downgrade is
+    // dangerous because it changes the security posture of the channel
+    // we already authenticated over.
+    if (here.protocol === 'https:' && target.protocol === 'http:') {
+      throw new RestApiError(
+        `[${vault.name}] refused HTTPS→HTTP downgrade redirect to ${target.toString()}`,
+        {
+          kind: 'unknown',
+          vaultName: vault.name,
+          urlPath,
+          status: res.status,
+          hint:
+            'A redirect tried to downgrade the channel to cleartext HTTP, which would send your API key and other auth headers in the clear. Configure your reverse proxy to keep redirects on HTTPS.',
         },
       );
     }
