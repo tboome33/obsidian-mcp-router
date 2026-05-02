@@ -1,5 +1,7 @@
 # obsidian-mcp-router
 
+> *🇬🇧 English version below — [🇫🇷 version française](#-version-française)*
+
 > An MCP server that routes Claude tool calls to **multiple** Obsidian vaults — local or remote — over the [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin.
 
 Instead of registering one MCP per vault (one process, one port, one API key), this router exposes a single MCP that knows about every vault you've configured. Each tool takes a `vault` parameter (or uses your default), and the router fans out the HTTPS call to the right Obsidian instance.
@@ -102,3 +104,110 @@ The Local REST API plugin generates a self-signed certificate by default. For lo
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restrictions.
+
+---
+
+## 🇫🇷 Version française
+
+> Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
+
+Au lieu d'enregistrer un MCP par vault (un process, un port, une clé API), ce router expose un **seul** MCP qui connaît tous les vaults que tu as configurés. Chaque outil prend un paramètre `vault` (ou utilise ton vault par défaut), et le router fait suivre l'appel HTTPS vers la bonne instance Obsidian.
+
+### Pourquoi
+
+Le setup MCP Obsidian par défaut ([jacksteamdev/mcp-tools](https://github.com/jacksteamdev/mcp-tools)) verrouille un process MCP sur un vault unique via des variables d'environnement (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). Avec plusieurs vaults, il te faut plusieurs entrées MCP — une par scope/projet — et tu ne peux toucher qu'**un seul** vault à la fois par session Claude.
+
+Ce router remplace tout ça par :
+
+- **Une seule entrée MCP** dans `~/.claude.json` (user scope) → tous les vaults sont visibles depuis n'importe quelle session Claude Desktop ou Code.
+- **Vaults locaux et distants traités à l'identique**. Tu veux interroger un vault Obsidian qui tourne sur ton QNAP, ton iPad via Tailscale, ou un VPS headless ? Tu ajoutes simplement l'URL + la clé API dans le config.
+- **Recherche cross-vault** : passe `vault: "*"` à l'outil `search` pour lancer la recherche sur tous les vaults en parallèle.
+
+### Différences avec `mcp-tools`
+
+| | jacksteamdev/mcp-tools | obsidian-mcp-router |
+|---|---|---|
+| Vaults par process MCP | 1 | N |
+| Ajout d'un nouveau vault | nouvelle entrée MCP par scope | 1 ligne dans `config.json` |
+| Vaults distants | nécessite un MCP dédié + tweaks env | natif |
+| Recherche sémantique (Smart Connections) | oui (binaire natif) | pas encore (REST-only pour le moment) |
+| Exécution de Templater | oui | pas encore |
+| Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
+
+Le router couvre **uniquement la surface REST API**. Si tu as besoin de la recherche sémantique ou de l'exécution Templater, garde `mcp-tools` enregistré en parallèle pour ces cas — les deux peuvent coexister.
+
+### Installation
+
+```bash
+git clone https://github.com/tboome33/obsidian-mcp-router.git
+cd obsidian-mcp-router
+npm install
+npm link    # rend le binaire `obsidian-mcp-router` accessible globalement
+```
+
+Puis enregistre-le dans `~/.claude.json` (user scope) :
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "type": "stdio",
+      "command": "obsidian-mcp-router"
+    }
+  }
+}
+```
+
+C'est tout. Le router lit `~/.claude/mcp-obsidian/config.json` au démarrage (le même fichier déjà maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+
+### Config
+
+Le router lit la config existante maintenue par [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md), et ajoute trois champs optionnels par-dessus :
+
+```jsonc
+{
+  // --- écrits par setup-vault.mjs (ne pas éditer à la main) ---
+  "referenceVault": "C:\\VAULTS\\.template",
+  "portStart": 27124,
+  "portRegistry": {
+    "C:\\VAULTS\\.template": 27124,
+    "C:\\VAULTS\\TradingView": 27125
+  },
+
+  // --- spécifiques au router (optionnels, modifiables librement) ---
+  "vaultNames": {
+    "C:\\VAULTS\\.template": "template",
+    "C:\\VAULTS\\TradingView": "tradingview"
+  },
+  "remoteVaults": [
+    {
+      "name": "qnap",
+      "baseUrl": "https://192.168.0.11:27125",
+      "apiKey": "...",
+      "tlsInsecure": true
+    }
+  ],
+  "defaultVault": "tradingview"
+}
+```
+
+Voir [`examples/config.example.json`](./examples/config.example.json) pour un exemple complet commenté, et [`docs/remote-vaults.md`](./docs/remote-vaults.md) pour le guide complet d'ajout d'un vault distant.
+
+### Outils exposés
+
+| Outil | Description |
+|---|---|
+| `list_vaults` | Catalogue de tous les vaults configurés avec leur état online + latence. À appeler en premier. |
+| `list_files` | Liste les fichiers d'un répertoire d'un vault donné. |
+| `get_file` | Lit le contenu complet d'un fichier (markdown + frontmatter). |
+| `search` | Recherche texte simple. Passe `vault: "*"` pour lancer la recherche sur tous les vaults en parallèle. |
+
+D'autres outils (`create_file`, `append_to_file`, `patch_file`, `delete_file`, `execute_template`) sont sur la roadmap — voir les [Issues](https://github.com/tboome33/obsidian-mcp-router/issues).
+
+### TLS
+
+Le plugin Local REST API génère un certificat auto-signé par défaut. Pour les vaults localhost, mets `tlsInsecure: true` (c'est le défaut pour les vaults chargés depuis `portRegistry`). Pour les vaults distants derrière un vrai certificat TLS (par exemple un reverse proxy avec Let's Encrypt), mets `tlsInsecure: false`.
+
+### Licence
+
+Apache 2.0 — voir [LICENSE](./LICENSE) et [NOTICE](./NOTICE). Aucune restriction d'usage.
