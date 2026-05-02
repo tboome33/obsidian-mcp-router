@@ -103,8 +103,16 @@ export async function loadRegistry({ configPath } = {}) {
   }
 
   // --- 3. Defaults ---
+  // Honor config.defaultVault only if it's still in the active set —
+  // otherwise the user disables a vault and every tool call that omits the
+  // `vault` argument fails with "Unknown vault". Fall back to the first
+  // healthy local vault, then to the first active vault of any type.
+  const configuredDefault = config.defaultVault;
+  const isConfiguredDefaultActive =
+    configuredDefault && vaults.some((v) => v.name === configuredDefault);
+
   const defaultVault =
-    config.defaultVault ||
+    (isConfiguredDefaultActive && configuredDefault) ||
     vaults.find((v) => v.type === 'local' && !v.missingApiKey)?.name ||
     vaults[0]?.name;
 

@@ -12,6 +12,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
@@ -367,32 +368,48 @@ export async function startServer({ configPath, watch = true } = {}) {
   // never crashes on a bad edit.
   if (watch) {
     let timer;
+    // Watch the parent directory rather than the config file directly. On
+    // Linux/macOS, an atomic write (tmp + rename) replaces the inode and a
+    // file-level watcher stays attached to the old, now-orphaned inode —
+    // missing every subsequent edit. Watching the directory and filtering
+    // by filename survives atomic replacements gracefully and works on all
+    // three OSes. Caveat: the dir watcher fires for sibling files too, so
+    // we must filter on `filename`.
+    const watchDir = path.dirname(cfgPath);
+    const watchName = path.basename(cfgPath);
+    const reload = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        try {
+          const fresh = await loadRegistry({ configPath: cfgPath });
+          registryRef.current = fresh;
+          console.error(
+            `[obsidian-mcp-router] Config reloaded. ` +
+              `${fresh.vaults.length} active vault(s)` +
+              (fresh.skipped?.length ? `, ${fresh.skipped.length} disabled` : '') +
+              '.',
+          );
+        } catch (err) {
+          console.error(
+            `[obsidian-mcp-router] Config reload failed (keeping previous): ${err.message}`,
+          );
+        }
+      }, 500);
+    };
     try {
-      const watcher = fs.watch(cfgPath, () => {
-        clearTimeout(timer);
-        timer = setTimeout(async () => {
-          try {
-            const fresh = await loadRegistry({ configPath: cfgPath });
-            registryRef.current = fresh;
-            console.error(
-              `[obsidian-mcp-router] Config reloaded. ` +
-                `${fresh.vaults.length} active vault(s)` +
-                (fresh.skipped?.length ? `, ${fresh.skipped.length} disabled` : '') +
-                '.',
-            );
-          } catch (err) {
-            console.error(
-              `[obsidian-mcp-router] Config reload failed (keeping previous): ${err.message}`,
-            );
-          }
-        }, 500);
+      const watcher = fs.watch(watchDir, (eventType, changedFile) => {
+        // Some platforms pass null for changedFile — fall back to "any
+        // change in the directory triggers a reload" rather than missing
+        // the event.
+        if (changedFile && changedFile !== watchName) return;
+        reload();
       });
       // Don't keep the event loop alive just for the watcher — let stdin
       // closure (MCP transport disconnect) terminate the process cleanly.
       watcher.unref?.();
     } catch (err) {
       console.error(
-        `[obsidian-mcp-router] Cannot watch ${cfgPath} (${err.code}). Hot-reload disabled.`,
+        `[obsidian-mcp-router] Cannot watch ${watchDir} (${err.code}). Hot-reload disabled.`,
       );
     }
   }
@@ -400,7 +417,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.4.2',
+      version: '0.4.3',
     },
     {
       capabilities: {

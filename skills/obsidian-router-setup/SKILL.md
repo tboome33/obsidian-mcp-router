@@ -21,17 +21,23 @@ This skill walks the user through installing **obsidian-mcp-router** and replaci
 ## Install steps
 
 ```bash
-# 1. Clone (private GitHub repo for now)
-git clone https://github.com/tboome33/obsidian-mcp-router.git I:\DEVELOPPEMENT\obsidian-mcp-router
-cd I:\DEVELOPPEMENT\obsidian-mcp-router
+# 1. Clone (pick a destination that fits your workflow — examples below).
+#    Linux/macOS:
+git clone https://github.com/tboome33/obsidian-mcp-router.git ~/dev/obsidian-mcp-router
+cd ~/dev/obsidian-mcp-router
+#    Windows (PowerShell):
+#    git clone https://github.com/tboome33/obsidian-mcp-router.git "$env:USERPROFILE\dev\obsidian-mcp-router"
+#    cd "$env:USERPROFILE\dev\obsidian-mcp-router"
 
 # 2. Install dependencies + create global symlink
 npm install
 npm link
 
 # 3. Verify the binary is callable
-obsidian-mcp-router --help 2>/dev/null || echo "binary registered"
+obsidian-mcp-router --version
 ```
+
+Ask the user upfront which directory they prefer if it's not obvious. Don't pick a destination on their behalf — clone paths are a personal taste thing.
 
 ## Register in Claude (user scope)
 

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-mcp-router",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "MCP server that routes tool calls to multiple Obsidian vaults (local or remote) over the Local REST API plugin.",
   "type": "module",
   "main": "src/index.mjs",

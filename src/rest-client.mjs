@@ -199,7 +199,11 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
       headers: { ...authHeaders(vault), ...headers },
       body,
       signal: controller.signal,
-      redirect: 'manual', // we want to detect CF Access redirects, not follow them
+      // Follow ordinary redirects (canonical-host http→https, trailing-slash
+      // normalization, reverse-proxy redirects). Cloudflare Access redirects
+      // are detected after the chain via res.url ending up on
+      // cloudflareaccess.com (see the !res.ok branch below).
+      redirect: 'follow',
     });
   } catch (err) {
     clearTimeout(timeout);
@@ -210,12 +214,21 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // Manual redirect detection (302/303/307/308 are not "ok" with redirect:'manual')
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get('location') || '';
-      throw categorizeHttpStatus(res.status, res.statusText, location, vault, urlPath);
+    // After redirect:'follow', a Cloudflare Access denial typically lands on
+    // *.cloudflareaccess.com (HTTP 200 with the login page) or returns the
+    // redirect chain in res.url. Both surface here as "not ok" only if the
+    // page itself returns non-2xx, OR we detect the cloudflareaccess.com
+    // hostname in res.url even when the body is 200 (rare but possible).
+    if (/cloudflareaccess\.com/i.test(res.url || '') || /cloudflareaccess\.com/i.test(text)) {
+      throw categorizeHttpStatus(res.status, res.statusText, 'cloudflareaccess.com redirect', vault, urlPath);
     }
     throw categorizeHttpStatus(res.status, res.statusText, text, vault, urlPath);
+  }
+
+  // Even with res.ok, if the final URL lives on cloudflareaccess.com, the
+  // request was hijacked by Access and we never reached the vault.
+  if (/cloudflareaccess\.com/i.test(res.url || '')) {
+    throw categorizeHttpStatus(200, 'OK', 'cloudflareaccess.com (auth page reached)', vault, urlPath);
   }
 
   const contentType = res.headers.get('content-type') || '';
