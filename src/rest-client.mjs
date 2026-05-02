@@ -17,10 +17,17 @@ function agentFor(vault) {
 }
 
 function authHeaders(vault) {
-  return {
+  const headers = {
     Authorization: `Bearer ${vault.apiKey}`,
     Accept: 'application/json',
   };
+  // Merge any vault-specific extra headers (e.g. Cloudflare Access service
+  // token pair, custom reverse-proxy auth tokens). Per-call headers override
+  // these in the request() helper.
+  if (vault.extraHeaders) {
+    Object.assign(headers, vault.extraHeaders);
+  }
+  return headers;
 }
 
 function encodePath(p) {

@@ -71,6 +71,14 @@ export async function loadRegistry() {
       description: r.description,
       tlsInsecure: r.tlsInsecure === true,
       timeoutMs: r.timeoutMs ?? 10000,
+      // extraHeaders are merged into every request — used for things like
+      // Cloudflare Access service tokens (CF-Access-Client-Id +
+      // CF-Access-Client-Secret) when the vault is fronted by an auth
+      // gateway. See docs/cloudflare-tunnel.md for the typical recipe.
+      extraHeaders:
+        r.extraHeaders && typeof r.extraHeaders === 'object'
+          ? { ...r.extraHeaders }
+          : undefined,
     });
   }
 

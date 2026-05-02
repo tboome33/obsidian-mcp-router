@@ -99,7 +99,7 @@ The router reads the existing config maintained by [`setup-vault.mjs`](https://g
 }
 ```
 
-See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, and [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults.
+See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults, and [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) for the recipe to expose a vault over a Cloudflare Tunnel with optional Cloudflare Access auth (service tokens supported via the `extraHeaders` field).
 
 ## Tools exposed
 
@@ -358,7 +358,7 @@ Le router lit la config existante maintenue par [`setup-vault.mjs`](https://gith
 }
 ```
 
-Voir [`examples/config.example.json`](./examples/config.example.json) pour un exemple complet commenté, et [`docs/remote-vaults.md`](./docs/remote-vaults.md) pour le guide complet d'ajout d'un vault distant.
+Voir [`examples/config.example.json`](./examples/config.example.json) pour un exemple complet commenté, [`docs/remote-vaults.md`](./docs/remote-vaults.md) pour le guide complet d'ajout d'un vault distant, et [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) pour la recette d'exposition d'un vault via Cloudflare Tunnel avec auth optionnelle Cloudflare Access (service tokens supportés via le champ `extraHeaders`).
 
 ### Outils exposés
 

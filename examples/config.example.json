@@ -30,6 +30,18 @@
       "apiKey": "<paste API key>",
       "tlsInsecure": false,
       "timeoutMs": 8000
+    },
+    {
+      "name": "behind-cf-access",
+      "description": "Vault exposed via Cloudflare Tunnel + protected by Cloudflare Access service token",
+      "baseUrl": "https://vault.mydomain.com",
+      "apiKey": "<paste original Local REST API key>",
+      "tlsInsecure": false,
+      "timeoutMs": 10000,
+      "extraHeaders": {
+        "CF-Access-Client-Id":     "abc123def456.access",
+        "CF-Access-Client-Secret": "<service token secret>"
+      }
     }
   ],
 
