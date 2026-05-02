@@ -98,6 +98,105 @@ export function getFileContent(vault, filePath) {
   return request(vault, 'GET', `/vault/${encodePath(filePath)}`, { json: false });
 }
 
+/**
+ * Create a file or replace its content. Always overwrites if the file exists,
+ * unless `applyIfContentPreexists` is set to false (server returns 409 then).
+ *
+ * @param {object} vault
+ * @param {string} filePath  — path relative to vault root
+ * @param {string} content   — new file content (markdown text)
+ * @param {object} [opts]
+ */
+export function writeFile(vault, filePath, content, opts = {}) {
+  const headers = { 'Content-Type': 'text/markdown' };
+  if (opts.applyIfContentPreexists === false) {
+    headers['Apply-If-Content-Preexists'] = 'false';
+  }
+  return request(vault, 'PUT', `/vault/${encodePath(filePath)}`, {
+    headers,
+    body: content,
+    json: false,
+  });
+}
+
+/**
+ * Append content at the end of a file. Creates the file if it doesn't exist.
+ */
+export function appendToFile(vault, filePath, content, opts = {}) {
+  const headers = { 'Content-Type': 'text/markdown' };
+  if (opts.createTargetIfMissing === false) {
+    headers['Create-Target-If-Missing'] = 'false';
+  }
+  return request(vault, 'POST', `/vault/${encodePath(filePath)}`, {
+    headers,
+    body: content,
+    json: false,
+  });
+}
+
+/**
+ * Delete a file from the vault.
+ */
+export function deleteFile(vault, filePath) {
+  return request(vault, 'DELETE', `/vault/${encodePath(filePath)}`, {
+    json: false,
+  });
+}
+
+/**
+ * Surgical edit: patch a heading, block, or frontmatter field.
+ *
+ * @param {object} vault
+ * @param {string} filePath
+ * @param {object} args
+ *   @param {"append"|"prepend"|"replace"} args.operation
+ *   @param {"heading"|"block"|"frontmatter"} args.targetType
+ *   @param {string} args.target           — heading path / block id / frontmatter key
+ *   @param {string|object} args.content   — new content (string for heading/block, any for frontmatter)
+ *   @param {string} [args.targetDelimiter]
+ *   @param {boolean} [args.createTargetIfMissing]
+ *   @param {boolean} [args.applyIfContentPreexists]
+ *   @param {boolean} [args.trimTargetWhitespace]
+ */
+export function patchFile(vault, filePath, args) {
+  const {
+    operation,
+    targetType,
+    target,
+    content,
+    targetDelimiter,
+    createTargetIfMissing,
+    applyIfContentPreexists,
+    trimTargetWhitespace,
+  } = args;
+
+  const isFrontmatterObject = targetType === 'frontmatter' && typeof content === 'object';
+  const headers = {
+    Operation: operation,
+    'Target-Type': targetType,
+    Target: encodeURIComponent(target),
+    'Content-Type': isFrontmatterObject ? 'application/json' : 'text/markdown',
+  };
+  if (targetDelimiter) headers['Target-Delimiter'] = targetDelimiter;
+  if (createTargetIfMissing != null) {
+    headers['Create-Target-If-Missing'] = String(createTargetIfMissing);
+  }
+  if (applyIfContentPreexists != null) {
+    headers['Apply-If-Content-Preexists'] = String(applyIfContentPreexists);
+  }
+  if (trimTargetWhitespace != null) {
+    headers['Trim-Target-Whitespace'] = String(trimTargetWhitespace);
+  }
+
+  const body = isFrontmatterObject ? JSON.stringify(content) : content;
+
+  return request(vault, 'PATCH', `/vault/${encodePath(filePath)}`, {
+    headers,
+    body,
+    json: false,
+  });
+}
+
 export function searchSimple(vault, query, contextLength = 100) {
   const params = new URLSearchParams({
     query,
@@ -130,18 +229,16 @@ export function searchSmart(vault, query, filter = {}) {
  * Execute a Templater template against the vault, optionally creating a new
  * note from it. Requires the `templater-obsidian` plugin to be installed.
  *
- * The mcp-tools handler expects the same JSON-string-in-text/plain quirk as
- * /search/smart.
+ * Quirk note: unlike /search/smart (which expects a JSON-string body in
+ * text/plain), /templates/execute is validated by a different schema that
+ * requires a real JSON object — so we send application/json here.
  */
 export function executeTemplate(vault, { name, args = {}, createFile, targetPath } = {}) {
-  const payload = JSON.stringify({
-    name,
-    arguments: args,
-    createFile,
-    targetPath,
-  });
+  const payload = { name, arguments: args };
+  if (createFile != null) payload.createFile = createFile;
+  if (targetPath != null) payload.targetPath = targetPath;
   return request(vault, 'POST', '/templates/execute', {
-    headers: { 'Content-Type': 'text/plain' },
-    body: payload,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   });
 }

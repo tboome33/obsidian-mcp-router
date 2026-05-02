@@ -17,6 +17,11 @@ import { listFiles } from './tools/list-files.mjs';
 import { getFile } from './tools/get-file.mjs';
 import { search } from './tools/search.mjs';
 import { searchSmartTool } from './tools/search-smart.mjs';
+import { writeFileTool } from './tools/write-file.mjs';
+import { appendToFileTool } from './tools/append-to-file.mjs';
+import { deleteFileTool } from './tools/delete-file.mjs';
+import { patchFileTool } from './tools/patch-file.mjs';
+import { executeTemplateTool } from './tools/execute-template.mjs';
 
 const TOOLS = [
   {
@@ -93,6 +98,144 @@ const TOOLS = [
     },
   },
   {
+    name: 'write_file',
+    description:
+      'Create a new file or replace the entire content of an existing file. Pass ifNew: true to refuse to overwrite an existing file (server returns 409 in that case).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string', description: 'Vault name. Omit for default.' },
+        path: { type: 'string', description: 'Target path relative to vault root.' },
+        content: { type: 'string', description: 'Full file content (markdown).' },
+        ifNew: {
+          type: 'boolean',
+          description: 'If true, fail with 409 if the file already exists. Default: false (overwrite).',
+        },
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'append_to_file',
+    description:
+      'Append content to the end of a file. Creates the file if it doesn\'t exist (unless requireExisting is true). Use this for journals, logs, or running notes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string' },
+        content: { type: 'string', description: 'Markdown to append.' },
+        requireExisting: {
+          type: 'boolean',
+          description: 'If true, fail when the file does not exist. Default: false (auto-create).',
+        },
+      },
+      required: ['path', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'delete_file',
+    description:
+      'Permanently delete a file from the vault. Requires confirm: true to proceed — this guard prevents accidental deletes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string' },
+        confirm: {
+          type: 'boolean',
+          description: 'Must be exactly true. Any other value blocks the operation.',
+        },
+      },
+      required: ['path', 'confirm'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'patch_file',
+    description:
+      'Surgical edit of a specific section, block, or frontmatter field of a file — without rewriting the whole file. Use this when you want to insert under a specific heading, replace a block by ID, or update a single frontmatter property.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        path: { type: 'string', description: 'File path relative to vault root.' },
+        operation: {
+          type: 'string',
+          enum: ['append', 'prepend', 'replace'],
+          description: 'How to combine new content with the target.',
+        },
+        targetType: {
+          type: 'string',
+          enum: ['heading', 'block', 'frontmatter'],
+          description: 'What kind of target to address.',
+        },
+        target: {
+          type: 'string',
+          description:
+            'For heading: the heading path joined by the delimiter (default "::") — e.g. "Section 1::Subsection". For block: the block id without the leading ^. For frontmatter: the property name.',
+        },
+        content: {
+          oneOf: [
+            { type: 'string', description: 'Markdown text (heading/block targets).' },
+            { type: 'object', description: 'JSON value (frontmatter targets only).' },
+          ],
+          description: 'New content to insert.',
+        },
+        targetDelimiter: {
+          type: 'string',
+          description: 'Override the heading-path delimiter (default "::").',
+        },
+        createTargetIfMissing: {
+          type: 'boolean',
+          description: 'If the target doesn\'t exist, create it (heading/frontmatter only).',
+        },
+        applyIfContentPreexists: {
+          type: 'boolean',
+          description: 'Skip the patch when the target already contains the new content (idempotency).',
+        },
+        trimTargetWhitespace: {
+          type: 'boolean',
+          description: 'Trim whitespace around the target before applying the operation.',
+        },
+      },
+      required: ['path', 'operation', 'targetType', 'target', 'content'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'execute_template',
+    description:
+      'Execute a Templater template against the vault. Optionally writes the rendered result to a new file. Requires the templater-obsidian plugin enabled in the target vault. The arguments map is exposed inside the template via tp.mcpTools.prompt("key") — note: directly under tp, NOT under tp.user.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: { type: 'string' },
+        name: {
+          type: 'string',
+          description: 'Path to the template file in the vault, e.g. "Templates/Daily.md".',
+        },
+        arguments: {
+          type: 'object',
+          description: 'Key-value map injected into the template via tp.user.mcpTools.prompt("key").',
+          additionalProperties: { type: 'string' },
+        },
+        createFile: {
+          type: 'boolean',
+          description: 'If true, save the rendered template to targetPath. If false, only return the rendered content.',
+        },
+        targetPath: {
+          type: 'string',
+          description: 'Where to save the rendered template (required when createFile is true).',
+        },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'search_smart',
     description:
       'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Requires the target vault to have both the "mcp-tools" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
@@ -134,7 +277,7 @@ export async function startServer() {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.2.0',
+      version: '0.3.0',
     },
     {
       capabilities: {
@@ -162,6 +305,16 @@ export async function startServer() {
           return await wrapResult(search(registry, args));
         case 'search_smart':
           return await wrapResult(searchSmartTool(registry, args));
+        case 'write_file':
+          return await wrapResult(writeFileTool(registry, args));
+        case 'append_to_file':
+          return await wrapResult(appendToFileTool(registry, args));
+        case 'delete_file':
+          return await wrapResult(deleteFileTool(registry, args));
+        case 'patch_file':
+          return await wrapResult(patchFileTool(registry, args));
+        case 'execute_template':
+          return await wrapResult(executeTemplateTool(registry, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }

@@ -12,21 +12,27 @@ Reverse-engineered the `mcp-tools` plugin's API extension to Local REST API to d
 
 The same approach unlocks `/templates/execute` for v0.3.
 
-## v0.3 — Write operations + Templater
+## ✅ v0.3 — Write operations + Templater (shipped)
 
-Round out the REST API surface so the router can replace `mcp-tools` for everyday writing too.
+The router can now fully replace `mcp-tools` for day-to-day usage. All writes go through the same Local REST API plugin endpoints; Templater execution goes through the `mcp-tools` extension.
 
-- [ ] `create_file(vault, path, content)` — `POST /vault/<path>`
-- [ ] `append_to_file(vault, path, content)` — `POST /vault/<path>` with append semantics
-- [ ] `update_file(vault, path, content)` — `PUT /vault/<path>`
-- [ ] `patch_file(vault, path, target, operation, content)` — `PATCH /vault/<path>` for surgical edits to headings, blocks, frontmatter
-- [ ] `delete_file(vault, path)` — `DELETE /vault/<path>`
-- [ ] `move_file(vault, from, to)` — derived from PATCH
-- [ ] Frontmatter helpers (read/update YAML without re-emitting the whole file)
-- [ ] `execute_template(vault, name, args?, createFile?, targetPath?)` — wraps the existing `executeTemplate()` rest-client call, exposed as a tool
+- ✅ `write_file(vault, path, content, ifNew?)` — `PUT /vault/<path>` (create or replace)
+- ✅ `append_to_file(vault, path, content, requireExisting?)` — `POST /vault/<path>`
+- ✅ `patch_file(vault, path, operation, targetType, target, content, ...)` — `PATCH /vault/<path>` for surgical edits to `heading` / `block` / `frontmatter` targets
+- ✅ `delete_file(vault, path, confirm)` — `DELETE /vault/<path>` with explicit confirm guard
+- ✅ `execute_template(vault, name, arguments?, createFile?, targetPath?)` — `POST /templates/execute` via the mcp-tools extension. Templates access router-injected args via `tp.mcpTools.prompt("key")`.
+
+Quirks discovered and documented inline:
+- `/templates/execute` validator wants `application/json` with a real object — different from `/search/smart` which expects a stringified-JSON in `text/plain`.
+- The PATCH `heading` target must be the **full heading path** joined by the delimiter (default `::`), not just the immediate heading name.
+- `tp.mcpTools` is added to `tp` directly, not under `tp.user` — diverges from typical Templater user-script convention.
+
+Deferred to v0.4: `move_file` (no native REST endpoint — needs PATCH-rename or a Get+Put+Delete fallback) and frontmatter helpers (read-modify-write convenience around `patch_file`).
 
 ## v0.4 — Quality of life
 
+- [ ] `move_file(vault, from, to)` — likely PATCH-rename if Local REST API supports it, else GET → PUT → DELETE fallback
+- [ ] Frontmatter helpers — read/update single keys without remembering PATCH header semantics
 - [ ] `obsidian-router-add-vault` skill — interactive flow to add a remote vault
 - [ ] `obsidian-router-status` skill — diagnostic ping of all vaults, surface which are offline
 - [ ] `--config <path>` CLI flag for non-default config locations

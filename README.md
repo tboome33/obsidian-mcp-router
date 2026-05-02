@@ -24,7 +24,8 @@ This router replaces that with:
 | Setup per vault | new MCP entry per scope | 1 line in config.json |
 | Remote vaults | requires per-vault MCP + env tweaks | first-class citizen |
 | Semantic search (Smart Connections) | yes (native binary) | yes (via the same `mcp-tools` API extension, no binary dependency) |
-| Templater execution | yes | client wired, tool exposure on the v0.3 roadmap |
+| Templater execution | yes | yes (`execute_template` tool) |
+| File writes (create / append / patch / delete) | yes | yes |
 | Cross-vault operations | no | yes (`search` with `vault: "*"`) |
 
 The router covers the **REST API surface only**. If you need semantic search or Templater execution, keep `mcp-tools` registered alongside for those use cases — both can coexist.
@@ -95,8 +96,13 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `get_file` | Read full file content (markdown + frontmatter). |
 | `search` | Plain-text (substring) search. Pass `vault: "*"` to fan-out across all vaults. |
 | `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `mcp-tools` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. |
+| `write_file` | Create a new file or replace the entire content of an existing one. Pass `ifNew: true` to refuse to overwrite. |
+| `append_to_file` | Append content at the end of a file. Auto-creates the file unless `requireExisting: true`. |
+| `patch_file` | Surgical edit by `heading` / `block` / `frontmatter` target — insert under a heading without rewriting the whole file, replace a block by id, update a single frontmatter key. |
+| `delete_file` | Permanently delete a file. Requires explicit `confirm: true` to guard against hallucinated deletes. |
+| `execute_template` | Execute a Templater template, optionally writing the rendered result to a new file. Arguments are exposed in the template via `tp.mcpTools.prompt("key")`. |
 
-More tools (`create_file`, `append_to_file`, `patch_file`, `delete_file`, `execute_template`) are on the roadmap — see [Issues](https://github.com/tboome33/obsidian-mcp-router/issues).
+More tools (`move_file`, frontmatter helpers, file watchers) are on the roadmap — see [ROADMAP.md](./ROADMAP.md).
 
 ## TLS
 
@@ -132,7 +138,8 @@ Ce router remplace tout ça par :
 | Ajout d'un nouveau vault | nouvelle entrée MCP par scope | 1 ligne dans `config.json` |
 | Vaults distants | nécessite un MCP dédié + tweaks env | natif |
 | Recherche sémantique (Smart Connections) | oui (binaire natif) | oui (via la même extension API `mcp-tools`, sans dépendance au binaire) |
-| Exécution de Templater | oui | client câblé, exposition outil prévue en v0.3 |
+| Exécution de Templater | oui | oui (outil `execute_template`) |
+| Écritures (create / append / patch / delete) | oui | oui |
 | Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
 
 Le router couvre **uniquement la surface REST API**. Si tu as besoin de la recherche sémantique ou de l'exécution Templater, garde `mcp-tools` enregistré en parallèle pour ces cas — les deux peuvent coexister.
@@ -203,8 +210,13 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `get_file` | Lit le contenu complet d'un fichier (markdown + frontmatter). |
 | `search` | Recherche texte simple (substring). Passe `vault: "*"` pour lancer la recherche sur tous les vaults en parallèle. |
 | `search_smart` | Recherche sémantique (par sens) via les embeddings de Smart Connections. Retourne les chunks classés avec scores cosinus et breadcrumbs (chemin de titres). Nécessite les plugins `mcp-tools` + `smart-connections` activés dans le vault cible. Supporte `vault: "*"` pour la recherche sémantique cross-vaults. |
+| `write_file` | Crée un fichier ou remplace son contenu intégral. Passe `ifNew: true` pour refuser l'écrasement. |
+| `append_to_file` | Ajoute du contenu en fin de fichier. Crée le fichier si absent (sauf si `requireExisting: true`). |
+| `patch_file` | Édition chirurgicale par cible `heading` / `block` / `frontmatter` — insérer sous un titre sans réécrire tout le fichier, remplacer un bloc par id, modifier une clé de frontmatter. |
+| `delete_file` | Suppression définitive. Exige `confirm: true` pour éviter les suppressions accidentelles. |
+| `execute_template` | Exécute un template Templater, écrit optionnellement le rendu dans un nouveau fichier. Les arguments sont accessibles dans le template via `tp.mcpTools.prompt("clé")`. |
 
-D'autres outils (`create_file`, `append_to_file`, `patch_file`, `delete_file`, `execute_template`) sont sur la roadmap — voir les [Issues](https://github.com/tboome33/obsidian-mcp-router/issues).
+D'autres outils (`move_file`, helpers frontmatter, file watchers) sont sur la roadmap — voir [ROADMAP.md](./ROADMAP.md).
 
 ### TLS
 
