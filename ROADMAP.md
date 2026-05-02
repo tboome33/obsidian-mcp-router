@@ -51,11 +51,15 @@ Two new conversational skills under [`skills/`](./skills/), installable into `~/
 - ✅ `obsidian-router-add-vault` — disambiguates local vs remote, gathers required fields, runs `setup-vault.mjs` for local vaults, edits `config.json` directly for remote vaults, optionally pings the new vault for live verification, refuses to leak secrets to logs.
 - ✅ `obsidian-router-status` — calls `list_vaults`, renders a markdown table with online/offline/missingApiKey, then for each unhealthy vault produces a fix hint mapped to the root cause (offline-local vs offline-remote vs cf_access vs unauthorized vs slow).
 
-## v0.4.2 — Hot reload + small DX
+## ✅ v0.4.2 — Hot reload + small DX (shipped)
 
-- [ ] `--config <path>` CLI flag for non-default config locations
-- [ ] Per-vault `enabled: false` flag to hide a vault from `list_vaults` without removing it
-- [ ] File-watcher on `config.json` so the registry reloads on edit (combo win with the future Obsidian Cloudflare Tunnel plugin auto-writing into config.json)
+The router stops being a "boot once and forget" black box. It now reflects config edits live, supports custom config locations for testing, and lets you mute a vault without deleting its entry.
+
+- ✅ `--config <path>` / `-c <path>` CLI flag for non-default config locations. Also reads `OBSIDIAN_ROUTER_CONFIG` env var. `--help` and `--version` flags added for hygiene.
+- ✅ Two ways to disable a vault:
+  - Global `disabledVaults: [name1, name2]` array (works for local + remote)
+  - Per-remote-vault `enabled: false` flag (only in `remoteVaults` entries)
+- ✅ File-watcher on the config file (`fs.watch` with 500ms debounce). When the file changes, the registry reloads atomically — current registry stays in place if the new one fails to parse. Disabled with `--no-watch` or `OBSIDIAN_ROUTER_NO_WATCH` env var. The watcher is `unref()`ed so it never holds the process alive past stdin closure.
 
 ## v0.5 — Cloudflare Tunnel companion plugin
 

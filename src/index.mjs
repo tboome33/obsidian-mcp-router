@@ -11,7 +11,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
-import { loadRegistry } from './registry.mjs';
+import fs from 'node:fs';
+import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
 import { getFile } from './tools/get-file.mjs';
@@ -356,13 +357,50 @@ const TOOLS = [
   },
 ];
 
-export async function startServer() {
-  const registry = await loadRegistry();
+export async function startServer({ configPath, watch = true } = {}) {
+  const cfgPath = resolveConfigPath({ configPath });
+  const registryRef = { current: await loadRegistry({ configPath: cfgPath }) };
+
+  // Hot-reload of the config file. Debounced (500ms) to coalesce rapid
+  // successive writes from setup-vault.mjs. On parse error, the existing
+  // registry is preserved and the reason is logged to stderr — the server
+  // never crashes on a bad edit.
+  if (watch) {
+    let timer;
+    try {
+      const watcher = fs.watch(cfgPath, () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          try {
+            const fresh = await loadRegistry({ configPath: cfgPath });
+            registryRef.current = fresh;
+            console.error(
+              `[obsidian-mcp-router] Config reloaded. ` +
+                `${fresh.vaults.length} active vault(s)` +
+                (fresh.skipped?.length ? `, ${fresh.skipped.length} disabled` : '') +
+                '.',
+            );
+          } catch (err) {
+            console.error(
+              `[obsidian-mcp-router] Config reload failed (keeping previous): ${err.message}`,
+            );
+          }
+        }, 500);
+      });
+      // Don't keep the event loop alive just for the watcher — let stdin
+      // closure (MCP transport disconnect) terminate the process cleanly.
+      watcher.unref?.();
+    } catch (err) {
+      console.error(
+        `[obsidian-mcp-router] Cannot watch ${cfgPath} (${err.code}). Hot-reload disabled.`,
+      );
+    }
+  }
 
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.4.1',
+      version: '0.4.2',
     },
     {
       capabilities: {
@@ -379,35 +417,36 @@ export async function startServer() {
     const { name, arguments: args = {} } = request.params;
 
     try {
+      const reg = registryRef.current;
       switch (name) {
         case 'list_vaults':
-          return await wrapResult(listVaults(registry));
+          return await wrapResult(listVaults(reg));
         case 'list_files':
-          return await wrapResult(listFiles(registry, args));
+          return await wrapResult(listFiles(reg, args));
         case 'get_file':
-          return await wrapResult(getFile(registry, args));
+          return await wrapResult(getFile(reg, args));
         case 'search':
-          return await wrapResult(search(registry, args));
+          return await wrapResult(search(reg, args));
         case 'search_smart':
-          return await wrapResult(searchSmartTool(registry, args));
+          return await wrapResult(searchSmartTool(reg, args));
         case 'write_file':
-          return await wrapResult(writeFileTool(registry, args));
+          return await wrapResult(writeFileTool(reg, args));
         case 'append_to_file':
-          return await wrapResult(appendToFileTool(registry, args));
+          return await wrapResult(appendToFileTool(reg, args));
         case 'delete_file':
-          return await wrapResult(deleteFileTool(registry, args));
+          return await wrapResult(deleteFileTool(reg, args));
         case 'patch_file':
-          return await wrapResult(patchFileTool(registry, args));
+          return await wrapResult(patchFileTool(reg, args));
         case 'execute_template':
-          return await wrapResult(executeTemplateTool(registry, args));
+          return await wrapResult(executeTemplateTool(reg, args));
         case 'move_file':
-          return await wrapResult(moveFileTool(registry, args));
+          return await wrapResult(moveFileTool(reg, args));
         case 'get_frontmatter':
-          return await wrapResult(getFrontmatterTool(registry, args));
+          return await wrapResult(getFrontmatterTool(reg, args));
         case 'set_frontmatter':
-          return await wrapResult(setFrontmatterTool(registry, args));
+          return await wrapResult(setFrontmatterTool(reg, args));
         case 'merge_frontmatter':
-          return await wrapResult(mergeFrontmatterTool(registry, args));
+          return await wrapResult(mergeFrontmatterTool(reg, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -432,10 +471,14 @@ export async function startServer() {
   await server.connect(transport);
 
   // Log to stderr so it doesn't pollute the stdio MCP channel
+  const reg = registryRef.current;
+  const skippedNote = reg.skipped?.length
+    ? ` (${reg.skipped.length} disabled: ${reg.skipped.map((s) => s.name).join(', ')})`
+    : '';
   console.error(
-    `[obsidian-mcp-router] Ready. ${registry.vaults.length} vault(s) configured: ${registry.vaults
+    `[obsidian-mcp-router] Ready. ${reg.vaults.length} vault(s) configured: ${reg.vaults
       .map((v) => v.name)
-      .join(', ')}`,
+      .join(', ')}${skippedNote}`,
   );
 }
 

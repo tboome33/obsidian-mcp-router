@@ -78,6 +78,35 @@ Then register it in `~/.claude.json` (user scope):
 
 That's it. The router reads `~/.claude/mcp-obsidian/config.json` on start (the same file that `setup-vault.mjs` already maintains) and exposes every vault automatically.
 
+### CLI flags
+
+```bash
+obsidian-mcp-router --version
+obsidian-mcp-router --help
+obsidian-mcp-router --config /custom/path/config.json
+obsidian-mcp-router --no-watch     # disable hot-reload of the config file
+```
+
+By default, the router watches the config file and reloads automatically when it changes — useful when paired with `setup-vault.mjs` adding new vaults, or with the future `Obsidian Cloudflare Tunnel` plugin auto-writing tunnel URLs into `remoteVaults`.
+
+### Disabling a vault temporarily
+
+To hide a vault from `list_vaults` without removing it from the config, either:
+
+```jsonc
+{
+  // Global blacklist (works for both local and remote vaults, by name):
+  "disabledVaults": ["template", "experimental-vps"],
+
+  // Or per-remote-vault flag (only for entries in remoteVaults):
+  "remoteVaults": [
+    { "name": "qnap", "baseUrl": "...", "apiKey": "...", "enabled": false }
+  ]
+}
+```
+
+Disabled vaults appear in the boot log as `(N disabled: ...)` for visibility, but they don't show up in `list_vaults` and aren't pingable.
+
 ## Config
 
 The router reads the existing config maintained by [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md), and adds three optional fields on top:
@@ -350,6 +379,35 @@ Puis enregistre-le dans `~/.claude.json` (user scope) :
 ```
 
 C'est tout. Le router lit `~/.claude/mcp-obsidian/config.json` au démarrage (le même fichier déjà maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+
+### Flags CLI
+
+```bash
+obsidian-mcp-router --version
+obsidian-mcp-router --help
+obsidian-mcp-router --config /chemin/perso/config.json
+obsidian-mcp-router --no-watch     # désactive le hot-reload du fichier de config
+```
+
+Par défaut, le router surveille le fichier de config et le recharge automatiquement à chaque modification — utile quand `setup-vault.mjs` ajoute de nouveaux vaults, ou quand le futur plugin `Obsidian Cloudflare Tunnel` écrit automatiquement des URLs de tunnel dans `remoteVaults`.
+
+### Désactiver un vault temporairement
+
+Pour cacher un vault de `list_vaults` sans le retirer de la config, deux options :
+
+```jsonc
+{
+  // Blacklist globale (fonctionne pour les vaults locaux ET distants, par nom) :
+  "disabledVaults": ["template", "vps-experimental"],
+
+  // Ou flag par-remote-vault (uniquement dans remoteVaults) :
+  "remoteVaults": [
+    { "name": "qnap", "baseUrl": "...", "apiKey": "...", "enabled": false }
+  ]
+}
+```
+
+Les vaults désactivés apparaissent dans le log de démarrage `(N disabled: ...)` pour visibilité, mais n'apparaissent pas dans `list_vaults` et ne sont pas pingés.
 
 ### Config
 

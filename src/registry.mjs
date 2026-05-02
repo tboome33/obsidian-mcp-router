@@ -17,21 +17,33 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
-const CONFIG_PATH =
-  process.env.OBSIDIAN_ROUTER_CONFIG ||
-  path.join(os.homedir(), '.claude', 'mcp-obsidian', 'config.json');
+const DEFAULT_CONFIG_PATH = path.join(
+  os.homedir(),
+  '.claude',
+  'mcp-obsidian',
+  'config.json',
+);
 
-export async function loadRegistry() {
-  const raw = await fs.readFile(CONFIG_PATH, 'utf8').catch((err) => {
+export function resolveConfigPath({ configPath } = {}) {
+  return configPath || process.env.OBSIDIAN_ROUTER_CONFIG || DEFAULT_CONFIG_PATH;
+}
+
+export async function loadRegistry({ configPath } = {}) {
+  const cfgPath = resolveConfigPath({ configPath });
+  const raw = await fs.readFile(cfgPath, 'utf8').catch((err) => {
     throw new Error(
-      `Cannot read config at ${CONFIG_PATH} (${err.code}). ` +
+      `Cannot read config at ${cfgPath} (${err.code}). ` +
         `Run 'node ~/.claude/mcp-obsidian/scripts/setup-vault.mjs <vault-path>' ` +
-        `to bootstrap a vault, or set OBSIDIAN_ROUTER_CONFIG to a valid config file.`,
+        `to bootstrap a vault, or pass --config <path> / set OBSIDIAN_ROUTER_CONFIG.`,
     );
   });
 
   const config = JSON.parse(raw);
   const vaults = [];
+  const disabled = new Set(
+    Array.isArray(config.disabledVaults) ? config.disabledVaults : [],
+  );
+  const skipped = [];
 
   // --- 1. Local vaults from portRegistry ---
   const portRegistry = config.portRegistry || {};
@@ -39,6 +51,10 @@ export async function loadRegistry() {
 
   for (const [vaultPath, port] of Object.entries(portRegistry)) {
     const name = vaultNames[vaultPath] || defaultNameFromPath(vaultPath);
+    if (disabled.has(name)) {
+      skipped.push({ name, type: 'local', reason: 'disabled' });
+      continue;
+    }
     const apiKey = await readLocalApiKey(vaultPath).catch(() => null);
 
     vaults.push({
@@ -61,6 +77,10 @@ export async function loadRegistry() {
         `[registry] Skipping malformed remoteVault entry: ${JSON.stringify(r)}. ` +
           `Required: name, baseUrl, apiKey.`,
       );
+      continue;
+    }
+    if (r.enabled === false || disabled.has(r.name)) {
+      skipped.push({ name: r.name, type: 'remote', reason: 'disabled' });
       continue;
     }
     vaults.push({
@@ -89,9 +109,10 @@ export async function loadRegistry() {
     vaults[0]?.name;
 
   return {
-    configPath: CONFIG_PATH,
+    configPath: cfgPath,
     defaultVault,
     vaults,
+    skipped,
     resolveVault(name) {
       const target = name || this.defaultVault;
       if (!target) {
