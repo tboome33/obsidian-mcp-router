@@ -39,32 +39,52 @@ Five categories, fifteen-character ceiling-ish per token, alphabetical autocompl
 | `/obsidian-manage-delete` | `delete_file` (with `confirm=true` guard) |
 | `/obsidian-template-execute` | `execute_template` |
 
-## Install
+## Install / refresh
 
-Copy or symlink each `.md` into `~/.claude/commands/`.
+Three equivalent install scripts ship in this folder. Pick whichever matches your shell:
 
-### Linux / macOS
+| Script | Shell |
+|---|---|
+| [`install.sh`](./install.sh)   | Bash / Git Bash on Windows / Linux / macOS |
+| [`install.cmd`](./install.cmd) | Windows CMD (double-click works) |
+| [`install.ps1`](./install.ps1) | Windows PowerShell |
+
+Each one copies `obsidian-*.md` from this folder into `~/.claude/commands/` (or `%USERPROFILE%\.claude\commands\` on Windows). Run the same script every time you `git pull` to stay in sync — the script is idempotent.
+
+### Bash / Git Bash / Linux / macOS
+
+```bash
+cd <where-you-cloned-obsidian-mcp-router>/commands
+bash install.sh
+```
+
+### Windows CMD
+
+```cmd
+cd <where-you-cloned-obsidian-mcp-router>\commands
+install.cmd
+```
+
+### Windows PowerShell
+
+```powershell
+cd <where-you-cloned-obsidian-mcp-router>\commands
+.\install.ps1
+```
+
+### Why scripts instead of symlinks?
+
+On Linux and macOS, `ln -s` would let `git pull` automatically refresh the installed commands. On Windows, symlinks require admin or Developer Mode, which most users don't have. A flat copy works everywhere; the trade-off is that you re-run the install script after each `git pull`.
+
+If you're on Linux/macOS and prefer the symlink approach:
 
 ```bash
 cd <where-you-cloned-obsidian-mcp-router>/commands
 mkdir -p ~/.claude/commands
-ln -s "$PWD"/obsidian-*.md ~/.claude/commands/
+ln -sf "$PWD"/obsidian-*.md ~/.claude/commands/
 ```
 
-The symlink approach lets `git pull` keep your installed commands current with the repo.
-
-### Windows (PowerShell)
-
-```powershell
-$src = "<where-you-cloned-obsidian-mcp-router>\commands"
-$dst = "$env:USERPROFILE\.claude\commands"
-New-Item -ItemType Directory -Force -Path $dst | Out-Null
-Get-ChildItem "$src\obsidian-*.md" | ForEach-Object {
-    Copy-Item $_.FullName -Destination $dst -Force
-}
-```
-
-(Symlinks on Windows require Developer Mode or admin privileges. Copy is simpler.)
+Then `git pull` is enough — no re-install needed.
 
 ### Verify
 
