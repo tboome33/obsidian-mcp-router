@@ -2,7 +2,17 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
-## v0.2 — Write operations
+## ✅ v0.2 — Semantic search (shipped)
+
+Reverse-engineered the `mcp-tools` plugin's API extension to Local REST API to discover the `POST /search/smart` endpoint, then implemented `search_smart` directly against that HTTPS surface — **no dependency on the `mcp-server.exe` binary**.
+
+- ✅ `search_smart(vault, query, folders?, excludeFolders?, limit?)` — semantic search with cosine scores and breadcrumbs
+- ✅ Cross-vault fan-out via `vault: "*"`
+- ✅ Graceful error when the target vault lacks the `smart-connections` plugin
+
+The same approach unlocks `/templates/execute` for v0.3.
+
+## v0.3 — Write operations + Templater
 
 Round out the REST API surface so the router can replace `mcp-tools` for everyday writing too.
 
@@ -13,8 +23,9 @@ Round out the REST API surface so the router can replace `mcp-tools` for everyda
 - [ ] `delete_file(vault, path)` — `DELETE /vault/<path>`
 - [ ] `move_file(vault, from, to)` — derived from PATCH
 - [ ] Frontmatter helpers (read/update YAML without re-emitting the whole file)
+- [ ] `execute_template(vault, name, args?, createFile?, targetPath?)` — wraps the existing `executeTemplate()` rest-client call, exposed as a tool
 
-## v0.3 — Quality of life
+## v0.4 — Quality of life
 
 - [ ] `obsidian-router-add-vault` skill — interactive flow to add a remote vault
 - [ ] `obsidian-router-status` skill — diagnostic ping of all vaults, surface which are offline
@@ -23,7 +34,7 @@ Round out the REST API surface so the router can replace `mcp-tools` for everyda
 - [ ] Per-vault `enabled: false` flag to hide a vault from `list_vaults` without removing it
 - [ ] Cache config reads with file-watcher so `list_vaults` reflects edits without restart
 
-## v0.4 — Cloudflare Tunnel companion plugin
+## v0.5 — Cloudflare Tunnel companion plugin
 
 A separate **Obsidian community plugin** that provisions a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for the local vault's REST API. Goal: the user clicks a button in Obsidian, the vault becomes reachable from anywhere via a stable HTTPS URL, with optional auth.
 

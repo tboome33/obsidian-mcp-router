@@ -23,8 +23,8 @@ This router replaces that with:
 | Vaults per MCP process | 1 | N |
 | Setup per vault | new MCP entry per scope | 1 line in config.json |
 | Remote vaults | requires per-vault MCP + env tweaks | first-class citizen |
-| Semantic search (Smart Connections) | yes (native binary) | not yet (REST-only for now) |
-| Templater execution | yes | not yet |
+| Semantic search (Smart Connections) | yes (native binary) | yes (via the same `mcp-tools` API extension, no binary dependency) |
+| Templater execution | yes | client wired, tool exposure on the v0.3 roadmap |
 | Cross-vault operations | no | yes (`search` with `vault: "*"`) |
 
 The router covers the **REST API surface only**. If you need semantic search or Templater execution, keep `mcp-tools` registered alongside for those use cases — both can coexist.
@@ -93,7 +93,8 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `list_vaults` | Catalogue of all configured vaults with online status + latency. Always call this first. |
 | `list_files` | List files in a directory of a specific vault. |
 | `get_file` | Read full file content (markdown + frontmatter). |
-| `search` | Simple text search. Pass `vault: "*"` to fan-out across all vaults. |
+| `search` | Plain-text (substring) search. Pass `vault: "*"` to fan-out across all vaults. |
+| `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `mcp-tools` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. |
 
 More tools (`create_file`, `append_to_file`, `patch_file`, `delete_file`, `execute_template`) are on the roadmap — see [Issues](https://github.com/tboome33/obsidian-mcp-router/issues).
 
@@ -130,8 +131,8 @@ Ce router remplace tout ça par :
 | Vaults par process MCP | 1 | N |
 | Ajout d'un nouveau vault | nouvelle entrée MCP par scope | 1 ligne dans `config.json` |
 | Vaults distants | nécessite un MCP dédié + tweaks env | natif |
-| Recherche sémantique (Smart Connections) | oui (binaire natif) | pas encore (REST-only pour le moment) |
-| Exécution de Templater | oui | pas encore |
+| Recherche sémantique (Smart Connections) | oui (binaire natif) | oui (via la même extension API `mcp-tools`, sans dépendance au binaire) |
+| Exécution de Templater | oui | client câblé, exposition outil prévue en v0.3 |
 | Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
 
 Le router couvre **uniquement la surface REST API**. Si tu as besoin de la recherche sémantique ou de l'exécution Templater, garde `mcp-tools` enregistré en parallèle pour ces cas — les deux peuvent coexister.
@@ -200,7 +201,8 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `list_vaults` | Catalogue de tous les vaults configurés avec leur état online + latence. À appeler en premier. |
 | `list_files` | Liste les fichiers d'un répertoire d'un vault donné. |
 | `get_file` | Lit le contenu complet d'un fichier (markdown + frontmatter). |
-| `search` | Recherche texte simple. Passe `vault: "*"` pour lancer la recherche sur tous les vaults en parallèle. |
+| `search` | Recherche texte simple (substring). Passe `vault: "*"` pour lancer la recherche sur tous les vaults en parallèle. |
+| `search_smart` | Recherche sémantique (par sens) via les embeddings de Smart Connections. Retourne les chunks classés avec scores cosinus et breadcrumbs (chemin de titres). Nécessite les plugins `mcp-tools` + `smart-connections` activés dans le vault cible. Supporte `vault: "*"` pour la recherche sémantique cross-vaults. |
 
 D'autres outils (`create_file`, `append_to_file`, `patch_file`, `delete_file`, `execute_template`) sont sur la roadmap — voir les [Issues](https://github.com/tboome33/obsidian-mcp-router/issues).
 

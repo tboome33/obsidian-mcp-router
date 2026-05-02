@@ -16,6 +16,7 @@ import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
 import { getFile } from './tools/get-file.mjs';
 import { search } from './tools/search.mjs';
+import { searchSmartTool } from './tools/search-smart.mjs';
 
 const TOOLS = [
   {
@@ -70,7 +71,7 @@ const TOOLS = [
   {
     name: 'search',
     description:
-      'Search for documents in a vault matching a text query. Returns a list of matching files with surrounding context.',
+      'Plain-text (substring) search across a vault. Returns matches with surrounding context. For meaning-based search, use search_smart instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -91,6 +92,40 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'search_smart',
+    description:
+      'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Requires the target vault to have both the "mcp-tools" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Vault name (see list_vaults). Omit for default. Pass "*" to fan-out across all vaults.',
+        },
+        query: {
+          type: 'string',
+          description: 'Natural-language query, e.g. "money management rules for swing trading".',
+        },
+        folders: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Restrict results to chunks whose path starts with one of these folders (e.g. ["Sessions", "Trades"]).',
+        },
+        excludeFolders: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Exclude chunks whose path starts with one of these folders (e.g. [".trash", "Templates"]).',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results. Default: 10.',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export async function startServer() {
@@ -99,7 +134,7 @@ export async function startServer() {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     {
       capabilities: {
@@ -125,6 +160,8 @@ export async function startServer() {
           return await wrapResult(getFile(registry, args));
         case 'search':
           return await wrapResult(search(registry, args));
+        case 'search_smart':
+          return await wrapResult(searchSmartTool(registry, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }

@@ -105,3 +105,43 @@ export function searchSimple(vault, query, contextLength = 100) {
   });
   return request(vault, 'POST', `/search/simple/?${params.toString()}`);
 }
+
+/**
+ * Semantic search via the mcp-tools API extension to Local REST API.
+ *
+ * Requires both the `mcp-tools` plugin AND the `smart-connections` plugin
+ * to be installed and enabled in the target vault. Smart Connections must
+ * have indexed the vault (it does so automatically on plugin load).
+ *
+ * Quirk: the endpoint expects the body as a JSON string in plain text — i.e.
+ * Content-Type is text/plain and the body is a stringified JSON object. The
+ * handler does its own JSON.parse. Sending Content-Type: application/json
+ * with a JSON object directly fails with "must be a string (was an object)".
+ */
+export function searchSmart(vault, query, filter = {}) {
+  const payload = JSON.stringify({ query, filter });
+  return request(vault, 'POST', '/search/smart', {
+    headers: { 'Content-Type': 'text/plain' },
+    body: payload,
+  });
+}
+
+/**
+ * Execute a Templater template against the vault, optionally creating a new
+ * note from it. Requires the `templater-obsidian` plugin to be installed.
+ *
+ * The mcp-tools handler expects the same JSON-string-in-text/plain quirk as
+ * /search/smart.
+ */
+export function executeTemplate(vault, { name, args = {}, createFile, targetPath } = {}) {
+  const payload = JSON.stringify({
+    name,
+    arguments: args,
+    createFile,
+    targetPath,
+  });
+  return request(vault, 'POST', '/templates/execute', {
+    headers: { 'Content-Type': 'text/plain' },
+    body: payload,
+  });
+}
