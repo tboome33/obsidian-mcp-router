@@ -56,6 +56,8 @@ Edit `~/.claude.json`. Find the `mcpServers` section, **remove** the existing `o
 
 Edit `~/.claude/mcp-obsidian/config.json`, add an entry under `remoteVaults`. See `docs/remote-vaults.md` in the repo for the full guide. Restart Claude after editing.
 
+For an interactive walkthrough of adding any vault (local or remote), use the companion skill **`obsidian-router-add-vault`**. For diagnostic checks of all configured vaults, use **`obsidian-router-status`**.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

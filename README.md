@@ -30,6 +30,16 @@ This router replaces that with:
 
 The router talks to the same Local REST API endpoints that `mcp-tools` does — including the `mcp-tools` API extension's own routes (`/search/smart`, `/templates/execute`). So semantic search and Templater execution work natively without keeping the `mcp-tools` MCP registered alongside.
 
+## Companion skills
+
+The repo ships three skills under [`skills/`](./skills/) that you can install into `~/.claude/skills/` (copy or symlink) to get conversational helpers:
+
+- **`obsidian-router-setup`** — bootstrap the router on a fresh machine (clone, npm link, register in `~/.claude.json`).
+- **`obsidian-router-add-vault`** — interactive flow to add a new vault (local via `setup-vault.mjs`, or remote with name + baseUrl + apiKey).
+- **`obsidian-router-status`** — diagnostic of all configured vaults with per-issue fix hints.
+
+Once installed, you can trigger them by saying things like *"check the status of my vaults"* or *"add my QNAP vault to the router"*.
+
 ## Prerequisites
 
 | Plugin (per vault) | Required for | Where to get it |
@@ -292,6 +302,16 @@ Ce router remplace tout ça par :
 | Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
 
 Le router parle aux mêmes endpoints du Local REST API que `mcp-tools` — y compris les routes ajoutées par l'extension API du plugin `mcp-tools` (`/search/smart`, `/templates/execute`). La recherche sémantique et l'exécution Templater fonctionnent donc nativement sans avoir à conserver le MCP `mcp-tools` enregistré en parallèle.
+
+### Skills compagnons
+
+Le repo livre trois skills dans [`skills/`](./skills/) que tu peux installer dans `~/.claude/skills/` (copy ou symlink) pour avoir des helpers conversationnels :
+
+- **`obsidian-router-setup`** — bootstrap du router sur une machine neuve (clone, npm link, enregistrement dans `~/.claude.json`).
+- **`obsidian-router-add-vault`** — flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant avec name + baseUrl + apiKey).
+- **`obsidian-router-status`** — diagnostic de tous les vaults configurés avec hints de fix par type d'erreur.
+
+Une fois installés, tu déclenches en disant des choses comme *"vérifie le statut de mes vaults"* ou *"ajoute mon vault QNAP au router"*.
 
 ### Prérequis
 

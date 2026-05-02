@@ -44,10 +44,12 @@ Quirk fixed: `Content-Type: application/vnd.olrapi.note+json` wasn't recognized 
 
 Quirk fixed: `patch_file` with `targetType: frontmatter` and a non-string non-object value (number, boolean, null) was sending it as `text/markdown` instead of `application/json`, so Obsidian stored it as a string. Now any non-string value goes through JSON, types preserved end-to-end.
 
-## v0.4.1 — Onboarding skills (next)
+## ✅ v0.4.1 — Onboarding skills (shipped)
 
-- [ ] `obsidian-router-add-vault` skill — interactive flow to add a remote vault
-- [ ] `obsidian-router-status` skill — diagnostic ping of all vaults, surface which are offline
+Two new conversational skills under [`skills/`](./skills/), installable into `~/.claude/skills/`:
+
+- ✅ `obsidian-router-add-vault` — disambiguates local vs remote, gathers required fields, runs `setup-vault.mjs` for local vaults, edits `config.json` directly for remote vaults, optionally pings the new vault for live verification, refuses to leak secrets to logs.
+- ✅ `obsidian-router-status` — calls `list_vaults`, renders a markdown table with online/offline/missingApiKey, then for each unhealthy vault produces a fix hint mapped to the root cause (offline-local vs offline-remote vs cf_access vs unauthorized vs slow).
 
 ## v0.4.2 — Hot reload + small DX
 

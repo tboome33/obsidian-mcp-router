@@ -362,7 +362,7 @@ export async function startServer() {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.4.0',
+      version: '0.4.1',
     },
     {
       capabilities: {
