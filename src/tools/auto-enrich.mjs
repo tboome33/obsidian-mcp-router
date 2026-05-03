@@ -91,28 +91,27 @@ export async function setAutoEnrichMode(registry, args = {}) {
       );
     }
     envPath = path.join(cwd, '.env');
-    if (mode === 'off') {
-      // "off" persisted = remove the env var entirely. Avoids the
-      // ambiguity of an env-var-set-to-"off" (which would still need
-      // validateAutoEnrichMode to handle as a value).
-      await removeDotenvVar(envPath, 'OBSIDIAN_ROUTER_AUTO_ENRICH');
-    } else {
-      await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_AUTO_ENRICH', mode);
-    }
+    // Always write the literal mode value, including "off". Earlier we
+    // tried "remove the line entirely" as a clever shortcut for "off
+    // persisted", but that was buggy: startup interprets a missing env
+    // var as the default ("ClaudeAsk"), so a user who explicitly chose
+    // "off" for a sensitive/debug vault would silently get auto-suggestions
+    // back after the next restart. The honest persistence is to write
+    // the literal — `validateAutoEnrichMode("off")` recognizes it cleanly
+    // via canonicalizeMode and the boot path keeps the user's intent.
+    await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_AUTO_ENRICH', mode);
     persisted = true;
   }
 
   return {
     mode,
-    previousMode: previousMode || null,
+    previousMode: previousMode ?? null,
     persisted,
     envPath: persisted ? envPath : undefined,
     message:
       `Auto-enrichment mode set to "${mode}". ` +
       (persisted
-        ? mode === 'off'
-          ? `Removed OBSIDIAN_ROUTER_AUTO_ENRICH from ${envPath} — auto-enrichment off across restarts.`
-          : `OBSIDIAN_ROUTER_AUTO_ENRICH=${mode} written to ${envPath} — mode survives restart.`
+        ? `OBSIDIAN_ROUTER_AUTO_ENRICH=${mode} written to ${envPath} — mode survives restart.`
         : `Mode is volatile (this session only). Use persist:true to make it survive restarts.`),
   };
 }
@@ -220,5 +219,6 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Exported for tests only.
-export const _internals = { upsertDotenvVar, removeDotenvVar, canonicalizeMode };
+// Exported for tests only. canonicalizeMode is a top-level named export
+// (above) — don't re-export it here too, that's redundant.
+export const _internals = { upsertDotenvVar, removeDotenvVar };

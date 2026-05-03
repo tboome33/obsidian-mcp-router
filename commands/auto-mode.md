@@ -28,8 +28,11 @@ Argument parsing from $ARGUMENTS:
 NL phrase → mode mapping (when the user's intent is the BEHAVIOR, not the mode name):
 - "demande avant de sauver" / "ask before saving" → `ClaudeAsk`
 - "auto-save les trucs sûrs" / "auto-save the cheap stuff" / "automatique sauf pour les décisions" → `Hybrid`
-- "sauve tout automatiquement" / "save everything automatically" / "ne demande plus rien" → `FullAuto`
-- "arrête de sauver" / "stop auto-saving" / "désactive l'auto-enrichissement" → `off`
+- "sauve tout automatiquement" / "save everything automatically" → `FullAuto`
+- "arrête de sauver auto" / "stop auto-saving" / "désactive l'auto-enrichissement" / "pas de notes" → `off`
+
+**Ambiguous phrases that require disambiguation BEFORE mapping** (do not auto-pick a mode):
+- *"ne demande plus rien"* / *"arrête de me demander à chaque fois"* / *"stop asking me"* — could mean **off** (no auto-save at all) OR **FullAuto** (auto-save without asking) OR **Hybrid** (auto-save the easy stuff, ask only on the hard stuff). When the user phrases their frustration as "stop asking" rather than as a specific behavior, ASK them which they want before invoking the tool: *"You can either turn auto-save fully off, or have me auto-save without asking — which do you want?"*
 
 Always:
 - After a successful mode change, confirm to the user: which mode is now active, what changed in behavior versus the previous mode, whether the .env was written.

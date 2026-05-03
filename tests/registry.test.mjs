@@ -749,6 +749,15 @@ describe('lockVault — homedir refusal (E.2)', () => {
   });
 
   test('persist:true refuses when cwd is the user homedir', async () => {
+    // Snapshot ~/.env state before to avoid false positive if a real .env exists
+    const homeEnvPath = path.join(os.homedir(), '.env');
+    let preExisted = true;
+    try {
+      await fs.access(homeEnvPath);
+    } catch {
+      preExisted = false;
+    }
+
     process.chdir(os.homedir());
     const reg = {
       vaults: [{ name: 'alpha', type: 'remote' }],
@@ -760,6 +769,26 @@ describe('lockVault — homedir refusal (E.2)', () => {
     );
     // In-memory lock IS still set per docstring contract
     assert.equal(reg.lockedVault, 'alpha');
+
+    // CRITICAL: refusal must happen BEFORE any .env write. If ~/.env didn't
+    // exist before, it must still not exist. If it did exist, its content
+    // must not have been mutated to add OBSIDIAN_ROUTER_LOCKED.
+    if (!preExisted) {
+      let exists = true;
+      try {
+        await fs.access(homeEnvPath);
+      } catch {
+        exists = false;
+      }
+      assert.equal(exists, false, 'lock_vault must not create ~/.env on refusal');
+    } else {
+      const content = await fs.readFile(homeEnvPath, 'utf8');
+      assert.equal(
+        content.includes('OBSIDIAN_ROUTER_LOCKED'),
+        false,
+        'lock_vault must not mutate ~/.env on refusal',
+      );
+    }
   });
 
   test('persist:false works at homedir (no .env touched)', async () => {
@@ -929,18 +958,29 @@ describe('setAutoEnrichMode — tool handler', () => {
     assert.match(envContent, /^OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid$/m);
   });
 
-  test('persist:true with mode "off" REMOVES the line (not writes "off")', async () => {
-    // First set a real mode persisted
+  test('persist:true with mode "off" writes "off" literally (Codex Critical regression)', async () => {
+    // Earlier impl removed the line entirely on persist+off. That was a
+    // user-facing bug: startup defaults to "ClaudeAsk" when the env var is
+    // absent, so an explicit "off" chosen for sensitive/debug vaults would
+    // silently revert to ClaudeAsk after restart. Now we write the literal.
     const reg = { autoEnrichMode: 'ClaudeAsk' };
+
+    // First set a non-default mode persisted
     await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: true });
     let envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
     assert.match(envContent, /OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto/);
 
-    // Now persist "off" — should remove the line
-    await setAutoEnrichMode(reg, { mode: 'off', persist: true });
+    // Now persist "off" — must WRITE off, not remove
+    const result = await setAutoEnrichMode(reg, { mode: 'off', persist: true });
     envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
-    assert.equal(envContent.includes('OBSIDIAN_ROUTER_AUTO_ENRICH'), false);
+    assert.match(envContent, /^OBSIDIAN_ROUTER_AUTO_ENRICH=off$/m);
     assert.equal(reg.autoEnrichMode, 'off');
+    // Returned message must NOT claim "removed" — must claim "written"
+    assert.match(result.message, /written to/);
+    assert.equal(result.message.includes('Removed'), false);
+
+    // Confirm round-trip: simulate boot with this .env value would resolve to "off"
+    assert.deepEqual(canonicalizeMode('off'), 'off');
   });
 
   test('persist:true preserves other .env entries', async () => {
@@ -971,6 +1011,15 @@ describe('setAutoEnrichMode — homedir refusal (mirrors lock_vault E.2)', () =>
   });
 
   test('persist:true refuses when cwd is the user homedir', async () => {
+    // Snapshot ~/.env state before to avoid false positive if a real .env exists
+    const homeEnvPath = path.join(os.homedir(), '.env');
+    let preExisted = true;
+    try {
+      await fs.access(homeEnvPath);
+    } catch {
+      preExisted = false;
+    }
+
     process.chdir(os.homedir());
     const reg = { autoEnrichMode: 'ClaudeAsk' };
     await assert.rejects(
@@ -979,6 +1028,25 @@ describe('setAutoEnrichMode — homedir refusal (mirrors lock_vault E.2)', () =>
     );
     // In-memory mode IS still set per docstring contract
     assert.equal(reg.autoEnrichMode, 'Hybrid');
+
+    // Refusal must happen BEFORE any .env write — same artifact assertion as
+    // the lock_vault homedir test.
+    if (!preExisted) {
+      let exists = true;
+      try {
+        await fs.access(homeEnvPath);
+      } catch {
+        exists = false;
+      }
+      assert.equal(exists, false, 'set_auto_enrich_mode must not create ~/.env on refusal');
+    } else {
+      const content = await fs.readFile(homeEnvPath, 'utf8');
+      assert.equal(
+        content.includes('OBSIDIAN_ROUTER_AUTO_ENRICH'),
+        false,
+        'set_auto_enrich_mode must not mutate ~/.env on refusal',
+      );
+    }
   });
 
   test('persist:false works at homedir (no .env touched)', async () => {

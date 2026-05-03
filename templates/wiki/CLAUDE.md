@@ -110,16 +110,20 @@ Auto-save policy in `Hybrid`:
 - **Auto-save** types: `fact`, `url`, `preference`
 - **Ask** types: `decision`, `adr`, `rule`, `technique`, `session`
 
-`FullAuto` — auto-save everything, then surface the audit summary:
+`FullAuto` — auto-save everything **except items flagged by the sensitivity filter** (see "Sensitivity filter" section below — applies in EVERY mode including FullAuto, downgrades flagged items to ask). After auto-saving the safe items, surface the audit summary:
 
 > 🔖 **Pour ce sujet** (FullAuto, X auto-saves cette session sur 5 max) :
 > - ✅ wiki/decisions/<slug>.md
 > - ✅ wiki/techniques/<slug>.md
 > - ✅ wiki/facts.md (append)
+> - 🔒 **À confirmer** (sensitivity filter) :
+>   - [1] **<type>** — "..." 🔒 reason: contains <client name | credential | financial figure>
+>
+> Save les items 🔒 ? ("yes", "no", numéros)
 >
 > [Your usual transition question]
 
-Wait for nothing — just inform. If the user disagrees with a save, they can edit / delete after the fact.
+Wait for nothing on the auto-saved items — just inform. Wait for the user's decision on the 🔒 flagged items if any. If the user disagrees with an auto-save retrospectively, they can edit / delete after the fact via `wiki/log.md` audit trail.
 
 `off` — never propose, never auto-save. Skip this trigger entirely.
 
@@ -159,11 +163,13 @@ Recognize when the user pivots to a new topic without closing the previous one.
 
 This pause is **mandatory** even if no markers were accumulated — it serves as a graceful checkpoint, marking the cognitive pivot for the user. After their response, then proceed to the new topic.
 
-`FullAuto` — auto-save everything pending, then proceed to the new topic in the SAME response:
+`FullAuto` — auto-save everything pending **except items flagged by the sensitivity filter** (which still require ask in every mode). Then proceed to the new topic in the SAME response:
 
 > ✅ Auto-saved before pivot: wiki/<...>.md, wiki/<...>.md
+> 🔒 Held back for confirmation (sensitivity filter): [1] ... [2] ...
+>   → Save these too before continuing? ("yes", "no", numéros)
 >
-> [direct response to the new topic]
+> [direct response to the new topic — only if no 🔒 items, otherwise wait]
 
 `off` — proceed directly to the new topic, no checkpoint.
 

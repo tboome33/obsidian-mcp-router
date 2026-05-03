@@ -55,6 +55,11 @@ export async function listVaults(registry) {
     //   - "FullAuto"   — auto-save everything (audit log + safety nets)
     //   - "off"        — no auto-suggestions; manual /save only
     // See `set_auto_enrich_mode` tool to change this at runtime.
+    // Legacy fallback: a registry from a pre-v0.8.2 boot path won't have
+    // this field set. Default to 'ClaudeAsk' — the safe default that
+    // matches the documented behavior (propose + always confirm). We do
+    // NOT silently default to 'off' here, because absence of an explicit
+    // mode means "user hasn't customized" and the safe default applies.
     autoEnrichMode: registry.autoEnrichMode || 'ClaudeAsk',
   };
 }
