@@ -31,40 +31,84 @@ Semantic search (`search_smart`) and Templater execution (`execute_template`) re
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes 27 slash commands under the `/obsidian-router:*` namespace:
+The repo doubles as a **Claude Code plugin marketplace** that exposes **29 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
-**14 wrappers**, one per MCP tool, organised in 5 categories:
+### 🔧 14 MCP wrappers — one per router tool
 
-| Category | Commands |
-|---|---|
-| `discover` | `/obsidian-router:discover-list-vaults`, `/obsidian-router:discover-list-files` |
-| `read` | `/obsidian-router:read-get`, `:read-search`, `:read-search-smart`, `:read-frontmatter` |
-| `write` | `/obsidian-router:write-create-or-replace`, `:write-append`, `:write-patch`, `:write-frontmatter-set`, `:write-frontmatter-merge` |
-| `manage` | `/obsidian-router:manage-move`, `/obsidian-router:manage-delete` (with confirm guard) |
-| `template` | `/obsidian-router:template-execute` |
+#### `discover/` (2)
 
-**3 conversational helpers** for setup and diagnostics (auto-trigger on natural language too):
-
-- `/obsidian-router:meta-setup` — bootstrap the router on a fresh machine
-- `/obsidian-router:meta-add-vault` — interactive flow to add a vault (local or remote)
-- `/obsidian-router:meta-status` — health-check of every configured vault with fix hints
-
-**10 knowledge-management commands + 11 skills** implementing a Karpathy-style LLM-wiki workflow on top of the router. The wiki pattern: an LLM-maintained, structured markdown knowledge base where pages reference each other and the system grows with use.
-
-| Workflow | Command | What it does |
+| Command | Effect | Trigger phrasings |
 |---|---|---|
-| Bootstrap | `/obsidian-router:wiki` | Scaffold `wiki/` (index, log, hot, overview) inside any vault |
-| Ingest | `/obsidian-router:wiki-ingest` | Read source → entity/concept pages → cross-references |
-| Query | `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → index.md → drill into pages) |
-| Lint | `/obsidian-router:wiki-lint` | Orphans, dead links, frontmatter gaps, index drift |
-| Fold | `/obsidian-router:wiki-fold` | Idempotent log rollups under `wiki/folds/` |
-| Save | `/obsidian-router:save` | File the current conversation as a typed wiki note |
-| Research | `/obsidian-router:autoresearch` | Autonomous web→synth→file loop bounded by a research program |
-| Canvas | `/obsidian-router:canvas` | Create/edit Obsidian `.canvas` files (visual layer) |
-| Defuddle | `/obsidian-router:defuddle` | Strip noise from webpages before ingestion |
-| Bases | `/obsidian-router:obsidian-bases` | Create/edit Obsidian `.base` files (database-like views over frontmatter) |
+| `/obsidian-router:discover-list-vaults` | List every configured vault (local + remote) with online/offline/latency, default-vault, lock state | *"list my vaults"*, *"are my vaults online"* / *"liste mes vaults"*, *"mes vaults sont-ils en ligne"* |
+| `/obsidian-router:discover-list-files` | List files and subdirectories of a vault path | *"list files in Sessions"*, *"what's in <folder>"* / *"liste les fichiers de Sessions"*, *"qu'est-ce qu'il y a dans <dossier>"* |
 
-Plus one Obsidian-specific reference skill (no slash command — knowledge surfaced when other skills run): `obsidian-markdown` (Obsidian Flavored Markdown reference for wikilinks, embeds, callouts, properties, etc.). Note that `obsidian-bases` is BOTH a reference skill AND has its own slash command (the row above) — other skills consult it when they need to generate `.base` files, and you can also invoke it directly.
+#### `read/` (4)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:read-get` | Read a file in full (markdown + frontmatter + meta) | *"show me X"*, *"open the file X"* / *"montre-moi X"*, *"ouvre le fichier X"* |
+| `/obsidian-router:read-search` | Plain-text (substring) search with surrounding context | *"find <text> in my vault"*, *"grep for X"* / *"trouve <texte> dans mon vault"*, *"grep <X>"* |
+| `/obsidian-router:read-search-smart` | Semantic search via Smart Connections (cosine scores + breadcrumbs) | *"find notes about X"*, *"semantic search for X"* / *"trouve mes notes sur X"*, *"recherche sémantique sur X"* |
+| `/obsidian-router:read-frontmatter` | Read frontmatter (whole object or one key, types preserved) | *"what's the status of X"*, *"show me the metadata of X"* / *"quel est le statut de X"*, *"montre les méta de X"* |
+
+#### `write/` (5)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:write-create-or-replace` | PUT — create a new file or replace an existing one | *"create a note X"*, *"save this as X.md"* / *"crée une note X"*, *"enregistre ça comme X.md"* |
+| `/obsidian-router:write-append` | POST — append to an existing file (auto-creates if missing) | *"append to my journal"*, *"add a line to X"* / *"ajoute à X"*, *"rajoute à la fin de X"* |
+| `/obsidian-router:write-patch` | Surgical PATCH on heading / block / frontmatter | *"edit the X section in Y"*, *"replace the content under X"* / *"édite la section X dans Y"*, *"remplace le contenu sous X"* |
+| `/obsidian-router:write-frontmatter-set` | Set/replace a single frontmatter key | *"set status to closed on X"*, *"tag this with X"* / *"passe le statut de X à closed"*, *"tag ça avec X"* |
+| `/obsidian-router:write-frontmatter-merge` | Apply multiple frontmatter updates in sequence | *"on X set status=closed outcome=tp1"* / *"sur X mets status=closed outcome=tp1"* |
+
+#### `manage/` (2)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:manage-move` | Move or rename a file (GET → PUT → DELETE) | *"rename X to Y"*, *"move X into <folder>"* / *"renomme X en Y"*, *"déplace X dans <dossier>"* |
+| `/obsidian-router:manage-delete` | Delete a file (with two-step confirm guard) | *"delete X"* (preview), *"yes confirm=true"* (proceed) / *"supprime X"* puis *"oui confirm=true"* |
+
+#### `template/` (1)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:template-execute` | Execute a Templater template (preview or save) | *"render Templates/X.md with arg1=v1"*, *"run the daily template"* / *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* |
+
+### 🔒 2 isolation commands (lock mode)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:lock` | Restrict the router to a single vault for the session (volatile or `--persist` to write to `.env`) | *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* / *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* |
+| `/obsidian-router:unlock` | Lift the lock and restore multi-vault routing (`--persist` to also clean `.env`) | *"unlock vaults"*, *"give me back access to all vaults"* / *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* |
+
+See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) below for the full design and three concrete cases.
+
+### 🩺 3 conversational helpers
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:meta-setup` | Bootstrap the router on a fresh machine (clone, npm link, register MCP) | *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* / *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* |
+| `/obsidian-router:meta-add-vault` | Interactive flow to add a vault (local via `setup-vault.mjs`, or remote) | *"add a vault to the router"*, *"connect my QNAP vault"* / *"ajoute un vault au router"*, *"connecte mon vault QNAP"* |
+| `/obsidian-router:meta-status` | Health-check every vault with per-issue fix hints | *"diagnose the router"*, *"are my vaults reachable"* / *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* |
+
+### 📚 10 knowledge-management commands (Karpathy-style LLM-wiki)
+
+A small workflow on top of the router for an LLM-maintained, structured markdown knowledge base where pages reference each other and grow with use.
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:wiki` | Scaffold `wiki/` inside a vault (index, log, hot, overview + CLAUDE.md update) | *"set up a wiki"*, *"scaffold a knowledge base"* / *"scaffold un wiki"*, *"crée une base de connaissances"* |
+| `/obsidian-router:wiki-ingest` | Ingest a source (URL/file/text) → entity & concept pages + cross-refs | *"ingest this URL"*, *"absorb this article"* / *"ingère cette URL"*, *"absorbe cet article"* |
+| `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → index.md → drill into pages), wiki-only (no web) | *"based on my notes, ..."*, *"what does my wiki say about X"* / *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* |
+| `/obsidian-router:wiki-lint` | Health check (orphans, dead wikilinks, index drift, frontmatter gaps) | *"lint the wiki"*, *"audit my wiki"* / *"lint le wiki"*, *"audit mon wiki"* |
+| `/obsidian-router:wiki-fold` | Idempotent rollup of log entries under `wiki/folds/` | *"fold the log"*, *"roll up recent activity"* / *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* |
+| `/obsidian-router:save` | File the current conversation as a typed wiki note (session/answer/decision/ADR/...) | *"save this"*, *"file this conversation"* / *"sauvegarde ça"*, *"archive cette conversation"* |
+| `/obsidian-router:autoresearch` | Autonomous web→synth→file loop bounded by a research program | *"research X on the web"*, *"go investigate X online"* / *"fais une recherche web sur X"*, *"investigue X en ligne"* |
+| `/obsidian-router:canvas` | Create/edit Obsidian `.canvas` files (visual layer for wiki pages, images, PDFs) | *"create a canvas for X"*, *"add to my canvas"* / *"crée un canvas pour X"*, *"ajoute à mon canvas"* |
+| `/obsidian-router:defuddle` | Strip noise from webpages (ads, nav, footers) before ingestion | *"defuddle <url>"*, *"clean this page"* / *"nettoie cette page"*, *"extrais la version lisible de <url>"* |
+| `/obsidian-router:obsidian-bases` | Create/edit Obsidian `.base` files (database-like views over frontmatter) | *"create a base for X"*, *"task tracker base"* / *"crée une base pour X"*, *"base task tracker"* |
+
+Plus one Obsidian-specific reference skill (no slash command — knowledge surfaced when other skills run): `obsidian-markdown` (Obsidian Flavored Markdown reference for wikilinks, embeds, callouts, properties, etc.). Note that `obsidian-bases` is BOTH a reference skill AND has its own slash command above — other skills consult it when they need to generate `.base` files, and you can also invoke it directly.
 
 **Two parallel sub-agents** for batch work:
 - `wiki-ingest` agent — fan out one source per agent, parallel
@@ -77,7 +121,7 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 
 The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.claude/settings.json`. Reference: [`hooks/hooks.json`](./hooks/hooks.json).
 
-Type `/obsidian-router:` in Claude Code → the autocomplete shows everything grouped by category. Install steps are in the [Install](#install) section below.
+Install steps are in the [Install](#install) section below.
 
 ## Prerequisites
 
@@ -141,7 +185,7 @@ Add the marketplace + enable the plugin in `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code. Type `/obsidian-router:` — the 27 slash commands should appear in autocomplete.
+Restart Claude Code. Type `/obsidian-router:` — the 29 slash commands should appear in autocomplete.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
@@ -158,7 +202,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 27 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 29 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -586,38 +630,82 @@ La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_te
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose 27 slash commands sous le namespace `/obsidian-router:*` :
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **29 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
-**14 wrappers**, un par outil MCP, organisés en 5 catégories :
+#### 🔧 14 wrappers MCP — un par outil du router
 
-| Catégorie | Commandes |
-|---|---|
-| `discover` | `/obsidian-router:discover-list-vaults`, `:discover-list-files` |
-| `read` | `/obsidian-router:read-get`, `:read-search`, `:read-search-smart`, `:read-frontmatter` |
-| `write` | `/obsidian-router:write-create-or-replace`, `:write-append`, `:write-patch`, `:write-frontmatter-set`, `:write-frontmatter-merge` |
-| `manage` | `/obsidian-router:manage-move`, `:manage-delete` (avec garde confirm) |
-| `template` | `/obsidian-router:template-execute` |
+##### `discover/` (2)
 
-**3 helpers conversationnels** pour le setup et le diagnostic (auto-déclenchés par langage naturel aussi) :
-
-- `/obsidian-router:meta-setup` — bootstrap du router sur une machine neuve
-- `/obsidian-router:meta-add-vault` — flux interactif pour ajouter un vault (local ou distant)
-- `/obsidian-router:meta-status` — health-check de tous les vaults avec hints de fix
-
-**10 commandes de gestion de connaissances + 11 skills** qui implémentent un workflow de wiki LLM façon Karpathy par-dessus le router. Le pattern : une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et où le système croît avec l'usage.
-
-| Workflow | Commande | Effet |
+| Commande | Effet | Phrases déclencheuses |
 |---|---|---|
-| Bootstrap | `/obsidian-router:wiki` | Scaffold `wiki/` (index, log, hot, overview) dans n'importe quel vault |
-| Ingest | `/obsidian-router:wiki-ingest` | Lecture source → pages entité/concept → cross-références |
-| Query | `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → index.md → drill into pages) |
-| Lint | `/obsidian-router:wiki-lint` | Orphelins, liens morts, frontmatter manquant, dérive d'index |
-| Fold | `/obsidian-router:wiki-fold` | Rollups idempotents du log sous `wiki/folds/` |
-| Save | `/obsidian-router:save` | File la conversation courante comme note typée |
-| Recherche | `/obsidian-router:autoresearch` | Boucle web→synthèse→file autonome bornée par un programme |
-| Canvas | `/obsidian-router:canvas` | Création/édition de fichiers `.canvas` Obsidian (couche visuelle) |
-| Defuddle | `/obsidian-router:defuddle` | Strip le bruit des pages web avant ingestion |
-| Bases | `/obsidian-router:obsidian-bases` | Crée/édite des fichiers `.base` Obsidian (vues database sur frontmatter) |
+| `/obsidian-router:discover-list-vaults` | Liste tous les vaults configurés (local + remote) avec online/offline/latence, vault par défaut, état du lock | *"liste mes vaults"*, *"mes vaults sont-ils en ligne"* / *"list my vaults"*, *"are my vaults online"* |
+| `/obsidian-router:discover-list-files` | Liste fichiers et sous-dossiers d'un chemin de vault | *"liste les fichiers de Sessions"*, *"qu'est-ce qu'il y a dans <dossier>"* / *"list files in Sessions"*, *"what's in <folder>"* |
+
+##### `read/` (4)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:read-get` | Lit un fichier en intégralité (markdown + frontmatter + meta) | *"montre-moi X"*, *"ouvre le fichier X"* / *"show me X"*, *"open the file X"* |
+| `/obsidian-router:read-search` | Recherche keyword full-text (substring) avec contexte | *"trouve <texte> dans mon vault"*, *"grep <X>"* / *"find <text> in my vault"*, *"grep for X"* |
+| `/obsidian-router:read-search-smart` | Recherche sémantique via Smart Connections (cosine + breadcrumbs) | *"trouve mes notes sur X"*, *"recherche sémantique sur X"* / *"find notes about X"*, *"semantic search for X"* |
+| `/obsidian-router:read-frontmatter` | Lit le frontmatter (objet entier ou une clé, types préservés) | *"quel est le statut de X"*, *"montre les méta de X"* / *"what's the status of X"*, *"show me the metadata of X"* |
+
+##### `write/` (5)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:write-create-or-replace` | PUT — crée ou remplace un fichier | *"crée une note X"*, *"enregistre ça comme X.md"* / *"create a note X"*, *"save this as X.md"* |
+| `/obsidian-router:write-append` | POST — append à un fichier (auto-création si absent) | *"ajoute à X"*, *"rajoute à la fin de X"* / *"append to my journal"*, *"add a line to X"* |
+| `/obsidian-router:write-patch` | PATCH chirurgical sur heading / block / frontmatter | *"édite la section X dans Y"*, *"remplace le contenu sous X"* / *"edit the X section in Y"*, *"replace the content under X"* |
+| `/obsidian-router:write-frontmatter-set` | Set/remplace une seule clé du frontmatter | *"passe le statut de X à closed"*, *"tag ça avec X"* / *"set status to closed on X"*, *"tag this with X"* |
+| `/obsidian-router:write-frontmatter-merge` | Applique plusieurs updates de frontmatter en séquence | *"sur X mets status=closed outcome=tp1"* / *"on X set status=closed outcome=tp1"* |
+
+##### `manage/` (2)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:manage-move` | Déplace ou renomme un fichier (GET → PUT → DELETE) | *"renomme X en Y"*, *"déplace X dans <dossier>"* / *"rename X to Y"*, *"move X into <folder>"* |
+| `/obsidian-router:manage-delete` | Supprime un fichier (avec garde confirm en deux étapes) | *"supprime X"* (preview), *"oui confirm=true"* (proceed) / *"delete X"* puis *"yes confirm=true"* |
+
+##### `template/` (1)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:template-execute` | Exécute un template Templater (preview ou save) | *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* / *"render Templates/X.md with arg1=v1"*, *"run the daily template"* |
+
+#### 🔒 2 commandes d'isolation (mode lock)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:lock` | Restreint le router à un seul vault pour la session (volatile ou `--persist` pour écrire dans `.env`) | *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* / *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* |
+| `/obsidian-router:unlock` | Lève le lock et restaure le routing multi-vault (`--persist` pour aussi nettoyer `.env`) | *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* / *"unlock vaults"*, *"give me back access to all vaults"* |
+
+Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) plus bas pour le design complet et trois cas concrets.
+
+#### 🩺 3 helpers conversationnels
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:meta-setup` | Bootstrap du router sur une machine neuve (clone, npm link, registration MCP) | *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* / *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* |
+| `/obsidian-router:meta-add-vault` | Flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant) | *"ajoute un vault au router"*, *"connecte mon vault QNAP"* / *"add a vault to the router"*, *"connect my QNAP vault"* |
+| `/obsidian-router:meta-status` | Health-check de chaque vault avec hints de fix par catégorie d'erreur | *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* / *"diagnose the router"*, *"are my vaults reachable"* |
+
+#### 📚 10 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
+
+Un petit workflow par-dessus le router pour une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et croissent avec l'usage.
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:wiki` | Scaffold `wiki/` dans un vault (index, log, hot, overview + update CLAUDE.md) | *"scaffold un wiki"*, *"crée une base de connaissances"* / *"set up a wiki"*, *"scaffold a knowledge base"* |
+| `/obsidian-router:wiki-ingest` | Ingestion d'une source (URL/fichier/texte) → pages entité & concept + cross-refs | *"ingère cette URL"*, *"absorbe cet article"* / *"ingest this URL"*, *"absorb this article"* |
+| `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → index.md → drill), wiki-only (sans web) | *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* / *"based on my notes, ..."*, *"what does my wiki say about X"* |
+| `/obsidian-router:wiki-lint` | Health check (orphelins, wikilinks morts, dérive d'index, frontmatter manquant) | *"lint le wiki"*, *"audit mon wiki"* / *"lint the wiki"*, *"audit my wiki"* |
+| `/obsidian-router:wiki-fold` | Rollup idempotent des entrées du log dans `wiki/folds/` | *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* / *"fold the log"*, *"roll up recent activity"* |
+| `/obsidian-router:save` | File la conversation courante comme note typée (session/answer/decision/ADR/...) | *"sauvegarde ça"*, *"archive cette conversation"* / *"save this"*, *"file this conversation"* |
+| `/obsidian-router:autoresearch` | Boucle web→synthèse→file autonome bornée par un programme de recherche | *"fais une recherche web sur X"*, *"investigue X en ligne"* / *"research X on the web"*, *"go investigate X online"* |
+| `/obsidian-router:canvas` | Crée/édite des fichiers `.canvas` Obsidian (couche visuelle pour wiki, images, PDFs) | *"crée un canvas pour X"*, *"ajoute à mon canvas"* / *"create a canvas for X"*, *"add to my canvas"* |
+| `/obsidian-router:defuddle` | Strip le bruit des pages web (pubs, nav, footers) avant ingestion | *"nettoie cette page"*, *"extrais la version lisible de <url>"* / *"defuddle <url>"*, *"clean this page"* |
+| `/obsidian-router:obsidian-bases` | Crée/édite des fichiers `.base` Obsidian (vues database sur frontmatter) | *"crée une base pour X"*, *"base task tracker"* / *"create a base for X"*, *"task tracker base"* |
 
 Plus un skill de référence Obsidian (sans slash command — surfacé quand d'autres skills tournent) : `obsidian-markdown` (référence du Obsidian Flavored Markdown : wikilinks, embeds, callouts, properties, etc.). Note : `obsidian-bases` est À LA FOIS un skill de référence ET a sa propre slash command (la ligne au-dessus) — d'autres skills le consultent quand ils ont besoin de générer des fichiers `.base`, et tu peux aussi l'invoquer directement.
 
@@ -632,7 +720,7 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 
 Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux dans `~/.claude/settings.json`. Référence : [`hooks/hooks.json`](./hooks/hooks.json).
 
-Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par catégorie. Étapes d'install dans la section [Installation](#installation) ci-dessous.
+Étapes d'install dans la section [Installation](#installation) ci-dessous.
 
 ### Prérequis
 
@@ -696,7 +784,7 @@ Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
 }
 ```
 
-Redémarre Claude Code. Tape `/obsidian-router:` — les 27 slash commands doivent apparaître dans l'autocomplete.
+Redémarre Claude Code. Tape `/obsidian-router:` — les 29 slash commands doivent apparaître dans l'autocomplete.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
@@ -713,7 +801,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 27 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 29 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 
