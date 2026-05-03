@@ -26,3 +26,6 @@ Always:
 Push back if:
 - The vault name is missing or ambiguous → ask for the explicit name.
 - The user is already locked to a different vault → tell them, ask if they want to switch (which means re-running lock with the new name) or unlock first.
+
+Homedir refusal caveat (persist mode only):
+- If the user asks for a persistent lock from their home directory (e.g., they launched Claude Code from `~` rather than a project folder), the tool refuses with an explicit error and the in-memory lock still applies for the session. Surface the message verbatim — it tells them how to fix it (run from a real project directory, or set `OBSIDIAN_ROUTER_LOCKED=<vault>` in their shell profile / PowerShell `$PROFILE`). Do not retry the persist call from the same cwd.

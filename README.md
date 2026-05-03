@@ -295,6 +295,8 @@ To unlock:
 - `unlock_vaults({ persist: true })` — also removes `OBSIDIAN_ROUTER_LOCKED` from `<cwd>/.env`
 - `/obsidian-router:unlock` or *"give me back access to all vaults"*
 
+> **Caveat — persist refused at home directory.** `lock_vault({ persist: true })` refuses when the current working directory IS your home directory (`%USERPROFILE%` on Windows, `$HOME` elsewhere). That's almost always a mistake — Claude Code was launched from `~` rather than a project folder, and creating `~/.env` would surprise you. The in-memory lock still applies for the session. To make the lock survive a restart in this case: either re-run `lock_vault` from a real project directory, or set `OBSIDIAN_ROUTER_LOCKED=<vault>` in your shell profile (`~/.bashrc`, `~/.zshrc`, or PowerShell `$PROFILE`).
+
 #### What happens while locked
 
 | Operation | Behavior |
@@ -847,6 +849,8 @@ Pour déverrouiller :
 - `unlock_vaults()` — en mémoire uniquement
 - `unlock_vaults({ persist: true })` — retire aussi `OBSIDIAN_ROUTER_LOCKED` du `<cwd>/.env`
 - `/obsidian-router:unlock` ou *"redonne-moi accès à tous les vaults"*
+
+> **Caveat — persist refusé au home directory.** `lock_vault({ persist: true })` refuse si le répertoire courant EST ton home (`%USERPROFILE%` sur Windows, `$HOME` ailleurs). C'est presque toujours une erreur — Claude Code a été lancé depuis `~` plutôt que depuis un dossier de projet, et créer `~/.env` te surprendrait. Le lock en mémoire reste actif pour la session. Pour rendre le lock persistant dans ce cas : soit relance `lock_vault` depuis un vrai dossier de projet, soit pose `OBSIDIAN_ROUTER_LOCKED=<vault>` dans ton profil shell (`~/.bashrc`, `~/.zshrc`, ou PowerShell `$PROFILE`).
 
 #### Ce qui se passe pendant le lock
 

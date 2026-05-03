@@ -34,7 +34,7 @@ const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns three fields: defaultVault (the name resolved by the cascade for the current session), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), and disabled[] (vaults skipped by the disabledVaults config — name, type, reason). Always call this first to discover which vaults are available.',
+      'List all configured Obsidian vaults (local and remote). Returns four fields: defaultVault (the name resolved by the cascade for the current session), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), and lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault). Always call this first to discover which vaults are available and whether the router is locked.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -360,7 +360,7 @@ const TOOLS = [
   {
     name: 'lock_vault',
     description:
-      'Restrict the router to a single vault for the current session. While locked, every tool call that targets a different vault throws "Router is locked to ..."; calls without an explicit `vault` resolve to the locked one; cross-vault fan-out (`vault: "*"`) is refused. Use `unlock_vaults` to lift the lock. Pass `persist: true` to write OBSIDIAN_ROUTER_LOCKED=<vault> into the current workspace .env so the lock survives router restarts.',
+      'Restrict the router to a single vault for the current session. While locked, every tool call that targets a different vault throws "Router is locked to ..."; calls without an explicit `vault` resolve to the locked one; cross-vault fan-out (`vault: "*"`) is refused. Use `unlock_vaults` to lift the lock. Pass `persist: true` to write OBSIDIAN_ROUTER_LOCKED=<vault> into the current workspace .env so the lock survives router restarts. Note: persist:true is refused when the current working directory IS the user home directory (avoids creating a stray ~/.env on a Claude Code launched from $HOME). The in-memory lock still applies in that case — to make the lock permanent, run from a real project directory or set OBSIDIAN_ROUTER_LOCKED in your shell profile.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -398,12 +398,44 @@ const TOOLS = [
 ];
 
 /**
+ * Validate that a candidate lock name is in the active vault set. Returns
+ * `{ lock, warning }`: `lock` is the candidate if valid, otherwise null;
+ * `warning` is null when the candidate is valid (or absent), otherwise a
+ * stderr-ready string explaining the fall-through.
+ *
+ * Two contexts are supported:
+ *   - "env"        — initial lock from `OBSIDIAN_ROUTER_LOCKED` at startup
+ *   - "preserved"  — runtime lock that survived a config hot-reload but
+ *                    whose target may have been disabled/removed since
+ *
+ * Exported for testing (in addition to its use by startServer + watcher).
+ */
+export function validateLock(candidate, vaults, context = 'env') {
+  if (!candidate) return { lock: null, warning: null };
+  if (vaults.some((v) => v.name === candidate)) {
+    return { lock: candidate, warning: null };
+  }
+  const active = vaults.map((v) => v.name).join(', ') || '(none)';
+  const prefix =
+    context === 'preserved'
+      ? `[obsidian-mcp-router] Locked vault "${candidate}" is no longer in the active set after config reload`
+      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_LOCKED="${candidate}" does not match any active vault`;
+  return {
+    lock: null,
+    warning: `${prefix} — falling back to normal multi-vault mode. Active vaults: ${active}.`,
+  };
+}
+
+/**
  * Wrap the registry's `resolveVault()` so that, when `registry.lockedVault`
  * is set, requests for a different vault throw with a clear error. Calls
  * that omit `vault` resolve to the locked vault. Idempotent — applying
  * twice is safe because we always bind the ORIGINAL once via `_originalResolveVault`.
+ *
+ * Exported so tests exercise the production helper rather than an inlined
+ * copy that could silently drift.
  */
-function applyLockGuard(registry) {
+export function applyLockGuard(registry) {
   const original =
     registry._originalResolveVault || registry.resolveVault.bind(registry);
   registry._originalResolveVault = original;
@@ -423,8 +455,20 @@ function applyLockGuard(registry) {
 
 export async function startServer({ configPath, watch = true } = {}) {
   const cfgPath = resolveConfigPath({ configPath });
-  const initialLock = process.env.OBSIDIAN_ROUTER_LOCKED || null;
   const fresh = await loadRegistry({ configPath: cfgPath });
+
+  // Validate OBSIDIAN_ROUTER_LOCKED at startup. If it points to a vault
+  // that isn't in the active set (typo, vault disabled, vault removed
+  // since the env var was written), warn and fall through to no lock —
+  // mirrors the friendlier failure mode of OBSIDIAN_ROUTER_DEFAULT_VAULT.
+  // Otherwise a typo here would brick every subsequent tool call with
+  // "Router is locked to <typo>" until the user noticed.
+  const { lock: initialLock, warning: lockWarning } = validateLock(
+    process.env.OBSIDIAN_ROUTER_LOCKED,
+    fresh.vaults,
+    'env',
+  );
+  if (lockWarning) console.error(lockWarning);
   fresh.lockedVault = initialLock;
   applyLockGuard(fresh);
   const registryRef = { current: fresh };
@@ -449,10 +493,19 @@ export async function startServer({ configPath, watch = true } = {}) {
       timer = setTimeout(async () => {
         try {
           const fresh = await loadRegistry({ configPath: cfgPath });
-          // Preserve the runtime lock state across config reloads. The
-          // lock is a session-level concern — config edits (e.g., adding
-          // a new vault) shouldn't silently un-lock the router.
-          fresh.lockedVault = registryRef.current?.lockedVault || null;
+          // Preserve the runtime lock state across config reloads — but
+          // VALIDATE it. If the user disabled or removed the locked
+          // vault since the last reload, drop the lock and warn rather
+          // than bricking every subsequent tool call with "Router is
+          // locked to <gone>".
+          const preserved = registryRef.current?.lockedVault || null;
+          const { lock: validatedLock, warning: reloadWarning } = validateLock(
+            preserved,
+            fresh.vaults,
+            'preserved',
+          );
+          if (reloadWarning) console.error(reloadWarning);
+          fresh.lockedVault = validatedLock;
           applyLockGuard(fresh);
           registryRef.current = fresh;
           console.error(

@@ -18,6 +18,7 @@ import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
+import { applyLockGuard, validateLock } from '../src/index.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
@@ -572,5 +573,202 @@ describe('upsertDotenvVar / removeDotenvVar', () => {
     assert.doesNotMatch(content, /FOO/);
     assert.match(content, /^A=1$/m);
     assert.match(content, /^B=2$/m);
+  });
+
+  test('upsert updates FIRST occurrence (matches reader convention) — C.4 regression', async () => {
+    // The .env loader (bin/obsidian-mcp-router.mjs) keeps the FIRST occurrence
+    // of a duplicated key. The writer must follow the same convention or
+    // the user can end up with the writer updating the bottom line and
+    // the loader reading a stale top one.
+    await fs.writeFile(envPath, 'FOO=stale_top\nMIDDLE=preserved\nFOO=stale_bottom\n', 'utf8');
+    await upsertDotenvVar(envPath, 'FOO', 'fresh');
+    const content = await fs.readFile(envPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    assert.equal(lines[0], 'FOO=fresh');
+    assert.equal(lines[1], 'MIDDLE=preserved');
+    assert.equal(lines[2], 'FOO=stale_bottom');
+  });
+
+  test('remove deletes ALL occurrences of the key', async () => {
+    await fs.writeFile(envPath, 'FOO=top\nMIDDLE=keep\nFOO=bottom\n', 'utf8');
+    const removed = await removeDotenvVar(envPath, 'FOO');
+    assert.equal(removed, true);
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.doesNotMatch(content, /FOO/);
+    assert.match(content, /^MIDDLE=keep$/m);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateLock — startup + hot-reload guard against typo / disabled lock
+// ---------------------------------------------------------------------------
+
+describe('validateLock — env + preserved contexts', () => {
+  const vaults = [
+    { name: 'alpha', type: 'remote' },
+    { name: 'beta', type: 'remote' },
+  ];
+
+  test('null/undefined candidate returns no lock + no warning', () => {
+    assert.deepEqual(validateLock(null, vaults, 'env'), {
+      lock: null,
+      warning: null,
+    });
+    assert.deepEqual(validateLock(undefined, vaults, 'preserved'), {
+      lock: null,
+      warning: null,
+    });
+    assert.deepEqual(validateLock('', vaults, 'env'), {
+      lock: null,
+      warning: null,
+    });
+  });
+
+  test('valid candidate is returned as the lock with no warning', () => {
+    const result = validateLock('alpha', vaults, 'env');
+    assert.equal(result.lock, 'alpha');
+    assert.equal(result.warning, null);
+  });
+
+  test('env context: unknown candidate falls through with OBSIDIAN_ROUTER_LOCKED warning (A.3 regression)', () => {
+    const result = validateLock('alpha-typo', vaults, 'env');
+    assert.equal(result.lock, null);
+    assert.match(result.warning, /OBSIDIAN_ROUTER_LOCKED="alpha-typo"/);
+    assert.match(result.warning, /falling back to normal multi-vault mode/);
+    assert.match(result.warning, /Active vaults: alpha, beta/);
+  });
+
+  test('preserved context: unknown candidate falls through with reload warning (B.6 regression)', () => {
+    // Simulates a hot-reload where the user disabled the locked vault
+    // in config.json. Without validateLock the lock would persist and
+    // brick every subsequent tool call.
+    const result = validateLock('alpha', [{ name: 'beta', type: 'remote' }], 'preserved');
+    assert.equal(result.lock, null);
+    assert.match(result.warning, /Locked vault "alpha" is no longer in the active set after config reload/);
+    assert.match(result.warning, /Active vaults: beta/);
+  });
+
+  test('empty active vault list still produces a clean fall-through', () => {
+    const result = validateLock('alpha', [], 'env');
+    assert.equal(result.lock, null);
+    assert.match(result.warning, /Active vaults: \(none\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyLockGuard — integration: monkey-patched resolveVault enforces lock
+// ---------------------------------------------------------------------------
+
+describe('applyLockGuard — registry.resolveVault enforces lock', () => {
+  let tmpDir;
+  let cfgPath;
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-applylock-test-'));
+    cfgPath = path.join(tmpDir, 'config.json');
+  });
+
+  after(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // applyLockGuard is imported from `../src/index.mjs` — exercising the
+  // production helper directly so any signature drift breaks these tests.
+
+  async function makeRegistry() {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'alpha', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    const reg = await loadRegistry({ configPath: cfgPath });
+    applyLockGuard(reg);
+    return reg;
+  }
+
+  test('no lock → resolveVault works for any active vault', async () => {
+    const reg = await makeRegistry();
+    assert.equal(reg.resolveVault('alpha').name, 'alpha');
+    assert.equal(reg.resolveVault('beta').name, 'beta');
+  });
+
+  test('locked → resolveVault to OTHER vault throws with explicit error', async () => {
+    const reg = await makeRegistry();
+    reg.lockedVault = 'alpha';
+    assert.throws(
+      () => reg.resolveVault('beta'),
+      /Router is locked to vault "alpha"/,
+    );
+  });
+
+  test('locked → resolveVault without name resolves to locked vault', async () => {
+    const reg = await makeRegistry();
+    reg.lockedVault = 'alpha';
+    assert.equal(reg.resolveVault().name, 'alpha');
+    assert.equal(reg.resolveVault(undefined).name, 'alpha');
+  });
+
+  test('locked → resolveVault with locked name proceeds normally', async () => {
+    const reg = await makeRegistry();
+    reg.lockedVault = 'alpha';
+    assert.equal(reg.resolveVault('alpha').name, 'alpha');
+  });
+
+  test('idempotent: applying applyLockGuard twice does not double-wrap', async () => {
+    const reg = await makeRegistry();
+    applyLockGuard(reg); // already applied in makeRegistry; this is the 2nd
+    reg.lockedVault = 'alpha';
+    let thrownCount = 0;
+    try {
+      reg.resolveVault('beta');
+    } catch (err) {
+      thrownCount++;
+      assert.match(err.message, /Router is locked to vault "alpha"/);
+    }
+    assert.equal(thrownCount, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lockVault E.2 regression: refuse persist when cwd === homedir
+// ---------------------------------------------------------------------------
+
+describe('lockVault — homedir refusal (E.2)', () => {
+  let savedCwd;
+
+  before(() => {
+    savedCwd = process.cwd();
+  });
+
+  after(() => {
+    process.chdir(savedCwd);
+  });
+
+  test('persist:true refuses when cwd is the user homedir', async () => {
+    process.chdir(os.homedir());
+    const reg = {
+      vaults: [{ name: 'alpha', type: 'remote' }],
+      lockedVault: null,
+    };
+    await assert.rejects(
+      () => lockVault(reg, { vault: 'alpha', persist: true }),
+      /refusing to persist.*home directory/,
+    );
+    // In-memory lock IS still set per docstring contract
+    assert.equal(reg.lockedVault, 'alpha');
+  });
+
+  test('persist:false works at homedir (no .env touched)', async () => {
+    process.chdir(os.homedir());
+    const reg = {
+      vaults: [{ name: 'alpha', type: 'remote' }],
+      lockedVault: null,
+    };
+    const result = await lockVault(reg, { vault: 'alpha', persist: false });
+    assert.equal(reg.lockedVault, 'alpha');
+    assert.equal(result.persisted, false);
   });
 });

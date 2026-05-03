@@ -22,6 +22,7 @@
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 
 /**
  * Lock the router to a single vault.
@@ -51,12 +52,43 @@ export async function lockVault(registry, args = {}) {
     );
   }
 
+  // Apply the lock state BEFORE attempting persistence — even if the
+  // persist write fails (refused below, or filesystem error), the
+  // in-memory lock takes effect. The user can still re-run with persist
+  // pointing at a sensible directory.
   registry.lockedVault = vault;
 
   let persisted = false;
   let envPath = null;
   if (persist) {
-    envPath = path.join(process.cwd(), '.env');
+    const cwd = process.cwd();
+    // Refuse to write a `.env` at the user's home directory. That's
+    // almost always a mistake (Claude Code launched from `~`) and
+    // creating ~/.env silently would surprise the user. The proper
+    // place for a global lock is `~/.claude/...` config or a real
+    // project directory.
+    //
+    // Case-folding caveat: Windows paths are case-insensitive (NTFS),
+    // so `C:\Users\Roland` and `C:\Users\roland` resolve to the same
+    // directory. We normalize case on Windows before comparison so a
+    // mixed-case cwd doesn't bypass the refusal.
+    const samePath = (a, b) => {
+      const ra = path.resolve(a);
+      const rb = path.resolve(b);
+      if (process.platform === 'win32') {
+        return ra.toLowerCase() === rb.toLowerCase();
+      }
+      return ra === rb;
+    };
+    if (samePath(cwd, os.homedir())) {
+      throw new Error(
+        `lock_vault: refusing to persist OBSIDIAN_ROUTER_LOCKED in your home directory (${cwd}/.env). ` +
+          `That's almost always unintended — Claude Code was launched from your home rather than a project folder. ` +
+          `Either: (a) run \`lock_vault\` again from a real project directory, OR (b) set OBSIDIAN_ROUTER_LOCKED=${vault} manually in your shell profile (.bashrc / PowerShell $PROFILE) for true machine-wide persistence. ` +
+          `The in-memory lock IS active for this session.`,
+      );
+    }
+    envPath = path.join(cwd, '.env');
     await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
     persisted = true;
   }
@@ -93,7 +125,19 @@ export async function unlockVaults(registry, args = {}) {
   let envPath = null;
   if (persist) {
     envPath = path.join(process.cwd(), '.env');
-    persistRemoved = await removeDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED');
+    try {
+      persistRemoved = await removeDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED');
+    } catch (err) {
+      // The in-memory lock IS already cleared above. Surface the
+      // partial-success state explicitly so the user can fix the .env
+      // manually before the next router restart relocks them.
+      throw new Error(
+        `unlock_vaults: in-memory lock cleared, but failed to remove ` +
+          `OBSIDIAN_ROUTER_LOCKED from ${envPath} (${err.message}). ` +
+          `If you don't remove the line manually, the router will re-lock ` +
+          `to "${wasLocked}" on next restart.`,
+      );
+    }
   }
 
   return {
@@ -121,10 +165,17 @@ export async function unlockVaults(registry, args = {}) {
 /**
  * Set or update KEY=VALUE in the .env file at envPath. Creates the file
  * if it doesn't exist. Preserves all other lines, including comments and
- * formatting. If KEY exists multiple times, only the last occurrence is
- * updated and earlier ones are left as-is (they would be shadowed by
- * the last anyway in standard parsers — this matches the .env loader's
- * behavior).
+ * formatting.
+ *
+ * Duplicate-line policy: updates the FIRST occurrence and leaves later
+ * duplicates as-is. This matches the convention of our .env loader at
+ * bin/obsidian-mcp-router.mjs, which keeps the first occurrence
+ * (line ~45: `if (!(key in process.env))` skips later assignments).
+ * Updating the last occurrence instead would create a writer/reader
+ * disagreement: the writer would update the bottom line but the loader
+ * would still read the stale top one. CRLF line endings on Windows are
+ * silently converted to LF on write — acceptable for .env files which
+ * shells/Node parse equivalently with either ending.
  */
 async function upsertDotenvVar(envPath, key, value) {
   let lines = [];
@@ -136,18 +187,18 @@ async function upsertDotenvVar(envPath, key, value) {
     // File doesn't exist — start with an empty array
   }
 
-  // Find the LAST occurrence of `<key>=` (start-of-line, ignoring
+  // Find the FIRST occurrence of `<key>=` (start-of-line, ignoring
   // surrounding whitespace) and update it. If absent, append.
-  let lastIdx = -1;
+  let firstIdx = -1;
   const keyRegex = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  for (let i = lines.length - 1; i >= 0; i--) {
+  for (let i = 0; i < lines.length; i++) {
     if (keyRegex.test(lines[i])) {
-      lastIdx = i;
+      firstIdx = i;
       break;
     }
   }
   const newLine = `${key}=${value}`;
-  if (lastIdx === -1) {
+  if (firstIdx === -1) {
     // Append, preserving trailing newline behavior
     if (lines.length > 0 && lines[lines.length - 1] !== '') {
       lines.push(newLine);
@@ -158,7 +209,7 @@ async function upsertDotenvVar(envPath, key, value) {
       lines.push(newLine);
     }
   } else {
-    lines[lastIdx] = newLine;
+    lines[firstIdx] = newLine;
   }
 
   // Always end with a newline
