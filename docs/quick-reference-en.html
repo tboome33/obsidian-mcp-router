@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>obsidian-mcp-router — quick reference</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 14mm 14mm;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, "Segoe UI", "Inter", system-ui, sans-serif;
+      font-size: 11pt;
+      line-height: 1.5;
+      color: #111;
+    }
+    h1 {
+      font-size: 20pt;
+      margin: 0 0 2mm 0;
+      letter-spacing: -0.02em;
+      color: #4a2c8c;
+    }
+    h1 .subtitle {
+      font-size: 12pt;
+      font-weight: 400;
+      color: #555;
+      letter-spacing: 0;
+    }
+    h2 {
+      font-size: 14pt;
+      margin: 7mm 0 3mm 0;
+      color: #4a2c8c;
+      border-bottom: 1.5px solid #d6c9ee;
+      padding-bottom: 1mm;
+    }
+    h2 .count {
+      font-size: 11pt;
+      font-weight: 400;
+      color: #777;
+    }
+    .header {
+      border-bottom: 2.5px solid #4a2c8c;
+      padding-bottom: 3mm;
+      margin-bottom: 5mm;
+    }
+    .meta {
+      font-size: 10.5pt;
+      color: #666;
+    }
+    p, ul, ol {
+      margin: 0 0 3mm 0;
+    }
+    ul, ol {
+      padding-left: 6mm;
+    }
+    li {
+      margin-bottom: 1.5mm;
+    }
+    li strong {
+      color: #2a1850;
+    }
+    code {
+      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+      font-size: 10pt;
+      background: #f0eaf8;
+      padding: 0.5mm 1.5mm;
+      border-radius: 1.5mm;
+      color: #3a1f70;
+    }
+    pre {
+      background: #f4eff9;
+      border: 1px solid #d6c9ee;
+      border-radius: 2mm;
+      padding: 3mm 4mm;
+      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+      font-size: 10pt;
+      line-height: 1.4;
+      margin: 2mm 0;
+      overflow: hidden;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 4mm;
+    }
+    table.slash {
+      table-layout: fixed;
+      font-size: 10.5pt;
+    }
+    table.slash th, table.slash td {
+      text-align: left;
+      vertical-align: top;
+      padding: 2mm 2.5mm;
+      border-bottom: 0.5pt solid #e0d8ee;
+    }
+    table.slash th {
+      font-weight: 700;
+      font-size: 9.5pt;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #4a2c8c;
+      background: #f4eff9;
+      border-bottom: 1.2pt solid #4a2c8c;
+    }
+    table.slash td.cmd {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 9.5pt;
+      color: #3a1f70;
+      width: 28%;
+      font-weight: 500;
+    }
+    table.slash td.desc {
+      width: 32%;
+    }
+    table.slash td.trigger {
+      font-size: 10pt;
+      color: #444;
+      width: 40%;
+    }
+    table.config {
+      font-size: 10.5pt;
+    }
+    table.config td {
+      padding: 2mm 2.5mm;
+      border-bottom: 0.5pt solid #ece4f5;
+      vertical-align: top;
+    }
+    table.config td:first-child {
+      width: 38%;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 9.5pt;
+      color: #3a1f70;
+      font-weight: 500;
+    }
+    .page-break {
+      page-break-before: always;
+    }
+    .cat-header {
+      background: #f4eff9;
+      padding: 2.5mm 3mm;
+      margin: 4mm 0 0 0;
+      border-left: 3mm solid #4a2c8c;
+      font-weight: 700;
+      font-size: 11.5pt;
+      color: #4a2c8c;
+    }
+    .tips {
+      font-size: 10pt;
+      color: #444;
+      margin-top: 5mm;
+      padding-top: 3mm;
+      border-top: 1pt solid #d6c9ee;
+      line-height: 1.55;
+    }
+    .tips strong {
+      color: #4a2c8c;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
+  <div class="meta">v0.8.2 · multi-vault Obsidian MCP server + Claude Code plugin (30 slash commands)<br>
+  <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
+</div>
+
+<h2>The router in 30 seconds</h2>
+
+<p>A single MCP process that knows <strong>all your Obsidian vaults</strong> (local + remote). Each tool takes a <code>vault</code> parameter (or uses the default). No more registering one MCP server per vault.</p>
+
+<ul>
+  <li><strong>One entry</strong> in <code>~/.claude.json</code> → all vaults visible everywhere (Code + Desktop)</li>
+  <li><strong>Local + remote vaults</strong> treated identically — drop URL + API key into the config, done</li>
+  <li><strong>Cross-vault</strong>: <code>vault: "*"</code> auto-fans-out across every vault</li>
+  <li><strong>Lock mode</strong>: restrict the session to a single vault (safety, focus)</li>
+  <li><strong>Auto-enrichment</strong> (v0.8.2): Claude proactively suggests wiki saves at 3 moments (validation / result / topic switch)</li>
+</ul>
+
+<h2>Vault setup</h2>
+
+<ol>
+  <li>Have Node.js ≥ 20.18.1</li>
+  <li>Install the <strong>Local REST API</strong> plugin in the Obsidian vault (community plugins)</li>
+  <li>Optional for <code>search_smart</code>: <strong>Smart Connections</strong> + <strong>obsidian-mcp-router-bridge</strong> (from GitHub)</li>
+  <li>Optional for Templater: <strong>Templater</strong> (community plugins)</li>
+  <li>Auto-bootstrap the vault:
+    <pre>npm run setup-vault -- "C:\VAULTS\MyVault"</pre>
+    ⇒ writes <code>.env</code> with <code>VAULT_PATH</code>, <code>OBSIDIAN_API_KEY</code>, <code>OBSIDIAN_BASE_URL</code>; allocates a unique port; adds to the registry.</li>
+  <li>Verify: <code>/obsidian-router:meta-status</code> or just say <em>"diagnose the router"</em></li>
+</ol>
+
+<div class="page-break"></div>
+
+<h2>Configuration <span class="count">— environment variables (workspace <code>.env</code>)</span></h2>
+
+<table class="config">
+  <tr>
+    <td>VAULT_PATH</td>
+    <td>Path of the current vault. Auto-detection: if it matches a registered vault, that vault becomes the default. Written by <code>setup-vault.mjs</code>.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_DEFAULT_VAULT</td>
+    <td>Explicit override of the default vault for this process. Wins over <code>VAULT_PATH</code> and over <code>config.defaultVault</code>.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_LOCKED</td>
+    <td>Locks the router to one vault for the session. Any tool call to another vault throws. Set via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_AUTO_ENRICH</td>
+    <td>Wiki auto-enrichment mode: <code>ClaudeAsk</code> (default) | <code>Hybrid</code> | <code>FullAuto</code> | <code>off</code>. Set via <code>/obsidian-router:auto-mode &lt;Mode&gt; --persist</code>.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_NO_WATCH</td>
+    <td>Disables hot-reload of the config file (useful for debugging).</td>
+  </tr>
+</table>
+
+<h2>Important files <span class="count">— where things live</span></h2>
+
+<table class="config">
+  <tr>
+    <td>~/.claude/obsidian-mcp-router/config.json</td>
+    <td>Main router config (vaults, port registry, vault names, defaultVault, disabledVaults, remoteVaults). Hot-reload enabled.</td>
+  </tr>
+  <tr>
+    <td>~/.claude.json</td>
+    <td>Claude Code/Desktop config. Must contain the <code>mcpServers.obsidian-router</code> entry pointing to the <code>obsidian-mcp-router</code> binary.</td>
+  </tr>
+  <tr>
+    <td>~/.claude/settings.json</td>
+    <td>Activates the plugin (<code>extraKnownMarketplaces</code> + <code>enabledPlugins</code>) and optional hooks (<code>SessionStart</code>, <code>PostCompact</code>, <code>Stop</code>).</td>
+  </tr>
+  <tr>
+    <td>&lt;workspace&gt;/.env</td>
+    <td>Environment variables for the current workspace (above). Auto-loaded at router boot.</td>
+  </tr>
+  <tr>
+    <td>&lt;vault&gt;/CLAUDE.md</td>
+    <td>Vault wiki consigne — loaded by Claude Code into context. Includes the auto-enrichment consigne (4 modes) since v0.8.2.</td>
+  </tr>
+  <tr>
+    <td>&lt;vault&gt;/{index,log,hot,overview}.md</td>
+    <td>Karpathy LLM-wiki structure (catalog, journal, hot cache, overview). Scaffolded by <code>/obsidian-router:wiki</code>.</td>
+  </tr>
+  <tr>
+    <td>obsidian-mcp-router/templates/wiki/CLAUDE.md</td>
+    <td>Canonical template for the vault <code>CLAUDE.md</code> — cloned into every new vault scaffold.</td>
+  </tr>
+  <tr>
+    <td>obsidian-mcp-router/docs/auto-enrichment.md</td>
+    <td>Full auto-enrichment guide EN+FR: 4 modes (use cases) + 4 placement channels.</td>
+  </tr>
+</table>
+
+<div class="page-break"></div>
+
+<div class="header">
+  <h1>30 slash commands <span class="subtitle">/obsidian-router:&lt;name&gt; · auto-trigger on natural language (EN + FR)</span></h1>
+</div>
+
+<div class="cat-header">🔧 14 MCP wrappers — one per router tool</div>
+<p style="font-size: 10pt; color: #666; margin: 1mm 0 2mm 0;">Categories: <code>discover</code> · <code>read</code> · <code>write</code> · <code>manage</code> · <code>template</code></p>
+
+<table class="slash">
+  <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
+  <tr><td class="cmd">discover-list-vaults</td><td class="desc">List vaults (online/latency/lock state)</td><td class="trigger">"list my vaults" / "liste mes vaults"</td></tr>
+  <tr><td class="cmd">discover-list-files</td><td class="desc">List files in a vault directory</td><td class="trigger">"list files in Sessions" / "liste les fichiers de X"</td></tr>
+  <tr><td class="cmd">read-get</td><td class="desc">Read a file (markdown + frontmatter)</td><td class="trigger">"show me X" / "montre-moi X"</td></tr>
+  <tr><td class="cmd">read-search</td><td class="desc">Plain-text (substring) search</td><td class="trigger">"grep for &lt;text&gt;" / "trouve &lt;texte&gt;"</td></tr>
+  <tr><td class="cmd">read-search-smart</td><td class="desc">Semantic search (Smart Connections)</td><td class="trigger">"find notes about X" / "trouve mes notes sur X"</td></tr>
+  <tr><td class="cmd">read-frontmatter</td><td class="desc">Read frontmatter (object or one key)</td><td class="trigger">"metadata of X" / "quel est le statut de X"</td></tr>
+  <tr><td class="cmd">write-create-or-replace</td><td class="desc">PUT — create or replace a file</td><td class="trigger">"save this as X.md" / "crée une note X"</td></tr>
+  <tr><td class="cmd">write-append</td><td class="desc">POST — append to a file</td><td class="trigger">"append to my journal" / "ajoute à X"</td></tr>
+  <tr><td class="cmd">write-patch</td><td class="desc">Surgical PATCH (heading/block/frontmatter)</td><td class="trigger">"edit X section in Y" / "édite la section X dans Y"</td></tr>
+  <tr><td class="cmd">write-frontmatter-set</td><td class="desc">Set one frontmatter key</td><td class="trigger">"tag this with X" / "passe le statut de X à closed"</td></tr>
+  <tr><td class="cmd">write-frontmatter-merge</td><td class="desc">Set multiple keys in sequence</td><td class="trigger">"on X set status=closed outcome=tp1"</td></tr>
+  <tr><td class="cmd">manage-move</td><td class="desc">Move or rename a file</td><td class="trigger">"move X to Y" / "renomme X en Y"</td></tr>
+  <tr><td class="cmd">manage-delete</td><td class="desc">Delete a file (2-step confirm guard)</td><td class="trigger">"delete X" then "yes confirm=true"</td></tr>
+  <tr><td class="cmd">template-execute</td><td class="desc">Execute a Templater template</td><td class="trigger">"run X template" / "rends Templates/X.md avec arg=v"</td></tr>
+</table>
+
+<div class="cat-header">🔒 3 router-state commands (lock + auto-enrichment)</div>
+
+<table class="slash">
+  <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
+  <tr><td class="cmd">lock</td><td class="desc">Restrict the session to one vault (volatile or <code>--persist</code>)</td><td class="trigger">"I only want to work on X" / "verrouille sur X"</td></tr>
+  <tr><td class="cmd">unlock</td><td class="desc">Lift the lock, restore multi-vault routing</td><td class="trigger">"unlock vaults" / "déverrouille les vaults"</td></tr>
+  <tr><td class="cmd">auto-mode</td><td class="desc">Set the auto-enrichment mode (ClaudeAsk / Hybrid / FullAuto / off)</td><td class="trigger">"switch to Hybrid mode" / "passe en mode Hybrid"</td></tr>
+</table>
+
+<div class="cat-header">🩺 3 conversational helpers (setup + diagnostic)</div>
+
+<table class="slash">
+  <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
+  <tr><td class="cmd">meta-setup</td><td class="desc">Bootstrap the router on a fresh machine</td><td class="trigger">"setup obsidian-mcp-router" / "installe le router"</td></tr>
+  <tr><td class="cmd">meta-add-vault</td><td class="desc">Interactive vault-add flow (local or remote)</td><td class="trigger">"connect my remote vault" / "ajoute un vault"</td></tr>
+  <tr><td class="cmd">meta-status</td><td class="desc">Health-check every vault with fix hints</td><td class="trigger">"are my vaults reachable" / "diagnostique le router"</td></tr>
+</table>
+
+<div class="page-break"></div>
+
+<div class="cat-header">📚 10 knowledge-management commands (Karpathy-style LLM-wiki)</div>
+
+<table class="slash">
+  <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
+  <tr><td class="cmd">wiki</td><td class="desc">Scaffold wiki/ in a vault (index, log, hot, overview)</td><td class="trigger">"set up a wiki" / "scaffold un wiki"</td></tr>
+  <tr><td class="cmd">wiki-ingest</td><td class="desc">Ingest a source → entity/concept pages + cross-refs</td><td class="trigger">"absorb this article" / "ingère cette URL"</td></tr>
+  <tr><td class="cmd">wiki-query</td><td class="desc">3-tier RAG over the wiki (no web)</td><td class="trigger">"what does my wiki say about X" / "d'après mes notes …"</td></tr>
+  <tr><td class="cmd">wiki-lint</td><td class="desc">Health check (orphans, dead links, index drift)</td><td class="trigger">"audit my wiki" / "lint le wiki"</td></tr>
+  <tr><td class="cmd">wiki-fold</td><td class="desc">Idempotent log rollup under wiki/folds/</td><td class="trigger">"fold the log" / "compacte le journal"</td></tr>
+  <tr><td class="cmd">save</td><td class="desc">File the conversation as a typed wiki note (session/decision/ADR/...)</td><td class="trigger">"save this" / "sauvegarde ça"</td></tr>
+  <tr><td class="cmd">autoresearch</td><td class="desc">Autonomous web→synth→file loop</td><td class="trigger">"research X online" / "fais une recherche web sur X"</td></tr>
+  <tr><td class="cmd">canvas</td><td class="desc">Create/edit Obsidian .canvas files</td><td class="trigger">"create a canvas for X" / "crée un canvas pour X"</td></tr>
+  <tr><td class="cmd">defuddle</td><td class="desc">Strip noise from web pages before ingestion</td><td class="trigger">"defuddle &lt;url&gt;" / "nettoie cette page"</td></tr>
+  <tr><td class="cmd">obsidian-bases</td><td class="desc">Create/edit Obsidian .base files (database)</td><td class="trigger">"create a base for X" / "crée une base pour X"</td></tr>
+</table>
+
+<div class="tips">
+<strong>Tips</strong> · Type <code>/obsidian-router:</code> in Claude Code → autocomplete · Every command accepts a <code>vault</code> argument (wrappers fall back to the default) · <code>vault: "*"</code> on <code>read-search</code> and <code>read-search-smart</code> = cross-vault fan-out · Trigger phrases are indicative — Claude recognizes variants · The <code>meta-*</code> commands plus <code>save</code> / <code>autoresearch</code> / <code>wiki*</code> invoke skills, the others are direct MCP wrappers · Full docs: <code>docs/auto-enrichment.md</code> and <code>README.md</code> in the repo.
+</div>
+
+</body>
+</html>

@@ -33,6 +33,8 @@ Semantic search (`search_smart`) and Templater execution (`execute_template`) re
 
 The repo doubles as a **Claude Code plugin marketplace** that exposes **30 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
+> 📄 **Quick reference PDF** (router overview + setup + config + every slash command with NL trigger phrases) — [English](./docs/quick-reference-en.pdf) · [Français](./docs/quick-reference-fr.pdf). 5 pages, accessible font sizes for printing or screen reference.
+
 ### 🔧 14 MCP wrappers — one per router tool
 
 #### `discover/` (2)
@@ -645,6 +647,8 @@ La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_te
 ### Slash commands & skills (plugin Claude Code)
 
 Le repo est aussi un **marketplace de plugin Claude Code** qui expose **30 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+
+> 📄 **PDF de référence rapide** (vue d'ensemble du router + setup + config + chaque slash command avec phrases déclencheuses en langage naturel) — [Français](./docs/quick-reference-fr.pdf) · [English](./docs/quick-reference-en.pdf). 5 pages, fontes lisibles pour impression ou consultation écran.
 
 #### 🔧 14 wrappers MCP — un par outil du router
 
