@@ -47,5 +47,14 @@ export async function listVaults(registry) {
     // a vault name when the router is restricted to a single vault for
     // the current session. See `lock_vault` / `unlock_vaults` tools.
     lockedTo: registry.lockedVault || null,
+    // Auto-enrichment mode — controls whether/how Claude proactively
+    // proposes wiki saves at three triggers (validation pins, result
+    // digests, topic-switch checkpoints). One of:
+    //   - "ClaudeAsk"  — propose, user always confirms (default)
+    //   - "Hybrid"     — auto-save type-safe items, ask on high-stakes
+    //   - "FullAuto"   — auto-save everything (audit log + safety nets)
+    //   - "off"        — no auto-suggestions; manual /save only
+    // See `set_auto_enrich_mode` tool to change this at runtime.
+    autoEnrichMode: registry.autoEnrichMode || 'ClaudeAsk',
   };
 }

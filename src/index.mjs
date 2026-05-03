@@ -29,12 +29,13 @@ import { getFrontmatterTool } from './tools/get-frontmatter.mjs';
 import { setFrontmatterTool } from './tools/set-frontmatter.mjs';
 import { mergeFrontmatterTool } from './tools/merge-frontmatter.mjs';
 import { lockVault, unlockVaults } from './tools/lock.mjs';
+import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from './tools/auto-enrich.mjs';
 
 const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns four fields: defaultVault (the name resolved by the cascade for the current session), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), and lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault). Always call this first to discover which vaults are available and whether the router is locked.',
+      'List all configured Obsidian vaults (local and remote). Returns five fields: defaultVault (the name resolved by the cascade for the current session), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), and autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"). Always call this first to discover which vaults are available and the current router state.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -395,6 +396,28 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'set_auto_enrich_mode',
+    description:
+      'Set the wiki auto-enrichment mode for the current session. Auto-enrichment is the layer where Claude proactively proposes wiki saves at three triggers (validation pins, result-obtained digests, topic-switch checkpoints). Modes: "ClaudeAsk" (default — propose, user always confirms), "Hybrid" (auto-save type-safe items like facts and URLs, ask on high-stakes like decisions / ADRs / techniques), "FullAuto" (auto-save everything with audit log + sensitivity filter + hard cap), "off" (no auto-suggestions; user invokes /save manually). Pass `persist: true` to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> into <cwd>/.env so the mode survives restarts. Persist with mode "off" removes the line entirely. Note: persist:true is refused when the current working directory IS the user home directory (avoids creating a stray ~/.env). The in-memory mode still applies.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          description:
+            'One of "ClaudeAsk" | "Hybrid" | "FullAuto" | "off". Case-insensitive.',
+        },
+        persist: {
+          type: 'boolean',
+          description:
+            'If true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to <cwd>/.env (or remove the line if mode is "off"). Default: false (volatile, this session only).',
+        },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -423,6 +446,37 @@ export function validateLock(candidate, vaults, context = 'env') {
   return {
     lock: null,
     warning: `${prefix} — falling back to normal multi-vault mode. Active vaults: ${active}.`,
+  };
+}
+
+/**
+ * Validate the auto-enrichment mode read from `OBSIDIAN_ROUTER_AUTO_ENRICH`
+ * (or preserved from a prior session). Returns `{ mode, warning }`:
+ *   - mode is the canonical mode name if recognized, otherwise null
+ *   - warning is a stderr-ready string when the input was invalid
+ *
+ * Two contexts mirror validateLock:
+ *   - "env"        — initial mode from the env var at startup
+ *   - "preserved"  — runtime mode kept across a config hot-reload
+ *
+ * Default is "ClaudeAsk" — consistent with the Phase 0 ship: if no env
+ * var is set, auto-enrichment is on but only ever proposes (never
+ * auto-acts). To fully disable, set OBSIDIAN_ROUTER_AUTO_ENRICH=off.
+ *
+ * Exported for testing.
+ */
+export function validateAutoEnrichMode(candidate, context = 'env') {
+  if (!candidate) return { mode: 'ClaudeAsk', warning: null };
+  const canonical = canonicalizeMode(candidate);
+  if (canonical) return { mode: canonical, warning: null };
+  const valid = VALID_MODES.join(', ');
+  const prefix =
+    context === 'preserved'
+      ? `[obsidian-mcp-router] Preserved auto-enrichment mode "${candidate}" is not recognized after config reload`
+      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_AUTO_ENRICH="${candidate}" is not a recognized mode`;
+  return {
+    mode: 'ClaudeAsk',
+    warning: `${prefix} — falling back to "ClaudeAsk" (always-confirm). Valid modes: ${valid}.`,
   };
 }
 
@@ -471,6 +525,18 @@ export async function startServer({ configPath, watch = true } = {}) {
   if (lockWarning) console.error(lockWarning);
   fresh.lockedVault = initialLock;
   applyLockGuard(fresh);
+
+  // Initialize the auto-enrichment mode from env var. Same friendly
+  // failure mode as validateLock: typo or invalid value warns and falls
+  // back to "ClaudeAsk" (the safe default — always proposes, never
+  // auto-acts) rather than bricking on an unrecognized mode.
+  const { mode: initialMode, warning: modeWarning } = validateAutoEnrichMode(
+    process.env.OBSIDIAN_ROUTER_AUTO_ENRICH,
+    'env',
+  );
+  if (modeWarning) console.error(modeWarning);
+  fresh.autoEnrichMode = initialMode;
+
   const registryRef = { current: fresh };
 
   // Hot-reload of the config file. Debounced (500ms) to coalesce rapid
@@ -507,12 +573,26 @@ export async function startServer({ configPath, watch = true } = {}) {
           if (reloadWarning) console.error(reloadWarning);
           fresh.lockedVault = validatedLock;
           applyLockGuard(fresh);
+
+          // Preserve the runtime auto-enrichment mode across reloads.
+          // Same defensive validation as the lock — an in-memory "Hybrid"
+          // could end up on a fresh registry as a string we don't expect
+          // if the field was ever corrupted; revalidate.
+          const preservedMode = registryRef.current?.autoEnrichMode || null;
+          const { mode: validatedMode, warning: modeReloadWarning } =
+            validateAutoEnrichMode(preservedMode, 'preserved');
+          if (modeReloadWarning) console.error(modeReloadWarning);
+          fresh.autoEnrichMode = validatedMode;
+
           registryRef.current = fresh;
           console.error(
             `[obsidian-mcp-router] Config reloaded. ` +
               `${fresh.vaults.length} active vault(s)` +
               (fresh.skipped?.length ? `, ${fresh.skipped.length} disabled` : '') +
               (fresh.lockedVault ? `, locked to "${fresh.lockedVault}"` : '') +
+              (fresh.autoEnrichMode && fresh.autoEnrichMode !== 'ClaudeAsk'
+                ? `, auto-enrich: ${fresh.autoEnrichMode}`
+                : '') +
               '.',
           );
         } catch (err) {
@@ -554,7 +634,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.8.0',
+      version: '0.8.2',
     },
     {
       capabilities: {
@@ -605,6 +685,8 @@ export async function startServer({ configPath, watch = true } = {}) {
           return await wrapResult(lockVault(reg, args));
         case 'unlock_vaults':
           return await wrapResult(unlockVaults(reg, args));
+        case 'set_auto_enrich_mode':
+          return await wrapResult(setAutoEnrichMode(reg, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -634,10 +716,16 @@ export async function startServer({ configPath, watch = true } = {}) {
     ? ` (${reg.skipped.length} disabled: ${reg.skipped.map((s) => s.name).join(', ')})`
     : '';
   const lockNote = reg.lockedVault ? ` LOCKED to "${reg.lockedVault}".` : '';
+  // Only mention auto-enrich mode in boot log if it's been customized away
+  // from the safe default. Saves noise for the common case.
+  const autoEnrichNote =
+    reg.autoEnrichMode && reg.autoEnrichMode !== 'ClaudeAsk'
+      ? ` Auto-enrich mode: ${reg.autoEnrichMode}.`
+      : '';
   console.error(
     `[obsidian-mcp-router] Ready. ${reg.vaults.length} vault(s) configured: ${reg.vaults
       .map((v) => v.name)
-      .join(', ')}${skippedNote}.${lockNote}`,
+      .join(', ')}${skippedNote}.${lockNote}${autoEnrichNote}`,
   );
 }
 

@@ -106,16 +106,81 @@ The four channels are additive, not exclusive. A typical "all-in" Roland setup:
 
 Each channel handles a different surface; they compose cleanly because the consigne self-gates on "is a vault bound?" — only one channel's binding fires at a time, depending on context.
 
-## Phase 1 preview (not yet shipped)
+## The four modes — what fits when
 
-Phase 0 is fixed at `ClaudeAsk` mode (always confirm). Phase 1 will add:
+Phase 1 (v0.8.2) ships four modes. Switch with `/obsidian-router:auto-mode <Mode>` (volatile) or with `--persist` to write `OBSIDIAN_ROUTER_AUTO_ENRICH=<Mode>` into the workspace `.env`.
 
-- A persistent `OBSIDIAN_ROUTER_AUTO_ENRICH={ClaudeAsk | Hybrid | FullAuto | off}` env var, lock-mode-style
-- A slash command `/obsidian-router:auto-mode <Mode>` to toggle per-session
-- `Hybrid` mode: auto-save type-safe items (facts, URLs), ask on high-stakes (decisions, ADRs)
-- `FullAuto` mode with audit log + sensitivity filter + daily digest
+### `ClaudeAsk` (default) — propose, always confirm
 
-Until Phase 1 ships, every save goes through user confirmation.
+**Behavior**: at each trigger (validation / result / topic-switch), Claude lists candidates and waits for your selection ("all", "none", numbers, "skip"). Nothing is saved without your explicit OK.
+
+**Best fit**:
+- 🆕 **Discovery / calibration period** — the first 1-2 weeks of using auto-enrichment, before you trust the classifier
+- 📚 **Long sessions with mixed-importance content** — some bits are gold, most are noise; you want to be the filter
+- 🛡️ **Vaults where false positives would be costly to clean up** — domain wikis with lots of citations to other pages, where deleting a wrong page breaks references
+- 🎓 **Learning what Claude considers save-worthy** — you observe the proposals to recalibrate your own sense of "what's worth keeping"
+
+**Trade-off**: friction. Every digest is a question to answer.
+
+### `Hybrid` — auto-save type-safe, ask on high-stakes
+
+**Behavior**: Claude auto-saves the items where false positives are cheap (`fact`, `url`, `preference`) and asks for confirmation on items where false positives are expensive (`decision`, `adr`, `rule`, `technique`, `session`). Digests show both: "✅ auto-saved" + "à confirmer".
+
+**Best fit**:
+- ⚡ **Power-user sweet spot after calibration** — once you trust Claude's URL/fact detection, you stop wanting to confirm them every time
+- 🌐 **Active research with frequent URL ingestion** — you read 30 articles, you want each one filed without thinking
+- 📊 **Citation-heavy work** — `wiki-ingest` calls happen constantly, manual confirmation becomes the bottleneck
+- 🛠️ **Active development** — facts (port numbers, version pins, threshold values) pile up, but architectural decisions still warrant a beat of confirmation
+
+**Trade-off**: you still confirm the consequential saves, but you stop confirming the trivia. Best ratio of friction-saved to safety.
+
+### `FullAuto` — auto-save everything (with safety nets)
+
+**Behavior**: Claude auto-saves at every trigger, no questions. Audit log written to `wiki/log.md` (lines prefixed with `[auto-save]` so you can filter). Sensitivity filter ALWAYS applies (credentials / medical / financial / client names → never auto-saved, downgraded to ask). Hard cap: after 5 auto-saves in one session, behavior degrades to `ClaudeAsk` for the rest of the session (you'd hit it explicitly: *"FullAuto cap reached, asking for confirmation now"*).
+
+**Best fit**:
+- 📔 **Personal journal / family chronicle** — you don't want to think about save decisions, you just want a log of what happened
+- 🤖 **Long unsupervised flows** — `autoresearch` running for an hour, batch ingestion of 50 sources; you'd never be there to confirm each
+- 💭 **Solo brain-dumps where the wiki IS the conversation log** — you're chatting with Claude as a thinking-out-loud partner and want everything captured
+- 🏆 **High-trust mode** — after 3+ months of `Hybrid`, you've seen the classifier perform well, you accept the residual noise
+
+**Trade-off**: real noise risk. You WILL save some things you wouldn't have. Mitigation: review `wiki/log.md` weekly to catch the strays. The hard cap keeps a single session from spiraling, but a year of FullAuto without retrospective curation will produce a noisy wiki.
+
+**⚠️ Don't ship FullAuto on day one.** Calibrate with `ClaudeAsk` for 1 week, `Hybrid` for 1 month, then evaluate.
+
+### `off` — manual `/save` only
+
+**Behavior**: Claude makes NO proactive save proposals. The auto-enrichment consigne is fully ignored. You invoke `/save`, `/wiki-ingest`, `/wiki-fold`, etc. manually when you want them.
+
+**Best fit**:
+- 🐛 **Debugging sessions you don't want polluting the wiki** — the lock-mode-equivalent for the auto layer
+- 🤐 **Sensitive conversations** — even with sensitivity filter on, you want hard guarantee nothing gets saved
+- 🎛️ **Control-freak preference** — you want full conscious agency over what enters your wiki, period
+- 🏛️ **Default for legal / medical / financial vaults** — high stakes, low tolerance for accidents
+- 💡 **Brainstorm-only sessions** — the content is exploratory, locking save proposals out keeps the flow clean
+
+**Trade-off**: no friction, but also no proactive memory. You're back to v0.8.0 behavior — the wiki only grows when YOU push to it.
+
+## Picking your starting mode
+
+A pragmatic recommendation:
+
+| Where you are | Pick |
+|---|---|
+| First time using auto-enrichment | `ClaudeAsk` for 1-2 weeks |
+| Comfortable with the proposals, want less friction | `Hybrid` for 1-3 months |
+| Trust the classifier, want zero friction on the routine | `FullAuto` (with weekly `wiki/log.md` review) |
+| Specific session that shouldn't be tracked | `off` for that session (no `--persist`) |
+| Vault contains sensitive material by nature | `off` persisted at the vault level |
+
+You can persist the mode per-workspace (in the workspace's `.env`) so the same vault always boots in the right mode regardless of session.
+
+## Phase 2 preview (not yet shipped)
+
+Phase 1 (v0.8.2) covers the operational core. Phase 2 will add:
+- **Daily digest** — at the first interaction of the day, list yesterday's auto-saves so you can review/rollback in a batch
+- **Configurable hard cap** — currently fixed at 5 in FullAuto, will become per-vault tunable
+- **Sensitivity filter learned from corrections** — when you delete an auto-saved page within X minutes, the classifier remembers the pattern
 
 ---
 
@@ -225,13 +290,78 @@ Les quatre canaux sont additifs, pas exclusifs. Un setup "tout-en-un" type Rolan
 
 Chaque canal gère une surface différente ; ils se composent proprement parce que la consigne s'auto-gate sur "est-ce qu'un vault est bind ?" — un seul canal de binding fire à la fois, selon le contexte.
 
-### Aperçu Phase 1 (pas encore shipped)
+### Les quatre modes — quel mode pour quel usage
 
-La Phase 0 est figée en mode `ClaudeAsk` (toujours confirmer). La Phase 1 ajoutera :
+La Phase 1 (v0.8.2) ship quatre modes. Switch avec `/obsidian-router:auto-mode <Mode>` (volatile) ou avec `--persist` pour écrire `OBSIDIAN_ROUTER_AUTO_ENRICH=<Mode>` dans le `.env` du workspace.
 
-- Une variable d'env persistante `OBSIDIAN_ROUTER_AUTO_ENRICH={ClaudeAsk | Hybrid | FullAuto | off}`, façon lock-mode
-- Une slash command `/obsidian-router:auto-mode <Mode>` pour toggle per-session
-- Mode `Hybrid` : auto-save les items type-safe (facts, URLs), ask sur les high-stakes (decisions, ADRs)
-- Mode `FullAuto` avec audit log + filtre de sensibilité + digest quotidien
+#### `ClaudeAsk` (défaut) — propose, confirme toujours
 
-Tant que la Phase 1 n'est pas shipped, chaque save passe par confirmation utilisateur.
+**Comportement** : à chaque trigger (validation / résultat / changement de sujet), Claude liste les candidats et attend ta sélection ("all", "none", numéros, "skip"). Rien n'est sauvé sans ton OK explicite.
+
+**Pour quel usage** :
+- 🆕 **Période de découverte / calibration** — les 1-2 premières semaines d'utilisation, avant de faire confiance au classificateur
+- 📚 **Sessions longues à importance mixte** — quelques pépites, beaucoup de bruit ; tu veux être le filtre
+- 🛡️ **Vaults où les faux positifs coûtent cher à nettoyer** — wikis de domaine avec beaucoup de citations entre pages, où supprimer une page erronée casse les références
+- 🎓 **Apprendre ce que Claude considère save-worthy** — tu observes les propositions pour recalibrer ton propre sens de "qu'est-ce qui mérite d'être gardé"
+
+**Trade-off** : friction. Chaque digest est une question à laquelle répondre.
+
+#### `Hybrid` — auto-save les type-safe, ask sur les high-stakes
+
+**Comportement** : Claude auto-save les items où les faux positifs sont peu coûteux (`fact`, `url`, `preference`) et demande confirmation sur les items où les faux positifs coûtent cher (`decision`, `adr`, `rule`, `technique`, `session`). Les digests montrent les deux : "✅ auto-saved" + "à confirmer".
+
+**Pour quel usage** :
+- ⚡ **Sweet spot power-user après calibration** — une fois que tu fais confiance à la détection URL/fait de Claude, tu arrêtes de vouloir confirmer chacun
+- 🌐 **Recherche active avec ingestion d'URLs fréquente** — tu lis 30 articles, tu veux chacun filé sans réfléchir
+- 📊 **Travail à forte densité de citations** — les appels `wiki-ingest` arrivent en continu, la confirmation manuelle devient le bottleneck
+- 🛠️ **Dev actif** — les facts (numéros de port, versions épinglées, valeurs de threshold) s'empilent, mais les décisions architecturales méritent toujours un battement de confirmation
+
+**Trade-off** : tu confirmes toujours les saves consequentiels, mais tu arrêtes de confirmer les trivia. Meilleur ratio friction-évitée / sécurité.
+
+#### `FullAuto` — auto-save tout (avec garde-fous)
+
+**Comportement** : Claude auto-save à chaque trigger, pas de question. Audit log écrit dans `wiki/log.md` (lignes préfixées `[auto-save]` pour filtrer). Le filtre de sensibilité s'applique TOUJOURS (credentials / médical / financier / noms de clients → jamais auto-saved, dégradés en ask). Hard cap : après 5 auto-saves dans une session, le comportement dégrade en `ClaudeAsk` pour le reste de la session (tu seras explicitement informé : *"FullAuto cap atteint, je passe en demande de confirmation"*).
+
+**Pour quel usage** :
+- 📔 **Journal perso / chronique familiale** — tu ne veux pas penser aux décisions de save, tu veux juste un log de ce qui s'est passé
+- 🤖 **Flows longs non supervisés** — `autoresearch` qui tourne pendant une heure, ingestion en batch de 50 sources ; tu ne serais pas là pour confirmer chacun
+- 💭 **Brain-dumps solo où le wiki EST le log de conversation** — tu causes avec Claude comme partenaire de pensée à voix haute et veux tout capturer
+- 🏆 **Mode haute confiance** — après 3+ mois en `Hybrid`, tu as vu le classificateur bien performer, tu acceptes le bruit résiduel
+
+**Trade-off** : risque de bruit réel. Tu vas sauver des trucs que tu n'aurais pas sauvé. Mitigation : relire `wiki/log.md` chaque semaine pour attraper les égarés. Le hard cap empêche une session unique de dégénérer, mais une année de FullAuto sans curation rétrospective produira un wiki bruité.
+
+**⚠️ Ne ship pas FullAuto le premier jour.** Calibre avec `ClaudeAsk` pendant 1 semaine, `Hybrid` pendant 1 mois, puis évalue.
+
+#### `off` — `/save` manuel uniquement
+
+**Comportement** : Claude ne fait AUCUNE proposition de save proactive. La consigne d'auto-enrichissement est totalement ignorée. Tu invoques `/save`, `/wiki-ingest`, `/wiki-fold`, etc. manuellement quand tu les veux.
+
+**Pour quel usage** :
+- 🐛 **Sessions de debug que tu ne veux pas polluer dans le wiki** — l'équivalent lock-mode pour la couche auto
+- 🤐 **Conversations sensibles** — même avec le filtre de sensibilité activé, tu veux la garantie dure que rien ne soit sauvé
+- 🎛️ **Préférence control-freak** — tu veux pleine agence consciente de ce qui entre dans ton wiki, point
+- 🏛️ **Défaut pour les vaults légal / médical / financier** — high stakes, faible tolérance aux accidents
+- 💡 **Sessions purement brainstorm** — le contenu est exploratoire, locker les propositions de save garde le flux propre
+
+**Trade-off** : pas de friction, mais aussi pas de mémoire proactive. Tu reviens au comportement v0.8.0 — le wiki ne grossit que quand TU le pousses.
+
+### Choisir ton mode de départ
+
+Une recommandation pragmatique :
+
+| Où tu en es | Choisis |
+|---|---|
+| Première fois avec l'auto-enrichissement | `ClaudeAsk` pendant 1-2 semaines |
+| À l'aise avec les propositions, tu veux moins de friction | `Hybrid` pendant 1-3 mois |
+| Tu fais confiance au classificateur, zéro friction sur le routine | `FullAuto` (avec relecture hebdomadaire de `wiki/log.md`) |
+| Session spécifique qui ne doit pas être trackée | `off` pour cette session (sans `--persist`) |
+| Vault contient du matériel sensible par nature | `off` persisté au niveau du vault |
+
+Tu peux persister le mode per-workspace (dans le `.env` du workspace) pour que le même vault boot toujours dans le bon mode quelle que soit la session.
+
+### Aperçu Phase 2 (pas encore shipped)
+
+La Phase 1 (v0.8.2) couvre le cœur opérationnel. La Phase 2 ajoutera :
+- **Digest quotidien** — à la première interaction du jour, liste les auto-saves de la veille pour review/rollback en batch
+- **Hard cap configurable** — actuellement figé à 5 en FullAuto, deviendra ajustable per-vault
+- **Filtre de sensibilité appris des corrections** — quand tu supprimes une page auto-saved dans les X minutes, le classificateur retient le pattern

@@ -115,8 +115,18 @@ ENVIRONMENT
                                   by removing this var. Set at runtime via
                                   lock_vault({ vault, persist: true }) which
                                   writes this var to <cwd>/.env.
+  OBSIDIAN_ROUTER_AUTO_ENRICH     Wiki auto-enrichment mode for Claude's
+                                  proactive save suggestions. One of:
+                                  ClaudeAsk (default — propose + confirm),
+                                  Hybrid (auto-save type-safe, ask on
+                                  high-stakes), FullAuto (auto-save all
+                                  with audit log), or off (no auto). Set at
+                                  runtime via set_auto_enrich_mode({ mode,
+                                  persist: true }) which writes this var to
+                                  <cwd>/.env. Surfaced in list_vaults under
+                                  field autoEnrichMode.
 
-The router auto-loads a .env file from the cwd at startup, so the two
+The router auto-loads a .env file from the cwd at startup, so the
 variables above can be set per-workspace without touching ~/.claude.
 Existing env vars in the parent process win over .env.
 

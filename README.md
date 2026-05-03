@@ -31,7 +31,7 @@ Semantic search (`search_smart`) and Templater execution (`execute_template`) re
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes **29 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
+The repo doubles as a **Claude Code plugin marketplace** that exposes **30 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
 ### 🔧 14 MCP wrappers — one per router tool
 
@@ -74,14 +74,15 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **29 slash
 |---|---|---|
 | `/obsidian-router:template-execute` | Execute a Templater template (preview or save) | *"render Templates/X.md with arg1=v1"*, *"run the daily template"* / *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* |
 
-### 🔒 2 isolation commands (lock mode)
+### 🔒 3 router-state commands (lock + auto-enrichment)
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
 | `/obsidian-router:lock` | Restrict the router to a single vault for the session (volatile or `--persist` to write to `.env`) | *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* / *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* |
 | `/obsidian-router:unlock` | Lift the lock and restore multi-vault routing (`--persist` to also clean `.env`) | *"unlock vaults"*, *"give me back access to all vaults"* / *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* |
+| `/obsidian-router:auto-mode` | Set the wiki auto-enrichment mode (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`); `--persist` writes to `.env` | *"switch to Hybrid mode"*, *"save everything automatically"* (→ FullAuto), *"stop auto-saving"* (→ off) / *"passe en mode Hybrid"*, *"sauve tout automatiquement"*, *"arrête de sauver auto"* |
 
-See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) below for the full design and three concrete cases.
+See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and the auto-enrichment callout below for the full designs and concrete use cases.
 
 ### 🩺 3 conversational helpers
 
@@ -121,7 +122,18 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 
 The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.claude/settings.json`. Reference: [`hooks/hooks.json`](./hooks/hooks.json).
 
-**🆕 Auto-enrichment (v0.8.1, Phase 0)** — Claude proactively suggests wiki saves at three natural moments: **validation** (you say "OK" / "valide" → inline pin), **result obtained** (commit pushed, tests green → digest of candidates), and **topic switch** (mandatory checkpoint before Claude responds to the new topic). Mode is hardcoded `ClaudeAsk` — Claude proposes, you always confirm. Domain-agnostic: works for development, personal life, research, family planning, anything. Placement: shipped in the vault `CLAUDE.md` template, also configurable as Claude Desktop **Project instructions** (an elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Family" project to `roland`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md) and the activation rules.
+**🆕 Auto-enrichment (v0.8.2, Phase 1)** — Claude proactively suggests wiki saves at three natural moments: **validation** (you say "OK" / "valide" → inline pin), **result obtained** (commit pushed, tests green → digest of candidates), and **topic switch** (mandatory checkpoint before Claude responds to the new topic). Domain-agnostic: works for development, personal life, research, family planning, anything.
+
+**Four modes** (`/obsidian-router:auto-mode <Mode>` to switch, `--persist` to write to `.env`):
+
+| Mode | Behavior | Best for |
+|---|---|---|
+| `ClaudeAsk` (default) | Propose, always confirm | Discovering the feature · long mixed-importance sessions · vaults where false positives would hurt · the calibration period (1-2 weeks) before trusting auto-save |
+| `Hybrid` | Auto-save type-safe items (facts, URLs, preferences); ask on high-stakes (decisions, ADRs, rules, techniques) | Power-user sweet spot after calibration · active dev with frequent URL ingestion · research where citations pile up but conclusions need vetting |
+| `FullAuto` | Auto-save everything; audit log in `wiki/log.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
+| `off` | No auto-suggestions; manual `/save` only | Debugging sessions you don't want polluting the wiki · sensitive conversations · default for legal/medical/financial vaults · control-freak preference |
+
+**Placement** — the consigne ships in the vault `CLAUDE.md` template, but is also configurable as Claude Desktop **Project instructions** (elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Family" project to `roland`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md), the activation rules, and concrete copy-paste boilerplates per channel.
 
 Install steps are in the [Install](#install) section below.
 
@@ -187,7 +199,7 @@ Add the marketplace + enable the plugin in `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code. Type `/obsidian-router:` — the 29 slash commands should appear in autocomplete.
+Restart Claude Code. Type `/obsidian-router:` — the 30 slash commands should appear in autocomplete.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
@@ -204,7 +216,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 29 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 30 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -632,7 +644,7 @@ La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_te
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose **29 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **30 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
 #### 🔧 14 wrappers MCP — un par outil du router
 
@@ -675,14 +687,15 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **29 slash
 |---|---|---|
 | `/obsidian-router:template-execute` | Exécute un template Templater (preview ou save) | *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* / *"render Templates/X.md with arg1=v1"*, *"run the daily template"* |
 
-#### 🔒 2 commandes d'isolation (mode lock)
+#### 🔒 3 commandes d'état du router (lock + auto-enrichissement)
 
 | Commande | Effet | Phrases déclencheuses |
 |---|---|---|
 | `/obsidian-router:lock` | Restreint le router à un seul vault pour la session (volatile ou `--persist` pour écrire dans `.env`) | *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* / *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* |
 | `/obsidian-router:unlock` | Lève le lock et restaure le routing multi-vault (`--persist` pour aussi nettoyer `.env`) | *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* / *"unlock vaults"*, *"give me back access to all vaults"* |
+| `/obsidian-router:auto-mode` | Set le mode d'auto-enrichissement wiki (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`) ; `--persist` écrit dans `.env` | *"passe en mode Hybrid"*, *"sauve tout automatiquement"* (→ FullAuto), *"arrête de sauver auto"* (→ off) / *"switch to Hybrid mode"*, *"save everything automatically"*, *"stop auto-saving"* |
 
-Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) plus bas pour le design complet et trois cas concrets.
+Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le callout auto-enrichissement plus bas pour les designs complets et cas d'usage concrets.
 
 #### 🩺 3 helpers conversationnels
 
@@ -722,7 +735,18 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 
 Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux dans `~/.claude/settings.json`. Référence : [`hooks/hooks.json`](./hooks/hooks.json).
 
-**🆕 Auto-enrichissement (v0.8.1, Phase 0)** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Mode hardcodé `ClaudeAsk` — Claude propose, tu confirmes toujours. Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi. Placement : shipped dans le `CLAUDE.md` template du vault, aussi configurable en **instructions de Project Claude Desktop** (un pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Famille" dans `roland`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global) et les règles d'activation.
+**🆕 Auto-enrichissement (v0.8.2, Phase 1)** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi.
+
+**Quatre modes** (`/obsidian-router:auto-mode <Mode>` pour switcher, `--persist` pour écrire dans `.env`) :
+
+| Mode | Comportement | Pour quel usage |
+|---|---|---|
+| `ClaudeAsk` (défaut) | Propose, confirme toujours | Découverte de la feature · sessions longues à importance mixte · vaults où les faux positifs coûtent cher à nettoyer · période de calibration (1-2 semaines) avant de faire confiance à l'auto-save |
+| `Hybrid` | Auto-save les items type-safe (facts, URLs, préférences) ; ask sur les high-stakes (décisions, ADRs, règles, techniques) | Sweet spot power-user après calibration · dev actif avec ingestion d'URLs fréquente · recherche où les citations s'empilent mais les conclusions doivent être vettées |
+| `FullAuto` | Auto-save tout ; audit log dans `wiki/log.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
+| `off` | Pas de suggestions auto ; seul `/save` manuel | Sessions de debug que tu ne veux pas polluer dans le wiki · conversations sensibles · défaut pour les vaults légal/médical/financier · préférence control-freak |
+
+**Placement** — la consigne est shipped dans le `CLAUDE.md` template du vault, mais aussi configurable en **instructions de Project Claude Desktop** (pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Famille" dans `roland`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global), les règles d'activation, et des boilerplates copy-paste par canal.
 
 Étapes d'install dans la section [Installation](#installation) ci-dessous.
 
@@ -788,7 +812,7 @@ Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
 }
 ```
 
-Redémarre Claude Code. Tape `/obsidian-router:` — les 29 slash commands doivent apparaître dans l'autocomplete.
+Redémarre Claude Code. Tape `/obsidian-router:` — les 30 slash commands doivent apparaître dans l'autocomplete.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
@@ -805,7 +829,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 29 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 30 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 

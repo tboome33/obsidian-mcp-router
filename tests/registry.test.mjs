@@ -18,7 +18,8 @@ import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
-import { applyLockGuard, validateLock } from '../src/index.mjs';
+import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
+import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/index.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
@@ -769,6 +770,222 @@ describe('lockVault — homedir refusal (E.2)', () => {
     };
     const result = await lockVault(reg, { vault: 'alpha', persist: false });
     assert.equal(reg.lockedVault, 'alpha');
+    assert.equal(result.persisted, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 1 — auto-enrichment mode (canonicalizeMode + validateAutoEnrichMode)
+// ---------------------------------------------------------------------------
+
+describe('canonicalizeMode — input normalization', () => {
+  test('exact canonical names pass through', () => {
+    assert.equal(canonicalizeMode('ClaudeAsk'), 'ClaudeAsk');
+    assert.equal(canonicalizeMode('Hybrid'), 'Hybrid');
+    assert.equal(canonicalizeMode('FullAuto'), 'FullAuto');
+    assert.equal(canonicalizeMode('off'), 'off');
+  });
+
+  test('case-insensitive matching', () => {
+    assert.equal(canonicalizeMode('claudeask'), 'ClaudeAsk');
+    assert.equal(canonicalizeMode('HYBRID'), 'Hybrid');
+    assert.equal(canonicalizeMode('Fullauto'), 'FullAuto');
+    assert.equal(canonicalizeMode('OFF'), 'off');
+  });
+
+  test('common aliases resolve', () => {
+    assert.equal(canonicalizeMode('ask'), 'ClaudeAsk');
+    assert.equal(canonicalizeMode('claude-ask'), 'ClaudeAsk');
+    assert.equal(canonicalizeMode('auto'), 'FullAuto');
+    assert.equal(canonicalizeMode('full'), 'FullAuto');
+    assert.equal(canonicalizeMode('full-auto'), 'FullAuto');
+    assert.equal(canonicalizeMode('semi'), 'Hybrid');
+    assert.equal(canonicalizeMode('hybride'), 'Hybrid');
+    assert.equal(canonicalizeMode('none'), 'off');
+    assert.equal(canonicalizeMode('disabled'), 'off');
+  });
+
+  test('unknown input returns null', () => {
+    assert.equal(canonicalizeMode('superpowers'), null);
+    assert.equal(canonicalizeMode(''), null);
+    assert.equal(canonicalizeMode(null), null);
+    assert.equal(canonicalizeMode(undefined), null);
+    assert.equal(canonicalizeMode(42), null);
+  });
+
+  test('whitespace is trimmed', () => {
+    assert.equal(canonicalizeMode('  ClaudeAsk  '), 'ClaudeAsk');
+    assert.equal(canonicalizeMode('\thybrid\n'), 'Hybrid');
+  });
+
+  test('VALID_MODES is the source of truth', () => {
+    assert.deepEqual(VALID_MODES, ['ClaudeAsk', 'Hybrid', 'FullAuto', 'off']);
+  });
+});
+
+describe('validateAutoEnrichMode — env + preserved contexts', () => {
+  test('null/undefined falls back to ClaudeAsk silently', () => {
+    assert.deepEqual(validateAutoEnrichMode(null, 'env'), {
+      mode: 'ClaudeAsk',
+      warning: null,
+    });
+    assert.deepEqual(validateAutoEnrichMode(undefined, 'preserved'), {
+      mode: 'ClaudeAsk',
+      warning: null,
+    });
+    assert.deepEqual(validateAutoEnrichMode('', 'env'), {
+      mode: 'ClaudeAsk',
+      warning: null,
+    });
+  });
+
+  test('valid input returns canonical mode, no warning', () => {
+    assert.deepEqual(validateAutoEnrichMode('Hybrid', 'env'), {
+      mode: 'Hybrid',
+      warning: null,
+    });
+    assert.deepEqual(validateAutoEnrichMode('fullauto', 'env'), {
+      mode: 'FullAuto',
+      warning: null,
+    });
+  });
+
+  test('env context: invalid input falls back to ClaudeAsk with warning', () => {
+    const result = validateAutoEnrichMode('superduper', 'env');
+    assert.equal(result.mode, 'ClaudeAsk');
+    assert.match(result.warning, /OBSIDIAN_ROUTER_AUTO_ENRICH="superduper"/);
+    assert.match(result.warning, /falling back to "ClaudeAsk"/);
+    assert.match(result.warning, /Valid modes: ClaudeAsk, Hybrid, FullAuto, off/);
+  });
+
+  test('preserved context: invalid input warns differently', () => {
+    const result = validateAutoEnrichMode('garbled', 'preserved');
+    assert.equal(result.mode, 'ClaudeAsk');
+    assert.match(result.warning, /Preserved auto-enrichment mode "garbled" is not recognized after config reload/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setAutoEnrichMode — handler behavior
+// ---------------------------------------------------------------------------
+
+describe('setAutoEnrichMode — tool handler', () => {
+  let tmpDir;
+  let savedCwd;
+
+  before(async () => {
+    savedCwd = process.cwd();
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-automode-test-'));
+    process.chdir(tmpDir);
+  });
+
+  after(async () => {
+    process.chdir(savedCwd);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test('sets registry.autoEnrichMode in-memory', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    const result = await setAutoEnrichMode(reg, { mode: 'Hybrid' });
+    assert.equal(reg.autoEnrichMode, 'Hybrid');
+    assert.equal(result.mode, 'Hybrid');
+    assert.equal(result.previousMode, 'ClaudeAsk');
+    assert.equal(result.persisted, false);
+  });
+
+  test('canonicalizes case + alias inputs', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await setAutoEnrichMode(reg, { mode: 'fullauto' });
+    assert.equal(reg.autoEnrichMode, 'FullAuto');
+    await setAutoEnrichMode(reg, { mode: 'auto' });
+    assert.equal(reg.autoEnrichMode, 'FullAuto');
+    await setAutoEnrichMode(reg, { mode: 'none' });
+    assert.equal(reg.autoEnrichMode, 'off');
+  });
+
+  test('rejects unknown mode with explicit error', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await assert.rejects(
+      () => setAutoEnrichMode(reg, { mode: 'maximum-overdrive' }),
+      /invalid mode "maximum-overdrive"/,
+    );
+    // Mode unchanged on rejection
+    assert.equal(reg.autoEnrichMode, 'ClaudeAsk');
+  });
+
+  test('requires mode argument', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await assert.rejects(
+      () => setAutoEnrichMode(reg, {}),
+      /missing required argument `mode`/,
+    );
+  });
+
+  test('persist:true writes OBSIDIAN_ROUTER_AUTO_ENRICH to .env', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    const result = await setAutoEnrichMode(reg, { mode: 'Hybrid', persist: true });
+    assert.equal(result.persisted, true);
+    const envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
+    assert.match(envContent, /^OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid$/m);
+  });
+
+  test('persist:true with mode "off" REMOVES the line (not writes "off")', async () => {
+    // First set a real mode persisted
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: true });
+    let envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
+    assert.match(envContent, /OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto/);
+
+    // Now persist "off" — should remove the line
+    await setAutoEnrichMode(reg, { mode: 'off', persist: true });
+    envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
+    assert.equal(envContent.includes('OBSIDIAN_ROUTER_AUTO_ENRICH'), false);
+    assert.equal(reg.autoEnrichMode, 'off');
+  });
+
+  test('persist:true preserves other .env entries', async () => {
+    // Pre-populate .env with unrelated entries
+    await fs.writeFile(
+      path.join(tmpDir, '.env'),
+      'VAULT_PATH=/vaults/x\nSOME_OTHER=value\n',
+      'utf8',
+    );
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await setAutoEnrichMode(reg, { mode: 'Hybrid', persist: true });
+    const envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
+    assert.match(envContent, /VAULT_PATH=\/vaults\/x/);
+    assert.match(envContent, /SOME_OTHER=value/);
+    assert.match(envContent, /OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid/);
+  });
+});
+
+describe('setAutoEnrichMode — homedir refusal (mirrors lock_vault E.2)', () => {
+  let savedCwd;
+
+  before(() => {
+    savedCwd = process.cwd();
+  });
+
+  after(() => {
+    process.chdir(savedCwd);
+  });
+
+  test('persist:true refuses when cwd is the user homedir', async () => {
+    process.chdir(os.homedir());
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    await assert.rejects(
+      () => setAutoEnrichMode(reg, { mode: 'Hybrid', persist: true }),
+      /refusing to persist.*home directory/,
+    );
+    // In-memory mode IS still set per docstring contract
+    assert.equal(reg.autoEnrichMode, 'Hybrid');
+  });
+
+  test('persist:false works at homedir (no .env touched)', async () => {
+    process.chdir(os.homedir());
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    const result = await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: false });
+    assert.equal(reg.autoEnrichMode, 'FullAuto');
     assert.equal(result.persisted, false);
   });
 });
