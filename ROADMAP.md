@@ -4,7 +4,7 @@ A living list of what's coming next, ordered roughly by priority.
 
 ## ✅ v0.2 — Semantic search (shipped)
 
-Reverse-engineered the `mcp-tools` plugin's API extension to Local REST API to discover the `POST /search/smart` endpoint, then implemented `search_smart` directly against that HTTPS surface — **no dependency on the `mcp-server.exe` binary**.
+Implemented `search_smart` against `POST /search/smart` — a route registered by the companion bridge plugin (`obsidian-mcp-router-bridge`) on top of Local REST API. The router talks pure HTTPS to it; no native binary involved.
 
 - ✅ `search_smart(vault, query, folders?, excludeFolders?, limit?)` — semantic search with cosine scores and breadcrumbs
 - ✅ Cross-vault fan-out via `vault: "*"`
@@ -14,13 +14,13 @@ The same approach unlocks `/templates/execute` for v0.3.
 
 ## ✅ v0.3 — Write operations + Templater (shipped)
 
-The router can now fully replace `mcp-tools` for day-to-day usage. All writes go through the same Local REST API plugin endpoints; Templater execution goes through the `mcp-tools` extension.
+The CRUD surface is complete. All writes go through standard Local REST API plugin endpoints; Templater execution goes through the bridge plugin's `/templates/execute` route.
 
 - ✅ `write_file(vault, path, content, ifNew?)` — `PUT /vault/<path>` (create or replace)
 - ✅ `append_to_file(vault, path, content, requireExisting?)` — `POST /vault/<path>`
 - ✅ `patch_file(vault, path, operation, targetType, target, content, ...)` — `PATCH /vault/<path>` for surgical edits to `heading` / `block` / `frontmatter` targets
 - ✅ `delete_file(vault, path, confirm)` — `DELETE /vault/<path>` with explicit confirm guard
-- ✅ `execute_template(vault, name, arguments?, createFile?, targetPath?)` — `POST /templates/execute` via the mcp-tools extension. Templates access router-injected args via `tp.mcpTools.prompt("key")`.
+- ✅ `execute_template(vault, name, arguments?, createFile?, targetPath?)` — `POST /templates/execute` via the bridge plugin. Templates access router-injected args via `tp.mcpTools.prompt("key")`.
 
 Quirks discovered and documented inline:
 - `/templates/execute` validator wants `application/json` with a real object — different from `/search/smart` which expects a stringified-JSON in `text/plain`.

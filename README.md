@@ -8,27 +8,26 @@ Instead of registering one MCP per vault (one process, one port, one API key), t
 
 ## Why
 
-The default Obsidian MCP setup ([jacksteamdev/obsidian-mcp-tools](https://github.com/jacksteamdev/obsidian-mcp-tools)) binds one MCP server process to one vault via env vars (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). If you have multiple vaults, you need multiple MCP entries — one per scope/project — and you can only ever reach one vault at a time per Claude session.
+If you keep more than one Obsidian vault — a personal wiki, a research vault, a vault on your NAS, a vault behind a Cloudflare Tunnel — you don't want to register a separate MCP server per vault and switch context every time. This router is one process that knows about all of them and routes each tool call to the right one based on a `vault` parameter.
 
-This router replaces that with:
+What you get:
 
 - **One MCP entry** in `~/.claude.json` (user scope) → all vaults visible from any Claude Desktop/Code session.
-- **Local + remote vaults**, treated identically. Want to query an Obsidian vault running on your QNAP, your iPad over Tailscale, or a headless VPS? Just add the URL + API key to the config.
+- **Local + remote vaults**, treated identically. Add a vault running on your QNAP, your iPad over Tailscale, or a headless VPS by dropping its URL + API key into the config.
 - **Cross-vault search**: pass `vault: "*"` to the `search` tool to fan-out across every vault in parallel.
 
-## How it differs from `mcp-tools`
+## Capabilities
 
-| | jacksteamdev/obsidian-mcp-tools | obsidian-mcp-router |
-|---|---|---|
-| Vaults per MCP process | 1 | N |
-| Setup per vault | new MCP entry per scope | 1 line in config.json |
-| Remote vaults | requires per-vault MCP + env tweaks | first-class citizen |
-| Semantic search (Smart Connections) | yes (native binary) | yes (via the same `mcp-tools` API extension, no binary dependency) |
-| Templater execution | yes | yes (`execute_template` tool) |
-| File writes (create / append / patch / delete) | yes | yes |
-| Cross-vault operations | no | yes (`search` with `vault: "*"`) |
+| Tool surface | Coverage |
+|---|---|
+| Vault discovery | `list_vaults`, `list_files` |
+| Reads | `get_file`, `search`, `search_smart`, `get_frontmatter` |
+| Writes | `write_file`, `append_to_file`, `patch_file`, `delete_file`, `set_frontmatter`, `merge_frontmatter` |
+| File management | `move_file` |
+| Templater | `execute_template` |
+| Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
-The router talks to the same Local REST API endpoints that `mcp-tools` does — including the `mcp-tools` API extension's own routes (`/search/smart`, `/templates/execute`). So semantic search and Templater execution work natively without keeping the `mcp-tools` MCP registered alongside.
+Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. Everything else works against the standard Local REST API endpoints alone.
 
 ## Slash commands & skills (Claude Code plugin)
 
@@ -57,7 +56,7 @@ Type `/obsidian-router:` in Claude Code → the autocomplete shows everything gr
 | Plugin (per vault) | Required for | Where to get it |
 |---|---|---|
 | **Local REST API** | All tools | Community plugins → "Local REST API" by Adam Coddington |
-| **MCP Router Bridge** | `search_smart`, `execute_template` | Install from [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — registers the `/search/smart` and `/templates/execute` REST routes that this router calls. Replaces the deprecated `mcp-tools` plugin by jacksteamdev. |
+| **MCP Router Bridge** | `search_smart`, `execute_template` | Install from [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — registers the `/search/smart` and `/templates/execute` REST routes that this router calls. |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — the embeddings backend |
 | **Templater** | `execute_template` | Community plugins → "Templater" by SilentVoid13 |
 
@@ -356,27 +355,26 @@ Au lieu d'enregistrer un MCP par vault (un process, un port, une clé API), ce r
 
 ### Pourquoi
 
-Le setup MCP Obsidian par défaut ([jacksteamdev/obsidian-mcp-tools](https://github.com/jacksteamdev/obsidian-mcp-tools)) verrouille un process MCP sur un vault unique via des variables d'environnement (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). Avec plusieurs vaults, il te faut plusieurs entrées MCP — une par scope/projet — et tu ne peux toucher qu'**un seul** vault à la fois par session Claude.
+Si tu maintiens plusieurs vaults Obsidian — un wiki perso, un vault de recherche, un vault sur ton NAS, un vault derrière un Cloudflare Tunnel — tu ne veux pas enregistrer un serveur MCP par vault et changer de contexte à chaque fois. Ce router est **un seul** process qui les connaît tous et route chaque appel d'outil vers le bon en fonction d'un paramètre `vault`.
 
-Ce router remplace tout ça par :
+Ce que tu obtiens :
 
 - **Une seule entrée MCP** dans `~/.claude.json` (user scope) → tous les vaults sont visibles depuis n'importe quelle session Claude Desktop ou Code.
-- **Vaults locaux et distants traités à l'identique**. Tu veux interroger un vault Obsidian qui tourne sur ton QNAP, ton iPad via Tailscale, ou un VPS headless ? Tu ajoutes simplement l'URL + la clé API dans le config.
+- **Vaults locaux et distants traités à l'identique**. Tu ajoutes un vault qui tourne sur ton QNAP, ton iPad via Tailscale, ou un VPS headless en posant simplement son URL + sa clé API dans le config.
 - **Recherche cross-vault** : passe `vault: "*"` à l'outil `search` pour lancer la recherche sur tous les vaults en parallèle.
 
-### Différences avec `mcp-tools`
+### Capacités
 
-| | jacksteamdev/obsidian-mcp-tools | obsidian-mcp-router |
-|---|---|---|
-| Vaults par process MCP | 1 | N |
-| Ajout d'un nouveau vault | nouvelle entrée MCP par scope | 1 ligne dans `config.json` |
-| Vaults distants | nécessite un MCP dédié + tweaks env | natif |
-| Recherche sémantique (Smart Connections) | oui (binaire natif) | oui (via la même extension API `mcp-tools`, sans dépendance au binaire) |
-| Exécution de Templater | oui | oui (outil `execute_template`) |
-| Écritures (create / append / patch / delete) | oui | oui |
-| Opérations cross-vault | non | oui (`search` avec `vault: "*"`) |
+| Surface d'outils | Couverture |
+|---|---|
+| Découverte | `list_vaults`, `list_files` |
+| Lectures | `get_file`, `search`, `search_smart`, `get_frontmatter` |
+| Écritures | `write_file`, `append_to_file`, `patch_file`, `delete_file`, `set_frontmatter`, `merge_frontmatter` |
+| Gestion de fichiers | `move_file` |
+| Templater | `execute_template` |
+| Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
-Le router parle aux mêmes endpoints du Local REST API que `mcp-tools` — y compris les routes ajoutées par l'extension API du plugin `mcp-tools` (`/search/smart`, `/templates/execute`). La recherche sémantique et l'exécution Templater fonctionnent donc nativement sans avoir à conserver le MCP `mcp-tools` enregistré en parallèle.
+La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_template`) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart` et `/templates/execute` sur Local REST API. Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
 
 ### Slash commands & skills (plugin Claude Code)
 
@@ -405,7 +403,7 @@ Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par cat
 | Plugin (par vault) | Requis pour | Où l'obtenir |
 |---|---|---|
 | **Local REST API** | Tous les outils | Community plugins → "Local REST API" par Adam Coddington |
-| **MCP Router Bridge** | `search_smart`, `execute_template` | À installer depuis [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — enregistre les routes REST `/search/smart` et `/templates/execute` que ce router appelle. Remplace le plugin `mcp-tools` déprécié de jacksteamdev. |
+| **MCP Router Bridge** | `search_smart`, `execute_template` | À installer depuis [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — enregistre les routes REST `/search/smart` et `/templates/execute` que ce router appelle. |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — moteur d'embeddings |
 | **Templater** | `execute_template` | Community plugins → "Templater" par SilentVoid13 |
 
