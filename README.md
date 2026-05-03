@@ -8,7 +8,7 @@ Instead of registering one MCP per vault (one process, one port, one API key), t
 
 ## Why
 
-The default Obsidian MCP setup ([jacksteamdev/mcp-tools](https://github.com/jacksteamdev/mcp-tools)) binds one MCP server process to one vault via env vars (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). If you have multiple vaults, you need multiple MCP entries — one per scope/project — and you can only ever reach one vault at a time per Claude session.
+The default Obsidian MCP setup ([jacksteamdev/obsidian-mcp-tools](https://github.com/jacksteamdev/obsidian-mcp-tools)) binds one MCP server process to one vault via env vars (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). If you have multiple vaults, you need multiple MCP entries — one per scope/project — and you can only ever reach one vault at a time per Claude session.
 
 This router replaces that with:
 
@@ -18,7 +18,7 @@ This router replaces that with:
 
 ## How it differs from `mcp-tools`
 
-| | jacksteamdev/mcp-tools | obsidian-mcp-router |
+| | jacksteamdev/obsidian-mcp-tools | obsidian-mcp-router |
 |---|---|---|
 | Vaults per MCP process | 1 | N |
 | Setup per vault | new MCP entry per scope | 1 line in config.json |
@@ -356,7 +356,7 @@ Au lieu d'enregistrer un MCP par vault (un process, un port, une clé API), ce r
 
 ### Pourquoi
 
-Le setup MCP Obsidian par défaut ([jacksteamdev/mcp-tools](https://github.com/jacksteamdev/mcp-tools)) verrouille un process MCP sur un vault unique via des variables d'environnement (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). Avec plusieurs vaults, il te faut plusieurs entrées MCP — une par scope/projet — et tu ne peux toucher qu'**un seul** vault à la fois par session Claude.
+Le setup MCP Obsidian par défaut ([jacksteamdev/obsidian-mcp-tools](https://github.com/jacksteamdev/obsidian-mcp-tools)) verrouille un process MCP sur un vault unique via des variables d'environnement (`VAULT_PATH`, `OBSIDIAN_API_KEY`, `OBSIDIAN_BASE_URL`). Avec plusieurs vaults, il te faut plusieurs entrées MCP — une par scope/projet — et tu ne peux toucher qu'**un seul** vault à la fois par session Claude.
 
 Ce router remplace tout ça par :
 
@@ -366,7 +366,7 @@ Ce router remplace tout ça par :
 
 ### Différences avec `mcp-tools`
 
-| | jacksteamdev/mcp-tools | obsidian-mcp-router |
+| | jacksteamdev/obsidian-mcp-tools | obsidian-mcp-router |
 |---|---|---|
 | Vaults par process MCP | 1 | N |
 | Ajout d'un nouveau vault | nouvelle entrée MCP par scope | 1 ligne dans `config.json` |
