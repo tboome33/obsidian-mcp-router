@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/assets/logo.png" alt="obsidian-mcp-router — multi-vault MCP server" width="540">
+</p>
+
 # obsidian-mcp-router
 
 > *🇬🇧 English version below — [🇫🇷 version française](#-version-française)*
@@ -616,6 +620,10 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
 ---
 
 ## 🇫🇷 Version française
+
+<p align="center">
+  <img src="./docs/assets/logo.png" alt="obsidian-mcp-router — serveur MCP multi-vaults" width="540">
+</p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
 
