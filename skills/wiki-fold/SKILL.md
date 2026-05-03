@@ -74,9 +74,10 @@ window: <description>
 entries_covered: <N>
 first_entry: <ISO>
 last_entry: <ISO>
-generated_at: <ISO>
 ---
 ```
+
+**No `generated_at` field** — that's a wall-clock value and would break the byte-equivalence guarantee. The window is fully described by the deterministic fields above; you can always reconstruct *when* the fold was emitted by looking at the `wiki/log.md` entry written in step 7.
 
 Body sections:
 
@@ -108,8 +109,8 @@ Note: the fold itself becomes a log entry, but it doesn't appear inside its own 
 Re-running the same fold (same window definition) produces a byte-equivalent file at the same path. Achieved by:
 - Deterministic window-id from window definition
 - Sorted output sections (sort by count desc, then alphabetically)
-- ISO timestamps (no timezone surprises)
-- Skipping the `generated_at` field's wall-clock time when comparing for "did anything change?"
+- ISO timestamps in `first_entry` / `last_entry` are pulled from the source log entries (not wall-clock)
+- No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki/log.md`, not in the fold itself)
 
 Use `mcp__obsidian-router__write_file` (no `ifNew` flag — idempotent overwrite is fine here, that's the point).
 

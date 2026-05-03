@@ -8,6 +8,6 @@ Default behavior:
 - Read-only: produce the diagnostic report, no mutations.
 - After the report, ask once: "fix the N errors?" — if yes, walk through each ERROR-level finding interactively.
 - Never auto-fix WARNINGS (orphans, missing index entries) — those might be intentional.
-- Always append a log entry summarizing the lint pass.
+- Append a log entry **only** when the user accepted at least one ERROR-level auto-fix. Pure dry-runs leave the wiki untouched (read-only contract).
 
 Output format: severity-grouped tables with paths, descriptions, and proposed fixes. End with the lint summary line.

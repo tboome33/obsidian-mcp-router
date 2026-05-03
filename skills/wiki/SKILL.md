@@ -43,7 +43,17 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    ```
    If it returns 200 → the wiki is already scaffolded. Tell the user, offer to run `wiki-lint` instead. Stop.
 
-3. Create the four scaffolding files using `mcp__obsidian-router__write_file` (use `ifNew: true` so we never clobber):
+3. Create the four scaffolding files using `mcp__obsidian-router__write_file` (use `ifNew: true` so we never clobber).
+
+   The `templates/wiki/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki\`) ships starter content for each scaffolding file. Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
+
+   | Placeholder | Substitute with |
+   |---|---|
+   | `{{TIMESTAMP}}` | Current ISO timestamp (`YYYY-MM-DD HH:MM`) |
+   | `{{VAULT_PATH}}` | The absolute path of the target vault |
+   | `{{MODE}}` | The chosen mode (`personal`, `research`, etc.) — only in `overview.md` if you decide to seed it |
+
+   If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the structure for each file is documented below:
 
    - `wiki/index.md` — catalog of all wiki pages, organized by domain. Initial structure must include sections matching the chosen mode. Include a one-line invariant at the top: "This file is the catalog of the wiki. Add a row for every new page filed under wiki/."
 

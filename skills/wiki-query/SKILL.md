@@ -1,6 +1,6 @@
 ---
 name: wiki-query
-description: Answer a question using the wiki vault as the knowledge base. Reads hot.md first (cheap recent context), then index.md to navigate, then drills into specific pages and synthesizes an answer with citations. Optionally files a good answer back as a new wiki page so future queries get a faster path. Use this skill when the user asks "what do you know about X", "based on my wiki, ...", "explain X using my notes", "search the wiki for X", "/wiki-query", or any question that should be grounded in their personal knowledge base instead of the model's general knowledge.
+description: Answer a question using ONLY the existing wiki vault as the knowledge base — no web search, no general LLM knowledge. Reads hot.md first (cheap recent context), then index.md to navigate, then drills into specific pages, then optionally semantic-searches the wiki, and synthesizes an answer with citations. Use when the user asks "what do you know about X", "based on my wiki, ...", "explain X using my notes", "search the wiki for X", "from my notes, ...", "/wiki-query". Do NOT use when the user wants new information from the web — that's `autoresearch`.
 ---
 
 # wiki-query
@@ -20,7 +20,9 @@ The user may signal a preferred mode:
 - **standard** (default) — hot → index → 1-3 specific pages → synthesize.
 - **deep** — hot → index → semantic search across the wiki → 5-10 pages → synthesize → file the answer back as a new wiki page.
 
-If the user didn't say, infer: short factual question = quick; "explain X" = standard; "give me everything you know about X" or "research X" = deep.
+If the user didn't say, infer: short factual question = quick; "explain X" = standard; "give me everything you know about X (from my wiki)" = deep.
+
+**Disambiguation note**: "research X" is ambiguous — it could mean either (a) "tell me what my wiki has about X" (deep wiki-query) or (b) "go find new information about X on the web" (autoresearch). When the user says "research X" alone, ASK which they mean. Don't guess.
 
 ## Steps
 

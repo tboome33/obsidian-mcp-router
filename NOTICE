@@ -39,9 +39,10 @@ pattern proposed by Andrej Karpathy in a public gist:
 
 The pattern itself — LLM as continuous wiki maintainer over structured
 markdown files (catalog index, append-only log, recent-context cache,
-overview) — is an architectural idea and not subject to copyright. The
+overview) — is an architectural idea documented publicly. The
 implementation in this repo is original to obsidian-mcp-router, written
-against the router's MCP tool surface.
+against the router's MCP tool surface; no source code was reused from
+any prior implementation.
 
 A prior independent implementation of the same pattern exists at
 https://github.com/AgriciDaniel/claude-obsidian (MIT-licensed).

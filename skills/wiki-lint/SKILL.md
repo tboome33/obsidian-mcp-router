@@ -17,7 +17,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 ### 1. Inventory the wiki
 
 ```
-mcp__obsidian-router__list_files({ vault, path: "wiki" })
+mcp__obsidian-router__list_files({ vault, directory: "wiki" })
 ```
 
 Build a flat set of every page path under `wiki/`. Read `wiki/index.md` and parse the catalog into a separate set.
@@ -73,12 +73,17 @@ For WARNING-level findings, do NOT offer auto-fix. The orphan might be intention
 
 The user must explicitly say "fix the errors" or "yes fix dead links" before any mutation.
 
-### 5. Append to log.md
+### 5. Append to log.md (only when mutations happened)
 
-Whether or not anything was fixed, append:
+This skill is **read-only by default**. A pure dry-run does NOT touch `log.md` — that would be a hidden mutation contradicting the read-only contract.
+
+Append a log entry **only** if the user accepted at least one ERROR-level auto-fix in step 4:
+
 ```
-- YYYY-MM-DD HH:MM — lint — N error / M warning / K info — <user accepted N fixes | dry-run only>
+- YYYY-MM-DD HH:MM — lint — accepted N fix(es) — <comma-separated list of fixed paths>
 ```
+
+For dry-runs, surface the report in your reply and stop. The user can re-run later to capture the fix history if they want.
 
 ## Anti-patterns
 

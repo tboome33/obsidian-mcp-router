@@ -1,6 +1,6 @@
 ---
 name: autoresearch
-description: Run an autonomous research loop on a topic. Reads the user's `program.md` if present (objectives + constraints), then iterates web-search → fetch → synthesize → file as wiki pages until depth is reached. Each iteration narrows the gap between what's known (in the wiki) and what's still missing. Use when the user says "research X", "deep dive into X", "investigate X", "find everything about X", "/autoresearch", "build a wiki on X", "go research", or expresses intent for autonomous web-fed knowledge accumulation.
+description: Run an autonomous WEB-fed research loop on a topic. Iterates web-search → fetch → synthesize → file as wiki pages until depth is reached. Each iteration narrows the gap between what's known (in the wiki) and what's still missing. Use when the user explicitly says "research X on the web", "go research X", "deep dive online into X", "find new info about X", "build a wiki on X", "/autoresearch", or any phrasing that implies fetching NEW information from the internet. Do NOT use when the user wants answers from the existing wiki only — that's `wiki-query`. If "research X" is ambiguous, ask which is intended before kicking off the loop (it costs real tokens).
 ---
 
 # autoresearch

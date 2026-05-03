@@ -21,18 +21,32 @@ const wikiDir = path.join(cwd, 'wiki');
 
 if (!fs.existsSync(gitDir) || !fs.existsSync(wikiDir)) process.exit(0);
 
-const diff = spawnSync(
+// Detect wiki/ activity in BOTH the working tree (uncommitted) AND in
+// recent commits — the PostToolUse autocommit hook may have already
+// committed mid-session, so checking the working tree alone misses
+// everything once autocommit fires. We union both sources.
+const diffTree = spawnSync(
   'git',
   ['diff', '--name-only', 'HEAD', '--', 'wiki/'],
   { cwd, encoding: 'utf8', stdio: 'pipe' },
 );
+const recentCommits = spawnSync(
+  'git',
+  ['log', '--since=15 minutes ago', '--name-only', '--pretty=format:', '--', 'wiki/'],
+  { cwd, encoding: 'utf8', stdio: 'pipe' },
+);
 
-if (diff.status !== 0) process.exit(0);
+if (diffTree.status !== 0 && recentCommits.status !== 0) process.exit(0);
 
-const changed = (diff.stdout || '')
-  .split('\n')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const changedSet = new Set();
+for (const out of [diffTree.stdout, recentCommits.stdout]) {
+  if (!out) continue;
+  for (const line of out.split('\n')) {
+    const path = line.trim();
+    if (path) changedSet.add(path);
+  }
+}
+const changed = [...changedSet];
 
 if (changed.length === 0) process.exit(0);
 

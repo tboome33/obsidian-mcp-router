@@ -1,5 +1,5 @@
 ---
-description: Create or modify Obsidian canvas (.canvas) files — the visual layout layer for wiki pages, images, PDFs, and free-form text cards. Supports add-text, add-file, add-link, add-zone, add-to-zone, list, and capture-recent-images-from-banana. Auto-positions new nodes so you don't have to hand-place them.
+description: Create or modify Obsidian canvas (.canvas) files — the visual layout layer for wiki pages, images, PDFs, and free-form text cards. Supports add-text, add-file, add-link, add-zone, add-to-zone, list, and capture-recent-images. Auto-positions new nodes so you don't have to hand-place them.
 ---
 
 Invoke the `canvas` skill.
