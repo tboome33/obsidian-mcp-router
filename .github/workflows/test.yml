@@ -1,0 +1,51 @@
+# Run the test suite on every push to main and on every PR.
+# Tests are pure Node (no external services) — should pass anywhere
+# Node 20.18.1+ is available.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Avoid wasting CI minutes on doc-only edits.
+# Anything in src/, tests/, scripts/, bin/, package*.json, or the
+# workflow file itself triggers a run; pure README / docs / ROADMAP
+# changes are skipped.
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover the published engines.node range and one extra LTS.
+        # Windows + Linux because the project has Windows-specific path
+        # logic (case-insensitive samePath, UNC, etc.) that should be
+        # exercised on actual Windows runners.
+        os: [ubuntu-latest, windows-latest]
+        node: ['20.18.1', '22']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test

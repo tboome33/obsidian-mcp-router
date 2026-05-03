@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Quick reference (PDF, 5 pages)
+    url: https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/quick-reference-en.pdf
+    about: Router overview, vault setup, every slash command with NL trigger phrases. Read this first.
+  - name: Auto-enrichment placement guide
+    url: https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/auto-enrichment.md
+    about: Where to place the auto-enrichment consigne (vault, Project, Memory, global) and which mode fits which use case.
+  - name: Companion bridge plugin
+    url: https://github.com/tboome33/obsidian-mcp-router-bridge
+    about: Issues with semantic search or Templater execution? Probably belong in the bridge plugin repo.
