@@ -287,7 +287,16 @@ function appendGitignore(vaultPath) {
 
 // Files OR directories at the root of the reference vault to clone to new vaults.
 // Auto-skipped if already present in target (preserves user customizations) unless --force.
-const ROOT_FILES_TO_CLONE = ['README.md'];
+//
+// `quick-reference-{fr,en}.pdf` are the printable cheat sheets (router overview
+// + setup + every slash command with NL trigger phrases) — generated from the
+// HTML sources in `obsidian-mcp-router/docs/` and committed to `.template/` so
+// every bootstrapped vault inherits them. Update via:
+//   1. Edit docs/quick-reference-{fr,en}.html in the obsidian-mcp-router repo
+//   2. Re-render PDFs via Chrome headless (--print-to-pdf=...)
+//   3. Copy PDFs to `.template/`
+//   4. `npm run setup-vault -- <existing-vault> --sync-plugins --force` to push update.
+const ROOT_FILES_TO_CLONE = ['README.md', 'quick-reference-fr.pdf', 'quick-reference-en.pdf'];
 
 function cloneRootDocs(referenceVault, targetVault, force) {
   for (const item of ROOT_FILES_TO_CLONE) {
