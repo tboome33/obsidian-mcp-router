@@ -43,9 +43,17 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    ```
    If it returns 200 → the wiki is already scaffolded. Tell the user, offer to run `wiki-lint` instead. Stop.
 
-3. Create the four scaffolding files using `mcp__obsidian-router__write_file` (use `ifNew: true` so we never clobber).
+3. **Create the four scaffolding files in the `wiki/` subdirectory of the vault** (NOT at the vault root — the wiki must live under `wiki/`). Use `mcp__obsidian-router__write_file` with `ifNew: true` so we never clobber.
 
-   The `templates/wiki/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki\`) ships starter content for each scaffolding file. Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
+   ⚠️ **Path discipline (do not deviate)**: every `path` argument to `write_file` MUST start with `wiki/`. The four files are:
+   - `wiki/index.md`
+   - `wiki/log.md`
+   - `wiki/hot.md`
+   - `wiki/overview.md`
+
+   If you write `index.md`, `log.md`, etc. at the vault root, the wiki workflow breaks: the `wiki-query` skill won't find them (it looks under `wiki/`), the `wiki-lint` skill will mark them as orphans, and `wiki-fold` won't see the log. The whole stack assumes the `wiki/` prefix.
+
+   The `templates/wiki/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki\`) ships starter content. Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
 
    | Placeholder | Substitute with |
    |---|---|
@@ -53,7 +61,7 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    | `{{VAULT_PATH}}` | The absolute path of the target vault |
    | `{{MODE}}` | The chosen mode (`personal`, `research`, etc.) — only in `overview.md` if you decide to seed it |
 
-   If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the structure for each file is documented below:
+   If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the contract for each file (still under `wiki/`) is:
 
    - `wiki/index.md` — catalog of all wiki pages, organized by domain. Initial structure must include sections matching the chosen mode. Include a one-line invariant at the top: "This file is the catalog of the wiki. Add a row for every new page filed under wiki/."
 
@@ -62,6 +70,8 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    - `wiki/hot.md` — recent-context cache (≤500 words). What's been recently touched, key facts, active threads. Empty placeholder at scaffold time with structure: `## Last Updated`, `## Key Recent Facts`, `## Recent Changes`, `## Active Threads`.
 
    - `wiki/overview.md` — executive summary of the wiki's domain. 100-300 words written by you based on what the user said about the mode/domain. If the user gave no detail, leave a stub: "_Update me with a one-paragraph summary of what this wiki covers._"
+
+   Verify after writing: call `mcp__obsidian-router__list_files({ vault, directory: "wiki" })` and confirm all four files appear. If they ended up at vault root by mistake, use `move_file` to relocate each to `wiki/<name>.md` before continuing to step 4.
 
 4. Append a `CLAUDE.md` block at the vault root (or create the file if absent). The block tells Claude how to navigate the wiki:
    ```
