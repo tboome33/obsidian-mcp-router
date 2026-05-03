@@ -110,19 +110,29 @@ export async function loadRegistry({ configPath } = {}) {
     });
   }
 
-  // --- 3. Defaults ---
-  // Honor config.defaultVault only if it's still in the active set —
-  // otherwise the user disables a vault and every tool call that omits the
-  // `vault` argument fails with "Unknown vault". Fall back to the first
-  // healthy local vault, then to the first active vault of any type.
+  // --- 3. Default vault — 5-tier resolution cascade ---
+  //
+  // Priority (highest first):
+  //   1. OBSIDIAN_ROUTER_DEFAULT_VAULT env var — explicit per-process override.
+  //      Most useful in a project's .env when the auto-detection (step 2) picks
+  //      the wrong vault, or when the project isn't a vault directory.
+  //   2. VAULT_PATH env var — auto-detection from the project's .env.
+  //      `setup-vault.mjs` writes this into every bootstrapped vault, so opening
+  //      Claude Code in a vault directory "just works" with that vault as default.
+  //   3. config.defaultVault — explicit global default in
+  //      ~/.claude/obsidian-mcp-router/config.json.
+  //   4. First healthy local vault — historical fallback.
+  //   5. First active vault of any type — last resort.
+  //
+  // At each step we only honor a candidate if it's actually in the active
+  // `vaults[]` set (i.e., not disabled and not removed since the override
+  // was written). Local vaults with `missingApiKey: true` ARE eligible for
+  // tiers 1, 2, 3 — the user explicitly named/configured them, so respect
+  // that choice and let resolveVault() raise a clear error at tool-call
+  // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
+  // so a router with no explicit configuration prefers a healthy vault.
   const configuredDefault = config.defaultVault;
-  const isConfiguredDefaultActive =
-    configuredDefault && vaults.some((v) => v.name === configuredDefault);
-
-  const defaultVault =
-    (isConfiguredDefaultActive && configuredDefault) ||
-    vaults.find((v) => v.type === 'local' && !v.missingApiKey)?.name ||
-    vaults[0]?.name;
+  const defaultVault = resolveDefaultVault({ vaults, configuredDefault });
 
   return {
     configPath: cfgPath,
@@ -157,6 +167,89 @@ function defaultNameFromPath(p) {
 }
 
 /**
+ * Normalize a path for equality comparison, robust across OSes.
+ *
+ * Windows paths are normalized via `path.win32` and lowercased
+ * (NTFS / SMB are case-insensitive). POSIX paths are normalized via
+ * `path.posix` and case is preserved (POSIX file systems are
+ * case-sensitive).
+ *
+ * Windows-style paths recognized:
+ *   - Drive-letter:           `C:\VAULTS\X`, `C:/VAULTS/X`
+ *   - UNC (network share):    `\\server\share\Vault`
+ *   - Extended-length prefix: `\\?\C:\path`, `\\?\UNC\server\share\path`
+ *
+ * Detection is structural — it works correctly even when running under
+ * WSL/Linux but the portRegistry contains Windows paths (or vice versa).
+ */
+function normalizePathForCompare(p) {
+  if (!p) return p;
+  const isDriveLetter = /^[A-Za-z]:[\\/]/.test(p);
+  const isUNC = /^\\\\/.test(p); // `\\server\share\...` or `\\?\...`
+  const isWindowsStyle = isDriveLetter || isUNC;
+  const lib = isWindowsStyle ? path.win32 : path.posix;
+  let n = lib.normalize(p);
+  // Strip a trailing separator except for the root marker itself. For UNC
+  // the "root" is `\\server\share`, longer than 3 chars, so the >3 guard is
+  // safe but a UNC of just `\\s\s` (5 chars) would still be trimmed past
+  // the separator — acceptable since we only use this for vault paths,
+  // which are always deeper than the share root.
+  const sep = isWindowsStyle ? '\\' : '/';
+  while (n.length > 3 && (n.endsWith(sep) || n.endsWith('/'))) {
+    n = n.slice(0, -1);
+  }
+  if (isWindowsStyle) n = n.toLowerCase();
+  return n;
+}
+
+/**
+ * Five-tier default-vault resolution. See the call site in loadRegistry() for
+ * the full priority order. This function only returns a name that is in the
+ * active vaults[] set — disabled or missing-key candidates fall through.
+ *
+ * Logs a one-line warning to stderr if `OBSIDIAN_ROUTER_DEFAULT_VAULT` is
+ * set to a name that doesn't match any active vault, so the user notices
+ * their override didn't take effect (typical cause: typo or a vault that
+ * was disabled/removed since the override was written).
+ */
+function resolveDefaultVault({ vaults, configuredDefault }) {
+  const isActive = (name) => name && vaults.some((v) => v.name === name);
+
+  // 1. Explicit per-process override
+  const envOverride = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+  if (envOverride) {
+    if (isActive(envOverride)) return envOverride;
+    console.error(
+      `[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="${envOverride}" does not match any active vault — ` +
+        `falling through to other resolution tiers. Active vaults: ` +
+        (vaults.map((v) => v.name).join(', ') || '(none)') + '.',
+    );
+  }
+
+  // 2. VAULT_PATH auto-detection (matches a portRegistry path → vault name)
+  const cwdVaultPath = process.env.VAULT_PATH;
+  if (cwdVaultPath) {
+    const target = normalizePathForCompare(cwdVaultPath);
+    const matched = vaults.find(
+      (v) => v.type === 'local' && v.path && normalizePathForCompare(v.path) === target,
+    );
+    if (matched) return matched.name;
+    // Don't warn — VAULT_PATH might be set by other tools for other purposes;
+    // a non-match here is not necessarily a router config error.
+  }
+
+  // 3. Global default from config file
+  if (isActive(configuredDefault)) return configuredDefault;
+
+  // 4. First healthy local vault
+  const healthyLocal = vaults.find((v) => v.type === 'local' && !v.missingApiKey);
+  if (healthyLocal) return healthyLocal.name;
+
+  // 5. First active vault of any type — last resort
+  return vaults[0]?.name;
+}
+
+/**
  * Returns a shallow copy of a remoteVault entry with sensitive fields
  * (apiKey, extraHeaders.*) replaced by "<redacted>". Used before logging
  * malformed entries — never write a user's API key or Cloudflare Access
@@ -186,3 +279,12 @@ async function readLocalApiKey(vaultPath) {
   const data = JSON.parse(raw);
   return data.apiKey || null;
 }
+
+// Exposed for tests only — not part of the public API. Consumers should
+// only use the named exports above (loadRegistry, resolveConfigPath).
+export const _internals = {
+  resolveDefaultVault,
+  normalizePathForCompare,
+  defaultNameFromPath,
+  redactSecrets,
+};

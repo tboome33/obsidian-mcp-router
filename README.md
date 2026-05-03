@@ -180,6 +180,83 @@ To hide a vault from `list_vaults` without removing it from the config, either:
 
 Disabled vaults appear in the boot log as `(N disabled: ...)` for visibility, but they don't show up in `list_vaults` and aren't pingable.
 
+### Default vault resolution
+
+When a tool call omits the `vault` argument (e.g., `read-search "trading risk"`), the router has to pick one. **The same call can resolve to different vaults depending on which workspace you launch Claude from.**
+
+Resolution cascade, highest priority first:
+
+1. **`OBSIDIAN_ROUTER_DEFAULT_VAULT` env var** — explicit per-process override. Set this in your project's `.env` to force a specific default regardless of cwd.
+2. **`VAULT_PATH` env var** — auto-detection. If `VAULT_PATH` matches a path registered in your `portRegistry`, that vault becomes the default. `setup-vault.mjs` writes this into every bootstrapped vault's `.env`, so opening Claude Code in a vault directory "just works" with that vault as default.
+3. **`config.defaultVault`** — explicit global default in `~/.claude/obsidian-mcp-router/config.json`.
+4. **First healthy local vault** — historical fallback.
+5. **First active vault of any type** — last resort.
+
+The router auto-loads `.env` from the cwd at startup, so steps 1 and 2 work without any other tooling. Existing env vars in the parent process win over `.env`.
+
+#### Three concrete cases
+
+**Case 1 — your project IS a vault (the common case).**
+
+```
+cd C:\VAULTS\TradingView\
+claude
+```
+
+`.env` (written by `setup-vault.mjs` when you bootstrapped the vault) contains:
+
+```
+VAULT_PATH=C:\VAULTS\TradingView
+OBSIDIAN_API_KEY=...
+OBSIDIAN_BASE_URL=https://127.0.0.1:27125
+```
+
+Auto-detection (step 2) matches `VAULT_PATH` against your `portRegistry` → default = `tradingview`. **No config needed.** Tools that omit `vault` operate on `tradingview`.
+
+**Case 2 — your project is NOT a vault, but works with one.**
+
+```
+cd C:\Code\my-app\
+claude
+```
+
+This isn't a vault directory, so `VAULT_PATH` isn't set. Without intervention, the router falls back to `config.defaultVault` (probably `tradingview`). If you want this project to default to a different vault — say `recherche` for note-taking — add to `C:\Code\my-app\.env`:
+
+```
+OBSIDIAN_ROUTER_DEFAULT_VAULT=recherche
+```
+
+Step 1 wins → default = `recherche` for this project only.
+
+**Case 3 — your project IS a vault, but you want a different default.**
+
+You opened Claude Code in `C:\VAULTS\.template\` because you're documenting it, but you want vault tool calls without explicit `vault=` to operate on `tradingview` instead of `template`. Add to `C:\VAULTS\.template\.env`:
+
+```
+OBSIDIAN_ROUTER_DEFAULT_VAULT=tradingview
+```
+
+Step 1 overrides the auto-detection of step 2.
+
+#### Verifying which default the router picked
+
+Call `list_vaults` — the result has a `defaultVault` field showing which name resolved.
+
+```bash
+# from any project, in Claude Code:
+"list my vaults"
+```
+
+If the `defaultVault` is wrong for what you expected, check (in order): your project's `.env`, the parent process's env, and `~/.claude/obsidian-mcp-router/config.json`'s `defaultVault` field.
+
+#### Override didn't take effect?
+
+If you set `OBSIDIAN_ROUTER_DEFAULT_VAULT="something"` and the router can't find that name in the active set (typo, vault disabled, vault removed), the cascade falls through to step 2/3/4/5 AND emits a one-line warning to stderr:
+
+```
+[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="recherchee" does not match any active vault — falling through to other resolution tiers. Active vaults: template, tradingview.
+```
+
 ## Config
 
 The router reads the existing config maintained by [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), and adds three optional fields on top:
@@ -554,6 +631,83 @@ Pour cacher un vault de `list_vaults` sans le retirer de la config, deux options
 ```
 
 Les vaults désactivés apparaissent dans le log de démarrage `(N disabled: ...)` pour visibilité, mais n'apparaissent pas dans `list_vaults` et ne sont pas pingés.
+
+### Résolution du vault par défaut
+
+Quand un appel d'outil omet l'argument `vault` (ex: `read-search "gestion du risque"`), le router doit en choisir un. **Le même appel peut résoudre vers des vaults différents selon le dossier depuis lequel tu lances Claude.**
+
+Cascade de résolution, par ordre de priorité décroissant :
+
+1. **Variable d'env `OBSIDIAN_ROUTER_DEFAULT_VAULT`** — override explicite par process. À mettre dans le `.env` de ton projet pour forcer un default spécifique indépendamment du cwd.
+2. **Variable d'env `VAULT_PATH`** — auto-détection. Si `VAULT_PATH` correspond à un chemin enregistré dans `portRegistry`, ce vault devient le default. `setup-vault.mjs` écrit cette variable dans le `.env` de chaque vault qu'il bootstrap, donc lancer Claude Code dans le dossier d'un vault « ça marche tout seul » avec ce vault en default.
+3. **`config.defaultVault`** — default global explicite dans `~/.claude/obsidian-mcp-router/config.json`.
+4. **Premier vault local en bonne santé** — fallback historique.
+5. **Premier vault actif quel que soit le type** — dernier recours.
+
+Le router charge automatiquement le `.env` du cwd au démarrage, donc les étapes 1 et 2 fonctionnent sans outillage supplémentaire. Les variables d'env déjà présentes dans le process parent gagnent sur le `.env`.
+
+#### Trois cas concrets
+
+**Cas 1 — ton projet EST un vault (le cas le plus commun).**
+
+```
+cd C:\VAULTS\TradingView\
+claude
+```
+
+Le `.env` (écrit par `setup-vault.mjs` lors du bootstrap) contient :
+
+```
+VAULT_PATH=C:\VAULTS\TradingView
+OBSIDIAN_API_KEY=...
+OBSIDIAN_BASE_URL=https://127.0.0.1:27125
+```
+
+L'auto-détection (étape 2) matche `VAULT_PATH` contre ton `portRegistry` → default = `tradingview`. **Aucune config nécessaire.** Les outils qui omettent `vault` opèrent sur `tradingview`.
+
+**Cas 2 — ton projet n'est PAS un vault, mais il bosse avec un.**
+
+```
+cd C:\Code\mon-app\
+claude
+```
+
+Ce dossier n'est pas un vault, donc `VAULT_PATH` n'est pas défini. Sans intervention, le router retombe sur `config.defaultVault` (probablement `tradingview`). Si tu veux que ce projet utilise un autre vault par défaut — disons `recherche` pour la prise de notes — ajoute dans `C:\Code\mon-app\.env` :
+
+```
+OBSIDIAN_ROUTER_DEFAULT_VAULT=recherche
+```
+
+L'étape 1 gagne → default = `recherche` pour ce projet uniquement.
+
+**Cas 3 — ton projet EST un vault, mais tu veux un autre default.**
+
+Tu as ouvert Claude Code dans `C:\VAULTS\.template\` parce que tu documentes ce vault, mais tu veux que les appels d'outils sans `vault=` explicite tapent sur `tradingview` plutôt que `template`. Ajoute dans `C:\VAULTS\.template\.env` :
+
+```
+OBSIDIAN_ROUTER_DEFAULT_VAULT=tradingview
+```
+
+L'étape 1 override l'auto-détection de l'étape 2.
+
+#### Vérifier quel default le router a choisi
+
+Appelle `list_vaults` — le résultat a un champ `defaultVault` qui indique le nom résolu.
+
+```bash
+# depuis n'importe quel projet dans Claude Code :
+"liste mes vaults"
+```
+
+Si le `defaultVault` n'est pas celui que tu attendais, vérifie dans l'ordre : le `.env` de ton projet, les variables d'env du process parent, et le champ `defaultVault` dans `~/.claude/obsidian-mcp-router/config.json`.
+
+#### Override qui n'a pas pris ?
+
+Si tu mets `OBSIDIAN_ROUTER_DEFAULT_VAULT="quelque-chose"` et que le router ne trouve pas ce nom dans l'ensemble actif (faute de frappe, vault désactivé, vault supprimé), la cascade retombe sur les étapes 2/3/4/5 ET écrit un avertissement d'une ligne sur stderr :
+
+```
+[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="recherchee" does not match any active vault — falling through to other resolution tiers. Active vaults: template, tradingview.
+```
 
 ### Config
 

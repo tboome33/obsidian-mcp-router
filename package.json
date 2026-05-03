@@ -1,6 +1,6 @@
 {
   "name": "obsidian-mcp-router",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "MCP server that routes tool calls to multiple Obsidian vaults (local or remote) over the Local REST API plugin.",
   "type": "module",
   "main": "src/index.mjs",
@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "start": "node bin/obsidian-mcp-router.mjs",
-    "test": "echo \"No tests yet — see ROADMAP.md\" && exit 0",
+    "test": "node --test tests/*.test.mjs",
     "setup-vault": "node scripts/setup-vault.mjs",
     "status": "node scripts/setup-vault.mjs --status"
   },
