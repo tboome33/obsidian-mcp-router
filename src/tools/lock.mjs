@@ -4,8 +4,8 @@
  * "Lock mode" restricts the router to a single vault for the duration of
  * a session. Useful when you want to:
  *   - Prevent accidental writes to the wrong vault (safety)
- *   - Route a shared Claude install per-user (Roland's session locks
- *     to "roland", Nicolas's locks to "nicolas")
+ *   - Route a shared Claude install per-user (Donald's session locks
+ *     to "donald", Mitch's locks to "mitch")
  *   - Focus a long session on one vault and reject cross-vault drift
  *
  * Lock state is stored as `registry.lockedVault` (mutated in-place by
@@ -69,7 +69,7 @@ export async function lockVault(registry, args = {}) {
     // project directory.
     //
     // Case-folding caveat: Windows paths are case-insensitive (NTFS),
-    // so `C:\Users\Roland` and `C:\Users\roland` resolve to the same
+    // so `C:\Users\Donald` and `C:\Users\donald` resolve to the same
     // directory. We normalize case on Windows before comparison so a
     // mixed-case cwd doesn't bypass the refusal.
     const samePath = (a, b) => {

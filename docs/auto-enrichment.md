@@ -12,7 +12,7 @@ This file answers a different question: **where do you place the consigne so Cla
 |---|---|---|---|
 | Claude Code (workspace IS a vault) | Vault root `CLAUDE.md` | Per-vault, in the vault itself | The default — auto-loaded when you `cd` into the vault |
 | Claude Desktop / Claude.ai (Project mode) | Project instructions | Per-project, cloud-synced | A workspace dedicated to a vault (e.g. "Trading Journal" → vault `tradingview`) |
-| Claude Desktop / Claude.ai (chat free mode) | Memory | Cloud-synced, regenerated nightly | Identity-based routing ("I'm Roland" → vault `roland`) |
+| Claude Desktop / Claude.ai (chat free mode) | Memory | Cloud-synced, regenerated nightly | Identity-based routing ("I'm Donald" → vault `donald`) |
 | Any Claude Code session | `~/.claude/CLAUDE.md` (global) | Local to your machine | Power users who want the consigne everywhere |
 
 You can combine multiple channels — they don't conflict. Claude reads ALL the consignes loaded in its context and applies the activation rules.
@@ -31,7 +31,7 @@ You can combine multiple channels — they don't conflict. Claude reads ALL the 
 
 **When it applies**: any conversation started inside a Claude Project. Projects on Claude.ai (also surfaced in Claude Desktop) have their own custom instructions block, persisted server-side and shared by every chat in that project.
 
-**Why this is elegant**: a Project is *already* the natural unit for "a domain that maps to a vault" — your "Trading Journal" project always saves to `tradingview`, your "Family Planning" project always saves to `roland`. Binding the vault at the Project level makes every conversation inside it auto-tracked, no slash command, no explicit opt-in.
+**Why this is elegant**: a Project is *already* the natural unit for "a domain that maps to a vault" — your "Trading Journal" project always saves to `tradingview`, your "Personal" project always saves to `personal`. Binding the vault at the Project level makes every conversation inside it auto-tracked, no slash command, no explicit opt-in.
 
 **Setup**:
 
@@ -59,7 +59,7 @@ From the next conversation in this Project, Claude reads the rules from the vaul
 
 ## Channel 3 — Memory (Claude Desktop, identity-based routing)
 
-**When it applies**: free chat in Claude Desktop / Claude.ai (no Project), where the user's identity routes to a vault. Useful for shared installs ("Roland's household shares a Claude account" — Memory asks who's speaking, then proposes tracking).
+**When it applies**: free chat in Claude Desktop / Claude.ai (no Project), where the user's identity routes to a vault. Useful for shared installs (a small team or household sharing one Claude account — Memory asks who's speaking, then proposes tracking).
 
 **How it works**: Claude's Memory feature persists facts across conversations and regenerates a summary nightly. You add an instruction to Memory that says "when user identifies as X, propose tracking in vault `x`".
 
@@ -68,7 +68,7 @@ From the next conversation in this Project, Claude reads the rules from the vaul
 1. Open **Settings → Capacités → Mémoire → Afficher et gérer la mémoire** in Claude Desktop.
 2. (Optional but recommended) In a regular chat, tell Claude explicitly:
 
-   > *"To remember: at the start of each new conversation, ask which family member is using the account (Roland, Karine, Maxence, Nicolas, Amélie). Once identified, if the user has a vault by their name (e.g., Roland → vault `roland`), propose to enable wiki tracking for the session via the obsidian-router MCP. Apply the auto-enrichment consigne from the vault's CLAUDE.md."*
+   > *"To remember: at the start of each new conversation, ask which user is on the account (e.g. Donald, Mitch, Bernie, Joe, Mitt). Once identified, if the user has a vault by their name (e.g., Donald → vault `donald`), propose to enable wiki tracking for the session via the obsidian-router MCP. Apply the auto-enrichment consigne from the vault's CLAUDE.md."*
 
 3. Verify a few hours later that this instruction appears in **Afficher et gérer la mémoire** (it's regenerated nightly — give it a day).
 4. To prevent drift, re-state the instruction every 2-3 months in any conversation. Claude will keep it pinned in the next regeneration.
@@ -97,12 +97,12 @@ Apply the consigne below ONLY when:
 
 ## Combining channels
 
-The four channels are additive, not exclusive. A typical "all-in" Roland setup:
+The four channels are additive, not exclusive. A typical "all-in" multi-vault setup:
 
-- **Vault `roland`'s `CLAUDE.md`** → consigne loaded when working from a Roland-vault workspace in Claude Code
+- **Vault `personal`'s `CLAUDE.md`** → consigne loaded when working from a personal-vault workspace in Claude Code
 - **Project "Trading Journal"** instructions → bound to vault `tradingview` for Claude Desktop trading conversations
-- **Project "Family"** instructions → bound to vault `roland` for personal/family Claude Desktop conversations
-- **Memory** → asks "which family member?" and proposes vault matching at chat start, when no Project is active
+- **Project "Personal"** instructions → bound to vault `personal` for personal Claude Desktop conversations
+- **Memory** → asks "which user?" and proposes vault matching at chat start, when no Project is active (useful when several people share the Claude account)
 
 Each channel handles a different surface; they compose cleanly because the consigne self-gates on "is a vault bound?" — only one channel's binding fires at a time, depending on context.
 
@@ -196,7 +196,7 @@ Ce fichier répond à une autre question : **où placer la consigne pour que Cla
 |---|---|---|---|
 | Claude Code (workspace = vault) | `CLAUDE.md` racine du vault | Per-vault, dans le vault | Le défaut — auto-chargé quand tu `cd` dans le vault |
 | Claude Desktop / Claude.ai (mode Project) | Instructions du Project | Per-projet, sync cloud | Un workspace dédié à un vault (ex : "Journal Trading" → vault `tradingview`) |
-| Claude Desktop / Claude.ai (chat libre) | Memory | Sync cloud, régénérée chaque nuit | Routing par identité ("c'est Roland" → vault `roland`) |
+| Claude Desktop / Claude.ai (chat libre) | Memory | Sync cloud, régénérée chaque nuit | Routing par identité ("c'est Donald" → vault `donald`) |
 | N'importe quelle session Claude Code | `~/.claude/CLAUDE.md` (global) | Local à ta machine | Pour ceux qui veulent la consigne partout |
 
 Tu peux combiner plusieurs canaux — ils ne se contredisent pas. Claude lit toutes les consignes chargées dans son contexte et applique les règles d'activation.
@@ -215,7 +215,7 @@ Tu peux combiner plusieurs canaux — ils ne se contredisent pas. Claude lit tou
 
 **Quand ça s'applique** : toute conversation démarrée dans un Project Claude. Les Projects sur Claude.ai (et dans Claude Desktop) ont leur propre bloc d'instructions custom, persisté côté serveur et partagé par chaque chat dans ce Project.
 
-**Pourquoi c'est élégant** : un Project EST déjà l'unité naturelle pour "un domaine qui mappe à un vault" — ton Project "Journal Trading" sauve toujours dans `tradingview`, ton Project "Famille" sauve toujours dans `roland`. Binder le vault au niveau du Project rend chaque conversation à l'intérieur auto-trackée, sans slash command, sans opt-in explicite.
+**Pourquoi c'est élégant** : un Project EST déjà l'unité naturelle pour "un domaine qui mappe à un vault" — ton Project "Journal Trading" sauve toujours dans `tradingview`, ton Project "Personnel" sauve toujours dans `personal`. Binder le vault au niveau du Project rend chaque conversation à l'intérieur auto-trackée, sans slash command, sans opt-in explicite.
 
 **Setup** :
 
@@ -243,7 +243,7 @@ Activation :
 
 ### Canal 3 — Memory (Claude Desktop, routing par identité)
 
-**Quand ça s'applique** : chat libre dans Claude Desktop / Claude.ai (pas de Project), où l'identité de l'utilisateur route vers un vault. Utile pour les installs partagées ("le foyer de Roland partage un compte Claude" — Memory demande qui parle, puis propose le tracking).
+**Quand ça s'applique** : chat libre dans Claude Desktop / Claude.ai (pas de Project), où l'identité de l'utilisateur route vers un vault. Utile pour les installs partagées (une petite équipe ou un foyer partagent un compte Claude — Memory demande qui parle, puis propose le tracking).
 
 **Comment ça marche** : la feature Memory de Claude persiste des faits entre conversations et régénère un résumé chaque nuit. Tu ajoutes une instruction à la Memory qui dit "quand l'utilisateur s'identifie comme X, propose le tracking dans le vault `x`".
 
@@ -252,7 +252,7 @@ Activation :
 1. Ouvre **Paramètres → Capacités → Mémoire → Afficher et gérer la mémoire** dans Claude Desktop.
 2. (Optionnel mais recommandé) Dans un chat normal, dis explicitement à Claude :
 
-   > *"À retenir : au début de chaque nouvelle conversation, demande quel membre de la famille utilise le compte (Roland, Karine, Maxence, Nicolas, Amélie). Une fois identifié, si l'utilisateur a un vault à son nom (ex : Roland → vault `roland`), propose-lui d'activer le tracking wiki pour la session via le MCP obsidian-router. Applique la consigne d'auto-enrichissement depuis le `CLAUDE.md` du vault."*
+   > *"À retenir : au début de chaque nouvelle conversation, demande qui utilise le compte (par exemple Donald, Mitch, Bernie, Joe, Mitt). Une fois identifié, si l'utilisateur a un vault à son nom (ex : Donald → vault `donald`), propose-lui d'activer le tracking wiki pour la session via le MCP obsidian-router. Applique la consigne d'auto-enrichissement depuis le `CLAUDE.md` du vault."*
 
 3. Vérifie quelques heures plus tard que cette instruction apparaît dans **Afficher et gérer la mémoire** (régénérée chaque nuit — laisse-lui une journée).
 4. Pour éviter la dérive, re-énonce l'instruction tous les 2-3 mois dans n'importe quelle conversation. Claude la pinera dans la régénération suivante.
@@ -281,12 +281,12 @@ Applique la consigne ci-dessous SEULEMENT quand :
 
 ### Combiner les canaux
 
-Les quatre canaux sont additifs, pas exclusifs. Un setup "tout-en-un" type Roland :
+Les quatre canaux sont additifs, pas exclusifs. Un setup "tout-en-un" multi-vaults :
 
-- **`CLAUDE.md` du vault `roland`** → consigne chargée quand on bosse depuis un workspace Roland en Claude Code
+- **`CLAUDE.md` du vault `personal`** → consigne chargée quand on bosse depuis un workspace personal-vault en Claude Code
 - **Instructions du Project "Journal Trading"** → bind au vault `tradingview` pour les conversations trading sur Claude Desktop
-- **Instructions du Project "Famille"** → bind au vault `roland` pour les conversations perso/famille sur Claude Desktop
-- **Memory** → demande "quel membre de la famille ?" et propose le matching de vault au début du chat, quand aucun Project n'est actif
+- **Instructions du Project "Personnel"** → bind au vault `personal` pour les conversations perso sur Claude Desktop
+- **Memory** → demande "quel utilisateur ?" et propose le matching de vault au début du chat, quand aucun Project n'est actif (utile quand plusieurs personnes partagent le compte Claude)
 
 Chaque canal gère une surface différente ; ils se composent proprement parce que la consigne s'auto-gate sur "est-ce qu'un vault est bind ?" — un seul canal de binding fire à la fois, selon le contexte.
 

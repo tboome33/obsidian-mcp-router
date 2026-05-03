@@ -135,7 +135,7 @@ The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.cl
 | `FullAuto` | Auto-save everything; audit log in `wiki/log.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
 | `off` | No auto-suggestions; manual `/save` only | Debugging sessions you don't want polluting the wiki · sensitive conversations · default for legal/medical/financial vaults · control-freak preference |
 
-**Placement** — the consigne ships in the vault `CLAUDE.md` template, but is also configurable as Claude Desktop **Project instructions** (elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Family" project to `roland`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md), the activation rules, and concrete copy-paste boilerplates per channel.
+**Placement** — the consigne ships in the vault `CLAUDE.md` template, but is also configurable as Claude Desktop **Project instructions** (elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Personal" project to `personal`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md), the activation rules, and concrete copy-paste boilerplates per channel.
 
 Install steps are in the [Install](#install) section below.
 
@@ -379,19 +379,19 @@ Router locks. All wiki-ingest calls go to `recherche`. After the session ends or
 
 **Case 2 — permanent lock for a shared install.**
 
-You and other family members share the same Claude Code install. Roland wants every Claude session he opens to default to (and stay locked on) the `roland` vault, no matter what `config.defaultVault` says.
+You and other users share the same Claude Code install. Donald wants every Claude session he opens to default to (and stay locked on) the `donald` vault, no matter what `config.defaultVault` says.
 
 In `~/.bashrc` / PowerShell profile, OR in the `.env` of his usual project:
 
 ```
-OBSIDIAN_ROUTER_LOCKED=roland
+OBSIDIAN_ROUTER_LOCKED=donald
 ```
 
 Or, equivalently, run once:
 
-> *"lock to roland and persist this"*
+> *"lock to donald and persist this"*
 
-The slash command writes `OBSIDIAN_ROUTER_LOCKED=roland` to `<cwd>/.env`. From now on, opening Claude in this workspace, the router boots already locked. Other users (Nicolas, Amélie...) on different workspaces have their own `.env` with their own lock value.
+The slash command writes `OBSIDIAN_ROUTER_LOCKED=donald` to `<cwd>/.env`. From now on, opening Claude in this workspace, the router boots already locked. Other users (Mitch, Bernie...) on different workspaces have their own `.env` with their own lock value.
 
 **Case 3 — switching the lock target.**
 
@@ -750,7 +750,7 @@ Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux da
 | `FullAuto` | Auto-save tout ; audit log dans `wiki/log.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
 | `off` | Pas de suggestions auto ; seul `/save` manuel | Sessions de debug que tu ne veux pas polluer dans le wiki · conversations sensibles · défaut pour les vaults légal/médical/financier · préférence control-freak |
 
-**Placement** — la consigne est shipped dans le `CLAUDE.md` template du vault, mais aussi configurable en **instructions de Project Claude Desktop** (pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Famille" dans `roland`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global), les règles d'activation, et des boilerplates copy-paste par canal.
+**Placement** — la consigne est shipped dans le `CLAUDE.md` template du vault, mais aussi configurable en **instructions de Project Claude Desktop** (pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Personnel" dans `personal`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global), les règles d'activation, et des boilerplates copy-paste par canal.
 
 Étapes d'install dans la section [Installation](#installation) ci-dessous.
 
@@ -994,19 +994,19 @@ Le router lock. Tous les `wiki-ingest` partent vers `recherche`. À la fin de la
 
 **Cas 2 — lock permanent pour une install partagée.**
 
-Plusieurs membres de la famille partagent la même install Claude Code. Roland veut que chaque session Claude qu'il ouvre se positionne (et reste verrouillée) sur son vault `roland`, peu importe ce que dit `config.defaultVault`.
+Plusieurs utilisateurs partagent la même install Claude Code. Donald veut que chaque session Claude qu'il ouvre se positionne (et reste verrouillée) sur son vault `donald`, peu importe ce que dit `config.defaultVault`.
 
 Dans son `.env` du projet habituel :
 
 ```
-OBSIDIAN_ROUTER_LOCKED=roland
+OBSIDIAN_ROUTER_LOCKED=donald
 ```
 
 Ou, équivalent, lancer une fois :
 
-> *"verrouille sur roland de manière permanente"*
+> *"verrouille sur donald de manière permanente"*
 
-La slash command écrit `OBSIDIAN_ROUTER_LOCKED=roland` dans `<cwd>/.env`. Désormais, en ouvrant Claude dans ce workspace, le router boot déjà locké. Les autres utilisateurs (Nicolas, Amélie...) sur d'autres workspaces ont leur propre `.env` avec leur propre valeur de lock.
+La slash command écrit `OBSIDIAN_ROUTER_LOCKED=donald` dans `<cwd>/.env`. Désormais, en ouvrant Claude dans ce workspace, le router boot déjà locké. Les autres utilisateurs (Mitch, Bernie...) sur d'autres workspaces ont leur propre `.env` avec leur propre valeur de lock.
 
 **Cas 3 — changer la cible du lock.**
 
