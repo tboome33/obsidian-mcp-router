@@ -35,6 +35,14 @@ export async function searchSmartTool(registry, args = {}) {
 
   // Cross-vault fan-out
   if (name === '*') {
+    // Lock guard: cross-vault fan-out is incompatible with single-vault
+    // isolation. Refuse explicitly rather than silently restrict.
+    if (registry.lockedVault) {
+      throw new Error(
+        `Cannot fan-out: router is locked to vault "${registry.lockedVault}". ` +
+          `Use unlock_vaults first or specify "${registry.lockedVault}" instead of "*".`,
+      );
+    }
     const candidates = registry.vaults.filter((v) => !v.missingApiKey);
     const settled = await Promise.allSettled(
       candidates.map(async (v) => {

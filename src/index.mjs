@@ -28,6 +28,7 @@ import { moveFileTool } from './tools/move-file.mjs';
 import { getFrontmatterTool } from './tools/get-frontmatter.mjs';
 import { setFrontmatterTool } from './tools/set-frontmatter.mjs';
 import { mergeFrontmatterTool } from './tools/merge-frontmatter.mjs';
+import { lockVault, unlockVaults } from './tools/lock.mjs';
 
 const TOOLS = [
   {
@@ -356,11 +357,77 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'lock_vault',
+    description:
+      'Restrict the router to a single vault for the current session. While locked, every tool call that targets a different vault throws "Router is locked to ..."; calls without an explicit `vault` resolve to the locked one; cross-vault fan-out (`vault: "*"`) is refused. Use `unlock_vaults` to lift the lock. Pass `persist: true` to write OBSIDIAN_ROUTER_LOCKED=<vault> into the current workspace .env so the lock survives router restarts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description:
+            'Name of the vault to lock to. Must be in the active vault set (see list_vaults). Locking to a disabled or unknown vault is refused.',
+        },
+        persist: {
+          type: 'boolean',
+          description:
+            'If true, write OBSIDIAN_ROUTER_LOCKED=<vault> into <cwd>/.env so the lock survives a Claude Code restart. Default: false (volatile, this session only).',
+        },
+      },
+      required: ['vault'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'unlock_vaults',
+    description:
+      'Lift the single-vault lock and restore normal multi-vault routing. Pass `persist: true` to ALSO remove the OBSIDIAN_ROUTER_LOCKED line from the current workspace .env (otherwise the lock would re-apply at next startup if the .env still has it set).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        persist: {
+          type: 'boolean',
+          description:
+            'If true, remove the OBSIDIAN_ROUTER_LOCKED line from <cwd>/.env. Default: false (in-memory only).',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
+
+/**
+ * Wrap the registry's `resolveVault()` so that, when `registry.lockedVault`
+ * is set, requests for a different vault throw with a clear error. Calls
+ * that omit `vault` resolve to the locked vault. Idempotent — applying
+ * twice is safe because we always bind the ORIGINAL once via `_originalResolveVault`.
+ */
+function applyLockGuard(registry) {
+  const original =
+    registry._originalResolveVault || registry.resolveVault.bind(registry);
+  registry._originalResolveVault = original;
+  registry.resolveVault = (name) => {
+    if (registry.lockedVault) {
+      if (name && name !== registry.lockedVault) {
+        throw new Error(
+          `Router is locked to vault "${registry.lockedVault}". Cannot operate on "${name}". ` +
+            `Use unlock_vaults first or specify "${registry.lockedVault}".`,
+        );
+      }
+      return original(registry.lockedVault);
+    }
+    return original(name);
+  };
+}
 
 export async function startServer({ configPath, watch = true } = {}) {
   const cfgPath = resolveConfigPath({ configPath });
-  const registryRef = { current: await loadRegistry({ configPath: cfgPath }) };
+  const initialLock = process.env.OBSIDIAN_ROUTER_LOCKED || null;
+  const fresh = await loadRegistry({ configPath: cfgPath });
+  fresh.lockedVault = initialLock;
+  applyLockGuard(fresh);
+  const registryRef = { current: fresh };
 
   // Hot-reload of the config file. Debounced (500ms) to coalesce rapid
   // successive writes from setup-vault.mjs. On parse error, the existing
@@ -382,11 +449,17 @@ export async function startServer({ configPath, watch = true } = {}) {
       timer = setTimeout(async () => {
         try {
           const fresh = await loadRegistry({ configPath: cfgPath });
+          // Preserve the runtime lock state across config reloads. The
+          // lock is a session-level concern — config edits (e.g., adding
+          // a new vault) shouldn't silently un-lock the router.
+          fresh.lockedVault = registryRef.current?.lockedVault || null;
+          applyLockGuard(fresh);
           registryRef.current = fresh;
           console.error(
             `[obsidian-mcp-router] Config reloaded. ` +
               `${fresh.vaults.length} active vault(s)` +
               (fresh.skipped?.length ? `, ${fresh.skipped.length} disabled` : '') +
+              (fresh.lockedVault ? `, locked to "${fresh.lockedVault}"` : '') +
               '.',
           );
         } catch (err) {
@@ -428,7 +501,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.7.1',
+      version: '0.8.0',
     },
     {
       capabilities: {
@@ -475,6 +548,10 @@ export async function startServer({ configPath, watch = true } = {}) {
           return await wrapResult(setFrontmatterTool(reg, args));
         case 'merge_frontmatter':
           return await wrapResult(mergeFrontmatterTool(reg, args));
+        case 'lock_vault':
+          return await wrapResult(lockVault(reg, args));
+        case 'unlock_vaults':
+          return await wrapResult(unlockVaults(reg, args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -503,10 +580,11 @@ export async function startServer({ configPath, watch = true } = {}) {
   const skippedNote = reg.skipped?.length
     ? ` (${reg.skipped.length} disabled: ${reg.skipped.map((s) => s.name).join(', ')})`
     : '';
+  const lockNote = reg.lockedVault ? ` LOCKED to "${reg.lockedVault}".` : '';
   console.error(
     `[obsidian-mcp-router] Ready. ${reg.vaults.length} vault(s) configured: ${reg.vaults
       .map((v) => v.name)
-      .join(', ')}${skippedNote}`,
+      .join(', ')}${skippedNote}.${lockNote}`,
   );
 }
 

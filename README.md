@@ -257,6 +257,107 @@ If you set `OBSIDIAN_ROUTER_DEFAULT_VAULT="something"` and the router can't find
 [registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="recherchee" does not match any active vault — falling through to other resolution tiers. Active vaults: template, tradingview.
 ```
 
+### Lock mode (single-vault isolation)
+
+By default the router is in **multi-vault mode**: any tool call can target any registered vault via the `vault` parameter, and `vault: "*"` fans out across all of them. This is the right default for power users who want one MCP entry to rule them all.
+
+For situations where you want the **opposite** — one vault for the whole session, with the router refusing every cross-vault drift — use **lock mode**.
+
+#### When lock mode is useful
+
+- **Safety**: working on a sensitive vault (legal docs, client data) and you want a structural barrier against accidental writes elsewhere.
+- **User routing on a shared install**: a single Claude Code installation shared between several people. Each user locks to their personal vault at session start; nobody's notes leak into anyone else's.
+- **Focus**: long ingestion or autoresearch session on one wiki — lock prevents the assistant from "helpfully" filing anything in a sibling vault.
+
+#### How to lock / unlock
+
+Three ways to lock:
+
+1. **MCP tool directly** (Claude calls it for you):
+   ```
+   lock_vault({ vault: "tradingview" })                    # volatile (this session)
+   lock_vault({ vault: "tradingview", persist: true })     # writes .env so it survives restart
+   ```
+
+2. **Slash command** (or natural language → auto-trigger):
+   - `/obsidian-router:lock tradingview` — volatile
+   - `/obsidian-router:lock tradingview --persist` — persistent
+   - Natural language: *"I only want to work on tradingview"*, *"lock to tradingview permanently"*
+
+3. **Environment variable at startup**:
+   ```
+   OBSIDIAN_ROUTER_LOCKED=tradingview
+   ```
+   in the workspace's `.env`. The router reads it on boot. Permanent until removed.
+
+To unlock:
+- `unlock_vaults()` — in-memory only
+- `unlock_vaults({ persist: true })` — also removes `OBSIDIAN_ROUTER_LOCKED` from `<cwd>/.env`
+- `/obsidian-router:unlock` or *"give me back access to all vaults"*
+
+#### What happens while locked
+
+| Operation | Behavior |
+|---|---|
+| Tool call with `vault: <locked-vault>` | ✅ proceeds normally |
+| Tool call without explicit `vault` | ✅ resolves to the locked vault (overrides the default cascade) |
+| Tool call with `vault: <other-vault>` | ❌ throws `Router is locked to vault "<X>". Cannot operate on "<other>". Use unlock_vaults first or specify "<X>".` |
+| Tool call with `vault: "*"` (cross-vault fan-out) | ❌ throws `Cannot fan-out: router is locked to vault "<X>". Use unlock_vaults first or specify "<X>" instead of "*".` |
+| `list_vaults` | ✅ always works. Response includes new field `lockedTo: "<X>"` so callers can render the lock state. |
+
+#### Three concrete cases
+
+**Case 1 — quick volatile lock during a session.**
+
+You're about to ingest 30 articles into your `recherche` wiki and don't want any drift to other vaults:
+
+> *"lock to recherche"*
+
+Router locks. All wiki-ingest calls go to `recherche`. After the session ends or Claude Code restarts, the lock is gone (since you didn't persist).
+
+**Case 2 — permanent lock for a shared install.**
+
+You and other family members share the same Claude Code install. Roland wants every Claude session he opens to default to (and stay locked on) the `roland` vault, no matter what `config.defaultVault` says.
+
+In `~/.bashrc` / PowerShell profile, OR in the `.env` of his usual project:
+
+```
+OBSIDIAN_ROUTER_LOCKED=roland
+```
+
+Or, equivalently, run once:
+
+> *"lock to roland and persist this"*
+
+The slash command writes `OBSIDIAN_ROUTER_LOCKED=roland` to `<cwd>/.env`. From now on, opening Claude in this workspace, the router boots already locked. Other users (Nicolas, Amélie...) on different workspaces have their own `.env` with their own lock value.
+
+**Case 3 — switching the lock target.**
+
+You're locked to `recherche`. You want to switch the lock to `tradingview`:
+
+> *"lock to tradingview"*
+
+`lock_vault` overrides the previous lock atomically. No need to unlock first.
+
+#### Verifying the lock state
+
+```
+"list my vaults"
+```
+
+The response now contains `lockedTo`:
+
+```jsonc
+{
+  "defaultVault": "tradingview",
+  "lockedTo": "tradingview",        // ← non-null = locked
+  "vaults": [...],
+  "disabled": [...]
+}
+```
+
+When `lockedTo` is `null`, the router is in normal multi-vault mode.
+
 ## Config
 
 The router reads the existing config maintained by [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), and adds three optional fields on top:
@@ -708,6 +809,107 @@ Si tu mets `OBSIDIAN_ROUTER_DEFAULT_VAULT="quelque-chose"` et que le router ne t
 ```
 [registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="recherchee" does not match any active vault — falling through to other resolution tiers. Active vaults: template, tradingview.
 ```
+
+### Mode lock (isolation mono-vault)
+
+Par défaut le router est en **mode multi-vault** : chaque appel d'outil peut cibler n'importe quel vault enregistré via le paramètre `vault`, et `vault: "*"` fait du fan-out sur tous. C'est le bon défaut quand tu veux qu'une seule entrée MCP serve tout le monde.
+
+Pour les situations où tu veux **l'inverse** — un seul vault pour toute la session, le router refusant tout débordement — utilise le **mode lock**.
+
+#### Quand le mode lock est utile
+
+- **Sécurité** : tu travailles sur un vault sensible (documents juridiques, données client) et tu veux une barrière structurelle contre les écritures accidentelles ailleurs.
+- **Routing par utilisateur sur une install partagée** : un seul Claude Code partagé entre plusieurs personnes. Chacun verrouille sur son vault perso au début de session ; les notes des uns ne fuitent pas chez les autres.
+- **Concentration** : longue session d'ingestion ou d'autoresearch sur un wiki — le lock empêche l'assistant de classer "utilement" des trucs dans un vault frère.
+
+#### Comment lock / unlock
+
+Trois façons de verrouiller :
+
+1. **Outil MCP direct** (Claude l'appelle pour toi) :
+   ```
+   lock_vault({ vault: "tradingview" })                    # volatile (cette session)
+   lock_vault({ vault: "tradingview", persist: true })     # écrit dans .env, survit aux restarts
+   ```
+
+2. **Slash command** (ou langage naturel → auto-déclenchement) :
+   - `/obsidian-router:lock tradingview` — volatile
+   - `/obsidian-router:lock tradingview --persist` — persistant
+   - Langage naturel : *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"*
+
+3. **Variable d'env au démarrage** :
+   ```
+   OBSIDIAN_ROUTER_LOCKED=tradingview
+   ```
+   dans le `.env` du workspace. Le router la lit au boot. Permanent jusqu'à suppression.
+
+Pour déverrouiller :
+- `unlock_vaults()` — en mémoire uniquement
+- `unlock_vaults({ persist: true })` — retire aussi `OBSIDIAN_ROUTER_LOCKED` du `<cwd>/.env`
+- `/obsidian-router:unlock` ou *"redonne-moi accès à tous les vaults"*
+
+#### Ce qui se passe pendant le lock
+
+| Opération | Comportement |
+|---|---|
+| Appel d'outil avec `vault: <vault-locké>` | ✅ procède normalement |
+| Appel d'outil sans `vault` explicite | ✅ résout vers le vault locké (override la cascade default) |
+| Appel d'outil avec `vault: <autre-vault>` | ❌ throw `Router is locked to vault "<X>". Cannot operate on "<autre>". Use unlock_vaults first or specify "<X>".` |
+| Appel d'outil avec `vault: "*"` (fan-out cross-vault) | ❌ throw `Cannot fan-out: router is locked to vault "<X>". Use unlock_vaults first or specify "<X>" instead of "*".` |
+| `list_vaults` | ✅ marche toujours. Réponse inclut un nouveau champ `lockedTo: "<X>"` pour que les callers puissent rendre l'état du lock. |
+
+#### Trois cas concrets
+
+**Cas 1 — lock volatile rapide pendant une session.**
+
+Tu vas ingérer 30 articles dans ton wiki `recherche` et tu ne veux aucune dérive vers d'autres vaults :
+
+> *"verrouille sur recherche"*
+
+Le router lock. Tous les `wiki-ingest` partent vers `recherche`. À la fin de la session (ou au restart de Claude Code), le lock disparaît (puisque pas persisté).
+
+**Cas 2 — lock permanent pour une install partagée.**
+
+Plusieurs membres de la famille partagent la même install Claude Code. Roland veut que chaque session Claude qu'il ouvre se positionne (et reste verrouillée) sur son vault `roland`, peu importe ce que dit `config.defaultVault`.
+
+Dans son `.env` du projet habituel :
+
+```
+OBSIDIAN_ROUTER_LOCKED=roland
+```
+
+Ou, équivalent, lancer une fois :
+
+> *"verrouille sur roland de manière permanente"*
+
+La slash command écrit `OBSIDIAN_ROUTER_LOCKED=roland` dans `<cwd>/.env`. Désormais, en ouvrant Claude dans ce workspace, le router boot déjà locké. Les autres utilisateurs (Nicolas, Amélie...) sur d'autres workspaces ont leur propre `.env` avec leur propre valeur de lock.
+
+**Cas 3 — changer la cible du lock.**
+
+Tu es locké sur `recherche`. Tu veux basculer le lock sur `tradingview` :
+
+> *"verrouille sur tradingview"*
+
+`lock_vault` override le lock précédent atomiquement. Pas besoin d'unlocker avant.
+
+#### Vérifier l'état du lock
+
+```
+"liste mes vaults"
+```
+
+La réponse contient maintenant `lockedTo` :
+
+```jsonc
+{
+  "defaultVault": "tradingview",
+  "lockedTo": "tradingview",        // ← non-null = locked
+  "vaults": [...],
+  "disabled": [...]
+}
+```
+
+Quand `lockedTo` est `null`, le router est en mode multi-vault normal.
 
 ### Config
 

@@ -7,6 +7,14 @@ export async function search(registry, { vault: name, query, contextLength = 100
 
   // Special token "*" → fan-out to all vaults
   if (name === '*') {
+    // Lock guard: cross-vault fan-out is incompatible with single-vault
+    // isolation. Refuse explicitly rather than silently restrict.
+    if (registry.lockedVault) {
+      throw new Error(
+        `Cannot fan-out: router is locked to vault "${registry.lockedVault}". ` +
+          `Use unlock_vaults first or specify "${registry.lockedVault}" instead of "*".`,
+      );
+    }
     // Capture the vault list once so we can index back into it for the
     // rejected promises — Promise.allSettled doesn't surface the input
     // each promise was bound to, and we don't want to lose the vault

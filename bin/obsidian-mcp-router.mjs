@@ -106,6 +106,15 @@ ENVIRONMENT
                                   bootstrapped vault's .env, so opening
                                   Claude Code in a vault directory uses
                                   that vault as default with no config.
+  OBSIDIAN_ROUTER_LOCKED          Lock the router to a single vault for
+                                  this process. While locked, every tool
+                                  call targeting another vault throws,
+                                  cross-vault fan-out is refused, and
+                                  list_vaults reports lockedTo: <vault>.
+                                  Lift via the unlock_vaults MCP tool or
+                                  by removing this var. Set at runtime via
+                                  lock_vault({ vault, persist: true }) which
+                                  writes this var to <cwd>/.env.
 
 The router auto-loads a .env file from the cwd at startup, so the two
 variables above can be set per-workspace without touching ~/.claude.

@@ -17,8 +17,10 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
+import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath } = _internals;
+const { upsertDotenvVar, removeDotenvVar } = lockInternals;
 
 // ---------------------------------------------------------------------------
 // normalizePathForCompare — pure unit tests
@@ -401,5 +403,174 @@ describe('loadRegistry — integration', () => {
     assert.equal(r.skipped[0].name, 'beta');
     assert.equal(r.skipped[0].type, 'remote');
     assert.equal(r.skipped[0].reason, 'disabled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// lock_vault / unlock_vaults — tool handler tests
+// ---------------------------------------------------------------------------
+
+describe('lockVault / unlockVaults — tool handlers', () => {
+  let tmpDir;
+  let originalCwd;
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-lock-test-'));
+    originalCwd = process.cwd();
+    process.chdir(tmpDir);
+  });
+
+  after(async () => {
+    process.chdir(originalCwd);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeRegistry() {
+    return {
+      vaults: [
+        { name: 'alpha', type: 'remote', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', type: 'remote', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+      lockedVault: null,
+    };
+  }
+
+  test('lockVault sets registry.lockedVault on the in-memory state', async () => {
+    const reg = makeRegistry();
+    const result = await lockVault(reg, { vault: 'alpha' });
+    assert.equal(reg.lockedVault, 'alpha');
+    assert.equal(result.locked, true);
+    assert.equal(result.vault, 'alpha');
+    assert.equal(result.persisted, false);
+  });
+
+  test('lockVault refuses unknown vault with explicit error', async () => {
+    const reg = makeRegistry();
+    await assert.rejects(
+      () => lockVault(reg, { vault: 'gamma' }),
+      /not in the active vault set/,
+    );
+    assert.equal(reg.lockedVault, null);
+  });
+
+  test('lockVault requires `vault` argument', async () => {
+    const reg = makeRegistry();
+    await assert.rejects(
+      () => lockVault(reg, {}),
+      /missing required argument `vault`/,
+    );
+  });
+
+  test('lockVault with persist:true writes OBSIDIAN_ROUTER_LOCKED to .env', async () => {
+    const reg = makeRegistry();
+    const envPath = path.join(tmpDir, '.env');
+    await fs.rm(envPath, { force: true });
+
+    const result = await lockVault(reg, { vault: 'alpha', persist: true });
+    assert.equal(result.persisted, true);
+    const envContent = await fs.readFile(envPath, 'utf8');
+    assert.match(envContent, /^OBSIDIAN_ROUTER_LOCKED=alpha$/m);
+  });
+
+  test('unlockVaults clears lockedVault', async () => {
+    const reg = makeRegistry();
+    reg.lockedVault = 'alpha';
+    const result = await unlockVaults(reg, {});
+    assert.equal(reg.lockedVault, null);
+    assert.equal(result.locked, false);
+    assert.equal(result.wasLocked, 'alpha');
+  });
+
+  test('unlockVaults on a non-locked router is a no-op', async () => {
+    const reg = makeRegistry();
+    const result = await unlockVaults(reg, {});
+    assert.equal(reg.lockedVault, null);
+    assert.match(result.message, /was not locked/i);
+  });
+
+  test('unlockVaults with persist:true removes OBSIDIAN_ROUTER_LOCKED from .env', async () => {
+    const envPath = path.join(tmpDir, '.env');
+    await fs.writeFile(envPath, 'KEEP_ME=hello\nOBSIDIAN_ROUTER_LOCKED=alpha\nALSO_KEEP=world\n', 'utf8');
+
+    const reg = makeRegistry();
+    reg.lockedVault = 'alpha';
+    const result = await unlockVaults(reg, { persist: true });
+    assert.equal(result.persistRemoved, true);
+
+    const envContent = await fs.readFile(envPath, 'utf8');
+    assert.doesNotMatch(envContent, /OBSIDIAN_ROUTER_LOCKED/);
+    // Other lines preserved
+    assert.match(envContent, /KEEP_ME=hello/);
+    assert.match(envContent, /ALSO_KEEP=world/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// .env mutation helpers — directly tested via _internals
+// ---------------------------------------------------------------------------
+
+describe('upsertDotenvVar / removeDotenvVar', () => {
+  let tmpDir;
+  let envPath;
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-env-test-'));
+    envPath = path.join(tmpDir, '.env');
+  });
+
+  after(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    await fs.rm(envPath, { force: true });
+  });
+
+  test('upsert creates the file when absent', async () => {
+    await upsertDotenvVar(envPath, 'FOO', 'bar');
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.equal(content, 'FOO=bar\n');
+  });
+
+  test('upsert appends when key not present', async () => {
+    await fs.writeFile(envPath, 'EXISTING=1\n', 'utf8');
+    await upsertDotenvVar(envPath, 'FOO', 'bar');
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.match(content, /^EXISTING=1$/m);
+    assert.match(content, /^FOO=bar$/m);
+  });
+
+  test('upsert updates existing key in place', async () => {
+    await fs.writeFile(envPath, 'A=1\nFOO=old\nB=2\n', 'utf8');
+    await upsertDotenvVar(envPath, 'FOO', 'new');
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.match(content, /^FOO=new$/m);
+    assert.doesNotMatch(content, /FOO=old/);
+    // Other keys preserved
+    assert.match(content, /^A=1$/m);
+    assert.match(content, /^B=2$/m);
+  });
+
+  test('remove returns false on missing file', async () => {
+    const removed = await removeDotenvVar(envPath, 'FOO');
+    assert.equal(removed, false);
+  });
+
+  test('remove returns false when key absent', async () => {
+    await fs.writeFile(envPath, 'A=1\nB=2\n', 'utf8');
+    const removed = await removeDotenvVar(envPath, 'FOO');
+    assert.equal(removed, false);
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.equal(content, 'A=1\nB=2\n');
+  });
+
+  test('remove deletes the line and preserves others', async () => {
+    await fs.writeFile(envPath, 'A=1\nFOO=bar\nB=2\n', 'utf8');
+    const removed = await removeDotenvVar(envPath, 'FOO');
+    assert.equal(removed, true);
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.doesNotMatch(content, /FOO/);
+    assert.match(content, /^A=1$/m);
+    assert.match(content, /^B=2$/m);
   });
 });

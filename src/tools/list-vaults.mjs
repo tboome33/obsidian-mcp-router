@@ -43,5 +43,9 @@ export async function listVaults(registry) {
     configPath: registry.configPath,
     vaults: results,
     disabled,
+    // Lock state — null when the router is in normal multi-vault mode,
+    // a vault name when the router is restricted to a single vault for
+    // the current session. See `lock_vault` / `unlock_vaults` tools.
+    lockedTo: registry.lockedVault || null,
   };
 }
