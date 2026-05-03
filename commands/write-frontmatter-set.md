@@ -2,6 +2,8 @@
 description: Set or replace a single frontmatter property. Type-preserving.
 ---
 
+# write-frontmatter-set
+
 Call the obsidian-router `set_frontmatter` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:
@@ -28,4 +30,4 @@ Type inference from $ARGUMENTS:
 
 After the set, confirm: `<path>: <key> = <value>`.
 
-For setting multiple keys at once, prefer `obsidian-write-frontmatter-merge`.
+For setting multiple keys at once, prefer `write-frontmatter-merge`.

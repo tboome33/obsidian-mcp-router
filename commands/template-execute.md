@@ -2,6 +2,8 @@
 description: Execute a Templater template, optionally writing the rendered output to a new file.
 ---
 
+# template-execute
+
 Call the obsidian-router `execute_template` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:

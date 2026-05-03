@@ -2,6 +2,8 @@
 description: Permanently delete a file. Requires explicit confirm=true to proceed.
 ---
 
+# manage-delete
+
 Call the obsidian-router `delete_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:

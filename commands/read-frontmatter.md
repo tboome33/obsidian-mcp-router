@@ -2,6 +2,8 @@
 description: Read frontmatter (the whole object or one key) from a file. Types are preserved.
 ---
 
+# read-frontmatter
+
 Call the obsidian-router `get_frontmatter` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:

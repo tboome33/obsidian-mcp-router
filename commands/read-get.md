@@ -2,6 +2,8 @@
 description: Read the full content of a file from a vault (markdown + frontmatter).
 ---
 
+# read-get
+
 Call the obsidian-router `get_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:
@@ -18,4 +20,4 @@ Argument parsing:
 
 If `path` is missing, refuse to call the tool and ask the user for it.
 
-After fetching, render the markdown content. If the file has frontmatter, format it as a code block at the top followed by the body. Don't truncate unless the file is huge (>2000 lines), in which case show the first 200 lines and offer to fetch more on request.
+After fetching, render the markdown content. If the file has frontmatter, format it as a YAML code block at the top followed by the body. Don't truncate unless the file is huge (>2000 lines), in which case show the first 200 lines and offer to fetch more on request.

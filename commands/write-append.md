@@ -2,6 +2,8 @@
 description: Append content at the end of a file. Auto-creates the file unless requireExisting=true.
 ---
 
+# write-append
+
 Call the obsidian-router `append_to_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:
@@ -19,7 +21,7 @@ Argument parsing:
 
 Use cases:
 - Daily journals, logs, running notes, captures
-- For surgical edits under a specific heading or block, prefer `obsidian-write-patch` instead
+- For surgical edits under a specific heading or block, prefer `write-patch` instead
 
 After the append, report:
 - `vault`, `path`, `bytesAppended`.

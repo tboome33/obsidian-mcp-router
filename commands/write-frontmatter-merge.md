@@ -2,6 +2,8 @@
 description: Apply multiple frontmatter updates at once (sequential, NOT atomic — see notes).
 ---
 
+# write-frontmatter-merge
+
 Call the obsidian-router `merge_frontmatter` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:
@@ -29,4 +31,4 @@ Type inference per value:
 - N succeeded, M failed
 - list the failed keys with their error
 
-For atomic multi-key updates, the alternative is to read the current frontmatter (`get_frontmatter`), modify the object client-side, and `write_file` the entire file back — but that rewrites the body too.
+For atomic multi-key updates, the alternative is to read the current frontmatter (`read-frontmatter`), modify the object client-side, and `write-create-or-replace` the entire file back — but that rewrites the body too.

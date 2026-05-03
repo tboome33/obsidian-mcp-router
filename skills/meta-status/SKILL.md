@@ -1,11 +1,11 @@
 ---
-name: obsidian-router-status
+name: meta-status
 description: Diagnose the obsidian-mcp-router and all its configured vaults. Pings each vault, reports online/offline/auth status, and suggests fixes for each issue type. Use when the user says "check vault status", "diagnose the router", "are my vaults reachable", "status of obsidian", "what's wrong with the router", or asks to debug an obsidian connection issue.
 ---
 
-# obsidian-router-status
+# meta-status
 
-This skill produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when the user wants to know what's working, what isn't, and how to fix it.
+Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when the user wants to know what's working, what isn't, and how to fix it.
 
 ## Steps
 
@@ -60,7 +60,7 @@ This skill produces a one-shot diagnostic of the multi-vault Obsidian router. Ru
   > 🎉 All <n> vaults online. Ready to use.
 
 - **Issues present**:
-  > Found `<k>` issue(s). Apply the fixes above, then re-run `obsidian-router-status` to verify.
+  > Found `<k>` issue(s). Apply the fixes above, then re-run `meta-status` to verify.
 
 ## Don't
 
@@ -75,7 +75,7 @@ If `list_vaults` itself errors out (e.g., the router process crashed, MCP connec
 
 > ⚠️ The Obsidian router MCP didn't respond. Possible causes:
 > - The router binary `obsidian-mcp-router` isn't installed (run `npm link` in the repo)
-> - `~/.claude.json` doesn't have the router registered under `mcpServers.obsidian` (or whatever name)
+> - `~/.claude.json` doesn't have the router registered under `mcpServers.obsidian-router` (or whatever name)
 > - Claude Desktop / Code wasn't restarted after the registration
 >
 > Fix: verify with `which obsidian-mcp-router` and check the `mcpServers` block in `~/.claude.json`.

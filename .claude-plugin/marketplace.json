@@ -1,0 +1,30 @@
+{
+  "name": "obsidian-mcp-router-marketplace",
+  "owner": {
+    "name": "tboome33",
+    "url": "https://github.com/tboome33"
+  },
+  "metadata": {
+    "description": "Slash commands and conversational helpers for the obsidian-mcp-router multi-vault MCP server.",
+    "version": "0.4.5"
+  },
+  "plugins": [
+    {
+      "name": "obsidian-router",
+      "source": {
+        "source": "github",
+        "repo": "tboome33/obsidian-mcp-router",
+        "ref": "main"
+      },
+      "description": "Slash commands and conversational helpers for the obsidian-mcp-router multi-vault MCP server. Provides /obsidian-router:* commands for vault discovery, reads, writes, frontmatter manipulation, file management, and Templater execution.",
+      "version": "0.4.5",
+      "author": {
+        "name": "tboome33",
+        "url": "https://github.com/tboome33"
+      },
+      "homepage": "https://github.com/tboome33/obsidian-mcp-router",
+      "repository": "https://github.com/tboome33/obsidian-mcp-router",
+      "license": "Apache-2.0"
+    }
+  ]
+}

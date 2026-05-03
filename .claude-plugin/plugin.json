@@ -1,0 +1,18 @@
+{
+  "name": "obsidian-router",
+  "description": "Slash commands and conversational helpers for the obsidian-mcp-router multi-vault MCP server. Provides /obsidian-router:* commands for vault discovery, reads, writes, frontmatter manipulation, file management, and Templater execution. Pairs with the npm package obsidian-mcp-router which exposes the underlying 14 MCP tools.",
+  "version": "0.4.5",
+  "author": {
+    "name": "tboome33",
+    "url": "https://github.com/tboome33"
+  },
+  "homepage": "https://github.com/tboome33/obsidian-mcp-router",
+  "license": "Apache-2.0",
+  "keywords": [
+    "obsidian",
+    "mcp",
+    "router",
+    "smart-connections",
+    "templater"
+  ]
+}

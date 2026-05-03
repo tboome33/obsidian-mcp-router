@@ -30,15 +30,27 @@ This router replaces that with:
 
 The router talks to the same Local REST API endpoints that `mcp-tools` does — including the `mcp-tools` API extension's own routes (`/search/smart`, `/templates/execute`). So semantic search and Templater execution work natively without keeping the `mcp-tools` MCP registered alongside.
 
-## Companion skills
+## Slash commands & skills (Claude Code plugin)
 
-The repo ships three skills under [`skills/`](./skills/) that you can install into `~/.claude/skills/` (copy or symlink) to get conversational helpers:
+The repo doubles as a **Claude Code plugin marketplace** that exposes 17 slash commands under the `/obsidian-router:*` namespace:
 
-- **`obsidian-router-setup`** — bootstrap the router on a fresh machine (clone, npm link, register in `~/.claude.json`).
-- **`obsidian-router-add-vault`** — interactive flow to add a new vault (local via `setup-vault.mjs`, or remote with name + baseUrl + apiKey).
-- **`obsidian-router-status`** — diagnostic of all configured vaults with per-issue fix hints.
+**14 wrappers**, one per MCP tool, organised in 5 categories:
 
-Once installed, you can trigger them by saying things like *"check the status of my vaults"* or *"add my QNAP vault to the router"*.
+| Category | Commands |
+|---|---|
+| `discover` | `/obsidian-router:discover-list-vaults`, `/obsidian-router:discover-list-files` |
+| `read` | `/obsidian-router:read-get`, `:read-search`, `:read-search-smart`, `:read-frontmatter` |
+| `write` | `/obsidian-router:write-create-or-replace`, `:write-append`, `:write-patch`, `:write-frontmatter-set`, `:write-frontmatter-merge` |
+| `manage` | `/obsidian-router:manage-move`, `/obsidian-router:manage-delete` (with confirm guard) |
+| `template` | `/obsidian-router:template-execute` |
+
+**3 conversational helpers** for setup and diagnostics (auto-trigger on natural language too):
+
+- `/obsidian-router:meta-setup` — bootstrap the router on a fresh machine
+- `/obsidian-router:meta-add-vault` — interactive flow to add a vault (local or remote)
+- `/obsidian-router:meta-status` — health-check of every configured vault with fix hints
+
+Type `/obsidian-router:` in Claude Code → the autocomplete shows everything grouped by category. Install steps are in the [Install](#install) section below.
 
 ## Prerequisites
 
@@ -56,6 +68,10 @@ You also need:
 
 ## Install
 
+Two pieces to install: the **MCP server** (the router itself, exposes the 14 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
+
+### Step 1 — Install the MCP server
+
 ```bash
 git clone https://github.com/tboome33/obsidian-mcp-router.git
 cd obsidian-mcp-router
@@ -63,12 +79,12 @@ npm install
 npm link    # makes the `obsidian-mcp-router` binary available globally
 ```
 
-Then register it in `~/.claude.json` (user scope):
+Register it in `~/.claude.json` (user scope) as `obsidian-router`:
 
 ```json
 {
   "mcpServers": {
-    "obsidian": {
+    "obsidian-router": {
       "type": "stdio",
       "command": "obsidian-mcp-router"
     }
@@ -76,7 +92,31 @@ Then register it in `~/.claude.json` (user scope):
 }
 ```
 
-That's it. The router reads `~/.claude/mcp-obsidian/config.json` on start (the same file that `setup-vault.mjs` already maintains) and exposes every vault automatically.
+The router reads `~/.claude/mcp-obsidian/config.json` on start (the same file that `setup-vault.mjs` maintains) and exposes every vault automatically.
+
+### Step 2 — Install the plugin
+
+Add the marketplace + enable the plugin in `~/.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "obsidian-mcp-router-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "tboome33/obsidian-mcp-router"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "obsidian-router@obsidian-mcp-router-marketplace": true
+  }
+}
+```
+
+Restart Claude Code. Type `/obsidian-router:` — the 17 slash commands should appear in autocomplete.
+
+You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
 ### CLI flags
 
@@ -89,22 +129,9 @@ obsidian-mcp-router --no-watch     # disable hot-reload of the config file
 
 By default, the router watches the config file and reloads automatically when it changes — useful when paired with `setup-vault.mjs` adding new vaults, or with the future `Obsidian Cloudflare Tunnel` plugin auto-writing tunnel URLs into `remoteVaults`.
 
-### Slash command wrappers (optional)
+### Building your own macros on top (advanced)
 
-For users who prefer `/obsidian-...` invocation over natural language (or just want autocomplete-driven discoverability), the repo ships **14 slash command wrappers** under [`commands/`](./commands/) — one per MCP tool, grouped into 5 categories: `discover`, `read`, `write`, `manage`, `template`.
-
-Install:
-
-```bash
-ln -s "$(pwd)/commands"/obsidian-*.md ~/.claude/commands/    # Linux/macOS
-# Windows: see commands/README.md
-```
-
-Then type `/obsidian-` in any Claude Code session — the catalog autocompletes. Both slash commands and natural language coexist; pick whichever feels right.
-
-### Building your own slash commands on top (advanced)
-
-The 14 wrappers above are domain-agnostic. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them separately as your own slash commands in `~/.claude/commands/` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 17 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -351,15 +378,27 @@ Ce router remplace tout ça par :
 
 Le router parle aux mêmes endpoints du Local REST API que `mcp-tools` — y compris les routes ajoutées par l'extension API du plugin `mcp-tools` (`/search/smart`, `/templates/execute`). La recherche sémantique et l'exécution Templater fonctionnent donc nativement sans avoir à conserver le MCP `mcp-tools` enregistré en parallèle.
 
-### Skills compagnons
+### Slash commands & skills (plugin Claude Code)
 
-Le repo livre trois skills dans [`skills/`](./skills/) que tu peux installer dans `~/.claude/skills/` (copy ou symlink) pour avoir des helpers conversationnels :
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose 17 slash commands sous le namespace `/obsidian-router:*` :
 
-- **`obsidian-router-setup`** — bootstrap du router sur une machine neuve (clone, npm link, enregistrement dans `~/.claude.json`).
-- **`obsidian-router-add-vault`** — flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant avec name + baseUrl + apiKey).
-- **`obsidian-router-status`** — diagnostic de tous les vaults configurés avec hints de fix par type d'erreur.
+**14 wrappers**, un par outil MCP, organisés en 5 catégories :
 
-Une fois installés, tu déclenches en disant des choses comme *"vérifie le statut de mes vaults"* ou *"ajoute mon vault QNAP au router"*.
+| Catégorie | Commandes |
+|---|---|
+| `discover` | `/obsidian-router:discover-list-vaults`, `:discover-list-files` |
+| `read` | `/obsidian-router:read-get`, `:read-search`, `:read-search-smart`, `:read-frontmatter` |
+| `write` | `/obsidian-router:write-create-or-replace`, `:write-append`, `:write-patch`, `:write-frontmatter-set`, `:write-frontmatter-merge` |
+| `manage` | `/obsidian-router:manage-move`, `:manage-delete` (avec garde confirm) |
+| `template` | `/obsidian-router:template-execute` |
+
+**3 helpers conversationnels** pour le setup et le diagnostic (auto-déclenchés par langage naturel aussi) :
+
+- `/obsidian-router:meta-setup` — bootstrap du router sur une machine neuve
+- `/obsidian-router:meta-add-vault` — flux interactif pour ajouter un vault (local ou distant)
+- `/obsidian-router:meta-status` — health-check de tous les vaults avec hints de fix
+
+Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par catégorie. Étapes d'install dans la section [Installation](#installation) ci-dessous.
 
 ### Prérequis
 
@@ -377,6 +416,10 @@ Il te faut aussi :
 
 ### Installation
 
+Deux composants à installer : le **MCP server** (le router lui-même, expose les 14 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
+
+#### Étape 1 — Installer le MCP server
+
 ```bash
 git clone https://github.com/tboome33/obsidian-mcp-router.git
 cd obsidian-mcp-router
@@ -384,12 +427,12 @@ npm install
 npm link    # rend le binaire `obsidian-mcp-router` accessible globalement
 ```
 
-Puis enregistre-le dans `~/.claude.json` (user scope) :
+Enregistre-le dans `~/.claude.json` (user scope) sous le nom `obsidian-router` :
 
 ```json
 {
   "mcpServers": {
-    "obsidian": {
+    "obsidian-router": {
       "type": "stdio",
       "command": "obsidian-mcp-router"
     }
@@ -397,7 +440,31 @@ Puis enregistre-le dans `~/.claude.json` (user scope) :
 }
 ```
 
-C'est tout. Le router lit `~/.claude/mcp-obsidian/config.json` au démarrage (le même fichier déjà maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+Le router lit `~/.claude/mcp-obsidian/config.json` au démarrage (le même fichier maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+
+#### Étape 2 — Installer le plugin
+
+Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "obsidian-mcp-router-marketplace": {
+      "source": {
+        "source": "github",
+        "repo": "tboome33/obsidian-mcp-router"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "obsidian-router@obsidian-mcp-router-marketplace": true
+  }
+}
+```
+
+Redémarre Claude Code. Tape `/obsidian-router:` — les 17 slash commands doivent apparaître dans l'autocomplete.
+
+Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
 ### Flags CLI
 
@@ -410,22 +477,9 @@ obsidian-mcp-router --no-watch     # désactive le hot-reload du fichier de conf
 
 Par défaut, le router surveille le fichier de config et le recharge automatiquement à chaque modification — utile quand `setup-vault.mjs` ajoute de nouveaux vaults, ou quand le futur plugin `Obsidian Cloudflare Tunnel` écrit automatiquement des URLs de tunnel dans `remoteVaults`.
 
-### Wrappers slash commands (optionnels)
+### Construire tes propres macros par-dessus (avancé)
 
-Pour les utilisateurs qui préfèrent l'invocation `/obsidian-...` au langage naturel (ou qui veulent juste de la découvrabilité par autocomplete), le repo livre **14 wrappers slash command** sous [`commands/`](./commands/) — un par outil MCP, groupés en 5 catégories : `discover`, `read`, `write`, `manage`, `template`.
-
-Installation :
-
-```bash
-ln -s "$(pwd)/commands"/obsidian-*.md ~/.claude/commands/    # Linux/macOS
-# Windows : voir commands/README.md
-```
-
-Puis tape `/obsidian-` dans n'importe quelle session Claude Code — le catalogue s'auto-complète. Les slash commands et le langage naturel coexistent ; tu choisis selon le moment.
-
-### Construire tes propres slash commands par-dessus (avancé)
-
-Les 14 wrappers ci-dessus sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 17 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 

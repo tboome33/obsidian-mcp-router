@@ -2,6 +2,8 @@
 description: Surgical edit — insert/replace under a specific heading, block id, or frontmatter key.
 ---
 
+# write-patch
+
 Call the obsidian-router `patch_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:
@@ -22,10 +24,10 @@ Optional:
 - `trimTargetWhitespace` — trim whitespace around the target before applying.
 
 Argument parsing:
-- This tool has many parameters. If $ARGUMENTS doesn't make the intent crystal-clear, ask the user before calling. A typical bare invocation should be `path=... operation=... targetType=... target=... content=...`.
+- This tool has many parameters. If $ARGUMENTS doesn't make the intent crystal-clear, ask the user before calling. A typical bare invocation as $ARGUMENTS should be `path=... operation=... targetType=... target=... content=...`.
 
 Common quick patterns:
-- Set a frontmatter key: `path=X operation=replace targetType=frontmatter target=<key> content=<value>` (consider using `obsidian-write-frontmatter-set` instead — friendlier wrapper)
+- Set a frontmatter key: `path=X operation=replace targetType=frontmatter target=<key> content=<value>` (consider using `write-frontmatter-set` instead — friendlier wrapper)
 - Append under a heading: `path=X operation=append targetType=heading target="Section::Sub" content="..."`
 - Replace a block: `path=X operation=replace targetType=block target=<block-id> content="..."`
 

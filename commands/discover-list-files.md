@@ -2,6 +2,8 @@
 description: List files and subdirectories inside a vault directory (or vault root).
 ---
 
+# discover-list-files
+
 Call the obsidian-router `list_files` MCP tool with arguments parsed from $ARGUMENTS.
 
 Argument extraction:
@@ -10,7 +12,7 @@ Argument extraction:
 
 Accept any of these forms in $ARGUMENTS:
 - bare path → use as `directory`
-- `<vault>/<directory>` → split on first slash
+- `<vault>/<directory>` → split on first slash if the first segment matches a known vault name
 - `vault=X directory=Y` or `vault=X dir=Y`
 - empty → list the default vault's root
 

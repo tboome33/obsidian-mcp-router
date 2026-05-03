@@ -2,6 +2,8 @@
 description: Create a new file, or replace the entire content of an existing one. Pass ifNew=true to refuse overwrite.
 ---
 
+# write-create-or-replace
+
 Call the obsidian-router `write_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:

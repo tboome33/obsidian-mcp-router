@@ -2,6 +2,8 @@
 description: Move or rename a file. GET source → PUT destination → DELETE source.
 ---
 
+# manage-move
+
 Call the obsidian-router `move_file` MCP tool with arguments parsed from $ARGUMENTS.
 
 Required:

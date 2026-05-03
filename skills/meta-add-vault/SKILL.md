@@ -1,9 +1,9 @@
 ---
-name: obsidian-router-add-vault
+name: meta-add-vault
 description: Interactive flow to add a new Obsidian vault (local or remote) to the obsidian-mcp-router config. Use whenever the user wants to "add a vault to the router", "register a new obsidian vault", "connect a remote vault", "set up Obsidian for this project", or any phrasing implying a new vault should be wired up to the multi-vault router.
 ---
 
-# obsidian-router-add-vault
+# meta-add-vault
 
 Walk the user through adding a new vault to `~/.claude/mcp-obsidian/config.json`. There are two flavors:
 
@@ -101,4 +101,4 @@ If it returns the JSON server-info, you're golden. If it 401s, the API key is wr
 End your turn with a short recap:
 
 > ✅ Added vault `<name>` to the router config.
-> Next step: restart Claude Desktop, then run `list_vaults` to confirm.
+> Next step: restart Claude Desktop, then run `/obsidian-router:discover-list-vaults` to confirm.
