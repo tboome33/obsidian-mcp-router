@@ -31,7 +31,7 @@ Semantic search (`search_smart`) and Templater execution (`execute_template`) re
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes 17 slash commands under the `/obsidian-router:*` namespace:
+The repo doubles as a **Claude Code plugin marketplace** that exposes 26 slash commands under the `/obsidian-router:*` namespace:
 
 **14 wrappers**, one per MCP tool, organised in 5 categories:
 
@@ -49,6 +49,33 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes 17 slash c
 - `/obsidian-router:meta-add-vault` — interactive flow to add a vault (local or remote)
 - `/obsidian-router:meta-status` — health-check of every configured vault with fix hints
 
+**9 knowledge-management commands + 11 skills** implementing a Karpathy-style LLM-wiki workflow on top of the router. The wiki pattern: an LLM-maintained, structured markdown knowledge base where pages reference each other and the system grows with use.
+
+| Workflow | Command | What it does |
+|---|---|---|
+| Bootstrap | `/obsidian-router:wiki` | Scaffold `wiki/` (index, log, hot, overview) inside any vault |
+| Ingest | `/obsidian-router:wiki-ingest` | Read source → entity/concept pages → cross-references |
+| Query | `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → index.md → drill into pages) |
+| Lint | `/obsidian-router:wiki-lint` | Orphans, dead links, frontmatter gaps, index drift |
+| Fold | `/obsidian-router:wiki-fold` | Idempotent log rollups under `wiki/folds/` |
+| Save | `/obsidian-router:save` | File the current conversation as a typed wiki note |
+| Research | `/obsidian-router:autoresearch` | Autonomous web→synth→file loop bounded by a research program |
+| Canvas | `/obsidian-router:canvas` | Create/edit Obsidian `.canvas` files (visual layer) |
+| Defuddle | `/obsidian-router:defuddle` | Strip noise from webpages before ingestion |
+
+Plus two Obsidian-specific reference skills (no slash command — they're knowledge surfaced when other skills run): `obsidian-bases` (writes Obsidian `.base` files for dynamic database views) and `obsidian-markdown` (Obsidian Flavored Markdown reference for wikilinks, embeds, callouts, properties, etc.).
+
+**Two parallel sub-agents** for batch work:
+- `wiki-ingest` agent — fan out one source per agent, parallel
+- `wiki-lint` agent — read-only diagnostic in a separate context
+
+**Hooks** (cross-platform Node, opt-in via `~/.claude/settings.json`):
+- `SessionStart` / `PostCompact` — load `wiki/hot.md` into context
+- `PostToolUse` — auto-commit `wiki/`, `.raw/`, `.vault-meta/` to git after writes
+- `Stop` — prompt to refresh `wiki/hot.md` if files changed
+
+The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.claude/settings.json`. Reference: [`hooks/hooks.json`](./hooks/hooks.json).
+
 Type `/obsidian-router:` in Claude Code → the autocomplete shows everything grouped by category. Install steps are in the [Install](#install) section below.
 
 ## Prerequisites
@@ -62,7 +89,7 @@ Type `/obsidian-router:` in Claude Code → the autocomplete shows everything gr
 
 You also need:
 
-- **Node.js ≥ 18**
+- **Node.js ≥ 20.18.1** (required by `undici@7`)
 - At least one vault provisioned in `~/.claude/obsidian-mcp-router/config.json`. If you've never set this up, run `npm run setup-vault -- "<vault-path>"` from a clone of this repo, or invoke [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directly — it'll bootstrap the config interactively. Schema reference: [`examples/config.example.json`](./examples/config.example.json).
 
 ## Install
@@ -113,7 +140,7 @@ Add the marketplace + enable the plugin in `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code. Type `/obsidian-router:` — the 17 slash commands should appear in autocomplete.
+Restart Claude Code. Type `/obsidian-router:` — the 26 slash commands should appear in autocomplete.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
@@ -378,7 +405,7 @@ La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_te
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose 17 slash commands sous le namespace `/obsidian-router:*` :
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose 26 slash commands sous le namespace `/obsidian-router:*` :
 
 **14 wrappers**, un par outil MCP, organisés en 5 catégories :
 
@@ -396,6 +423,33 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose 17 slash c
 - `/obsidian-router:meta-add-vault` — flux interactif pour ajouter un vault (local ou distant)
 - `/obsidian-router:meta-status` — health-check de tous les vaults avec hints de fix
 
+**9 commandes de gestion de connaissances + 11 skills** qui implémentent un workflow de wiki LLM façon Karpathy par-dessus le router. Le pattern : une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et où le système croît avec l'usage.
+
+| Workflow | Commande | Effet |
+|---|---|---|
+| Bootstrap | `/obsidian-router:wiki` | Scaffold `wiki/` (index, log, hot, overview) dans n'importe quel vault |
+| Ingest | `/obsidian-router:wiki-ingest` | Lecture source → pages entité/concept → cross-références |
+| Query | `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → index.md → drill into pages) |
+| Lint | `/obsidian-router:wiki-lint` | Orphelins, liens morts, frontmatter manquant, dérive d'index |
+| Fold | `/obsidian-router:wiki-fold` | Rollups idempotents du log sous `wiki/folds/` |
+| Save | `/obsidian-router:save` | File la conversation courante comme note typée |
+| Recherche | `/obsidian-router:autoresearch` | Boucle web→synthèse→file autonome bornée par un programme |
+| Canvas | `/obsidian-router:canvas` | Création/édition de fichiers `.canvas` Obsidian (couche visuelle) |
+| Defuddle | `/obsidian-router:defuddle` | Strip le bruit des pages web avant ingestion |
+
+Plus deux skills de référence Obsidian (sans slash command — surfacés quand d'autres skills tournent) : `obsidian-bases` (écrit des fichiers `.base` Obsidian pour des vues database dynamiques) et `obsidian-markdown` (référence du Obsidian Flavored Markdown : wikilinks, embeds, callouts, properties, etc.).
+
+**Deux sub-agents parallèles** pour les batches :
+- agent `wiki-ingest` — fan-out un agent par source, en parallèle
+- agent `wiki-lint` — diagnostic read-only dans un contexte isolé
+
+**Hooks** (Node cross-platform, opt-in via `~/.claude/settings.json`) :
+- `SessionStart` / `PostCompact` — chargent `wiki/hot.md` dans le contexte
+- `PostToolUse` — auto-commit `wiki/`, `.raw/`, `.vault-meta/` sur git après les écritures
+- `Stop` — propose de rafraîchir `wiki/hot.md` si des fichiers ont changé
+
+Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux dans `~/.claude/settings.json`. Référence : [`hooks/hooks.json`](./hooks/hooks.json).
+
 Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par catégorie. Étapes d'install dans la section [Installation](#installation) ci-dessous.
 
 ### Prérequis
@@ -409,7 +463,7 @@ Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par cat
 
 Il te faut aussi :
 
-- **Node.js ≥ 18**
+- **Node.js ≥ 20.18.1** (required by `undici@7`)
 - Au moins un vault provisionné dans `~/.claude/obsidian-mcp-router/config.json`. Si tu n'as jamais fait ce setup, lance `npm run setup-vault -- "<vault-path>"` depuis un clone de ce repo, ou invoque [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directement — il bootstrappe la config interactivement. Référence du schéma : [`examples/config.example.json`](./examples/config.example.json).
 
 ### Installation
@@ -460,7 +514,7 @@ Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
 }
 ```
 
-Redémarre Claude Code. Tape `/obsidian-router:` — les 17 slash commands doivent apparaître dans l'autocomplete.
+Redémarre Claude Code. Tape `/obsidian-router:` — les 26 slash commands doivent apparaître dans l'autocomplete.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 

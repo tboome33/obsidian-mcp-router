@@ -26,3 +26,24 @@ Third-party dependencies (declared in package.json):
 This product talks to the Obsidian Local REST API plugin
 (https://github.com/coddingtonbear/obsidian-local-rest-api), which is an
 independent third-party project under its own license.
+
+---
+
+Methodology credit (knowledge-management skills, v0.6+):
+
+The wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold / save /
+autoresearch skill family implements the "LLM wiki" architectural
+pattern proposed by Andrej Karpathy in a public gist:
+
+  https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
+
+The pattern itself — LLM as continuous wiki maintainer over structured
+markdown files (catalog index, append-only log, recent-context cache,
+overview) — is an architectural idea and not subject to copyright. The
+implementation in this repo is original to obsidian-mcp-router, written
+against the router's MCP tool surface.
+
+A prior independent implementation of the same pattern exists at
+https://github.com/AgriciDaniel/claude-obsidian (MIT-licensed).
+Conventions and slash command names overlap by necessity (both target
+the Karpathy pattern), but no source code was reused.

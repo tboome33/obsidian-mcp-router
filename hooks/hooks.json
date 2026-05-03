@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/hot-cache-load.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/hot-cache-load.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/wiki-autocommit.mjs\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/hot-cache-update-prompt.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}
