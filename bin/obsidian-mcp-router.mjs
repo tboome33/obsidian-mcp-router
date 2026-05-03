@@ -39,7 +39,7 @@ USAGE
 
 OPTIONS
   -c, --config <path>   Path to config file. Default:
-                        ~/.claude/mcp-obsidian/config.json
+                        ~/.claude/obsidian-mcp-router/config.json
                         Also reads OBSIDIAN_ROUTER_CONFIG env var.
 
       --no-watch        Disable hot-reload of the config file.

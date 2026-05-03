@@ -116,8 +116,8 @@ Criteria:
 
 ## Beyond v1.0 — Possible directions
 
-- **Smart Connections proxy**: proxy `mcp-server.exe` (the jacksteamdev binary) through the router so semantic search becomes available across all vaults too.
-- **Templater proxy**: same idea for template execution.
+- **Cross-vault Smart Connections**: collapse the per-vault `obsidian-mcp-router-bridge` integration into a router-level facade so `search_smart` returns merged ranked results across multiple vaults at once (currently a fan-out with per-vault scores).
+- **Cross-vault Templater**: same idea for template execution — a single template available from any vault via the router.
 - **Operation log**: per-vault append-only log of mutations the router performed, for audit and undo.
 - **Read-only mode**: per-vault flag that rejects all write tools (useful for a "reference" vault you don't want Claude editing).
 - **Vault federation**: aggregate multiple local-only vaults into a virtual "super-vault" for cross-vault links and search.

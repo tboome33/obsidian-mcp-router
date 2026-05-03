@@ -325,7 +325,7 @@ const TOOLS = [
   {
     name: 'search_smart',
     description:
-      'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Requires the target vault to have both the "mcp-tools" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
+      'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Requires the target vault to have both the "obsidian-mcp-router-bridge" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -404,6 +404,17 @@ export async function startServer({ configPath, watch = true } = {}) {
         if (changedFile && changedFile !== watchName) return;
         reload();
       });
+      // fs.watch is an EventEmitter; an unhandled 'error' event crashes the
+      // process. This realistically happens when the watched directory is
+      // deleted out from under us (e.g. user removes ~/.claude/obsidian-mcp-router/
+      // while the server is running). Log and disable hot-reload — the
+      // server keeps serving the cached registry rather than dying.
+      watcher.on('error', (err) => {
+        console.error(
+          `[obsidian-mcp-router] Config watcher error (hot-reload disabled): ${err.message}`,
+        );
+        try { watcher.close(); } catch {}
+      });
       // Don't keep the event loop alive just for the watcher — let stdin
       // closure (MCP transport disconnect) terminate the process cleanly.
       watcher.unref?.();
@@ -417,7 +428,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.4.5',
+      version: '0.5.0',
     },
     {
       capabilities: {

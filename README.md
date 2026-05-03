@@ -57,14 +57,14 @@ Type `/obsidian-router:` in Claude Code → the autocomplete shows everything gr
 | Plugin (per vault) | Required for | Where to get it |
 |---|---|---|
 | **Local REST API** | All tools | Community plugins → "Local REST API" by Adam Coddington |
-| **MCP Tools** | `search_smart`, `execute_template` | Community plugins → "MCP Tools" by Jack Steam — provides the API extension routes the router calls |
+| **MCP Router Bridge** | `search_smart`, `execute_template` | Install from [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — registers the `/search/smart` and `/templates/execute` REST routes that this router calls. Replaces the deprecated `mcp-tools` plugin by jacksteamdev. |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — the embeddings backend |
 | **Templater** | `execute_template` | Community plugins → "Templater" by SilentVoid13 |
 
 You also need:
 
 - **Node.js ≥ 18**
-- At least one vault provisioned in `~/.claude/mcp-obsidian/config.json`. If you've never set this up, install [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md) (referenced from the router but lives in your local Claude home) or paste the schema by hand — see [`examples/config.example.json`](./examples/config.example.json).
+- At least one vault provisioned in `~/.claude/obsidian-mcp-router/config.json`. If you've never set this up, run `npm run setup-vault -- "<vault-path>"` from a clone of this repo, or invoke [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directly — it'll bootstrap the config interactively. Schema reference: [`examples/config.example.json`](./examples/config.example.json).
 
 ## Install
 
@@ -92,7 +92,7 @@ Register it in `~/.claude.json` (user scope) as `obsidian-router`:
 }
 ```
 
-The router reads `~/.claude/mcp-obsidian/config.json` on start (the same file that `setup-vault.mjs` maintains) and exposes every vault automatically.
+The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same file that `setup-vault.mjs` maintains) and exposes every vault automatically.
 
 ### Step 2 — Install the plugin
 
@@ -155,7 +155,7 @@ Disabled vaults appear in the boot log as `(N disabled: ...)` for visibility, bu
 
 ## Config
 
-The router reads the existing config maintained by [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md), and adds three optional fields on top:
+The router reads the existing config maintained by [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), and adds three optional fields on top:
 
 ```jsonc
 {
@@ -194,7 +194,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `list_files` | List files in a directory of a specific vault. |
 | `get_file` | Read full file content (markdown + frontmatter). |
 | `search` | Plain-text (substring) search. Pass `vault: "*"` to fan-out across all vaults. |
-| `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `mcp-tools` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. |
+| `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `obsidian-mcp-router-bridge` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. |
 | `write_file` | Create a new file or replace the entire content of an existing one. Pass `ifNew: true` to refuse to overwrite. |
 | `append_to_file` | Append content at the end of a file. Auto-creates the file unless `requireExisting: true`. |
 | `patch_file` | Surgical edit by `heading` / `block` / `frontmatter` target — insert under a heading without rewriting the whole file, replace a block by id, update a single frontmatter key. |
@@ -405,14 +405,14 @@ Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout par cat
 | Plugin (par vault) | Requis pour | Où l'obtenir |
 |---|---|---|
 | **Local REST API** | Tous les outils | Community plugins → "Local REST API" par Adam Coddington |
-| **MCP Tools** | `search_smart`, `execute_template` | Community plugins → "MCP Tools" par Jack Steam — fournit les extensions API que le router appelle |
+| **MCP Router Bridge** | `search_smart`, `execute_template` | À installer depuis [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — enregistre les routes REST `/search/smart` et `/templates/execute` que ce router appelle. Remplace le plugin `mcp-tools` déprécié de jacksteamdev. |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — moteur d'embeddings |
 | **Templater** | `execute_template` | Community plugins → "Templater" par SilentVoid13 |
 
 Il te faut aussi :
 
 - **Node.js ≥ 18**
-- Au moins un vault provisionné dans `~/.claude/mcp-obsidian/config.json`. Si tu n'as jamais fait ce setup, installe [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md) (référencé par le router mais vit dans ton home Claude local) ou colle le schéma à la main — voir [`examples/config.example.json`](./examples/config.example.json).
+- Au moins un vault provisionné dans `~/.claude/obsidian-mcp-router/config.json`. Si tu n'as jamais fait ce setup, lance `npm run setup-vault -- "<vault-path>"` depuis un clone de ce repo, ou invoque [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directement — il bootstrappe la config interactivement. Référence du schéma : [`examples/config.example.json`](./examples/config.example.json).
 
 ### Installation
 
@@ -440,7 +440,7 @@ Enregistre-le dans `~/.claude.json` (user scope) sous le nom `obsidian-router` :
 }
 ```
 
-Le router lit `~/.claude/mcp-obsidian/config.json` au démarrage (le même fichier maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le même fichier maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
 
 #### Étape 2 — Installer le plugin
 
@@ -503,7 +503,7 @@ Les vaults désactivés apparaissent dans le log de démarrage `(N disabled: ...
 
 ### Config
 
-Le router lit la config existante maintenue par [`setup-vault.mjs`](https://github.com/tboome33/obsidian-mcp-router/blob/main/docs/setup-vault.md), et ajoute trois champs optionnels par-dessus :
+Le router lit la config existante maintenue par [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), et ajoute trois champs optionnels par-dessus :
 
 ```jsonc
 {
@@ -542,7 +542,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `list_files` | Liste les fichiers d'un répertoire d'un vault donné. |
 | `get_file` | Lit le contenu complet d'un fichier (markdown + frontmatter). |
 | `search` | Recherche texte simple (substring). Passe `vault: "*"` pour lancer la recherche sur tous les vaults en parallèle. |
-| `search_smart` | Recherche sémantique (par sens) via les embeddings de Smart Connections. Retourne les chunks classés avec scores cosinus et breadcrumbs (chemin de titres). Nécessite les plugins `mcp-tools` + `smart-connections` activés dans le vault cible. Supporte `vault: "*"` pour la recherche sémantique cross-vaults. |
+| `search_smart` | Recherche sémantique (par sens) via les embeddings de Smart Connections. Retourne les chunks classés avec scores cosinus et breadcrumbs (chemin de titres). Nécessite les plugins `obsidian-mcp-router-bridge` + `smart-connections` activés dans le vault cible. Supporte `vault: "*"` pour la recherche sémantique cross-vaults. |
 | `write_file` | Crée un fichier ou remplace son contenu intégral. Passe `ifNew: true` pour refuser l'écrasement. |
 | `append_to_file` | Ajoute du contenu en fin de fichier. Crée le fichier si absent (sauf si `requireExisting: true`). |
 | `patch_file` | Édition chirurgicale par cible `heading` / `block` / `frontmatter` — insérer sous un titre sans réécrire tout le fichier, remplacer un bloc par id, modifier une clé de frontmatter. |

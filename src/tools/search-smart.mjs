@@ -1,11 +1,11 @@
 /**
  * search_smart — semantic search powered by Smart Connections, exposed via
- * the mcp-tools plugin's API extension to Local REST API.
+ * the obsidian-mcp-router-bridge plugin's API extension to Local REST API.
  *
- * Per-vault: the vault must have BOTH the mcp-tools plugin AND the
- * smart-connections plugin installed and enabled. The router surfaces
+ * Per-vault: the vault must have BOTH the obsidian-mcp-router-bridge plugin
+ * AND the smart-connections plugin installed and enabled. The router surfaces
  * "Smart Connections plugin is not available" as a clear error if the vault
- * has mcp-tools but no smart-connections.
+ * has the bridge but no smart-connections.
  *
  * Cross-vault: pass `vault: "*"` to fan-out across every configured vault
  * in parallel. Vaults that don't support semantic search are silently

@@ -1,5 +1,5 @@
 {
-  "_comment": "This file documents the schema. The real config lives at ~/.claude/mcp-obsidian/config.json (created by setup-vault.mjs).",
+  "_comment": "This file documents the schema. The real config lives at ~/.claude/obsidian-mcp-router/config.json (created by setup-vault.mjs).",
 
   "referenceVault": "C:\\VAULTS\\.template",
   "portStart": 27124,
@@ -13,6 +13,9 @@
     "C:\\VAULTS\\.template": "template",
     "C:\\VAULTS\\TradingView": "tradingview"
   },
+
+  "_comment_disabledVaults": "Optional. Vaults listed here are kept in portRegistry (so setup-vault.mjs sees their port allocation) but hidden from the MCP tool surface. Each entry can be either the resolved vault NAME or the raw PATH. Useful for the .template reference vault.",
+  "disabledVaults": ["C:\\VAULTS\\.template"],
 
   "remoteVaults": [
     {

@@ -22,7 +22,7 @@ Argument parsing:
 
 Pre-requisites: the target vault must have the `templater-obsidian` plugin enabled. If the tool returns 503 with "Templater plugin is not available", surface that clearly.
 
-The mcp-tools API extension monkey-patches Templater so `tp.mcpTools.prompt("key")` returns whatever you put in the `arguments` map. This is **directly under `tp`**, not under `tp.user` (which is the convention for Templater user scripts) — easy footgun.
+The obsidian-mcp-router-bridge plugin (which exposes `/templates/execute`) monkey-patches Templater so `tp.mcpTools.prompt("key")` returns whatever you put in the `arguments` map. This is **directly under `tp`**, not under `tp.user` (which is the convention for Templater user scripts) — easy footgun.
 
 After execution:
 - If `createFile` was true: report the rendered content and confirm the file was written at `targetPath`

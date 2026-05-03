@@ -137,11 +137,24 @@ function categorizeHttpStatus(status, statusText, body, vault, urlPath) {
     });
   }
   if (status === 404) {
+    // The bridge plugin (obsidian-mcp-router-bridge) registers two
+    // additional routes onto Local REST API: /search/smart and
+    // /templates/execute. If the bridge isn't enabled in the target vault,
+    // those URLs 404 — but the user wouldn't know why. Surface a hint so
+    // the failure points at the missing plugin instead of a generic
+    // "not_found".
+    const bridgeRoutes = ['/search/smart', '/templates/execute'];
+    const isBridgeRoute = bridgeRoutes.some(
+      (r) => urlPath === r || urlPath.startsWith(`${r}?`),
+    );
     return new RestApiError(base, {
       kind: 'not_found',
       vaultName: vault.name,
       status,
       urlPath,
+      hint: isBridgeRoute
+        ? `Route ${urlPath} not found. The "obsidian-mcp-router-bridge" plugin is probably not installed or not enabled in this vault. Install it from https://github.com/tboome33/obsidian-mcp-router-bridge and toggle it on in Community plugins.`
+        : undefined,
     });
   }
   if (status === 409) {
@@ -528,11 +541,13 @@ export function searchSimple(vault, query, contextLength = 100) {
 }
 
 /**
- * Semantic search via the mcp-tools API extension to Local REST API.
+ * Semantic search via the obsidian-mcp-router-bridge plugin's API extension
+ * to Local REST API (which registers the /search/smart route).
  *
- * Requires both the `mcp-tools` plugin AND the `smart-connections` plugin
- * to be installed and enabled in the target vault. Smart Connections must
- * have indexed the vault (it does so automatically on plugin load).
+ * Requires both the `obsidian-mcp-router-bridge` plugin AND the
+ * `smart-connections` plugin to be installed and enabled in the target vault.
+ * Smart Connections must have indexed the vault (it does so automatically on
+ * plugin load).
  *
  * Quirk: the endpoint expects the body as a JSON string in plain text — i.e.
  * Content-Type is text/plain and the body is a stringified JSON object. The

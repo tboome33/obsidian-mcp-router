@@ -7,20 +7,25 @@ export async function search(registry, { vault: name, query, contextLength = 100
 
   // Special token "*" → fan-out to all vaults
   if (name === '*') {
+    // Capture the vault list once so we can index back into it for the
+    // rejected promises — Promise.allSettled doesn't surface the input
+    // each promise was bound to, and we don't want to lose the vault
+    // name on failure (was previously rendered as "?").
+    const candidates = registry.vaults.filter((v) => !v.missingApiKey);
     const results = await Promise.allSettled(
-      registry.vaults
-        .filter((v) => !v.missingApiKey)
-        .map(async (v) => {
-          const matches = await searchSimple(v, query, contextLength);
-          return { vault: v.name, matches };
-        }),
+      candidates.map(async (v) => {
+        const matches = await searchSimple(v, query, contextLength);
+        return { vault: v.name, matches };
+      }),
     );
 
     return {
       query,
       contextLength,
-      perVault: results.map((r) =>
-        r.status === 'fulfilled' ? r.value : { vault: '?', error: r.reason.message },
+      perVault: results.map((r, i) =>
+        r.status === 'fulfilled'
+          ? r.value
+          : { vault: candidates[i].name, error: r.reason.message },
       ),
     };
   }

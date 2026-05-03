@@ -4,7 +4,7 @@ description: Interactive flow to add a new Obsidian vault (local or remote) to t
 
 # meta-add-vault
 
-Walk the user through adding a new vault to `~/.claude/mcp-obsidian/config.json`. There are two flavors:
+Walk the user through adding a new vault to `~/.claude/obsidian-mcp-router/config.json`. There are two flavors:
 
 - **Local vault**: an Obsidian vault running on the same machine as the user.
 - **Remote vault**: an Obsidian vault running elsewhere (NAS, VPS, behind Cloudflare Tunnel, on a different OS), reachable via HTTPS.
@@ -21,25 +21,25 @@ First, ask the user which case applies if it's not obvious from their message. E
 
 1. Ask for the absolute vault path (e.g. `D:\Notes\Recherche` or `/Users/me/Vaults/Personal`). If the user already mentioned it, confirm.
 2. Verify the path exists and contains a `.obsidian/` directory (use `Read` or `Bash` `ls`). If not, ask whether to bootstrap it as a new vault — `setup-vault.mjs` handles both.
-3. Run the setup script:
+3. Run the setup script (it lives in the router repo's `scripts/` folder; replace `<router-repo>` with the path where the user cloned `obsidian-mcp-router`):
    ```bash
-   node "$HOME/.claude/mcp-obsidian/scripts/setup-vault.mjs" "<path>"
+   node "<router-repo>/scripts/setup-vault.mjs" "<path>"
    ```
-   On Windows, use `%USERPROFILE%`:
+   On Windows:
    ```bash
-   node "%USERPROFILE%\.claude\mcp-obsidian\scripts\setup-vault.mjs" "<path>"
+   node "<router-repo>\scripts\setup-vault.mjs" "<path>"
    ```
 4. Show the user what the script printed (allocated port, generated API key, plugins synced).
 5. Tell the user the next steps explicitly:
    - **Open the vault in Obsidian** (otherwise the REST API server doesn't run)
    - **Disable Restricted Mode** in Settings → Community plugins
-   - **Verify Local REST API and MCP Tools are toggled ON**
+   - **Verify Local REST API and MCP Router Bridge are toggled ON**
    - **Restart Claude Desktop / Claude Code** so the router picks up the new entry on next start
 6. Optionally call the router's `list_vaults` tool to confirm the new vault appears (note: it'll show offline until the user opens it in Obsidian).
 
 If `setup-vault.mjs` is not found:
 
-> The vault provisioning script `~/.claude/mcp-obsidian/scripts/setup-vault.mjs` doesn't exist on this machine. You'll need to either install it (it's part of the per-user Claude home setup) or add the vault entry manually. Want me to walk you through the manual path?
+> The vault provisioning script `<router-repo>/scripts/setup-vault.mjs` doesn't exist on this machine. You'll need to either clone the obsidian-mcp-router repo or add the vault entry manually. Want me to walk you through the manual path?
 
 ## Step 2B — Remote vault flow
 
@@ -66,7 +66,7 @@ Optional:
 
 ### Edit the config
 
-1. Read `~/.claude/mcp-obsidian/config.json`.
+1. Read `~/.claude/obsidian-mcp-router/config.json`.
 2. Parse the JSON.
 3. If a `remoteVaults` entry with the same name already exists → ask the user before overwriting.
 4. Append (or replace) the entry in the `remoteVaults` array with the values gathered above.
@@ -90,7 +90,7 @@ If it returns the JSON server-info, you're golden. If it 401s, the API key is wr
 
 ## Don't
 
-- Don't write secrets (API keys, service token secrets) anywhere except `~/.claude/mcp-obsidian/config.json`. No log files, no echo to terminal beyond the immediate confirmation, no clipboard write.
+- Don't write secrets (API keys, service token secrets) anywhere except `~/.claude/obsidian-mcp-router/config.json`. No log files, no echo to terminal beyond the immediate confirmation, no clipboard write.
 - Don't auto-restart Claude. Tell the user to do it themselves.
 - Don't add a remote vault entry without a full set of `name`, `baseUrl`, `apiKey`. Refuse and ask for the missing fields.
 - Don't pretend the setup-vault.mjs script exists if it doesn't. Fall back to the manual path.

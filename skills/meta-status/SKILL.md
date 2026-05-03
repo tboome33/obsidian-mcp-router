@@ -13,7 +13,7 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
    ```json
    {
      "defaultVault": "tradingview",
-     "configPath": "/Users/.../.claude/mcp-obsidian/config.json",
+     "configPath": "/Users/.../.claude/obsidian-mcp-router/config.json",
      "vaults": [
        {
          "name": "tradingview",

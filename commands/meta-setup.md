@@ -14,8 +14,8 @@ Walks the user through installing **obsidian-mcp-router** and replacing their ex
 ## Pre-requisites to verify
 
 1. `node --version` ≥ 18.
-2. `~/.claude/mcp-obsidian/config.json` exists with at least one entry in `portRegistry`. If not, run `node ~/.claude/mcp-obsidian/scripts/setup-vault.mjs <vault-path>` first (see the `obsidian-vault-setup` skill).
-3. Obsidian is installed and at least one vault has the Local REST API + MCP Tools plugins activated.
+2. `~/.claude/obsidian-mcp-router/config.json` exists with at least one entry in `portRegistry`. If not, run `node <router-repo>/scripts/setup-vault.mjs <vault-path>` first.
+3. Obsidian is installed and at least one vault has the Local REST API + MCP Router Bridge plugins activated.
 
 ## Install steps
 

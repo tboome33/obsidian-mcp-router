@@ -1,7 +1,7 @@
 /**
  * Vault registry loader.
  *
- * Reads ~/.claude/mcp-obsidian/config.json (the same file used by setup-vault.mjs)
+ * Reads ~/.claude/obsidian-mcp-router/config.json (the same file used by setup-vault.mjs)
  * and produces a flat list of vault descriptors that the rest of the router uses.
  *
  * Supported sources, in order:
@@ -20,7 +20,7 @@ import os from 'node:os';
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
   '.claude',
-  'mcp-obsidian',
+  'obsidian-mcp-router',
   'config.json',
 );
 
@@ -33,7 +33,7 @@ export async function loadRegistry({ configPath } = {}) {
   const raw = await fs.readFile(cfgPath, 'utf8').catch((err) => {
     throw new Error(
       `Cannot read config at ${cfgPath} (${err.code}). ` +
-        `Run 'node ~/.claude/mcp-obsidian/scripts/setup-vault.mjs <vault-path>' ` +
+        `Run 'node <router-repo>/scripts/setup-vault.mjs <vault-path>' ` +
         `to bootstrap a vault, or pass --config <path> / set OBSIDIAN_ROUTER_CONFIG.`,
     );
   });
@@ -51,7 +51,11 @@ export async function loadRegistry({ configPath } = {}) {
 
   for (const [vaultPath, port] of Object.entries(portRegistry)) {
     const name = vaultNames[vaultPath] || defaultNameFromPath(vaultPath);
-    if (disabled.has(name)) {
+    // disabledVaults entries can be either the resolved vault NAME or the
+    // raw PATH (the registry key). Accepting both is friendlier — users
+    // rarely remember the auto-generated name (defaultNameFromPath) but
+    // know their vault path.
+    if (disabled.has(name) || disabled.has(vaultPath)) {
       skipped.push({ name, type: 'local', reason: 'disabled' });
       continue;
     }
@@ -73,8 +77,12 @@ export async function loadRegistry({ configPath } = {}) {
   const remotes = Array.isArray(config.remoteVaults) ? config.remoteVaults : [];
   for (const r of remotes) {
     if (!r.name || !r.baseUrl || !r.apiKey) {
+      // Redact secrets before logging — the malformed entry can contain
+      // apiKey or extraHeaders.{CF-Access-Client-Secret, ...} that we
+      // must never write to logs.
+      const safe = redactSecrets(r);
       console.error(
-        `[registry] Skipping malformed remoteVault entry: ${JSON.stringify(r)}. ` +
+        `[registry] Skipping malformed remoteVault entry: ${JSON.stringify(safe)}. ` +
           `Required: name, baseUrl, apiKey.`,
       );
       continue;
@@ -146,6 +154,24 @@ function defaultNameFromPath(p) {
   const base = path.basename(p);
   // strip leading dot (.template → template) and lowercase
   return base.replace(/^\./, '').toLowerCase();
+}
+
+/**
+ * Returns a shallow copy of a remoteVault entry with sensitive fields
+ * (apiKey, extraHeaders.*) replaced by "<redacted>". Used before logging
+ * malformed entries — never write a user's API key or Cloudflare Access
+ * service-token secret to a logfile or terminal.
+ */
+function redactSecrets(entry) {
+  if (!entry || typeof entry !== 'object') return entry;
+  const out = { ...entry };
+  if ('apiKey' in out) out.apiKey = '<redacted>';
+  if (out.extraHeaders && typeof out.extraHeaders === 'object') {
+    out.extraHeaders = Object.fromEntries(
+      Object.keys(out.extraHeaders).map((k) => [k, '<redacted>']),
+    );
+  }
+  return out;
 }
 
 async function readLocalApiKey(vaultPath) {

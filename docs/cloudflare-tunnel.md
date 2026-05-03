@@ -27,7 +27,7 @@ brew install cloudflared                          # macOS
 sudo apt install cloudflared                      # Debian/Ubuntu
 
 # Make sure Obsidian is open and the Local REST API plugin is active
-# (port 27124+ for the first vault — check ~/.claude/mcp-obsidian/config.json
+# (port 27124+ for the first vault — check ~/.claude/obsidian-mcp-router/config.json
 # or Obsidian Settings → Local REST API).
 
 # Start an ephemeral tunnel pointing at the vault's REST API
@@ -47,7 +47,7 @@ cloudflared prints a public URL on startup, e.g.:
 
 ### On the client machine (the one running Claude/the router)
 
-Edit `~/.claude/mcp-obsidian/config.json` and add:
+Edit `~/.claude/obsidian-mcp-router/config.json` and add:
 
 ```json
 {

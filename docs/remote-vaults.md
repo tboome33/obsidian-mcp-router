@@ -22,7 +22,7 @@ By default, the Local REST API plugin only listens on `127.0.0.1`. To expose it 
 
 ## Step 2 — add the vault to the router
 
-Edit `~/.claude/mcp-obsidian/config.json` and add an entry to `remoteVaults`:
+Edit `~/.claude/obsidian-mcp-router/config.json` and add an entry to `remoteVaults`:
 
 ```json
 {
