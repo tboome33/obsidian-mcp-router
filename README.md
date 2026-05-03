@@ -13,7 +13,7 @@ If you keep more than one Obsidian vault — a personal wiki, a research vault, 
 What you get:
 
 - **One MCP entry** in `~/.claude.json` (user scope) → all vaults visible from any Claude Desktop/Code session.
-- **Local + remote vaults**, treated identically. Add a vault running on your QNAP, your iPad over Tailscale, or a headless VPS by dropping its URL + API key into the config.
+- **Local + remote vaults**, treated identically. Whether your vaults live on your PC or on a remote machine reachable through (for example) a Cloudflare Tunnel, you wire them in the same way — drop the URL + API key into the config.
 - **Cross-vault search**: pass `vault: "*"` to the `search` tool to fan-out across every vault in parallel.
 
 ## Capabilities
@@ -88,7 +88,7 @@ See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) belo
 | Command | Effect | Trigger phrasings |
 |---|---|---|
 | `/obsidian-router:meta-setup` | Bootstrap the router on a fresh machine (clone, npm link, register MCP) | *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* / *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* |
-| `/obsidian-router:meta-add-vault` | Interactive flow to add a vault (local via `setup-vault.mjs`, or remote) | *"add a vault to the router"*, *"connect my QNAP vault"* / *"ajoute un vault au router"*, *"connecte mon vault QNAP"* |
+| `/obsidian-router:meta-add-vault` | Interactive flow to add a vault (local via `setup-vault.mjs`, or remote) | *"add a vault to the router"*, *"connect my remote vault"* / *"ajoute un vault au router"*, *"connecte mon vault distant"* |
 | `/obsidian-router:meta-status` | Health-check every vault with per-issue fix hints | *"diagnose the router"*, *"are my vaults reachable"* / *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* |
 
 ### 📚 10 knowledge-management commands (Karpathy-style LLM-wiki)
@@ -612,7 +612,7 @@ Si tu maintiens plusieurs vaults Obsidian — un wiki perso, un vault de recherc
 Ce que tu obtiens :
 
 - **Une seule entrée MCP** dans `~/.claude.json` (user scope) → tous les vaults sont visibles depuis n'importe quelle session Claude Desktop ou Code.
-- **Vaults locaux et distants traités à l'identique**. Tu ajoutes un vault qui tourne sur ton QNAP, ton iPad via Tailscale, ou un VPS headless en posant simplement son URL + sa clé API dans le config.
+- **Vaults locaux et distants traités à l'identique**. Que tes vaults soient sur ton PC ou sur une machine distante accessible (par exemple) à travers un tunnel Cloudflare, tu les branches de la même manière — pose l'URL + la clé API dans le config.
 - **Recherche cross-vault** : passe `vault: "*"` à l'outil `search` pour lancer la recherche sur tous les vaults en parallèle.
 
 ### Capacités
@@ -687,7 +687,7 @@ Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) plus ba
 | Commande | Effet | Phrases déclencheuses |
 |---|---|---|
 | `/obsidian-router:meta-setup` | Bootstrap du router sur une machine neuve (clone, npm link, registration MCP) | *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* / *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* |
-| `/obsidian-router:meta-add-vault` | Flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant) | *"ajoute un vault au router"*, *"connecte mon vault QNAP"* / *"add a vault to the router"*, *"connect my QNAP vault"* |
+| `/obsidian-router:meta-add-vault` | Flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant) | *"ajoute un vault au router"*, *"connecte mon vault distant"* / *"add a vault to the router"*, *"connect my remote vault"* |
 | `/obsidian-router:meta-status` | Health-check de chaque vault avec hints de fix par catégorie d'erreur | *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* / *"diagnose the router"*, *"are my vaults reachable"* |
 
 #### 📚 10 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
