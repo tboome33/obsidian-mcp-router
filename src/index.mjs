@@ -33,7 +33,7 @@ const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote) with their online status, latency, and metadata. Always call this first to discover which vaults are available.',
+      'List all configured Obsidian vaults (local and remote). Returns three fields: defaultVault (the name resolved by the cascade for the current session), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), and disabled[] (vaults skipped by the disabledVaults config — name, type, reason). Always call this first to discover which vaults are available.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -428,7 +428,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.7.0',
+      version: '0.7.1',
     },
     {
       capabilities: {

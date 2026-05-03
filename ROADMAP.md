@@ -105,6 +105,20 @@ The default vault is no longer a single global value. The router now resolves it
 
 Backward compatible: setups without `OBSIDIAN_ROUTER_DEFAULT_VAULT` and without per-project `.env` resolve exactly as before via tiers 3-5.
 
+## ✅ v0.7.1 — `list_vaults` exposes disabled vaults (shipped)
+
+The `list_vaults` MCP tool used to silently filter disabled vaults from its response — they were tracked in the registry's internal `skipped[]` but never surfaced to MCP clients. Users asking *"which vaults are disabled?"* had no programmatic answer.
+
+- ✅ `list_vaults` response gains a `disabled[]` field. Always returned (even when empty), so callers don't have to special-case the missing-field case.
+- ✅ Each entry: `{ name, type, reason }`. Disabled vaults are NOT pinged (no point — they're hidden from the MCP surface, pinging would just add noise).
+- ✅ Tool description updated to document the new field.
+- ✅ `discover-list-vaults` slash command updated:
+   - New EN/FR triggers: "which vaults are active", "which vaults are disabled", "show me all vaults including disabled" / equivalent FR.
+   - Rendering instructions now adapt to the user's intent (active only, disabled only, or both).
+- ✅ Unit test added in `tests/registry.test.mjs` for the `skipped[]` shape.
+
+Backward compatible: existing callers that only read `vaults[]` ignore the new `disabled[]` field with no impact.
+
 ## v0.8 — Cloudflare Tunnel companion plugin
 
 A separate **Obsidian community plugin** that provisions a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for the local vault's REST API. Goal: the user clicks a button in Obsidian, the vault becomes reachable from anywhere via a stable HTTPS URL, with optional auth.

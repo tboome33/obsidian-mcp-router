@@ -385,4 +385,21 @@ describe('loadRegistry — integration', () => {
     assert.deepEqual(r.vaults.map((v) => v.name), ['alpha']);
     assert.deepEqual(r.skipped.map((s) => s.name), ['beta']);
   });
+
+  test('loadRegistry exposes skipped[] with name + type + reason', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'alpha', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+      disabledVaults: ['beta'],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].name, 'beta');
+    assert.equal(r.skipped[0].type, 'remote');
+    assert.equal(r.skipped[0].reason, 'disabled');
+  });
 });

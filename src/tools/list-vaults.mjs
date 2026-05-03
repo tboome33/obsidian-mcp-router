@@ -2,7 +2,10 @@
  * list_vaults — meta-tool that returns the catalogue of configured vaults
  * along with their online status and latency.
  *
- * Pings each vault in parallel.
+ * Pings each ACTIVE vault in parallel. Disabled vaults are surfaced in a
+ * separate `disabled[]` field with their reason — they are NOT pinged
+ * (no point: they're hidden from the MCP surface, and pinging them
+ * would just add latency and timeout noise).
  */
 import { pingVault } from '../rest-client.mjs';
 
@@ -25,9 +28,20 @@ export async function listVaults(registry) {
     }),
   );
 
+  // Disabled vaults from the registry's skipped[] list. Read-only metadata
+  // (no ping). Each entry has { name, type, reason }. Always returned, even
+  // when empty, so callers don't have to special-case "no disabled" vs
+  // "field missing".
+  const disabled = (registry.skipped || []).map((s) => ({
+    name: s.name,
+    type: s.type,
+    reason: s.reason,
+  }));
+
   return {
     defaultVault: registry.defaultVault,
     configPath: registry.configPath,
     vaults: results,
+    disabled,
   };
 }
