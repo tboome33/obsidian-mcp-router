@@ -8,12 +8,12 @@ Instead of registering one MCP per vault (one process, one port, one API key), t
 
 ## Why
 
-If you keep more than one Obsidian vault — a personal wiki, a research vault, a vault on your NAS, a vault behind a Cloudflare Tunnel — you don't want to register a separate MCP server per vault and switch context every time. This router is one process that knows about all of them and routes each tool call to the right one based on a `vault` parameter.
+If you keep more than one Obsidian vault — local or remote, in any combination — you don't want to register a separate MCP server per vault and switch context every time. This router is one process that knows about all of them and routes each tool call to the right one based on a `vault` parameter.
 
 What you get:
 
 - **One MCP entry** in `~/.claude.json` (user scope) → all vaults visible from any Claude Desktop/Code session.
-- **Local + remote vaults**, treated identically. Whether your vaults live on your PC or on a remote machine reachable through (for example) a Cloudflare Tunnel, you wire them in the same way — drop the URL + API key into the config.
+- **Local + remote vaults**, treated identically. Drop the URL + API key into the config; the router doesn't care where the vault actually runs.
 - **Cross-vault search**: pass `vault: "*"` to the `search` tool to fan-out across every vault in parallel.
 
 ## Capabilities
@@ -607,12 +607,12 @@ Au lieu d'enregistrer un MCP par vault (un process, un port, une clé API), ce r
 
 ### Pourquoi
 
-Si tu maintiens plusieurs vaults Obsidian — un wiki perso, un vault de recherche, un vault sur ton NAS, un vault derrière un Cloudflare Tunnel — tu ne veux pas enregistrer un serveur MCP par vault et changer de contexte à chaque fois. Ce router est **un seul** process qui les connaît tous et route chaque appel d'outil vers le bon en fonction d'un paramètre `vault`.
+Si tu maintiens plusieurs vaults Obsidian — locaux ou distants, dans n'importe quelle combinaison — tu ne veux pas enregistrer un serveur MCP par vault et changer de contexte à chaque fois. Ce router est **un seul** process qui les connaît tous et route chaque appel d'outil vers le bon en fonction d'un paramètre `vault`.
 
 Ce que tu obtiens :
 
 - **Une seule entrée MCP** dans `~/.claude.json` (user scope) → tous les vaults sont visibles depuis n'importe quelle session Claude Desktop ou Code.
-- **Vaults locaux et distants traités à l'identique**. Que tes vaults soient sur ton PC ou sur une machine distante accessible (par exemple) à travers un tunnel Cloudflare, tu les branches de la même manière — pose l'URL + la clé API dans le config.
+- **Vaults locaux et distants traités à l'identique**. Pose l'URL + la clé API dans le config ; le router se moque d'où le vault tourne réellement.
 - **Recherche cross-vault** : passe `vault: "*"` à l'outil `search` pour lancer la recherche sur tous les vaults en parallèle.
 
 ### Capacités
