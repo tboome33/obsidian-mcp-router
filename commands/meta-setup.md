@@ -1,5 +1,13 @@
 ---
-description: Install obsidian-mcp-router and register it as the user-scope Obsidian MCP. Use when the user wants to switch from per-vault MCP entries to a single multi-vault router, or when bootstrapping the router on a fresh machine.
+description: |
+  Install obsidian-mcp-router and register it as the user-scope Obsidian MCP. Walks through cloning the repo, npm install, npm link, and registering the resulting binary in ~/.claude.json. Use when bootstrapping the router on a fresh machine or migrating off per-vault MCP entries.
+
+  EN triggers: "install the router", "set up obsidian-mcp-router", "bootstrap the router on this machine", "register the router as MCP", "switch from per-vault MCPs to the router".
+  FR triggers : "installe le router", "setup le obsidian-mcp-router", "bootstrap le router sur cette machine", "enregistre le router comme MCP", "passe des MCP par vault au router unique".
+
+  Example / Exemple:
+    EN: "install the obsidian-mcp-router on this machine"
+    FR: "installe le obsidian-mcp-router sur cette machine"
 ---
 
 # meta-setup

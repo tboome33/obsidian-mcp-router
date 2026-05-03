@@ -1,5 +1,13 @@
 ---
-description: Create a new file, or replace the entire content of an existing one. Pass ifNew=true to refuse overwrite.
+description: |
+  Create a new file, or replace the entire content of an existing one. Pass ifNew=true to refuse overwrite.
+
+  EN triggers: "create a note X", "make a file at X", "write X", "replace X with this content", "save this as X.md".
+  FR triggers : "crée une note X", "fais un fichier à X", "écris X", "remplace X par ce contenu", "enregistre ça comme X.md".
+
+  Example / Exemple:
+    EN: "create a note Sessions/2026-05-03.md with my morning review"
+    FR: "crée la note Sessions/2026-05-03.md avec mon point du matin"
 ---
 
 # write-create-or-replace

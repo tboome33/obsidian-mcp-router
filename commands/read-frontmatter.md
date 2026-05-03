@@ -1,5 +1,13 @@
 ---
-description: Read frontmatter (the whole object or one key) from a file. Types are preserved.
+description: |
+  Read frontmatter (the whole object or one key) from a file. Types are preserved (numbers stay numbers, arrays stay arrays).
+
+  EN triggers: "what's the frontmatter of X", "show me the metadata of X", "read the properties of X", "what's the status of X", "get the tags on X".
+  FR triggers : "quel est le frontmatter de X", "montre les méta de X", "lis les properties de X", "quel est le statut de X", "récupère les tags de X".
+
+  Example / Exemple:
+    EN: "what's the status of Trades/AAPL.md"
+    FR: "quel est le statut de Trades/AAPL.md"
 ---
 
 # read-frontmatter

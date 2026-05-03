@@ -1,5 +1,13 @@
 ---
-description: Semantic search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs.
+description: |
+  Semantic search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Use when the query is conceptual (meaning, not literal substring).
+
+  EN triggers: "find notes about X", "what do I have on X", "semantic search for X", "find concepts related to X", "notes similar to <topic>".
+  FR triggers : "trouve mes notes sur X", "qu'est-ce que j'ai sur X", "recherche sémantique sur X", "concepts liés à X", "notes similaires à <sujet>".
+
+  Example / Exemple:
+    EN: "find my notes about position sizing"
+    FR: "trouve mes notes sur la taille de position"
 ---
 
 # read-search-smart

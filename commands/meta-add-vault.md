@@ -1,5 +1,13 @@
 ---
-description: Interactive flow to add a new Obsidian vault (local or remote) to the obsidian-mcp-router config. Use whenever the user wants to "add a vault to the router", "register a new obsidian vault", "connect a remote vault", "set up Obsidian for this project", or any phrasing implying a new vault should be wired up to the multi-vault router.
+description: |
+  Interactive flow to add a new Obsidian vault (local or remote) to the obsidian-mcp-router config. Disambiguates local vs remote, gathers required fields, runs setup-vault.mjs for local vaults, edits config.json directly for remote vaults, optionally pings the new vault for live verification.
+
+  EN triggers: "add a vault to the router", "register a new obsidian vault", "connect my QNAP vault", "set up Obsidian for this project", "wire up <path> as a vault".
+  FR triggers : "ajoute un vault au router", "enregistre un nouveau vault obsidian", "connecte mon vault QNAP", "setup Obsidian pour ce projet", "branche <chemin> comme vault".
+
+  Example / Exemple:
+    EN: "add a vault for my QNAP at https://192.168.0.11:27125"
+    FR: "ajoute un vault pour mon QNAP à https://192.168.0.11:27125"
 ---
 
 # meta-add-vault

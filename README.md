@@ -31,7 +31,7 @@ Semantic search (`search_smart`) and Templater execution (`execute_template`) re
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes 26 slash commands under the `/obsidian-router:*` namespace:
+The repo doubles as a **Claude Code plugin marketplace** that exposes 27 slash commands under the `/obsidian-router:*` namespace:
 
 **14 wrappers**, one per MCP tool, organised in 5 categories:
 
@@ -49,7 +49,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes 26 slash c
 - `/obsidian-router:meta-add-vault` — interactive flow to add a vault (local or remote)
 - `/obsidian-router:meta-status` — health-check of every configured vault with fix hints
 
-**9 knowledge-management commands + 11 skills** implementing a Karpathy-style LLM-wiki workflow on top of the router. The wiki pattern: an LLM-maintained, structured markdown knowledge base where pages reference each other and the system grows with use.
+**10 knowledge-management commands + 11 skills** implementing a Karpathy-style LLM-wiki workflow on top of the router. The wiki pattern: an LLM-maintained, structured markdown knowledge base where pages reference each other and the system grows with use.
 
 | Workflow | Command | What it does |
 |---|---|---|
@@ -62,8 +62,9 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes 26 slash c
 | Research | `/obsidian-router:autoresearch` | Autonomous web→synth→file loop bounded by a research program |
 | Canvas | `/obsidian-router:canvas` | Create/edit Obsidian `.canvas` files (visual layer) |
 | Defuddle | `/obsidian-router:defuddle` | Strip noise from webpages before ingestion |
+| Bases | `/obsidian-router:obsidian-bases` | Create/edit Obsidian `.base` files (database-like views over frontmatter) |
 
-Plus two Obsidian-specific reference skills (no slash command — they're knowledge surfaced when other skills run): `obsidian-bases` (writes Obsidian `.base` files for dynamic database views) and `obsidian-markdown` (Obsidian Flavored Markdown reference for wikilinks, embeds, callouts, properties, etc.).
+Plus one Obsidian-specific reference skill (no slash command — knowledge surfaced when other skills run): `obsidian-markdown` (Obsidian Flavored Markdown reference for wikilinks, embeds, callouts, properties, etc.). Note that `obsidian-bases` is BOTH a reference skill AND has its own slash command (the row above) — other skills consult it when they need to generate `.base` files, and you can also invoke it directly.
 
 **Two parallel sub-agents** for batch work:
 - `wiki-ingest` agent — fan out one source per agent, parallel
@@ -140,7 +141,7 @@ Add the marketplace + enable the plugin in `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code. Type `/obsidian-router:` — the 26 slash commands should appear in autocomplete.
+Restart Claude Code. Type `/obsidian-router:` — the 27 slash commands should appear in autocomplete.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
@@ -157,7 +158,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 26 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 27 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -405,7 +406,7 @@ La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_te
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose 26 slash commands sous le namespace `/obsidian-router:*` :
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose 27 slash commands sous le namespace `/obsidian-router:*` :
 
 **14 wrappers**, un par outil MCP, organisés en 5 catégories :
 
@@ -423,7 +424,7 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose 26 slash c
 - `/obsidian-router:meta-add-vault` — flux interactif pour ajouter un vault (local ou distant)
 - `/obsidian-router:meta-status` — health-check de tous les vaults avec hints de fix
 
-**9 commandes de gestion de connaissances + 11 skills** qui implémentent un workflow de wiki LLM façon Karpathy par-dessus le router. Le pattern : une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et où le système croît avec l'usage.
+**10 commandes de gestion de connaissances + 11 skills** qui implémentent un workflow de wiki LLM façon Karpathy par-dessus le router. Le pattern : une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et où le système croît avec l'usage.
 
 | Workflow | Commande | Effet |
 |---|---|---|
@@ -436,8 +437,9 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose 26 slash c
 | Recherche | `/obsidian-router:autoresearch` | Boucle web→synthèse→file autonome bornée par un programme |
 | Canvas | `/obsidian-router:canvas` | Création/édition de fichiers `.canvas` Obsidian (couche visuelle) |
 | Defuddle | `/obsidian-router:defuddle` | Strip le bruit des pages web avant ingestion |
+| Bases | `/obsidian-router:obsidian-bases` | Crée/édite des fichiers `.base` Obsidian (vues database sur frontmatter) |
 
-Plus deux skills de référence Obsidian (sans slash command — surfacés quand d'autres skills tournent) : `obsidian-bases` (écrit des fichiers `.base` Obsidian pour des vues database dynamiques) et `obsidian-markdown` (référence du Obsidian Flavored Markdown : wikilinks, embeds, callouts, properties, etc.).
+Plus un skill de référence Obsidian (sans slash command — surfacé quand d'autres skills tournent) : `obsidian-markdown` (référence du Obsidian Flavored Markdown : wikilinks, embeds, callouts, properties, etc.). Note : `obsidian-bases` est À LA FOIS un skill de référence ET a sa propre slash command (la ligne au-dessus) — d'autres skills le consultent quand ils ont besoin de générer des fichiers `.base`, et tu peux aussi l'invoquer directement.
 
 **Deux sub-agents parallèles** pour les batches :
 - agent `wiki-ingest` — fan-out un agent par source, en parallèle
@@ -514,7 +516,7 @@ Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
 }
 ```
 
-Redémarre Claude Code. Tape `/obsidian-router:` — les 26 slash commands doivent apparaître dans l'autocomplete.
+Redémarre Claude Code. Tape `/obsidian-router:` — les 27 slash commands doivent apparaître dans l'autocomplete.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
@@ -531,7 +533,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 26 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 27 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 

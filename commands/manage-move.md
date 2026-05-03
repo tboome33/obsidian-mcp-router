@@ -1,5 +1,13 @@
 ---
-description: Move or rename a file. GET source → PUT destination → DELETE source.
+description: |
+  Move or rename a file. The router does GET source → PUT destination → DELETE source (Local REST API has no native move). Reports if the source-delete step fails so you can clean up.
+
+  EN triggers: "rename X to Y", "move X to Y", "relocate X into <folder>", "move X into the archive", "send X to <folder>".
+  FR triggers : "renomme X en Y", "déplace X vers Y", "déplace X dans <dossier>", "archive X", "envoie X dans <dossier>".
+
+  Example / Exemple:
+    EN: "rename Sessions/draft.md to Sessions/2026-05-03.md"
+    FR: "renomme Sessions/draft.md en Sessions/2026-05-03.md"
 ---
 
 # manage-move

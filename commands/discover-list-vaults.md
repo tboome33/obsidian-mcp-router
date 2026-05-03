@@ -1,5 +1,13 @@
 ---
-description: List all configured Obsidian vaults with online status, latency, and any issues.
+description: |
+  List all configured Obsidian vaults with online status, latency, and any issues.
+
+  EN triggers: "list my vaults", "show me my Obsidian vaults", "what vaults do I have", "are my vaults online".
+  FR triggers : "liste mes vaults", "montre mes vaults Obsidian", "quels vaults j'ai", "mes vaults sont-ils en ligne".
+
+  Example / Exemple:
+    EN: "list my Obsidian vaults"
+    FR: "liste mes vaults Obsidian"
 ---
 
 # discover-list-vaults

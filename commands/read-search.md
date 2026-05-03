@@ -1,5 +1,13 @@
 ---
-description: Plain-text (substring) search inside a vault, with surrounding context.
+description: |
+  Plain-text (substring) search inside a vault, with surrounding context.
+
+  EN triggers: "find <text> in my vault", "search for the literal string X", "grep for X", "where do I mention X", "find files containing X".
+  FR triggers : "trouve <texte> dans mon vault", "cherche la chaîne X littéralement", "grep <X>", "où est-ce que je mentionne X", "trouve les fichiers contenant X".
+
+  Example / Exemple:
+    EN: "find 'risk management' in my vault"
+    FR: "cherche 'gestion du risque' dans mes notes"
 ---
 
 # read-search

@@ -1,5 +1,13 @@
 ---
-description: List files and subdirectories inside a vault directory (or vault root).
+description: |
+  List files and subdirectories inside a vault directory (or vault root).
+
+  EN triggers: "list files in X", "show me what's in <folder>", "what's inside <folder>", "ls X", "browse the X directory".
+  FR triggers : "liste les fichiers de X", "qu'est-ce qu'il y a dans <dossier>", "montre le dossier X", "ls X".
+
+  Example / Exemple:
+    EN: "list files in Sessions"
+    FR: "liste les fichiers du dossier Sessions"
 ---
 
 # discover-list-files

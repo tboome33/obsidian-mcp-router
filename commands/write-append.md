@@ -1,5 +1,13 @@
 ---
-description: Append content at the end of a file. Auto-creates the file unless requireExisting=true.
+description: |
+  Append content at the end of a file. Auto-creates the file unless requireExisting=true. Best for daily journals, logs, running captures.
+
+  EN triggers: "add to X", "append to my journal", "log this in X", "tack on the end of X", "add a line to X".
+  FR triggers : "ajoute à X", "append dans mon journal", "log ça dans X", "rajoute à la fin de X", "ajoute une ligne à X".
+
+  Example / Exemple:
+    EN: "append 'closed AAPL position +2.3%' to Trades/journal.md"
+    FR: "ajoute 'fermé position AAPL +2,3%' à Trades/journal.md"
 ---
 
 # write-append

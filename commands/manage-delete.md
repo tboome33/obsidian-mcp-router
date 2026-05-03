@@ -1,5 +1,17 @@
 ---
-description: Permanently delete a file. Requires explicit confirm=true to proceed.
+description: |
+  Permanently delete a file. Requires explicit confirm=true on a second invocation — first call shows a preview and refuses, second call with confirm=true proceeds. Designed against accidental deletes from hallucinated tool calls.
+
+  EN triggers: "delete X", "remove the file X", "trash X", "wipe X", "get rid of X.md".
+  FR triggers : "supprime X", "efface le fichier X", "mets X à la corbeille", "vire X", "débarrasse-moi de X.md".
+
+  Confirmation triggers (only after a preview, only for the SAME path that was just previewed — don't loosen the guard):
+    EN: "yes confirm=true", "go ahead", "confirm delete X", "yes delete it".
+    FR : "oui confirm=true", "vas-y", "confirme la suppression de X", "oui supprime".
+
+  Example / Exemple:
+    EN: "delete Sessions/old-test.md" → preview, then "yes confirm=true"
+    FR: "supprime Sessions/old-test.md" → preview, puis "oui confirm=true"
 ---
 
 # manage-delete

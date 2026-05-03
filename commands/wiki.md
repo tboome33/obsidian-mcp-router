@@ -1,5 +1,13 @@
 ---
-description: Bootstrap a Karpathy-style LLM wiki structure inside an Obsidian vault — scaffolds index.md, log.md, hot.md, overview.md and updates CLAUDE.md so Claude knows how to navigate. Optionally takes a mode (personal, research, business, code, domain). Use to set up a vault for ongoing knowledge management with Claude.
+description: |
+  Bootstrap a Karpathy-style LLM-wiki structure inside an Obsidian vault — scaffolds index.md, log.md, hot.md, overview.md and updates CLAUDE.md so Claude knows how to navigate. Optionally takes a mode (personal, research, business, code, domain).
+
+  EN triggers: "set up a wiki", "scaffold a knowledge base", "create my second brain", "bootstrap this vault for note-taking with Claude", "turn this vault into a wiki".
+  FR triggers : "scaffold un wiki", "crée une base de connaissances", "monte mon second brain", "bootstrap ce vault pour la prise de notes avec Claude", "transforme ce vault en wiki".
+
+  Example / Exemple:
+    EN: "scaffold a research-mode wiki in my Recherche vault"
+    FR: "scaffold un wiki en mode recherche dans mon vault Recherche"
 ---
 
 Invoke the `wiki` skill to scaffold the target vault.

@@ -1,5 +1,13 @@
 ---
-description: File the current Claude conversation (or a specific insight from it) as a structured wiki note with appropriate type frontmatter (session, answer, decision, ADR, technique, idea). Auto-routes to the right wiki folder, builds cross-links, and updates index/log/hot. The most-used wiki workflow — do it at the end of any substantive session.
+description: |
+  File the current Claude conversation (or a specific insight from it) as a structured wiki note with appropriate type frontmatter (session, answer, decision, ADR, technique, idea). Auto-routes to the right wiki folder, builds cross-links, and updates index/log/hot. The most-used wiki workflow — do it at the end of any substantive session.
+
+  EN triggers: "save this", "save that answer", "file this conversation", "keep this as a note", "save this as a decision/ADR/technique", "save this session".
+  FR triggers : "sauvegarde ça", "garde cette réponse", "archive cette conversation", "garde ça comme note", "sauvegarde ça comme décision/ADR/technique", "classe cette session dans le wiki".
+
+  Example / Exemple:
+    EN: "save this conversation as my-trading-plan"
+    FR: "sauvegarde cette conversation sous mon-plan-trading"
 ---
 
 Invoke the `save` skill.

@@ -1,5 +1,13 @@
 ---
-description: Diagnose the obsidian-mcp-router and all its configured vaults. Pings each vault, reports online/offline/auth status, and suggests fixes for each issue type. Use when the user says "check vault status", "diagnose the router", "are my vaults reachable", "status of obsidian", "what's wrong with the router", or asks to debug an obsidian connection issue.
+description: |
+  Diagnose the obsidian-mcp-router and all its configured vaults. Pings each vault, reports online/offline/auth status, and suggests fixes for each issue type (offline-local vs offline-remote vs cf_access vs unauthorized vs slow).
+
+  EN triggers: "check vault status", "diagnose the router", "are my vaults reachable", "status of obsidian", "what's wrong with the router", "which vaults are online".
+  FR triggers : "vérifie l'état des vaults", "diagnostique le router", "mes vaults sont-ils accessibles", "statut d'obsidian", "qu'est-ce qui cloche avec le router", "quels vaults sont en ligne".
+
+  Example / Exemple:
+    EN: "diagnose my Obsidian router — TradingView seems offline"
+    FR: "diagnostique le router Obsidian — TradingView a l'air offline"
 ---
 
 # meta-status

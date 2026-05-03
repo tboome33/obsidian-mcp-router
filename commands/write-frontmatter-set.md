@@ -1,5 +1,13 @@
 ---
-description: Set or replace a single frontmatter property. Type-preserving.
+description: |
+  Set or replace a single frontmatter property. Type-preserving (numbers stay numbers, arrays stay arrays).
+
+  EN triggers: "set status to X on Y", "tag this with X", "set the property X on Y", "mark Y as <status>", "change the score of X to Y".
+  FR triggers : "passe le statut de Y à X", "tag ça avec X", "mets la property X sur Y", "marque Y comme <statut>", "change le score de X à Y".
+
+  Example / Exemple:
+    EN: "set status to closed on Trades/AAPL.md"
+    FR: "passe le statut de Trades/AAPL.md à closed"
 ---
 
 # write-frontmatter-set

@@ -1,5 +1,13 @@
 ---
-description: Read the full content of a file from a vault (markdown + frontmatter).
+description: |
+  Read the full content of a file from a vault (markdown + frontmatter).
+
+  EN triggers: "show me X", "open the file X", "read X", "what's in X.md", "fetch X".
+  FR triggers : "montre-moi X", "ouvre le fichier X", "lis X", "qu'est-ce qu'il y a dans X.md", "récupère X".
+
+  Example / Exemple:
+    EN: "show me Sessions/2026-05-03.md"
+    FR: "ouvre Sessions/2026-05-03.md"
 ---
 
 # read-get

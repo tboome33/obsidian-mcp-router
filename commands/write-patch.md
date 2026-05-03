@@ -1,5 +1,13 @@
 ---
-description: Surgical edit — insert/replace under a specific heading, block id, or frontmatter key.
+description: |
+  Surgical edit — insert/replace under a specific heading, block id, or frontmatter key. Use when you need to modify ONE section of a long note without rewriting the whole file.
+
+  EN triggers: "edit the X section in Y", "update the heading X", "modify the block X", "replace the content under X", "insert under heading Y".
+  FR triggers : "édite la section X dans Y", "mets à jour le titre X", "modifie le bloc X", "remplace le contenu sous X", "insère sous le titre Y".
+
+  Example / Exemple:
+    EN: "in Indicators/ATP.md, replace the content under heading 'Module 5::Pendant le trade' with: ..."
+    FR: "dans Indicators/ATP.md, remplace le contenu sous le titre 'Module 5::Pendant le trade' par : ..."
 ---
 
 # write-patch

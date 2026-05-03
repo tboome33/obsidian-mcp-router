@@ -1,5 +1,13 @@
 ---
-description: Apply multiple frontmatter updates at once (sequential, NOT atomic — see notes).
+description: |
+  Apply multiple frontmatter updates at once (sequential, NOT atomic — partial failures are reported per-key). Use when you want to update 2+ properties on the same file in one call.
+
+  EN triggers: "update multiple properties on X", "set status, score, and tags on X", "mark Y as closed with outcome stopped", "bulk-update the metadata of X".
+  FR triggers : "mets à jour plusieurs propriétés sur X", "définis status, score et tags sur X en une fois", "marque Y comme closed avec outcome stopped", "mets à jour plusieurs métadonnées de X d'un coup".
+
+  Example / Exemple:
+    EN: "on Trades/AAPL.md set status=closed outcome=tp1 closed_at=2026-05-03"
+    FR: "sur Trades/AAPL.md mets status=closed outcome=tp1 closed_at=2026-05-03"
 ---
 
 # write-frontmatter-merge
