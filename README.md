@@ -121,6 +121,8 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 
 The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.claude/settings.json`. Reference: [`hooks/hooks.json`](./hooks/hooks.json).
 
+**🆕 Auto-enrichment (v0.8.1, Phase 0)** — Claude proactively suggests wiki saves at three natural moments: **validation** (you say "OK" / "valide" → inline pin), **result obtained** (commit pushed, tests green → digest of candidates), and **topic switch** (mandatory checkpoint before Claude responds to the new topic). Mode is hardcoded `ClaudeAsk` — Claude proposes, you always confirm. Domain-agnostic: works for development, personal life, research, family planning, anything. Placement: shipped in the vault `CLAUDE.md` template, also configurable as Claude Desktop **Project instructions** (an elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Family" project to `roland`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md) and the activation rules.
+
 Install steps are in the [Install](#install) section below.
 
 ## Prerequisites
@@ -719,6 +721,8 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - `Stop` — propose de rafraîchir `wiki/hot.md` si des fichiers ont changé
 
 Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux dans `~/.claude/settings.json`. Référence : [`hooks/hooks.json`](./hooks/hooks.json).
+
+**🆕 Auto-enrichissement (v0.8.1, Phase 0)** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Mode hardcodé `ClaudeAsk` — Claude propose, tu confirmes toujours. Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi. Placement : shipped dans le `CLAUDE.md` template du vault, aussi configurable en **instructions de Project Claude Desktop** (un pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Famille" dans `roland`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global) et les règles d'activation.
 
 Étapes d'install dans la section [Installation](#installation) ci-dessous.
 

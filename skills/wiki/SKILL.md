@@ -73,23 +73,17 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 
    Verify after writing: call `mcp__obsidian-router__list_files({ vault, directory: "wiki" })` and confirm all four files appear. If they ended up at vault root by mistake, use `move_file` to relocate each to `wiki/<name>.md` before continuing to step 4.
 
-4. Append a `CLAUDE.md` block at the vault root (or create the file if absent). The block tells Claude how to navigate the wiki:
-   ```
-   ## Wiki Knowledge Base
+4. Write/append the canonical wiki `CLAUDE.md` block at the vault root.
 
-   Path: <vault-path>
+   **Source of truth**: read `templates/wiki/CLAUDE.md` from the plugin install directory and use ITS content (with `{{VAULT_PATH}}` substituted) as the block. The template includes:
+   - The wiki navigation rules (read hot → index → drill, append log, refresh hot)
+   - The "always use obsidian-router MCP" reminder
+   - The list of available `/obsidian-router:wiki-*` workflows
+   - The **auto-enrichment Phase 0 consigne** (3 triggers: validation pins, result digests, topic-switch checkpoints — `ClaudeAsk` mode, domain-agnostic)
 
-   When you need context not already in this conversation:
-   1. Read `wiki/hot.md` first (cheap, recent context).
-   2. If not enough, read `wiki/index.md` to find the relevant page.
-   3. Drill into specific wiki pages.
-   4. After substantive work, append a 1-line entry to `wiki/log.md`.
-   5. After substantive work, refresh `wiki/hot.md` with the latest state.
+   If you cannot read the template file, fall back to inlining the structure manually — but verify with `mcp__obsidian-router__get_file({ vault, path: "CLAUDE.md" })` afterward that the auto-enrichment section is present, and add it explicitly if missing.
 
-   Use the `obsidian-router` MCP for all reads/writes — it's the multi-vault aware path.
-   ```
-
-   Use `mcp__obsidian-router__append_to_file` if `CLAUDE.md` exists, else `write_file` with `ifNew: true`.
+   Use `mcp__obsidian-router__write_file` with `ifNew: true` if `CLAUDE.md` is absent. If it exists, use `append_to_file` BUT first check (via `get_file`) that the wiki block isn't already there — re-running scaffold should NOT duplicate the block.
 
 5. Append the scaffold operation to `wiki/log.md` itself:
    ```

@@ -1,7 +1,7 @@
 {
   "name": "obsidian-router",
   "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 29 commands across four layers: (1) wrappers for the router's 14 MCP primitives (discover/read/write/manage/template); (2) 2 isolation commands (lock / unlock — single-vault mode for safety, user routing on shared installs, focused sessions); (3) a Karpathy-style LLM-wiki workflow (wiki, wiki-ingest, wiki-query, wiki-lint, wiki-fold, save, autoresearch); (4) Obsidian-specific helpers (canvas, defuddle, obsidian-bases, obsidian-markdown). Hooks (cross-platform Node, opt-in) auto-load the hot.md cache on session start, auto-commit wiki changes, and prompt for hot.md refresh after substantive turns. Pairs with the npm package obsidian-mcp-router which provides the underlying multi-vault MCP server.",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "author": {
     "name": "tboome33",
     "url": "https://github.com/tboome33"
