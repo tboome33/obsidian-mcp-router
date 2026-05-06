@@ -132,16 +132,45 @@ describe('normalizePathForCompare', () => {
 // ---------------------------------------------------------------------------
 
 describe('defaultNameFromPath', () => {
-  test('strips leading dot and lowercases', () => {
+  // ⚠️ REGRESSION TESTS — these existed before commit 7740a6a but only passed
+  // on Windows by accident (where Node's default `path` IS path.win32). On
+  // POSIX runtime they failed because `path.basename('C:\\VAULTS\\.template')`
+  // returned the whole string verbatim. The fix routes Windows-style inputs
+  // to `path.win32.basename` regardless of runtime — these tests now pin
+  // that behavior so a regression would be caught on ANY CI runner.
+
+  test('strips leading dot and lowercases (Windows path)', () => {
     assert.equal(defaultNameFromPath('C:\\VAULTS\\.template'), 'template');
   });
 
-  test('lowercases without leading dot', () => {
+  test('lowercases without leading dot (Windows path)', () => {
     assert.equal(defaultNameFromPath('C:\\VAULTS\\TradingView'), 'tradingview');
   });
 
-  test('handles POSIX paths', () => {
+  test('handles POSIX absolute paths', () => {
     assert.equal(defaultNameFromPath('/home/user/Vaults/Recherche'), 'recherche');
+  });
+
+  test('Windows path with mixed forward/backslash separators', () => {
+    // Real-world: people sometimes write `C:/VAULTS/X` in JSON to avoid
+    // having to escape backslashes. path.win32 handles this.
+    assert.equal(defaultNameFromPath('C:/VAULTS/.template'), 'template');
+  });
+
+  test('UNC network share path', () => {
+    assert.equal(defaultNameFromPath('\\\\nas-01\\Vaults\\Wiki'), 'wiki');
+  });
+
+  test('Windows extended-length prefix (\\\\?\\)', () => {
+    assert.equal(defaultNameFromPath('\\\\?\\C:\\VAULTS\\.template'), 'template');
+  });
+
+  test('empty string is safe', () => {
+    assert.equal(defaultNameFromPath(''), '');
+  });
+
+  test('POSIX path with leading dot folder', () => {
+    assert.equal(defaultNameFromPath('/srv/vaults/.shared'), 'shared');
   });
 });
 

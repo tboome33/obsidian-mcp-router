@@ -110,10 +110,15 @@ function warn(msg) {
 }
 
 function defaultNameFromPath(p) {
-  const base = path.basename(p);
-  // strip leading dot (.template → template) and lowercase — must match
-  // src/registry.mjs's defaultNameFromPath() exactly so disabled-by-name
-  // checks behave identically here and at runtime.
+  // MUST match src/registry.mjs's defaultNameFromPath() exactly so
+  // disabled-by-name checks (and the printStatus output) match what the
+  // router computes at runtime. The structural Windows-path detection
+  // mirrors `isWindowsPath` in registry.mjs — duplicated inline because
+  // setup-vault.mjs is intentionally a standalone script with no
+  // src/registry.mjs imports (runs in npm preinstall scenarios etc.).
+  // If you change either copy, change BOTH and add a regression test.
+  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
+  const base = (isWindows ? path.win32 : path.posix).basename(p);
   return base.replace(/^\./, '').toLowerCase();
 }
 

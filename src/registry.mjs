@@ -160,17 +160,26 @@ export async function loadRegistry({ configPath } = {}) {
   };
 }
 
+/**
+ * Detect Windows-style paths structurally so we can route to the correct
+ * `path` module regardless of runtime. Returns true for:
+ *   - Drive-letter:           `C:\VAULTS\X`, `C:/VAULTS/X`
+ *   - UNC (network share):    `\\server\share\Vault`
+ *   - Extended-length prefix: `\\?\C:\path`, `\\?\UNC\server\share\path`
+ *
+ * Used by every helper that takes a path which MAY come from the registry
+ * config (where Windows paths are stored verbatim even when the runtime
+ * is POSIX — e.g., a CI matrix runner on Linux loading a Windows-paths
+ * config). Without this, `path.basename` / `path.join` etc. on POSIX would
+ * treat `\` as a literal character and produce garbage.
+ */
+function isWindowsPath(p) {
+  if (!p || typeof p !== 'string') return false;
+  return /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
+}
+
 function defaultNameFromPath(p) {
-  // Detect Windows-style paths structurally (drive letter or UNC prefix) and
-  // pick the right path module. Default Node `path` is POSIX-flavored on
-  // Linux, so `path.basename('C:\\VAULTS\\.template')` returns the whole
-  // string verbatim — `\` isn't a separator on POSIX. Same paths on Windows
-  // would correctly yield `.template`. The router's config holds Windows
-  // paths even when the runtime is POSIX (rare, but happens in CI), so we
-  // can't rely on the platform-default `path`. Mirror the same detection
-  // pattern used in normalizePathForCompare for consistency.
-  const isWindowsPath = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindowsPath ? path.win32 : path.posix).basename(p);
+  const base = (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
   // strip leading dot (.template → template) and lowercase
   return base.replace(/^\./, '').toLowerCase();
 }
@@ -193,9 +202,7 @@ function defaultNameFromPath(p) {
  */
 function normalizePathForCompare(p) {
   if (!p) return p;
-  const isDriveLetter = /^[A-Za-z]:[\\/]/.test(p);
-  const isUNC = /^\\\\/.test(p); // `\\server\share\...` or `\\?\...`
-  const isWindowsStyle = isDriveLetter || isUNC;
+  const isWindowsStyle = isWindowsPath(p);
   const lib = isWindowsStyle ? path.win32 : path.posix;
   let n = lib.normalize(p);
   // Strip a trailing separator except for the root marker itself. For UNC
@@ -277,7 +284,15 @@ function redactSecrets(entry) {
 }
 
 async function readLocalApiKey(vaultPath) {
-  const dataPath = path.join(
+  // Same cross-platform consideration as defaultNameFromPath: vaultPath
+  // may be a Windows-style string from config even when runtime is POSIX
+  // (CI matrix on Linux). `path.posix.join` on `C:\VAULTS\X` would produce
+  // `C:\VAULTS\X/.obsidian/...` — well-formed in neither universe.
+  // Fall through to a real file read either way; the caller's `.catch`
+  // will mark the vault `missingApiKey: true` if the path is unreachable
+  // from this runtime, which is the honest answer.
+  const lib = isWindowsPath(vaultPath) ? path.win32 : path.posix;
+  const dataPath = lib.join(
     vaultPath,
     '.obsidian',
     'plugins',
