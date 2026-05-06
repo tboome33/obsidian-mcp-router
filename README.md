@@ -2,6 +2,13 @@
   <img src="./docs/assets/logo.png" alt="obsidian-mcp-router — multi-vault MCP server" width="540">
 </p>
 
+<p align="center">
+  <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.8.2-blueviolet.svg" alt="version"></a>
+</p>
+
 # obsidian-mcp-router
 
 > *🇬🇧 English version below — [🇫🇷 version française](#-version-française)*
@@ -634,6 +641,13 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
 
 <p align="center">
   <img src="./docs/assets/logo.png" alt="obsidian-mcp-router — serveur MCP multi-vaults" width="540">
+</p>
+
+<p align="center">
+  <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.8.2-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
