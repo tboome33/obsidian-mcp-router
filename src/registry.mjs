@@ -161,7 +161,16 @@ export async function loadRegistry({ configPath } = {}) {
 }
 
 function defaultNameFromPath(p) {
-  const base = path.basename(p);
+  // Detect Windows-style paths structurally (drive letter or UNC prefix) and
+  // pick the right path module. Default Node `path` is POSIX-flavored on
+  // Linux, so `path.basename('C:\\VAULTS\\.template')` returns the whole
+  // string verbatim — `\` isn't a separator on POSIX. Same paths on Windows
+  // would correctly yield `.template`. The router's config holds Windows
+  // paths even when the runtime is POSIX (rare, but happens in CI), so we
+  // can't rely on the platform-default `path`. Mirror the same detection
+  // pattern used in normalizePathForCompare for consistency.
+  const isWindowsPath = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
+  const base = (isWindowsPath ? path.win32 : path.posix).basename(p);
   // strip leading dot (.template → template) and lowercase
   return base.replace(/^\./, '').toLowerCase();
 }
