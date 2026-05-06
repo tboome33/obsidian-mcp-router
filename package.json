@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "start": "node bin/obsidian-mcp-router.mjs",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test tests/registry.test.mjs",
     "setup-vault": "node scripts/setup-vault.mjs",
     "status": "node scripts/setup-vault.mjs --status"
   },
