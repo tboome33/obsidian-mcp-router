@@ -296,7 +296,17 @@ function appendGitignore(vaultPath) {
 //   2. Re-render PDFs via Chrome headless (--print-to-pdf=...)
 //   3. Copy PDFs to `.template/`
 //   4. `npm run setup-vault -- <existing-vault> --sync-plugins --force` to push update.
-const ROOT_FILES_TO_CLONE = ['README.md', 'quick-reference-fr.pdf', 'quick-reference-en.pdf'];
+//
+// `.claude/` (directory) ships a per-workspace `.claude/settings.json` that enables
+// the obsidian-router plugin scoped to this vault only — instead of forcing users
+// to add it to their global `~/.claude/settings.json` (which would load the 30+
+// slash commands + skills in EVERY Claude Code session, even on unrelated
+// projects, costing ~10k context tokens per session). With project-scope, the
+// plugin only loads in vault workspaces. The reference vault `.template/.claude/
+// settings.json` is the canonical content; cpSync handles the directory clone
+// recursively. Existing per-vault `.claude/settings.json` files are preserved by
+// the no-overwrite guard (use --force to push template updates).
+const ROOT_FILES_TO_CLONE = ['README.md', 'quick-reference-fr.pdf', 'quick-reference-en.pdf', '.claude'];
 
 function cloneRootDocs(referenceVault, targetVault, force) {
   for (const item of ROOT_FILES_TO_CLONE) {

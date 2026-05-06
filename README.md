@@ -187,7 +187,7 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 
 ### Step 2 — Install the plugin
 
-Add the marketplace + enable the plugin in `~/.claude/settings.json`:
+**Register the marketplace globally** in `~/.claude/settings.json`:
 
 ```json
 {
@@ -198,14 +198,25 @@ Add the marketplace + enable the plugin in `~/.claude/settings.json`:
         "repo": "tboome33/obsidian-mcp-router"
       }
     }
-  },
+  }
+}
+```
+
+**Then enable the plugin per-workspace**, NOT globally. The plugin loads ~30 slash commands and ~12 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
+
+```json
+{
   "enabledPlugins": {
     "obsidian-router@obsidian-mcp-router-marketplace": true
   }
 }
 ```
 
-Restart Claude Code. Type `/obsidian-router:` — the 30 slash commands should appear in autocomplete.
+For vaults bootstrapped via `setup-vault.mjs`, this file is **cloned automatically** from `.template/.claude/settings.json` — you don't have to write it by hand. For non-vault workspaces (dev repos that work with vault content), copy the snippet above into `<workspace>/.claude/settings.json`.
+
+Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 30 slash commands should appear. From a workspace without, the namespace stays clean.
+
+> **Why not enable it globally?** If you put `enabledPlugins` in `~/.claude/settings.json` instead of per-workspace, the plugin loads in EVERY Claude Code session — random scripts, debug sessions, unrelated repos — paying ~10k tokens for commands those sessions will never use. Project-scope keeps the budget tight.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
@@ -806,7 +817,7 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 
 #### Étape 2 — Installer le plugin
 
-Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
+**Enregistre le marketplace globalement** dans `~/.claude/settings.json` :
 
 ```json
 {
@@ -817,14 +828,25 @@ Ajoute le marketplace + active le plugin dans `~/.claude/settings.json` :
         "repo": "tboome33/obsidian-mcp-router"
       }
     }
-  },
+  }
+}
+```
+
+**Puis active le plugin par workspace**, PAS globalement. Le plugin charge ~30 slash commands et ~12 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
+
+```json
+{
   "enabledPlugins": {
     "obsidian-router@obsidian-mcp-router-marketplace": true
   }
 }
 ```
 
-Redémarre Claude Code. Tape `/obsidian-router:` — les 30 slash commands doivent apparaître dans l'autocomplete.
+Pour les vaults bootstrappés via `setup-vault.mjs`, ce fichier est **cloné automatiquement** depuis `.template/.claude/settings.json` — pas à écrire à la main. Pour les workspaces hors-vault (repos de code qui travaillent avec le contenu d'un vault), copie le snippet ci-dessus dans `<workspace>/.claude/settings.json`.
+
+Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 30 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
+
+> **Pourquoi pas en global ?** Si tu mets `enabledPlugins` dans `~/.claude/settings.json` au lieu de per-workspace, le plugin se charge dans CHAQUE session Claude Code — scripts random, sessions de debug, repos sans rapport — payant ~10k tokens pour des commandes que ces sessions n'utiliseront jamais. Le project-scope garde le budget serré.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
