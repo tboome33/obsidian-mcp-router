@@ -29,7 +29,7 @@ Nothing pending right now.
 - Tests for `lock_vault` + `set_auto_enrich_mode` homedir refusal now assert that `~/.env` was NOT created/mutated when the call was rejected (parity fix).
 
 ### Tests
-- 83/83 passing.
+- 88/88 passing.
 
 ## [0.8.1] — 2026-05-03
 

@@ -63,7 +63,7 @@ The router stops being a "boot once and forget" black box. It now reflects confi
 
 ## ✅ v0.5.0 — Rebrand cleanup, integrated setup scripts, runtime hardening (shipped)
 
-Removed all references to the now-obsolete jacksteamdev/mcp-tools dependency and consolidated the multi-vault provisioning into the router repo itself.
+Removed all references to the previously-required jacksteamdev/mcp-tools dependency and consolidated the multi-vault provisioning into the router repo itself.
 
 - ✅ Default config home moved from `~/.claude/mcp-obsidian/config.json` → `~/.claude/obsidian-mcp-router/config.json`
 - ✅ `setup-vault.mjs` and `sync-hook.mjs` now ship inside the repo at `scripts/` (previously lived in the user's Claude home dir)
