@@ -1,13 +1,5 @@
 ---
-description: |
-  Create or modify Obsidian canvas (.canvas) files — the visual layout layer for wiki pages, images, PDFs, and free-form text cards. Supports add-text, add-file, add-link, add-zone, add-to-zone, list, and capture-recent-images. Auto-positions new nodes so you don't have to hand-place them.
-
-  EN triggers: "create a canvas for X", "add to my canvas", "show this on a canvas", "make a visual board for X", "add image to canvas", "add note to canvas".
-  FR triggers : "crée un canvas pour X", "ajoute à mon canvas", "montre ça sur un canvas", "fais un tableau visuel pour X", "ajoute une image au canvas", "ajoute une note au canvas".
-
-  Example / Exemple:
-    EN: "create a canvas 'mood-board' and add the last 8 images from _attachments/"
-    FR: "crée un canvas 'mood-board' et ajoute les 8 dernières images de _attachments/"
+description: Create or modify Obsidian canvas (.canvas) files — visual layout with auto-positioning for wiki pages, images, links, zones. (Skill `canvas` handles natural-language triggers.)
 ---
 
 Invoke the `canvas` skill.

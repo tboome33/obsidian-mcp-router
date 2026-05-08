@@ -1,15 +1,5 @@
 ---
-description: |
-  Answer a question grounded in the EXISTING wiki vault — no web fetching. Three-tier retrieval (hot.md → index.md → drill into pages), with semantic search fallback in deep mode. Optionally files good answers back as wiki pages. Use when the user wants the wiki's view, not the model's general knowledge.
-
-  EN triggers: "what do you know about X (from my wiki)", "based on my notes, ...", "explain X using my wiki", "search my wiki for X", "what does my wiki say about X".
-  FR triggers : "que dit mon wiki sur X", "d'après mes notes, ...", "explique X à partir de mon wiki", "cherche dans mon wiki sur X", "qu'est-ce que mon wiki dit sur X".
-
-  Example / Exemple:
-    EN: "based on my notes, what's my approach to position sizing?"
-    FR: "d'après mes notes, c'est quoi mon approche pour la taille de position ?"
-
-  Disambiguation: "research X" alone is ambiguous between this skill (deep wiki query, no web) and `autoresearch` (web-fed). When unclear, ask the user which they want.
+description: Answer a question grounded in the EXISTING wiki vault (no web fetching) — three-tier retrieval with optional semantic search. (Skill `wiki-query` handles natural-language triggers.)
 ---
 
 Invoke the `wiki-query` skill on the user's question.

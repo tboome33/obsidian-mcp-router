@@ -1,13 +1,5 @@
 ---
-description: |
-  Ingest a source (URL, file, or pasted text) into the wiki — extracts entities and concepts, files them as cross-referenced wiki pages, and updates index/log/hot. Single source or batch (multiple sources fan out via the wiki-ingest sub-agent). Use after the wiki is scaffolded.
-
-  EN triggers: "ingest this URL", "absorb this article", "file this in the wiki", "process this source", "add this to my knowledge base", "ingest all of these".
-  FR triggers : "ingère cette URL", "absorbe cet article", "file ça dans le wiki", "traite cette source", "ajoute ça à ma base de connaissances", "ingère tout ça".
-
-  Example / Exemple:
-    EN: "ingest https://example.com/post into my Recherche wiki"
-    FR: "ingère https://example.com/article dans mon wiki Recherche"
+description: Ingest a source (URL, file, or pasted text) into the wiki — extracts entities/concepts, files them as cross-referenced pages. (Skill `wiki-ingest` handles natural-language triggers.)
 ---
 
 Invoke the `wiki-ingest` skill on the source(s) provided.

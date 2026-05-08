@@ -1,13 +1,5 @@
 ---
-description: |
-  Health-check the wiki — finds orphan pages, dead wikilinks, index drift, frontmatter gaps, empty sections, and stale hot cache. Reports by severity (error/warning/info) with proposed fixes. Read-only by default; offers interactive auto-fix for ERROR-level findings only with explicit confirmation.
-
-  EN triggers: "lint the wiki", "health check my wiki", "audit my wiki", "find orphan pages", "what's broken in my wiki", "clean up the wiki".
-  FR triggers : "lint le wiki", "vérifie la santé du wiki", "audit mon wiki", "trouve les pages orphelines", "qu'est-ce qui cloche dans mon wiki", "fais le ménage dans le wiki".
-
-  Example / Exemple:
-    EN: "lint my Recherche wiki and show me dead links"
-    FR: "lint mon wiki Recherche et montre les liens morts"
+description: Health-check the wiki — orphans, dead wikilinks, index drift, frontmatter gaps. Read-only by default with optional auto-fix. (Skill `wiki-lint` handles natural-language triggers.)
 ---
 
 Invoke the `wiki-lint` skill on the target vault.

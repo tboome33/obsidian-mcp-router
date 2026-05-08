@@ -1,13 +1,5 @@
 ---
-description: |
-  Strip noise (ads, nav, cookie banners, comment threads, footers) from a webpage and return clean readable markdown — saves 40-60% tokens before ingestion. Typically chained with wiki-ingest or invoked inside autoresearch.
-
-  EN triggers: "clean this page", "defuddle <url>", "strip the noise from <url>", "fetch and clean <url>", "give me the readable version of <url>".
-  FR triggers : "nettoie cette page", "extrais la version lisible de <url>", "récupère le contenu propre de <url>", "récupère et nettoie <url>", "donne-moi la version lisible de <url>".
-
-  Example / Exemple:
-    EN: "defuddle https://news-site.com/article-with-heavy-chrome and show me what's left"
-    FR: "defuddle https://site-news.com/article-avec-chrome-lourd et montre ce qui reste"
+description: Strip noise from a webpage and return clean readable markdown — saves 40-60% tokens before ingestion. (Skill `defuddle` handles natural-language triggers.)
 ---
 
 Invoke the `defuddle` skill on the URL.

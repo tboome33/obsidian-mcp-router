@@ -1,13 +1,5 @@
 ---
-description: |
-  Roll up the wiki's log.md entries into a structurally-idempotent fold page under wiki/folds/ — extractive summarization (no invention) with backlinks to children. Defaults to the last 16 log entries; accepts explicit count or time-bounded windows.
-
-  EN triggers: "fold the log", "roll up recent activity", "compact the log", "summarize this week's wiki activity", "fold the last 32 entries".
-  FR triggers : "compacte le journal", "compacte le log", "fais un récapitulatif de l'activité récente", "résume l'activité wiki de cette semaine", "compacte les 32 dernières entrées du journal".
-
-  Example / Exemple:
-    EN: "fold this week's log entries"
-    FR: "compacte les entrées du journal de cette semaine"
+description: Roll up wiki/log.md entries into a structurally-idempotent fold page — extractive summarization with backlinks to children. (Skill `wiki-fold` handles natural-language triggers.)
 ---
 
 Invoke the `wiki-fold` skill on the target vault.
