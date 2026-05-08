@@ -61,7 +61,7 @@ const ROUTER_BIN = path.join(REPO_ROOT, 'bin', 'obsidian-mcp-router.mjs');
 const NODE_EXE = process.execPath;
 
 // --- Required plugins: must exist in reference vault, otherwise we fail --
-const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'obsidian-mcp-router-bridge'];
+const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 // --- Optional plugins: cloned if present in reference vault, else skipped ---
 const OPTIONAL_PLUGINS = ['smart-connections', 'templater-obsidian', 'dataview', 'obsidian-bases'];
 const PLUGINS_TO_CLONE = [...REQUIRED_PLUGINS, ...OPTIONAL_PLUGINS];

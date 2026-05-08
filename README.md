@@ -163,8 +163,11 @@ You also need:
 
 - **Node.js ≥ 20.18.1** (required by `undici@7`)
 - At least one vault provisioned in `~/.claude/obsidian-mcp-router/config.json`. If you've never set this up, run `npm run setup-vault -- "<vault-path>"` from a clone of this repo, or invoke [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directly — it'll bootstrap the config interactively. Schema reference: [`examples/config.example.json`](./examples/config.example.json).
+- A **reference vault** registered with the router. It holds the canonical plugin set + config that `setup-vault.mjs` clones into every new vault. One-time setup procedure: [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
 ## Install
+
+> 📘 **Reference vault required for `setup-vault.mjs`** — to bootstrap new vaults via the script (which most users will want), you first need a one-time-configured reference vault holding the canonical plugin set. See [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) for the full procedure (which plugins, the `mcp-router-bridge` folder-vs-id naming gotcha, registration with `--init-reference`).
 
 Two pieces to install: the **MCP server** (the router itself, exposes the 14 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
 
@@ -808,8 +811,11 @@ Il te faut aussi :
 
 - **Node.js ≥ 20.18.1** (required by `undici@7`)
 - Au moins un vault provisionné dans `~/.claude/obsidian-mcp-router/config.json`. Si tu n'as jamais fait ce setup, lance `npm run setup-vault -- "<vault-path>"` depuis un clone de ce repo, ou invoque [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directement — il bootstrappe la config interactivement. Référence du schéma : [`examples/config.example.json`](./examples/config.example.json).
+- Un **vault de référence** enregistré auprès du router. Il contient le set canonique de plugins + config que `setup-vault.mjs` clone dans chaque nouveau vault. Procédure de setup unique : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
 
 ### Installation
+
+> 📘 **Vault de référence requis pour `setup-vault.mjs`** — pour bootstrapper de nouveaux vaults via le script (ce que la plupart des utilisateurs voudront), il faut d'abord un vault de référence configuré une seule fois qui contient le set canonique de plugins. Voir [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais) pour la procédure complète (quels plugins, le piège de nommage `mcp-router-bridge` dossier-vs-id, enregistrement avec `--init-reference`).
 
 Deux composants à installer : le **MCP server** (le router lui-même, expose les 14 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
 
