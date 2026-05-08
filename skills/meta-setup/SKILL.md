@@ -72,6 +72,30 @@ To get `/obsidian-router:*` slash commands (vault discovery, reads, writes, etc.
 
 Restart Claude Code. Type `/obsidian-router:` to see the autocomplete list.
 
+## Bump the skill-listing budget (recommended)
+
+The router contributes ~30 skills (slash commands + skills) to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — Claude Code then truncates skill descriptions or drops them entirely, which silently disables natural-language triggering for `/save`, `/wiki`, `/autoresearch`, etc.
+
+**Recommended fix**: raise the budget to `0.05` (5%) in `~/.claude/settings.json`.
+
+### Steps
+
+1. Read `~/.claude/settings.json` (use the `Read` tool — handle the BOM if Windows-created: `JSON.parse` after stripping `﻿` from the start).
+2. Look for `skillListingBudgetFraction`:
+   - **Absent** → propose to add `"skillListingBudgetFraction": 0.05`.
+   - **Present and < 0.03** → propose to bump to `0.05`.
+   - **Present and ≥ 0.03** → leave alone (already enough).
+3. Show the user the proposed change + the trade-off (below) and **ask for confirmation** before editing — this is a global setting, never edit silently.
+4. If confirmed, merge into the existing JSON (don't replace the file). Use the `Edit` tool, not `Write`, to preserve unrelated keys (`env`, `permissions`, `hooks`, etc.).
+
+### Trade-off to communicate
+
+- **Cost**: ~6k extra tokens of context per session (the skill listing is sent at every turn).
+- **Benefit**: every router skill stays listed with its full description → natural-language triggers work consistently. Without the bump, skills like `/save` and `/wiki` are among the first to be dropped because they're competing with default Anthropic skills + other plugins.
+- **Indicator that the bump worked**: at next session start, no `Skill listing will be truncated` warning in the diagnostics.
+
+If the user has a tight context budget for other reasons (e.g., they run a lot of large `Read` calls), a value of `0.03` is a safer middle ground — covers the router but leaves more headroom.
+
 ## Verify
 
 1. Restart Claude Desktop / Claude Code.
