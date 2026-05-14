@@ -87,13 +87,17 @@ duration_messages: <count>
 
 ### 5. Write the body
 
-This is the part that requires care. Don't dump the raw transcript verbatim. Distill:
+This is the part that requires care. Don't dump the raw transcript verbatim. Distill.
 
-- **For `answer`**: lead with the question (or what was asked), then the answer rewritten for standalone reading. Future-you might read this in 6 months without context.
-- **For `session`**: short narrative — what was tried, what worked, what didn't, the final outcome. 200-500 words.
-- **For `decision` / `adr`**: classic ADR shape — Context, Decision, Consequences. The conversation likely already had this implicitly.
-- **For `technique` / `runbook`**: step-by-step procedure, with prerequisites and gotchas inline.
-- **For `idea`**: the nucleus of the idea, why it matters, what would make it concrete.
+**Heading hierarchy is MANDATORY** — see the vault `CLAUDE.md` section "Note structure — headings hierarchy". TL;DR: one `# H1` matching the title at top, then proper `## H2` sections (never skip levels, never use bold as faux-heading). Outline panel relies on it.
+
+- **For `answer`**: `# <Title>` → `## Question` → `## Answer` → optional `## See also`. Future-you might read this in 6 months without context.
+- **For `session`**: `# <Title>` → `## Prompt` → `## What happened` → `## Outcome` → optional `## See also`. 200-500 words across the H2 sections.
+- **For `decision` / `adr`**: `# <Title>` → `## Context` → `## Decision` → `## Consequences` → optional `## Alternatives considered`. The conversation likely already had this implicitly.
+- **For `technique` / `runbook`**: `# <Title>` → `## Prerequisites` → `## Steps` → `## Gotchas` → optional `## See also`. Step-by-step procedure with prerequisites and gotchas inline.
+- **For `idea`**: `# <Title>` → `## The idea` → `## Why it matters` → `## Concrete first step`. The nucleus of the idea, why it matters, what would make it concrete.
+
+If the content is genuinely too thin to support 2 `## H2` sections, push back to the user: *"This is too brief for a standalone page — append as a line to `wiki/facts.md` instead?"* Don't produce a flat single-section note that defeats Outline navigation.
 
 End with a `## See also` section linking to wiki pages mentioned during the conversation: `[[Page A]]`, `[[Page B]]`.
 

@@ -72,7 +72,14 @@ tags: [<source-type>, <topic-tags>]
 ---
 ```
 
-Body: 1-2 paragraph summary of what the source says, then a "## Key Claims" section with 3-7 bulleted claims (each ≤2 lines, factual, citable). End with a "## Related" section that wikilinks to the entity/concept pages you're about to create or update.
+Body structure (heading hierarchy is MANDATORY — see vault `CLAUDE.md` section "Note structure"):
+
+- `# <title>` — exactly one H1 at the top (matches the frontmatter title).
+- `## Summary` — 1-2 paragraph summary of what the source says.
+- `## Key Claims` — 3-7 bulleted claims (each ≤2 lines, factual, citable).
+- `## Related` — wikilinks to the entity/concept pages you're about to create or update.
+
+Never produce a flat body without H2 sections — Outline plugin relies on the structure for navigation.
 
 Use `mcp__obsidian-router__write_file` with `ifNew: true`. If a page with this slug already exists, **stop and ask** — never silently overwrite.
 
@@ -80,7 +87,7 @@ Use `mcp__obsidian-router__write_file` with `ifNew: true`. If a page with this s
 
 For each entity/concept identified in step 2:
 
-- **New page**: `mcp__obsidian-router__write_file` with frontmatter `type: entity` (or `concept`), tags, and a body that introduces the entity in 1-3 paragraphs. Add a `## Sources` section with a wikilink to the source page you just filed.
+- **New page**: `mcp__obsidian-router__write_file` with frontmatter `type: entity` (or `concept`), tags. Body MUST follow the heading hierarchy: one `# <title>` H1, then for `concept` use `## Definition` / `## Why it matters` / `## Related` / `## Sources`; for `entity` use `## Context` / `## Notes` / `## Sources`. End the body with a `## Sources` H2 that wikilinks to the source page you just filed.
 
 - **Existing page**: use `mcp__obsidian-router__patch_file` to:
   - Append a bullet under `## Sources` — fully-specified call:
