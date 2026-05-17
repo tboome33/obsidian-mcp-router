@@ -11,11 +11,14 @@
  *
  * Usage:
  *   node setup-vault.mjs <vault-path>
- *   node setup-vault.mjs <vault-path> --force          # overwrite existing files
- *   node setup-vault.mjs <vault-path> --regenerate     # force fresh port + apiKey
- *   node setup-vault.mjs <vault-path> --sync-plugins   # only sync new plugins from .template
- *   node setup-vault.mjs --init-reference <path>       # mark a vault as the reference
- *   node setup-vault.mjs --status                      # show config + registry
+ *   node setup-vault.mjs <vault-path> --force            # overwrite existing files
+ *   node setup-vault.mjs <vault-path> --regenerate       # force fresh port + apiKey
+ *   node setup-vault.mjs <vault-path> --sync-plugins     # only sync new plugins from .template
+ *   node setup-vault.mjs --bootstrap-reference <path>    # scaffold a fresh reference vault from
+ *                                                          templates/reference-vault-skeleton/
+ *                                                          + download bridge plugin from GitHub
+ *   node setup-vault.mjs --init-reference <path>         # mark an existing vault as the reference
+ *   node setup-vault.mjs --status                        # show config + registry
  *
  * Config file lives at: ~/.claude/obsidian-mcp-router/config.json
  * (kept outside this repo because it contains user-specific paths.)
@@ -24,6 +27,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import https from 'node:https';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
@@ -63,8 +67,38 @@ const NODE_EXE = process.execPath;
 // --- Required plugins: must exist in reference vault, otherwise we fail --
 const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 // --- Optional plugins: cloned if present in reference vault, else skipped ---
+// Note: this list is the SUPERSET of plugins setup-vault.mjs is willing to
+// clone from a reference. The shipped skeleton's `community-plugins.json`
+// (templates/reference-vault-skeleton/.obsidian/community-plugins.json) lists
+// a SUBSET — the "default recommended set" enabled out of the box. `dataview`
+// and `obsidian-bases` are NOT in the skeleton; they're cloned only if the
+// user (a) adds them to their own reference vault later, OR (b) uses an
+// existing reference vault that already has them. This divergence is
+// intentional: the skeleton ships an opinionated minimal-but-useful set, the
+// script accommodates any user-grown reference.
 const OPTIONAL_PLUGINS = ['smart-connections', 'templater-obsidian', 'dataview', 'obsidian-bases', 'obsidian-quiet-outline'];
 const PLUGINS_TO_CLONE = [...REQUIRED_PLUGINS, ...OPTIONAL_PLUGINS];
+
+// --- Reference-vault skeleton: shipped with the repo, used by --bootstrap-reference --
+// Contains: .obsidian/community-plugins.json + app.json, .smart-env/smart_env.json,
+// .claude/settings.json, CLAUDE.md, wiki/{index,log,hot,overview}.md, README.md.
+// Does NOT contain plugin binaries (license + size reasons); --bootstrap-reference
+// downloads the bridge plugin from GitHub releases, and the user installs the
+// remaining marketplace plugins via Obsidian's Community Plugins browser.
+const SKELETON_DIR = path.join(REPO_ROOT, 'templates', 'reference-vault-skeleton');
+
+// --- Bridge plugin release: only non-marketplace required plugin --
+// `releases/latest/download/<asset>` is GitHub's stable URL pattern that
+// 302-redirects to the latest release asset's signed CDN URL.
+// `downloadToFile` follows the redirect chain. Both files are tiny
+// (main.js ~few KB, manifest.json <1KB).
+const BRIDGE_PLUGIN_URLS = {
+  'main.js': 'https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest/download/main.js',
+  'manifest.json': 'https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest/download/manifest.json',
+};
+// Expected plugin id in the manifest after download — guards against an
+// HTML error page or a wrong asset being silently accepted as JSON.
+const BRIDGE_EXPECTED_MANIFEST_ID = 'mcp-router-bridge';
 
 const COLORS = {
   reset: '\x1b[0m',
@@ -357,6 +391,207 @@ function cloneSmartEnv(referenceVault, targetVault, force) {
   }
 }
 
+// HTTPS GET with redirect following (GitHub releases use 302 chains).
+// Caps at 5 hops to avoid infinite redirect loops. Streams to a file rather
+// than buffering — the bridge plugin assets are small (~few KB) so this is
+// belt-and-suspenders, but keeps the helper reusable for larger downloads.
+// On ANY error (network, HTTP non-200, timeout, write failure) the partial
+// destination file is unlinked so the caller can retry or fall back to the
+// manual install path without an unusable truncated file sitting on disk.
+function downloadToFile(url, destPath, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    const cleanup = (err) => fs.unlink(destPath, () => reject(err));
+    const req = https.get(
+      url,
+      { headers: { 'User-Agent': 'obsidian-mcp-router-bootstrap' } },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          if (redirectsLeft <= 0) return cleanup(new Error(`Too many redirects: ${url}`));
+          const next = new URL(res.headers.location, url).toString();
+          return downloadToFile(next, destPath, redirectsLeft - 1).then(resolve, reject);
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          return cleanup(new Error(`HTTP ${res.statusCode} ${res.statusMessage || ''} for ${url}`));
+        }
+        const file = fs.createWriteStream(destPath);
+        res.pipe(file);
+        file.on('finish', () => file.close(() => resolve()));
+        file.on('error', cleanup);
+        res.on('error', cleanup);
+      },
+    );
+    req.on('error', cleanup);
+    req.setTimeout(30_000, () => req.destroy(new Error(`Timeout fetching ${url}`)));
+  });
+}
+
+// Sanity-check the downloaded bridge plugin: manifest.json must be valid JSON
+// with the expected plugin id. We've seen edge cases where a CDN returns an
+// HTML error page with HTTP 200 in front of GitHub release URLs, and we want
+// to catch that BEFORE the user enables the plugin in Obsidian and hits an
+// opaque "plugin failed to load" with a JS syntax error in console.
+function validateBridgePlugin(pluginDir) {
+  const manifestPath = path.join(pluginDir, 'manifest.json');
+  const mainJsPath = path.join(pluginDir, 'main.js');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (err) {
+    throw new Error(`manifest.json is not valid JSON — likely an HTML error page leaked through: ${err.message}`);
+  }
+  if (manifest.id !== BRIDGE_EXPECTED_MANIFEST_ID) {
+    throw new Error(`manifest.json id mismatch: got "${manifest.id}", expected "${BRIDGE_EXPECTED_MANIFEST_ID}"`);
+  }
+  // main.js sanity: if the first bytes look like HTML (`<!DOCTYPE`, `<html`),
+  // it's not a plugin bundle. We don't try to parse it as JS — too brittle —
+  // just refuse the obvious HTML-error-page case.
+  const head = fs.readFileSync(mainJsPath, { encoding: 'utf8', flag: 'r' }).slice(0, 64).trimStart().toLowerCase();
+  if (head.startsWith('<!doctype') || head.startsWith('<html')) {
+    throw new Error('main.js looks like an HTML page, not a JS bundle');
+  }
+}
+
+async function downloadBridgePlugin(pluginDir) {
+  fs.mkdirSync(pluginDir, { recursive: true });
+  for (const [asset, url] of Object.entries(BRIDGE_PLUGIN_URLS)) {
+    const dst = path.join(pluginDir, asset);
+    info(`Downloading mcp-router-bridge/${asset}…`);
+    await downloadToFile(url, dst);
+    ok(`Downloaded ${asset}`);
+  }
+  validateBridgePlugin(pluginDir);
+  ok(`Validated mcp-router-bridge manifest (id="${BRIDGE_EXPECTED_MANIFEST_ID}")`);
+}
+
+// Refuse paths that, combined with the destructive `--force` flag, could wipe
+// important user content if pasted by accident. We check:
+//   - empty / "." / "/" / Windows drive root (`C:\` or `C:`)
+//   - the user's HOME directory itself
+//   - the OS temp dir root
+// We intentionally do NOT try to enumerate "system" paths like /etc, /usr,
+// C:\Windows — fs permissions handle those. We catch the realistic footgun:
+// `--bootstrap-reference C:\Users\me --force` blowing away Documents/Desktop.
+function assertSafeBootstrapTarget(abs) {
+  if (!abs || abs === '.' || abs === '/' || abs === '\\') {
+    fail(`Refusing to bootstrap into "${abs}" — pass an explicit subdirectory path.`);
+  }
+  // Windows drive root: "C:" or "C:\" (path.resolve normalizes to "C:\")
+  if (/^[A-Za-z]:[\\/]?$/.test(abs)) {
+    fail(`Refusing to bootstrap into drive root "${abs}".`);
+  }
+  const norm = path.resolve(abs);
+  const dangerous = [
+    path.resolve(os.homedir()),
+    path.resolve(os.tmpdir()),
+  ];
+  if (dangerous.includes(norm)) {
+    fail(
+      `Refusing to bootstrap into "${norm}" — it's your home dir or temp root.\n  ` +
+      `Choose a dedicated subdirectory (e.g. ${path.join(norm, '.template')}).`
+    );
+  }
+}
+
+async function bootstrapReference(targetPath, opts = {}) {
+  if (!fs.existsSync(SKELETON_DIR)) {
+    fail(
+      `Skeleton not found at ${SKELETON_DIR}.\n  ` +
+      `This shouldn't happen with a normal checkout of obsidian-mcp-router.\n  ` +
+      `Verify the templates/reference-vault-skeleton/ directory exists in the repo.`
+    );
+  }
+
+  const abs = path.resolve(targetPath);
+  assertSafeBootstrapTarget(abs);
+
+  // Refuse if target exists and is non-empty, unless --force.
+  // We don't want to silently merge into a directory that may contain unrelated
+  // user content (or worse, a vault with real notes the user might think is being
+  // upgraded — that's what setup-vault.mjs <path> --sync-plugins is for).
+  if (fs.existsSync(abs)) {
+    const contents = fs.readdirSync(abs);
+    if (contents.length > 0 && !opts.force) {
+      fail(
+        `Target directory is not empty: ${abs}\n  ` +
+        `Pass --force to overwrite (DESTRUCTIVE), or choose a different path.\n  ` +
+        `If this is already a working vault, use --init-reference instead to just register it.`
+      );
+    }
+  }
+
+  fs.mkdirSync(abs, { recursive: true });
+
+  // Copy the skeleton — handles nested dirs (.obsidian/, .smart-env/, wiki/, .claude/).
+  // We don't need an entry-level "skip if exists" branch: the emptiness check
+  // above already gated the whole operation. With --force we wipe-and-replace
+  // each entry; without --force we only get here when the target was empty.
+  info(`Cloning skeleton from ${SKELETON_DIR}…`);
+  for (const entry of fs.readdirSync(SKELETON_DIR)) {
+    const src = path.join(SKELETON_DIR, entry);
+    const dst = path.join(abs, entry);
+    if (fs.existsSync(dst) && opts.force) {
+      fs.rmSync(dst, { recursive: true, force: true });
+    }
+    if (fs.statSync(src).isDirectory()) {
+      fs.cpSync(src, dst, { recursive: true });
+    } else {
+      fs.copyFileSync(src, dst);
+    }
+    ok(`Cloned ${entry}`);
+  }
+
+  // Download bridge plugin — the only non-marketplace REQUIRED plugin. The
+  // other required plugin (obsidian-local-rest-api) and the optional plugins
+  // (smart-connections, templater-obsidian, obsidian-quiet-outline) all live
+  // in Obsidian's Community Plugins marketplace, so the user installs them
+  // via Obsidian after we hand off. Obsidian auto-prompts to install plugins
+  // that are listed in `.obsidian/community-plugins.json` but not yet present
+  // under `.obsidian/plugins/`, which makes that step a couple of clicks.
+  //
+  // On any failure (download or validation), nuke the partially-populated
+  // plugin dir so we don't leave a broken plugin that Obsidian would refuse
+  // to load with a confusing error.
+  const bridgeDir = path.join(abs, '.obsidian', 'plugins', 'mcp-router-bridge');
+  try {
+    await downloadBridgePlugin(bridgeDir);
+  } catch (err) {
+    if (fs.existsSync(bridgeDir)) fs.rmSync(bridgeDir, { recursive: true, force: true });
+    warn(`Bridge plugin acquisition failed: ${err.message}`);
+    warn(`Install manually from: https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest`);
+    warn(`  → drop main.js + manifest.json into ${bridgeDir}`);
+  }
+
+  // Record the path in config.json. We don't call initReference() because
+  // its REQUIRED_PLUGINS check would fail (Local REST API isn't installed
+  // yet — user does that via Obsidian in the next step). The port reservation
+  // also happens later, after the user has launched Obsidian and the Local
+  // REST API plugin has written its data.json with the auto-generated port.
+  const cfg = loadConfig();
+  cfg.referenceVault = abs;
+  saveConfig(cfg);
+  ok(`Recorded referenceVault = ${abs}`);
+
+  console.log('');
+  console.log(c('bold', c('green', '✓ Reference vault skeleton created')));
+  console.log('');
+  console.log(c('bold', 'Next steps:'));
+  console.log(`  1. Open Obsidian → File → ${c('cyan', 'Open another vault')} → ${abs}`);
+  console.log(`  2. Trust the vault when prompted.`);
+  console.log(`  3. Obsidian will prompt you to install the plugins listed in community-plugins.json.`);
+  console.log(`     Click ${c('cyan', 'Install')} for: Local REST API, Smart Connections, Templater, Quiet Outline.`);
+  console.log(`     (The bridge plugin is already in place — no action needed for it.)`);
+  console.log(`  4. Enable all four in Settings → Community plugins.`);
+  console.log(`  5. Restart Obsidian once so Local REST API generates its certificate.`);
+  console.log(`  6. ${c('bold', 'Finalize')}: ${c('cyan', `node "${fileURLToPath(import.meta.url)}" --init-reference "${abs}"`)}`);
+  console.log(`     This validates the required plugins are present and reserves the port.`);
+  console.log('');
+  console.log(c('gray', `After step 6, bootstrap any new vault with:`));
+  console.log(c('gray', `  node ${path.basename(fileURLToPath(import.meta.url))} <new-vault-path>`));
+  console.log('');
+}
+
 function setupVault(vaultPath, opts = {}) {
   const cfg = loadConfig();
   if (!cfg.referenceVault) {
@@ -573,6 +808,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs <vault-path> --sync-plugins           Sync new plugins from reference vault
   node setup-vault.mjs <vault-path> --sync-plugins --force   Re-clone all plugins, preserving data.json
   node setup-vault.mjs <vault-path> --sync-plugins --quiet   Silent unless something changed (for hooks)
+  node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
+                                                              shipped skeleton + download bridge plugin.
+                                                              Follow up with --init-reference once you've
+                                                              installed the marketplace plugins via Obsidian.
   node setup-vault.mjs --init-reference <path>               Register a vault as the reference template
   node setup-vault.mjs --status                              Show current configuration
 `);
@@ -587,6 +826,25 @@ if (args[0] === '--status') {
 if (args[0] === '--init-reference') {
   if (!args[1]) fail('--init-reference requires a path');
   initReference(args[1]);
+  process.exit(0);
+}
+
+if (args[0] === '--bootstrap-reference') {
+  const pathArg = args[1];
+  // Refuse explicitly known flag tokens here rather than the broader
+  // `startsWith('--')` heuristic (which would false-positive a literal path
+  // like `--my-folder`). The known flags consumed by this subcommand:
+  if (!pathArg || pathArg === '--force' || pathArg === '--help' || pathArg === '-h') {
+    fail('--bootstrap-reference requires a path');
+  }
+  const bootstrapForce = args.includes('--force');
+  await bootstrapReference(pathArg, { force: bootstrapForce });
+  // Flush stdout before exit: process.exit() is synchronous and on piped
+  // stdout (e.g. `> out.txt`) can truncate the next-steps message. The
+  // promise resolves only after the drain callback fires, then we exit.
+  // Using await here (rather than a callback) keeps the script from falling
+  // through to the <vault-path> branch below while we wait for the flush.
+  await new Promise((resolve) => process.stdout.write('', resolve));
   process.exit(0);
 }
 

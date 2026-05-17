@@ -2,6 +2,36 @@
 
 > How to create the **reference vault** that `setup-vault.mjs` clones from when bootstrapping new vaults.
 
+## Fast path (recommended for new installs)
+
+```bash
+node scripts/setup-vault.mjs --bootstrap-reference <path-to-new-reference>
+```
+
+What this does:
+
+1. Refuses if the path exists and is non-empty (override with `--force`).
+2. Clones the shipped skeleton from [`templates/reference-vault-skeleton/`](../templates/reference-vault-skeleton/) into the path — empty `.obsidian/community-plugins.json` (listing the 5 canonical plugins), `.smart-env/smart_env.json` (with API key field empty), `.claude/settings.json`, `CLAUDE.md` (LLM-wiki navigation rules), `wiki/{index,log,hot,overview}.md` (scaffolding).
+3. Downloads the **MCP Router Bridge** plugin from `https://github.com/tboome33/obsidian-mcp-router-bridge/releases/latest/download/` into `<path>/.obsidian/plugins/mcp-router-bridge/`. The bridge plugin is the only required plugin that's not in Obsidian's marketplace — the rest install via Obsidian itself.
+4. Records the path as `referenceVault` in `~/.claude/obsidian-mcp-router/config.json`. (Validation is deferred until you run `--init-reference` after step 5.)
+
+Then, manually:
+
+5. Open the path in Obsidian → Trust the vault. Obsidian sees the IDs in `.obsidian/community-plugins.json`, doesn't find the plugin folders for the four marketplace ones, and prompts you to install them. Click Install for: **Local REST API**, **Smart Connections**, **Templater**, **Quiet Outline**. (The bridge plugin is already in place from step 3.)
+6. Enable all four in Settings → Community plugins.
+7. Restart Obsidian so Local REST API generates its TLS certificate.
+8. Finalize:
+
+```bash
+node scripts/setup-vault.mjs --init-reference <path-to-new-reference>
+```
+
+This validates the required plugins are present and reserves the port. From here, `setup-vault.mjs <other-vault>` bootstraps any new vault by cloning from this reference.
+
+The rest of this document explains the **manual procedure** (the long way), the design choices behind keeping the reference vault outside the repo, and troubleshooting. Read it if you want to customize the skeleton or understand the mechanics.
+
+---
+
 ## What is the reference vault?
 
 The reference vault is a **regular Obsidian vault** kept on disk, used by [`scripts/setup-vault.mjs`](../scripts/setup-vault.mjs) as a source of truth when bootstrapping any new vault. When you run `setup-vault.mjs <new-vault>`, the script:
