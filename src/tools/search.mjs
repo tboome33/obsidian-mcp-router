@@ -1,4 +1,5 @@
 import { searchSimple } from '../rest-client.mjs';
+import { sanitizeResponse } from '../helpers/sanitize.mjs';
 
 export async function search(registry, { vault: name, query, contextLength = 100 } = {}) {
   if (!query) {
@@ -27,7 +28,7 @@ export async function search(registry, { vault: name, query, contextLength = 100
       }),
     );
 
-    return {
+    return sanitizeResponse({
       query,
       contextLength,
       perVault: results.map((r, i) =>
@@ -35,15 +36,15 @@ export async function search(registry, { vault: name, query, contextLength = 100
           ? r.value
           : { vault: candidates[i].name, error: r.reason.message },
       ),
-    };
+    });
   }
 
   const vault = registry.resolveVault(name);
   const matches = await searchSimple(vault, query, contextLength);
-  return {
+  return sanitizeResponse({
     vault: vault.name,
     query,
     contextLength,
     matches,
-  };
+  });
 }

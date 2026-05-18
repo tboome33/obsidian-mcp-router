@@ -64,6 +64,40 @@ When generating content of these types, use AT LEAST these `## H2` sections (add
 
 ---
 
+## Source provenance — `source_type` frontmatter (mandatory for substantive pages)
+
+Every substantive page MUST declare where its content came from. Without this, a reader (you, me, future-Claude, or a wiki-query consumer) cannot tell whether an assertion is a verbatim citation, a reasonable inference from a source, or pure synthesis by Claude. That gap silently erodes trust in the whole wiki.
+
+Three values, vocabulary borrowed from graphify's `EXTRACTED / INFERRED / AMBIGUOUS` taxonomy (`validate.py:1-7`):
+
+| Value | Meaning | When to use |
+|---|---|---|
+| `extracted` | Verbatim or near-quote from a source (a user statement, an article, a pasted document). Maximum reliability — a reader can trust the wording came from outside. | `wiki-ingest` source pages; user-quoted statements; literal citations. |
+| `inferred` | Claude derived this by reading the source/conversation, but it isn't written verbatim. Medium reliability — it's a reasonable interpretation that someone else might have phrased differently. | Most `answer` notes; most `wiki-ingest` entity/concept pages spawned from a source; summaries. |
+| `claude_synthesized` | Pure synthesis by Claude with no direct textual basis. Low reliability for "what does the source say?" but full agency on "what does Claude think?". | `idea` notes proposed by Claude; framings/restatings; opinion pieces. |
+
+### Where to declare it
+
+- **Frontmatter level** (covers the whole page): `source_type: extracted | inferred | claude_synthesized`. Required on every page of type `source`, `answer`, `decision`, `decision-input`, `reference`, `reference-deep-dive`, `technique`, `idea`. Optional but encouraged on `session`, `concept`, `entity`.
+- **Inline callout** (covers a specific paragraph, overrides the page-level default): `> [!extracted]`, `> [!inferred]`, `> [!claude_synthesized]`. Use when a single page mixes provenance — common for `session` notes (user verbatim + your inferences + your synthesis) and for `wiki-ingest` entity pages.
+
+### Rule of thumb when in doubt
+
+Prefer the more conservative tag. `claude_synthesized` over `inferred`, `inferred` over `extracted`. False humility is cheap; false confidence corrodes the wiki.
+
+### How skills use it
+
+- `wiki-ingest` writes `source_type: extracted` on source pages (the body summarises the source faithfully) and `source_type: inferred` or `claude_synthesized` on spawned entity/concept pages depending on how directly the source supported them.
+- `save` writes the dominant `source_type` based on what's being saved (see skill for matrix).
+- `wiki-query` includes provenance in its citations: *"per [[my-note]] (extracted)"* vs *"per [[my-note]] (synthesized)"* — so readers know whether the answer is grounded or speculative.
+- `wiki-lint` (future) flags pages with high `claude_synthesized` ratio for human review.
+
+### Not yet — `confidence_score`
+
+graphify also assigns a discrete float (0.55 / 0.65 / 0.75 / 0.85 / 0.95) on top of the three-bucket tag. For a markdown wiki the three buckets carry most of the value; the float is deferred until a real use case proves it's worth the per-claim labelling cost.
+
+---
+
 ## Auto-enrichment (4 modes — `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`)
 
 Proactive save suggestions during conversations bound to this vault. Domain-agnostic — works for development, personal life, research, family planning, anything.

@@ -10,8 +10,14 @@
  * Cross-vault: pass `vault: "*"` to fan-out across every configured vault
  * in parallel. Vaults that don't support semantic search are silently
  * skipped (their entries appear as `{ vault, error }` in the response).
+ *
+ * Hardening (v0.8.8): every string in the response is run through
+ * `sanitizeLabel` to strip ANSI escapes / control chars from breadcrumbs,
+ * excerpts, paths — vault content can be authored by anyone and we don't
+ * want corpus-injected escape sequences reaching Claude's context.
  */
 import { searchSmart } from '../rest-client.mjs';
+import { sanitizeResponse } from '../helpers/sanitize.mjs';
 
 export async function searchSmartTool(registry, args = {}) {
   const {
@@ -51,7 +57,7 @@ export async function searchSmartTool(registry, args = {}) {
       }),
     );
 
-    return {
+    return sanitizeResponse({
       query,
       filter,
       perVault: settled.map((r, i) =>
@@ -59,15 +65,15 @@ export async function searchSmartTool(registry, args = {}) {
           ? r.value
           : { vault: candidates[i]?.name ?? '?', error: r.reason.message },
       ),
-    };
+    });
   }
 
   const vault = registry.resolveVault(name);
   const data = await searchSmart(vault, query, filter);
-  return {
+  return sanitizeResponse({
     vault: vault.name,
     query,
     filter,
     ...data,
-  };
+  });
 }

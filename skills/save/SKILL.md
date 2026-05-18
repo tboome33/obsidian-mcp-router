@@ -67,10 +67,19 @@ title: "<human-readable title, ≤80 chars>"
 slug: <slug>
 saved_at: <ISO>
 tags: [<inferred from content, 2-4 tags>]
-sources: []      # if user referenced wiki pages, fill with [[wikilinks]]
-related: []      # cross-references to existing wiki pages
+sources: []         # if user referenced wiki pages, fill with [[wikilinks]]
+related: []         # cross-references to existing wiki pages
+source_type: <see below>   # see "Source provenance" in vault CLAUDE.md
 ---
 ```
+
+Choose `source_type` based on what you're filing:
+
+- `extracted` — a direct citation, a verbatim user statement, or a piece of literal source material the user is preserving.
+- `inferred` — content that you (Claude) derived by reading the conversation but that wasn't said verbatim — most `answer` and many `session` notes land here.
+- `claude_synthesized` — pure synthesis from you with no direct textual basis in what the user said. Often appropriate for `idea` notes you propose to file, or for `decision` notes where the framing is yours, not the user's words. When in doubt prefer the more conservative tag.
+
+For pages whose paragraphs mix provenance (common for `session` notes — user verbatim + your inferences + your synthesis), set the frontmatter to the dominant kind and mark per-paragraph exceptions with inline callouts `[!extracted]` / `[!inferred]` / `[!claude_synthesized]`.
 
 For `decision` type, add:
 ```yaml

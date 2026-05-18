@@ -69,8 +69,11 @@ url: <url or path>
 ingested_at: <ISO date>
 authors: [<...>]
 tags: [<source-type>, <topic-tags>]
+source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ---
 ```
+
+The source page itself is `extracted` — the body is a faithful summary/quote of an external document. For entity/concept pages spawned from this source (step 5), the provenance varies — use `inferred` when Claude derived the page from cues in the source, `claude_synthesized` when the page is pure synthesis with no direct textual basis. When in doubt, prefer the more conservative tag (`claude_synthesized` over `inferred`, `inferred` over `extracted`).
 
 Body structure (heading hierarchy is MANDATORY — see vault `CLAUDE.md` section "Note structure"):
 
@@ -87,7 +90,7 @@ Use `mcp__obsidian-router__write_file` with `ifNew: true`. If a page with this s
 
 For each entity/concept identified in step 2:
 
-- **New page**: `mcp__obsidian-router__write_file` with frontmatter `type: entity` (or `concept`), tags. Body MUST follow the heading hierarchy: one `# <title>` H1, then for `concept` use `## Definition` / `## Why it matters` / `## Related` / `## Sources`; for `entity` use `## Context` / `## Notes` / `## Sources`. End the body with a `## Sources` H2 that wikilinks to the source page you just filed.
+- **New page**: `mcp__obsidian-router__write_file` with frontmatter `type: entity` (or `concept`), `tags`, **and `source_type`** (`extracted` if the page is a literal quote/citation, `inferred` if derived by reading the source, `claude_synthesized` if pure synthesis — see step 4 note and vault CLAUDE.md "Source provenance" section). For paragraphs of mixed provenance inside the body, use inline callouts `[!extracted]` / `[!inferred]` / `[!claude_synthesized]`. Body MUST follow the heading hierarchy: one `# <title>` H1, then for `concept` use `## Definition` / `## Why it matters` / `## Related` / `## Sources`; for `entity` use `## Context` / `## Notes` / `## Sources`. End the body with a `## Sources` H2 that wikilinks to the source page you just filed.
 
 - **Existing page**: use `mcp__obsidian-router__patch_file` to:
   - Append a bullet under `## Sources` — fully-specified call:
