@@ -64,6 +64,29 @@ Where `<window-id>` is:
 
 The deterministic naming is what makes folds idempotent: re-running with the same window writes to the same path.
 
+### 4.5. Topology-equality short-circuit (v0.8.10, T1.C)
+
+Before writing the fold page, **read what's already on disk at the target path** and compare with the fold body you're about to write:
+
+```
+mcp__obsidian-router__get_file({ vault, path: "wiki/folds/<window-id>.md" })
+```
+
+If the existing file content is **byte-equivalent to the new body** (after canonicalisation — normalize CRLF to LF, strip trailing whitespace per line, collapse trailing blank lines), then skip the write entirely:
+
+- **DO NOT** call `write_file`
+- **DO NOT** update `index.md` (the fold is already there)
+- **DO NOT** append to `log.md` (no operation actually happened)
+- **DO** tell the user: *"Fold for `<window-id>` is already up to date — no changes written."*
+
+Why: the idempotency contract is structural (deterministic naming + sorted output + ISO timestamps), but auto-commit hooks (`PostToolUse`) don't know that — they'll commit a no-op write as a real commit and pollute `git log` with empty fold churn over time. The short-circuit enforces the contract operationally.
+
+This is a port of graphify's `_canonical_topology_for_compare` pattern (`watch.py` rebuild path) — they apply the same "skip write if topology-canonical matches" check to graph.json regeneration. Same intent: idempotency you can trust at the disk level.
+
+If the existing file does NOT exist, or its content differs after canonicalisation, proceed to step 5 normally.
+
+The router exposes `contentIsUnchanged(filePath, newContent)` in `src/helpers/wiki-fingerprint.mjs` for tools that need to perform this check programmatically. As a skill (driven by Claude reading files via MCP), apply the same logic by hand: fetch the existing content, normalise both sides, compare.
+
 ### 5. Write the fold page
 
 Frontmatter:
@@ -112,7 +135,9 @@ Re-running the same fold (same window definition) produces a byte-equivalent fil
 - ISO timestamps in `first_entry` / `last_entry` are pulled from the source log entries (not wall-clock)
 - No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki/log.md`, not in the fold itself)
 
-Use `mcp__obsidian-router__write_file` (no `ifNew` flag — idempotent overwrite is fine here, that's the point).
+**Operational enforcement (v0.8.10, T1.C)**: step 4.5 reads the existing file and skips the write+index+log triplet if the body is byte-equivalent after canonicalisation. The structural design + the operational check together mean: re-running `/wiki-fold` with the same window costs one read and zero writes.
+
+Use `mcp__obsidian-router__write_file` (no `ifNew` flag — idempotent overwrite is fine here, that's the point) for the actual write in step 5, AFTER step 4.5 has cleared it.
 
 ## Anti-patterns
 
