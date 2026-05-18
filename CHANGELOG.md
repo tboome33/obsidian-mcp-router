@@ -6,7 +6,11 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Documentation / convention change (no code change in this repo)
+
+- **Click-to-open links in chat** — when the bridge plugin (`tboome33/obsidian-mcp-router-bridge`) is ≥ v0.2.0, Claude formatting rule in `~/.claude/CLAUDE.md` emits markdown links of the form `[label](https://127.0.0.1:<vault-port>/open/<url-encoded-path>)` instead of the previous inline-code `obsidian://` URI format. A click in Claude Code's terminal dispatches the http URL → browser hits the bridge's new `GET /open/<path>` public-route → bridge calls `app.workspace.openLinkText` → Obsidian navigates to the file → tab auto-closes. No copy-paste. Falls back to the inline-code `obsidian://` format when the bridge is too old or the endpoint returns 404.
+- Bridge plugin v0.2.0 adds the `GET /open/<path>` route via Local REST API's `addPublicRoute()` (loopback-only, no auth — security analysis in the bridge's `CHANGELOG.md` and `README.md#click-to-open`).
+- Router-side: no code change. The convention update lives in the user's global `~/.claude/CLAUDE.md`; no router release is required, but users who want click-to-open must update the bridge to ≥ v0.2.0 in each vault.
 
 ## [0.8.10] — 2026-05-18
 
