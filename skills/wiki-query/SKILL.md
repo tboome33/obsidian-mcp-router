@@ -36,13 +36,33 @@ Read it. If the cache contains the answer (the question is covered by the recent
 
 If hot doesn't cover it: don't try to extract anything tangential. Move to tier 2.
 
-### Tier 2: index.md
+### Tier 2: index.md — IDF-weighted candidate ranking
 
 ```
 mcp__obsidian-router__get_file({ vault, path: "wiki/index.md" })
 ```
 
-Scan it for pages whose titles match the question. Pick 1-3 most relevant. If nothing in the index matches, skip to tier 3 (semantic search).
+Score and rank index entries against the question using the algorithm below (the same one the router's `src/helpers/idf-score.mjs` module exposes for tools that need to score programmatically — keep the algorithm in sync so machine and skill agree).
+
+**Step 2a — Tokenise the query.** Lowercase, split on non-letter/non-digit runs, drop tokens with length ≤2. Example: *"What does my wiki say about position sizing?"* → `[what, does, wiki, say, about, position, sizing]`. (Don't drop `wiki` / `does` etc. manually — IDF will down-weight them automatically.)
+
+**Step 2b — Score each candidate page from the index.** For each query token, evaluate the page's title (and optionally its source folder, with ×0.5 weight):
+
+- **Exact match** (token equals title, case-insensitive) → contribute **1000 × IDF(token)**
+- **Prefix match** (title starts with token) → contribute **100 × IDF(token)**
+- **Substring match** (title contains token) → contribute **1 × IDF(token)**
+- No match → 0
+
+For IDF: estimate `idf(token) ≈ log(1 + N / (1 + df(token)))` where N is the total number of index entries and df(token) is how many of those entries contain the token. You don't need to compute it precisely — the relative ordering matters far more than the absolute values. Tokens that look common across the index ("notes", "wiki", "page", common project names) get low weight; tokens that look rare get high weight.
+
+**Step 2c — Pick seeds (dynamic count).** Sort candidates by score descending.
+
+- If the top score is **more than 5× the runner-up**, drill into ONLY the top page. A dominant match is unambiguous; pulling in weak runner-ups dilutes the answer.
+- Otherwise, drill into the top **3** candidates (or fewer if there aren't 3 with non-zero scores).
+
+If all scores are 0 → nothing in the index matched; skip to tier 4 (semantic search).
+
+Why all this rigor: the previous heuristic ("scan for matching titles, pick 1-3") had two failure modes — (a) it gave equal weight to common and rare query terms, so a question about "user kelly criterion" ranked "user notes" alongside "kelly criterion" instead of putting Kelly first; (b) it always pulled 3 candidates even when one was clearly dominant, producing incoherent multi-page synthesis. IDF + dominant-match cutoff fix both.
 
 ### Tier 3: drill into pages
 
@@ -66,13 +86,19 @@ mcp__obsidian-router__search_smart({ vault, query: "<question>", limit: 8 })
 
 For each result above score 0.55 that you haven't already read, fetch the page and incorporate. Bridge plugin must be active in the vault for this to work — if you get a 503 with a "missing bridge" hint, fall back to standard `mcp__obsidian-router__search` (keyword search) with `vault: <name>`.
 
-### Step 5: synthesize
+### Step 5: synthesize (with confidence-aware citations)
 
 Compose the answer:
 
 - Lead with the directly-asked thing in 1-3 sentences.
 - Then 1-3 short paragraphs of supporting detail, citing wiki pages inline as `[[PageName]]`.
-- End with a `_Sources_` line listing the pages used.
+- **Annotate each citation with the source page's `source_type`** (read it from the frontmatter when you drilled in). Format: `[[PageName]] (extracted)` / `[[PageName]] (inferred)` / `[[PageName]] (synthesized)`. If the page's body has inline provenance callouts (`[!extracted]` etc.) and the paragraph you're citing carries one, use that finer-grained value instead of the page-level frontmatter. If a page has no `source_type` at all (pre-v0.8.8 pages), annotate as `(unmarked)`.
+- End with a `_Sources_` line listing the pages used WITH their provenance, so the reader can see at a glance how grounded the answer is.
+
+Example output line:
+> Per [[graphify-deep-dive]] (extracted), graphify's confidence taxonomy is `{EXTRACTED, INFERRED, AMBIGUOUS}` — but per [[2026-05-18-graphify-roadmap]] (synthesized), our adaptation skips the `confidence_score` field for now.
+
+The reader instantly knows: the taxonomy claim is grounded in a faithful summary of graphify's source code; the skip-decision is Claude's synthesis. Different trust levels.
 
 If the wiki didn't have enough to answer:
 - Say so explicitly. "The wiki has X, Y but not Z."
