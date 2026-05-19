@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.8.2 · multi-vault Obsidian MCP server + Claude Code plugin (30 slash commands)<br>
+  <div class="meta">v0.8.11 · multi-vault Obsidian MCP server + Claude Code plugin (31 slash commands)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -179,6 +179,10 @@
   <li><strong>Cross-vault</strong>: <code>vault: "*"</code> auto-fans-out across every vault</li>
   <li><strong>Lock mode</strong>: restrict the session to a single vault (safety, focus)</li>
   <li><strong>Auto-enrichment</strong> (v0.8.2): Claude proactively suggests wiki saves at 3 moments (validation / result / topic switch)</li>
+  <li><strong>Confidence tags</strong> (v0.8.8): <code>source_type: extracted | inferred | claude_synthesized</code> on every wiki page — provenance visible in <code>wiki-query</code> citations; <code>sanitize.mjs</code> helper for prompt-injection defense on MCP responses</li>
+  <li><strong>IDF scoring + dynamic seed picking</strong> (v0.8.9): <code>wiki-query</code> ranks candidate pages by IDF (exact ×1000, prefix ×100, substring ×1) with 5× dominant cutoff — no more noisy multi-page drills</li>
+  <li><strong>CLAUDE.md conventions</strong> (v0.8.11): 4 installable conventions (<code>source-type</code>, <code>bilingual</code>, <code>heading-hierarchy</code>, <code>auto-enrichment</code>) propagatable cross-vaults via <code>/obsidian-router:conventions install --all</code></li>
+  <li><strong>Click-to-open</strong> (bridge v0.2.0): clickable links in Claude Code chat via the bridge plugin's <code>GET /open/&lt;path&gt;</code> route — one click → Obsidian opens directly, no more copy-paste</li>
 </ul>
 
 <h2>Vault setup</h2>
@@ -305,7 +309,7 @@
 
 <div class="page-break"></div>
 
-<div class="cat-header">📚 10 knowledge-management commands (Karpathy-style LLM-wiki)</div>
+<div class="cat-header">📚 11 knowledge-management commands (Karpathy-style LLM-wiki)</div>
 
 <table class="slash">
   <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
@@ -319,6 +323,7 @@
   <tr><td class="cmd">canvas</td><td class="desc">Create/edit Obsidian .canvas files</td><td class="trigger">"create a canvas for X" / "crée un canvas pour X"</td></tr>
   <tr><td class="cmd">defuddle</td><td class="desc">Strip noise from web pages before ingestion</td><td class="trigger">"defuddle &lt;url&gt;" / "nettoie cette page"</td></tr>
   <tr><td class="cmd">obsidian-bases</td><td class="desc">Create/edit Obsidian .base files (database)</td><td class="trigger">"create a base for X" / "crée une base pour X"</td></tr>
+  <tr><td class="cmd">conventions</td><td class="desc">Install/remove/list/sync CLAUDE.md conventions cross-vaults (4 conventions shipped in v0.8.11)</td><td class="trigger">"install source-type on smile" / "sync source-type everywhere"</td></tr>
 </table>
 
 <div class="tips">
