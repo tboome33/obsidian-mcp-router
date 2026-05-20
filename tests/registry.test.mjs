@@ -20,8 +20,9 @@ import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
 import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/index.mjs';
+import { buildDefaultVaultStatus } from '../src/tools/list-vaults.mjs';
 
-const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath } = _internals;
+const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath, pathBasename } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
 
 // ---------------------------------------------------------------------------
@@ -171,6 +172,184 @@ describe('defaultNameFromPath', () => {
 
   test('POSIX path with leading dot folder', () => {
     assert.equal(defaultNameFromPath('/srv/vaults/.shared'), 'shared');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathBasename — preserves on-disk casing for obsidian:// URI composition
+// ---------------------------------------------------------------------------
+
+describe('pathBasename — exact-case basename helper (v0.10.0)', () => {
+  test('Windows path preserves casing (Roland, not roland)', () => {
+    assert.equal(pathBasename('C:\\VAULTS\\Roland'), 'Roland');
+  });
+
+  test('Windows path with forward slashes still detected as Windows', () => {
+    assert.equal(pathBasename('C:/VAULTS/Roland'), 'Roland');
+  });
+
+  test('Windows path with leading-dot folder preserves the dot', () => {
+    // Contrast with defaultNameFromPath which strips it for slug stability.
+    // The Obsidian URI handler needs the actual folder name.
+    assert.equal(pathBasename('C:\\VAULTS\\.template'), '.template');
+  });
+
+  test('POSIX absolute path preserves case', () => {
+    assert.equal(pathBasename('/home/user/Vaults/Trading'), 'Trading');
+  });
+
+  test('UNC network share path is supported', () => {
+    assert.equal(pathBasename('\\\\nas-01\\Vaults\\Wiki'), 'Wiki');
+  });
+
+  test('empty / falsy input returns empty string (does not throw)', () => {
+    assert.equal(pathBasename(''), '');
+    assert.equal(pathBasename(null), '');
+    assert.equal(pathBasename(undefined), '');
+  });
+
+  test('non-string input is safe', () => {
+    assert.equal(pathBasename(42), '');
+    assert.equal(pathBasename({}), '');
+  });
+
+  test('Windows path with trailing backslash returns the last segment', () => {
+    // path.win32.basename(`C:\VAULTS\Roland\`) === 'Roland'
+    assert.equal(pathBasename('C:\\VAULTS\\Roland\\'), 'Roland');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDefaultVaultStatus — pure URI composition for list_vaults (v0.10.0)
+// ---------------------------------------------------------------------------
+
+describe('buildDefaultVaultStatus — default vault health summary', () => {
+  // Synthetic ping result rows — mirror what `listVaults` builds internally
+  // for each registry.vaults[] entry. No network involved.
+  const localOnlineRow = (name, vaultPath) => ({
+    name,
+    type: 'local',
+    path: vaultPath,
+    online: true,
+    latencyMs: 12,
+    error: undefined,
+    missingApiKey: false,
+  });
+
+  const localOfflineRow = (name, vaultPath, errMsg = 'ECONNREFUSED') => ({
+    name,
+    type: 'local',
+    path: vaultPath,
+    online: false,
+    latencyMs: 5000,
+    error: errMsg,
+    missingApiKey: false,
+  });
+
+  const localMissingKeyRow = (name, vaultPath) => ({
+    name,
+    type: 'local',
+    path: vaultPath,
+    online: false,
+    latencyMs: 0,
+    error: 'no api key',
+    missingApiKey: true,
+  });
+
+  const remoteOnlineRow = (name, baseUrl) => ({
+    name,
+    type: 'remote',
+    path: undefined,
+    baseUrl,
+    online: true,
+    latencyMs: 42,
+    error: undefined,
+    missingApiKey: false,
+  });
+
+  test('default vault online → status carries obsidianName + openUri + online=true', () => {
+    const results = [localOnlineRow('roland', 'P:\\Mon Drive\\VAULTS\\Roland')];
+    const status = buildDefaultVaultStatus('roland', results);
+    assert.equal(status.name, 'roland');
+    assert.equal(status.obsidianName, 'Roland');
+    assert.equal(status.online, true);
+    assert.equal(status.error, null);
+    assert.equal(status.missingApiKey, false);
+    assert.equal(status.openUri, 'obsidian://open?vault=Roland');
+    assert.equal(status.path, 'P:\\Mon Drive\\VAULTS\\Roland');
+    assert.equal(status.type, 'local');
+  });
+
+  test('default vault offline (ECONNREFUSED) → status.online=false + error surfaced', () => {
+    const results = [localOfflineRow('roland', 'P:\\Mon Drive\\VAULTS\\Roland')];
+    const status = buildDefaultVaultStatus('roland', results);
+    assert.equal(status.online, false);
+    assert.equal(status.error, 'ECONNREFUSED');
+    // openUri must STILL be emitted on offline — that's the whole point:
+    // the convention layer uses it to compose the one-click fix link.
+    assert.equal(status.openUri, 'obsidian://open?vault=Roland');
+  });
+
+  test('default vault missingApiKey → status.missingApiKey=true + openUri still emitted', () => {
+    const results = [localMissingKeyRow('roland', 'P:\\Mon Drive\\VAULTS\\Roland')];
+    const status = buildDefaultVaultStatus('roland', results);
+    assert.equal(status.missingApiKey, true);
+    assert.equal(status.openUri, 'obsidian://open?vault=Roland');
+    // Even with no API key, the URI is useful — opening Obsidian on the
+    // vault is the first step toward fixing the missing-key state.
+  });
+
+  test('no defaultVaultName (empty registry / no cascade match) → returns null', () => {
+    assert.equal(buildDefaultVaultStatus(null, []), null);
+    assert.equal(buildDefaultVaultStatus(undefined, []), null);
+    assert.equal(buildDefaultVaultStatus('', []), null);
+  });
+
+  test('defaultVaultName references a vault not in pingedResults → returns null', () => {
+    // Pathological post-load mutation: the default name doesn't match
+    // any active vault. Don't fabricate a status — let the convention
+    // layer surface the inconsistency at session start.
+    const results = [localOnlineRow('roland', 'P:\\VAULTS\\Roland')];
+    const status = buildDefaultVaultStatus('karine', results);
+    assert.equal(status, null);
+  });
+
+  test('remote default vault → obsidianName falls back to the router slug', () => {
+    // Remote vaults have no `path` field, so there's no on-disk basename
+    // to use. We surface the slug — the convention layer can detect
+    // `type !== 'local'` and skip the openUri suggestion if it wants.
+    const results = [remoteOnlineRow('tribu-dedibox', 'https://livesync.kiviri.fr/tribu')];
+    const status = buildDefaultVaultStatus('tribu-dedibox', results);
+    assert.equal(status.obsidianName, 'tribu-dedibox');
+    assert.equal(status.openUri, 'obsidian://open?vault=tribu-dedibox');
+    assert.equal(status.path, null);
+    assert.equal(status.type, 'remote');
+  });
+
+  test('obsidianName with spaces is URL-encoded in openUri (P:\\Mon Drive case)', () => {
+    // The Roland vault is literally `P:\Mon Drive\VAULTS\Roland`; if the
+    // basename ever contains spaces (it doesn't in this layout but might
+    // for other users), the URI must percent-encode them so the OS
+    // handler doesn't split on the space.
+    const results = [localOnlineRow('client x', 'C:\\VAULTS\\Client X')];
+    const status = buildDefaultVaultStatus('client x', results);
+    assert.equal(status.obsidianName, 'Client X');
+    assert.equal(status.openUri, 'obsidian://open?vault=Client%20X');
+  });
+
+  test('obsidianName with accents is URL-encoded in openUri', () => {
+    const results = [localOnlineRow('amelie', 'P:\\VAULTS\\Amélie')];
+    const status = buildDefaultVaultStatus('amelie', results);
+    assert.equal(status.obsidianName, 'Amélie');
+    // encodeURIComponent yields %C3%A9 for é
+    assert.equal(status.openUri, 'obsidian://open?vault=Am%C3%A9lie');
+  });
+
+  test('UNC-path vault yields openUri based on the share basename', () => {
+    const results = [localOnlineRow('wiki', '\\\\nas-01\\Vaults\\Wiki')];
+    const status = buildDefaultVaultStatus('wiki', results);
+    assert.equal(status.obsidianName, 'Wiki');
+    assert.equal(status.openUri, 'obsidian://open?vault=Wiki');
   });
 });
 

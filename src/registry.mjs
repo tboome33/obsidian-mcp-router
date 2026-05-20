@@ -223,6 +223,31 @@ function defaultNameFromPath(p) {
 }
 
 /**
+ * Path basename with EXACT case preserved — used to derive `obsidianName`
+ * for `obsidian://open?vault=<name>` URIs.
+ *
+ * Why a separate helper from `defaultNameFromPath`:
+ *  - `defaultNameFromPath` lowercases + strips leading dot to produce a
+ *    router slug (`.template` → `template`, `Roland` → `roland`). Slugs
+ *    are stable identifiers across portRegistry/vaultNames maps.
+ *  - `pathBasename` preserves the on-disk casing because Obsidian's URI
+ *    handler is case-sensitive about the vault label: `obsidian://open?vault=Roland`
+ *    works, `obsidian://open?vault=roland` may not match the registered
+ *    vault title in the Obsidian config (depends on platform / how the
+ *    vault was first opened).
+ *
+ * Returns the empty string for falsy input — matches `defaultNameFromPath`.
+ *
+ * Cross-platform detection identical to `defaultNameFromPath`: Windows-style
+ * paths route to `path.win32.basename` regardless of runtime, so a CI matrix
+ * on Linux reading a Windows-paths config still produces the right result.
+ */
+function pathBasename(p) {
+  if (!p || typeof p !== 'string') return '';
+  return (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
+}
+
+/**
  * Normalize a path for equality comparison, robust across OSes.
  *
  * Windows paths are normalized via `path.win32` and lowercased
@@ -348,5 +373,10 @@ export const _internals = {
   resolveDefaultVault,
   normalizePathForCompare,
   defaultNameFromPath,
+  pathBasename,
   redactSecrets,
 };
+
+// Exposed for the list_vaults tool which needs the on-disk casing for the
+// `obsidianName` field that feeds the obsidian://open?vault=<name> URI.
+export { pathBasename };

@@ -6,8 +6,67 @@
  * separate `disabled[]` field with their reason — they are NOT pinged
  * (no point: they're hidden from the MCP surface, and pinging them
  * would just add latency and timeout noise).
+ *
+ * v0.10.0 — adds top-level `defaultVaultStatus` field. Surfaces whether
+ * the default vault is reachable at session start, together with an
+ * `obsidian://open?vault=<obsidianName>` URI the convention
+ * `default-vault-health-check` uses to compose a clickable one-click
+ * fix in the natural-language warning. See
+ * `wiki/obsidian-mcp-router/router-ux-improvements-roadmap.md` Phase 1.
  */
 import { pingVault } from '../rest-client.mjs';
+import { pathBasename } from '../registry.mjs';
+
+/**
+ * Build the `defaultVaultStatus` summary for the list_vaults response.
+ *
+ * Exported as a pure helper (no I/O) so unit tests can exercise the URI
+ * composition + null cases without needing to ping real vaults.
+ *
+ * Parameters:
+ *  - `defaultVaultName`: registry.defaultVault — the resolved slug, or
+ *    null/undefined when no vault matched the resolution cascade.
+ *  - `pingedResults`: the `results[]` array built by `listVaults`. Each
+ *    entry must carry `{ name, type, path?, online, error?, missingApiKey? }`.
+ *
+ * Returns null when:
+ *  - `defaultVaultName` is falsy (empty registry / no cascade match)
+ *  - `defaultVaultName` doesn't match any entry in `pingedResults`
+ *    (post-load mutation — leave for the convention layer to surface)
+ *
+ * Otherwise returns a frozen-shape object: `{ name, obsidianName, type,
+ * online, error, missingApiKey, openUri, path }`. `path` is `null` for
+ * remote vaults (no on-disk folder to derive a basename from).
+ *
+ * For LOCAL vaults the obsidian:// URI handler matches against the vault
+ * label registered in Obsidian itself, which is the on-disk folder
+ * basename WITH its on-disk casing. The router slug is lowercased
+ * (defaultNameFromPath), so we need the exact-case basename here.
+ *
+ * For REMOTE vaults there's no local Obsidian to open. We still emit an
+ * openUri using the router slug — the convention layer can branch on
+ * `type !== 'local'` to skip the suggestion, but a remote vault MAY also
+ * be opened locally if the user happens to have a clone, so surfacing
+ * the URI is harmless.
+ */
+export function buildDefaultVaultStatus(defaultVaultName, pingedResults) {
+  if (!defaultVaultName) return null;
+  const def = pingedResults.find((r) => r.name === defaultVaultName);
+  if (!def) return null;
+  const defPath = def.path; // undefined for remote vaults
+  const obsidianName = defPath ? pathBasename(defPath) : def.name;
+  const openUri = `obsidian://open?vault=${encodeURIComponent(obsidianName)}`;
+  return {
+    name: def.name,
+    obsidianName,
+    type: def.type,
+    online: def.online,
+    error: def.error || null,
+    missingApiKey: def.missingApiKey || false,
+    openUri,
+    path: defPath || null,
+  };
+}
 
 export async function listVaults(registry) {
   const results = await Promise.all(
@@ -38,8 +97,15 @@ export async function listVaults(registry) {
     reason: s.reason,
   }));
 
+  // Default vault health summary (v0.10.0) — null when no default vault
+  // resolved (empty registry / no cascade match) OR when the resolved
+  // default name isn't in the pinged results (pathological post-load
+  // mutation; let the convention layer surface the inconsistency).
+  const defaultVaultStatus = buildDefaultVaultStatus(registry.defaultVault, results);
+
   return {
     defaultVault: registry.defaultVault,
+    defaultVaultStatus,
     configPath: registry.configPath,
     vaults: results,
     disabled,

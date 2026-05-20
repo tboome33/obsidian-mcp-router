@@ -39,6 +39,7 @@ Mapping (initial library shipped with this skill):
 | `heading-hierarchy.md` | `heading-hierarchy` | `## Note structure — headings hierarchy (mandatory)` |
 | `auto-enrichment.md` | `auto-enrichment` | `## Auto-enrichment (4 modes — \`ClaudeAsk\` / \`Hybrid\` / \`FullAuto\` / \`off\`)` |
 | `roadmap-discipline.md` | `roadmap-discipline` | `## Roadmap discipline — création + maintenance dans le vault courant` |
+| `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
 
 (Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
 
