@@ -92,14 +92,26 @@ For multi-vault status, render one row per vault with checkmark columns.
 1. Same snippet resolution as install.
 2. Same vault resolution.
 3. For each target vault:
-   - Read its `CLAUDE.md`
-   - Find the snippet's H2 heading
-   - If not present, SKIP and report "not installed"
-   - If present, find the section boundaries: from the H2 line through the line before the NEXT H2 heading (or EOF if it's the last section)
-   - `write_file` with the content minus that section
-4. Report summary.
+   - Read its `CLAUDE.md` via `get_file`.
+   - Find the snippet's H2 heading.
+   - If not present, SKIP and report "not installed".
+   - If present, find the section boundaries: from the H2 line through the line before the NEXT H2 heading (or EOF if it's the last section).
+   - **MANDATORY backup before write** (IMP-4 from `/review+` 2026-05-21) — see "Safety guards" below.
+   - `write_file` with the content minus that section.
+4. Report summary, INCLUDING the path of every sidecar backup created (so the user can rollback by hand if needed).
 
-**Safety**: before any remove, show the user the exact content that will be removed and ask confirmation if the operation is `--all` (bulk remove is the riskiest case).
+### Safety guards on `remove` (mandatory, IMP-4)
+
+**Why these guards exist** — the H2-heading match strips the section between `## <heading>` and the next `## ` line. If the user has hand-edited the convention's section in their vault's `CLAUDE.md` (extended it with personal rules, inline examples, etc.), `remove` would wipe all their customisations along with the convention. The guards make destructive intent explicit and rollback trivial.
+
+**MANDATORY for every remove call (single-vault or `--all`):**
+
+1. **Preview before write**: after locating the section to remove, show the user the EXACT content that will be deleted (between code fences) BEFORE calling `write_file`. Do NOT abbreviate; do NOT just say "the source-type convention section". The user must see verbatim what disappears.
+2. **Sidecar backup**: write a copy of the current `CLAUDE.md` to `CLAUDE.md.bak-<convention-id>-<YYYY-MM-DD-HHmmss>` (in the same vault directory) BEFORE the `write_file` that strips the section. Use `write_file` with the original full content; the timestamped name guarantees no clobber. If the backup write fails, ABORT the remove (don't continue to the destructive step).
+3. **Explicit `confirm: true` on `--all`**: when the operation targets multiple vaults (`--all` or any multi-vault resolution), require an explicit `confirm: true` argument in the slash command invocation. Without it, refuse and tell the user to add `confirm: true` after they've reviewed the preview. Single-vault `remove` can proceed after preview (one vault, low blast radius).
+4. **Backups are NOT auto-cleaned**. Leave the `.bak-*` files in place — they're the user's safety net. Mention their paths in the final summary so the user can rm them manually after verifying the convention removal is what they wanted.
+
+**Failure mode policy**: if any guard fails (preview can't be rendered, backup write fails, confirm:true missing on --all), STOP for that vault. Continue with other vaults in a multi-vault operation only if their guards pass independently. Report each vault's outcome separately.
 
 ### `sync-all-vaults <convention-id>` — bulk install with smart skip
 

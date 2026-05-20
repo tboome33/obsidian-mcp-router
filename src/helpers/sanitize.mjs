@@ -34,6 +34,15 @@ const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 // should never appear inside vault content reaching the model verbatim.
 // Match the OPENING `<` (with optional `/`) of these tag names — we encode
 // just that `<` to break the parse without otherwise mangling the text.
+//
+// IMP-5 (v0.8.12): broadened the blocklist beyond the original v0.8.8
+// shipping. The pattern `antml:[a-z_-]+` already covers
+// `<parameter>`, `<invoke>`, `<function_calls>`, etc. —
+// the Anthropic prefixed family. The new bare-tag additions
+// (`function_calls`, `function_results`, `invoke`, `parameter`, `env`,
+// `claudeMd`, `currentDate`) cover variants that have appeared in Claude
+// Code's system reminders WITHOUT the `antml:` prefix. Better belt-and-
+// suspenders than to discover a bypass via a non-prefixed tag.
 const INJECTION_TAGS = [
   'system-reminder',
   'system',
@@ -41,6 +50,14 @@ const INJECTION_TAGS = [
   'tool_call',
   'tool_result',
   'antml:[a-z_-]+', // anthropic markup family (parameter, function_calls, ...)
+  'function_calls',
+  'function_results',
+  'invoke',
+  'parameter',
+  'env',
+  'claudeMd',
+  'currentDate',
+  'userEmail',
   'cc-instructions',
   'commands',
   'command-name',

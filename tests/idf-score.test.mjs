@@ -45,9 +45,11 @@ describe('tokenise', () => {
     assert.deepEqual(tokenise('café résumé über naïve'), ['café', 'résumé', 'über', 'naïve']);
   });
 
-  test('numbers count as tokens (codes, years, versions)', () => {
-    // 'v0' (2 chars), '8' (1 char), '9' (1 char) all filtered as too short;
-    // 'released' (8 chars) and '2026' (4 chars) kept.
+  test('numbers count as tokens when they pass the min length filter (years, multi-digit codes)', () => {
+    // In "v0.8.9 released 2026" the version fragments v0 / 8 / 9 are 1-2
+    // chars each → all filtered by MIN_TOKEN_LEN. "released" (8 chars) and
+    // "2026" (4 chars) are kept. See the dedicated "tokenise — version
+    // strings" describe-block below for the bare-version edge case.
     assert.deepEqual(tokenise('v0.8.9 released 2026'), ['released', '2026']);
   });
 
@@ -64,9 +66,12 @@ describe('tokenise', () => {
   });
 });
 
-// Fix the version-tokens test which I miscounted above.
+// Bare-version edge case (no surrounding tokens). Lives in its own describe
+// so it's clear this is the "v0.8.9 alone returns []" complement of the
+// "v0.8.9 + words" case in the parent describe-block. NIT-2 from /review+
+// (consolidated the previously-confusing pair of conflicting descriptions).
 describe('tokenise — version strings', () => {
-  test('v0.8.9 splits and drops <3-char fragments', () => {
+  test('v0.8.9 alone → [] because every fragment is below MIN_TOKEN_LEN', () => {
     const out = tokenise('v0.8.9');
     // v0, 8, 9 — all 1-2 chars → all filtered.
     assert.deepEqual(out, []);
@@ -129,9 +134,20 @@ describe('computeIdf', () => {
 });
 
 describe('defaultIdf', () => {
-  test('returns log(1 + N)', () => {
+  test('returns log(1 + N) for valid corpus sizes', () => {
     assert.equal(defaultIdf(10), Math.log(11));
-    assert.equal(defaultIdf(0), Math.log(1));
+    assert.equal(defaultIdf(1), Math.log(2));
+  });
+
+  test('NIT-5 — throws on empty corpus (corpusSize < 1) instead of silently returning 0', () => {
+    // Pre-v0.8.12 defaultIdf(0) returned Math.log(1) = 0, which made every
+    // downstream score zero and the all-zero `pickSeeds` fallback fire —
+    // surfacing as confidently-wrong drill. Now it throws explicitly so
+    // the misuse is caught at the call site.
+    assert.throws(() => defaultIdf(0), /corpusSize must be a finite number >= 1/);
+    assert.throws(() => defaultIdf(-3), /corpusSize must be a finite number >= 1/);
+    assert.throws(() => defaultIdf(NaN), /corpusSize must be a finite number >= 1/);
+    assert.throws(() => defaultIdf(Infinity), /corpusSize must be a finite number >= 1/);
   });
 });
 
@@ -355,6 +371,33 @@ describe('pickSeeds', () => {
       { score: 0, candidate: { label: 'd' } },
     ]);
     assert.equal(out.length, 3);
+  });
+
+  test('IMP-6 — all scores 0 + fallbackOnAllZero=none → returns [] (no confidently-wrong drill)', () => {
+    const allZero = [
+      { score: 0, candidate: { label: 'a' } },
+      { score: 0, candidate: { label: 'b' } },
+      { score: 0, candidate: { label: 'c' } },
+    ];
+    const out = pickSeeds(allZero, { fallbackOnAllZero: 'none' });
+    assert.deepEqual(out, [], 'should suppress the silent fallback when caller opts in');
+  });
+
+  test('IMP-6 — default fallbackOnAllZero stays first-n (rétrocompat)', () => {
+    const allZero = [
+      { score: 0, candidate: { label: 'a' } },
+      { score: 0, candidate: { label: 'b' } },
+    ];
+    const out = pickSeeds(allZero); // no fallbackOnAllZero arg
+    assert.equal(out.length, 2, 'default behavior must remain "first-n" for backward compat');
+  });
+
+  test('IMP-6 — single candidate with score 0 + fallbackOnAllZero=none → []', () => {
+    const out = pickSeeds(
+      [{ score: 0, candidate: { label: 'lonely' } }],
+      { fallbackOnAllZero: 'none' },
+    );
+    assert.deepEqual(out, []);
   });
 
   test('exactly equals dominanceRatio (boundary case) → NOT dominant', () => {

@@ -106,7 +106,21 @@ export function computeIdf(documents) {
 
 // IDF weight assumed for tokens not present in the corpus map — full
 // weight, since we have no evidence the term is common.
+//
+// NIT-5 (v0.8.12): on `corpusSize === 0` (degenerate — empty corpus), the
+// pre-v0.8.12 formula returned `log(1) = 0`, which made every score zero
+// and every `pickSeeds` call fall through to its all-zero fallback
+// (`first-n` by default → confidently-wrong drill). Now we throw a
+// targeted error so the misuse is caught at the call site instead of
+// surfacing as a wrong answer downstream.
 export function defaultIdf(corpusSize) {
+  if (!Number.isFinite(corpusSize) || corpusSize < 1) {
+    throw new Error(
+      `defaultIdf: corpusSize must be a finite number >= 1 (got ${corpusSize}). ` +
+        'Pass the actual number of documents in the corpus — an empty corpus ' +
+        'should not reach the scoring path at all (skip with an early "no results").',
+    );
+  }
   return Math.log(1 + corpusSize);
 }
 
@@ -232,7 +246,7 @@ const DEFAULT_DOMINANCE_RATIO = 5;
  *   - Empty input → []
  *   - Single candidate → that candidate (no runner-up to compare).
  *   - All zeros → first `maxSeeds` candidates (the caller passed something
- *     useless; return something rather than nothing).
+ *     useless; behaviour controlled by `fallbackOnAllZero`).
  *   - Second-best is zero → top is automatically dominant (n / 0 = infinity).
  *
  * @param {Array<{score: number, candidate: object}>} scored
@@ -240,20 +254,36 @@ const DEFAULT_DOMINANCE_RATIO = 5;
  * @param {object} [opts]
  * @param {number} [opts.maxSeeds=3]
  * @param {number} [opts.dominanceRatio=5]
+ * @param {'first-n' | 'none'} [opts.fallbackOnAllZero='first-n']
+ *   Policy when all candidates score zero (query terms don't match the
+ *   corpus at all). `'first-n'` (default, pre-v0.8.12 behavior) returns
+ *   the first `maxSeeds` candidates unranked — useful when the caller
+ *   prefers ANY suggestion over silence. `'none'` returns `[]` — useful
+ *   when the caller would rather emit "no results" than risk a
+ *   confidently-wrong drill. IMP-6 from `/review+`.
  * @returns {object[]} The candidate objects (unwrapped).
  */
 export function pickSeeds(scored, opts = {}) {
-  const { maxSeeds = DEFAULT_MAX_SEEDS, dominanceRatio = DEFAULT_DOMINANCE_RATIO } = opts;
+  const {
+    maxSeeds = DEFAULT_MAX_SEEDS,
+    dominanceRatio = DEFAULT_DOMINANCE_RATIO,
+    fallbackOnAllZero = 'first-n',
+  } = opts;
   if (!Array.isArray(scored) || scored.length === 0) return [];
-  if (scored.length === 1) return [scored[0].candidate];
+  if (scored.length === 1) {
+    // Even a single candidate is "all-zero" if its score is zero. Respect
+    // the policy for consistency with the multi-candidate branch.
+    if (scored[0].score === 0 && fallbackOnAllZero === 'none') return [];
+    return [scored[0].candidate];
+  }
 
   const top = scored[0];
   const second = scored[1];
 
-  // All-zero scores: caller didn't get useful matches; return up to
-  // maxSeeds candidates anyway so the calling skill has something to
-  // fall back on rather than an empty list.
+  // All-zero scores: caller didn't get useful matches. Behaviour controlled
+  // by `fallbackOnAllZero` — see param docs.
   if (top.score === 0) {
+    if (fallbackOnAllZero === 'none') return [];
     return scored.slice(0, maxSeeds).map((s) => s.candidate);
   }
 
@@ -276,11 +306,23 @@ export function pickSeeds(scored, opts = {}) {
  * Most callers want this — the three-step API is exposed for use sites
  * that need to inspect or cache intermediate state.
  *
+ * **All-zero fallback warning (IMP-6 from `/review+` 2026-05-21)**: when
+ * none of the query tokens match any candidate (e.g. query is unique
+ * jargon not in the corpus), the default `seedOpts.fallbackOnAllZero =
+ * 'first-n'` returns the first `maxSeeds` candidates UNRANKED. The
+ * caller (often a skill like `wiki-query`) then drills into those —
+ * which can look confidently-correct in the output even though no
+ * candidate actually matched. If your call site prefers "no result over
+ * a wrong result", pass `seedOpts: { fallbackOnAllZero: 'none' }` to
+ * return `[]` instead.
+ *
  * @param {object} params
  * @param {string} params.query
  * @param {Array<object>} params.candidates
  * @param {Map<string, number>} [params.idf]
  * @param {object} [params.seedOpts]
+ *   Forwarded to `pickSeeds`. See `pickSeeds` for `maxSeeds`,
+ *   `dominanceRatio`, and `fallbackOnAllZero`.
  * @returns {object[]}
  */
 export function rankAndPick({ query, candidates, idf, seedOpts }) {

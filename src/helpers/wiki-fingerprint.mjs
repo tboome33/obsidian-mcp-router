@@ -108,8 +108,9 @@ export function contentIsUnchanged(filePath, newContent) {
  * The fingerprint is deterministic in:
  *   - The set of paths (sorted lexicographically before hashing)
  *   - The canonicalised content of each path
- *   - Missing files (treated as empty content — so deleting a file
- *     produces a different fingerprint than not changing it)
+ *   - The presence-or-absence of each path (empty file ≠ missing file —
+ *     deleting an already-empty file STILL changes the fingerprint, so the
+ *     hot-cache hook re-fires correctly when an empty wiki note is removed)
  *
  * @param {string} cwd - Project root; paths are resolved relative to this.
  * @param {string[]} relativePaths
@@ -120,13 +121,20 @@ export function computeFingerprint(cwd, relativePaths) {
   const hasher = crypto.createHash('sha256');
   for (const rel of sorted) {
     let content = '';
+    let presenceMarker = '1'; // present
     try {
       content = fs.readFileSync(path.join(cwd, rel), 'utf8');
     } catch {
-      // File missing → fingerprinted as empty. Different from "file
-      // present but empty" because we hash the path prefix regardless.
+      // File missing → fingerprinted with presenceMarker='0'. Pre-IMP-7
+      // (v0.8.11 and earlier) we hashed only the canonical content, which
+      // meant deleting an already-empty file produced the SAME hash as not
+      // changing it (canonicalise('') === '\n', same as canonicalise of an
+      // absent file). The explicit marker breaks that collision.
+      presenceMarker = '0';
     }
     hasher.update(rel);
+    hasher.update('\0');
+    hasher.update(presenceMarker);
     hasher.update('\0');
     hasher.update(canonicalise(content));
     hasher.update('\0');
@@ -154,8 +162,13 @@ export function readFingerprint(filePath) {
 
 /**
  * Write a fingerprint to a sidecar file. Creates parent directory if
- * missing. Silently swallows write errors — the next call will just
- * re-emit the prompt, which is acceptable degradation.
+ * missing. Failures are logged to stderr but not thrown — the next call
+ * will just re-emit the prompt, which is acceptable degradation.
+ *
+ * NIT-3 (v0.8.12): pre-v0.8.12 the catch was fully silent, which made
+ * "why does the hook re-prompt at every turn for 3 days" hard to
+ * diagnose. Now we surface the failure once to stderr so the cause
+ * (disk full, permission denied, ENOSPC, etc.) is visible.
  *
  * @param {string} filePath - Absolute path.
  * @param {string} fingerprint
@@ -164,10 +177,13 @@ export function writeFingerprint(filePath, fingerprint) {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, fingerprint + '\n', 'utf8');
-  } catch {
-    // Silent — disk full, permission denied, etc. The deduplication is
-    // a nice-to-have; if it fails, we degrade to "re-prompt every time"
-    // which is the pre-v0.8.10 behaviour anyway.
+  } catch (err) {
+    // Surface the cause to stderr but keep the call non-throwing. The
+    // deduplication is a nice-to-have; if it fails, we degrade to
+    // "re-prompt every time" which is the pre-v0.8.10 behaviour anyway.
+    console.error(
+      `[obsidian-mcp-router] writeFingerprint failed for ${filePath}: ${err.code || ''} ${err.message}`.trim(),
+    );
   }
 }
 

@@ -31,6 +31,13 @@ import { mergeFrontmatterTool } from './tools/merge-frontmatter.mjs';
 import { lockVault, unlockVaults } from './tools/lock.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from './tools/auto-enrich.mjs';
 
+// Read package version once at module load. Fixes IMP-2 (handshake reported
+// stale '0.8.2' instead of package.json version). Read synchronously at import
+// time — runs once, can't drift from package.json.
+const PKG_VERSION = JSON.parse(
+  fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
+
 const TOOLS = [
   {
     name: 'list_vaults',
@@ -421,6 +428,58 @@ const TOOLS = [
 ];
 
 /**
+ * Dispatch map from tool name to handler. Fixes IMP-3 — pre-v0.8.12 the
+ * CallTool handler was a manual `switch (name)` that could drift silently
+ * from the TOOLS array (typo in case → "Unknown tool" surface only at
+ * runtime, e.g. when READONLY filtering was added in Phase 1 and a missed
+ * case let a write through). The cross-check below runs at module load,
+ * so any drift between TOOLS schemas and TOOL_HANDLERS keys is a static
+ * boot-time error instead of a runtime surprise.
+ *
+ * Handler signature is uniform: (reg, args) => Promise<result>. `list_vaults`
+ * ignores args; every other tool reads from it. The uniformity lets the
+ * dispatcher be a one-liner.
+ */
+const TOOL_HANDLERS = {
+  list_vaults: (reg, args) => listVaults(reg),
+  list_files: (reg, args) => listFiles(reg, args),
+  get_file: (reg, args) => getFile(reg, args),
+  search: (reg, args) => search(reg, args),
+  search_smart: (reg, args) => searchSmartTool(reg, args),
+  write_file: (reg, args) => writeFileTool(reg, args),
+  append_to_file: (reg, args) => appendToFileTool(reg, args),
+  delete_file: (reg, args) => deleteFileTool(reg, args),
+  patch_file: (reg, args) => patchFileTool(reg, args),
+  execute_template: (reg, args) => executeTemplateTool(reg, args),
+  move_file: (reg, args) => moveFileTool(reg, args),
+  get_frontmatter: (reg, args) => getFrontmatterTool(reg, args),
+  set_frontmatter: (reg, args) => setFrontmatterTool(reg, args),
+  merge_frontmatter: (reg, args) => mergeFrontmatterTool(reg, args),
+  lock_vault: (reg, args) => lockVault(reg, args),
+  unlock_vaults: (reg, args) => unlockVaults(reg, args),
+  set_auto_enrich_mode: (reg, args) => setAutoEnrichMode(reg, args),
+};
+
+// Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
+// module load — any mismatch (typo, forgotten handler, orphan handler) is a
+// boot-time error, never a runtime "Unknown tool" surprise. This is the
+// structural guarantee that protects Phase 1's READONLY filtering against
+// the drift that the IMP-3 finding flagged.
+{
+  const toolNames = TOOLS.map((t) => t.name);
+  const handlerNames = Object.keys(TOOL_HANDLERS);
+  const missingHandlers = toolNames.filter((n) => !handlerNames.includes(n));
+  const orphanHandlers = handlerNames.filter((n) => !toolNames.includes(n));
+  if (missingHandlers.length || orphanHandlers.length) {
+    throw new Error(
+      `[obsidian-mcp-router] TOOLS / TOOL_HANDLERS drift detected. ` +
+        `Missing handlers: [${missingHandlers.join(', ') || 'none'}]. ` +
+        `Orphan handlers: [${orphanHandlers.join(', ') || 'none'}].`,
+    );
+  }
+}
+
+/**
  * Validate that a candidate lock name is in the active vault set. Returns
  * `{ lock, warning }`: `lock` is the candidate if valid, otherwise null;
  * `warning` is null when the candidate is valid (or absent), otherwise a
@@ -634,7 +693,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   const server = new Server(
     {
       name: 'obsidian-mcp-router',
-      version: '0.8.2',
+      version: PKG_VERSION,
     },
     {
       capabilities: {
@@ -652,44 +711,15 @@ export async function startServer({ configPath, watch = true } = {}) {
 
     try {
       const reg = registryRef.current;
-      switch (name) {
-        case 'list_vaults':
-          return await wrapResult(listVaults(reg));
-        case 'list_files':
-          return await wrapResult(listFiles(reg, args));
-        case 'get_file':
-          return await wrapResult(getFile(reg, args));
-        case 'search':
-          return await wrapResult(search(reg, args));
-        case 'search_smart':
-          return await wrapResult(searchSmartTool(reg, args));
-        case 'write_file':
-          return await wrapResult(writeFileTool(reg, args));
-        case 'append_to_file':
-          return await wrapResult(appendToFileTool(reg, args));
-        case 'delete_file':
-          return await wrapResult(deleteFileTool(reg, args));
-        case 'patch_file':
-          return await wrapResult(patchFileTool(reg, args));
-        case 'execute_template':
-          return await wrapResult(executeTemplateTool(reg, args));
-        case 'move_file':
-          return await wrapResult(moveFileTool(reg, args));
-        case 'get_frontmatter':
-          return await wrapResult(getFrontmatterTool(reg, args));
-        case 'set_frontmatter':
-          return await wrapResult(setFrontmatterTool(reg, args));
-        case 'merge_frontmatter':
-          return await wrapResult(mergeFrontmatterTool(reg, args));
-        case 'lock_vault':
-          return await wrapResult(lockVault(reg, args));
-        case 'unlock_vaults':
-          return await wrapResult(unlockVaults(reg, args));
-        case 'set_auto_enrich_mode':
-          return await wrapResult(setAutoEnrichMode(reg, args));
-        default:
-          throw new Error(`Unknown tool: ${name}`);
+      // Map-based dispatch (IMP-3). The boot-time cross-check between TOOLS
+      // and TOOL_HANDLERS guarantees every advertised tool has a handler, so
+      // a missing entry here is impossible. Phase 1's READONLY filter will
+      // wrap this lookup with a per-call guard.
+      const handler = TOOL_HANDLERS[name];
+      if (!handler) {
+        throw new Error(`Unknown tool: ${name}`);
       }
+      return await wrapResult(handler(reg, args));
     } catch (err) {
       // Friendly errors when the underlying RestApiError carries a `hint`.
       const lines = [`Error: ${err.message}`];

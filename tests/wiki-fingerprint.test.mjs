@@ -201,6 +201,23 @@ describe('computeFingerprint', () => {
     });
   });
 
+  test('IMP-7 regression — empty file vs missing file produce DIFFERENT fingerprints', () => {
+    // Pre-v0.8.12 the function hashed only `canonicalise(content)`. Since
+    // canonicalise('') === '\n' (same as canonicalise of a missing file),
+    // an empty-then-deleted file produced an identical hash → hot-cache
+    // hook would NOT re-fire on the delete. Fix: an explicit presence
+    // marker ('1' for present, '0' for absent) before the canonical body.
+    fs.writeFileSync(path.join(tempDir, 'wiki', 'empty.md'), '', 'utf8');
+    const empty = computeFingerprint(tempDir, ['wiki/empty.md']);
+    fs.rmSync(path.join(tempDir, 'wiki', 'empty.md'));
+    const missing = computeFingerprint(tempDir, ['wiki/empty.md']);
+    assert.notEqual(
+      empty,
+      missing,
+      'an existing empty file MUST fingerprint differently than a missing file',
+    );
+  });
+
   test('whitespace-only changes (canonical equivalence) do NOT change fingerprint', () => {
     fs.writeFileSync(path.join(tempDir, 'wiki', 'a.md'), 'content A\n', 'utf8');
     const before = computeFingerprint(tempDir, ['wiki/a.md']);
