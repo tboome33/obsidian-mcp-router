@@ -1,0 +1,88 @@
+/*
+ * no-task-strikethrough.css
+ *
+ * Désactive le rendu strikethrough automatique d'Obsidian sur les items de
+ * checklist cochés (`- [x] texte`). Aligné sur la convention
+ * `roadmap-discipline` v0.10.1 §2bis : la case cochée est le SEUL signal de
+ * complétion ; on ne raye pas le texte.
+ *
+ * Quirk CSS adressé : `text-decoration: line-through` posé sur un parent
+ * (<li>) ne peut PAS être annulé par `text-decoration: none` sur un enfant —
+ * la ligne est dessinée au niveau du parent et traverse tous les descendants.
+ * On doit donc tuer la décoration sur le parent ET utiliser
+ * `text-decoration-color: transparent` en belt-and-suspenders.
+ *
+ * Shipped by obsidian-mcp-router (v0.10.1+) — auto-installed on every vault
+ * bootstrapped via setup-vault.mjs. To remove: disable in Settings → Appearance
+ * → CSS snippets, or delete this file.
+ */
+
+/* ============================================================
+ * Reading view + Live Preview
+ * Cible le <li> coché ET tous ses descendants pour les thèmes qui posent
+ * la décoration au niveau interne (Prism, Minimal customisé, etc.)
+ * ============================================================ */
+
+body .task-list-item.is-checked,
+body .task-list-item.is-checked *,
+body li[data-task="x"],
+body li[data-task="x"] *,
+body li[data-task="X"],
+body li[data-task="X"] * {
+  text-decoration: none !important;
+  text-decoration-line: none !important;
+  text-decoration-color: transparent !important;
+  -webkit-text-decoration: none !important;
+  -webkit-text-decoration-line: none !important;
+  -webkit-text-decoration-color: transparent !important;
+  opacity: 1 !important;
+  color: var(--text-normal) !important;
+}
+
+/* Plus haute spécificité encore au cas où le thème pose la règle avec
+ * `body.theme-dark` ou `body.theme-light` en préfixe (cumul de classes). */
+body.theme-dark .task-list-item.is-checked,
+body.theme-dark .task-list-item.is-checked *,
+body.theme-light .task-list-item.is-checked,
+body.theme-light .task-list-item.is-checked * {
+  text-decoration: none !important;
+  text-decoration-line: none !important;
+  text-decoration-color: transparent !important;
+  opacity: 1 !important;
+  color: var(--text-normal) !important;
+}
+
+/* ============================================================
+ * CodeMirror (Live Preview + Source mode)
+ * Le wrapper de ligne `HyperMD-task-line-checked` et l'overlay
+ * `.cm-strikethrough` posent leur propre décoration.
+ * ============================================================ */
+
+body .cm-s-obsidian .HyperMD-task-line.HyperMD-task-line-checked,
+body .cm-s-obsidian .HyperMD-task-line.HyperMD-task-line-checked *,
+body .cm-s-obsidian .HyperMD-task-line.HyperMD-task-line-checked .cm-strikethrough,
+body .cm-s-obsidian .HyperMD-list-line.HyperMD-task-line .task-list-item.is-checked,
+body .cm-s-obsidian .HyperMD-list-line.HyperMD-task-line .task-list-item.is-checked *,
+body .cm-s-obsidian .cm-strikethrough {
+  text-decoration: none !important;
+  text-decoration-line: none !important;
+  text-decoration-color: transparent !important;
+  opacity: 1 !important;
+  color: var(--text-normal) !important;
+}
+
+/* ============================================================
+ * Variables CSS utilisées par certains thèmes (Minimal, Things, AnuPpuccin)
+ * Mettre ces variables à neutral désactive le styling sans toucher la cascade.
+ * ============================================================ */
+
+body,
+body .task-list-item.is-checked,
+body .markdown-rendered,
+body .markdown-preview-view,
+body .markdown-source-view {
+  --checklist-done-decoration: none !important;
+  --checklist-done-color: var(--text-normal) !important;
+  --task-completed-decoration: none !important;
+  --task-completed-color: var(--text-normal) !important;
+}

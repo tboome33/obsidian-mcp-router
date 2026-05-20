@@ -182,6 +182,25 @@ Backward compatible: setups without `OBSIDIAN_ROUTER_AUTO_ENRICH` env var that d
 
 Phase 2 (planned): daily digest of yesterday's auto-saves at first interaction of the day; configurable hard cap (per-vault, not hardcoded 5); sensitivity filter learned from user corrections (when user deletes an auto-saved page within X minutes, the classifier remembers the pattern).
 
+## ✅ v0.8.3 → v0.10.0 — see CHANGELOG.md
+
+This ROADMAP.md tracks the original feature plan. Versions v0.8.3 through v0.10.0 shipped substantial work (auto-enrichment Phase 2 polish, conventions library, multi-tenant env vars for MCPHub, `defaultVaultStatus`, etc.) that **isn't backfilled here** — see [`CHANGELOG.md`](./CHANGELOG.md) for the per-version detail. The forward-looking `v0.9` / `v1.0` sections below describe the ORIGINAL planned features (Cloudflare Tunnel, public release), which still apply but ended up downstream of what actually shipped in those slots.
+
+## ✅ v0.10.1 — Roadmap-discipline §2bis + no-task-strikethrough CSS snippet + `--sync-all` (shipped 2026-05-21)
+
+Two-layer fix for the "checked roadmap items get visually striked through" problem: a markdown convention §2bis that forbids `~~...~~` on shipped items, AND an Obsidian CSS snippet that kills the default-renderer line-through styling on `- [x]` task items. Plus tooling to push both to all vaults in one command.
+
+- ✅ Convention `roadmap-discipline` extended with **section 2bis "Lisibilité — JAMAIS de strikethrough sur les items livrés"** ([`skills/conventions/snippets/roadmap-discipline.md`](./skills/conventions/snippets/roadmap-discipline.md)). Forbids `~~...~~` on item text / phase H2 / trailing note. Retroactive cleanup directive (mention + ask before stripping).
+- ✅ CSS snippet `no-task-strikethrough.css` shipped in [`templates/reference-vault-skeleton/.obsidian/snippets/`](./templates/reference-vault-skeleton/.obsidian/snippets/no-task-strikethrough.css) — disables `text-decoration: line-through` across all 3 Obsidian modes (Reading view, Live Preview, Source), covers Default + Minimal + Prism + AnuPpuccin themes via standard selectors + `--checklist-done-decoration` CSS variable.
+- ✅ Skeleton `appearance.json` ships with `enabledCssSnippets: ["no-task-strikethrough"]` pre-active.
+- ✅ `setup-vault.mjs` gains `cloneSnippets()` + `enableSnippetsInAppearance()` — every new vault and every `--sync-plugins` call now copies the snippets and enables them in `appearance.json`. Idempotent.
+- ✅ **New CLI option `--sync-all`** in `setup-vault.mjs` — iterates `portRegistry` and runs `--sync-plugins` on every configured vault in one go. Variant `--sync-all --force` for pushing a snippet/plugin update to all vaults at once.
+- ✅ Convention copy in user-global `~/.claude/CLAUDE.md` updated with the same §2bis. Wiki [[router-conventions]] catalog page updated FR + EN.
+
+Trigger: Roland *"quand dans une roadmap tu marques que section est déjà réalisée, est ce que tu peux seulement faire un check sur la case à cocher mais ne pas rayer tout le texte sans quoi on a du mal à relire"* followed by *"j'ai encore des textes de rayés"* after discovering Obsidian's default render style was producing the line-through visually even with clean markdown.
+
+Application directe de la règle `roadmap-discipline` v0.10.1 elle-même : cette entrée ROADMAP.md cochée AVANT commit.
+
 ## v0.9 — Cloudflare Tunnel companion plugin
 
 A separate **Obsidian community plugin** that provisions a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for the local vault's REST API. Goal: the user clicks a button in Obsidian, the vault becomes reachable from anywhere via a stable HTTPS URL, with optional auth.

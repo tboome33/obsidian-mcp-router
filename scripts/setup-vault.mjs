@@ -249,8 +249,24 @@ function patchRestApiData(vaultPath, port, apiKey) {
   data.apiKey = apiKey;
   data.port = port;
   data.bindingHost = '127.0.0.1';
+  // Convention: enable the unencrypted HTTP server on `port + 10`, bound to
+  // loopback. Used by the bridge plugin's GET /open/<path> route to produce
+  // click-to-open URLs that work even when an antivirus (Bitdefender, ESET,
+  // Kaspersky) silently drops self-signed HTTPS loopback connections — those
+  // products intercept HTTPS for inspection and refuse the plugin's
+  // auto-generated cert, with no browser-side warning. Plain HTTP on
+  // 127.0.0.1 sidesteps the issue. Each vault gets a unique HTTP port via
+  // the `+ 10` offset so multiple vaults can have HTTP enabled
+  // simultaneously without binding the same socket. Safe because: bind is
+  // loopback-only, the public route /open/* is navigation-only (no read,
+  // write, or exec capability — it calls workspace.openLinkText), and the
+  // routes that DO read/write/search still require the apiKey on the
+  // HTTPS port. Documented in the user's CLAUDE.md "Obsidian vault links"
+  // section.
+  data.insecurePort = port + 10;
+  data.enableInsecureServer = true;
   fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
-  ok(`Patched Local REST API data.json (port=${port}, fresh apiKey)`);
+  ok(`Patched Local REST API data.json (port=${port}, insecurePort=${port + 10}, HTTP enabled, fresh apiKey)`);
 }
 
 function ensureCommunityPlugins(vaultPath) {
@@ -389,6 +405,75 @@ function cloneSmartEnv(referenceVault, targetVault, force) {
     }
     ok(`Cloned .smart-env/${item}`);
   }
+}
+
+// Clone Obsidian CSS snippets from reference vault. Currently ships
+// `no-task-strikethrough.css` (kills the default rendering of `~~text~~`
+// on `- [x]` items — aligned with the `roadmap-discipline` v0.10.1 §2bis
+// convention). Future-proofed: every `.css` file under the reference's
+// `.obsidian/snippets/` is copied, and every snippet basename is added to
+// `appearance.json`'s `enabledCssSnippets` array.
+function cloneSnippets(referenceVault, targetVault, force) {
+  const srcDir = path.join(referenceVault, '.obsidian', 'snippets');
+  if (!fs.existsSync(srcDir)) return;
+
+  const snippets = fs.readdirSync(srcDir).filter((f) => f.endsWith('.css'));
+  if (snippets.length === 0) return;
+
+  const dstDir = path.join(targetVault, '.obsidian', 'snippets');
+  fs.mkdirSync(dstDir, { recursive: true });
+
+  const copiedBasenames = [];
+  for (const snippet of snippets) {
+    const src = path.join(srcDir, snippet);
+    const dst = path.join(dstDir, snippet);
+    if (fs.existsSync(dst) && !force) {
+      warn(`Snippet already present, skipping clone: ${snippet} (use --force to overwrite)`);
+      copiedBasenames.push(snippet.replace(/\.css$/, ''));
+      continue;
+    }
+    fs.copyFileSync(src, dst);
+    copiedBasenames.push(snippet.replace(/\.css$/, ''));
+    ok(`Cloned snippet: ${snippet}`);
+  }
+
+  // Patch appearance.json so the snippets actually load. Without this step,
+  // the file lives on disk but Obsidian ignores it.
+  enableSnippetsInAppearance(targetVault, copiedBasenames);
+}
+
+// Merge a list of snippet basenames into `<vault>/.obsidian/appearance.json`'s
+// `enabledCssSnippets` array. Creates the file if missing. Idempotent: a
+// snippet already in the array is not duplicated.
+function enableSnippetsInAppearance(targetVault, snippetBasenames) {
+  if (!snippetBasenames || snippetBasenames.length === 0) return;
+
+  const appearancePath = path.join(targetVault, '.obsidian', 'appearance.json');
+  let appearance = {};
+  if (fs.existsSync(appearancePath)) {
+    try {
+      appearance = JSON.parse(fs.readFileSync(appearancePath, 'utf8'));
+    } catch {
+      // File is malformed — start fresh rather than crash the bootstrap.
+      appearance = {};
+    }
+  }
+
+  const enabled = new Set(appearance.enabledCssSnippets || []);
+  let added = 0;
+  for (const basename of snippetBasenames) {
+    if (!enabled.has(basename)) {
+      enabled.add(basename);
+      added++;
+    }
+  }
+
+  if (added === 0) return;
+
+  appearance.enabledCssSnippets = Array.from(enabled);
+  fs.mkdirSync(path.dirname(appearancePath), { recursive: true });
+  fs.writeFileSync(appearancePath, JSON.stringify(appearance, null, 2) + '\n');
+  ok(`Enabled ${added} CSS snippet(s) in appearance.json`);
 }
 
 // HTTPS GET with redirect following (GitHub releases use 302 chains).
@@ -678,6 +763,10 @@ function setupVault(vaultPath, opts = {}) {
   // Clone Smart Connections config + embedding cache from reference
   cloneSmartEnv(cfg.referenceVault, abs, opts.force);
 
+  // Clone Obsidian CSS snippets (no-task-strikethrough.css + any others)
+  // and patch appearance.json to enable them.
+  cloneSnippets(cfg.referenceVault, abs, opts.force);
+
   // Clone root-level docs (README.md etc.) from reference
   cloneRootDocs(cfg.referenceVault, abs, opts.force);
 
@@ -766,6 +855,10 @@ function syncPluginsMode(vaultPath, opts = {}) {
     smartEnvAdded = true;
   }
 
+  // Sync Obsidian CSS snippets (no-task-strikethrough.css + any future ones)
+  // and patch appearance.json — idempotent, never blocks existing snippets.
+  cloneSnippets(cfg.referenceVault, abs, opts.force);
+
   // Sync root docs (README.md) — preserve user customizations unless --force
   cloneRootDocs(cfg.referenceVault, abs, opts.force);
 
@@ -808,6 +901,8 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs <vault-path> --sync-plugins           Sync new plugins from reference vault
   node setup-vault.mjs <vault-path> --sync-plugins --force   Re-clone all plugins, preserving data.json
   node setup-vault.mjs <vault-path> --sync-plugins --quiet   Silent unless something changed (for hooks)
+  node setup-vault.mjs --sync-all                            Run --sync-plugins on every vault in portRegistry
+  node setup-vault.mjs --sync-all --force                    Same, force-overwrite plugins + snippets
   node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
                                                               shipped skeleton + download bridge plugin.
                                                               Follow up with --init-reference once you've
@@ -821,6 +916,61 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
 if (args[0] === '--status') {
   printStatus();
   process.exit(0);
+}
+
+if (args[0] === '--sync-all') {
+  // Iterate over portRegistry and run sync-plugins on each vault.
+  // Convenient bulk operation for: pushing a new snippet, a new plugin,
+  // or a refreshed reference vault to every configured vault at once.
+  // Idempotent — vaults that are already in sync are no-ops.
+  const cfg = loadConfig();
+  if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
+    fail('No reference vault configured or it no longer exists.');
+  }
+  const force = args.includes('--force');
+  const targets = Object.keys(cfg.portRegistry || {});
+  if (targets.length === 0) {
+    info('No vaults in portRegistry. Nothing to do.');
+    process.exit(0);
+  }
+  console.log(c('bold', `Syncing ${targets.length} vault(s) from ${cfg.referenceVault}${force ? ' (--force)' : ''}…`));
+  console.log('');
+  let okCount = 0;
+  let skipCount = 0;
+  let failCount = 0;
+  for (const vaultPath of targets) {
+    // Skip the reference vault itself — syncing it to itself is a no-op
+    // and just adds noise to the output.
+    if (path.resolve(vaultPath) === path.resolve(cfg.referenceVault)) {
+      console.log(c('gray', `  - skip (reference): ${vaultPath}`));
+      skipCount++;
+      continue;
+    }
+    if (!fs.existsSync(vaultPath)) {
+      console.log(c('yellow', `  - skip (path missing): ${vaultPath}`));
+      skipCount++;
+      continue;
+    }
+    if (!fs.existsSync(path.join(vaultPath, '.obsidian'))) {
+      console.log(c('yellow', `  - skip (no .obsidian): ${vaultPath}`));
+      skipCount++;
+      continue;
+    }
+    try {
+      console.log(c('cyan', `  → ${vaultPath}`));
+      syncPluginsMode(vaultPath, { force, quiet: false });
+    } catch (err) {
+      // syncPluginsMode normally exits on error via fail() — but if it returns,
+      // count it as a soft failure and keep iterating the rest.
+      console.log(c('red', `    failed: ${err.message || err}`));
+      failCount++;
+      continue;
+    }
+    okCount++;
+  }
+  console.log('');
+  console.log(c('bold', `Done. ${okCount} synced, ${skipCount} skipped, ${failCount} failed.`));
+  process.exit(failCount > 0 ? 1 : 0);
 }
 
 if (args[0] === '--init-reference') {

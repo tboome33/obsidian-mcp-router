@@ -8,6 +8,46 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.10.1] — 2026-05-21
+
+Extends the `roadmap-discipline` convention with a new **section 2bis** that forbids `~~strikethrough~~` on completed roadmap items, AND ships a matching Obsidian CSS snippet that kills the *default* Obsidian rendering style which paints `- [x]` items with line-through styling — defeating the whole convention visually. Both pieces shipped together: the markdown-level rule + the rendering-level fix.
+
+### Added
+
+#### Convention (markdown-level)
+
+- **Section 2bis "Lisibilité — JAMAIS de strikethrough sur les items livrés"** in `skills/conventions/snippets/roadmap-discipline.md` — explicit no-strikethrough rule, retroactive cleanup directive (mention + ask before stripping `~~...~~` from existing roadmaps), and rationale (`- [x]` is the universal markdown convention; strikethrough is decorative noise on top of an already-signaled-as-complete item).
+- **Anti-pattern entry** in the same snippet listing strikethrough on shipped items as a forbidden formatting move.
+- **Source-trail line** updated to record the v0.10.1 addition with Roland's verbatim trigger phrase.
+
+#### CSS snippet (rendering-level)
+
+- **New file** `templates/reference-vault-skeleton/.obsidian/snippets/no-task-strikethrough.css` — disables `text-decoration: line-through` on `- [x]` items across all 3 Obsidian render modes (Reading view, Live Preview, Source). Covers default + Minimal + Prism + AnuPpuccin theme conventions via `.task-list-item.is-checked`, `.HyperMD-task-line-checked`, and the `--checklist-done-decoration` CSS variable used by theme authors.
+- **New file** `templates/reference-vault-skeleton/.obsidian/appearance.json` — pre-enables the snippet via `"enabledCssSnippets": ["no-task-strikethrough"]` on every freshly-bootstrapped reference vault.
+- **`cloneSnippets()` + `enableSnippetsInAppearance()`** functions added to `scripts/setup-vault.mjs`. Every `setup-vault.mjs <path>` and `setup-vault.mjs <path> --sync-plugins` invocation now copies `<referenceVault>/.obsidian/snippets/*.css` into the target vault and merges each basename into `<target>/.obsidian/appearance.json` `enabledCssSnippets`. Idempotent: existing snippets are skipped unless `--force`, and an already-enabled basename is not duplicated. Even when the `.css` file is skipped (already present), the `appearance.json` patch still runs — so a vault with the file on disk but not enabled gets fixed automatically on next sync.
+- **New CLI option `--sync-all`** in `scripts/setup-vault.mjs` — iterates `portRegistry` and runs `--sync-plugins` on every configured vault in one go (skipping the reference vault itself and any path that's gone missing). Adds `--force` for re-cloning plugins + snippets when the reference vault's content has been updated. Useful for bulk operations like "push a new snippet to every vault" or "refresh every vault to the latest reference plugin versions".
+
+#### HTTP server convention (click-to-open links)
+
+- **`patchRestApiData()` in `scripts/setup-vault.mjs` now applies the `insecurePort = port + 10` + `enableInsecureServer = true` convention** documented in the user's global `CLAUDE.md` (section "Obsidian vault links — v2 click-to-open"). Every freshly-bootstrapped vault gets a working HTTP server on loopback for the bridge's GET `/open/<path>` click-to-open route, so markdown links like `[note](http://127.0.0.1:<port+10>/open/<path>)` open the file in Obsidian on a single click. Each vault gets a unique HTTP port (HTTPS port + 10) so multiple vaults can have HTTP enabled simultaneously without socket collision on the plugin's default `27123`.
+- **Why this lives in the script and not the skeleton**: the Local REST API plugin generates its own `data.json` at first launch (with insecure server disabled by default), so the skeleton can't ship the desired config — only `patchRestApiData()`, which runs AFTER the user has launched Obsidian once, can enforce the convention. Pre-v0.10.1 the script set `apiKey` / `port` / `bindingHost` but left `insecurePort` and `enableInsecureServer` at the plugin defaults, leaving every bootstrapped vault unable to serve click-to-open links — silent footgun, only surfaced when Roland tried a generated link and nothing happened.
+- **Why HTTP and not HTTPS**: Bitdefender, ESET, Kaspersky (and other AV/EDR products doing HTTPS inspection) silently drop self-signed loopback TLS connections — the request never reaches the plugin, and the browser shows no cert-warning prompt. Plain HTTP on `127.0.0.1` sidesteps the inspection layer entirely. Safe because the `/open/*` route is navigation-only (it calls `workspace.openLinkText`, no read/write/exec); the routes that DO read/write/search files still require the apiKey on the HTTPS port.
+- **Retroactive fix for vaults bootstrapped before v0.10.1**: run `setup-vault.mjs <path> --regenerate` (which forces a fresh `patchRestApiData()` call) on each vault, then reload Obsidian on that vault for the plugin to pick up the new config. The `--regenerate` flag also rotates the apiKey — if you want to preserve the existing apiKey, edit `data.json` by hand and set `"insecurePort": <port>+10, "enableInsecureServer": true`.
+
+### Why
+
+Two-layer fix because two layers of the system were producing the same bad visual:
+1. **Markdown convention layer** — past sessions wrote `- [x] ~~feature livrée~~` thinking strikethrough emphasised "done". §2bis bans this.
+2. **Obsidian default rendering layer** — even with clean markdown (`- [x] feature livrée` without `~~...~~`), the default Obsidian stylesheet applies `text-decoration: line-through` to checked task items. Visually identical to layer 1's anti-pattern. The CSS snippet kills that automatic styling so what the user types is what the user reads.
+
+Roadmaps are re-read constantly during a project's lifecycle to understand "what got done, when, with what commit". Strikethrough hides keywords, breaks grep/Ctrl+F at the human level, and makes long completed-phase blocks visually painful. The checked box `- [x]` already carries 100% of the "done" semantics — no decorative overlay needed, whether the strike comes from the markdown source or from the renderer.
+
+### Backward compatible
+
+- **Convention** is a pure documentation extension. Vaults that already installed `roadmap-discipline` before v0.10.1 keep working — they get the older 5-step rule. To pull in section 2bis, run `/obsidian-router:conventions install roadmap-discipline` again on the target vault: the H2-presence check will detect "already installed" and skip… so prefer `remove` then `install` (the safety-guarded path), or hand-edit the existing CLAUDE.md to append section 2bis directly.
+- **CSS snippet** is opt-out per vault — a user can disable it in `Settings → Appearance → CSS snippets` if they prefer the Obsidian default rendering. Existing vaults bootstrapped before v0.10.1 don't automatically receive the snippet at upgrade time: run `setup-vault.mjs <path> --sync-plugins` (or `--force`) to pull it in retroactively, or copy the file by hand from the skeleton.
+- The global `~/.claude/CLAUDE.md` has already been updated with the same section 2bis at the time of the v0.10.1 release.
+
 ## [0.10.0] — 2026-05-21
 
 Adds a top-level `defaultVaultStatus` field to the `list_vaults` response, and a matching installable convention (`default-vault-health-check`) that tells Claude to surface a natural-language warning with a clickable `obsidian://open?vault=<name>` link when the default vault is offline at session start. Triggered by Roland's observation that an Obsidian app closed at the start of a session produced cryptic `ECONNREFUSED` errors on the first write tool call, with no actionable hint that "open Obsidian" was the fix.

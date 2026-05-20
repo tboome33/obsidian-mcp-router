@@ -30,6 +30,22 @@ Procédure obligatoire :
 4. **Update "Ordre d'attaque recommandé"** si la prochaine étape change.
 5. **Append au `wiki/log.md`** une ligne bilingue traçant l'update.
 
+### 2bis. Lisibilité — JAMAIS de strikethrough sur les items livrés
+
+Quand un item est livré, le seul changement visuel autorisé est :
+- `- [ ]` → `- [x]` (la case cochée suffit comme signal de complétion)
+- Optionnellement une note de fin en italique sur la ligne suivante (date, commit, fichiers)
+
+**INTERDIT** :
+- ❌ Wrapper le texte de l'item dans `~~...~~` (strikethrough markdown)
+- ❌ Wrapper le H2 d'une phase livrée dans `~~...~~`
+- ❌ Wrapper la note de fin dans `~~...~~`
+- ❌ Tout autre formatage qui dégrade la lisibilité du texte historique
+
+**Raison** : une roadmap se relit constamment pour comprendre l'historique du projet. Le texte rayé est pénible à lire (surtout en bloc), perd les keywords scannables visuellement, et brise le grep/Ctrl+F côté humain. La checkbox cochée `- [x]` est déjà 100% suffisante pour signaler "fait" — c'est la convention markdown universelle.
+
+**À appliquer aussi rétroactivement** : si tu tombes sur une roadmap existante qui contient du `~~strikethrough~~` sur des items cochés, propose de nettoyer en passant. Ne le fais pas en silence sur une autre tâche — mentionne-le et laisse l'user trancher si le scope du nettoyage est ok pour la session courante.
+
 ### 3. Pre-flight check avant d'annoncer "Phase X done"
 
 Avant de répondre au user avec "Phase X terminée" / "shipping complet" :
@@ -47,7 +63,8 @@ Avant de répondre au user avec "Phase X terminée" / "shipping complet" :
 - ❌ Update partielle (H2 sans cocher les `- [ ]` détaillés)
 - ❌ Oublier `updated:` dans le frontmatter
 - ❌ Annoncer "Phase X done" sans pre-flight check
+- ❌ Rayer le texte des items livrés avec `~~...~~` (cf. section 2bis — la checkbox cochée suffit, le strikethrough tue la lisibilité historique)
 
 ### Source
 
-Convention shippée en v0.9.1 du router (2026-05-21) à la demande explicite de Roland après observation de drift répété entre code shippé et roadmaps non mises à jour. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user pour application par défaut sans installation per-vault.
+Convention shippée en v0.9.1 du router (2026-05-21) à la demande explicite de Roland après observation de drift répété entre code shippé et roadmaps non mises à jour. Section 2bis (no-strikethrough) ajoutée en v0.10.1 (2026-05-21) après *"quand dans une roadmap tu marques que section est déjà réalisée, est ce que tu peux seulement faire un check sur la case à cocher mais ne pas rayer tout le texte sans quoi on a du mal à relire"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user pour application par défaut sans installation per-vault.
