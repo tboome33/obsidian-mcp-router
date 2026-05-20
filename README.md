@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.8.6-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.9.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -39,6 +39,40 @@ What you get:
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
 Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. Everything else works against the standard Local REST API endpoints alone.
+
+## Deployment modes
+
+The router runs in two modes, controlled entirely by environment variables — **no code change**, **no separate binary**:
+
+### Local mode (default, v0.8.x compatible)
+
+No env vars set. Single binary, stdio MCP transport, registered once in `~/.claude.json` user scope. The router sees every vault listed in `~/.claude/obsidian-mcp-router/config.json`. This is what you get when you follow the install steps below — it's how the project has worked since day one.
+
+### Multi-tenant mode (v0.9.0+, opt-in)
+
+Three independent env vars turn the router into a scoped instance — useful when you run multiple copies behind a hub (MCPHub, `mcpo`, a custom proxy) and want each instance to expose a different subset of vaults to a different user.
+
+| Env var | What it does | Default when unset |
+|---|---|---|
+| `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
+| `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 8 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
+| `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
+
+The three vars compose freely: an instance can be scoped to one vault (`ALLOWED_VAULTS=karine`) AND read-only (`READONLY=true`) AND attribute writes (`USER_ID=karine-guest`). Setting none = v0.8.x behavior exactly.
+
+Concrete deployment example (MCPHub `mcp_settings.json` entry):
+
+```json
+"obsidian-router-roland": {
+  "command": "obsidian-mcp-router",
+  "env": {
+    "OBSIDIAN_ROUTER_ALLOWED_VAULTS": "roland,tribu,projects",
+    "OBSIDIAN_ROUTER_USER_ID": "roland"
+  }
+}
+```
+
+See `wiki/obsidian-mcp-router sur Dedibox et MCPHub/` in the [opsidian-mcp-router et bridge meta vault](https://github.com/tboome33/obsidian-mcp-router#related-repos) for the complete multi-tenant deployment recipe (bundle `.mcpb`, MCPHub Keys with Access Scope, NPM front, Self-hosted LiveSync, etc.).
 
 ## Slash commands & skills (Claude Code plugin)
 
@@ -658,7 +692,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.8.6-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.9.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).

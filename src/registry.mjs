@@ -110,6 +110,44 @@ export async function loadRegistry({ configPath } = {}) {
     });
   }
 
+  // --- 2.5. Whitelist filtering via OBSIDIAN_ROUTER_ALLOWED_VAULTS (v0.9.0, opt-in) ---
+  //
+  // When the env var is set (CSV list of vault names), the registry only
+  // exposes those vaults — everything else is moved to `skipped[]` with
+  // reason "not in allowed vaults whitelist". When unset/empty, the
+  // registry behaves exactly as v0.8.x (no filtering).
+  //
+  // Used by the v0.9.0 multi-tenant deployment on MCPHub: each registered
+  // instance gets its own `OBSIDIAN_ROUTER_ALLOWED_VAULTS` env so that
+  // `obsidian-router-Roland` only sees Roland's vaults, `obsidian-router-Karine`
+  // only Karine's, etc. — even though they all read the same central config.json.
+  //
+  // CRITICAL ordering: this MUST run BEFORE `resolveDefaultVault()` below,
+  // otherwise `configuredDefault` could resolve to a vault that gets filtered
+  // out right after, and tier-3 of the cascade would silently pick a vault
+  // the user filtered away. See `2026-05-21-codex-audit.md` risk R3.
+  const allowedVaultsEnv = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
+  if (allowedVaultsEnv && allowedVaultsEnv.trim().length > 0) {
+    const allowed = new Set(
+      allowedVaultsEnv
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    );
+    // Iterate in reverse so splice() index math stays correct.
+    for (let i = vaults.length - 1; i >= 0; i -= 1) {
+      const v = vaults[i];
+      if (!allowed.has(v.name)) {
+        skipped.push({
+          name: v.name,
+          type: v.type,
+          reason: 'not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist',
+        });
+        vaults.splice(i, 1);
+      }
+    }
+  }
+
   // --- 3. Default vault — 5-tier resolution cascade ---
   //
   // Priority (highest first):

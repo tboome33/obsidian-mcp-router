@@ -14,6 +14,7 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
+import { appendToFile as restAppendToFile } from './rest-client.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
 import { getFile } from './tools/get-file.mjs';
@@ -480,6 +481,70 @@ const TOOL_HANDLERS = {
 }
 
 /**
+ * Tools that mutate vault state. When `OBSIDIAN_ROUTER_READONLY` is truthy,
+ * these are removed from the ListTools surface AND refused at CallTool
+ * time. Filtering only the listing isn't enough — an MCP client that
+ * already knows the tool name (e.g. from a previous session, or a stale
+ * cache) could still call into a write tool. The dual guard closes that.
+ *
+ * Keep this list synced with the schemas in TOOLS / handlers in
+ * TOOL_HANDLERS. The Set is shipped as `_internals.WRITE_TOOL_NAMES` for
+ * tests and external auditors.
+ */
+const WRITE_TOOL_NAMES = new Set([
+  'write_file',
+  'append_to_file',
+  'patch_file',
+  'set_frontmatter',
+  'merge_frontmatter',
+  'move_file',
+  'delete_file',
+  'execute_template',
+]);
+
+/**
+ * Parse the OBSIDIAN_ROUTER_READONLY env var into a boolean. Truthy
+ * recognised tokens: "true", "1", "yes", "on" (case-insensitive). Anything
+ * else (unset, empty, "false", "0", "no", "off", typos) → false.
+ *
+ * Exported for testing.
+ */
+export function isReadonlyMode(rawEnvValue) {
+  if (rawEnvValue == null) return false;
+  const v = String(rawEnvValue).trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Pick the path field that identifies the file a write tool touched.
+ * Different tools name the field differently (path vs to vs targetPath) —
+ * normalise so the audit log line is always populated. Returns `(unknown)`
+ * as a last-resort sentinel (audit is best-effort and never blocks the
+ * call, so a missing path becomes a placeholder rather than an error).
+ *
+ * Exported for testing.
+ */
+export function pickAuditPath(toolName, args = {}) {
+  if (toolName === 'move_file') return args.to || args.from || '(unknown)';
+  if (toolName === 'execute_template') return args.targetPath || args.name || '(unknown)';
+  return args.path || '(unknown)';
+}
+
+/**
+ * Format a single audit-log line. Stable shape so we can grep it later
+ * (e.g. `git log -p wiki/log.md | grep "by roland"`). The leading and
+ * trailing newlines isolate the entry from whatever sits in `wiki/log.md`
+ * already — the file is append-only so we always end up between
+ * existing entries.
+ *
+ * Exported for testing.
+ */
+export function formatAuditLine({ userId, toolName, auditPath, now = new Date() }) {
+  const ts = now.toISOString().replace('T', ' ').slice(0, 16);
+  return `\n[claude-write by ${userId}] ${ts} — ${toolName} path="${auditPath}"\n`;
+}
+
+/**
  * Validate that a candidate lock name is in the active vault set. Returns
  * `{ lock, warning }`: `lock` is the candidate if valid, otherwise null;
  * `warning` is null when the candidate is valid (or absent), otherwise a
@@ -702,8 +767,49 @@ export async function startServer({ configPath, watch = true } = {}) {
     },
   );
 
+  // v0.9.0 — read-only mode (opt-in). When OBSIDIAN_ROUTER_READONLY is
+  // truthy, write tools are filtered out of ListTools AND refused at
+  // CallTool. Read once at startup; we don't watch the env var for change
+  // because flipping a security gate mid-session is more surprising than
+  // useful — restart the router to flip it.
+  const readonly = isReadonlyMode(process.env.OBSIDIAN_ROUTER_READONLY);
+  if (readonly) {
+    console.error(
+      `[obsidian-mcp-router] OBSIDIAN_ROUTER_READONLY=true — write tools disabled: ` +
+        [...WRITE_TOOL_NAMES].join(', '),
+    );
+  }
+  const exposedTools = readonly
+    ? TOOLS.filter((t) => !WRITE_TOOL_NAMES.has(t.name))
+    : TOOLS;
+
+  // v0.9.0 — audit log (USER_ID). When OBSIDIAN_ROUTER_USER_ID is set,
+  // every SUCCESSFUL write tool call gets a line appended to the touched
+  // vault's `wiki/log.md` so we can trace "who wrote what" later. Each
+  // MCPHub instance gets its own USER_ID env, so a 6-instance multi-tenant
+  // setup gives us free user-level attribution without modifying any
+  // downstream tool.
+  //
+  // CRITICAL: the audit append uses `restAppendToFile` directly (REST
+  // helper) — NOT the `append_to_file` tool handler. Going through the
+  // handler would loop because the audit write itself is a write tool.
+  // The direct REST call bypasses the dispatcher and the audit middleware.
+  //
+  // Failure policy: best-effort. If the audit write fails (disk full,
+  // log.md not writable, etc.), we log the cause to stderr and return
+  // the original write's success — better to lose an audit line than to
+  // fail the user-facing operation. Cf. risk R5 in 2026-05-21-codex-audit.
+  const rawUserId = process.env.OBSIDIAN_ROUTER_USER_ID;
+  const userId = rawUserId && rawUserId.trim().length > 0 ? rawUserId.trim() : null;
+  if (userId) {
+    console.error(
+      `[obsidian-mcp-router] OBSIDIAN_ROUTER_USER_ID="${userId}" — audit logging enabled. ` +
+        `Every successful write appends to <vault>/wiki/log.md.`,
+    );
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS,
+    tools: exposedTools,
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -711,15 +817,52 @@ export async function startServer({ configPath, watch = true } = {}) {
 
     try {
       const reg = registryRef.current;
+      // v0.9.0 — read-only guard. Refuse write tools even if the client
+      // skipped ListTools and called the name directly. The static guard
+      // here is the second layer; the dynamic guard at startup (`exposedTools`)
+      // is the first.
+      if (readonly && WRITE_TOOL_NAMES.has(name)) {
+        throw new Error(
+          `Tool "${name}" is disabled in read-only mode ` +
+            `(OBSIDIAN_ROUTER_READONLY is set). Restart the router with the env ` +
+            `var cleared to enable writes.`,
+        );
+      }
       // Map-based dispatch (IMP-3). The boot-time cross-check between TOOLS
       // and TOOL_HANDLERS guarantees every advertised tool has a handler, so
-      // a missing entry here is impossible. Phase 1's READONLY filter will
-      // wrap this lookup with a per-call guard.
+      // a missing entry here is impossible.
       const handler = TOOL_HANDLERS[name];
       if (!handler) {
         throw new Error(`Unknown tool: ${name}`);
       }
-      return await wrapResult(handler(reg, args));
+      const result = await handler(reg, args);
+
+      // v0.9.0 — audit log AFTER a successful write. We deliberately don't
+      // log failed writes — the user already sees the error, and a failed
+      // write didn't modify the vault, so there's nothing to attribute.
+      if (userId && WRITE_TOOL_NAMES.has(name)) {
+        const auditPath = pickAuditPath(name, args);
+        const auditLine = formatAuditLine({ userId, toolName: name, auditPath });
+        try {
+          const auditVault = reg.resolveVault(args.vault);
+          // Direct REST call → break the recursion that would happen if we
+          // routed through `appendToFileTool` (which is itself a write tool
+          // that would trigger another audit, ad infinitum).
+          await restAppendToFile(auditVault, 'wiki/log.md', auditLine, {
+            createTargetIfMissing: true,
+          });
+        } catch (auditErr) {
+          // Best-effort: don't fail the original write. Log the cause so
+          // the operator can diagnose (typical: missing wiki/ folder, or
+          // vault was locked and audit vault resolution mismatched).
+          console.error(
+            `[obsidian-mcp-router] audit log failed for ${name} ` +
+              `(by ${userId}): ${auditErr.message}`,
+          );
+        }
+      }
+
+      return await wrapResult(Promise.resolve(result));
     } catch (err) {
       // Friendly errors when the underlying RestApiError carries a `hint`.
       const lines = [`Error: ${err.message}`];
@@ -770,3 +913,13 @@ async function wrapResult(promise) {
     ],
   };
 }
+
+// Exposed for tests only — not part of the public API. v0.9.0 needs
+// TOOLS + WRITE_TOOL_NAMES visible so unit tests can verify the readonly
+// filtering behavior without spinning up an MCP transport.
+export const _internals = {
+  TOOLS,
+  TOOL_HANDLERS,
+  WRITE_TOOL_NAMES,
+  PKG_VERSION,
+};

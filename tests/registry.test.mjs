@@ -366,6 +366,18 @@ describe('loadRegistry — integration', () => {
   beforeEach(() => {
     delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
     delete process.env.VAULT_PATH;
+    delete process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
+  });
+
+  // afterEach mirrors beforeEach so that even if a test mutates env then
+  // throws (so its own beforeEach for the next test never runs), state
+  // still doesn't leak across describe blocks. v0.9.0 needs this because
+  // OBSIDIAN_ROUTER_ALLOWED_VAULTS, when leaked, can wipe the vault list
+  // seen by unrelated tests downstream (e.g. lockVault).
+  afterEach(() => {
+    delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    delete process.env.VAULT_PATH;
+    delete process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
   });
 
   test('loadRegistry resolves defaultVault from config when no env is set', async () => {
@@ -434,6 +446,118 @@ describe('loadRegistry — integration', () => {
     assert.equal(r.skipped[0].name, 'beta');
     assert.equal(r.skipped[0].type, 'remote');
     assert.equal(r.skipped[0].reason, 'disabled');
+  });
+
+  // -------------------------------------------------------------------------
+  // OBSIDIAN_ROUTER_ALLOWED_VAULTS — Phase 1.1 (v0.9.0) opt-in whitelist
+  // -------------------------------------------------------------------------
+
+  test('v0.9.0 ALLOWED_VAULTS — unset → all vaults visible (rétrocompat)', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'alpha', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', baseUrl: 'https://b/', apiKey: 'k' },
+        { name: 'gamma', baseUrl: 'https://g/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    // env var NOT set → behaviour must be identical to v0.8.x
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(
+      r.vaults.map((v) => v.name).sort(),
+      ['alpha', 'beta', 'gamma'],
+    );
+    assert.equal(r.skipped.length, 0);
+  });
+
+  test('v0.9.0 ALLOWED_VAULTS — CSV list filters vaults[] to the whitelist', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'roland', baseUrl: 'https://r/', apiKey: 'k' },
+        { name: 'karine', baseUrl: 'https://k/', apiKey: 'k' },
+        { name: 'nicolas', baseUrl: 'https://n/', apiKey: 'k' },
+        { name: 'tribu', baseUrl: 'https://t/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'roland,tribu';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(
+      r.vaults.map((v) => v.name).sort(),
+      ['roland', 'tribu'],
+    );
+    // skipped[] contains the filtered-out names with the explicit reason
+    const skippedNames = r.skipped.map((s) => s.name).sort();
+    assert.deepEqual(skippedNames, ['karine', 'nicolas']);
+    for (const s of r.skipped) {
+      assert.equal(s.reason, 'not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist');
+    }
+  });
+
+  test('v0.9.0 ALLOWED_VAULTS — tolerates spaces and empty CSV entries', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'a', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'b', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = '  a , , b  ,';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name).sort(), ['a', 'b']);
+  });
+
+  test('v0.9.0 ALLOWED_VAULTS — empty string treated as unset (no filtering)', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'a', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'b', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = '';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.equal(r.vaults.length, 2, 'empty string must NOT filter');
+  });
+
+  test('v0.9.0 ALLOWED_VAULTS — filtering precedes defaultVault resolution (R3 from codex-audit)', async () => {
+    // configuredDefault = "alpha" but ALLOWED_VAULTS excludes alpha → the
+    // resolution cascade must NOT pick alpha (it's not in the active set
+    // after filtering). It should fall through to tier 4/5 within the
+    // filtered set.
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'alpha', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', baseUrl: 'https://b/', apiKey: 'k' },
+      ],
+      defaultVault: 'alpha',
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'beta';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.equal(r.vaults.length, 1);
+    assert.equal(r.vaults[0].name, 'beta');
+    assert.equal(r.defaultVault, 'beta', 'defaultVault must fall through to filtered set, not point at the wiped alpha');
+  });
+
+  test('v0.9.0 ALLOWED_VAULTS — whitelist of unknown names yields empty active set', async () => {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'a', baseUrl: 'https://a/', apiKey: 'k' },
+      ],
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'does-not-exist,also-not';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.equal(r.vaults.length, 0);
+    assert.equal(r.skipped.length, 1);
+    assert.equal(r.skipped[0].name, 'a');
   });
 });
 
