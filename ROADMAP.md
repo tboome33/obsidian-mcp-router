@@ -201,6 +201,33 @@ Trigger: Roland *"quand dans une roadmap tu marques que section est déjà réal
 
 Application directe de la règle `roadmap-discipline` v0.10.1 elle-même : cette entrée ROADMAP.md cochée AVANT commit.
 
+## ✅ v0.11.0 — Conversion tools (markdownify-mcp vendor port) (shipped 2026-05-22)
+
+The router gains a 10-tool family that turns binary sources (PDF, DOCX, XLSX, PPTX, image, audio, YouTube transcript, Bing search results, generic webpages, git repos) into clean markdown. JS/ESM port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT) — see `NOTICE` for the vendor credit + license text.
+
+**Why ship this inside the router** rather than register markdownify-mcp as a sibling MCP server: the vault is the artifact destination. The router's whole job is "land structured markdown in Obsidian". Conversion is the missing pre-step before `write_file` — and bundling it makes the router useful to **non-Claude MCP clients** (Cursor, Cline, Continue, Goose, custom clients) that have no native PDF/DOCX/audio reading.
+
+- ✅ **10 new MCP tools** (snake_case to match router convention):
+  - File inputs: `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`
+  - URL inputs: `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`
+  - Git repos: `git_repo_to_markdown` (via [`repomix`](https://github.com/yamadashy/repomix))
+- ✅ **JS/ESM port** of the upstream TypeScript implementation — no Bun, no build step, fits the router's `*.mjs` architecture. Lives at `src/markdownify/utils.mjs`, `src/markdownify/markitdown.mjs`, `src/tools/convert.mjs`.
+- ✅ **Postinstall bootstraps the Python venv**: `scripts/install-markitdown.mjs` detects `python3` / `python` (3.10+), creates `<repo>/.venv`, pip-installs `markitdown[all]>=0.1.5`. **Never fails npm install** — if Python is missing or pip can't reach PyPI, logs a clear warning and exits 0. The conversion tools then throw a friendly "markitdown not found" error at call time. Skip with `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` or `npm install --ignore-scripts`.
+- ✅ **Inline `private-ip` replacement**: the upstream depends on the `private-ip` npm package for the SSRF guard. The port reimplements it inline (~25 lines, covers loopback / RFC1918 / link-local / CGNAT / `.local` mDNS / `.localhost`) — keeps the router's runtime dep list small.
+- ✅ **`MD_ALLOWED_PATHS` sandbox**: opt-in env var that whitelists which directories the file-input conversion tools are allowed to read. `:`-separated on POSIX, `;`-separated on Windows. Unset = no sandbox. Path-segment comparison so `/data/foobar` is NOT inside `/data/foo`.
+- ✅ **`MARKITDOWN_PATH` / `REPOMIX_PATH` env vars**: override the bundled venv / `node_modules/.bin` lookups when the user has a system-wide install.
+- ✅ **Not classified as write tools**: the 10 conversion tools are NOT in `WRITE_TOOL_NAMES`, so `OBSIDIAN_ROUTER_READONLY=true` deployments keep them exposed (they're read-only by nature — they don't touch any vault).
+- ✅ **NOT vault-routed**: conversion tools don't take a `vault` argument; they return the markdown string and let the caller decide where to land it (typically `write_file` or a skill like `wiki-ingest`). Atomic, composable MCP design.
+- ✅ **Excluded `get-markdown-file`** from the upstream tool list — redundant with the router's existing `get_file`.
+- ✅ **NOTICE updated** with the full MIT license text from markdownify-mcp + Microsoft `markitdown` Python CLI attribution.
+- ✅ **11 new unit tests** in `tests/markdownify.test.mjs` covering pure helpers (SSRF guard for loopback/RFC1918/link-local/CGNAT, MD_ALLOWED_PATHS sandbox with path-segment comparison, repo-URL validation, HTML-detection heuristic) and the boot-time TOOLS / TOOL_HANDLERS surface (all 10 tools registered, all 10 have handlers, none classified as write tools). Total: 284/284 passing.
+- ✅ **README updated**: new "Conversion tools — runtime dependencies" section documenting Python prerequisite, postinstall flow, env vars, and the bypass options.
+- ✅ **`.gitignore`** updated to exclude `.venv/`.
+
+Backward compatible: existing setups that don't call any `*_to_markdown` tool see no behavior change. The 10 new tools surface in `list_tools` but don't conflict with anything. The new `repomix` dep installs alongside the existing two (no peer-dep collisions checked at the npm level).
+
+Trigger: user explicitly asked to absorb the markdownify-mcp tool surface into the router, with three deliberate sub-choices: port to `.mjs` (vs. adding a TS build step or vendoring TS directly), bundle the Python venv at postinstall (vs. requiring manual `pipx install`), and return markdown text only (vs. auto-writing into the vault). Each choice trades upstream-sync ease for router-architecture coherence.
+
 ## v0.9 — Cloudflare Tunnel companion plugin
 
 A separate **Obsidian community plugin** that provisions a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for the local vault's REST API. Goal: the user clicks a button in Obsidian, the vault becomes reachable from anywhere via a stable HTTPS URL, with optional auth.

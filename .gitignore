@@ -4,9 +4,21 @@ node_modules/
 .env.*
 !.env.example
 
+# Bundled Python venv for the `markitdown` CLI used by the *_to_markdown tools.
+# Created by scripts/install-markitdown.mjs at npm postinstall.
+.venv/
+
 # Personal config — must never be committed (contains API keys)
 config.json
 config.local.json
+
+# Claude Code machine-local state — must never be committed.
+# `.claude/settings.local.json` can contain ALLOWED Bash commands that include
+# plaintext credentials (SSH passwords in -pw flags, etc.). `.claude/worktrees/`
+# are scratch git worktrees created by sub-agent isolation — they have their
+# own .git and would be picked up by git as embedded repositories.
+.claude/settings.local.json
+.claude/worktrees/
 
 # OS
 .DS_Store

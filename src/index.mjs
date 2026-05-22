@@ -31,6 +31,18 @@ import { setFrontmatterTool } from './tools/set-frontmatter.mjs';
 import { mergeFrontmatterTool } from './tools/merge-frontmatter.mjs';
 import { lockVault, unlockVaults } from './tools/lock.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from './tools/auto-enrich.mjs';
+import {
+  youtubeToMarkdown,
+  bingSearchToMarkdown,
+  webpageToMarkdown,
+  pdfToMarkdown,
+  imageToMarkdown,
+  audioToMarkdown,
+  docxToMarkdown,
+  xlsxToMarkdown,
+  pptxToMarkdown,
+  gitRepoToMarkdown,
+} from './tools/convert.mjs';
 
 // Read package version once at module load. Fixes IMP-2 (handshake reported
 // stale '0.8.2' instead of package.json version). Read synchronously at import
@@ -404,6 +416,152 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  /* ---------- Conversion tools (vendor port of markdownify-mcp, MIT) ---------- */
+  {
+    name: 'pdf_to_markdown',
+    description:
+      'Convert a local PDF file to markdown via the bundled `markitdown` Python CLI. Returns the markdown text — does NOT write to any vault. Chain with `write_file` to persist the output. Set `MD_ALLOWED_PATHS` to restrict which directories can be read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: {
+          type: 'string',
+          description: 'Absolute path of the PDF file to convert.',
+        },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'docx_to_markdown',
+    description:
+      'Convert a local DOCX file to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the DOCX file to convert.' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'xlsx_to_markdown',
+    description:
+      'Convert a local XLSX spreadsheet to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the XLSX file to convert.' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'pptx_to_markdown',
+    description:
+      'Convert a local PPTX presentation to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the PPTX file to convert.' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'image_to_markdown',
+    description:
+      'Convert a local image to markdown (metadata + OCR-derived description) via `markitdown[all]`. Requires the `[all]` extras — image OCR fails on the slim install.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the image file to convert.' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'audio_to_markdown',
+    description:
+      'Convert a local audio file to markdown (with transcription when supported) via `markitdown[all]`. Requires the `[all]` extras — audio transcription fails on the slim install.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the audio file to convert.' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'youtube_to_markdown',
+    description:
+      'Convert a YouTube video page to markdown — includes the transcript when one is available. URL must be http(s); private/loopback hosts are refused (SSRF guard).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the YouTube video.' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'bing_search_to_markdown',
+    description:
+      'Convert a Bing search results page to markdown. Pass the full results URL. SPA pages that defer rendering to JS produce raw HTML — the tool detects that and returns a clear error rather than misleading "markdown".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the Bing search results page.' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'webpage_to_markdown',
+    description:
+      'Convert an arbitrary webpage to markdown. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-rendered SPAs prefer the `defuddle` skill which uses a headless browser.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the webpage to convert.' },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'git_repo_to_markdown',
+    description:
+      'Convert a git repository into a single markdown document (file tree + source code) via `repomix`. Useful as input to an LLM that needs whole-repo context. Supports GitHub URLs and the `owner/repo` shorthand. Pass `compress: true` for Tree-sitter compression (~70% size reduction).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description:
+            'Git repository URL or GitHub shorthand (e.g. "https://github.com/owner/repo" or "owner/repo").',
+        },
+        branch: {
+          type: 'string',
+          description: 'Branch, tag, or commit to use. Defaults to the repo default branch.',
+        },
+        compress: {
+          type: 'boolean',
+          description: 'Use Tree-sitter compression to reduce output size. Default: false.',
+        },
+      },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
   {
     name: 'set_auto_enrich_mode',
     description:
@@ -459,6 +617,19 @@ const TOOL_HANDLERS = {
   lock_vault: (reg, args) => lockVault(reg, args),
   unlock_vaults: (reg, args) => unlockVaults(reg, args),
   set_auto_enrich_mode: (reg, args) => setAutoEnrichMode(reg, args),
+  // Conversion tools (vendor port of markdownify-mcp). These don't touch any
+  // vault — they return markdown text only. Excluded from WRITE_TOOL_NAMES so
+  // OBSIDIAN_ROUTER_READONLY keeps them exposed for ingestion use cases.
+  pdf_to_markdown: (reg, args) => pdfToMarkdown(reg, args),
+  docx_to_markdown: (reg, args) => docxToMarkdown(reg, args),
+  xlsx_to_markdown: (reg, args) => xlsxToMarkdown(reg, args),
+  pptx_to_markdown: (reg, args) => pptxToMarkdown(reg, args),
+  image_to_markdown: (reg, args) => imageToMarkdown(reg, args),
+  audio_to_markdown: (reg, args) => audioToMarkdown(reg, args),
+  youtube_to_markdown: (reg, args) => youtubeToMarkdown(reg, args),
+  bing_search_to_markdown: (reg, args) => bingSearchToMarkdown(reg, args),
+  webpage_to_markdown: (reg, args) => webpageToMarkdown(reg, args),
+  git_repo_to_markdown: (reg, args) => gitRepoToMarkdown(reg, args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at

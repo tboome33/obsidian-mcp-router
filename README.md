@@ -36,9 +36,10 @@ What you get:
 | Writes | `write_file`, `append_to_file`, `patch_file`, `delete_file`, `set_frontmatter`, `merge_frontmatter` |
 | File management | `move_file` |
 | Templater | `execute_template` |
+| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown` — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
-Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. Everything else works against the standard Local REST API endpoints alone.
+Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` so the postinstall can install `markitdown[all]` into a local `.venv` — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
 
 ## Deployment modes
 
@@ -552,8 +553,32 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `get_frontmatter` | Read frontmatter (whole object or one key). Returns parsed values — numbers, booleans, arrays preserved. |
 | `set_frontmatter` | Set/replace one frontmatter property. Type preserved (string/number/bool/null/array/object). |
 | `merge_frontmatter` | Apply multiple frontmatter updates in sequence (non-atomic — see ROADMAP for atomic alternative). |
+| `lock_vault` / `unlock_vaults` | Restrict the router to a single vault for the session (single-vault isolation). See the **Lock mode** section. |
+| `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
+| `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (installed by default at postinstall). Returns markdown text only — chain with `write_file` to persist. |
+| `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convert a remote URL to markdown via `markitdown`. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-heavy SPAs prefer the `defuddle` skill (headless browser). |
+| `git_repo_to_markdown` | Bundle a git repository (file tree + source code) into a single markdown document via `repomix`. Accepts a full URL or the `owner/repo` shorthand. Pass `compress: true` for ~70% size reduction via Tree-sitter. |
 
 More tools (CLI flags, hot config reload, skills) are on the roadmap — see [ROADMAP.md](./ROADMAP.md).
+
+### Conversion tools — runtime dependencies
+
+The `*_to_markdown` family is a JS/ESM port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT) — see `NOTICE` for the full credit. The actual file → markdown conversion is performed by Microsoft's `markitdown` Python CLI:
+
+- **Python 3.10+** is required. The router's npm postinstall script (`scripts/install-markitdown.mjs`) auto-detects Python on `PATH`, creates a local `.venv` at the repo root, and installs `markitdown[all]>=0.1.5`. If Python is missing, the postinstall prints a warning and exits cleanly — the rest of the router still works.
+- Skip the postinstall with `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` or `npm install --ignore-scripts`. Re-run manually any time with `npm run install-markitdown`.
+- To use a system-wide install instead of the bundled venv: `pipx install "markitdown[all]"` and set `MARKITDOWN_PATH=/abs/path/to/markitdown`.
+- `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup).
+
+Optional sandbox env vars:
+
+| Variable | Purpose |
+|---|---|
+| `MARKITDOWN_PATH` | Absolute path to the `markitdown` executable. Override when not using the bundled venv. |
+| `REPOMIX_PATH` | Absolute path to the `repomix` executable. Override when not using the bundled `node_modules/.bin/repomix`. |
+| `MD_ALLOWED_PATHS` | `:`-separated (POSIX) or `;`-separated (Windows) list of directories the conversion tools are allowed to read. When unset (default), any absolute path is fair game. When set, the file-input conversion tools reject paths outside the listed directories. |
+| `MD_SHARE_DIR` | Legacy single-directory alias for `MD_ALLOWED_PATHS`, kept for backward compatibility with markdownify-mcp setups. Prefer `MD_ALLOWED_PATHS`. |
+| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | Set to `1` to skip the venv creation at postinstall. |
 
 ## Usage examples
 
