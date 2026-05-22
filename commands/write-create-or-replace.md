@@ -1,36 +1,7 @@
 ---
-description: |
-  Create a new file, or replace the entire content of an existing one. Pass ifNew=true to refuse overwrite.
-
-  EN triggers: "create a note X", "make a file at X", "write X", "replace X with this content", "save this as X.md".
-  FR triggers : "crée une note X", "fais un fichier à X", "écris X", "remplace X par ce contenu", "enregistre ça comme X.md".
-
-  Example / Exemple:
-    EN: "create a note Sessions/2026-05-03.md with my morning review"
-    FR: "crée la note Sessions/2026-05-03.md avec mon point du matin"
+description: Create a new file, or replace the entire content of an existing one. Pass `ifNew=true` to refuse overwrite. (Skill `write-create-or-replace` handles natural-language triggers + the overwrite-confirm safety prompt.)
 ---
 
-# write-create-or-replace
+Invoke the `write-create-or-replace` skill.
 
-Call the obsidian-router `write_file` MCP tool with arguments parsed from $ARGUMENTS.
-
-Required:
-- `path` — file path relative to vault root.
-- `content` — full markdown content (frontmatter + body).
-
-Optional:
-- `vault` — vault name. Omit for default.
-- `ifNew` — if true, fail with HTTP 409 when the file already exists. Default false (overwrite).
-
-Argument parsing:
-- the user usually wants to give the path on the slash line and the content in a follow-up turn
-  → if the slash line gives only a path, ask for the content
-- `path=X content="..."` for full one-shot
-- `--if-new` or `ifNew=true` → set `ifNew`
-
-Safety:
-- If overwriting an existing file (ifNew is not set/true), preview the existing top 10 lines first and ask the user to confirm before sending the write.
-- If the user explicitly says "overwrite" or "remplace", skip the confirmation.
-
-After the write, report:
-- `vault`, `path`, `bytesWritten`, `mode` (create-only or create-or-replace).
+Required: `path`, `content`. Optional: `vault`, `ifNew` (default false — will overwrite). The skill previews the existing top 10 lines before overwriting unless the user explicitly said "overwrite" / "remplace".

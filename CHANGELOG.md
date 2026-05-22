@@ -8,6 +8,57 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.10.2] — 2026-05-22
+
+Discovery hygiene fix for the Claude Code skills panel + marketplace/plugin version sync. The Claude Code "Compétences" UI iterates over both `skills/` and `commands/`, but only items with a real `skills/<name>/SKILL.md` render cleanly — command-only items produce a misleading `Plugin not found: obsidian-router@obsidian-mcp-router-marketplace` error. **All 17 previously command-only entries are now promoted to proper skills**, so every entry the panel surfaces has a backing SKILL.md and the error disappears entirely.
+
+### Added — 17 new skills (1 SKILL.md per previously command-only entry)
+
+**Router-state (3)**:
+- **`skills/auto-mode/SKILL.md`** — mode-decision rules (when to pick `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`), bilingual NL phrase → mode mapping, disambiguation of *"stop asking me"* (could mean `off` OR `FullAuto` OR `Hybrid`), homedir refusal caveat, persist defaults inference from *"de manière permanente"*.
+- **`skills/lock/SKILL.md`** — single-vault isolation, EN+FR triggers, push-back when already locked to a different vault, homedir refusal caveat.
+- **`skills/unlock/SKILL.md`** — lift the lock, EN+FR triggers, gentle no-op surfacing when not locked, info-level reporting when `persist=true` but `.env` had nothing to remove.
+
+**Discovery (2)**:
+- **`skills/discover-list-files/SKILL.md`** — list files in a vault directory, vault-prefix path parsing, >50-entry summarization.
+- **`skills/discover-list-vaults/SKILL.md`** — list configured vaults (active + disabled), render adaptation based on whether the user asked about active / disabled / both, status-line + table format.
+
+**Read (4)**:
+- **`skills/read-get/SKILL.md`** — fetch a file (markdown + frontmatter), `<vault>/<path>` shorthand, frontmatter-as-YAML rendering, large-file truncation policy.
+- **`skills/read-frontmatter/SKILL.md`** — read frontmatter (whole object or single key), type-preserving render (number/boolean/array/null/object distinctions kept).
+- **`skills/read-search/SKILL.md`** — plain-text substring search, cross-vault fan-out via `vault=*`, suggestion to fall back to `read-search-smart` for semantic queries.
+- **`skills/read-search-smart/SKILL.md`** — Smart Connections semantic search, pre-req check (bridge + smart-connections plugins must be installed and indexed), 503-handling.
+
+**Write (5)**:
+- **`skills/write-append/SKILL.md`** — append to file, auto-create unless `requireExisting=true`, use-case guidance (journals vs surgical edits → `write-patch`).
+- **`skills/write-create-or-replace/SKILL.md`** — create or full-replace, overwrite-confirm safety prompt (preview top 10 lines before clobbering unless user said "overwrite" / "remplace").
+- **`skills/write-patch/SKILL.md`** — surgical heading/block/frontmatter edit, FULL heading path footgun (must be `Section::Sub`, not just `Sub`), idempotency flag, common quick patterns.
+- **`skills/write-frontmatter-set/SKILL.md`** — single-key set, type inference from $ARGUMENTS (numeric / boolean / null / array / object), `--no-create` flag.
+- **`skills/write-frontmatter-merge/SKILL.md`** — multi-key set, non-atomicity warning (partial failures reported per-key), alternative for true atomicity (read + modify + `write-create-or-replace`).
+
+**Manage (2)**:
+- **`skills/manage-delete/SKILL.md`** — two-step confirm guard against hallucinated deletes (first call previews + refuses, second call with `confirm=true` actually deletes).
+- **`skills/manage-move/SKILL.md`** — move/rename via GET → PUT → DELETE fallback (no native REST endpoint), partial-failure mode reporting (`sourceDeleted: false` + warning).
+
+**Template (1)**:
+- **`skills/template-execute/SKILL.md`** — Templater dispatch with the `tp.mcpTools` vs `tp.user.mcpTools` footgun explained with WRONG/RIGHT examples, 503-when-Templater-missing handling.
+
+### Changed
+
+- **All 17 corresponding `commands/<name>.md` files** slimmed to short dispatchers pointing to their skill (same pattern as `commands/autoresearch.md` / `commands/save.md`). The skill is now the source of truth for the rich content; the command file is just the slash-command entry point with a 2-3 line dispatch hint.
+- **`.claude-plugin/marketplace.json`** marketplace `metadata.version` and plugin `version` bumped 0.8.6 → 0.10.2. Out of sync with `package.json` since v0.8.6 shipped on 2026-05-14 — the marketplace/plugin manifests now track the package version so `/plugin update` users don't stay on a stale cache.
+- **`.claude-plugin/plugin.json`** `version` bumped 0.8.6 → 0.10.2 for the same reason.
+
+### Why
+
+Roland surfaced the bug via screenshot of the Claude Code skills panel: the bottom half of the list showed entries (`auto-mode`, `discover-list-files`, `lock`, `manage-delete`, etc.) with a "Plugin not found" error in the right pane. Root cause investigation showed the plugin is correctly installed at v0.8.6 — the error is the UI's wording for "no `SKILL.md` file found for this entry in the plugin's `skills/` folder". An initial scoped fix only promoted the 4 most NL-trigger-heavy commands, but on Roland's *"je ne veux aucune erreur d'affichage, débrouille toi"* the scope expanded to **all 17** previously command-only entries. Now every entry the panel iterates over has a backing SKILL.md → zero "Plugin not found" errors.
+
+### Backward compatible
+
+- All 17 slash commands (`/obsidian-router:auto-mode`, `/obsidian-router:discover-list-files`, `/obsidian-router:write-patch`, etc.) still work identically — each command file delegates to the matching skill which holds the prior rich content.
+- The NL triggers (EN + FR) are preserved verbatim in every skill description, so phrasings like *"passe en mode Hybrid"* / *"liste les fichiers du dossier Sessions"* / *"trouve mes notes sur la taille de position"* / *"supprime Sessions/old-test.md"* continue to fire as before.
+- No MCP tool changed. This is a pure plugin-content reorganization (skills/ and commands/).
+
 ## [0.10.1] — 2026-05-21
 
 Extends the `roadmap-discipline` convention with a new **section 2bis** that forbids `~~strikethrough~~` on completed roadmap items, AND ships a matching Obsidian CSS snippet that kills the *default* Obsidian rendering style which paints `- [x]` items with line-through styling — defeating the whole convention visually. Both pieces shipped together: the markdown-level rule + the rendering-level fix.

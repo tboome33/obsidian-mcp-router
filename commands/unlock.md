@@ -1,26 +1,13 @@
 ---
-description: |
-  Lift the single-vault lock and restore normal multi-vault routing. Pass "persist" to ALSO remove `OBSIDIAN_ROUTER_LOCKED` from the workspace `.env` (otherwise the lock would re-apply at next router restart if the variable is still in the file).
-
-  EN triggers: "unlock vaults", "unlock the router", "I want access to all vaults again", "give me back multi-vault mode", "exit single-vault mode", "lift the lock".
-  FR triggers : "déverrouille les vaults", "unlock le router", "je veux pouvoir avoir accès à tous les vaults", "redonne-moi le mode multi-vault", "sors du mode mono-vault", "lève le verrou".
-
-  Example / Exemple:
-    EN: "unlock and clean up the .env"
-    FR: "déverrouille et nettoie le .env"
+description: Lift the single-vault lock and restore normal multi-vault routing. Pass "persist" to also remove `OBSIDIAN_ROUTER_LOCKED` from the workspace `.env`. (Skill `unlock` handles natural-language triggers + no-op edge cases.)
 ---
 
-Invoke the `unlock_vaults` MCP tool.
+Invoke the `unlock` skill.
 
-Argument parsing from $ARGUMENTS:
-- empty → `persist=false` (in-memory only)
-- "persist" / "permanently" / "de manière permanente" / "et nettoie le .env" → `persist=true`
-- `persist=true` / `persist=false` — explicit
+Optional: `persist` (default false) — when true, also removes the `OBSIDIAN_ROUTER_LOCKED` line from `<cwd>/.env` (otherwise the lock would re-apply at next router restart if the variable is still in the file).
 
-Always:
-- After a successful unlock, confirm to the user: previous lock target (if any), whether the .env was cleaned, and that the router is back in normal multi-vault mode.
-- If the router wasn't locked, the tool returns a no-op message. Surface that gently — no need to be dramatic.
-- If the user said "persist" but the .env didn't have OBSIDIAN_ROUTER_LOCKED, the tool reports `persistRemoved: false` — surface that as an info ("nothing to clean up in .env").
-
-Push back if:
-- The user wants to unlock and switch to a different vault in the same breath — that's two operations. Suggest `/obsidian-router:lock <new-vault>` directly (lock_vault overrides the previous lock without needing an unlock).
+The skill handles:
+- Argument parsing (empty, `"persist"`, conversational phrasing like *"et nettoie le .env"*)
+- Gentle no-op surfacing when the router wasn't locked
+- Info-level surfacing when `persist=true` but `.env` had nothing to remove
+- Push-back when the user tries to unlock + switch in one breath (suggest `/obsidian-router:lock <new-vault>` directly)
