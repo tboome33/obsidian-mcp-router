@@ -190,7 +190,7 @@ La Phase 0 du système d'auto-enrichissement fait que Claude propose proactiveme
 
 Ce fichier répond à une autre question : **où placer la consigne pour que Claude l'applique réellement ?** Quatre canaux, un par surface Claude, tous interopérables.
 
-### TL;DR
+### En bref
 
 | Surface | Canal | Persistance | Pour quoi |
 |---|---|---|---|

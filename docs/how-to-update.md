@@ -199,7 +199,7 @@ It's not — the request times out after 3 seconds and the hook exits silently. 
 
 # 🇫🇷 Version française
 
-## TL;DR
+## En bref
 
 Trois façons de savoir + deux façons d'appliquer.
 
