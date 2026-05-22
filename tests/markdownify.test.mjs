@@ -26,7 +26,11 @@ import {
   isWithinDirectory,
   getAllowedPaths,
   assertPathAllowed,
+  resolveAndAssertPublic,
+  resolveRepomixCommand,
 } from '../src/markdownify/utils.mjs';
+
+import { assertSandboxConsistent } from '../src/index.mjs';
 
 import {
   pdfToMarkdown,
@@ -209,6 +213,11 @@ test('isUnconvertedHtml detects raw HTML payloads', () => {
   assert.strictEqual(isUnconvertedHtml('  <html>...'), true);
   assert.strictEqual(isUnconvertedHtml('# Heading\n\nText'), false);
   assert.strictEqual(isUnconvertedHtml(''), false);
+  // bug_017 from /ultrareview — uppercase `<HTML>` (legacy CMSs, Office HTML
+  // export, hand-written HTML) MUST also be caught.
+  assert.strictEqual(isUnconvertedHtml('<HTML lang="en">'), true);
+  assert.strictEqual(isUnconvertedHtml('<Html>...'), true);
+  assert.strictEqual(isUnconvertedHtml('<HTML>...</HTML>'), true);
 });
 
 test('inferExtensionFromUrl distinguishes PDF from HTML', () => {
@@ -216,6 +225,103 @@ test('inferExtensionFromUrl distinguishes PDF from HTML', () => {
   assert.strictEqual(inferExtensionFromUrl('https://example.com/Doc.PDF'), 'pdf');
   assert.strictEqual(inferExtensionFromUrl('https://example.com/page'), 'html');
   assert.strictEqual(inferExtensionFromUrl('https://example.com/page.html'), 'html');
+  // bug_002 from /ultrareview — PDF URLs with query/fragment (signed S3,
+  // Google Drive download, page bookmarks) MUST resolve as 'pdf', not fall
+  // through to 'html'.
+  assert.strictEqual(
+    inferExtensionFromUrl('https://files.s3.amazonaws.com/doc.pdf?X-Amz-Signature=abc'),
+    'pdf',
+  );
+  assert.strictEqual(
+    inferExtensionFromUrl('https://drive.google.com/file/d/abc/view.pdf?export=download'),
+    'pdf',
+  );
+  assert.strictEqual(inferExtensionFromUrl('https://example.com/doc.pdf#page=5'), 'pdf');
+  assert.strictEqual(inferExtensionFromUrl('https://example.com/doc.pdf?utm_source=x'), 'pdf');
+  // Non-PDF with .pdf in query string MUST NOT misdetect as PDF.
+  assert.strictEqual(inferExtensionFromUrl('https://example.com/page?file=doc.pdf'), 'html');
+});
+
+test('resolveAndAssertPublic short-circuits IP literals (bug_013/_018 follow-up)', async () => {
+  // IP literal that's public — no DNS round-trip needed.
+  const pub = await resolveAndAssertPublic('8.8.8.8');
+  assert.strictEqual(pub.address, '8.8.8.8');
+  assert.strictEqual(pub.family, 4);
+
+  // Bracketed IPv6 literal — strip brackets, short-circuit.
+  const pubV6 = await resolveAndAssertPublic('[2001:4860:4860::8888]');
+  assert.strictEqual(pubV6.address, '2001:4860:4860::8888');
+  assert.strictEqual(pubV6.family, 6);
+
+  // Private IP literal — refused.
+  await assert.rejects(
+    () => resolveAndAssertPublic('127.0.0.1'),
+    /private\/loopback/,
+  );
+  // Bracketed loopback IPv6 — refused (bug_013 regression: pre-v0.11.1 the
+  // bracketed form bypassed dns.lookup and produced a misleading error).
+  await assert.rejects(
+    () => resolveAndAssertPublic('[::1]'),
+    /private\/loopback/,
+  );
+});
+
+test('resolveRepomixCommand uses node-direct on Windows (bug_003)', () => {
+  // On any platform, with REPOMIX_PATH env set, override wins.
+  const old = process.env.REPOMIX_PATH;
+  try {
+    process.env.REPOMIX_PATH = '/custom/repomix';
+    const r = resolveRepomixCommand('/whatever');
+    assert.strictEqual(r.cmd, '/custom/repomix');
+    assert.deepStrictEqual(r.prefixArgs, []);
+  } finally {
+    if (old !== undefined) process.env.REPOMIX_PATH = old;
+    else delete process.env.REPOMIX_PATH;
+  }
+  // Without REPOMIX_PATH: result is at minimum a { cmd, prefixArgs } shape.
+  // We can't easily assert the Windows-specific node-direct path here without
+  // an installed repomix on disk, but we can guarantee the shape.
+  const r = resolveRepomixCommand(process.cwd());
+  assert.ok(typeof r.cmd === 'string' && r.cmd.length > 0);
+  assert.ok(Array.isArray(r.prefixArgs));
+});
+
+test('assertSandboxConsistent refuses READONLY without MD_ALLOWED_PATHS (bug_015)', () => {
+  // Baseline: single-user, no env vars set → no constraint.
+  assert.doesNotThrow(() => assertSandboxConsistent({}));
+  // READONLY set, MD_ALLOWED_PATHS missing → refuse.
+  assert.throws(
+    () => assertSandboxConsistent({ OBSIDIAN_ROUTER_READONLY: 'true' }),
+    /MD_ALLOWED_PATHS is unset/,
+  );
+  // READONLY set + sandbox set → allow.
+  assert.doesNotThrow(() =>
+    assertSandboxConsistent({
+      OBSIDIAN_ROUTER_READONLY: 'true',
+      MD_ALLOWED_PATHS: '/data/ingest',
+    }),
+  );
+  // ALLOWED_VAULTS set, sandbox missing → refuse (multi-tenant w/o sandbox is unsafe).
+  assert.throws(
+    () => assertSandboxConsistent({ OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'a,b' }),
+    /MD_ALLOWED_PATHS is unset/,
+  );
+  // USER_ID set, sandbox missing → refuse.
+  assert.throws(
+    () => assertSandboxConsistent({ OBSIDIAN_ROUTER_USER_ID: 'roland' }),
+    /MD_ALLOWED_PATHS is unset/,
+  );
+  // MD_SHARE_DIR legacy alias also satisfies the sandbox requirement.
+  assert.doesNotThrow(() =>
+    assertSandboxConsistent({
+      OBSIDIAN_ROUTER_READONLY: 'true',
+      MD_SHARE_DIR: '/data/ingest',
+    }),
+  );
+  // READONLY=false (env var present but truthy=false) → no constraint.
+  assert.doesNotThrow(() =>
+    assertSandboxConsistent({ OBSIDIAN_ROUTER_READONLY: 'false' }),
+  );
 });
 
 test('isWithinDirectory uses path-segment comparison (no naive prefix)', () => {

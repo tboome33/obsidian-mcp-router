@@ -82,6 +82,61 @@ export function resolveRepomixPath(projectRoot) {
 }
 
 /**
+ * Resolve how to invoke repomix as a `{ cmd, prefixArgs }` pair, ready to
+ * hand to `execFile(cmd, [...prefixArgs, ...userArgs])`.
+ *
+ * **Why this exists** — Node 20.12.0 shipped the CVE-2024-27980 fix: spawning
+ * a `.cmd` / `.bat` file through `execFile` (or `spawn` without `shell:true`)
+ * now throws `ERR_CHILD_PROCESS_BAD_NAME`. Our `engines.node` constraint
+ * (`>=20.18.1`) means EVERY supported Windows install hits this path. The
+ * pre-v0.11.1 code preferred `repomix.cmd` and called `execFile` directly,
+ * so `git_repo_to_markdown` was broken out-of-the-box on Windows — codex
+ * pass 3 spotted the missing `node_modules/.bin/repomix` (we used
+ * `--ignore-scripts` at lockfile regen), and the /ultrareview cloud agent
+ * (bug_003) walked through the exact failure mode.
+ *
+ * **What it does** — on Windows we skip the `.cmd` shim entirely and invoke
+ * `node` directly against the bundled `node_modules/repomix/bin/repomix.cjs`,
+ * which is what the shim would have done anyway. On POSIX we keep the
+ * existing extensionless `node_modules/.bin/repomix` path. `REPOMIX_PATH`
+ * override still wins on either platform.
+ */
+export function resolveRepomixCommand(projectRoot) {
+  if (process.env.REPOMIX_PATH) {
+    return { cmd: process.env.REPOMIX_PATH, prefixArgs: [] };
+  }
+  const isWin = process.platform === 'win32';
+  if (isWin) {
+    // Path 1: invoke the .cjs directly through `node` — sidesteps the
+    // .cmd-spawn ban.
+    const localCjs = path.join(
+      projectRoot,
+      'node_modules',
+      'repomix',
+      'bin',
+      'repomix.cjs',
+    );
+    if (fs.existsSync(localCjs)) {
+      return { cmd: process.execPath, prefixArgs: [localCjs] };
+    }
+    // Path 2: real .exe (rare, e.g. pkg'd standalone) — safe to execFile.
+    const localExe = path.join(projectRoot, 'node_modules', '.bin', 'repomix.exe');
+    if (fs.existsSync(localExe)) {
+      return { cmd: localExe, prefixArgs: [] };
+    }
+    // Path 3: bare `repomix` on PATH may or may not work depending on what
+    // the user installed (`pipx install repomix` → exe, `npm i -g repomix`
+    // → .cmd shim which would fail). Caller's ENOENT path already covers
+    // the common "not installed" case with a clear hint.
+    return { cmd: 'repomix', prefixArgs: [] };
+  }
+  // POSIX — extensionless shim is a real shell script, execFile handles it.
+  const local = path.join(projectRoot, 'node_modules', '.bin', 'repomix');
+  if (fs.existsSync(local)) return { cmd: local, prefixArgs: [] };
+  return { cmd: 'repomix', prefixArgs: [] };
+}
+
+/**
  * Parse `MD_ALLOWED_PATHS` (or its legacy single-dir alias `MD_SHARE_DIR`)
  * into a normalized list of absolute directory paths. Returns `null` when
  * neither is set — meaning "no sandbox, every absolute path is allowed".
@@ -156,11 +211,27 @@ export async function assertHostnameNotPrivate(hostname) {
   if (!hostname) {
     throw new Error('Missing hostname for SSRF DNS check.');
   }
-  // If the textual hostname is ALREADY an IP, `dns.lookup` returns it
-  // verbatim — we still run the check (defense in depth) but the no-op is fine.
+  // Strip WHATWG IPv6 brackets — Node's URL constructor returns IPv6 hostnames
+  // with surrounding `[...]` (e.g. `http://[2001:db8::1]/.hostname` →
+  // `[2001:db8::1]`), but `getaddrinfo` rejects the bracketed form with
+  // ENOTFOUND. bug_013 from /ultrareview pass.
+  let h = hostname;
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1);
+  }
+  // IP literals don't need DNS — short-circuit and defer to isPrivateIp.
+  // Saves the round-trip AND closes the bracketed-IPv6-literal case (the
+  // bracket-strip above plus `net.isIP` covers `[::1]`, `[2001:db8::1]`,
+  // `[fec0::1]`, etc.).
+  if (net.isIP(h) > 0) {
+    if (isPrivateIp(h)) {
+      throw new Error(`Refusing to fetch ${hostname}: IP literal ${h} is private/loopback.`);
+    }
+    return;
+  }
   let resolved;
   try {
-    resolved = await dns.lookup(hostname);
+    resolved = await dns.lookup(h);
   } catch (e) {
     // ENOTFOUND etc. — let the original fetch surface its own error. We don't
     // synthesize a clearer message because the caller might WANT the raw DNS
@@ -172,6 +243,45 @@ export async function assertHostnameNotPrivate(hostname) {
       `Refusing to fetch ${hostname}: resolves to private/loopback IP ${resolved.address}.`,
     );
   }
+}
+
+/**
+ * Resolve hostname → `{ address, family }`, refuse if private. Used by
+ * `safeFetch` to pin the connection to a pre-resolved IP and close the
+ * DNS-rebinding TOCTOU window between the validating lookup and fetch's
+ * own getaddrinfo (bug_018 from /ultrareview).
+ *
+ * Returns the resolved address + family so the caller can hand them to a
+ * custom undici Dispatcher that pins the connect target.
+ */
+export async function resolveAndAssertPublic(hostname) {
+  if (!hostname) {
+    throw new Error('Missing hostname for SSRF DNS check.');
+  }
+  let h = hostname;
+  if (h.startsWith('[') && h.endsWith(']')) {
+    h = h.slice(1, -1);
+  }
+  // IP literal — return as-is, no DNS round-trip needed.
+  const literalFamily = net.isIP(h);
+  if (literalFamily > 0) {
+    if (isPrivateIp(h)) {
+      throw new Error(`Refusing to fetch ${hostname}: IP literal ${h} is private/loopback.`);
+    }
+    return { address: h, family: literalFamily };
+  }
+  let resolved;
+  try {
+    resolved = await dns.lookup(h);
+  } catch (e) {
+    throw new Error(`DNS lookup failed for ${hostname}: ${e.message}`);
+  }
+  if (isPrivateIp(resolved.address)) {
+    throw new Error(
+      `Refusing to fetch ${hostname}: resolves to private/loopback IP ${resolved.address}.`,
+    );
+  }
+  return resolved;
 }
 
 /**
@@ -259,12 +369,11 @@ export function validateBranchName(branch) {
  * can't feed that to the user as "markdown".
  */
 export function isUnconvertedHtml(output) {
-  const trimmed = output.trimStart();
-  return (
-    trimmed.startsWith('<!DOCTYPE') ||
-    trimmed.startsWith('<!doctype') ||
-    trimmed.startsWith('<html')
-  );
+  // Lowercase once so `<HTML>` and `<Html>` are caught alongside `<html>`.
+  // Pre-v0.11.1 the bare-`<html` check was lowercase-only while the DOCTYPE
+  // branch handled case — bug_017 from /ultrareview pass on v0.11.0 release.
+  const trimmed = output.trimStart().toLowerCase();
+  return trimmed.startsWith('<!doctype') || trimmed.startsWith('<html');
 }
 
 /**
@@ -272,7 +381,17 @@ export function isUnconvertedHtml(output) {
  * the tempfile naming so markitdown picks the right converter.
  */
 export function inferExtensionFromUrl(url) {
-  if (url.toLowerCase().endsWith('.pdf')) return 'pdf';
+  // Compare the URL pathname, NOT the raw string — otherwise signed S3 URLs
+  // (`.pdf?X-Amz-Signature=…`), Google Drive download links
+  // (`.pdf?export=download`), and `.pdf#page=5` bookmarks all fall through to
+  // `'html'` and get fed to markitdown's HTML converter, producing garbage.
+  // bug_002 from /ultrareview pass on v0.11.0 release.
+  try {
+    const { pathname } = new URL(url);
+    if (pathname.toLowerCase().endsWith('.pdf')) return 'pdf';
+  } catch {
+    // Invalid URL — let the caller's URL validation surface a clearer error.
+  }
   return 'html';
 }
 

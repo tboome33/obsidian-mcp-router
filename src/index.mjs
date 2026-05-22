@@ -802,7 +802,65 @@ export function applyLockGuard(registry) {
   };
 }
 
+/**
+ * Reject startup when the deployment is gated as multi-tenant / read-only but
+ * `MD_ALLOWED_PATHS` (the sandbox for the file-input conversion tools) is
+ * unset.
+ *
+ * Context — bug_015 from /ultrareview on v0.11.0:
+ *   The 10 `*_to_markdown` conversion tools are deliberately excluded from
+ *   `WRITE_TOOL_NAMES` (they don't mutate vault state, so `READONLY=true`
+ *   keeps them exposed for ingestion). But 6 of them take a `filepath`
+ *   argument and spawn markitdown, which reads whatever the router process
+ *   can read. Without `MD_ALLOWED_PATHS`, a "read-only" guest tenant can
+ *   call `pdf_to_markdown({ filepath: "/etc/passwd" })` or `.../.ssh/id_rsa`
+ *   or `/proc/self/environ` and exfiltrate arbitrary server files.
+ *
+ *   The trigger for the refusal is "operator opted into a multi-tenant /
+ *   gated topology" — any of: `OBSIDIAN_ROUTER_READONLY=true`,
+ *   `OBSIDIAN_ROUTER_ALLOWED_VAULTS=*`, `OBSIDIAN_ROUTER_USER_ID=*`. Single-
+ *   user setups without these env vars are unaffected (the README never
+ *   marketed READONLY in that context, so blocking startup there would
+ *   surprise legitimate users).
+ *
+ * Exported for tests.
+ */
+export function assertSandboxConsistent(env = process.env) {
+  const multiTenantSignals = [];
+  if (isReadonlyMode(env.OBSIDIAN_ROUTER_READONLY)) multiTenantSignals.push('OBSIDIAN_ROUTER_READONLY');
+  if (env.OBSIDIAN_ROUTER_ALLOWED_VAULTS && env.OBSIDIAN_ROUTER_ALLOWED_VAULTS.trim()) {
+    multiTenantSignals.push('OBSIDIAN_ROUTER_ALLOWED_VAULTS');
+  }
+  if (env.OBSIDIAN_ROUTER_USER_ID && env.OBSIDIAN_ROUTER_USER_ID.trim()) {
+    multiTenantSignals.push('OBSIDIAN_ROUTER_USER_ID');
+  }
+  if (multiTenantSignals.length === 0) return; // Single-user setup — no constraint.
+  const sandboxSet = (env.MD_ALLOWED_PATHS && env.MD_ALLOWED_PATHS.trim())
+    || (env.MD_SHARE_DIR && env.MD_SHARE_DIR.trim());
+  if (sandboxSet) return; // Operator opted in AND set the sandbox — all good.
+  throw new Error(
+    `[obsidian-mcp-router] Multi-tenant / gated deployment detected ` +
+      `(${multiTenantSignals.join(', ')} set) but MD_ALLOWED_PATHS is unset.\n` +
+      `\n` +
+      `The v0.11+ conversion tools (pdf_to_markdown, docx_to_markdown, etc.) ` +
+      `bypass OBSIDIAN_ROUTER_READONLY and read any path the router process ` +
+      `can open — including secrets like /etc/passwd, ~/.ssh/id_rsa, or other ` +
+      `tenants' vaults. Set MD_ALLOWED_PATHS to a path-delimiter-separated list ` +
+      `of directories the conversion tools may read (POSIX uses ":", Windows ";"), ` +
+      `OR opt out of file-conversion entirely by removing the conversion tools ` +
+      `from your handler map.\n` +
+      `\n` +
+      `Example: MD_ALLOWED_PATHS=/data/ingest /data/vaults`,
+  );
+}
+
 export async function startServer({ configPath, watch = true } = {}) {
+  // Multi-tenant sandbox consistency — refuse to start a "read-only" or
+  // user-scoped deployment that would silently expose the host filesystem
+  // through the new file-input conversion tools. bug_015 from /ultrareview
+  // on v0.11.0 release.
+  assertSandboxConsistent();
+
   const cfgPath = resolveConfigPath({ configPath });
   const fresh = await loadRegistry({ configPath: cfgPath });
 
