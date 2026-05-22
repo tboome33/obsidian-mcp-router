@@ -8,6 +8,52 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.10.3] — 2026-05-22
+
+Closes the "I didn't know there was an update" gap. Ships a SessionStart hook that, at most once per 24 hours, checks GitHub for a newer router version and emits a notice as session context — Claude relays it on the first response, so the user finds out without having to remember to check. Combined with a dedicated [`docs/how-to-update.md`](./docs/how-to-update.md) bilingual guide covering both `/plugin update` and the 5-step manual filesystem path (for environments where `/plugin` is unavailable).
+
+### Added
+
+- **`hooks/check-router-update.mjs`** — SessionStart hook (110 lines, vanilla Node `https` — no new deps). Reads installed version from the plugin's own `package.json`, fetches `https://raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/package.json`, compares with [`semver-compare`](./src/helpers/semver-compare.mjs), emits a markdown notice to stdout when GitHub is ahead. Cached in `~/.claude/obsidian-mcp-router/.last-version-check.json` with a 24h TTL — within the throttle window the cached notice is replayed (so the user keeps seeing it across sessions without spamming GitHub). **Fails silently** on any error (network, parse, cache I/O) — never disturbs the user. **3-second timeout** on the HTTPS request so offline sessions get at most a 3s session-start delay.
+- **`src/helpers/semver-compare.mjs`** — tiny semver parser + comparator (`parseSemver(v)`, `compareSemver(a, b)`). Narrow on purpose: handles `X.Y.Z` and `X.Y.Z-prerelease`, returns 0 on unparseable input (safe fallback — caller treats "can't compare" as "up to date" rather than surfacing a fake update notice). Includes the `0.10 > 0.9` numeric-not-lexicographic rule and the `1.0.0-alpha < 1.0.0` prerelease-is-older convention.
+- **`tests/semver-compare.test.mjs`** — 17 new tests covering parse (basic, `v` prefix, prerelease, whitespace, double-digit segments, unparseable, non-string), compare (equal, major/minor/patch dominance, the v0.10-vs-v0.9 trap, prerelease ordering, unparseable fallback). Total test count: **271/271** passing (was 254).
+- **`docs/how-to-update.md`** — bilingual EN+FR update guide. Covers: (1) the three discovery paths (built-in hook, GitHub Watch on Releases, periodic blind check), (2) the two application paths (`/plugin update` slash command for environments that have it, 5-step manual filesystem recipe for those that don't — both bash and PowerShell variants), (3) why updates aren't fully auto-applied (Claude Code design choice: plugin authors don't control auto-install — security tradeoff), (4) troubleshooting (notice persists, skipping a release, dev install ahead of main, offline behavior). Linked from README EN+FR under a new "Staying up to date" / "Rester à jour" subsection.
+- **`hooks/hooks.example.json`** — the `SessionStart` block now wires up both `hot-cache-load.mjs` AND `check-router-update.mjs`. Fresh installs via the `meta-setup` skill pick up both. Existing setups that hand-rolled their hooks file need to add the second entry (documented in `docs/how-to-update.md`).
+- **README sections** — new "Staying up to date" (EN, line ~277) and "Rester à jour" (FR, line ~939) subsections under Install, between `meta-setup` walkthrough and `CLI flags`. Briefly explain the hook, point at `docs/how-to-update.md` for the manual recipe, document the opt-out env vars.
+
+### Opt-out
+
+Either of these env vars skips the check entirely:
+
+- `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` (truthy: `true` / `1` / `yes` / `on`)
+- `OBSIDIAN_ROUTER_USER_ID=<slug>` (the multi-tenant audit-log var from v0.9.0 — its presence indicates a multi-tenant deployment where the sysadmin manages updates centrally; the per-user notice would be noise)
+
+### Why
+
+User-facing problem: a user installs the router on day 1 (say v0.8.6), the router gains 4 versions worth of features and fixes over 8 days, and the user has **no way to know** unless they actively go check the repo. There's no badge, no notif, no command that says "you're behind". This is a real UX gap — Claude Code's plugin system currently relies on the user manually running `/plugin update <name>` as a periodic blind check.
+
+Three options for the plugin author to address this:
+1. **Hook that notifies** — what v0.10.3 ships. Minimal effort, opt-out, fails silent.
+2. **Custom MCP tool** — Claude could invoke `check_router_update` itself. Overkill for what's essentially a static comparison.
+3. **README mention only** — pushes the responsibility entirely onto the user. Not enough on its own.
+
+This release goes with (1) + the README mention as a fallback for users who landed via GitHub before installing.
+
+### Privacy
+
+The check is a single anonymous HTTPS GET to `raw.githubusercontent.com/tboome33/obsidian-mcp-router/main/package.json` with the User-Agent `obsidian-mcp-router/check-router-update`. No payload sent. No telemetry. No collection. The cache file (`~/.claude/obsidian-mcp-router/.last-version-check.json`) is local-only — it stores `{ checkedAt: <ms>, notice: <string|null>, installedAtCheck: <version> }`. The hook source is 110 lines of vanilla Node, auditable in [`hooks/check-router-update.mjs`](./hooks/check-router-update.mjs).
+
+### Tests
+
+- 271/271 passing — 254 from v0.10.2 + 17 new `semver-compare.test.mjs` cases.
+- `package.json` `test` script extended with `tests/semver-compare.test.mjs`.
+
+### Backward compatible
+
+- The hook is opt-out, not opt-in by default — but a user that doesn't update `hooks.example.json` after v0.10.3 won't get the check (because their personal `hooks.json` still only references `hot-cache-load.mjs`). To activate retroactively on an existing setup, copy the second entry from the shipped `hooks.example.json` into your `~/.claude/settings.json` (or the project-scope equivalent).
+- No tool surface change, no MCP-protocol change.
+- The `semver-compare` helper is a new module; nothing else in the runtime imports it yet (only the hook does).
+
 ## [0.10.2] — 2026-05-22
 
 Discovery hygiene fix for the Claude Code skills panel + marketplace/plugin version sync. The Claude Code "Compétences" UI iterates over both `skills/` and `commands/`, but only items with a real `skills/<name>/SKILL.md` render cleanly — command-only items produce a misleading `Plugin not found: obsidian-router@obsidian-mcp-router-marketplace` error. **All 17 previously command-only entries are now promoted to proper skills**, so every entry the panel surfaces has a backing SKILL.md and the error disappears entirely.

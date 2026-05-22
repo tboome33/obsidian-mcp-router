@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.10.2-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.10.3-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -273,6 +273,18 @@ Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-r
 > The bundled `meta-setup` skill detects an under-budgeted setup and offers to apply this change interactively.
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
+
+### Staying up to date
+
+The plugin ships a SessionStart hook (`hooks/check-router-update.mjs`, since v0.10.3) that checks GitHub once per 24 hours and surfaces a notice if a newer version is available. The notice tells Claude to relay it on its first response of the session, so you find out without having to remember to check.
+
+If `/plugin update obsidian-router@obsidian-mcp-router-marketplace` is available in your Claude Code environment, that's the one-liner upgrade path. If it isn't (some environments don't expose the `/plugin` slash command), see [`docs/how-to-update.md`](./docs/how-to-update.md) for the 5-step manual filesystem equivalent (bash + PowerShell recipes).
+
+Opt-out — set either of these env vars and the check is skipped:
+- `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` (any truthy value)
+- `OBSIDIAN_ROUTER_USER_ID=<slug>` (multi-tenant deployments — assumes the sysadmin manages updates centrally)
+
+The check is a single GET to `raw.githubusercontent.com`. No payload, no telemetry — source is [`hooks/check-router-update.mjs`](./hooks/check-router-update.mjs).
 
 ### CLI flags
 
@@ -694,7 +706,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.10.2-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.10.3-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -923,6 +935,18 @@ Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/ob
 > Le skill `meta-setup` détecte un budget sous-dimensionné et propose d'appliquer ce changement interactivement.
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
+
+### Rester à jour
+
+Le plugin ship un hook SessionStart (`hooks/check-router-update.mjs`, depuis v0.10.3) qui check GitHub une fois par 24h et émet une notice si une nouvelle version est disponible. La notice demande à Claude de la relayer sur sa première réponse de la session — tu es au courant sans avoir besoin de penser à check.
+
+Si `/plugin update obsidian-router@obsidian-mcp-router-marketplace` est disponible dans ton environnement Claude Code, c'est le path one-liner. Sinon (certains environnements n'exposent pas le slash command `/plugin`), voir [`docs/how-to-update.md`](./docs/how-to-update.md) pour l'équivalent filesystem manuel en 5 étapes (recettes bash + PowerShell).
+
+Opt-out — définis une de ces env vars et le check est skippé :
+- `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` (any truthy value)
+- `OBSIDIAN_ROUTER_USER_ID=<slug>` (déploiements multi-tenant — assume que le sysadmin gère les updates centralement)
+
+Le check est un seul GET sur `raw.githubusercontent.com`. Pas de payload, pas de télémétrie — source dans [`hooks/check-router-update.mjs`](./hooks/check-router-update.mjs).
 
 ### Flags CLI
 
