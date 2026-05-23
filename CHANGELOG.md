@@ -8,6 +8,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.4] — 2026-05-23
+
+Adds automatic per-session journaling to the router. Splits "what happened during a session" (now auto-captured chronologically) from "what's worth keeping as a polished document" (still `/save`-triggered). Triggered by Roland noticing the `wiki/Sessions/` folder in the DEDIBOX vault and wanting full-auto journaling everywhere instead of manual `/save` for chronology.
+
+### Added
+
+- **`hooks/session-auto-journal.mjs`** — multi-event hook that auto-writes one journal file per Claude Code session under `<vault>/wiki/Sessions/<YYYY-MM-DD>-<HHMM>-<workspace-slug>.md`. Dispatches on `hook_event_name`:
+  - **`SessionStart`** (matcher `startup|resume|clear`): creates the file with frontmatter `type: session, status: open, session-id, workspace, cwd, started-at`. Records state in `~/.claude/obsidian-mcp-router/session-journals/<session-id>.json` for cross-event continuity.
+  - **`UserPromptSubmit`**: appends `## HH:MM:SS — User prompt` with the prompt verbatim. Lazy-creates the journal if SessionStart wasn't wired or fired.
+  - **`PostToolUse`** (matcher restricted to write-flavored tools — `Write|Edit|MultiEdit|Bash|mcp__obsidian-router__write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|delete_file|move_file`): appends `### HH:MM:SS — tool: <name>` with concise args. Reads intentionally skipped (too noisy).
+  - **`SessionEnd`**: inserts a heuristic recap at the top of the journal (counts of prompts/tools, files touched, bash highlights, duration, vault), rewrites frontmatter `status: closed` + `ended-at` + `duration`, deletes the state JSON.
+- Vault target follows the same dual-mode resolution as `hot-cache-load`: cwd-is-vault writes under `<cwd>/wiki/Sessions/`, workspace-bound writes under the linked vault's `wiki/Sessions/`. No association → silent skip.
+- Opt-out per-session: `OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=true`.
+- **`tests/session-auto-journal.test.mjs`** — 10 tests covering SessionStart creation, lazy creation on UserPromptSubmit, Write/Bash logging, Read silencing, full SessionEnd flow (recap + frontmatter rewrite + state cleanup), workspace-bound vault target, no-vault silent skip, opt-out env var, unknown-event forward-compat.
+
+### Changed
+
+- **`skills/save/SKILL.md`** — `/save` no longer routes any flavor to `wiki/Sessions/`. The "whole conversation as session note" flavor is deprecated and now redirects: *"the auto-journal captures the chronology; which polished insight from this session do you want extracted into a permanent document?"*. `/save` keeps its job (polished, type-classified documents in `decisions/` / `answers/` / `refs/` / `techniques/` / `adrs/` / `ideas/`).
+- **`hooks/hooks.example.json`** — adds `session-auto-journal.mjs` to `SessionStart`, `UserPromptSubmit`, `PostToolUse` (with the write-tool matcher), and the new `SessionEnd` event slot. `SessionStart` matcher widened from `startup|resume` to `startup|resume|clear` to also journal across context-clear events.
+
+### Why this split
+
+Manual `/save` produces high-polish notes (structured frontmatter, narrative sections, cross-links) but requires Roland's discipline to invoke at the right moment. Auto-journal produces low-polish but high-coverage chronological capture: every session lands a file, no exceptions. The two complement each other: the journal is the raw "what happened", `/save` outputs are the curated "what mattered". A `/save`-produced document can backlink to its session journal for context recovery (e.g. *"this decision was made during [[2026-05-23-2200-obsidian-mcp-router]]"*).
+
+### Recap quality (current limit)
+
+The SessionEnd recap is **heuristic-only** for v0.12.4: counts + files touched + bash highlights + duration. No LLM call. Considered shipping LLM-driven extractive recap but rejected for v1 — it requires `ANTHROPIC_API_KEY` in the workspace `.env`, adds API call latency at SessionEnd, and the heuristic recap already covers ~80% of the "what happened" scan-read use case. LLM-driven recap is a planned v0.12.5 feature behind the opt-in env var, with heuristic fallback when absent.
+
+### Test count: **444/444 passing** (was 434 at v0.12.3; +10 session-auto-journal tests).
+
 ## [0.12.3] — 2026-05-23
 
 Hardens the click-to-open feature against silent drift. Triggered by an audit discovery that **8/10 vaults** had been running with a stale bridge plugin (v0.1.1, no `/open/*` route) AND a too-old Local REST API plugin (v3.6.1, no `addPublicRoute()` method) for over a week — both states invisible to the existing `meta-status` diagnostic, which only checks the router → vault HTTP ping. Roland's request: *"je veux que le routeur soit infaillible"*.

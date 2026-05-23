@@ -9,10 +9,11 @@ The most-used wiki skill. Turn the current conversation into a wiki page in seco
 
 ## When to use
 
-- "save this" / "save that answer" — file the current turn or a recent thread
-- "/save" with no argument — file the entire conversation as a session note
+- "save this" / "save that answer" — file the current turn or a recent thread as a polished, type-classified document
 - "/save <name>" — file with an explicit slug instead of inferred one
 - "save this decision" / "ADR this" — file as a decision/ADR with that frontmatter type
+
+> ⚠️ **`/save` no longer files to `wiki/Sessions/`** (router v0.12.4+). That folder is owned by the **`session-auto-journal.mjs` hook** which writes one chronological file per Claude Code session automatically. Use `/save` for **polished, type-classified outputs** that deserve a permanent document — decisions, answers, references, techniques, ADRs, ideas. If the user says "save this session" or "save the whole conversation", redirect: the auto-journal already captures the raw chronology; ask which polished insight they want to extract.
 
 ## When NOT to use
 
@@ -29,11 +30,13 @@ The most-used wiki skill. Turn the current conversation into a wiki page in seco
 
 ### 1. Identify what to save
 
-Three flavors:
+Three flavors (the `session` flavor is **deprecated** — auto-journal hook owns chronological capture since v0.12.4):
 
-- **Whole conversation** — `/save` alone. Capture the prompt, the back-and-forth, and the final state. Type: `session`.
 - **Specific answer** — "save that answer". Capture the most recent substantive answer from you, with enough context for it to make sense alone. Type: `answer`.
-- **Specific insight** — "save this decision" or "save this technique". The user is pointing at a discrete thing. Type matches what they said (`decision`, `technique`, `idea`, `runbook`, `adr`).
+- **Specific insight** — "save this decision" / "save this technique" / "ADR this". The user is pointing at a discrete thing. Type matches what they said (`decision`, `technique`, `idea`, `runbook`, `adr`).
+- **Reference / runbook** — "save this as a ref" or the conversation produced a how-to. Type: `reference`.
+
+If the user says "/save" alone with no qualifier (intending "the whole session"), redirect them: *"The auto-journal already captures the chronology in `wiki/Sessions/<today>-...md`. Which polished insight from this session do you want extracted into a permanent document? (decision / answer / reference / technique / ADR)"*.
 
 If ambiguous, ask one short question. Don't save the wrong thing.
 
@@ -49,12 +52,14 @@ Check if `wiki/<folder>/<slug>.md` already exists. If yes:
 ### 3. Choose the folder
 
 Default folders by type:
-- `session` → `wiki/sessions/`
 - `answer` → `wiki/answers/`
 - `decision` / `adr` → `wiki/decisions/`
 - `technique` / `runbook` → `wiki/techniques/`
+- `reference` → `wiki/refs/`
 - `idea` → `wiki/ideas/`
 - Else → `wiki/notes/` as fallback
+
+**Never** route to `wiki/Sessions/` — that folder is owned by `session-auto-journal.mjs` (router v0.12.4+). If a `session` type slips through somehow, treat it as `answer` or `reference` and pick the more appropriate folder.
 
 If the wiki has a different convention (look at `wiki-meta/index.md` structure to detect), match that.
 

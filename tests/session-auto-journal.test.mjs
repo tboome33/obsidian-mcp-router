@@ -1,0 +1,301 @@
+/**
+ * Tests for hooks/session-auto-journal.mjs (v0.12.4).
+ *
+ * Covers:
+ *   - SessionStart creates the journal file with frontmatter
+ *   - UserPromptSubmit appends verbatim user prompts
+ *   - PostToolUse appends entries for write-flavored tools (Write/Bash/MCP)
+ *   - PostToolUse is silent for non-logged tools (e.g. Read)
+ *   - SessionEnd inserts heuristic recap + closes frontmatter + cleans state
+ *   - Workspace-bound mode (cwd is code project, vault via .env link)
+ *   - No vault association → silent skip (no file created)
+ *   - OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=true → opt-out
+ */
+
+import { test, describe, before, after, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'session-auto-journal.mjs');
+
+let workDir;
+let vaultDir;          // simulated vault (has wiki-meta/index.md)
+let codeWorkspace;     // code workspace (no wiki-meta/) — linked to vaultDir via .env
+let plainCwd;          // no-vault cwd
+let configPath;        // router config registering vaultDir
+let stateDirOverride;  // we'll point HOME to here so state JSONs don't pollute the real home
+
+function fakeHome() {
+  return stateDirOverride;
+}
+
+before(() => {
+  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-journal-'));
+
+  vaultDir = path.join(workDir, 'my-vault');
+  fs.mkdirSync(path.join(vaultDir, 'wiki-meta'), { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, 'wiki-meta', 'index.md'), '# Index\n');
+
+  codeWorkspace = path.join(workDir, 'code-workspace');
+  fs.mkdirSync(codeWorkspace, { recursive: true });
+
+  plainCwd = path.join(workDir, 'plain');
+  fs.mkdirSync(plainCwd, { recursive: true });
+
+  configPath = path.join(workDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    portRegistry: { [vaultDir]: 27999 },
+    vaultNames: { [vaultDir]: 'my-vault' },
+  }, null, 2));
+
+  stateDirOverride = path.join(workDir, 'fake-home');
+  fs.mkdirSync(stateDirOverride, { recursive: true });
+});
+
+after(() => {
+  fs.rmSync(workDir, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  // Wipe Sessions/ from the vault between tests so each test starts fresh
+  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  if (fs.existsSync(sessionsDir)) {
+    fs.rmSync(sessionsDir, { recursive: true, force: true });
+  }
+  // Wipe state dir between tests
+  const stateDir = path.join(stateDirOverride, '.claude', 'obsidian-mcp-router', 'session-journals');
+  if (fs.existsSync(stateDir)) {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+  }
+  // Clean any .env left behind in workspaces
+  for (const cwd of [codeWorkspace, plainCwd]) {
+    const e = path.join(cwd, '.env');
+    if (fs.existsSync(e)) fs.unlinkSync(e);
+  }
+});
+
+function runHook({
+  event,
+  cwd,
+  sessionId = 'test-session-1',
+  prompt = '',
+  toolName = '',
+  toolInput = {},
+  reason = 'logout',
+  env = {},
+  workspaceDotenv = null,
+} = {}) {
+  if (workspaceDotenv !== null) {
+    fs.writeFileSync(path.join(cwd, '.env'), workspaceDotenv);
+  }
+  const payload = {
+    hook_event_name: event,
+    cwd,
+    session_id: sessionId,
+  };
+  if (event === 'UserPromptSubmit') payload.prompt = prompt;
+  if (event === 'PostToolUse') { payload.tool_name = toolName; payload.tool_input = toolInput; }
+  if (event === 'SessionEnd') payload.reason = reason;
+
+  return spawnSync(process.execPath, [HOOK_PATH], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      OBSIDIAN_ROUTER_CONFIG: configPath,
+      // Redirect $HOME / $USERPROFILE so the hook's state dir lands under
+      // our scratch workDir instead of the developer's real home.
+      HOME: stateDirOverride,
+      USERPROFILE: stateDirOverride,
+      ...env,
+    },
+    timeout: 10000,
+  });
+}
+
+function findJournal() {
+  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  if (!fs.existsSync(sessionsDir)) return null;
+  const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.md'));
+  if (files.length === 0) return null;
+  // Tests only ever create one journal each — return the first.
+  return path.join(sessionsDir, files[0]);
+}
+
+function readJournal() {
+  const p = findJournal();
+  return p ? fs.readFileSync(p, 'utf8') : null;
+}
+
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — cwd-is-vault mode', () => {
+  test('SessionStart creates a journal file with frontmatter', () => {
+    const r = runHook({ event: 'SessionStart', cwd: vaultDir });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.ok(content, 'journal file should exist');
+    assert.match(content, /^---\n/);
+    assert.match(content, /type: session/);
+    assert.match(content, /status: open/);
+    assert.match(content, /session-id: test-session-1/);
+    assert.match(content, /## Chronological log/);
+  });
+
+  test('UserPromptSubmit lazy-creates the journal + appends prompt verbatim', () => {
+    const r = runHook({
+      event: 'UserPromptSubmit',
+      cwd: vaultDir,
+      sessionId: 'lazy-session',
+      prompt: 'Hello world — verbatim prompt content',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.ok(content, 'journal should be lazy-created');
+    assert.match(content, /User prompt/);
+    assert.match(content, /Hello world — verbatim prompt content/);
+  });
+
+  test('PostToolUse appends a Write tool entry with the file_path', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'tool-session' });
+    const r = runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'tool-session',
+      toolName: 'Write',
+      toolInput: { file_path: '/foo/bar.mjs' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.match(content, /tool: Write/);
+    assert.match(content, /file: \/foo\/bar\.mjs/);
+  });
+
+  test('PostToolUse appends a Bash entry with the command', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'bash-session' });
+    const r = runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'bash-session',
+      toolName: 'Bash',
+      toolInput: { command: 'git status --short' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.match(content, /tool: Bash/);
+    assert.match(content, /git status --short/);
+  });
+
+  test('PostToolUse is silent for filtered-out tools (Read)', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'read-session' });
+    const before = readJournal();
+    const r = runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'read-session',
+      toolName: 'Read',
+      toolInput: { file_path: '/foo/bar.mjs' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const after = readJournal();
+    assert.equal(after, before, 'journal should not change for Read tool');
+  });
+
+  test('SessionEnd inserts recap + closes frontmatter + deletes state', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'end-session' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'end-session',
+      prompt: 'do the thing',
+    });
+    runHook({
+      event: 'PostToolUse', cwd: vaultDir, sessionId: 'end-session',
+      toolName: 'Write', toolInput: { file_path: '/foo/output.md' },
+    });
+    runHook({
+      event: 'PostToolUse', cwd: vaultDir, sessionId: 'end-session',
+      toolName: 'Bash', toolInput: { command: 'npm run build' },
+    });
+    const r = runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'end-session', reason: 'logout' });
+    assert.equal(r.status, 0, r.stderr);
+
+    const content = readJournal();
+    assert.ok(content);
+    // Recap inserted near the top after frontmatter
+    assert.match(content, /## Recap \(auto-generated\)/);
+    assert.match(content, /1 user prompts/);
+    assert.match(content, /1 writes/);
+    assert.match(content, /1 bash/);
+    assert.match(content, /\/foo\/output\.md/);
+    assert.match(content, /npm run build/);
+    // Frontmatter closed
+    assert.match(content, /status: closed/);
+    assert.match(content, /ended-at:/);
+    assert.match(content, /duration:/);
+    // Closure marker in chrono
+    assert.match(content, /Session closed/);
+
+    // State JSON cleaned up
+    const stateFile = path.join(stateDirOverride, '.claude', 'obsidian-mcp-router', 'session-journals', 'end-session.json');
+    assert.equal(fs.existsSync(stateFile), false, 'state file should be deleted after SessionEnd');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — workspace-bound mode', () => {
+  test('SessionStart creates journal in the linked vault (not in cwd)', () => {
+    const r = runHook({
+      event: 'SessionStart',
+      cwd: codeWorkspace,
+      sessionId: 'ws-session',
+      workspaceDotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.ok(content, 'journal should be in the linked vault');
+    assert.match(content, /workspace: code-workspace/);
+    // The journal should NOT be in the code workspace
+    assert.equal(fs.existsSync(path.join(codeWorkspace, 'wiki', 'Sessions')), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — skip conditions', () => {
+  test('No vault association → silent skip (no file)', () => {
+    const r = runHook({ event: 'SessionStart', cwd: plainCwd, sessionId: 'skip-1' });
+    assert.equal(r.status, 0, r.stderr);
+    const content = readJournal();
+    assert.equal(content, null, 'no journal should be created');
+  });
+
+  test('OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=true → silent skip', () => {
+    const r = runHook({
+      event: 'SessionStart',
+      cwd: vaultDir,
+      sessionId: 'optout-1',
+      env: { OBSIDIAN_ROUTER_NO_SESSION_JOURNAL: 'true' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readJournal(), null, 'no journal should be created');
+  });
+
+  test('Unknown event name → silent no-op (forward-compat)', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'unknown-event-session' });
+    const before = readJournal();
+    const r = spawnSync(process.execPath, [HOOK_PATH], {
+      input: JSON.stringify({ hook_event_name: 'SomeFutureEvent', cwd: vaultDir, session_id: 'unknown-event-session' }),
+      encoding: 'utf8',
+      env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: configPath, HOME: stateDirOverride, USERPROFILE: stateDirOverride },
+      timeout: 10000,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readJournal(), before, 'unknown event should not modify the journal');
+  });
+});

@@ -2,7 +2,7 @@
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume",
+        "matcher": "startup|resume|clear",
         "hooks": [
           {
             "type": "command",
@@ -11,6 +11,10 @@
           {
             "type": "command",
             "command": "node \"<router-repo>/hooks/check-router-update.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
           }
         ]
       }
@@ -33,6 +37,10 @@
           {
             "type": "command",
             "command": "node \"<router-repo>/hooks/wiki-query-first-nudge.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
           }
         ]
       }
@@ -55,6 +63,15 @@
             "command": "node \"<router-repo>/hooks/doc-propagation-checker.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|Bash|mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
+          }
+        ]
       }
     ],
     "Stop": [
@@ -68,6 +85,17 @@
           {
             "type": "command",
             "command": "node \"<router-repo>/hooks/hot-cache-update-prompt.mjs\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
           }
         ]
       }
