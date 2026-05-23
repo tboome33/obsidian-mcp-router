@@ -1,22 +1,24 @@
 ---
-description: Propagate the reference (`.template`) vault's plugins, snippets, Smart Connections config and root docs to one or more configured vaults. Interactive picker — lists each vault with online status, lets you sync all or a subset, with optional `--force` re-clone. (Skill `meta-sync-template` handles natural-language triggers + the picker flow.)
+description: Propagate the reference (`.template`) vault's plugins, snippets, and root docs to one or more configured vaults. Interactive picker — lists each vault with online status + REST-API-plugin presence, lets you sync all or a subset, with optional `--force` re-clone. (Skill `meta-sync-template` handles natural-language triggers + the picker flow.)
 ---
 
 # meta-sync-template
 
-Interactive bulk propagation of the reference vault (typically `.template`) to one or more configured vaults. Iterates the existing `scripts/setup-vault.mjs --sync-plugins` per-vault command behind a conversational picker with safety filters (case-insensitive reference-vault detection, pre-flight check for REST API plugin presence).
+Interactive bulk propagation of the reference vault (typically `.template`) to one or more configured vaults. Conversational picker over `scripts/setup-vault.mjs`'s `--sync-all` and `--sync-plugins` modes.
+
+The safety guarantees are enforced **by the script itself** (`obsidian-mcp-router` v0.11.2+): the reference vault is auto-skipped via a case-insensitive `samePath()` match (Windows NTFS / macOS APFS safe), and first-time copies of credentialed plugins (currently `obsidian-local-rest-api`) into vaults that don't have them yet are refused to prevent API-key leaks. The skill's job is purely UX.
 
 Follow the steps in the `meta-sync-template` skill. The skill:
 
 1. Locates the cloned `obsidian-mcp-router` repo (CWD → `npm root -g` → `npm ls -g --parseable` → ask the user).
-2. Reads the router config (`$HOME/.claude/obsidian-mcp-router/config.json`, or `$env:USERPROFILE\.claude\obsidian-mcp-router\config.json` on Windows) to get `referenceVault` + `portRegistry`.
-3. Calls the router's `list_vaults` tool to probe online status (informational — sync works offline too).
-4. Filters the target list: removes the reference vault (case-insensitive match via `fs.realpathSync.native()` — guards against the Windows-casing data-loss scenario where `--force` on the reference itself would wipe the source). Pre-flight checks each target for an existing `obsidian-local-rest-api/data.json` — vaults missing it get flagged `⚠️ no REST` (syncing them first-time would leak the reference vault's port + API key into the target). Renders the table and asks: **All safe vaults**, **subset**, or **cancel**.
+2. Reads the active router config (`list_vaults.configPath`, respecting `OBSIDIAN_ROUTER_CONFIG`).
+3. Calls `list_vaults` to probe online status (informational — sync works offline too).
+4. Renders a picker table flagging targets that lack `obsidian-local-rest-api/data.json` with `⚠️ needs bootstrap` so the user can prep them first. Asks: **All vaults**, **subset**, or **cancel**.
 5. Asks whether to pass `--force` (re-clone every plugin folder).
-6. Iterates the validated target list — one `node scripts/setup-vault.mjs "<path>" --sync-plugins [--force]` per target. Does NOT call `--sync-all`, because that path bypasses the skill's filters (the bulk handler at `setup-vault.mjs:944` uses a case-sensitive self-skip and has no REST-less check).
-7. Aggregates per-vault results client-side and reminds the user that any vault currently open in Obsidian needs a reload (Ctrl+R / Cmd+R) to pick up newly synced plugins.
+6. Runs `npm run setup-vault -- --sync-all [--force]` for the all-vaults case (the script's bulk handler iterates safely). For a subset, loops `node scripts/setup-vault.mjs "<path>" --sync-plugins [--force]` over the user's selection.
+7. Aggregates per-vault results and reminds the user that any vault currently open in Obsidian needs a reload (Ctrl+R / Cmd+R) to pick up newly synced plugins.
 
-The sync is filesystem-based — **offline vaults are propagated too**. The per-vault `obsidian-local-rest-api/data.json` (port + API key) is preserved across re-clones for vaults that already have the plugin (`setup-vault.mjs:835-842`). For first-time copies into vaults without the plugin, the skill refuses to sync (see step 4 pre-flight) to avoid leaking the reference's credentials.
+The sync is filesystem-based — **offline vaults are propagated too**. Per-vault `obsidian-local-rest-api/data.json` (port + API key) is preserved across re-clones for vaults that already have the plugin (`setup-vault.mjs:835-842`); for vaults without it, the script refuses the copy with a clear "bootstrap first via `setup-vault.mjs "<path>"`" message.
 
 ## Examples
 

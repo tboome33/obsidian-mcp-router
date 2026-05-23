@@ -31,16 +31,27 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { samePath } from './path-helpers.mjs';
+
 // --- Config path: user-home, NOT relative to this script ---------------------
 // The script lives inside the router repo (which is git-tracked and may live
 // anywhere), so we anchor config.json in the user's home dir under our project
 // name. The router itself reads from the same path by default.
-const CONFIG_PATH = path.join(
-  os.homedir(),
-  '.claude',
-  'obsidian-mcp-router',
-  'config.json',
-);
+//
+// `OBSIDIAN_ROUTER_CONFIG` env var overrides the default — mirrors the router
+// binary's own `--config` flag / env var (see src/index.mjs). This lets the
+// meta-sync-template skill read `list_vaults.configPath` and pass the SAME
+// active config path back into setup-vault.mjs, instead of falling back to a
+// hard-coded `~/.claude/...`. Also used by the test suite to point at temp
+// config fixtures (see tests/setup-vault-safety.test.mjs).
+const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
+  ? path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG)
+  : path.join(
+      os.homedir(),
+      '.claude',
+      'obsidian-mcp-router',
+      'config.json',
+    );
 
 // --- Router executable that bootstrapped vaults will spawn -------------------
 // .mcp.json files in each vault will reference these paths so Claude Code
@@ -66,6 +77,31 @@ const NODE_EXE = process.execPath;
 
 // --- Required plugins: must exist in reference vault, otherwise we fail --
 const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
+
+// --- Credentialed plugins (data.json carries per-vault secrets) -------------
+// Plugins whose folder contains a per-vault credential file. The
+// reference vault's `data.json` for these holds its OWN port + API
+// key — copying that file into any target would leak the credential
+// across vaults (every target ends up with the same key, and the
+// bound port would conflict on first plugin start).
+//
+// `syncPluginsMode()` (--sync-plugins) handles these specially:
+//   - First-time copy (no plugin folder in target):  refuse, ask user
+//     to bootstrap via `setup-vault.mjs <path>` first (generates a
+//     fresh port + key per vault).
+//   - --force refresh AND target's data.json exists:  preserved
+//     across re-clone (read → rm → copy code → write data.json back).
+//   - --force refresh AND target's data.json MISSING (folder existed
+//     but plugin was never activated):  also refuse, same as first
+//     time — otherwise we'd overwrite the empty slot with the
+//     reference's data.json. See codex P1 finding for the regression
+//     trail.
+//
+// Note: `setupVault()` (full bootstrap path, NOT --sync-plugins) is
+// safe for these plugins because it explicitly overwrites data.json
+// with a freshly-generated port + key via `patchRestApiData()`
+// immediately after the clone.
+const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
 // --- Optional plugins: cloned if present in reference vault, else skipped ---
 // Note: this list is the SUPERSET of plugins setup-vault.mjs is willing to
 // clone from a reference. The shipped skeleton's `community-plugins.json`
@@ -155,6 +191,10 @@ function defaultNameFromPath(p) {
   const base = (isWindows ? path.win32 : path.posix).basename(p);
   return base.replace(/^\./, '').toLowerCase();
 }
+
+// Note: samePath() / canonicalPath() live in scripts/path-helpers.mjs
+// (imported at the top of this file). Extracted so unit tests can hit
+// them without spawning this CLI as a subprocess.
 
 function printStatus() {
   const cfg = loadConfig();
@@ -316,16 +356,37 @@ function writeMcpJson(vaultPath, force) {
     warn(`.mcp.json already exists, leaving it untouched. Use --force to overwrite.`);
     return;
   }
+
+  // If this bootstrap is running against a non-default config path
+  // (currently only via the `OBSIDIAN_ROUTER_CONFIG` env var — this
+  // script doesn't parse a `--config` CLI flag of its own; the router
+  // binary does), embed `--config <path>` into the spawned router's
+  // args. Without this,
+  // the MCP client (Claude Code, Claude Desktop) launches the router
+  // process WITHOUT the env var the user set during bootstrap, so the
+  // router falls back to the default config and can't see the vault
+  // that was just registered. The CLI flag is the only reliable way
+  // to pin the registry across process boundaries.
+  //
+  // CONFIG_PATH equals the default when no override was provided; in
+  // that case we keep args minimal so the generated .mcp.json stays
+  // identical to the historical output (no diff-noise across upgrades).
+  const defaultConfigPath = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
+  const usingCustomConfig = path.resolve(CONFIG_PATH) !== path.resolve(defaultConfigPath);
+  const args = usingCustomConfig
+    ? [ROUTER_BIN, '--config', CONFIG_PATH]
+    : [ROUTER_BIN];
+
   const config = {
     mcpServers: {
       'obsidian-router': {
         command: NODE_EXE,
-        args: [ROUTER_BIN],
+        args,
       },
     },
   };
   fs.writeFileSync(mcpPath, JSON.stringify(config, null, 2));
-  ok(`Wrote ${mcpPath}`);
+  ok(`Wrote ${mcpPath}${usingCustomConfig ? ` (with --config ${CONFIG_PATH})` : ''}`);
 }
 
 function appendGitignore(vaultPath) {
@@ -795,24 +856,48 @@ function setupVault(vaultPath, opts = {}) {
 }
 
 function syncPluginsMode(vaultPath, opts = {}) {
+  // When called from --sync-all (opts.throwOnError = true), errors throw
+  // instead of process.exit so a single failing vault doesn't tear down
+  // the whole loop. Direct CLI invocation keeps the legacy exit behavior
+  // so users see a non-zero exit code on failure.
+  const failOrThrow = (msg) => {
+    if (opts.throwOnError) throw new Error(msg);
+    fail(msg);
+  };
+
   const cfg = loadConfig();
   if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
     if (opts.quiet) process.exit(0);
-    fail('No reference vault configured or it no longer exists.');
+    failOrThrow('No reference vault configured or it no longer exists.');
   }
 
   const abs = path.resolve(vaultPath);
+
+  // Refuse to sync the reference vault onto itself. With --force this is
+  // a data-loss bug (the loop below would rm -rf each plugin dir in the
+  // source before copying from the same path, leaving the source empty).
+  // Without --force it's a silent no-op. Either way, surface clearly so
+  // a script-aware caller (--sync-all or the meta-sync-template skill)
+  // can adjust, but don't crash a --quiet hook run.
+  if (samePath(abs, cfg.referenceVault)) {
+    if (opts.quiet) process.exit(0);
+    failOrThrow(
+      `Refusing to sync the reference vault onto itself: ${abs}\n` +
+      `   (it is the source — sync targets must be other vaults).`,
+    );
+  }
+
   const targetObsidian = path.join(abs, '.obsidian');
   if (!fs.existsSync(targetObsidian)) {
     // Not an Obsidian vault — silent in quiet mode (hook will hit non-vault projects)
     if (opts.quiet) process.exit(0);
-    fail(`Not an Obsidian vault (no .obsidian/): ${abs}`);
+    failOrThrow(`Not an Obsidian vault (no .obsidian/): ${abs}`);
   }
 
   const refPluginsDir = path.join(cfg.referenceVault, '.obsidian', 'plugins');
   if (!fs.existsSync(refPluginsDir)) {
     if (opts.quiet) process.exit(0);
-    fail(`Reference vault has no plugins dir: ${refPluginsDir}`);
+    failOrThrow(`Reference vault has no plugins dir: ${refPluginsDir}`);
   }
 
   const tgtPluginsDir = path.join(targetObsidian, 'plugins');
@@ -825,12 +910,35 @@ function syncPluginsMode(vaultPath, opts = {}) {
 
   const newlySynced = [];
   const refreshed = [];
+  // Plugins we refused to copy for safety reasons — currently
+  // CREDENTIAL_LEAK_PLUGINS into a target that's missing the credential
+  // file. Surfaced at the end of the loop with a clear "bootstrap
+  // first" message. See CREDENTIAL_LEAK_PLUGINS doc-block at the top
+  // of this file for the full reasoning.
+  const deferredForSafety = [];
+
   for (const p of refPlugins) {
     const srcPlugin = path.join(refPluginsDir, p);
     const dstPlugin = path.join(tgtPluginsDir, p);
     const exists = fs.existsSync(dstPlugin);
 
     if (exists && !opts.force) continue;
+
+    // Credentialed-plugin safety check. Refuse the copy whenever the
+    // target lacks its own data.json — both the first-time-copy case
+    // (folder absent) AND the --force refresh case where the folder
+    // exists but data.json doesn't. Without this second check, --force
+    // on a folder-present-but-data.json-missing target would copy the
+    // reference's data.json wholesale (codex P1 — folder existed
+    // because Obsidian had created it on plugin install but the user
+    // never activated it, so no data.json was ever written).
+    if (CREDENTIAL_LEAK_PLUGINS.has(p)) {
+      const tgtDataJson = path.join(dstPlugin, 'data.json');
+      if (!fs.existsSync(tgtDataJson)) {
+        deferredForSafety.push(p);
+        continue;
+      }
+    }
 
     if (exists) {
       // --force: re-clone but preserve local data.json (port + apiKey + user settings)
@@ -878,13 +986,35 @@ function syncPluginsMode(vaultPath, opts = {}) {
     if (newlySynced.length > 0) {
       console.log(`[obsidian-mcp-router] Synced ${newlySynced.length} new plugin(s) from .template: ${newlySynced.join(', ')}`);
     }
+    if (deferredForSafety.length > 0) {
+      // Even in --quiet (used by hooks), credential-leak avoidance
+      // should not be silent — the user needs to know they have a vault
+      // that still needs bootstrapping.
+      console.log(
+        `[obsidian-mcp-router] WARNING: ${abs}\n` +
+        `  Skipped first-time copy of: ${deferredForSafety.join(', ')}\n` +
+        `  Run \`node ${path.relative(process.cwd(), fileURLToPath(import.meta.url)) || 'setup-vault.mjs'} "${abs}"\`\n` +
+        `  (without --sync-plugins) to bootstrap with a per-vault port + API key, then re-run sync.`,
+      );
+    }
     process.exit(0);
   }
 
   if (newlySynced.length > 0) ok(`Synced ${newlySynced.length} new plugin(s): ${newlySynced.join(', ')}`);
   if (refreshed.length > 0) ok(`Refreshed ${refreshed.length} plugin(s) (--force): ${refreshed.join(', ')}`);
   if (smartEnvAdded) ok('Cloned .smart-env from reference vault');
-  if (newlySynced.length === 0 && refreshed.length === 0 && !smartEnvAdded) {
+  if (deferredForSafety.length > 0) {
+    warn(
+      `Refused first-time copy of credentialed plugin(s) into ${abs}:\n` +
+      `      ${deferredForSafety.join(', ')}\n` +
+      `   The reference vault's data.json (port + API key) would be cloned\n` +
+      `   into this target, leaking credentials across vaults.\n` +
+      `   Fix: bootstrap this vault with a per-vault port + API key first:\n` +
+      `      node ${path.relative(process.cwd(), fileURLToPath(import.meta.url)) || 'setup-vault.mjs'} "${abs}"\n` +
+      `   Then re-run --sync-plugins to pick up the remaining plugins.`,
+    );
+  }
+  if (newlySynced.length === 0 && refreshed.length === 0 && !smartEnvAdded && deferredForSafety.length === 0) {
     info('Already up to date with reference vault.');
   }
 }
@@ -939,9 +1069,12 @@ if (args[0] === '--sync-all') {
   let skipCount = 0;
   let failCount = 0;
   for (const vaultPath of targets) {
-    // Skip the reference vault itself — syncing it to itself is a no-op
-    // and just adds noise to the output.
-    if (path.resolve(vaultPath) === path.resolve(cfg.referenceVault)) {
+    // Skip the reference vault itself — syncing it to itself is a no-op,
+    // and with --force it's actively destructive (the per-vault sync
+    // would rm -rf the source's own plugin dir before re-copying from
+    // the now-empty source). samePath() handles Windows NTFS / macOS
+    // APFS case-insensitivity, which a raw path.resolve() did not.
+    if (samePath(vaultPath, cfg.referenceVault)) {
       console.log(c('gray', `  - skip (reference): ${vaultPath}`));
       skipCount++;
       continue;
@@ -958,10 +1091,10 @@ if (args[0] === '--sync-all') {
     }
     try {
       console.log(c('cyan', `  → ${vaultPath}`));
-      syncPluginsMode(vaultPath, { force, quiet: false });
+      // throwOnError: true so a single failing vault throws instead of
+      // calling process.exit(1), keeping the loop alive for the rest.
+      syncPluginsMode(vaultPath, { force, quiet: false, throwOnError: true });
     } catch (err) {
-      // syncPluginsMode normally exits on error via fail() — but if it returns,
-      // count it as a soft failure and keep iterating the rest.
       console.log(c('red', `    failed: ${err.message || err}`));
       failCount++;
       continue;

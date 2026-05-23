@@ -2,6 +2,19 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.11.2 — Template-propagation skill + setup-vault safety hardening (shipped 2026-05-23)
+
+Adds the `/obsidian-router:meta-sync-template` slash command (interactive picker for propagating the reference vault's plugins to other configured vaults) and closes two real safety bugs in `setup-vault.mjs` surfaced while building the skill.
+
+- ✅ `/obsidian-router:meta-sync-template` + skill — interactive picker (online/offline status + `⚠️ needs bootstrap` flagging) over `--sync-all` / `--sync-plugins`. Brings total plugin commands from 30 → 31 (4 meta helpers).
+- ✅ **Fix (data-loss)**: `--sync-all` self-skip used a case-sensitive `path.resolve()` compare. On Windows NTFS / macOS APFS, a mis-cased registry entry pointing at the reference vault would slip past the skip and `--force` would `rm -rf` the source mid-copy. Replaced with `samePath()` (new `scripts/path-helpers.mjs` module, backed by `fs.realpathSync.native()`).
+- ✅ **Fix (credential-leak)**: first-time `--sync-plugins` copy cloned the reference vault's `obsidian-local-rest-api/data.json` (port + API key) into any target lacking the plugin. New `CREDENTIAL_LEAK_PLUGINS` Set + `data.json`-presence check in both the no-folder and folder-but-no-data.json paths (the latter was a P1 codex finding caught in review pass 2).
+- ✅ **Fix (loop survivability)**: `syncPluginsMode()` now supports `throwOnError: true` so `--sync-all` can `try/catch` instead of being killed by a single vault's `process.exit(1)`. Direct CLI invocations keep the exit behavior.
+- ✅ **DX**: `OBSIDIAN_ROUTER_CONFIG` env var support in the script (mirrors the router binary's `--config` flag); `writeMcpJson` embeds `--config <path>` in `.mcp.json` when running against a non-default config, so MCP clients launching the router don't fall back to the wrong registry.
+- ✅ 16 new tests (`tests/setup-vault-safety.test.mjs`) covering every fix above. Total: 308/308 passing (was 271 at v0.11.1).
+
+Review trail: 2 full passes of `/review+` (Claude Code Reviewer + codex CLI in parallel). 4 BLOCKERS closed (data-loss, credential-leak first-time, credential-leak `--force`-with-missing-data.json, doc-version-mismatch), plus the `throwOnError` refactor, custom-config propagation, and `writeMcpJson` `--config` embedding from codex P2/P3 findings.
+
 ## ✅ v0.2 — Semantic search (shipped)
 
 Implemented `search_smart` against `POST /search/smart` — a route registered by the companion bridge plugin (`obsidian-mcp-router-bridge`) on top of Local REST API. The router talks pure HTTPS to it; no native binary involved.
