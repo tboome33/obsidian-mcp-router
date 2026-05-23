@@ -43,6 +43,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"<router-repo>/hooks/vault-link-linter.mjs\""
+          },
+          {
+            "type": "command",
             "command": "node \"<router-repo>/hooks/hot-cache-update-prompt.mjs\""
           }
         ]

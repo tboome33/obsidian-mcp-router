@@ -6,7 +6,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Added
+
+- **`hooks/vault-link-linter.mjs`** — new `Stop` hook that enforces the "Obsidian vault links" convention from `~/.claude/CLAUDE.md` (click-to-open markdown links pointing at the `obsidian-mcp-router-bridge` plugin's `/open/<path>` endpoint, instead of bare relative paths that aren't clickable in Claude Code). The hook reads the transcript, finds `[label](href.md)` links where `href` has no scheme and is relative, verifies each candidate against `portRegistry` vault paths on disk (filesystem check = false-positive avoidance), and if any verified-as-vault-file mentions remain, exits 2 with a bilingual stderr listing each violation + the corrected form (auto-derives the right `insecurePort` from each owning vault's `obsidian-local-rest-api/data.json`, with HTTPS fallback caveat when `enableInsecureServer: false`). Claude Code re-runs the turn so the user only sees the corrected response. Strips fenced code blocks and inline code before scanning to avoid flagging examples. Recursion guard via `stop_hook_active`. Opt-out via `OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true` (truthy: `true`/`1`/`yes`/`on`). Wire-up: added to `Stop` block in `hooks/hooks.example.json` alongside `hot-cache-update-prompt.mjs` (both run on every Stop event). Built after recurring observation that the convention — though loaded into Claude's context via the global CLAUDE.md — sometimes doesn't trigger at the moment of application (LLM attention bottleneck during multi-step recap turns); the hook is a deterministic check outside the LLM attention loop, same spirit as `wiki-autocommit` and `check-router-update`.
+- **`tests/vault-link-linter.test.mjs`** — 33 tests covering: 13 pass cases (no links, http/https/obsidian scheme already correct, code-block stripping incl. 4-space-indented, path not in any vault, path-traversal escape attempts, recursion guard, opt-out env var, missing config, absolute paths) + 16 block cases (bare-path link, multiple violations, percent-encoded href, FR+EN preamble, opt-out env var name in stderr, code-block stripping respected, HTTPS fallback when insecureServer disabled, REGRESSION tests for: filename with literal `%`, multi-vault `defaultVault` preference, `disabledVaults` filtering, `OBSIDIAN_ROUTER_ALLOWED_VAULTS` whitelist, `OBSIDIAN_ROUTER_DEFAULT_VAULT` env override, `VAULT_PATH` env path-based default, workspace `.env` autoload, `OBSIDIAN_ROUTER_LOCKED` lock-mode isolation) + 4 robustness tests (empty stdin, non-JSON stdin, missing transcript_path, no assistant messages). Total test count: **341/341 passing** (was 308).
+
+#### Multi-tenant correctness (vault-link-linter)
+
+The linter honors the same active-vault filtering and default-resolution cascade as the router itself, so it never lints against vaults the router would refuse to expose:
+
+- **Workspace `.env` autoload** — the hook runs as a separate Node subprocess invoked by Claude Code, so it does NOT inherit the workspace `.env` the router binary loads itself. The hook now loads `$CLAUDE_PROJECT_DIR/.env` (or `cwd()/.env`) at startup with standard dotenv semantics (file values fill only UNSET keys; `process.env` always wins). Without this, the multi-vault cascade below would always fall back to tier 3 in vault-bootstrapped workspaces (where `VAULT_PATH` lives only in `.env`).
+- **`cfg.disabledVaults`** entries (accepted as slug NAME or absolute PATH per v0.5.0+ convention) are excluded from linting.
+- **`OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c`** env var (v0.9.0+ multi-tenant whitelist) restricts linting to the listed slugs.
+- **`OBSIDIAN_ROUTER_LOCKED=<slug>`** (v0.8.0+ single-vault isolation) restricts linting to ONLY the locked vault. If the locked slug doesn't match any active vault, the linter skips entirely (the router would refuse to resolve too — no safe suggestion to make).
+- **Default-vault resolution** for the URL-suggestion bias follows the router's per-process cascade: (1) `OBSIDIAN_ROUTER_DEFAULT_VAULT` env (slug) — explicit per-process override; (2) `VAULT_PATH` env (absolute path) — auto-detected by `setup-vault.mjs` in each bootstrapped vault's `.env`; (3) `cfg.defaultVault` (slug) — global fallback.
 
 ## [0.11.2] — 2026-05-23
 

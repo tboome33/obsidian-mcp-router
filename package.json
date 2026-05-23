@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "start": "node bin/obsidian-mcp-router.mjs",
-    "test": "node --test tests/registry.test.mjs tests/sanitize.test.mjs tests/idf-score.test.mjs tests/wiki-fingerprint.test.mjs tests/readonly.test.mjs tests/user-id-audit.test.mjs tests/semver-compare.test.mjs tests/markdownify.test.mjs tests/setup-vault-safety.test.mjs",
+    "test": "node --test tests/registry.test.mjs tests/sanitize.test.mjs tests/idf-score.test.mjs tests/wiki-fingerprint.test.mjs tests/readonly.test.mjs tests/user-id-audit.test.mjs tests/semver-compare.test.mjs tests/markdownify.test.mjs tests/setup-vault-safety.test.mjs tests/vault-link-linter.test.mjs",
     "setup-vault": "node scripts/setup-vault.mjs",
     "status": "node scripts/setup-vault.mjs --status",
     "install-markitdown": "node scripts/install-markitdown.mjs",
