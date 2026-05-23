@@ -2,6 +2,22 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.11.4 — `--install-hooks` family + `doc-propagation-checker` hook + new-hooks tips (shipped 2026-05-23)
+
+Closes Couche 1 + Couche 2 of the "router-as-assistant" vision: hooks shipped on disk but stayed dormant because activating them required hand-editing `~/.claude/settings.json`. This release ships the CLI + interactive prompt + new-hooks notification flow so users can opt in (or extend their selection) without ever touching JSON.
+
+- ✅ **`hooks/doc-propagation-checker.mjs`** — `PostToolUse` hook on `Bash`. After every `git commit`, checks CHANGELOG/ROADMAP/vault-wiki alignment with `package.json` version. Non-blocking (exit 0, stdout nudge). Multi-tier check (repo + vault). 14 tests.
+- ✅ **`scripts/setup-vault.mjs --install-hooks`** — idempotent merge of `hooks/hooks.example.json` into `~/.claude/settings.json`. Preserves user-defined non-router hooks. Auto-detects router path. Forward-slash paths for Windows compat. `--select <a,b,c>` for partial install. 14 tests.
+- ✅ **`scripts/setup-vault.mjs --uninstall-hooks`** — removes router hooks, preserves user-defined, cleans up empty objects.
+- ✅ **`scripts/setup-vault.mjs --hooks-status`** — diagnostic listing each hook with active/inactive status.
+- ✅ **`hooks/check-router-update.mjs` extension** — snapshots local `hooks/` listing in cache. On next run, diffs current vs cached. New hooks detected AND not yet wired → 💡 tip appended to update notice listing them + the `--install-hooks --select <names>` command. Works offline (snapshot is local). Same opt-out (`OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true`). 7 tests.
+- ✅ **`skills/meta-setup/SKILL.md`** — new "Install router hooks (recommended)" section. Interactive prompt at end of meta-setup with All / Pick / Skip modes. Documents the 6 hooks + their per-hook opt-out env vars.
+- ✅ Test count: **376/376 ✅** (was 341 at v0.11.3).
+
+Activation path for existing users : after `/plugin update`, run `node <router-repo>/scripts/setup-vault.mjs --install-hooks` once. Idempotent. Restart Claude Code. Future updates will auto-tip about new hooks at the next 24h check.
+
+**Couche 3 (multi-session followup)** : `meta-config` skill/slash command to toggle individual hooks on/off without JSON or env vars + proactive usage tips ("your wiki has 80 unfolded entries, consider `/wiki-fold`") + auto-detection of conventions installed vs available + onboarding wizard. Tracked in [[router-ux-improvements-roadmap]] when filed.
+
 ## ✅ v0.11.3 — `vault-link-linter` Stop hook (shipped 2026-05-23)
 
 Closes the recurring slip where Claude mentions vault files using bare relative paths instead of the click-to-open format documented in `~/.claude/CLAUDE.md`. The convention was loaded into context every session but I'd miss applying it during multi-step recap turns. Memory entries don't solve recall-at-the-right-moment — only a deterministic check OUTSIDE the LLM attention loop does (same pattern as `wiki-autocommit` and `check-router-update`).

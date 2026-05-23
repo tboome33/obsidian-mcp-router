@@ -96,6 +96,52 @@ The router contributes ~30 skills (slash commands + skills) to Claude Code's ski
 
 If the user has a tight context budget for other reasons (e.g., they run a lot of large `Read` calls), a value of `0.03` is a safer middle ground — covers the router but leaves more headroom.
 
+## Install router hooks (recommended)
+
+The router ships **6 hooks** that automate vault maintenance — but they're **opt-in** and stay dormant until wired into `~/.claude/settings.json`. Historically users had to edit settings.json by hand (a UX cliff). Since v0.11.4, `setup-vault.mjs --install-hooks` does the wiring automatically.
+
+### What the 6 hooks do
+
+| Hook | Event | Purpose |
+|---|---|---|
+| `hot-cache-load` | SessionStart + PostCompact | Loads `wiki/hot.md` into Claude's context at session start |
+| `check-router-update` | SessionStart | Once-per-day GitHub check for new router versions |
+| `wiki-autocommit` | PostToolUse (7 mutating MCP tools) | Auto-commits wiki changes via git |
+| `vault-link-linter` | Stop | Blocks responses with bare-path vault links, forces click-to-open format |
+| `hot-cache-update-prompt` | Stop | Nudges Claude to refresh `hot.md` when wiki changed |
+| `doc-propagation-checker` | PostToolUse (Bash) | Post-`git commit` check that CHANGELOG/ROADMAP/wiki mention the current version |
+
+### Interactive install
+
+Ask the user which scope they want, then run the appropriate command from the cloned router repo. Recommended phrasing:
+
+> The router ships 6 hooks that turn your vault into an actively-maintained assistant (auto-commit, link linting, version-drift detection, etc.). Install which?
+>
+> **All (recommended)** — full kit, opt-in by env var per hook later if any becomes noisy.
+> **Pick** — choose specific hooks.
+> **Skip** — leave settings.json alone; you can run `node scripts/setup-vault.mjs --install-hooks` later.
+
+Based on the answer, run from the router repo:
+
+- **All**: `node scripts/setup-vault.mjs --install-hooks`
+- **Pick**: `node scripts/setup-vault.mjs --install-hooks --select <names>` (comma-separated basenames without `.mjs`, e.g. `vault-link-linter,doc-propagation-checker`)
+- **Skip**: don't run anything; mention `--install-hooks` exists for when they're ready.
+
+The command is **idempotent** (re-run safe), **preserves user-defined non-router hooks**, uses **forward-slash paths** in JSON for Windows compatibility, and auto-detects the absolute path of THIS clone (no `<router-repo>` placeholder to fill manually). Restart Claude Code afterward to pick up the new hooks.
+
+### Per-hook opt-out env vars
+
+If any hook becomes noisy or unwanted after install, the user can disable it WITHOUT touching settings.json:
+
+- `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` — disables `check-router-update`
+- `OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true` — disables `vault-link-linter`
+- `OBSIDIAN_ROUTER_NO_DOC_PROPAGATION_CHECK=true` — disables `doc-propagation-checker`
+- For the others (`hot-cache-load`, `hot-cache-update-prompt`, `wiki-autocommit`), the user can run `--uninstall-hooks` (removes ALL router hooks) and then re-run `--install-hooks --select <wanted-ones>` to keep a subset.
+
+### Verify after install
+
+Run `node scripts/setup-vault.mjs --hooks-status` from the router repo. Should show all installed hooks as `✓ active`.
+
 ## Verify
 
 1. Restart Claude Desktop / Claude Code.

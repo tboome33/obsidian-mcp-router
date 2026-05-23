@@ -19,6 +19,15 @@
  *                                            check is skipped)
  *
  * Wire-up: see hooks/hooks.example.json (SessionStart block).
+ *
+ * ── v0.11.4: new-hooks tips ────────────────────────────────────────────
+ * On top of the version-update notice, the hook now snapshots the local
+ * `hooks/` listing each run and stores it in the cache. When it detects
+ * a hook present on disk but missing from the previous snapshot (= the
+ * user just updated and got a new hook), AND that hook isn't already
+ * wired in `~/.claude/settings.json`, it appends a 💡 tip listing the
+ * new hook + the one-line command to activate it
+ * (`setup-vault.mjs --install-hooks --select <name>`). Same opt-outs.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -71,6 +80,43 @@ try {
   // First run or unreadable cache — re-fetch
 }
 
+// ─── Snapshot local hooks (for new-hooks tips) ────────────────────────
+// List the local hooks/ directory, filter to .mjs basenames. This is
+// fast (single readdir, ~5 files). Compared against the cached snapshot
+// to detect newly-added hooks since the last run.
+function listLocalHookBasenames() {
+  try {
+    return fs.readdirSync(path.join(pluginRoot, 'hooks'))
+      .filter((f) => f.endsWith('.mjs'))
+      .sort();
+  } catch { return []; }
+}
+const currentHooks = listLocalHookBasenames();
+
+// ─── Detect which hooks the user has already wired ────────────────────
+// Read ~/.claude/settings.json and walk every command string. A hook
+// is "wired" if any command contains its basename (case-sensitive —
+// settings.json paths are user-controlled and should be exact).
+function wiredHookBasenames() {
+  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  let settings;
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
+  catch { return new Set(); }
+  const found = new Set();
+  const hooks = settings.hooks || {};
+  for (const event of Object.keys(hooks)) {
+    for (const block of (hooks[event] || [])) {
+      for (const entry of (block.hooks || [])) {
+        const cmd = entry?.command || '';
+        for (const hb of currentHooks) {
+          if (cmd.includes(hb)) found.add(hb);
+        }
+      }
+    }
+  }
+  return found;
+}
+
 const now = Date.now();
 if (cached && typeof cached.checkedAt === 'number' && now - cached.checkedAt < CACHE_TTL_MS) {
   // Within throttle window — replay cached notice if any.
@@ -80,14 +126,36 @@ if (cached && typeof cached.checkedAt === 'number' && now - cached.checkedAt < C
   process.exit(0);
 }
 
+// ─── Compute new-hooks tip (works offline; depends only on local state) ──
+//
+// `newHooks` = hooks present locally now but NOT in the cached snapshot
+// from the previous check (= hooks added by a router update since last
+// run). On first run (no snapshot), this is empty by design — we don't
+// tip about every hook on first activation.
+//
+// Then filter to NOT-YET-WIRED in ~/.claude/settings.json — if the user
+// already activated the hook (e.g. ran --install-hooks themselves), the
+// tip is noise.
+const cachedHooks = Array.isArray(cached?.snapshotHooks) ? cached.snapshotHooks : null;
+let tipNotice = null;
+if (cachedHooks !== null) {
+  const wired = wiredHookBasenames();
+  const newAndNotWired = currentHooks.filter(
+    (h) => !cachedHooks.includes(h) && !wired.has(h),
+  );
+  if (newAndNotWired.length > 0) {
+    tipNotice = composeNewHooksTip(newAndNotWired);
+  }
+}
+
 // ─── Fetch latest version from GitHub ─────────────────────────────────
 const req = https.get(
   PACKAGE_JSON_URL,
   { timeout: FETCH_TIMEOUT_MS, headers: { 'User-Agent': 'obsidian-mcp-router/check-router-update' } },
   (res) => {
     if (res.statusCode !== 200) {
-      persistCache({ checkedAt: now, notice: null, installedAtCheck: installedVersion });
-      return process.exit(0);
+      finishWithoutFetch();
+      return;
     }
     let body = '';
     res.setEncoding('utf8');
@@ -97,29 +165,47 @@ const req = https.get(
       try {
         latestVersion = JSON.parse(body).version;
       } catch {
-        persistCache({ checkedAt: now, notice: null, installedAtCheck: installedVersion });
-        return process.exit(0);
+        finishWithoutFetch();
+        return;
       }
       if (!latestVersion || !parseSemver(latestVersion)) {
-        persistCache({ checkedAt: now, notice: null, installedAtCheck: installedVersion });
-        return process.exit(0);
+        finishWithoutFetch();
+        return;
       }
       const cmp = compareSemver(latestVersion, installedVersion);
-      if (cmp <= 0) {
-        // Up to date or local is ahead (dev install)
-        persistCache({ checkedAt: now, notice: null, installedAtCheck: installedVersion });
-        return process.exit(0);
-      }
-      const notice = composeNotice(installedVersion, latestVersion);
-      persistCache({ checkedAt: now, notice, installedAtCheck: installedVersion });
-      process.stdout.write(notice);
+      const versionNotice = cmp > 0 ? composeNotice(installedVersion, latestVersion) : null;
+      const fullNotice = [versionNotice, tipNotice].filter(Boolean).join('') || null;
+      persistCache({
+        checkedAt: now,
+        notice: fullNotice,
+        installedAtCheck: installedVersion,
+        snapshotHooks: currentHooks,
+      });
+      if (fullNotice) process.stdout.write(fullNotice);
       process.exit(0);
     });
   },
 );
 
-req.on('error', () => process.exit(0));
-req.on('timeout', () => { req.destroy(); process.exit(0); });
+req.on('error', () => finishWithoutFetch());
+req.on('timeout', () => { req.destroy(); finishWithoutFetch(); });
+
+/**
+ * Fallback path when GitHub is unreachable (offline session, rate-limit,
+ * etc.). We can still emit the new-hooks tip (purely local) and update
+ * the snapshot for next time. The version-update notice stays null so
+ * we don't replay a stale one from cache on cmp-failure paths.
+ */
+function finishWithoutFetch() {
+  persistCache({
+    checkedAt: now,
+    notice: tipNotice,
+    installedAtCheck: installedVersion,
+    snapshotHooks: currentHooks,
+  });
+  if (tipNotice) process.stdout.write(tipNotice);
+  process.exit(0);
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 function composeNotice(installed, latest) {
@@ -138,6 +224,40 @@ function composeNotice(installed, latest) {
     'To disable this once-per-day update check: set env var `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true`.',
     '',
   ].join('\n');
+}
+
+/**
+ * Compose a tip-style notice listing newly-available router hooks that
+ * the user hasn't wired yet. Style matches Claude CLI's `💡` tips so it
+ * blends into the session-start context.
+ */
+function composeNewHooksTip(newHookBasenames) {
+  const slugs = newHookBasenames.map((bn) => bn.replace(/\.mjs$/, ''));
+  const slugList = slugs.join(',');
+  const lines = [
+    '',
+    '<!-- obsidian-mcp-router new-hooks tip — please relay to the user on your first response -->',
+    `💡 **${newHookBasenames.length} new router hook(s) available** that you haven\'t activated yet:`,
+    '',
+  ];
+  for (const slug of slugs) {
+    lines.push(`  • \`${slug}\``);
+  }
+  lines.push('');
+  lines.push('Activate them with:');
+  lines.push('```');
+  lines.push(`node <router-repo>/scripts/setup-vault.mjs --install-hooks --select ${slugList}`);
+  lines.push('```');
+  lines.push('');
+  lines.push('Or activate everything (idempotent):');
+  lines.push('```');
+  lines.push('node <router-repo>/scripts/setup-vault.mjs --install-hooks');
+  lines.push('```');
+  lines.push('');
+  lines.push('Inspect current status: `node <router-repo>/scripts/setup-vault.mjs --hooks-status`.');
+  lines.push('Opt-out of these tips: set env var `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` (also disables the version notice).');
+  lines.push('');
+  return lines.join('\n');
 }
 
 function persistCache(entry) {

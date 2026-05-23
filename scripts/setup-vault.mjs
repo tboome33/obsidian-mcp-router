@@ -1019,6 +1019,255 @@ function syncPluginsMode(vaultPath, opts = {}) {
   }
 }
 
+// ---------- Hook installation helpers ------------------------------------
+//
+// Wires the router's hooks (from hooks/hooks.example.json) into the user's
+// `~/.claude/settings.json` so they actually fire. Without this, the hooks
+// ship on disk but stay dormant — the user has to edit settings.json
+// manually, which is a UX cliff documented in v0.11.3 review trail.
+//
+// Design:
+//   - Idempotent: re-run = no-op. Detection by hook script basename (e.g.
+//     `vault-link-linter.mjs`). If the user's settings already contain a
+//     command pointing at that basename ANYWHERE in any event, skip it.
+//   - Preserves user-defined hooks: the merge only adds, never reorders
+//     or removes non-router entries. Uninstall removes ONLY commands
+//     whose path contains `obsidian-mcp-router/hooks/` (or backslash
+//     variant on Windows).
+//   - Auto-detects this router's absolute path via `import.meta.url`.
+//     Forward slashes in JSON for Windows compat (escape-free).
+//   - `--select <names>` (comma-separated basenames without .mjs) lets
+//     the user pick a subset. Default = all hooks in the example file.
+//   - Layout note: appends new matcher blocks alongside existing ones
+//     rather than merging into them. Claude Code unions all blocks under
+//     the same event name at runtime, so this is functionally equivalent
+//     and avoids the complexity of regex-matching the matcher strings.
+
+const ROUTER_HOOKS_PATH_FRAGMENT = 'obsidian-mcp-router/hooks/';
+const ROUTER_HOOKS_PATH_FRAGMENT_WIN = 'obsidian-mcp-router\\hooks\\';
+
+function userSettingsPath() {
+  return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
+function loadUserSettings() {
+  const p = userSettingsPath();
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveUserSettings(settings) {
+  const p = userSettingsPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/**
+ * Load hooks/hooks.example.json and replace the `<router-repo>`
+ * placeholder with this router's absolute path (forward slashes for
+ * Windows-compatible JSON without escape gymnastics).
+ */
+function loadHooksExample() {
+  const examplePath = path.join(REPO_ROOT, 'hooks', 'hooks.example.json');
+  const raw = fs.readFileSync(examplePath, 'utf8');
+  const repoPath = REPO_ROOT.replace(/\\/g, '/');
+  return JSON.parse(raw.replace(/<router-repo>/g, repoPath));
+}
+
+/**
+ * Return basename (e.g. `vault-link-linter.mjs`) from a hook command
+ * string like `node "/path/to/.../hooks/vault-link-linter.mjs"`.
+ * Robust to quoted/unquoted, forward/backward slashes.
+ */
+function commandBasename(cmd) {
+  if (typeof cmd !== 'string') return null;
+  // Strip surrounding quotes if any
+  const cleaned = cmd.replace(/["']/g, '');
+  // Find last path separator and grab the rest
+  const m = cleaned.match(/[\\/]([^\\/]+\.mjs)\b/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Walk the settings.json structure and collect the basenames of every
+ * router-hook command already installed.
+ */
+function activeRouterHookBasenames(settings) {
+  const found = new Set();
+  const hooks = settings.hooks || {};
+  for (const event of Object.keys(hooks)) {
+    const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
+    for (const block of blocks) {
+      const entries = Array.isArray(block.hooks) ? block.hooks : [];
+      for (const entry of entries) {
+        const cmd = entry.command || '';
+        if (cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT) || cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT_WIN)) {
+          const bn = commandBasename(cmd);
+          if (bn) found.add(bn);
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * Install hooks from `example` into `settings`, skipping any hook whose
+ * basename is already present. Returns { added: string[], skipped: string[] }.
+ * Pure (mutates settings, but doesn't touch disk).
+ *
+ * `opts.select` (optional): Set of basenames (with or without .mjs) to
+ * restrict installation to. Default = all hooks in the example.
+ */
+function installHooksInto(settings, example, opts = {}) {
+  const added = [];
+  const skipped = [];
+  const already = activeRouterHookBasenames(settings);
+
+  // Normalize --select input: accept "vault-link-linter" or "vault-link-linter.mjs"
+  let selectFilter = null;
+  if (opts.select) {
+    selectFilter = new Set();
+    for (const name of opts.select) {
+      const trimmed = name.trim();
+      if (!trimmed) continue;
+      selectFilter.add(trimmed.endsWith('.mjs') ? trimmed : `${trimmed}.mjs`);
+    }
+  }
+
+  settings.hooks = settings.hooks || {};
+
+  for (const event of Object.keys(example.hooks || {})) {
+    settings.hooks[event] = settings.hooks[event] || [];
+    const exampleBlocks = Array.isArray(example.hooks[event]) ? example.hooks[event] : [];
+
+    for (const exampleBlock of exampleBlocks) {
+      const matcher = exampleBlock.matcher;
+      const exampleHooksList = Array.isArray(exampleBlock.hooks) ? exampleBlock.hooks : [];
+
+      // Filter to hooks not already installed (idempotency) AND in --select if set.
+      const toAdd = exampleHooksList.filter((entry) => {
+        const bn = commandBasename(entry.command);
+        if (!bn) return false;
+        if (selectFilter && !selectFilter.has(bn)) {
+          // Selected-out: count as skipped only if not already installed,
+          // otherwise it's just a no-op (which is fine).
+          if (!already.has(bn)) skipped.push(bn);
+          return false;
+        }
+        if (already.has(bn)) {
+          skipped.push(bn);
+          return false;
+        }
+        return true;
+      });
+
+      if (toAdd.length === 0) continue;
+
+      // Append a new block (intentional — see "Layout note" in the header
+      // doc above). Includes ALL the original example block's hooks even
+      // if some were filtered out for idempotency, because Claude Code
+      // would run the same hook twice if we add a partial duplicate. So
+      // we only add a block when there's at least one NEW hook for it,
+      // and we add ONLY the new ones (not the already-present siblings).
+      settings.hooks[event].push({
+        matcher: matcher === undefined ? '' : matcher,
+        hooks: toAdd,
+      });
+
+      for (const entry of toAdd) {
+        const bn = commandBasename(entry.command);
+        if (bn) added.push(bn);
+      }
+    }
+  }
+
+  return { added, skipped };
+}
+
+/**
+ * Remove all router hooks from `settings`. Preserves user-defined hooks.
+ * Returns { removed: string[] }. Pure.
+ */
+function uninstallHooksFrom(settings) {
+  const removed = [];
+  const hooks = settings.hooks || {};
+
+  for (const event of Object.keys(hooks)) {
+    const blocks = Array.isArray(hooks[event]) ? hooks[event] : [];
+    const filteredBlocks = [];
+
+    for (const block of blocks) {
+      const entries = Array.isArray(block.hooks) ? block.hooks : [];
+      const filteredEntries = entries.filter((entry) => {
+        const cmd = entry.command || '';
+        const isRouter = cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT) ||
+                         cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT_WIN);
+        if (isRouter) {
+          const bn = commandBasename(cmd);
+          if (bn) removed.push(bn);
+        }
+        return !isRouter;
+      });
+
+      if (filteredEntries.length > 0) {
+        filteredBlocks.push({ ...block, hooks: filteredEntries });
+      }
+      // Else: drop the whole block (no user-defined hooks left in it).
+    }
+
+    if (filteredBlocks.length > 0) {
+      hooks[event] = filteredBlocks;
+    } else {
+      delete hooks[event];
+    }
+  }
+
+  if (Object.keys(hooks).length === 0) delete settings.hooks;
+
+  return { removed };
+}
+
+/**
+ * Report which hooks from `example` are active in `settings`.
+ * Returns [{ basename, status: 'active'|'inactive' }].
+ */
+function reportHooksStatus(settings, example) {
+  const active = activeRouterHookBasenames(settings);
+  const knownBasenames = new Set();
+  for (const event of Object.keys(example.hooks || {})) {
+    for (const block of example.hooks[event] || []) {
+      for (const entry of block.hooks || []) {
+        const bn = commandBasename(entry.command);
+        if (bn) knownBasenames.add(bn);
+      }
+    }
+  }
+  const rows = [...knownBasenames].sort().map((bn) => ({
+    basename: bn,
+    status: active.has(bn) ? 'active' : 'inactive',
+  }));
+  return rows;
+}
+
+// Exported for test-time access (the file is a CLI but we also want to
+// unit-test the pure helpers). Tests `import * as setup from
+// './setup-vault.mjs'` — but importing this CLI file as a module would
+// execute the top-level CLI dispatch. Instead, tests spawn it as a
+// subprocess (see tests/install-hooks.test.mjs) — these exports stay
+// in the module namespace for future intra-module use.
+export {
+  loadHooksExample,
+  commandBasename,
+  activeRouterHookBasenames,
+  installHooksInto,
+  uninstallHooksFrom,
+  reportHooksStatus,
+};
+
 // ---------- CLI ----------
 const args = process.argv.slice(2);
 if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
@@ -1039,12 +1288,105 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               installed the marketplace plugins via Obsidian.
   node setup-vault.mjs --init-reference <path>               Register a vault as the reference template
   node setup-vault.mjs --status                              Show current configuration
+  node setup-vault.mjs --install-hooks                       Merge ALL hooks from hooks.example.json into
+                                                              ~/.claude/settings.json. Idempotent (re-run safe);
+                                                              preserves user-defined non-router hooks.
+  node setup-vault.mjs --install-hooks --select <a,b,c>      Install only the named hooks (basenames without .mjs)
+  node setup-vault.mjs --uninstall-hooks                     Remove all router hooks from ~/.claude/settings.json
+                                                              (preserves user-defined hooks)
+  node setup-vault.mjs --hooks-status                        Report which router hooks are currently active
 `);
   process.exit(0);
 }
 
 if (args[0] === '--status') {
   printStatus();
+  process.exit(0);
+}
+
+if (args[0] === '--install-hooks') {
+  // Merge hooks/hooks.example.json into ~/.claude/settings.json. See the
+  // "Hook installation helpers" doc-block above for design rationale.
+  const selectIdx = args.indexOf('--select');
+  let select = null;
+  if (selectIdx !== -1) {
+    const value = args[selectIdx + 1];
+    if (!value || value.startsWith('--')) {
+      fail('--select requires a comma-separated list of hook names (e.g. "vault-link-linter,doc-propagation-checker")');
+    }
+    select = value.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+
+  let example;
+  try { example = loadHooksExample(); }
+  catch (err) { fail(`Could not load hooks/hooks.example.json: ${err.message}`); }
+
+  const settings = loadUserSettings();
+  const result = installHooksInto(settings, example, { select });
+
+  if (result.added.length === 0) {
+    info('All requested hooks are already installed. Nothing to do.');
+    if (result.skipped.length > 0) {
+      console.log(c('gray', `   (already-installed or de-selected: ${[...new Set(result.skipped)].join(', ')})`));
+    }
+    process.exit(0);
+  }
+
+  try { saveUserSettings(settings); }
+  catch (err) { fail(`Could not write ${userSettingsPath()}: ${err.message}`); }
+
+  ok(`Installed ${result.added.length} hook(s) into ${userSettingsPath()}:`);
+  for (const bn of result.added) console.log(`    ${c('green', '+')} ${bn}`);
+  if (result.skipped.length > 0) {
+    const uniq = [...new Set(result.skipped)];
+    console.log(c('gray', `   (already-installed or de-selected: ${uniq.join(', ')})`));
+  }
+  console.log('');
+  info('Restart Claude Code to pick up the new hooks.');
+  process.exit(0);
+}
+
+if (args[0] === '--uninstall-hooks') {
+  const settings = loadUserSettings();
+  const result = uninstallHooksFrom(settings);
+
+  if (result.removed.length === 0) {
+    info('No router hooks were installed. Nothing to do.');
+    process.exit(0);
+  }
+
+  try { saveUserSettings(settings); }
+  catch (err) { fail(`Could not write ${userSettingsPath()}: ${err.message}`); }
+
+  ok(`Removed ${result.removed.length} router hook(s) from ${userSettingsPath()}:`);
+  for (const bn of result.removed) console.log(`    ${c('red', '-')} ${bn}`);
+  console.log('');
+  info('Restart Claude Code so the removed hooks stop firing.');
+  process.exit(0);
+}
+
+if (args[0] === '--hooks-status') {
+  let example;
+  try { example = loadHooksExample(); }
+  catch (err) { fail(`Could not load hooks/hooks.example.json: ${err.message}`); }
+  const settings = loadUserSettings();
+  const rows = reportHooksStatus(settings, example);
+
+  console.log(c('bold', '\nRouter hooks status\n'));
+  console.log('Settings file:  ' + c('gray', userSettingsPath()));
+  console.log('Router repo:    ' + c('gray', REPO_ROOT));
+  console.log('');
+  for (const row of rows) {
+    const marker = row.status === 'active' ? c('green', '✓ active   ') : c('gray', '○ inactive ');
+    console.log(`  ${marker} ${row.basename}`);
+  }
+  const inactive = rows.filter((r) => r.status === 'inactive').length;
+  console.log('');
+  if (inactive > 0) {
+    info(`${inactive} inactive hook(s) — install all with \`node ${path.relative(process.cwd(), fileURLToPath(import.meta.url)) || 'setup-vault.mjs'} --install-hooks\``);
+  } else {
+    ok('All router hooks active.');
+  }
   process.exit(0);
 }
 
