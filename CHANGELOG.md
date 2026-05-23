@@ -6,7 +6,14 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Added
+
+- **`/obsidian-router:meta-sync-template`** + companion **`skills/meta-sync-template/SKILL.md`** — interactive slash command that propagates the reference (`.template`) vault's plugins, snippets, and root docs to one or more configured vaults. Lists every vault in `portRegistry` with its online status (via the router's `list_vaults`), applies two **safety filters** that the underlying script lacks — (1) a `samePath()` helper backed by `fs.realpathSync.native()` to exclude the reference vault even when its `portRegistry` entry differs in casing (the script's self-skip at `setup-vault.mjs:944` is case-sensitive and would let `--force` wipe the template on Windows), and (2) a pre-flight check that flags targets without an existing `obsidian-local-rest-api/data.json` (a first-time plugin copy into a REST-less vault would clone the reference's `data.json`, leaking its port + API key). Lets the user pick **all safe vaults**, a **subset** (comma-separated numbers/names/abs-paths), or **cancel**, then asks whether to pass `--force` (re-clone every plugin folder vs idempotent skip-if-current). Under the hood it **always iterates `node scripts/setup-vault.mjs "<path>" --sync-plugins [--force]`** one call per validated target — never `--sync-all`, because the bulk handler re-reads `portRegistry` raw and bypasses both safety filters. Aggregates per-vault success/failure client-side from exit codes (treats `Synced`, `Refreshed (--force)`, and `Already up to date` all as success). Works on offline vaults (filesystem-based sync). Brings the total commands shipped by the plugin from 30 → 31 (4 meta helpers now: `meta-setup` / `meta-add-vault` / `meta-status` / `meta-sync-template`).
+
+### Known follow-ups
+
+- `scripts/setup-vault.mjs:944` self-skip uses `path.resolve(a) === path.resolve(b)`, case-sensitive. On Windows NTFS this can fail to recognize the reference vault if its casing differs from the `portRegistry` entry. The skill works around this client-side via `samePath()`; the script itself should be patched to use `fs.realpathSync.native()`.
+- The bulk handler `--sync-all` has no REST-API-plugin presence check — it'll happily sync the reference's `obsidian-local-rest-api/` plugin (including `data.json`) into any target missing the plugin, leaking the reference's port + API key. Same workaround as above (skill-side pre-flight); script should grow the same check before the new skill can safely delegate to `--sync-all`.
 
 ## [0.10.3] — 2026-05-22
 
