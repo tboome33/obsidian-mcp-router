@@ -2,6 +2,19 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.11.3 — `vault-link-linter` Stop hook (shipped 2026-05-23)
+
+Closes the recurring slip where Claude mentions vault files using bare relative paths instead of the click-to-open format documented in `~/.claude/CLAUDE.md`. The convention was loaded into context every session but I'd miss applying it during multi-step recap turns. Memory entries don't solve recall-at-the-right-moment — only a deterministic check OUTSIDE the LLM attention loop does (same pattern as `wiki-autocommit` and `check-router-update`).
+
+- ✅ **`hooks/vault-link-linter.mjs`** — Stop hook (~290 lines incl. comments). Reads transcript, finds `[label](href.md)` markdown links where `href` has no scheme + is relative, verifies each against ACTIVE vault paths on disk (filesystem check = false-positive guard), exits 2 with bilingual FR+EN stderr listing each violation + auto-derived correction (with HTTPS fallback caveat when `enableInsecureServer: false`).
+- ✅ **Multi-tenant correctness** — honors `cfg.disabledVaults`, `OBSIDIAN_ROUTER_ALLOWED_VAULTS`, `OBSIDIAN_ROUTER_LOCKED`. Default-vault cascade matches the router's per-process logic: `OBSIDIAN_ROUTER_DEFAULT_VAULT` env → `VAULT_PATH` env → `cfg.defaultVault`. Loads workspace `.env` itself (since the hook is a separate subprocess that doesn't inherit it from the router binary).
+- ✅ **Safety guards** — path-traversal rejection (`../` resolves outside vault → skip), recursion guard (`stop_hook_active` true → exit 0), robust to malformed inputs (empty/non-JSON stdin, missing transcript_path → exit 0 silent), `safeDecodeURI` never throws on filenames with literal `%`.
+- ✅ Opt-out: `OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true`.
+- ✅ Wire-up : added to `Stop` block in `hooks/hooks.example.json` BEFORE `hot-cache-update-prompt.mjs` (order matters — if linter exit-2s, hot-cache's fingerprint isn't written yet, so the hot.md nudge re-fires on the next Stop).
+- ✅ 33 tests (13 pass / 16 block / 4 robustness), each named REGRESSION test maps to a specific review finding. Total : 341/341 ✅ (was 308).
+
+Review trail : 3 passes of `/review+` (Reviewer A subagent + codex CLI in parallel). Pass 1 — Reviewer A 2 IMPORTANT (path traversal, 4-space-indented code blocks) + codex 3 P2 (hook order hot-cache/linter, multi-vault collision, decodeURIComponent crash on literal `%`). Pass 2 — Reviewer A "OK to merge" · codex 2 P2 (missing disabledVaults/ALLOWED_VAULTS filtering, per-process default cascade only checking cfg.defaultVault). Pass 3 — codex 2 P2 (workspace `.env` autoload, `OBSIDIAN_ROUTER_LOCKED` isolation). Each finding got a named regression test.
+
 ## ✅ v0.11.2 — Template-propagation skill + setup-vault safety hardening (shipped 2026-05-23)
 
 Adds the `/obsidian-router:meta-sync-template` slash command (interactive picker for propagating the reference vault's plugins to other configured vaults) and closes two real safety bugs in `setup-vault.mjs` surfaced while building the skill.
