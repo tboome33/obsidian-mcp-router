@@ -8,6 +8,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.6] — 2026-05-23
+
+`/review+` hardening pass over v0.12.4's `session-auto-journal` hook (the path-disambiguation work landed independently as v0.12.5 — this release is the parallel review audit's output). Two-pass audit (Code Reviewer subagent + `codex review --commit`) surfaced 7 priority findings on pass 1 + 1 fresh finding on pass 2 (codex caught that the first fallback fix still collided — see the last "Fixed" bullet for the iteration). All 8 addressed with 7 regression tests. Test count: **453/453 passing** (was 452 after v0.12.5 + 1 fresh fallback-collision test added in this pass).
+
+### Fixed
+
+- **Filename collision in same minute** (`hooks/session-auto-journal.mjs:261` — codex P2 #1): two distinct sessions for the same workspace started within the same minute resolved to the same `journalPath` because the filename was `<date>-<HHMM>-<workspace>.md`. The second session then appended into the first session's file. Filename now includes an 8-char session-id discriminator: `<date>-<HHMM>-<workspace>-<sessionIdShort>.md`.
+- **`rewriteFrontmatter` silent no-op when `status:` was absent** (`hooks/session-auto-journal.mjs:430-437` — Reviewer A #1): the regex `.replace(/^status:.*$/m, ...)` was a no-op if the `status:` key had been stripped (manual edit or upstream bug) — the journal stayed `open` forever. Now falls back to appending `\nstatus: closed`.
+- **`mcp__obsidian-router__execute_template` not journaled** (`hooks/session-auto-journal.mjs:204` + matchers — codex P2 #2): `execute_template` with `createFile: true` is a write tool per `src/index.mjs`'s `WRITE_TOOL_NAMES`, but the journal hook and `hooks.example.json` matchers omitted it. Added to both the in-hook `LOGGED_TOOLS` Set and the two relevant matcher blocks (wiki-autocommit + session-auto-journal).
+- **`move_file` + `execute_template` recap missed endpoints** (`hooks/session-auto-journal.mjs:373` — codex P3 #3): the MCP-write branch read only `tool_input.path`, but `move_file` uses `from`/`to` and `execute_template` uses `targetPath`. Now collects `path | from | to | targetPath`.
+- **User prompts > 100 KB corrupting the journal** (`hooks/session-auto-journal.mjs:318` — Reviewer A #5): user pasting a large dump into a prompt ballooned the journal beyond render capacity. Now truncated at 100 KB with a marker pointing to Claude Code's transcript for the full content.
+- **Doc/wiring drift on the `SessionStart` matcher** (`hooks/hot-cache-load.mjs:26` — Reviewer A #2): inline doc still described `startup|resume`, but `hooks.example.json` was widened to `startup|resume|clear` in v0.12.4. Aligned with a note explaining the widening.
+- **Fallback `session_id` lost entropy at `slice(0, 8)`** (`hooks/session-auto-journal.mjs:235-242` — Reviewer A pass 2 + codex pass 2 P3): the v0.12.4 fallback `unknown-${Date.now()}` survived `String(sessionId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)` as the literal `unknown1` — only the first digit of the timestamp. A first attempt at the fix used `fallback-${randomUUID()}`, but codex caught that `fallback` is exactly 8 chars → `slice(0, 8)` consumed the whole prefix and never sampled the UUID, so two fallback sessions still collided on the same suffix. Final fix: use a raw `randomUUID()` as the fallback, no prefix — the first 8 alphanum chars are then 32 bits of UUID entropy.
+
+### Regression tests added (7, in `tests/session-auto-journal.test.mjs`)
+
+- `codex P2 #1` — distinct session_ids never collide on filename
+- `Reviewer A IMPORTANT #2` — SessionEnd closes frontmatter even when `status:` was removed
+- `Reviewer A IMPORTANT #5` — user prompts > 100 KB are truncated with a marker
+- `codex P2 #2` — `execute_template` (with createFile) is logged + `targetPath` added to state.files
+- `codex P3 #3` — `move_file` adds both `from` and `to` to state.files
+- `codex pass 2 P3` — fallback session_id (Claude Code omits one) does not collide on filename
+- `Reviewer A IMPORTANT #7` — SessionStart 2x with same session_id is idempotent on the journal file
+
+### Deferred to follow-up (NIT, tracked but out of scope)
+
+- Casing `wiki/Sessions/` vs `wiki/sessions/` on case-sensitive filesystems (Linux ext4 / case-sensitive APFS) — needs a convention decision rather than a code-only fix.
+- `MAX_PROMPT_BYTES = 100_000` could be made env-overridable (`OBSIDIAN_ROUTER_JOURNAL_MAX_PROMPT_BYTES`) — 2-line change, deferred until real demand.
+- `appendFileSync` non-atomic multi-process — documented inline; only a real issue if Claude Code dispatches concurrent events for the same session_id, which it doesn't today.
+
 ## [0.12.5] — 2026-05-23
 
 Closes a recurring path-confusion footgun in workspace-bound mode: when the workspace cwd and the associated vault share the same basename (e.g. `C:\Users\rolan\DEDIBOX` ↔ `C:\VAULTS\DEDIBOX`), Claude could generate filesystem paths that concatenate the cwd path with a vault-internal subpath (`wiki/`, `wiki-meta/`) — producing non-existent paths. The pre-existing `wiki-query-first-nudge` hook already warned `cwd ≠ vault` but didn't give the two absolute paths concretely or forbid the mix explicitly. v0.12.5 enriches the hook with a dynamic `PATH RESOLUTION RULES` block + ships a matching installable convention + a backup section in the global user CLAUDE.md.

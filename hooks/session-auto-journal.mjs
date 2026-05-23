@@ -56,6 +56,7 @@
  * blocks Claude Code.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -186,6 +187,12 @@ function summarizeToolInput(toolName, input) {
 // Tools that get logged in the journal. Reads are intentionally absent
 // (too noisy). The PostToolUse hook config also filters at the matcher
 // layer; this is the second line of defense.
+//
+// v0.12.5 (review+ pass 1 fix — codex P2 #2): `execute_template` is a
+// router-side write tool when called with `createFile: true` (it can
+// materialize a file in the vault). Listing it here so its writes land
+// in the journal. The matcher in hooks.example.json was widened to
+// match.
 const LOGGED_TOOLS = new Set([
   'Write', 'Edit', 'MultiEdit', 'Bash',
   'mcp__obsidian-router__write_file',
@@ -195,6 +202,7 @@ const LOGGED_TOOLS = new Set([
   'mcp__obsidian-router__merge_frontmatter',
   'mcp__obsidian-router__delete_file',
   'mcp__obsidian-router__move_file',
+  'mcp__obsidian-router__execute_template',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -225,7 +233,15 @@ function buildOpeningContent(state) {
 
 function ensureJournalForSession(payload) {
   const cwd = resolveCwd(payload);
-  const sessionId = payload.session_id || `unknown-${Date.now()}`;
+  // v0.12.5 (review+ pass 2 — Reviewer A + codex pass 2 P3): when Claude
+  // Code omits session_id (very rare), use a raw UUID as the fallback.
+  // Earlier iterations tried `unknown-${Date.now()}` then
+  // `fallback-${randomUUID()}` — both lost entropy at the downstream
+  // `slice(0, 8)` because the deterministic prefix consumed the whole
+  // window. A raw UUID (no prefix) preserves 32 bits of entropy in the
+  // first 8 alphanum chars → fallback sessions can no longer share a
+  // filename suffix.
+  const sessionId = payload.session_id || randomUUID();
 
   // Existing state for this session?
   const existing = readState(sessionId);
@@ -246,7 +262,13 @@ function ensureJournalForSession(payload) {
   const slug = workspaceSlug(cwd);
   const dateIso = isoDate(now);
   const hh = hhmm(now);
-  const filename = `${dateIso}-${hh}-${slug}.md`;
+  // v0.12.5 (review+ pass 1 fix — codex P2 #1): include a session-id
+  // discriminator in the filename so two distinct sessions for the same
+  // workspace started within the same minute don't collide on the same
+  // journal file. Same session_id resolves to the same filename (idempotent
+  // on resume); different session_ids produce different filenames.
+  const sessionIdShort = String(sessionId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'session0';
+  const filename = `${dateIso}-${hh}-${slug}-${sessionIdShort}.md`;
   const sessionsDir = path.join(ctx.vaultPath, 'wiki', 'Sessions');
   const journalPath = path.join(sessionsDir, filename);
 
@@ -295,11 +317,24 @@ function handleSessionStart(payload) {
   ensureJournalForSession(payload);
 }
 
+// Cap on user-prompt bytes written verbatim to the journal. A user
+// pasting a 50 MB log dump into a prompt would otherwise produce a
+// journal markdown that Obsidian can't render. Truncating at ~100 KB
+// keeps the journal usable while preserving the typical short prompt
+// verbatim. The full content is still visible in Claude Code's own
+// transcript on disk — the journal is a navigation aid, not the
+// source of truth. (review+ pass 1 fix — Reviewer A IMPORTANT #5)
+const MAX_PROMPT_BYTES = 100_000;
+
 function handleUserPromptSubmit(payload) {
   const state = ensureJournalForSession(payload);
   if (!state) return;
-  const prompt = String(payload.prompt || '').trim();
-  if (!prompt) return;
+  const promptRaw = String(payload.prompt || '').trim();
+  if (!promptRaw) return;
+  const prompt = promptRaw.length > MAX_PROMPT_BYTES
+    ? promptRaw.slice(0, MAX_PROMPT_BYTES) +
+      `\n\n> [truncated by session-auto-journal — original prompt was ${promptRaw.length} chars; full content in Claude Code transcript]\n`
+    : promptRaw;
 
   const time = hhmmColon();
   const block = `\n## ${time} — User prompt\n\n${prompt}\n`;
@@ -337,8 +372,17 @@ function handlePostToolUse(payload) {
     }
   } else if (toolName.startsWith('mcp__obsidian-router__')) {
     state.counters.mcpWrites = (state.counters.mcpWrites || 0) + 1;
-    const p = payload.tool_input?.path;
-    if (p && !state.files.includes(p)) state.files.push(p);
+    // v0.12.5 (review+ pass 1 fix — codex P3 #3 + P2 #2): different MCP
+    // write tools use different schema keys for the target file path —
+    // most use `path`, `move_file` uses `from`/`to`, `execute_template`
+    // uses `targetPath` when `createFile: true`. Collect any key that
+    // could name a vault file so the recap's "Files touched" list is
+    // complete regardless of which write tool fired.
+    const input = payload.tool_input || {};
+    const candidates = [input.path, input.from, input.to, input.targetPath].filter(Boolean);
+    for (const f of candidates) {
+      if (!state.files.includes(f)) state.files.push(f);
+    }
   }
 
   writeState(state);
@@ -390,9 +434,17 @@ function rewriteFrontmatter(state, endedAt) {
   const end = content.indexOf('\n---\n', 4);
   if (end < 0) return;
   let block = content.slice(4, end);
-  block = block
-    .replace(/^status:.*$/m, 'status: closed')
-    .replace(/\s*$/, '');
+  // v0.12.5 (review+ pass 1 fix — Reviewer A IMPORTANT #2): if the user
+  // (or some other code path) removed the `status:` key, the previous
+  // `block.replace(/^status:.*$/m, ...)` was a silent no-op — the
+  // journal stayed marked `open` forever. Fall back to appending the
+  // key so SessionEnd always lands a `status: closed`.
+  if (/^status:/m.test(block)) {
+    block = block.replace(/^status:.*$/m, 'status: closed');
+  } else {
+    block += '\nstatus: closed';
+  }
+  block = block.replace(/\s*$/, '');
   if (!/^ended-at:/m.test(block)) block += `\nended-at: ${endedAt}`;
   const duration = humanDuration(state.startedAt, endedAt);
   if (!/^duration:/m.test(block)) block += `\nduration: ${duration}`;

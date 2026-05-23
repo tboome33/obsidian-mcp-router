@@ -23,12 +23,16 @@
  *
  * Wire it up in ~/.claude/settings.json:
  *
- *   "SessionStart": [{ "matcher": "startup|resume", "hooks": [
+ *   "SessionStart": [{ "matcher": "startup|resume|clear", "hooks": [
  *     { "type": "command", "command": "node \"<router>/hooks/hot-cache-load.mjs\"" }
  *   ]}],
  *   "PostCompact": [{ "matcher": "", "hooks": [
  *     { "type": "command", "command": "node \"<router>/hooks/hot-cache-load.mjs\"" }
  *   ]}]
+ *
+ * (v0.12.4 widened the SessionStart matcher from `startup|resume` to
+ * `startup|resume|clear` so hot.md is also reloaded after a `/clear`
+ * — same desired behavior since `/clear` wipes the context.)
  *
  * Stdin: optional JSON payload with a `cwd` field (Claude Code sends
  * this on SessionStart). Falls back to `CLAUDE_PROJECT_DIR` env var,

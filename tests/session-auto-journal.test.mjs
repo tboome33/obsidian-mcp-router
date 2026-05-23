@@ -128,6 +128,12 @@ function findJournal() {
   return path.join(sessionsDir, files[0]);
 }
 
+function listJournals() {
+  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  if (!fs.existsSync(sessionsDir)) return [];
+  return fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.md'));
+}
+
 function readJournal() {
   const p = findJournal();
   return p ? fs.readFileSync(p, 'utf8') : null;
@@ -299,3 +305,125 @@ describe('session-auto-journal — skip conditions', () => {
     assert.equal(readJournal(), before, 'unknown event should not modify the journal');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review+ pass 1 regression tests (v0.12.5 fixes for findings 1-7)
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — review+ pass 1 regressions', () => {
+  test('codex P2 #1 — distinct session_ids never collide on filename', () => {
+    // Two SessionStarts for the same workspace within the same minute
+    // (the tests run within ms of each other → identical YYYY-MM-DD-HHMM).
+    // Pre-fix: both resolved to the same `journalPath` and the second
+    // session appended into the first session's file.
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'session-aaaa-1111' });
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'session-bbbb-2222' });
+    const files = listJournals();
+    assert.equal(files.length, 2, `expected 2 distinct journal files, got ${files.length}: ${files.join(', ')}`);
+    // Each filename should carry a different session-id discriminator
+    const ids = files.map((f) => f.match(/-(sessiona|sessionb|[a-z0-9]{1,8})\.md$/)?.[1] || f);
+    assert.notEqual(ids[0], ids[1], 'filenames should carry distinct session-id suffixes');
+  });
+
+  test('Reviewer A IMPORTANT #2 — SessionEnd closes frontmatter even when `status:` was removed', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'no-status-session' });
+    // Manually strip `status: open` from the frontmatter to simulate a
+    // user editing the file or a bug somewhere upstream.
+    const jp = findJournal();
+    const original = fs.readFileSync(jp, 'utf8');
+    const stripped = original.replace(/^status:.*$\n/m, '');
+    assert.doesNotMatch(stripped, /^status:/m, 'sanity check: status removed');
+    fs.writeFileSync(jp, stripped);
+
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'no-status-session', reason: 'logout' });
+    const after = fs.readFileSync(jp, 'utf8');
+    assert.match(after, /^status: closed$/m, 'status: closed should have been appended');
+  });
+
+  test('Reviewer A IMPORTANT #5 — user prompts > 100 KB are truncated with a marker', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'huge-prompt-session' });
+    const huge = 'x'.repeat(120_000); // 120 KB, above the 100 KB cap
+    runHook({
+      event: 'UserPromptSubmit',
+      cwd: vaultDir,
+      sessionId: 'huge-prompt-session',
+      prompt: huge,
+    });
+    const content = readJournal();
+    assert.ok(content.length < huge.length + 5000, 'journal should be smaller than the original prompt');
+    assert.match(content, /\[truncated by session-auto-journal/);
+    assert.match(content, /original prompt was 120000 chars/);
+  });
+
+  test('codex P2 #2 — execute_template (with createFile) is logged + targetPath added to state.files', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'template-session' });
+    runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'template-session',
+      toolName: 'mcp__obsidian-router__execute_template',
+      toolInput: { name: 'Templates/Daily.md', createFile: true, targetPath: 'Daily/2026-05-23.md' },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'template-session', reason: 'logout' });
+    const content = readJournal();
+    assert.match(content, /tool: mcp__obsidian-router__execute_template/);
+    // The recap should list the created file
+    assert.match(content, /Daily\/2026-05-23\.md/);
+  });
+
+  test('codex P3 #3 — move_file adds both `from` and `to` to state.files', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'move-session' });
+    runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'move-session',
+      toolName: 'mcp__obsidian-router__move_file',
+      toolInput: { from: 'wiki/old-path.md', to: 'wiki/new-path.md' },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'move-session', reason: 'logout' });
+    const content = readJournal();
+    assert.match(content, /wiki\/old-path\.md/, 'recap should list the source path');
+    assert.match(content, /wiki\/new-path\.md/, 'recap should list the destination path');
+  });
+
+  test('codex pass 2 P3 — fallback session_id (Claude Code omits one) does not collide on filename', () => {
+    // Simulate Claude Code omitting session_id by passing an empty string.
+    // The hook should generate a UUID-based id and the filename's 8-char
+    // discriminator must be uuid-derived (not a constant prefix).
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: '' });
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: '' });
+    const files = listJournals();
+    assert.equal(files.length, 2,
+      `expected 2 distinct journal files for two missing-session_id starts, got ${files.length}: ${files.join(', ')}`);
+    // Each filename's last 11 chars are `<8-char>.md` — the 8-char part
+    // must be UUID-derived (not the literal "fallback").
+    for (const f of files) {
+      const suffix = f.slice(-11, -3); // chars before `.md`
+      assert.notEqual(suffix, 'fallback', `filename suffix should not be the literal "fallback": ${f}`);
+      assert.match(suffix, /^[a-f0-9]{8}$/i, `filename suffix should be UUID-derived hex (got "${suffix}" in ${f})`);
+    }
+  });
+
+  test('Reviewer A IMPORTANT #7 — SessionStart 2x with same session_id is idempotent on the journal file', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'resume-test-session' });
+    const before = readJournal();
+    const filesBefore = listJournals();
+    assert.equal(filesBefore.length, 1);
+
+    // Simulate a crash-recovery scenario: state JSON wiped, journal file
+    // still on disk. Second SessionStart for the same session_id must
+    // NOT overwrite the journal file.
+    const stateFile = path.join(
+      stateDirOverride, '.claude', 'obsidian-mcp-router',
+      'session-journals', 'resume-test-session.json',
+    );
+    fs.unlinkSync(stateFile);
+
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'resume-test-session' });
+    const after = readJournal();
+    const filesAfter = listJournals();
+    assert.equal(filesAfter.length, 1, 'still exactly one journal file');
+    assert.equal(after, before, 'journal file content must not change on idempotent resume');
+  });
+});
+

@@ -47,7 +47,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file",
+        "matcher": "mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file|mcp__obsidian-router__execute_template",
         "hooks": [
           {
             "type": "command",
@@ -65,7 +65,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit|MultiEdit|Bash|mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file",
+        "matcher": "Write|Edit|MultiEdit|Bash|mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file|mcp__obsidian-router__execute_template",
         "hooks": [
           {
             "type": "command",
