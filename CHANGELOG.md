@@ -8,6 +8,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.3] — 2026-05-23
+
+Hardens the click-to-open feature against silent drift. Triggered by an audit discovery that **8/10 vaults** had been running with a stale bridge plugin (v0.1.1, no `/open/*` route) AND a too-old Local REST API plugin (v3.6.1, no `addPublicRoute()` method) for over a week — both states invisible to the existing `meta-status` diagnostic, which only checks the router → vault HTTP ping. Roland's request: *"je veux que le routeur soit infaillible"*.
+
+### Added
+
+- **`scripts/meta-audit-bridge-readiness.mjs`** — read-only audit of every vault in `portRegistry` for click-to-open readiness. Four checks per vault:
+  1. `mcp-router-bridge` plugin ≥ v0.2.0 installed (route handler exists on disk)
+  2. `obsidian-local-rest-api` plugin ≥ v4.0.0 installed (exposes `addPublicRoute()`)
+  3. `enableInsecureServer: true` + `insecurePort` set in LRA's `data.json` (HTTP server listening)
+  4. **Live probe**: `GET http://127.0.0.1:<insecurePort>/open/<nonexistent>.md` returns 404 (route registered) vs 401 (auth-middleware catch-all = route never registered, usually because Obsidian holds stale code in memory)
+
+  The live probe (#4) is the key contribution: static manifest checks alone cannot detect "files on disk are correct but Obsidian hasn't reloaded since the sync". Output is a compact ANSI-coloured table + per-failure remediation hints. Flags: `--json` (machine-readable for skill / CI consumers), `--vault <slug-or-path>` (single-vault audit). Exit code 0 if all ready, 1 if any vault is not ready, 2 on script error.
+
+- **`skills/meta-audit-bridge-readiness/SKILL.md`** — natural-language wrapper for the audit. Triggers (EN) `audit my click-to-open links`, `which vaults need a reload`, `check bridge readiness`. Triggers (FR) `audite les liens cliquables`, `vérifie le bridge sur tous les vaults`, `quels vaults ont besoin d'un reload`.
+- **`commands/meta-audit-bridge-readiness.md`** — slash command (`/obsidian-router:meta-audit-bridge-readiness`).
+- **`npm run audit:bridge-readiness`** — `package.json` script entry for direct CLI use.
+
+### Why this matters
+
+`meta-status` (existing) checks the router can reach each vault (HTTP ping `/`). `meta-audit-bridge-readiness` (new) is its complement: it checks the *clickable links* you put in chat actually work, end-to-end including in-memory route registration. The two diagnostics together cover the full surface of "is the router working for me?" — connectivity AND feature-level readiness.
+
+### Test count: **434/434 passing** (unchanged from v0.12.2 — the new audit script is integration-tested via the smoke run during shipping, which exercised the live probe against all 10 configured vaults).
+
 ## [0.12.2] — 2026-05-23
 
 Session 3 of the v0.12.0 phased rollout. Closes the three-session arc with verification + a defensive code improvement to the migration script.
