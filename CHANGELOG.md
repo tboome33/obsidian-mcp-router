@@ -8,6 +8,42 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.1] — 2026-05-23
+
+Session 2 of the v0.12.0 phased rollout: ships the migration tooling and runs it across the 10 existing vaults. Closes the broken-window state left at v0.12.0 (hooks were silent on vaults still using the legacy `wiki/<scaffold>.md` layout).
+
+### Added
+
+- **`scripts/setup-vault.mjs --migrate-wiki-meta <vault-path>`** — single-vault migration. Detects state (`legacy` / `fresh` / `partial` / `empty` / `no-vault`), refuses on `partial` with a clear diagnostic, no-ops on `fresh` (unless `--force`). For `legacy`: ensures `wiki-meta/` exists, moves the 4 scaffolds via `git mv` if the vault is a git repo (preserves history + auto-stages) or `fs.rename` otherwise, rewrites `wiki/(hot|index|log|overview)\.md` → `wiki-meta/$1.md` in the vault's root `CLAUDE.md`, and appends a migration-line to the (now-moved) `wiki-meta/log.md`.
+- **`scripts/setup-vault.mjs --migrate-all-wiki-meta`** — batch form. Iterates over `cfg.portRegistry`, runs the same migration on each vault, reports a per-vault status summary at the end. Exits non-zero if any vault fails. Shared flags: `--dry-run` (preview without writes), `--force` (re-rewrite CLAUDE.md on already-migrated vaults — useful if a previous migration crashed mid-flight).
+- **`tests/migrate-wiki-meta.test.mjs`** (NEW) — 15 tests covering: plain-rename branch, git-mv branch (with real `git init` fixtures), CLAUDE.md scaffold-path rewrite (preserving non-scaffold `wiki/...` user-content paths), idempotency, `--force` re-rewrite, `--dry-run` no-op, batch summary aggregation, batch `--dry-run`, partial-state refusal, empty-state skip, missing-arg error, non-existent path failure, empty-portRegistry batch failure.
+
+### Migrated on Roland's machine (9 vaults)
+
+Ran `--migrate-all-wiki-meta` against the 10 vaults in `portRegistry`. Result:
+
+```
+✓ C:\VAULTS\.template                                — fs    rename, 31 CLAUDE.md replacements
+✓ C:\VAULTS\TradingView                              — fs    rename, 31 CLAUDE.md replacements
+✓ P:\Mon Drive\VAULTS\Roland                         — fs    rename, 17 CLAUDE.md replacements
+✓ P:\Mon Drive\SCI DU SOURIRE VAULT OBSIDIAN         — fs    rename, 17 CLAUDE.md replacements
+✓ M:\Mon Drive\VAULTS\portfolio.nicolasgalzy.fr      — fs    rename, 31 CLAUDE.md replacements
+✓ C:\VAULTS\Smile                                    — fs    rename, 31 CLAUDE.md replacements
+✓ M:\Mon Drive\VAULTS\portfolio.ameliegalzy.fr       — fs    rename, 31 CLAUDE.md replacements
+✓ C:\VAULTS\DEDIBOX                                  — fs    rename, 31 CLAUDE.md replacements
+✓ C:\VAULTS\opsidian-mcp-router et bridge            — git mv,  31 CLAUDE.md replacements
+
+— C:\VAULTS\Coursera                                 — skipped (empty state, never bootstrapped via /obsidian-router:wiki)
+```
+
+The broken-window status from v0.12.0 is now closed: `hot-cache-load` and `wiki-query-first-nudge` resume normal operation on these 9 vaults next session start.
+
+### Test count: **431/431 passing** (was 416 at v0.12.0; +15 from `migrate-wiki-meta.test.mjs`).
+
+### What's left for Session 3 (v0.12.2)
+
+The convention snippets installed in per-vault CLAUDE.md (`wiki-query-first`, `roadmap-discipline`) still contain old `wiki/<scaffold>.md` references in their prose. v0.12.1's `--migrate-wiki-meta` already swept those (the regex is unconditional on the 4 scaffold filenames anywhere in CLAUDE.md), so most are fixed. Session 3 will re-install the latest snippet versions to pick up other recent changes + run a verification sweep across the fleet.
+
 ## [0.12.0] — 2026-05-23
 
 **BREAKING** (vault layout): the 4 wiki scaffolds — `hot.md`, `index.md`, `log.md`, `overview.md` — move out of `wiki/` into a sibling `wiki-meta/` directory. User content stays under `wiki/` (people, concepts, sessions, decisions, references, projects, …). This is a clean break — there is **no fallback** to the old layout in the code. Vaults still on `wiki/<scaffold>.md` will appear "empty" to the hooks (silent exit) until migrated.

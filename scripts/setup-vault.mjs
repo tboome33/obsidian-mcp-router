@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { samePath } from './path-helpers.mjs';
@@ -195,6 +196,225 @@ function defaultNameFromPath(p) {
 // Note: samePath() / canonicalPath() live in scripts/path-helpers.mjs
 // (imported at the top of this file). Extracted so unit tests can hit
 // them without spawning this CLI as a subprocess.
+
+// ---------------------------------------------------------------------------
+// v0.12.1 — wiki/<scaffold>.md → wiki-meta/<scaffold>.md migration
+// ---------------------------------------------------------------------------
+
+/**
+ * The 4 canonical scaffolds that move from `wiki/` to `wiki-meta/` in v0.12.0.
+ */
+const WIKI_META_SCAFFOLDS = ['hot.md', 'index.md', 'log.md', 'overview.md'];
+
+/**
+ * Detect the migration state of a single vault.
+ * Returns one of:
+ *   - `'fresh'`        — already on the new layout (wiki-meta/{...}.md all present, none of the wiki/<scaffold>.md left)
+ *   - `'legacy'`       — fully on the old layout (wiki/{...}.md all present, no wiki-meta/)
+ *   - `'partial'`      — mix (some moved, some not — needs investigation, refuse auto-migration)
+ *   - `'empty'`        — neither layout present (no scaffolds at all — vault never bootstrapped)
+ *   - `'no-vault'`     — path doesn't exist or isn't a directory
+ */
+function detectVaultMigrationState(vaultPath) {
+  if (!fs.existsSync(vaultPath) || !fs.statSync(vaultPath).isDirectory()) {
+    return 'no-vault';
+  }
+  const wikiPresent = WIKI_META_SCAFFOLDS.filter((f) =>
+    fs.existsSync(path.join(vaultPath, 'wiki', f)));
+  const metaPresent = WIKI_META_SCAFFOLDS.filter((f) =>
+    fs.existsSync(path.join(vaultPath, 'wiki-meta', f)));
+
+  if (wikiPresent.length === 0 && metaPresent.length === 0) return 'empty';
+  if (wikiPresent.length === 0 && metaPresent.length === WIKI_META_SCAFFOLDS.length) return 'fresh';
+  if (wikiPresent.length === WIKI_META_SCAFFOLDS.length && metaPresent.length === 0) return 'legacy';
+  return 'partial';
+}
+
+/**
+ * Detect whether the vault is a git repo by probing for `.git/`. Used to
+ * decide between `git mv` (preserves history + auto-stages) and plain
+ * `fs.renameSync` (when there's no git layer to talk to).
+ */
+function vaultIsGitRepo(vaultPath) {
+  return fs.existsSync(path.join(vaultPath, '.git'));
+}
+
+/**
+ * Move one scaffold file. Uses `git mv` if the vault is a git repo (preserves
+ * history + auto-stages the rename), otherwise plain `fs.renameSync`.
+ * Returns { ok: bool, mode: 'git'|'fs', err?: string }.
+ */
+function moveScaffold(vaultPath, filename, useGit) {
+  const oldRel = path.posix.join('wiki', filename);
+  const newRel = path.posix.join('wiki-meta', filename);
+  if (useGit) {
+    const res = spawnSync('git', ['-C', vaultPath, 'mv', oldRel, newRel],
+      { encoding: 'utf8', stdio: 'pipe' });
+    if (res.status === 0) return { ok: true, mode: 'git' };
+    return { ok: false, mode: 'git', err: (res.stderr || res.stdout || '').trim() };
+  }
+  try {
+    fs.renameSync(path.join(vaultPath, oldRel), path.join(vaultPath, newRel));
+    return { ok: true, mode: 'fs' };
+  } catch (err) {
+    return { ok: false, mode: 'fs', err: err.message };
+  }
+}
+
+/**
+ * Rewrite occurrences of `wiki/<scaffold>.md` to `wiki-meta/<scaffold>.md` in
+ * the vault's root `CLAUDE.md`. Idempotent — re-running on already-migrated
+ * content is a no-op. Returns the number of replacements made (0 if no edits
+ * needed or CLAUDE.md absent).
+ *
+ * Scope: only matches the 4 scaffold filenames, never touches arbitrary
+ * `wiki/X.md` mentions (user content like `wiki/decisions/foo.md` is
+ * preserved).
+ */
+function rewriteClaudeMdScaffoldPaths(vaultPath) {
+  const claudeMd = path.join(vaultPath, 'CLAUDE.md');
+  if (!fs.existsSync(claudeMd)) return 0;
+  const before = fs.readFileSync(claudeMd, 'utf8');
+  const after = before.replace(/wiki\/(hot|index|log|overview)\.md/g, 'wiki-meta/$1.md');
+  if (after === before) return 0;
+  fs.writeFileSync(claudeMd, after, 'utf8');
+  // Count the diff to report.
+  const count = (before.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
+  return count;
+}
+
+/**
+ * Migrate a single vault from `wiki/<scaffold>.md` to `wiki-meta/<scaffold>.md`.
+ * Steps:
+ *   1. Detect state. Bail on 'no-vault'/'partial', skip on 'fresh' (already
+ *      migrated, unless `force`), warn on 'empty' (nothing to migrate).
+ *   2. Ensure `wiki-meta/` exists.
+ *   3. Move the 4 scaffolds (via `git mv` if git repo, else `fs.rename`).
+ *      Abort early if any move fails — partial state would require manual fix.
+ *   4. Rewrite scaffold paths in `<vault>/CLAUDE.md`.
+ *   5. Append a migration line to the (now-moved) `wiki-meta/log.md`.
+ *
+ * Returns { status, scaffoldsMoved, mode, claudeMdReplacements, error? }.
+ * `status` is one of: 'migrated', 'already-migrated', 'skipped', 'failed'.
+ *
+ * Options:
+ *   - `dryRun: true` — only report what would happen, don't touch the filesystem.
+ *   - `force: true`   — re-run CLAUDE.md rewrite + log append even if already migrated.
+ *   - `quiet: true`   — suppress per-vault success messages (batch mode uses this).
+ */
+function migrateVaultToWikiMeta(vaultPath, opts = {}) {
+  const { dryRun = false, force = false, quiet = false } = opts;
+  const result = {
+    vaultPath,
+    state: detectVaultMigrationState(vaultPath),
+    status: 'failed',
+    scaffoldsMoved: [],
+    mode: null,
+    claudeMdReplacements: 0,
+    error: null,
+  };
+
+  if (result.state === 'no-vault') {
+    result.error = `vault path does not exist or is not a directory: ${vaultPath}`;
+    return result;
+  }
+  if (result.state === 'partial') {
+    result.error = (
+      `vault is in a PARTIAL migration state — some scaffolds live under wiki/, ` +
+      `others under wiki-meta/. Refusing to auto-migrate. Inspect manually:\n` +
+      `  ls "${path.join(vaultPath, 'wiki')}"\n  ls "${path.join(vaultPath, 'wiki-meta')}"`
+    );
+    return result;
+  }
+  if (result.state === 'empty') {
+    result.error = (
+      `vault has neither wiki/<scaffold>.md NOR wiki-meta/<scaffold>.md — ` +
+      `it was never bootstrapped via the /obsidian-router:wiki skill. ` +
+      `Nothing to migrate.`
+    );
+    result.status = 'skipped';
+    return result;
+  }
+  if (result.state === 'fresh' && !force) {
+    result.status = 'already-migrated';
+    if (!quiet) info(`${vaultPath} — already on wiki-meta/ layout, nothing to do.`);
+    return result;
+  }
+
+  // Pre-flight: ensure wiki-meta/ dir exists (idempotent).
+  const wikiMetaDir = path.join(vaultPath, 'wiki-meta');
+  if (!dryRun && !fs.existsSync(wikiMetaDir)) {
+    fs.mkdirSync(wikiMetaDir, { recursive: true });
+  }
+
+  const useGit = vaultIsGitRepo(vaultPath);
+  result.mode = useGit ? 'git' : 'fs';
+
+  // State is 'legacy' (or 'fresh' with force). Perform the move.
+  if (result.state === 'legacy') {
+    for (const scaffold of WIKI_META_SCAFFOLDS) {
+      const src = path.join(vaultPath, 'wiki', scaffold);
+      const dst = path.join(vaultPath, 'wiki-meta', scaffold);
+      if (!fs.existsSync(src)) {
+        // Should not happen given state === 'legacy', but defend.
+        result.error = `expected scaffold missing: ${src}`;
+        return result;
+      }
+      if (fs.existsSync(dst)) {
+        result.error = `target already exists, refusing to overwrite: ${dst}`;
+        return result;
+      }
+      if (dryRun) {
+        result.scaffoldsMoved.push({ scaffold, mode: result.mode, dryRun: true });
+        continue;
+      }
+      const moveRes = moveScaffold(vaultPath, scaffold, useGit);
+      if (!moveRes.ok) {
+        result.error = `failed to move ${scaffold} via ${moveRes.mode}: ${moveRes.err}`;
+        return result;
+      }
+      result.scaffoldsMoved.push({ scaffold, mode: moveRes.mode });
+    }
+  }
+
+  // Rewrite CLAUDE.md scaffold paths (idempotent).
+  if (dryRun) {
+    // Compute what WOULD change without writing.
+    const claudeMd = path.join(vaultPath, 'CLAUDE.md');
+    if (fs.existsSync(claudeMd)) {
+      const content = fs.readFileSync(claudeMd, 'utf8');
+      result.claudeMdReplacements = (content.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
+    }
+  } else {
+    result.claudeMdReplacements = rewriteClaudeMdScaffoldPaths(vaultPath);
+  }
+
+  // Append a migration line to wiki-meta/log.md (only if not dry-run AND log.md
+  // actually ended up under wiki-meta/ — defensive against state weirdness).
+  if (!dryRun) {
+    const logMd = path.join(vaultPath, 'wiki-meta', 'log.md');
+    if (fs.existsSync(logMd)) {
+      const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      const line = (
+        `\n- ${ts} — **wiki-meta migration** (v0.12.1) — moved the 4 scaffolds from ` +
+        `\`wiki/{hot,index,log,overview}.md\` to \`wiki-meta/{...}.md\` ` +
+        `(via ${result.mode === 'git' ? '\`git mv\`' : '\`fs.rename\`'}). ` +
+        `Rewrote ${result.claudeMdReplacements} scaffold path(s) in \`CLAUDE.md\`.\n`
+      );
+      fs.appendFileSync(logMd, line, 'utf8');
+    }
+  }
+
+  result.status = 'migrated';
+  if (!quiet) {
+    if (dryRun) {
+      info(`[DRY-RUN] ${vaultPath} — would move ${result.scaffoldsMoved.length} scaffolds via ${result.mode}, rewrite ${result.claudeMdReplacements} CLAUDE.md path(s).`);
+    } else {
+      ok(`${vaultPath} — migrated ${result.scaffoldsMoved.length} scaffolds via ${result.mode}, rewrote ${result.claudeMdReplacements} CLAUDE.md path(s).`);
+    }
+  }
+  return result;
+}
 
 function printStatus() {
   const cfg = loadConfig();
@@ -1295,6 +1515,15 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --uninstall-hooks                     Remove all router hooks from ~/.claude/settings.json
                                                               (preserves user-defined hooks)
   node setup-vault.mjs --hooks-status                        Report which router hooks are currently active
+  node setup-vault.mjs --migrate-wiki-meta <vault-path>      Migrate ONE vault from wiki/<scaffold>.md to
+                                                              wiki-meta/<scaffold>.md (v0.12.1+). Uses git mv
+                                                              if .git/ exists, plain rename otherwise. Also
+                                                              rewrites scaffold paths in vault's CLAUDE.md.
+                                                              Idempotent. Add --dry-run to preview, --force to
+                                                              re-rewrite CLAUDE.md on already-migrated vaults.
+  node setup-vault.mjs --migrate-all-wiki-meta               Same migration, run on every vault in
+                                                              portRegistry. Reports per-vault status; non-zero
+                                                              exit if any vault fails.
   node setup-vault.mjs --link-workspace <path> <vault-slug>  Bind a code/dev workspace to a vault by writing
                                                               OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug> into the
                                                               workspace's .env. Activates workspace-bound mode
@@ -1489,6 +1718,96 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   info('  • hot-cache-load will print the associated vault\'s wiki-meta/hot.md');
   info('  • wiki-query-first-nudge will inject pre-answer reminders');
   process.exit(0);
+}
+
+if (args[0] === '--migrate-wiki-meta' || args[0] === '--migrate-all-wiki-meta') {
+  // v0.12.1 — migrate vaults from the legacy `wiki/<scaffold>.md` layout
+  // to the v0.12.0+ `wiki-meta/<scaffold>.md` layout.
+  //
+  // Single-vault form:  --migrate-wiki-meta <vault-path>
+  // Batch form:         --migrate-all-wiki-meta
+  //
+  // Shared flags:
+  //   --dry-run   preview only, don't touch the filesystem
+  //   --force     re-rewrite CLAUDE.md even if the vault is already on the new
+  //               layout (useful if a previous migration crashed before the
+  //               CLAUDE.md rewrite landed)
+  //
+  // Why this exists: v0.12.0 shipped the clean break in code, but existing
+  // vaults need their scaffold files physically relocated + their CLAUDE.md
+  // path references rewritten. Doing it via a script (vs ad-hoc git mv
+  // commands) makes the operation atomic per-vault, idempotent (safe to
+  // re-run), and consistent across 10 vaults.
+  const dryRun = args.includes('--dry-run');
+  const forceFlag = args.includes('--force');
+  const isBatch = args[0] === '--migrate-all-wiki-meta';
+
+  if (!isBatch) {
+    // Single vault: require an explicit path argument
+    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--'));
+    if (!vaultArg) {
+      fail('--migrate-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-wiki-meta <vault-path> [--dry-run] [--force]');
+    }
+    const abs = path.resolve(vaultArg);
+    const result = migrateVaultToWikiMeta(abs, { dryRun, force: forceFlag });
+    if (result.status === 'failed') {
+      fail(`Migration failed for ${abs}:\n   ${result.error}`);
+    }
+    if (result.status === 'skipped') {
+      info(`Skipped: ${result.error}`);
+    }
+    process.exit(0);
+  }
+
+  // Batch mode: iterate over portRegistry.
+  const cfg = loadConfig();
+  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  if (vaultPaths.length === 0) {
+    fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
+  }
+
+  console.log(c('bold',
+    `\n${dryRun ? '[DRY-RUN] ' : ''}Migrating ${vaultPaths.length} vault(s) to wiki-meta/ layout...\n`));
+
+  const summary = {
+    migrated: 0,
+    'already-migrated': 0,
+    skipped: 0,
+    failed: 0,
+  };
+  const failures = [];
+  for (const vp of vaultPaths) {
+    const result = migrateVaultToWikiMeta(vp, { dryRun, force: forceFlag, quiet: false });
+    summary[result.status] = (summary[result.status] || 0) + 1;
+    if (result.status === 'failed') {
+      failures.push({ vaultPath: vp, error: result.error });
+      // Surface but keep going — batch mode reports the full picture at the end.
+      warn(`${vp} — FAILED: ${result.error}`);
+    }
+  }
+
+  console.log('');
+  console.log(c('bold', 'Batch summary:'));
+  console.log(`  ${c('green', 'migrated:        ' + (summary.migrated || 0))}`);
+  console.log(`  ${c('gray',  'already-migrated: ' + (summary['already-migrated'] || 0))}`);
+  console.log(`  ${c('gray',  'skipped (empty):  ' + (summary.skipped || 0))}`);
+  if (summary.failed > 0) {
+    console.log(`  ${c('red', 'failed:          ' + summary.failed)}`);
+    console.log('');
+    for (const f of failures) {
+      console.log(`    ${c('red', '✗')} ${f.vaultPath}`);
+      console.log(`      ${c('gray', f.error)}`);
+    }
+  } else {
+    console.log(`  ${c('gray', 'failed:          0')}`);
+  }
+
+  if (dryRun) {
+    console.log('');
+    info('Dry-run only — re-run without --dry-run to apply.');
+  }
+
+  process.exit(summary.failed > 0 ? 1 : 0);
 }
 
 if (args[0] === '--hooks-status') {

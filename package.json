@@ -1,6 +1,6 @@
 {
   "name": "obsidian-mcp-router",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "MCP server that routes tool calls to multiple Obsidian vaults (local or remote) over the Local REST API plugin.",
   "type": "module",
   "main": "src/index.mjs",
@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "start": "node bin/obsidian-mcp-router.mjs",
-    "test": "node --test tests/registry.test.mjs tests/sanitize.test.mjs tests/idf-score.test.mjs tests/wiki-fingerprint.test.mjs tests/readonly.test.mjs tests/user-id-audit.test.mjs tests/semver-compare.test.mjs tests/markdownify.test.mjs tests/setup-vault-safety.test.mjs tests/vault-link-linter.test.mjs tests/doc-propagation-checker.test.mjs tests/install-hooks.test.mjs tests/check-router-update-tips.test.mjs tests/wiki-query-first-nudge.test.mjs tests/hot-cache-load.test.mjs",
+    "test": "node --test tests/registry.test.mjs tests/sanitize.test.mjs tests/idf-score.test.mjs tests/wiki-fingerprint.test.mjs tests/readonly.test.mjs tests/user-id-audit.test.mjs tests/semver-compare.test.mjs tests/markdownify.test.mjs tests/setup-vault-safety.test.mjs tests/vault-link-linter.test.mjs tests/doc-propagation-checker.test.mjs tests/install-hooks.test.mjs tests/check-router-update-tips.test.mjs tests/wiki-query-first-nudge.test.mjs tests/hot-cache-load.test.mjs tests/migrate-wiki-meta.test.mjs",
     "setup-vault": "node scripts/setup-vault.mjs",
     "status": "node scripts/setup-vault.mjs --status",
     "install-markitdown": "node scripts/install-markitdown.mjs",

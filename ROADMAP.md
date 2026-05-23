@@ -2,6 +2,25 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.12.1 — Migration script + run sur les 10 vaults (Session 2, shipped 2026-05-23)
+
+Session 2 du rollout phasé v0.12.0. Ferme la "broken window" laissée à v0.12.0 : les 10 vaults existants étaient sur l'ancien layout `wiki/<scaffold>.md` et les hooks `hot-cache-load` + `wiki-query-first-nudge` y étaient silencieux. Cette release ship le script de migration + run.
+
+- ✅ **`setup-vault.mjs --migrate-wiki-meta <vault-path>`** — migration single vault. Détecte 5 états (`legacy`/`fresh`/`partial`/`empty`/`no-vault`), refuse `partial` avec diagnostic clair, no-op sur `fresh` (sauf `--force`). Pour `legacy` : `mkdir wiki-meta/`, déplace les 4 scaffolds via `git mv` (si vault est un git repo, preserve history + auto-stage) ou `fs.rename` sinon, réécrit `wiki/(hot|index|log|overview)\.md` → `wiki-meta/$1.md` dans le `CLAUDE.md` du vault, append une ligne migration au `wiki-meta/log.md` post-déplacement.
+- ✅ **`setup-vault.mjs --migrate-all-wiki-meta`** — form batch sur `portRegistry`. Reporting per-vault + summary final + exit 1 si échec. Flags partagés : `--dry-run` (preview), `--force` (re-rewrite CLAUDE.md sur fresh vaults).
+- ✅ **`tests/migrate-wiki-meta.test.mjs`** — 15 tests : branche plain-rename + branche git-mv (avec real `git init` fixtures), CLAUDE.md rewrite (preserve les paths user-content `wiki/Concepts/...`), idempotency, `--force`, `--dry-run`, batch summary, partial-state refusal, empty-state skip, missing-arg + non-existent + empty-portRegistry errors.
+- ✅ **Migration tournée sur 10 vaults Roland** : 9 migrés (1 via git, 8 via fs.rename), 1 skipped (Coursera, never bootstrapped via `/obsidian-router:wiki`). Total : 36 scaffolds déplacés + 251 CLAUDE.md path replacements.
+- ✅ **Vault cascade** : `router-changelog.md` (nouvelle section v0.12.1 + row TOC) + `wiki-meta/log.md` (auto via migration script). Frontmatter `project-router.md` bumpé.
+
+**Broken-window v0.12.0 fermée** : `hot-cache-load` et `wiki-query-first-nudge` reprennent leur opération normale sur les 9 vaults dès la prochaine session start.
+
+Tests: **431/431 ✅** (was 416 at v0.12.0 ; +15 du nouveau fichier `migrate-wiki-meta.test.mjs`).
+
+Reste pour Session 3 (v0.12.2) :
+- Vérification end-to-end (re-test du flow `wiki-query-first-nudge` sur 2-3 vaults migrés)
+- Re-install des conventions installables (`wiki-query-first`, `roadmap-discipline`) pour propager les autres updates récentes (le path rewrite des scaffolds est déjà fait par v0.12.1 lui-même)
+- Cleanup éventuel (dirs `wiki/` vides s'il y en a)
+
 ## ✅ v0.12.0 — Move scaffolds to `wiki-meta/` (Session 1, shipped 2026-05-23)
 
 **BREAKING** — les 4 fichiers `wiki/{hot,index,log,overview}.md` quittent `wiki/` pour `wiki-meta/`. Le contenu utilisateur (notes, people, concepts, …) reste sous `wiki/`. Clean break côté code : aucun fallback vers l'ancien layout.
