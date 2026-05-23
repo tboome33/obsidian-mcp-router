@@ -35,6 +35,15 @@
             "command": "node \"<router-repo>/hooks/wiki-autocommit.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/doc-propagation-checker.mjs\""
+          }
+        ]
       }
     ],
     "Stop": [

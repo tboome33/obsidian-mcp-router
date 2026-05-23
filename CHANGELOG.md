@@ -6,7 +6,10 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Added
+
+- **`hooks/doc-propagation-checker.mjs`** — new `PostToolUse` hook on `Bash` that, after every `git commit` (matched via `/(?:^|[\s;&|])git\s+commit\b/` to catch compound shell commands and amend variants), checks that the repo's documentation surface is aligned with `package.json` version. Emits a prompt-style stdout nudge (NOT a block — exit 0 always) when drift is detected, listing concrete actions. Checks: (1) `CHANGELOG.md` has a `## [X.Y.Z]` section for the current version; (2) `ROADMAP.md` has a `## ✅ vX.Y.Z` section; (3) `CHANGELOG.md` `[Unreleased]` doesn't have substantive content when the current version section already exists (suggests forgotten promotion); (4) vault wiki `router-changelog.md` mentions the current version (multi-tier check: iterates `portRegistry`, finds first vault containing the project wiki, scans). Recognizes the project's "Nothing pending right now." placeholder so it doesn't false-positive on empty `[Unreleased]`. Built in response to recurring slip pattern: Claude ships a feat commit, bumps `package.json`, but forgets to propagate to CHANGELOG/ROADMAP/vault wiki — caught manually 2× in this session. Same spirit as `vault-link-linter` (v0.11.3): deterministic check OUTSIDE the LLM attention loop. Opt-out: `OBSIDIAN_ROUTER_NO_DOC_PROPAGATION_CHECK=true`. Wire-up: added to `PostToolUse` block in `hooks/hooks.example.json` matching `Bash`.
+- **`tests/doc-propagation-checker.test.mjs`** — 14 tests (6 silent / 8 nudge). Silent: non-Bash tool, non-git-commit command, aligned CHANGELOG+ROADMAP, opt-out env var, no package.json, malformed stdin. Nudge: missing CHANGELOG version section, missing ROADMAP version section, stale Unreleased when version section exists, no double-nudge when version section is missing (user mid-flow), vault wiki check, opt-out env var discoverable in stderr, compound shell commands (`git add . && git commit ...`), git commit variants (`--amend`, `-a`, `-am`). Total test count: **355/355 passing** (was 341).
 
 ## [0.11.3] — 2026-05-23
 
