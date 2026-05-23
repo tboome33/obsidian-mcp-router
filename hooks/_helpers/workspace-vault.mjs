@@ -142,10 +142,10 @@ export function resolveVaultBySlug(cfg, slug) {
 /**
  * Detect the vault context for a given cwd. Returns one of:
  *   - { mode: 'cwd-is-vault', vaultPath: <cwd> }
- *     when `cwd/wiki/index.md` exists (the workspace IS the vault)
+ *     when `cwd/wiki-meta/index.md` exists (the workspace IS the vault)
  *   - { mode: 'workspace-bound', vaultPath, slug }
- *     when cwd has no wiki/index.md BUT `OBSIDIAN_ROUTER_DEFAULT_VAULT`
- *     resolves to a configured vault whose `wiki/index.md` exists
+ *     when cwd has no wiki-meta/index.md BUT `OBSIDIAN_ROUTER_DEFAULT_VAULT`
+ *     resolves to a configured vault whose `wiki-meta/index.md` exists
  *   - null
  *     when neither condition holds
  *
@@ -155,11 +155,18 @@ export function resolveVaultBySlug(cfg, slug) {
  *
  * Why both modes share return shape: callers can switch on
  * `mode` for nudge-text differences while reading `vaultPath` uniformly
- * for filesystem reads (e.g. `<vaultPath>/wiki/hot.md`).
+ * for filesystem reads (e.g. `<vaultPath>/wiki-meta/hot.md`).
+ *
+ * v0.12.0: switched the scaffold-detection probe from `wiki/index.md`
+ * to `wiki-meta/index.md`. The 4 canonical scaffolds (hot, index, log,
+ * overview) now live in `wiki-meta/` separate from user content under
+ * `wiki/`. Clean break — no fallback to the old layout. Vaults still
+ * on `wiki/<scaffold>.md` need migration via `setup-vault.mjs
+ * --migrate-wiki-meta` (shipped in v0.12.1).
  */
 export function detectVaultContext(cwd, cfg) {
   // Mode 1: cwd is the vault itself
-  if (fs.existsSync(path.join(cwd, 'wiki', 'index.md'))) {
+  if (fs.existsSync(path.join(cwd, 'wiki-meta', 'index.md'))) {
     return { mode: 'cwd-is-vault', vaultPath: cwd, slug: null };
   }
   // Mode 2: workspace-bound via env var
@@ -167,6 +174,6 @@ export function detectVaultContext(cwd, cfg) {
   if (!slug || !cfg) return null;
   const vp = resolveVaultBySlug(cfg, slug);
   if (!vp) return null;
-  if (!fs.existsSync(path.join(vp, 'wiki', 'index.md'))) return null;
+  if (!fs.existsSync(path.join(vp, 'wiki-meta', 'index.md'))) return null;
   return { mode: 'workspace-bound', vaultPath: vp, slug };
 }

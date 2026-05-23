@@ -256,16 +256,16 @@ describe('setup-vault.mjs --uninstall-hooks', () => {
 
 describe('setup-vault.mjs --link-workspace / --unlink-workspace (v0.11.6)', () => {
   let lwWorkDir;
-  let validVault;        // vault with wiki/index.md (linkable)
-  let noWikiVault;       // vault in registry but no wiki/index.md (refuses)
+  let validVault;        // vault with wiki-meta/index.md (linkable)
+  let noWikiVault;       // vault in registry but no wiki-meta/index.md (refuses)
   let codeWorkspace;     // workspace to be linked
   let lwConfigPath;
 
   before(() => {
     lwWorkDir = fs.mkdtempSync(path.join(workDir, 'lw-'));
     validVault = path.join(lwWorkDir, 'my-vault');
-    fs.mkdirSync(path.join(validVault, 'wiki'), { recursive: true });
-    fs.writeFileSync(path.join(validVault, 'wiki', 'index.md'), '# Index\n');
+    fs.mkdirSync(path.join(validVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(validVault, 'wiki-meta', 'index.md'), '# Index\n');
 
     noWikiVault = path.join(lwWorkDir, 'empty-vault');
     fs.mkdirSync(noWikiVault, { recursive: true });
@@ -297,8 +297,8 @@ describe('setup-vault.mjs --link-workspace / --unlink-workspace (v0.11.6)', () =
   test('--link-workspace quotes the slug when it contains spaces', () => {
     // Create a vault with a multi-word slug-style basename
     const spacyDir = path.join(lwWorkDir, 'multi word vault');
-    fs.mkdirSync(path.join(spacyDir, 'wiki'), { recursive: true });
-    fs.writeFileSync(path.join(spacyDir, 'wiki', 'index.md'), '# Index\n');
+    fs.mkdirSync(path.join(spacyDir, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(spacyDir, 'wiki-meta', 'index.md'), '# Index\n');
 
     const spacyConfig = path.join(lwWorkDir, 'spacy-config.json');
     fs.writeFileSync(spacyConfig, JSON.stringify({
@@ -340,11 +340,11 @@ describe('setup-vault.mjs --link-workspace / --unlink-workspace (v0.11.6)', () =
     assert.match(output, /not in portRegistry/i);
   });
 
-  test('--link-workspace fails when vault has no wiki/index.md', () => {
+  test('--link-workspace fails when vault has no wiki-meta/index.md', () => {
     const r = runLink(['--link-workspace', codeWorkspace, 'empty-vault']);
     assert.notEqual(r.status, 0);
     const output = (r.stdout || '') + (r.stderr || '');
-    assert.match(output, /no wiki\/index\.md/i);
+    assert.match(output, /no wiki-meta\/index\.md/i);
   });
 
   test('--link-workspace fails when workspace path does not exist', () => {

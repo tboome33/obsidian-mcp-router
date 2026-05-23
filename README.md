@@ -57,7 +57,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 |---|---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
 | `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 8 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
-| `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
+| `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
 
 The three vars compose freely: an instance can be scoped to one vault (`ALLOWED_VAULTS=karine`) AND read-only (`READONLY=true`) AND attribute writes (`USER_ID=karine-guest`). Setting none = v0.8.x behavior exactly.
 
@@ -164,9 +164,9 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `wiki-lint` agent — read-only diagnostic in a separate context
 
 **Hooks** (cross-platform Node, opt-in via `~/.claude/settings.json`):
-- `SessionStart` / `PostCompact` — load `wiki/hot.md` into context
-- `PostToolUse` — auto-commit `wiki/`, `.raw/`, `.vault-meta/` to git after writes
-- `Stop` — prompt to refresh `wiki/hot.md` if files changed
+- `SessionStart` / `PostCompact` — load `wiki-meta/hot.md` into context
+- `PostToolUse` — auto-commit `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` to git after writes
+- `Stop` — prompt to refresh `wiki-meta/hot.md` if files changed
 
 The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.claude/settings.json`. Reference: [`hooks/hooks.json`](./hooks/hooks.json).
 
@@ -178,7 +178,7 @@ The hooks ship in [`hooks/`](./hooks/) — copy the entries you want into `~/.cl
 |---|---|---|
 | `ClaudeAsk` (default) | Propose, always confirm | Discovering the feature · long mixed-importance sessions · vaults where false positives would hurt · the calibration period (1-2 weeks) before trusting auto-save |
 | `Hybrid` | Auto-save type-safe items (facts, URLs, preferences); ask on high-stakes (decisions, ADRs, rules, techniques) | Power-user sweet spot after calibration · active dev with frequent URL ingestion · research where citations pile up but conclusions need vetting |
-| `FullAuto` | Auto-save everything; audit log in `wiki/log.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
+| `FullAuto` | Auto-save everything; audit log in `wiki-meta/log.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
 | `off` | No auto-suggestions; manual `/save` only | Debugging sessions you don't want polluting the wiki · sensitive conversations · default for legal/medical/financial vaults · control-freak preference |
 
 **Placement** — the consigne ships in the vault `CLAUDE.md` template, but is also configurable as Claude Desktop **Project instructions** (elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Personal" project to `personal`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md), the activation rules, and concrete copy-paste boilerplates per channel.
@@ -850,9 +850,9 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - agent `wiki-lint` — diagnostic read-only dans un contexte isolé
 
 **Hooks** (Node cross-platform, opt-in via `~/.claude/settings.json`) :
-- `SessionStart` / `PostCompact` — chargent `wiki/hot.md` dans le contexte
-- `PostToolUse` — auto-commit `wiki/`, `.raw/`, `.vault-meta/` sur git après les écritures
-- `Stop` — propose de rafraîchir `wiki/hot.md` si des fichiers ont changé
+- `SessionStart` / `PostCompact` — chargent `wiki-meta/hot.md` dans le contexte
+- `PostToolUse` — auto-commit `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` sur git après les écritures
+- `Stop` — propose de rafraîchir `wiki-meta/hot.md` si des fichiers ont changé
 
 Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux dans `~/.claude/settings.json`. Référence : [`hooks/hooks.json`](./hooks/hooks.json).
 
@@ -864,7 +864,7 @@ Les hooks vivent dans [`hooks/`](./hooks/) — copie les entrées que tu veux da
 |---|---|---|
 | `ClaudeAsk` (défaut) | Propose, confirme toujours | Découverte de la feature · sessions longues à importance mixte · vaults où les faux positifs coûtent cher à nettoyer · période de calibration (1-2 semaines) avant de faire confiance à l'auto-save |
 | `Hybrid` | Auto-save les items type-safe (facts, URLs, préférences) ; ask sur les high-stakes (décisions, ADRs, règles, techniques) | Sweet spot power-user après calibration · dev actif avec ingestion d'URLs fréquente · recherche où les citations s'empilent mais les conclusions doivent être vettées |
-| `FullAuto` | Auto-save tout ; audit log dans `wiki/log.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
+| `FullAuto` | Auto-save tout ; audit log dans `wiki-meta/log.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
 | `off` | Pas de suggestions auto ; seul `/save` manuel | Sessions de debug que tu ne veux pas polluer dans le wiki · conversations sensibles · défaut pour les vaults légal/médical/financier · préférence control-freak |
 
 **Placement** — la consigne est shipped dans le `CLAUDE.md` template du vault, mais aussi configurable en **instructions de Project Claude Desktop** (pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Personnel" dans `personal`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global), les règles d'activation, et des boilerplates copy-paste par canal.

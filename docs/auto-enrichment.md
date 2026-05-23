@@ -136,7 +136,7 @@ Phase 1 (v0.8.2) ships four modes. Switch with `/obsidian-router:auto-mode <Mode
 
 ### `FullAuto` — auto-save everything (with safety nets)
 
-**Behavior**: Claude auto-saves at every trigger, no questions. Audit log written to `wiki/log.md` (lines prefixed with `[auto-save]` so you can filter). Sensitivity filter ALWAYS applies (credentials / medical / financial / client names → never auto-saved, downgraded to ask). Hard cap: after 5 auto-saves in one session, behavior degrades to `ClaudeAsk` for the rest of the session (you'd hit it explicitly: *"FullAuto cap reached, asking for confirmation now"*).
+**Behavior**: Claude auto-saves at every trigger, no questions. Audit log written to `wiki-meta/log.md` (lines prefixed with `[auto-save]` so you can filter). Sensitivity filter ALWAYS applies (credentials / medical / financial / client names → never auto-saved, downgraded to ask). Hard cap: after 5 auto-saves in one session, behavior degrades to `ClaudeAsk` for the rest of the session (you'd hit it explicitly: *"FullAuto cap reached, asking for confirmation now"*).
 
 **Best fit**:
 - 📔 **Personal journal / family chronicle** — you don't want to think about save decisions, you just want a log of what happened
@@ -144,7 +144,7 @@ Phase 1 (v0.8.2) ships four modes. Switch with `/obsidian-router:auto-mode <Mode
 - 💭 **Solo brain-dumps where the wiki IS the conversation log** — you're chatting with Claude as a thinking-out-loud partner and want everything captured
 - 🏆 **High-trust mode** — after 3+ months of `Hybrid`, you've seen the classifier perform well, you accept the residual noise
 
-**Trade-off**: real noise risk. You WILL save some things you wouldn't have. Mitigation: review `wiki/log.md` weekly to catch the strays. The hard cap keeps a single session from spiraling, but a year of FullAuto without retrospective curation will produce a noisy wiki.
+**Trade-off**: real noise risk. You WILL save some things you wouldn't have. Mitigation: review `wiki-meta/log.md` weekly to catch the strays. The hard cap keeps a single session from spiraling, but a year of FullAuto without retrospective curation will produce a noisy wiki.
 
 **⚠️ Don't ship FullAuto on day one.** Calibrate with `ClaudeAsk` for 1 week, `Hybrid` for 1 month, then evaluate.
 
@@ -169,7 +169,7 @@ A pragmatic recommendation:
 |---|---|
 | First time using auto-enrichment | `ClaudeAsk` for 1-2 weeks |
 | Comfortable with the proposals, want less friction | `Hybrid` for 1-3 months |
-| Trust the classifier, want zero friction on the routine | `FullAuto` (with weekly `wiki/log.md` review) |
+| Trust the classifier, want zero friction on the routine | `FullAuto` (with weekly `wiki-meta/log.md` review) |
 | Specific session that shouldn't be tracked | `off` for that session (no `--persist`) |
 | Vault contains sensitive material by nature | `off` persisted at the vault level |
 
@@ -320,7 +320,7 @@ La Phase 1 (v0.8.2) ship quatre modes. Switch avec `/obsidian-router:auto-mode <
 
 #### `FullAuto` — auto-save tout (avec garde-fous)
 
-**Comportement** : Claude auto-save à chaque trigger, pas de question. Audit log écrit dans `wiki/log.md` (lignes préfixées `[auto-save]` pour filtrer). Le filtre de sensibilité s'applique TOUJOURS (credentials / médical / financier / noms de clients → jamais auto-saved, dégradés en ask). Hard cap : après 5 auto-saves dans une session, le comportement dégrade en `ClaudeAsk` pour le reste de la session (tu seras explicitement informé : *"FullAuto cap atteint, je passe en demande de confirmation"*).
+**Comportement** : Claude auto-save à chaque trigger, pas de question. Audit log écrit dans `wiki-meta/log.md` (lignes préfixées `[auto-save]` pour filtrer). Le filtre de sensibilité s'applique TOUJOURS (credentials / médical / financier / noms de clients → jamais auto-saved, dégradés en ask). Hard cap : après 5 auto-saves dans une session, le comportement dégrade en `ClaudeAsk` pour le reste de la session (tu seras explicitement informé : *"FullAuto cap atteint, je passe en demande de confirmation"*).
 
 **Pour quel usage** :
 - 📔 **Journal perso / chronique familiale** — tu ne veux pas penser aux décisions de save, tu veux juste un log de ce qui s'est passé
@@ -328,7 +328,7 @@ La Phase 1 (v0.8.2) ship quatre modes. Switch avec `/obsidian-router:auto-mode <
 - 💭 **Brain-dumps solo où le wiki EST le log de conversation** — tu causes avec Claude comme partenaire de pensée à voix haute et veux tout capturer
 - 🏆 **Mode haute confiance** — après 3+ mois en `Hybrid`, tu as vu le classificateur bien performer, tu acceptes le bruit résiduel
 
-**Trade-off** : risque de bruit réel. Tu vas sauver des trucs que tu n'aurais pas sauvé. Mitigation : relire `wiki/log.md` chaque semaine pour attraper les égarés. Le hard cap empêche une session unique de dégénérer, mais une année de FullAuto sans curation rétrospective produira un wiki bruité.
+**Trade-off** : risque de bruit réel. Tu vas sauver des trucs que tu n'aurais pas sauvé. Mitigation : relire `wiki-meta/log.md` chaque semaine pour attraper les égarés. Le hard cap empêche une session unique de dégénérer, mais une année de FullAuto sans curation rétrospective produira un wiki bruité.
 
 **⚠️ Ne ship pas FullAuto le premier jour.** Calibre avec `ClaudeAsk` pendant 1 semaine, `Hybrid` pendant 1 mois, puis évalue.
 
@@ -353,7 +353,7 @@ Une recommandation pragmatique :
 |---|---|
 | Première fois avec l'auto-enrichissement | `ClaudeAsk` pendant 1-2 semaines |
 | À l'aise avec les propositions, tu veux moins de friction | `Hybrid` pendant 1-3 mois |
-| Tu fais confiance au classificateur, zéro friction sur le routine | `FullAuto` (avec relecture hebdomadaire de `wiki/log.md`) |
+| Tu fais confiance au classificateur, zéro friction sur le routine | `FullAuto` (avec relecture hebdomadaire de `wiki-meta/log.md`) |
 | Session spécifique qui ne doit pas être trackée | `off` pour cette session (sans `--persist`) |
 | Vault contient du matériel sensible par nature | `off` persisté au niveau du vault |
 

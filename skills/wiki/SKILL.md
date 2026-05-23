@@ -16,7 +16,7 @@ This skill creates the four scaffolding files at the root of a vault that turn i
 ## When NOT to use
 
 - The user just wants to write a single note → don't scaffold.
-- The vault already has `wiki/index.md` and looks healthy → suggest `wiki-lint` instead.
+- The vault already has `wiki-meta/index.md` and looks healthy → suggest `wiki-lint` instead.
 - The user is asking how the pattern works conceptually → explain, don't scaffold.
 
 ## Pre-flight
@@ -37,23 +37,23 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 
 1. Verify the target vault is online via `list_vaults`. Bail with a clear message if `online: false` or `missingApiKey: true`.
 
-2. Check whether `wiki/index.md` already exists:
+2. Check whether `wiki-meta/index.md` already exists:
    ```
-   mcp__obsidian-router__get_file({ vault: <name>, path: "wiki/index.md" })
+   mcp__obsidian-router__get_file({ vault: <name>, path: "wiki-meta/index.md" })
    ```
    If it returns 200 → the wiki is already scaffolded. Tell the user, offer to run `wiki-lint` instead. Stop.
 
 3. **Create the four scaffolding files in the `wiki/` subdirectory of the vault** (NOT at the vault root — the wiki must live under `wiki/`). Use `mcp__obsidian-router__write_file` with `ifNew: true` so we never clobber.
 
    ⚠️ **Path discipline (do not deviate)**: every `path` argument to `write_file` MUST start with `wiki/`. The four files are:
-   - `wiki/index.md`
-   - `wiki/log.md`
-   - `wiki/hot.md`
-   - `wiki/overview.md`
+   - `wiki-meta/index.md`
+   - `wiki-meta/log.md`
+   - `wiki-meta/hot.md`
+   - `wiki-meta/overview.md`
 
-   If you write `index.md`, `log.md`, etc. at the vault root, the wiki workflow breaks: the `wiki-query` skill won't find them (it looks under `wiki/`), the `wiki-lint` skill will mark them as orphans, and `wiki-fold` won't see the log. The whole stack assumes the `wiki/` prefix.
+   If you write `index.md`, `log.md`, etc. at the vault root or under `wiki/`, the wiki workflow breaks: the `wiki-query` skill won't find them (it looks under `wiki-meta/`), the `wiki-lint` skill will mark them as orphans, and `wiki-fold` won't see the log. The whole stack assumes the `wiki-meta/` prefix for these 4 scaffolds (v0.12.0+). User content/pages stay under `wiki/`.
 
-   The `templates/wiki/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki\`) ships starter content. Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
+   The `templates/wiki-meta/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki-meta\`) ships the 4 scaffolds. The CLAUDE.md block (vault-root, see step 4) lives in `templates/wiki/CLAUDE.md` (path kept stable for back-compat — only the 4 scaffolds moved to `wiki-meta/`). Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
 
    | Placeholder | Substitute with |
    |---|---|
@@ -61,17 +61,17 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    | `{{VAULT_PATH}}` | The absolute path of the target vault |
    | `{{MODE}}` | The chosen mode (`personal`, `research`, etc.) — only in `overview.md` if you decide to seed it |
 
-   If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the contract for each file (still under `wiki/`) is:
+   If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the contract for each file (under `wiki-meta/`) is:
 
-   - `wiki/index.md` — catalog of all wiki pages, organized by domain. Initial structure must include sections matching the chosen mode. Include a one-line invariant at the top: "This file is the catalog of the wiki. Add a row for every new page filed under wiki/."
+   - `wiki-meta/index.md` — catalog of all wiki pages, organized by domain. Initial structure must include sections matching the chosen mode. Include a one-line invariant at the top: "This file is the catalog of the wiki. Add a row for every new page filed under wiki/."
 
-   - `wiki/log.md` — append-only operation history. Each entry: ISO timestamp + verb + target page(s) + 1-line reason. Initial entry: "scaffolded by wiki skill on YYYY-MM-DD".
+   - `wiki-meta/log.md` — append-only operation history. Each entry: ISO timestamp + verb + target page(s) + 1-line reason. Initial entry: "scaffolded by wiki skill on YYYY-MM-DD".
 
-   - `wiki/hot.md` — recent-context cache (≤500 words). What's been recently touched, key facts, active threads. Empty placeholder at scaffold time with structure: `## Last Updated`, `## Key Recent Facts`, `## Recent Changes`, `## Active Threads`.
+   - `wiki-meta/hot.md` — recent-context cache (≤500 words). What's been recently touched, key facts, active threads. Empty placeholder at scaffold time with structure: `## Last Updated`, `## Key Recent Facts`, `## Recent Changes`, `## Active Threads`.
 
-   - `wiki/overview.md` — executive summary of the wiki's domain. 100-300 words written by you based on what the user said about the mode/domain. If the user gave no detail, leave a stub: "_Update me with a one-paragraph summary of what this wiki covers._"
+   - `wiki-meta/overview.md` — executive summary of the wiki's domain. 100-300 words written by you based on what the user said about the mode/domain. If the user gave no detail, leave a stub: "_Update me with a one-paragraph summary of what this wiki covers._"
 
-   Verify after writing: call `mcp__obsidian-router__list_files({ vault, directory: "wiki" })` and confirm all four files appear. If they ended up at vault root by mistake, use `move_file` to relocate each to `wiki/<name>.md` before continuing to step 4.
+   Verify after writing: call `mcp__obsidian-router__list_files({ vault, directory: "wiki-meta" })` and confirm all four files appear. If they ended up at vault root or under `wiki/` by mistake, use `move_file` to relocate each to `wiki-meta/<name>.md` before continuing to step 4.
 
 4. Write/append the canonical wiki `CLAUDE.md` block at the vault root.
 
@@ -85,7 +85,7 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 
    Use `mcp__obsidian-router__write_file` with `ifNew: true` if `CLAUDE.md` is absent. If it exists, use `append_to_file` BUT first check (via `get_file`) that the wiki block isn't already there — re-running scaffold should NOT duplicate the block.
 
-5. Append the scaffold operation to `wiki/log.md` itself:
+5. Append the scaffold operation to `wiki-meta/log.md` itself:
    ```
    - YYYY-MM-DD HH:MM — scaffold — index.md, log.md, hot.md, overview.md, CLAUDE.md — initial wiki bootstrap (mode: <mode>)
    ```
@@ -98,7 +98,7 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 ## Anti-patterns
 
 - Don't scaffold without confirming which vault.
-- Don't overwrite an existing `wiki/index.md` — bail and suggest `wiki-lint`.
+- Don't overwrite an existing `wiki-meta/index.md` — bail and suggest `wiki-lint`.
 - Don't invent vault content during scaffold. Stubs are fine. The wiki gets populated through ingestion and queries, not at scaffold time.
 - Don't use Claude's native `Write` tool — it works only when the project IS the vault. Use `mcp__obsidian-router__write_file` everywhere so the skill is multi-vault and cross-project.
 
@@ -107,5 +107,5 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 End your turn with a compact summary:
 
 > ✅ Wiki scaffolded in vault `<name>` (mode: `<mode>`).
-> Created: `wiki/index.md`, `wiki/log.md`, `wiki/hot.md`, `wiki/overview.md`, `CLAUDE.md` updated.
+> Created: `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`, `CLAUDE.md` updated.
 > Next: try `wiki-ingest <source>` to file your first source, or just start asking questions — I'll grow the wiki as we go.

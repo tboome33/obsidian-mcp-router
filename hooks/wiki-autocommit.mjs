@@ -5,9 +5,15 @@
  * PostToolUse hook (matcher: only mcp__obsidian-router__* mutators —
  * write_file, patch_file, append_to_file, set_frontmatter,
  * merge_frontmatter, delete_file, move_file). After a vault write,
- * auto-commits wiki/, .raw/, .vault-meta/ changes to git so the wiki
- * has a built-in undo history. Skips silently if the cwd is not a git
- * repo, or if there's nothing staged.
+ * auto-commits wiki/, wiki-meta/, .raw/, .vault-meta/ changes to git so
+ * the wiki has a built-in undo history. Skips silently if the cwd is
+ * not a git repo, or if there's nothing staged.
+ *
+ * v0.12.0: added `wiki-meta/` to trackedDirs so the 4 scaffolds
+ * (hot/index/log/overview) that moved out of `wiki/` are still
+ * auto-committed. Without this, scaffold changes (notably the
+ * hot.md refresh triggered by hot-cache-update-prompt) would silently
+ * fall out of the autocommit safety net.
  *
  * Caveat (multi-vault): this hook fires from the cwd of the Claude
  * Code session, NOT from the path of the vault that the router wrote
@@ -32,7 +38,7 @@ if (!fs.existsSync(gitDir)) process.exit(0);
 
 // Only auto-commit if at least one of these dirs exists in cwd —
 // otherwise we have nothing to track and shouldn't pollute random repos.
-const trackedDirs = ['wiki', '.raw', '.vault-meta'].filter((d) =>
+const trackedDirs = ['wiki', 'wiki-meta', '.raw', '.vault-meta'].filter((d) =>
   fs.existsSync(path.join(cwd, d)),
 );
 if (trackedDirs.length === 0) process.exit(0);

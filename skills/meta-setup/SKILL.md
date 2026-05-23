@@ -104,7 +104,7 @@ The router ships **6 hooks** that automate vault maintenance — but they're **o
 
 | Hook | Event | Purpose |
 |---|---|---|
-| `hot-cache-load` | SessionStart + PostCompact | Loads `wiki/hot.md` into Claude's context at session start |
+| `hot-cache-load` | SessionStart + PostCompact | Loads `wiki-meta/hot.md` into Claude's context at session start |
 | `check-router-update` | SessionStart | Once-per-day GitHub check for new router versions |
 | `wiki-autocommit` | PostToolUse (7 mutating MCP tools) | Auto-commits wiki changes via git |
 | `vault-link-linter` | Stop | Blocks responses with bare-path vault links, forces click-to-open format |

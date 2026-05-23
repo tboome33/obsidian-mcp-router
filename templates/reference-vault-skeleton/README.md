@@ -16,11 +16,11 @@ node scripts/setup-vault.mjs --bootstrap-reference <path>
 | `.obsidian/app.json` | Empty — marks the directory as a valid Obsidian vault. |
 | `.smart-env/smart_env.json` | Smart Connections config (transformers embedding model, English language, etc.). **No API keys** — the chat API key field is empty by design; the user pastes their own after install. |
 | `.claude/settings.json` | Minimal Claude Code project settings — enables the `obsidian-router` plugin scoped to this vault. |
-| `CLAUDE.md` | Navigation rules for Claude. Treats the vault as a Karpathy-style LLM wiki under `wiki/`. |
-| `wiki/index.md` | Catalog of all pages. Empty sections per type. |
-| `wiki/log.md` | Append-only operation log. |
-| `wiki/hot.md` | Recent-context cache. |
-| `wiki/overview.md` | Executive summary of the vault's purpose. |
+| `CLAUDE.md` | Navigation rules for Claude. Treats the vault as a Karpathy-style LLM wiki — scaffolds under `wiki-meta/`, user content under `wiki/`. |
+| `wiki-meta/index.md` | Catalog of all pages. Empty sections per type. |
+| `wiki-meta/log.md` | Append-only operation log. |
+| `wiki-meta/hot.md` | Recent-context cache. |
+| `wiki-meta/overview.md` | Executive summary of the vault's purpose. |
 
 ## What's NOT in here (by design)
 
@@ -34,7 +34,7 @@ node scripts/setup-vault.mjs --bootstrap-reference <path>
 
 The skeleton is intentionally generic — `mode: personal` in the frontmatter, English language, "your" pronouns in `overview.md`. After bootstrap, the user is free to:
 
-- Switch to a different `mode` in `wiki/overview.md` (e.g., `team`, `research`, `project`) and update the prose accordingly.
+- Switch to a different `mode` in `wiki-meta/overview.md` (e.g., `team`, `research`, `project`) and update the prose accordingly.
 - Rewrite `CLAUDE.md` to reflect domain-specific conventions.
 - Add other root files that should propagate to every bootstrapped vault (quick-reference PDFs, custom `roadmap.md`, etc.) — `setup-vault.mjs` clones whatever is at the reference root.
 

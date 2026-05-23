@@ -15,5 +15,5 @@ For URLs, prefer running the `defuddle` skill first if the page looks like a typ
 Always:
 1. Show the page plan (what entities/concepts will be created or updated) BEFORE writing files.
 2. Use `mcp__obsidian-router__write_file` and `patch_file` (multi-vault aware), not native Write/Edit.
-3. Update `wiki/index.md`, `wiki/log.md`, `wiki/hot.md` after each successful ingestion.
+3. Update `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/hot.md` after each successful ingestion.
 4. Be selective — don't create a page for every passing mention.

@@ -12,7 +12,7 @@ Invoke the `set_auto_enrich_mode` MCP tool.
 
 - **`ClaudeAsk`** (default — propose, always confirm). Best for: discovering the feature, mixed-importance long sessions, vaults where false positives would be costly to clean up, calibration period.
 - **`Hybrid`** (auto-save type-safe items like facts/URLs, ask on decisions/ADRs/techniques/rules). Best for: power-user sweet spot after a calibration week, active development with frequent URL ingestion, research with citations to pile up but conclusions to vet.
-- **`FullAuto`** (auto-save everything; audit log in `wiki/log.md` + sensitivity filter + hard cap that degrades to `ClaudeAsk` after 5 saves/session). Best for: high-trust sessions, family chronicle / personal journal, long unsupervised flows (autoresearch, batch ingestion), solo brain-dumps where the wiki IS the conversation log.
+- **`FullAuto`** (auto-save everything; audit log in `wiki-meta/log.md` + sensitivity filter + hard cap that degrades to `ClaudeAsk` after 5 saves/session). Best for: high-trust sessions, family chronicle / personal journal, long unsupervised flows (autoresearch, batch ingestion), solo brain-dumps where the wiki IS the conversation log.
 - **`off`** (no auto-suggestions; manual `/save` only). Best for: debugging sessions you don't want polluting the wiki, sensitive conversations, control-freak preference, default for legal/medical/financial vaults.
 
 ## Argument parsing from $ARGUMENTS
@@ -42,7 +42,7 @@ When the user's intent is the BEHAVIOR rather than the mode name:
 - After a successful mode change, confirm to the user: which mode is now active, what changed in behavior versus the previous mode, whether the `.env` was written.
 - If the user phrased it persistently (*"permanently"*, *"de manière permanente"*, *"à chaque démarrage"*) but didn't explicitly say "persist", default `persist=true` — that's clearly their intent.
 - If the user phrased it temporarily (*"just for now"*, *"juste pour cette session"*, *"pour l'instant"*), default `persist=false`.
-- If the user is switching to `FullAuto` for the first time in this session, briefly remind them of the safety nets (audit log in `wiki/log.md`, sensitivity filter, hard cap of 5 auto-saves/session before degrading to `ClaudeAsk`) — so they're not surprised when those trigger.
+- If the user is switching to `FullAuto` for the first time in this session, briefly remind them of the safety nets (audit log in `wiki-meta/log.md`, sensitivity filter, hard cap of 5 auto-saves/session before degrading to `ClaudeAsk`) — so they're not surprised when those trigger.
 - If the user is switching to `off`, mention that manual `/save`, `/wiki-ingest`, etc. still work — only the proactive layer is disabled.
 
 ## Push back if

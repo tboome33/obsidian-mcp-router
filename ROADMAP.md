@@ -2,6 +2,44 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.12.0 — Move scaffolds to `wiki-meta/` (Session 1, shipped 2026-05-23)
+
+**BREAKING** — les 4 fichiers `wiki/{hot,index,log,overview}.md` quittent `wiki/` pour `wiki-meta/`. Le contenu utilisateur (notes, people, concepts, …) reste sous `wiki/`. Clean break côté code : aucun fallback vers l'ancien layout.
+
+Trigger Roland 2026-05-23 : *"les 4 fichiers hot, index, log et overview sont dans chaque vault dans le repertoire wiki, j'aimerai les sortir de ce répertoire pour les placer dans un repertoire autre du reste du vault car je trouve que ce sont plus des fichiers de configuration ou une mémoire que le contenu du vault en lui même"*. Le mélange scaffold/contenu encombrait la vue Obsidian — la séparation rend la frontière sémantique visible.
+
+### Rollout phasé (3 sessions)
+
+- ✅ **Session 1 (v0.12.0)** — code refactor + tests verts + templates physiquement déplacés (CETTE entrée).
+- 🚧 **Session 2 (v0.12.1)** — `setup-vault.mjs --migrate-wiki-meta <vault>` + `--migrate-all-wiki-meta`. Migration atomique via `git mv` + édition du `CLAUDE.md` de chaque vault. Run sur les 10 vaults de Roland.
+- 🚧 **Session 3 (v0.12.2)** — re-install des conventions installables (`wiki-query-first`, `roadmap-discipline`) sur chaque vault pour mettre à jour les paths dans leur `CLAUDE.md` per-vault. Vérification end-to-end.
+
+Entre Session 1 et Session 2, les vaults non migrés sont silencieux côté hooks (`hot-cache-load` et `wiki-query-first-nudge` sortent en exit 0 parce que `wiki-meta/index.md` n'existe pas). Coût accepté du clean break.
+
+### Session 1 — fait
+
+- ✅ **`hooks/_helpers/workspace-vault.mjs` `detectVaultContext()`** — probe `wiki-meta/index.md` au lieu de `wiki/index.md`. Cwd-is-vault ET workspace-bound affectés.
+- ✅ **`hooks/hot-cache-load.mjs`** — lit `<vault>/wiki-meta/hot.md`. Marker text en mode workspace-bound mis à jour.
+- ✅ **`hooks/wiki-query-first-nudge.mjs`** — les 4 entry points cités dans le nudge sont `wiki-meta/{hot,index,log,overview}.md`. Guidance read mode-aware couvre les DEUX préfixes (`wiki-meta/<scaffold>` pour les meta, `wiki/<page>` pour le contenu utilisateur).
+- ✅ **`hooks/hot-cache-update-prompt.mjs`** — trigger scanne `wiki/` ET `wiki-meta/` (git diff + git log sur les 2 paths). Nudge dit "update `wiki-meta/hot.md`".
+- ✅ **`hooks/wiki-autocommit.mjs`** — ajout de `wiki-meta` à `trackedDirs`. Sinon scaffold edits (notamment refresh hot.md) tomberaient hors autocommit.
+- ✅ **`hooks/vault-link-linter.mjs`** — docstring examples mis à jour ; logique runtime inchangée (le linter matche tout `.md` dans un vault, ne dépend pas du préfixe).
+- ✅ **`scripts/setup-vault.mjs --link-workspace`** — validation requiert maintenant `<vault>/wiki-meta/index.md`. Error message pointe vers `--migrate-wiki-meta` (v0.12.1).
+- ✅ **`src/index.mjs`** — audit log (USER_ID) écrit dans `<vault>/wiki-meta/log.md`.
+- ✅ **`templates/wiki/{hot,index,log,overview}.md`** déplacés vers **`templates/wiki-meta/{...}.md`** (4× `git mv`). Idem pour `templates/reference-vault-skeleton/wiki/{...}` → `wiki-meta/{...}`. `templates/wiki/CLAUDE.md` et `templates/reference-vault-skeleton/CLAUDE.md` restent en place (CLAUDE.md vault-root, pas un scaffold) mais leur CONTENU est rafraîchi.
+- ✅ **Bulk sweep** — `wiki/<scaffold>.md` → `wiki-meta/<scaffold>.md` dans `skills/`, `commands/`, `agents/`, `docs/` (64 remplacements sur 17 fichiers).
+- ✅ **Tests** — `tests/{wiki-query-first-nudge,hot-cache-load,install-hooks,user-id-audit}.test.mjs` fixtures + assertions mises à jour. `vault-link-linter.test.mjs` et `wiki-fingerprint.test.mjs` inchangés (utilisent `wiki/log.md` comme fichier-fixture générique, pas comme scaffold).
+- ✅ **Docs** — `CHANGELOG.md` entrée [0.12.0] + ce ROADMAP entry + `README.md` (refs hot.md + log.md mis à jour FR + EN) + `templates/{reference-vault-skeleton/}CLAUDE.md` body.
+- ✅ Manifests bumped : `package.json`, `package-lock.json`, `.claude-plugin/{plugin,marketplace}.json` → 0.12.0.
+
+### Risques connus + état
+
+1. **Broken window entre v0.12.0 et v0.12.1** : les 10 vaults de Roland sont silencieux côté hooks tant que Session 2 ne tourne pas. ✅ Acknowledged par Roland avant ship.
+2. **Conventions installées per-vault encore stales** : les CLAUDE.md de chaque vault contiennent encore l'ancien texte de `wiki-query-first` / `roadmap-discipline` qui mentionne `wiki/<scaffold>.md`. Pas critique au runtime (Claude lit l'injection des hooks, pas le CLAUDE.md persistant), mais à corriger en Session 3.
+3. **autocommit wiki-meta/ rate les changements anciens** : tout vault qui n'a pas encore `wiki-meta/` ne déclenche pas le tracking dessus. Devient effectif dès que la migration crée le dir.
+
+Tests: **416/416 ✅** (unchanged headcount — refactor pur, fixtures mises à jour).
+
 ## ✅ v0.11.6 — Workspace-bound vault mode (shipped 2026-05-23)
 
 Closes the v0.11.5 gap : hooks ne détectaient un vault context QUE quand cwd-IS-vault. Manquait le cas commun : workspace code/dev ASSOCIÉ à un vault. v0.11.6 introduit le mode `workspace-bound` via `OBSIDIAN_ROUTER_DEFAULT_VAULT` dans le `.env` du workspace.
@@ -311,6 +349,45 @@ Cloud `/ultrareview` ran 17min after the v0.11.0 commit landed and surfaced 7 va
 Tests: 292/292 passing (+3 new tests for `resolveAndAssertPublic`, `resolveRepomixCommand`, `assertSandboxConsistent`, plus inline cases for the upper-case-HTML + PDF-query-string regressions). The `assertSandboxConsistent` test covers all 6 combinations of {READONLY / ALLOWED_VAULTS / USER_ID} × {with/without MD_ALLOWED_PATHS} plus the `MD_SHARE_DIR` legacy alias.
 
 Methodology note: this is the kind of finding distribution that justifies the **3-tier review stack** (`/review+` local + `/ultrareview` cloud). `/review+` (local) caught the foundational bugs in passes 1 & 2 (SSRF textual check, argv injection, TOCTOU tempfile, credential leak in `.claude/settings.local.json`, package-lock not regenerated). `/ultrareview` (cloud, ~17 min) reasoned at a higher level about the **composition** of those fixes with the overall threat model — that DNS validation + fetch is TOCTOU when not IP-pinned, that READONLY's semantics changed silently when file-input tools shipped, that Node 20.12's CVE-2024-27980 means `.cmd` execFile is dead code on Windows. The local reviewers operate on the diff; the cloud reviewer operates on the diff in context.
+
+## 🔮 v0.12 — Port skills d'orchestration en `.claude/workflows/*.js`
+
+**Blocker externe** : feature `workflows` d'Anthropic encore non annoncée officiellement (mai 2026). Le binaire Claude Code l'embarque mais elle est désactivée par défaut (`CLAUDE_CODE_WORKFLOWS=1`). On peut écrire les fichiers dès maintenant à risque assumé, mais l'API peut évoluer avant release stable.
+
+### Why
+
+Les skills d'orchestration actuelles (`autoresearch`, `wiki-ingest` batch, `wiki-query`, `save`, `conventions` propagate) ont en commun un défaut structurel : l'orchestrateur (Claude lui-même) lit les résultats intermédiaires de chaque sub-agent, ce qui (a) consomme des tokens de la session principale à chaque hop, (b) dégrade la qualité de décision à mesure que le contexte se remplit, (c) rend les conditionnels non-déterministes (le LLM oublie ou réinterprète les règles). La feature `workflows` permet de remplacer cette couche par du JS pur où les outputs d'agents passent directement d'agent à agent sans transiter par l'orchestrateur — token tax éliminée, conditionnels garantis, retry auto, pause/resume natifs.
+
+**Insight clé** : l'option `agentType` permet d'invoquer les sub-agents existants du router (`agents/wiki-ingest.md`, `agents/wiki-lint.md`) directement depuis un workflow. **Pas de rewrite des workers** — seule la couche d'orchestration LLM-driven est remplacée par du JS déterministe.
+
+### Top 5 candidats (classés par payoff)
+
+1. **`workflows/autoresearch.js`** — pattern *loop-until-budget*. Boucle web-search → defuddle → `agentType: 'wiki-ingest'` → check `agentType: 'wiki-query'` pour skip si déjà couvert. Gain estimé : ~60% tokens session principale.
+2. **`workflows/wiki-ingest-batch.js`** — pattern *fan-out*. N sources en parallèle via `agentType: 'wiki-ingest'`, hot.md refresh une fois en fin.
+3. **`workflows/wiki-query.js`** — tiered fallback déterministe (hot → index → drill → semantic) avec early-exit sur confidence score retourné via `schema`.
+4. **`workflows/save.js`** — classify → write → `parallel([index, log, hot, backlinks])`. Type/slug déterministes (le LLM ne se contredit pas entre runs).
+5. **`workflows/conventions-propagate.js`** — fan-out sur tous les vaults pour install / sync d'une convention donnée.
+
+### Tasks
+
+- [ ] **Attendre annonce officielle Anthropic** (timing inconnu — surveiller le binaire ou la doc Claude Code)
+- [ ] Installer le skill `workflow-creator` de Ray Amjad (`~/.claude/skills/workflow-creator/`) comme aide à l'écriture
+- [ ] Étendre `skills/meta-status` pour signaler `CLAUDE_CODE_WORKFLOWS` state (set/unset)
+- [ ] **Phase 1** — porter `autoresearch` en workflow (le plus rentable, validation du pattern)
+- [ ] **Phase 2** — porter `wiki-ingest-batch` (réutilise `agentType: 'wiki-ingest'`)
+- [ ] **Phase 3** — porter `wiki-query` (déterminisme + cascade modèle)
+- [ ] **Phase 4** — porter `save` et `conventions-propagate`
+- [ ] Documenter la migration : quels skills restent skills, quels deviennent workflows, comment l'user choisit
+
+### Ne PAS porter
+
+- ❌ Skills single-shot (`read-get`, `write-append`, `manage-delete`, `lock`, etc.) — 1 tool call, aucune orchestration.
+- ❌ `wiki-lint` / `wiki-fold` — déjà déterministes en single-shot.
+- ❌ Les hooks — orthogonaux aux workflows, restent sur events Claude Code.
+
+### Trigger
+
+Roland 2026-05-23 : *"Prends connaissance de cette video youtube : https://www.youtube.com/watch?v=c0gVowvMR-g"* (Ray Amjad, *"Anthropic Just Dropped the Update Everyone's Been Waiting For"*). Le skill `workflow-creator` du créateur est sur GitHub : https://github.com/ray-amjad/claude-code-workflow-creator — préview complet de l'API tant qu'Anthropic n'annonce pas officiellement.
 
 ## v0.9 — Cloudflare Tunnel companion plugin
 

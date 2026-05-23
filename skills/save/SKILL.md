@@ -56,7 +56,7 @@ Default folders by type:
 - `idea` → `wiki/ideas/`
 - Else → `wiki/notes/` as fallback
 
-If the wiki has a different convention (look at `wiki/index.md` structure to detect), match that.
+If the wiki has a different convention (look at `wiki-meta/index.md` structure to detect), match that.
 
 ### 4. Compose the frontmatter
 

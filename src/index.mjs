@@ -703,10 +703,10 @@ export function pickAuditPath(toolName, args = {}) {
 
 /**
  * Format a single audit-log line. Stable shape so we can grep it later
- * (e.g. `git log -p wiki/log.md | grep "by roland"`). The leading and
- * trailing newlines isolate the entry from whatever sits in `wiki/log.md`
- * already — the file is append-only so we always end up between
- * existing entries.
+ * (e.g. `git log -p wiki-meta/log.md | grep "by roland"`). The leading
+ * and trailing newlines isolate the entry from whatever sits in
+ * `wiki-meta/log.md` already — the file is append-only so we always end
+ * up between existing entries.
  *
  * Exported for testing.
  */
@@ -1014,10 +1014,14 @@ export async function startServer({ configPath, watch = true } = {}) {
 
   // v0.9.0 — audit log (USER_ID). When OBSIDIAN_ROUTER_USER_ID is set,
   // every SUCCESSFUL write tool call gets a line appended to the touched
-  // vault's `wiki/log.md` so we can trace "who wrote what" later. Each
-  // MCPHub instance gets its own USER_ID env, so a 6-instance multi-tenant
-  // setup gives us free user-level attribution without modifying any
-  // downstream tool.
+  // vault's `wiki-meta/log.md` so we can trace "who wrote what" later.
+  // Each MCPHub instance gets its own USER_ID env, so a 6-instance
+  // multi-tenant setup gives us free user-level attribution without
+  // modifying any downstream tool.
+  //
+  // v0.12.0: target path moved from `wiki/log.md` to `wiki-meta/log.md`
+  // along with the other 3 scaffolds (hot/index/overview). User content
+  // stays under `wiki/`.
   //
   // CRITICAL: the audit append uses `restAppendToFile` directly (REST
   // helper) — NOT the `append_to_file` tool handler. Going through the
@@ -1033,7 +1037,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   if (userId) {
     console.error(
       `[obsidian-mcp-router] OBSIDIAN_ROUTER_USER_ID="${userId}" — audit logging enabled. ` +
-        `Every successful write appends to <vault>/wiki/log.md.`,
+        `Every successful write appends to <vault>/wiki-meta/log.md.`,
     );
   }
 
@@ -1077,13 +1081,13 @@ export async function startServer({ configPath, watch = true } = {}) {
           // Direct REST call → break the recursion that would happen if we
           // routed through `appendToFileTool` (which is itself a write tool
           // that would trigger another audit, ad infinitum).
-          await restAppendToFile(auditVault, 'wiki/log.md', auditLine, {
+          await restAppendToFile(auditVault, 'wiki-meta/log.md', auditLine, {
             createTargetIfMissing: true,
           });
         } catch (auditErr) {
           // Best-effort: don't fail the original write. Log the cause so
-          // the operator can diagnose (typical: missing wiki/ folder, or
-          // vault was locked and audit vault resolution mismatched).
+          // the operator can diagnose (typical: missing wiki-meta/ folder,
+          // or vault was locked and audit vault resolution mismatched).
           console.error(
             `[obsidian-mcp-router] audit log failed for ${name} ` +
               `(by ${userId}): ${auditErr.message}`,

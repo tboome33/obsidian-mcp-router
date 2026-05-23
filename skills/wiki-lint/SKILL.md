@@ -20,7 +20,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 mcp__obsidian-router__list_files({ vault, directory: "wiki" })
 ```
 
-Build a flat set of every page path under `wiki/`. Read `wiki/index.md` and parse the catalog into a separate set.
+Build a flat set of every page path under `wiki/`. Read `wiki-meta/index.md` and parse the catalog into a separate set.
 
 ### 2. Run checks in parallel
 
@@ -33,8 +33,8 @@ A page is orphan if NO other page wikilinks to it (excluding self-references and
 A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve aliases (`[[Target|Alias]]`) and folder-prefixed forms (`[[concepts/Foo]]`). If a link looks dead, double-check by trying both with and without the `.md` extension and against alias frontmatter.
 
 #### Check C: index drift
-- Pages on disk under `wiki/` but missing from `wiki/index.md` → "missing in index"
-- Rows in `wiki/index.md` pointing at pages that don't exist → "stale index entry"
+- Pages on disk under `wiki/` but missing from `wiki-meta/index.md` → "missing in index"
+- Rows in `wiki-meta/index.md` pointing at pages that don't exist → "stale index entry"
 
 #### Check D: frontmatter gaps
 Every wiki page should have `type:` set. Sources should have `url:` (or `path:`) and `ingested_at:`. Answers should have `question:` and `answered_at:`. Missing fields are warnings, not errors.
@@ -43,7 +43,7 @@ Every wiki page should have `type:` set. Sources should have `url:` (or `path:`)
 Pages with section headings followed by no body until the next heading. Surface them — they're usually placeholders that were forgotten.
 
 #### Check F: log consistency
-`wiki/log.md` should be append-only, monotonically increasing timestamps. Out-of-order or duplicate timestamps are a smell (manual edit?). Surface them as info-level.
+`wiki-meta/log.md` should be append-only, monotonically increasing timestamps. Out-of-order or duplicate timestamps are a smell (manual edit?). Surface them as info-level.
 
 #### Check G: hot.md staleness
 If `hot.md` `## Last Updated` is more than 7 days old, flag it. Real-world: hot caches go stale fast and become misleading.
@@ -112,7 +112,7 @@ WARNINGS (Y)
 INFO (Z)
 | Type | Where | Detail |
 |---|---|---|
-| hot stale | wiki/hot.md | Last Updated 12 days ago | run wiki-fold or refresh hot manually |
+| hot stale | wiki-meta/hot.md | Last Updated 12 days ago | run wiki-fold or refresh hot manually |
 
 Run `/obsidian-router:wiki-lint --fix-errors` to apply the X error fixes (interactive).
 ```

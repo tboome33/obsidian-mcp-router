@@ -1,5 +1,5 @@
 ---
-description: Roll up wiki/log.md entries into a structurally-idempotent fold page — extractive summarization with backlinks to children. (Skill `wiki-fold` handles natural-language triggers.)
+description: Roll up wiki-meta/log.md entries into a structurally-idempotent fold page — extractive summarization with backlinks to children. (Skill `wiki-fold` handles natural-language triggers.)
 ---
 
 Invoke the `wiki-fold` skill on the target vault.
@@ -12,5 +12,5 @@ Window resolution (in order):
 Always:
 - Pure extractive (verb counts, target counts) — no invented themes.
 - Deterministic file path: re-running the same window produces a byte-equivalent fold at the same path.
-- Update `wiki/index.md` to add a row under `## Folds`.
-- Append the fold operation to `wiki/log.md`.
+- Update `wiki-meta/index.md` to add a row under `## Folds`.
+- Append the fold operation to `wiki-meta/log.md`.

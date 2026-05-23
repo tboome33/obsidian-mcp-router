@@ -8,6 +8,52 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.0] — 2026-05-23
+
+**BREAKING** (vault layout): the 4 wiki scaffolds — `hot.md`, `index.md`, `log.md`, `overview.md` — move out of `wiki/` into a sibling `wiki-meta/` directory. User content stays under `wiki/` (people, concepts, sessions, decisions, references, projects, …). This is a clean break — there is **no fallback** to the old layout in the code. Vaults still on `wiki/<scaffold>.md` will appear "empty" to the hooks (silent exit) until migrated.
+
+Roland's motivation: the 4 scaffolds are conceptually META (catalog + recent-context cache + operation log + executive summary) — visually mixing them with user notes under a single `wiki/` clutters Obsidian's file tree. The split makes the boundary semantic: open `wiki-meta/` for system files, `wiki/` for content.
+
+### Phased rollout (Session 1 = THIS release, Sessions 2 & 3 ship after)
+
+- **Session 1 (v0.12.0)** — code refactor + tests green + templates moved. Existing vaults are NOT touched.
+- **Session 2 (v0.12.1, planned)** — `setup-vault.mjs --migrate-wiki-meta <vault>` + `--migrate-all-wiki-meta`. Atomic `git mv` of the 4 files + edit of the vault's `CLAUDE.md`. Run on all bootstrapped vaults.
+- **Session 3 (v0.12.2, planned)** — re-install the convention snippets (`wiki-query-first`, `roadmap-discipline`) on each vault so their per-vault `CLAUDE.md` references catch up to the new paths.
+
+Between Session 1 and Session 2, vaults still on the old layout cause the `hot-cache-load` and `wiki-query-first-nudge` hooks to silent-exit (detection probe `wiki-meta/index.md` fails). Accept this as the cost of clean break; alternative was carrying fallback logic indefinitely.
+
+### Changed
+
+- **`hooks/_helpers/workspace-vault.mjs` `detectVaultContext()`** — scaffold-detection probe switched from `wiki/index.md` to `wiki-meta/index.md`. Both `cwd-is-vault` and `workspace-bound` modes affected.
+- **`hooks/hot-cache-load.mjs`** — reads `<vault>/wiki-meta/hot.md` instead of `<vault>/wiki/hot.md`. Marker text (workspace-bound mode) updated accordingly.
+- **`hooks/wiki-query-first-nudge.mjs`** — nudge enumerates the 4 entry points as `wiki-meta/hot.md`, `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/overview.md`. Mode-aware read guidance covers both `wiki-meta/<scaffold>` and `wiki/<page>` so Claude knows the split.
+- **`hooks/hot-cache-update-prompt.mjs`** — trigger now scans `wiki/` AND `wiki-meta/` (`git diff` / `git log` against both paths). Refresh nudge text says "update `wiki-meta/hot.md`".
+- **`hooks/wiki-autocommit.mjs`** — added `wiki-meta` to `trackedDirs` array. Otherwise scaffold edits (notably the hot.md refresh) would silently fall outside autocommit coverage.
+- **`hooks/vault-link-linter.mjs`** — docstring examples updated; runtime logic unchanged (the linter already handles any `.md` inside a vault).
+- **`scripts/setup-vault.mjs --link-workspace`** — validation now requires `<vault>/wiki-meta/index.md`. Error message points at `--migrate-wiki-meta` (v0.12.1) for vaults on the legacy layout.
+- **`src/index.mjs`** — audit log (`OBSIDIAN_ROUTER_USER_ID`) appends to `<vault>/wiki-meta/log.md` instead of `<vault>/wiki/log.md`.
+- **`templates/wiki/{hot,index,log,overview}.md`** physically moved to **`templates/wiki-meta/{...}.md`** (4× `git mv`). Same for `templates/reference-vault-skeleton/wiki/{...}` → `wiki-meta/{...}` — the `wiki/` subdir under the skeleton is removed. `templates/wiki/CLAUDE.md` and `templates/reference-vault-skeleton/CLAUDE.md` stay where they are (vault-root CLAUDE.md, not a scaffold) but their CONTENT was updated to reference `wiki-meta/` for the 4 scaffolds and to explain the split.
+- **All `skills/` SKILL.md, `commands/`, `agents/`** mentioning the 4 scaffolds — bulk-swept (`wiki/<scaffold>.md` → `wiki-meta/<scaffold>.md`, 64 replacements across 17 files).
+- **Convention snippets** (`skills/conventions/snippets/wiki-query-first.md`, `roadmap-discipline.md`, `auto-enrichment.md`) — same sweep. Note: per-vault installed copies of these snippets need re-install via Session 3 to pick up the new paths.
+
+### Test count: **416/416 passing** (unchanged headcount — refactor + fixture path updates, no new tests this session).
+
+### Migration note for vault owners
+
+If your vault was bootstrapped before v0.12.0, the hooks `hot-cache-load` and `wiki-query-first-nudge` will be silent for that vault until you migrate. Quickest workaround pending the v0.12.1 script:
+
+```bash
+cd /path/to/your/vault
+mkdir wiki-meta
+git mv wiki/hot.md wiki-meta/hot.md
+git mv wiki/index.md wiki-meta/index.md
+git mv wiki/log.md wiki-meta/log.md
+git mv wiki/overview.md wiki-meta/overview.md
+# Then edit CLAUDE.md to swap the 4 wiki/<scaffold>.md refs for wiki-meta/<scaffold>.md
+```
+
+The automated `setup-vault.mjs --migrate-wiki-meta <vault-path>` ships in v0.12.1 and handles the CLAUDE.md edits too.
+
 ## [0.11.6] — 2026-05-23
 
 Closes the v0.11.5 gap Roland surfaced: the new `wiki-query-first-nudge` hook only detected vault context when cwd ITSELF contained `wiki/index.md`, missing the common case where the workspace is a code/dev project ASSOCIATED with a vault (e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router` ↔ vault `opsidian-mcp-router et bridge`). v0.11.6 introduces **workspace-bound mode**: hooks resolve an associated vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in the workspace `.env`, and operate against THAT vault's wiki when cwd has none. Also closes the related gap on `hot-cache-load` (now reads associated vault's `wiki/hot.md` with a marker).

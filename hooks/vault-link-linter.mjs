@@ -44,7 +44,7 @@
  *
  * Known gaps (intentional tradeoffs):
  *   - **Markdown links only**. Bare path tokens in prose, tables, or
- *     lists (e.g. a row like `| wiki/log.md | log file |`) are NOT
+ *     lists (e.g. a row like `| wiki-meta/log.md | log file |`) are NOT
  *     flagged. Detecting those would generate too many false positives
  *     on legitimate path mentions inside conversational text. The
  *     screenshot motivating this hook actually showed table-cell bare
@@ -330,7 +330,7 @@ if (lockedSlug) {
  * Returns null if no tier matches the active vault set.
  *
  * Used to bias `findOwningVault` toward the current vault when multiple
- * vaults could own the same relative file (e.g. `wiki/log.md` exists in
+ * vaults could own the same relative file (e.g. `wiki-meta/log.md` exists in
  * every router-bootstrapped vault). Codex P2 review finding 2026-05-23.
  */
 function resolveDefaultVaultPath() {
@@ -387,7 +387,7 @@ function safeDecodeURI(s) {
  *
  * Vault preference order:
  *   1. The `defaultVault` (per router config) — most likely correct in
- *      multi-vault setups where common files like `wiki/log.md` exist
+ *      multi-vault setups where common files like `wiki-meta/log.md` exist
  *      in every vault.
  *   2. Otherwise, first matching vault in `portRegistry` insertion order.
  *

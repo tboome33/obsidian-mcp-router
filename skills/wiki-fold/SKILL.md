@@ -15,7 +15,7 @@ Append-only rollup of `log.md` into hierarchical summary pages stored under `wik
 
 ## Pre-conditions
 
-1. Target vault has `wiki/log.md`.
+1. Target vault has `wiki-meta/log.md`.
 2. Vault is online.
 
 ## Steps
@@ -23,7 +23,7 @@ Append-only rollup of `log.md` into hierarchical summary pages stored under `wik
 ### 1. Read the log
 
 ```
-mcp__obsidian-router__get_file({ vault, path: "wiki/log.md" })
+mcp__obsidian-router__get_file({ vault, path: "wiki-meta/log.md" })
 ```
 
 Parse it into structured entries. The format from the `wiki` and `wiki-ingest` skills is:
@@ -100,7 +100,7 @@ last_entry: <ISO>
 ---
 ```
 
-**No `generated_at` field** — that's a wall-clock value and would break the byte-equivalence guarantee. The window is fully described by the deterministic fields above; you can always reconstruct *when* the fold was emitted by looking at the `wiki/log.md` entry written in step 7.
+**No `generated_at` field** — that's a wall-clock value and would break the byte-equivalence guarantee. The window is fully described by the deterministic fields above; you can always reconstruct *when* the fold was emitted by looking at the `wiki-meta/log.md` entry written in step 7.
 
 Body sections:
 
@@ -133,7 +133,7 @@ Re-running the same fold (same window definition) produces a byte-equivalent fil
 - Deterministic window-id from window definition
 - Sorted output sections (sort by count desc, then alphabetically)
 - ISO timestamps in `first_entry` / `last_entry` are pulled from the source log entries (not wall-clock)
-- No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki/log.md`, not in the fold itself)
+- No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki-meta/log.md`, not in the fold itself)
 
 **Operational enforcement (v0.8.10, T1.C)**: step 4.5 reads the existing file and skips the write+index+log triplet if the body is byte-equivalent after canonicalisation. The structural design + the operational check together mean: re-running `/wiki-fold` with the same window costs one read and zero writes.
 

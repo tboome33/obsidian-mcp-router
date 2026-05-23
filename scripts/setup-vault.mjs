@@ -1383,8 +1383,13 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   //       --unlink-workspace <workspace-path>
   //
   // Validation: vault-slug must exist in portRegistry AND the resolved
-  // vault must have a `wiki/index.md` (otherwise there's no point in
+  // vault must have a `wiki-meta/index.md` (otherwise there's no point in
   // binding — the hooks would skip silently anyway).
+  //
+  // v0.12.0: scaffold-detection probe is `wiki-meta/index.md` (was
+  // `wiki/index.md` pre-v0.12.0). Vaults still on the old layout need
+  // `setup-vault.mjs --migrate-wiki-meta <vault>` first (shipped in
+  // v0.12.1 — Session 2 of the phased rollout).
   const op = args[0];
   const wsArg = args[1];
   if (!wsArg) fail(`${op} requires a workspace path argument`);
@@ -1461,10 +1466,12 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
     const knownSlugs = paths.map((vp) => vaultNames[vp] || defaultNameFromPath(vp)).join(', ');
     fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownSlugs}`);
   }
-  if (!fs.existsSync(path.join(vaultPath, 'wiki', 'index.md'))) {
+  if (!fs.existsSync(path.join(vaultPath, 'wiki-meta', 'index.md'))) {
     fail(
-      `Vault "${vaultSlug}" exists in config but has no wiki/index.md at ${path.join(vaultPath, 'wiki', 'index.md')}.\n` +
-      `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill.`,
+      `Vault "${vaultSlug}" exists in config but has no wiki-meta/index.md at ${path.join(vaultPath, 'wiki-meta', 'index.md')}.\n` +
+      `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill, or if the vault is\n` +
+      `   on the legacy \`wiki/{hot,index,log,overview}.md\` layout (pre-v0.12.0), migrate it\n` +
+      `   with \`setup-vault.mjs --migrate-wiki-meta <vault-path>\` (shipped in v0.12.1).`,
     );
   }
 
@@ -1479,7 +1486,7 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
   console.log('');
   info('Restart Claude Code in this workspace to activate:');
-  info('  • hot-cache-load will print the associated vault\'s wiki/hot.md');
+  info('  • hot-cache-load will print the associated vault\'s wiki-meta/hot.md');
   info('  • wiki-query-first-nudge will inject pre-answer reminders');
   process.exit(0);
 }

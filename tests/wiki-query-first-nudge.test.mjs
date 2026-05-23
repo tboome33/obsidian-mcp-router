@@ -3,9 +3,10 @@
  *
  * Strategy: spawn the hook with synthetic stdin (UserPromptSubmit event)
  * + a temp cwd that may or may not look like a vault (presence of
- * `wiki/index.md`). Verify stdout JSON contains the additionalContext
- * nudge for substantive vault-bound prompts, and stdout is empty for
- * filtered cases (non-vault, trivial, slash command, opt-out).
+ * `wiki-meta/index.md`, v0.12.0+). Verify stdout JSON contains the
+ * additionalContext nudge for substantive vault-bound prompts, and
+ * stdout is empty for filtered cases (non-vault, trivial, slash command,
+ * opt-out).
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -21,14 +22,14 @@ const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'wiki-query-first-nudge.mjs');
 
 let workDir;
-let vaultCwd;        // contains wiki/index.md → treated as vault
+let vaultCwd;        // contains wiki-meta/index.md → treated as vault
 let nonVaultCwd;     // empty dir → treated as non-vault
 
 before(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wq-first-'));
   vaultCwd = fs.mkdtempSync(path.join(workDir, 'vault-'));
-  fs.mkdirSync(path.join(vaultCwd, 'wiki'), { recursive: true });
-  fs.writeFileSync(path.join(vaultCwd, 'wiki', 'index.md'), '# Index\n');
+  fs.mkdirSync(path.join(vaultCwd, 'wiki-meta'), { recursive: true });
+  fs.writeFileSync(path.join(vaultCwd, 'wiki-meta', 'index.md'), '# Index\n');
   nonVaultCwd = fs.mkdtempSync(path.join(workDir, 'plain-'));
 });
 
@@ -66,7 +67,7 @@ function runHook({ prompt = '', cwd = nonVaultCwd, env = {} } = {}) {
 // ---------------------------------------------------------------------------
 
 describe('wiki-query-first-nudge — silent (no nudge) cases', () => {
-  test('non-vault cwd (no wiki/index.md) → silent', () => {
+  test('non-vault cwd (no wiki-meta/index.md) → silent', () => {
     const r = runHook({ prompt: 'Comment fait-on X dans le projet ?', cwd: nonVaultCwd });
     assert.equal(r.status, 0);
     assert.equal(r.stdout.trim(), '');
@@ -163,7 +164,7 @@ describe('wiki-query-first-nudge — inject (nudge) cases', () => {
     assert.equal(r.parsed.hookSpecificOutput?.hookEventName, 'UserPromptSubmit');
     const ctx = r.parsed.hookSpecificOutput?.additionalContext || '';
     assert.match(ctx, /INVESTIGATION_REFLEX/);
-    assert.match(ctx, /wiki\/index\.md/);
+    assert.match(ctx, /wiki-meta\/index\.md/);
     assert.match(ctx, /search_smart/);
   });
 
@@ -225,7 +226,7 @@ describe('wiki-query-first-nudge — inject (nudge) cases', () => {
     });
     assert.equal(r.status, 0);
     const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-    for (const entry of ['wiki/hot.md', 'wiki/index.md', 'wiki/log.md', 'wiki/overview.md']) {
+    for (const entry of ['wiki-meta/hot.md', 'wiki-meta/index.md', 'wiki-meta/log.md', 'wiki-meta/overview.md']) {
       assert.match(ctx, new RegExp(entry.replace('.', '\\.')), `nudge should mention ${entry}`);
     }
   });
@@ -255,10 +256,10 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
     // Create a linked vault (separate from vaultCwd to avoid coupling
     // with the cwd-is-vault tests)
     linkedVault = fs.mkdtempSync(path.join(workDir, 'linked-vault-'));
-    fs.mkdirSync(path.join(linkedVault, 'wiki'), { recursive: true });
-    fs.writeFileSync(path.join(linkedVault, 'wiki', 'index.md'), '# Linked Index\n');
+    fs.mkdirSync(path.join(linkedVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(linkedVault, 'wiki-meta', 'index.md'), '# Linked Index\n');
 
-    // Create a code workspace (no wiki/)
+    // Create a code workspace (no wiki-meta/)
     codeWorkspace = fs.mkdtempSync(path.join(workDir, 'code-ws-'));
 
     // Router config registering the linked vault

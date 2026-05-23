@@ -6,7 +6,7 @@
  * Detects whether the current session is bound to an Obsidian vault in
  * one of two modes:
  *   - **cwd-is-vault**: the workspace itself is the vault (cwd contains
- *     `wiki/index.md`).
+ *     `wiki-meta/index.md`).
  *   - **workspace-bound** (v0.11.6+): the workspace is a code/dev
  *     project ASSOCIATED with a vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT`
  *     (set in the workspace `.env` by `setup-vault.mjs --link-workspace`).
@@ -87,15 +87,19 @@ if (TRIVIAL.test(trimmed)) process.exit(0);
 
 // ---- Compose the nudge (mode-aware) -----------------------------------
 // In cwd-is-vault mode, Claude can use either `Read` (filesystem) or
-// MCP tools. In workspace-bound mode, cwd has no `wiki/` so Claude MUST
-// use `mcp__obsidian-router__get_file({vault: "<slug>", path: ...})`.
+// MCP tools. In workspace-bound mode, cwd has no `wiki-meta/` so Claude
+// MUST use `mcp__obsidian-router__get_file({vault: "<slug>", path: ...})`.
 // We make this explicit in the nudge to prevent Claude from trying a
-// `Read("wiki/index.md")` that would fail with ENOENT in workspace-bound.
+// `Read("wiki-meta/index.md")` that would fail with ENOENT in
+// workspace-bound mode.
+//
+// v0.12.0: scaffold paths are `wiki-meta/{hot,index,log,overview}.md`,
+// user content (notes/pages) stays under `wiki/...`.
 
 const isWorkspaceBound = ctx.mode === 'workspace-bound';
 const readGuidance = isWorkspaceBound
-  ? `Use \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki/<file>" })\` to read vault files — the cwd has no \`wiki/\` directory, only the associated vault has the notes.`
-  : `Use \`Read\` on \`wiki/<file>\` directly (cwd IS the vault), or \`mcp__obsidian-router__get_file({ path: "wiki/<file>" })\` for the same result via MCP.`;
+  ? `Use \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/<scaffold>" or "wiki/<page>" })\` to read vault files — the cwd has no \`wiki-meta/\` or \`wiki/\` directory, only the associated vault has the notes.`
+  : `Use \`Read\` on \`wiki-meta/<scaffold>\` (or \`wiki/<page>\`) directly (cwd IS the vault), or \`mcp__obsidian-router__get_file({ path: "wiki-meta/<scaffold>" })\` for the same result via MCP.`;
 
 const searchGuidance = isWorkspaceBound
   ? `Run \`mcp__obsidian-router__search_smart({ vault: "${ctx.slug}", query: "<keywords>" })\` for semantic-fit topics.`
@@ -103,26 +107,37 @@ const searchGuidance = isWorkspaceBound
 
 const modeLine = isWorkspaceBound
   ? `This workspace (cwd) is a code/dev project ASSOCIATED with the Obsidian vault \`${ctx.slug}\` (path: \`${ctx.vaultPath}\`). The vault holds the notes — cwd is just the code.`
-  : `This workspace IS an Obsidian vault. The wiki lives under \`wiki/\` directly here.`;
+  : `This workspace IS an Obsidian vault. Scaffolds live under \`wiki-meta/\`; user pages live under \`wiki/\`.`;
+
+const indexReadHint = isWorkspaceBound
+  ? `Read \`wiki-meta/index.md\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/index.md" })\`.`
+  : `Read \`wiki-meta/index.md\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "wiki-meta/index.md" })\`.`;
 
 const nudge = [
   `INVESTIGATION_REFLEX (mode: ${ctx.mode}) — ${modeLine}`,
   '',
   'Before answering the user prompt, check whether the topic has been',
-  'discussed/documented in this vault. The 4 canonical entry points:',
+  'discussed/documented in this vault. The 4 canonical entry points',
+  '(scaffolds, separate from user content):',
   '',
-  '  • `wiki/hot.md`      — recent-context cache (likely already loaded',
-  '                          via the hot-cache-load session-start hook).',
-  '  • `wiki/index.md`    — full catalog of pages organized by folder',
-  '                          (people, concepts, sessions, decisions, refs,',
-  '                          projects). Scan this first for relevant pages.',
-  '  • `wiki/overview.md` — executive summary of vault scope + conventions.',
-  '  • `wiki/log.md`      — append-only operation history. Useful when',
-  '                          the user asks "what changed recently?".',
+  '  • `wiki-meta/hot.md`      — recent-context cache (likely already',
+  '                               loaded via the hot-cache-load',
+  '                               session-start hook).',
+  '  • `wiki-meta/index.md`    — full catalog of pages organized by folder',
+  '                               (people, concepts, sessions, decisions,',
+  '                               refs, projects). Scan this first.',
+  '  • `wiki-meta/overview.md` — executive summary of vault scope +',
+  '                               conventions.',
+  '  • `wiki-meta/log.md`      — append-only operation history. Useful',
+  '                               when the user asks "what changed',
+  '                               recently?".',
+  '',
+  'User notes/pages themselves live under `wiki/...` (e.g. `wiki/people/`,',
+  '`wiki/concepts/`, `wiki/projects/...`). Use the index to find them.',
   '',
   'Recommended pre-answer flow:',
   '',
-  `  1. ${readGuidance.replace('Use ', 'Read `wiki/index.md` first — ')}`,
+  `  1. ${indexReadHint}`,
   '  2. If a folder/page looks relevant, read it directly with the same',
   '     mechanism, gather the relevant sections.',
   `  3. ${searchGuidance}`,

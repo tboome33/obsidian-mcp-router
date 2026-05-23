@@ -2,16 +2,16 @@
 /**
  * hot-cache-load.mjs
  *
- * SessionStart / PostCompact hook. Loads the vault's `wiki/hot.md`
+ * SessionStart / PostCompact hook. Loads the vault's `wiki-meta/hot.md`
  * into Claude's context at session start (or after a context
  * compaction). Two modes (v0.11.6+):
  *
- *   - **cwd-is-vault**: cwd contains `wiki/hot.md` directly. Read it
+ *   - **cwd-is-vault**: cwd contains `wiki-meta/hot.md` directly. Read it
  *     and print to stdout (original behavior since v0.4.1).
  *
- *   - **workspace-bound**: cwd has no `wiki/`, but
+ *   - **workspace-bound**: cwd has no `wiki-meta/`, but
  *     `OBSIDIAN_ROUTER_DEFAULT_VAULT` (in workspace `.env` or env) maps
- *     to a configured vault that has a `wiki/hot.md`. Read THAT file
+ *     to a configured vault that has a `wiki-meta/hot.md`. Read THAT file
  *     and print, prefixed with a marker indicating which vault it came
  *     from so Claude knows the hot cache is the ASSOCIATED vault's,
  *     not the cwd's.
@@ -73,12 +73,14 @@ const ctx = detectVaultContext(cwd, cfg);
 if (!ctx) process.exit(0); // non-vault project, no associated vault — silent
 
 // ---- Read hot.md from the resolved vault path ------------------------
-const hotPath = path.join(ctx.vaultPath, 'wiki', 'hot.md');
+// v0.12.0: scaffold files now live under `wiki-meta/`, separate from
+// user content in `wiki/`. Clean break, no fallback.
+const hotPath = path.join(ctx.vaultPath, 'wiki-meta', 'hot.md');
 let hotContent;
 try {
   hotContent = fs.readFileSync(hotPath, 'utf8');
 } catch {
-  // The vault has wiki/index.md (detection passed) but no hot.md yet
+  // The vault has wiki-meta/index.md (detection passed) but no hot.md yet
   // — common before the user runs `/save` for the first time. Silent
   // exit so the absence isn't surfaced as an error.
   process.exit(0);

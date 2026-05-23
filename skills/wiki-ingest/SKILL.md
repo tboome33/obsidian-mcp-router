@@ -22,7 +22,7 @@ Take a source (URL, local file path, or pasted text) and do the structured work 
 ## When NOT to use
 
 - The user wants a quick answer without filing → just answer, don't ingest.
-- The source is already filed (check `wiki/index.md` for the title or URL) → tell them; offer to refresh instead.
+- The source is already filed (check `wiki-meta/index.md` for the title or URL) → tell them; offer to refresh instead.
 - The "source" is the current conversation → use the `save` skill instead.
 
 ## Steps
@@ -50,10 +50,10 @@ Don't extract everything. The wiki gets cluttered when ingestion is too eager. I
 
 For each entity/concept:
 
-- Does a wiki page already exist for it? Read `wiki/index.md` to check.
+- Does a wiki page already exist for it? Read `wiki-meta/index.md` to check.
   - **Exists** → you'll APPEND a section to that page, not create a new one.
   - **Doesn't exist** → you'll CREATE a new page.
-- What folder should it live in? Match the wiki's existing organization (read `wiki/index.md` structure). If unclear, default folders: `concepts/`, `entities/`, `sources/`, `projects/`.
+- What folder should it live in? Match the wiki's existing organization (read `wiki-meta/index.md` structure). If unclear, default folders: `concepts/`, `entities/`, `sources/`, `projects/`.
 
 Output a 1-paragraph plan to the user before writing files. They can correct misclassifications cheaply now.
 

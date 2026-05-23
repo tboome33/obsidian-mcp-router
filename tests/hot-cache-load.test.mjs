@@ -2,10 +2,10 @@
  * Tests for hooks/hot-cache-load.mjs (v0.11.6 dual-mode extension).
  *
  * Two modes covered:
- *   - cwd-is-vault: cwd has wiki/hot.md → print it (original behavior)
- *   - workspace-bound: cwd has no wiki/, but workspace .env sets
+ *   - cwd-is-vault: cwd has wiki-meta/hot.md → print it (original behavior)
+ *   - workspace-bound: cwd has no wiki-meta/, but workspace .env sets
  *     OBSIDIAN_ROUTER_DEFAULT_VAULT pointing to a configured vault that
- *     has wiki/hot.md → print THAT, prefixed with a marker comment
+ *     has wiki-meta/hot.md → print THAT, prefixed with a marker comment
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -21,8 +21,8 @@ const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'hot-cache-load.mjs');
 
 let workDir;
-let vaultDir;          // a real vault (has wiki/index.md + wiki/hot.md)
-let codeWorkspace;     // a code workspace (no wiki/) — will be linked to vaultDir via .env
+let vaultDir;          // a real vault (has wiki-meta/index.md + wiki-meta/hot.md)
+let codeWorkspace;     // a code workspace (no wiki-meta/) — will be linked to vaultDir via .env
 let plainCwd;          // non-vault, non-bound — should be silent
 let configPath;        // router config registering vaultDir
 
@@ -30,9 +30,9 @@ before(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hot-cache-load-'));
 
   vaultDir = path.join(workDir, 'my-vault');
-  fs.mkdirSync(path.join(vaultDir, 'wiki'), { recursive: true });
-  fs.writeFileSync(path.join(vaultDir, 'wiki', 'index.md'), '# Index\n');
-  fs.writeFileSync(path.join(vaultDir, 'wiki', 'hot.md'), '## Recent\n\n- did X\n- planning Y\n');
+  fs.mkdirSync(path.join(vaultDir, 'wiki-meta'), { recursive: true });
+  fs.writeFileSync(path.join(vaultDir, 'wiki-meta', 'index.md'), '# Index\n');
+  fs.writeFileSync(path.join(vaultDir, 'wiki-meta', 'hot.md'), '## Recent\n\n- did X\n- planning Y\n');
 
   codeWorkspace = path.join(workDir, 'code-workspace');
   fs.mkdirSync(codeWorkspace, { recursive: true });
@@ -91,7 +91,7 @@ function runHook({
 // ---------------------------------------------------------------------------
 
 describe('hot-cache-load — cwd-is-vault mode', () => {
-  test('prints wiki/hot.md when cwd IS the vault', () => {
+  test('prints wiki-meta/hot.md when cwd IS the vault', () => {
     const r = runHook({ cwd: vaultDir });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /## Recent/);
@@ -179,11 +179,11 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     assert.match(r.stdout, /workspace-bound mode/);
   });
 
-  test('silent when associated vault has no wiki/hot.md (but has wiki/index.md)', () => {
-    // Create another vault with wiki/index.md but no hot.md yet
+  test('silent when associated vault has no wiki-meta/hot.md (but has wiki-meta/index.md)', () => {
+    // Create another vault with wiki-meta/index.md but no hot.md yet
     const noHotVault = path.join(workDir, 'no-hot-vault');
-    fs.mkdirSync(path.join(noHotVault, 'wiki'), { recursive: true });
-    fs.writeFileSync(path.join(noHotVault, 'wiki', 'index.md'), '# Index\n');
+    fs.mkdirSync(path.join(noHotVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(noHotVault, 'wiki-meta', 'index.md'), '# Index\n');
 
     const otherConfig = path.join(workDir, 'no-hot-config.json');
     fs.writeFileSync(otherConfig, JSON.stringify({
@@ -204,7 +204,7 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     }
   });
 
-  test('cwd-is-vault takes precedence when cwd ALSO has wiki/ (no double-load)', () => {
+  test('cwd-is-vault takes precedence when cwd ALSO has wiki-meta/ (no double-load)', () => {
     // If somehow both conditions are true (cwd is a vault AND .env
     // links to another), cwd-is-vault wins (more specific). No marker.
     const r = runHook({

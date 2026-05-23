@@ -29,17 +29,17 @@ If the user didn't say, infer: short factual question = quick; "explain X" = sta
 ### Tier 1: hot.md
 
 ```
-mcp__obsidian-router__get_file({ vault, path: "wiki/hot.md" })
+mcp__obsidian-router__get_file({ vault, path: "wiki-meta/hot.md" })
 ```
 
-Read it. If the cache contains the answer (the question is covered by the recent activity), answer from hot alone. Cite `wiki/hot.md` as source. Stop.
+Read it. If the cache contains the answer (the question is covered by the recent activity), answer from hot alone. Cite `wiki-meta/hot.md` as source. Stop.
 
 If hot doesn't cover it: don't try to extract anything tangential. Move to tier 2.
 
 ### Tier 2: index.md — IDF-weighted candidate ranking
 
 ```
-mcp__obsidian-router__get_file({ vault, path: "wiki/index.md" })
+mcp__obsidian-router__get_file({ vault, path: "wiki-meta/index.md" })
 ```
 
 Score and rank index entries against the question using the algorithm below (the same one the router's `src/helpers/idf-score.mjs` module exposes for tools that need to score programmatically — keep the algorithm in sync so machine and skill agree).
@@ -119,7 +119,7 @@ If the user is in deep mode AND the synthesized answer is non-trivial:
    ---
    ```
 2. Body: the synthesized answer.
-3. Append to `wiki/index.md` and `wiki/log.md`.
+3. Append to `wiki-meta/index.md` and `wiki-meta/log.md`.
 4. Tell the user: "Filed this answer at `wiki/answers/<slug>.md` — future queries on this topic will hit it first."
 
 ## Anti-patterns
