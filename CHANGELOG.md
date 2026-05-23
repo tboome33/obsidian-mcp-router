@@ -8,6 +8,50 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.5] — 2026-05-23
+
+Closes a recurring path-confusion footgun in workspace-bound mode: when the workspace cwd and the associated vault share the same basename (e.g. `C:\Users\rolan\DEDIBOX` ↔ `C:\VAULTS\DEDIBOX`), Claude could generate filesystem paths that concatenate the cwd path with a vault-internal subpath (`wiki/`, `wiki-meta/`) — producing non-existent paths. The pre-existing `wiki-query-first-nudge` hook already warned `cwd ≠ vault` but didn't give the two absolute paths concretely or forbid the mix explicitly. v0.12.5 enriches the hook with a dynamic `PATH RESOLUTION RULES` block + ships a matching installable convention + a backup section in the global user CLAUDE.md.
+
+### Added
+
+#### Hook enhancement (deterministic, fires at every prompt-submit)
+
+- **New `PATH RESOLUTION RULES` block** in `hooks/wiki-query-first-nudge.mjs`, emitted only when `ctx.mode === 'workspace-bound'`. The block resolves the two absolute roots dynamically from the running context:
+  - `cwd` (workspace path, from hook input)
+  - `ctx.vaultPath` (associated vault path, from `OBSIDIAN_ROUTER_DEFAULT_VAULT` resolution)
+
+  and renders them inline with concrete WRONG/RIGHT examples that use the *actual* paths of the current session (not generic placeholders). Plus an ordered preference list: wikilink `[[basename]]` → click-to-open link → filesystem path (only when explicitly asked, double-checked).
+- **`defaultNameFromPath` now imported** from `hooks/_helpers/workspace-vault.mjs` to compute the shared basename for the explanation text (e.g. "they share the same basename `dedibox` but live under different parents").
+- In `cwd-is-vault` mode, the new block is suppressed entirely — there's only one root in that mode, no confusion possible.
+
+#### Installable convention (visible in vault CLAUDE.md)
+
+- **New convention snippet** `skills/conventions/snippets/path-disambiguation.md` (~3 KB) — install via `/obsidian-router:conventions install path-disambiguation`. Same content as the hook's PATH RESOLUTION RULES block but in static markdown form, so any contributor opening a CLAUDE.md sees the rule even without the hook running.
+- **Mapping table updated** in `skills/conventions/SKILL.md` — adds `path-disambiguation` to the documented library.
+
+#### Global user CLAUDE.md (backup layer)
+
+- **New section "Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath (universel)"** added to `~/.claude/CLAUDE.md` after the `Wiki-query-first reflex` section. Same content as the snippet, applies by default to every session whether or not the hook fires (covers opt-out via `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true`, settings.json missing hook entry, or hook silent failure).
+
+### Why
+
+Roland's verbatim trigger: *"avant tu m'as créé ce lien : `C:\Users\rolan\DEDIBOX/Stack/host.md` !!!!!!! lui c'est de la merde"* followed by *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*.
+
+The previous protection (wiki-query-first nudge with "cwd is a code/dev project, not the vault itself") was too generic — it told Claude the cwd and vault are different but didn't show the concrete paths side-by-side or forbid the trap pattern explicitly. With both paths visible (`C:\Users\rolan\DEDIBOX` next to `C:\VAULTS\DEDIBOX`) and a WRONG/RIGHT example using the actual session paths, the LLM has zero excuse to mix them — the trap is named, shown, and a safer default (wikilink `[[basename]]`) is recommended.
+
+Three layers of defense in depth, mirroring the `roadmap-discipline` v0.10.1 + `wiki-query-first` v0.11.6 patterns:
+1. **Hook** (deterministic, fires at every prompt-submit) — most reliable layer
+2. **Installable convention** (per-vault, visible in CLAUDE.md) — useful when sharing a vault or for contributors who turned off the hook
+3. **Global user CLAUDE.md** (every session) — backup for opt-out / hook failure
+
+### Backward compatible
+
+- **Hook change is additive** — same JSON output shape, just longer `additionalContext` payload (workspace-bound mode only). cwd-is-vault sessions get the identical pre-v0.12.5 nudge.
+- **Convention is opt-in** — vaults that don't install `path-disambiguation` see no change. The hook still injects the rule at prompt-submit for them via the global CLAUDE.md layer.
+- **No API change** — no new tools, no schema changes, no env vars added.
+- The hook can still be disabled per-session via `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true` (in which case only the global CLAUDE.md layer protects).
+- Test added: `tests/wiki-query-first-nudge.test.mjs` covers the new block (cwd-is-vault: no block emitted; workspace-bound: block present with both paths + WRONG/RIGHT example).
+
 ## [0.12.4] — 2026-05-23
 
 Adds automatic per-session journaling to the router. Splits "what happened during a session" (now auto-captured chronologically) from "what's worth keeping as a polished document" (still `/save`-triggered). Triggered by Roland noticing the `wiki/Sessions/` folder in the DEDIBOX vault and wanting full-auto journaling everywhere instead of manual `/save` for chronology.

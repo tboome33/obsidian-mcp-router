@@ -350,6 +350,62 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
     assert.equal(r.status, 0, r.stderr);
     assert.ok(r.parsed, `expected nudge with process.env winning: ${r.stdout}`);
   });
+
+  // v0.12.5 — PATH RESOLUTION RULES block (workspace-bound only)
+  test('workspace-bound nudge includes PATH RESOLUTION RULES block with both absolute roots', () => {
+    const { codeWorkspace, linkedVault, slug, configPath } = workspaceTestState;
+    fs.writeFileSync(path.join(codeWorkspace, '.env'),
+      `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+
+    // Header present
+    assert.match(ctx, /PATH RESOLUTION RULES \(workspace-bound — TWO ROOTS EXIST\)/);
+
+    // Both absolute roots resolved dynamically and printed in the output
+    // (use literal includes — these are real filesystem paths, not regex)
+    assert.ok(ctx.includes(codeWorkspace),
+      `expected nudge to mention cwd path ${codeWorkspace}, got:\n${ctx}`);
+    assert.ok(ctx.includes(linkedVault),
+      `expected nudge to mention vault path ${linkedVault}, got:\n${ctx}`);
+
+    // WRONG / RIGHT exemplars present
+    assert.match(ctx, /❌ WRONG/);
+    assert.match(ctx, /✅ RIGHT/);
+
+    // Preference order present (wikilink → click-to-open → filesystem)
+    assert.match(ctx, /\[\[basename\]\]/);
+    assert.match(ctx, /click-to-open/i);
+
+    // Shared basename callout
+    const sharedBasename = path.basename(linkedVault).replace(/^\./, '').toLowerCase();
+    assert.ok(ctx.includes(sharedBasename),
+      `expected shared basename "${sharedBasename}" in the nudge, got:\n${ctx}`);
+  });
+
+  test('cwd-is-vault nudge does NOT include PATH RESOLUTION RULES block (single root)', () => {
+    // Re-use a temp vault (cwd-is-vault mode → only one root, no confusion)
+    const isolatedVault = fs.mkdtempSync(path.join(workDir, 'iso-vault-'));
+    fs.mkdirSync(path.join(isolatedVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(isolatedVault, 'wiki-meta', 'index.md'), '# I\n');
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: isolatedVault,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+
+    assert.match(ctx, /mode: cwd-is-vault/);
+    assert.doesNotMatch(ctx, /PATH RESOLUTION RULES/,
+      `cwd-is-vault mode should NOT emit PATH RESOLUTION RULES (single root), got:\n${ctx}`);
+  });
 });
 
 // Module-level state shared between before() and tests in the

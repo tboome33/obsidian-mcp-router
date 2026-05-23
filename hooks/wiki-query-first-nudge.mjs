@@ -49,6 +49,7 @@ import {
   loadWorkspaceDotenv,
   readRouterConfig,
   detectVaultContext,
+  defaultNameFromPath,
 } from './_helpers/workspace-vault.mjs';
 
 // ---- Opt-out ----------------------------------------------------------
@@ -113,6 +114,58 @@ const indexReadHint = isWorkspaceBound
   ? `Read \`wiki-meta/index.md\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/index.md" })\`.`
   : `Read \`wiki-meta/index.md\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "wiki-meta/index.md" })\`.`;
 
+// v0.10.2: PATH RESOLUTION RULES (workspace-bound only)
+// Triggered by Roland 2026-05-23 after Claude generated a filesystem path
+// that concatenated the cwd path with a vault-internal subpath
+// (`C:\Users\rolan\DEDIBOX/Stack/host.md` instead of
+// `C:\VAULTS\DEDIBOX\wiki\Stack\host.md`). The cwd and the vault share
+// the same basename (DEDIBOX) but live under different parents — easy to
+// mix up at generation time. This block injects the two absolute roots
+// + concrete WRONG/RIGHT examples so the LLM sees the trap explicitly.
+//
+// Only emitted in workspace-bound mode — in cwd-is-vault mode the two
+// roots are identical so the confusion doesn't exist.
+const pathRulesBlock = isWorkspaceBound ? [
+  '',
+  'PATH RESOLUTION RULES (workspace-bound — TWO ROOTS EXIST)',
+  '',
+  'The cwd and the vault have DIFFERENT absolute paths. NEVER concatenate',
+  'the cwd path with a vault-internal subpath (`wiki/...`, `wiki-meta/...`)',
+  '— that produces a non-existent filesystem path. They share the same',
+  `basename (\`${defaultNameFromPath(ctx.vaultPath)}\`) but live under different parents.`,
+  '',
+  `  • Workspace cwd (code/dev repo):  ${cwd}`,
+  '    Files at THIS root: top-level code/data only (no `wiki/` or',
+  '    `wiki-meta/` subdirectory). Examples: README.md, package.json,',
+  '    scripts/, .env, source files specific to the code project.',
+  '',
+  `  • Vault root (Obsidian notes):    ${ctx.vaultPath}`,
+  '    Files at THIS root: `wiki/` (user pages), `wiki-meta/` (scaffolds),',
+  '    `.obsidian/` (Obsidian config). Notes live under',
+  '    `wiki/<folder>/<page>.md`.',
+  '',
+  'When referencing a vault page in chat, PREFER (in order):',
+  '',
+  '  1. Obsidian wikilink: `[[basename]]` — resolves by basename across',
+  '     the vault, survives file renames/moves. ✅ Best default.',
+  '  2. Click-to-open link: `[label](http://127.0.0.1:<insecurePort>/open/<url-encoded-vault-relative-path>)`',
+  '     — cf ~/.claude/CLAUDE.md "Obsidian vault links" section. Reads the',
+  `     port from \`${ctx.vaultPath}/.obsidian/plugins/obsidian-local-rest-api/data.json\``,
+  '     `insecurePort` field. ✅ When a clickable cross-vault link is needed.',
+  '  3. Absolute filesystem path: ONLY when explicitly requested AND',
+  `     double-checked. The vault root is \`${ctx.vaultPath}\`, NOT \`${cwd}\`.`,
+  '',
+  'CONCRETE EXAMPLE of the trap to avoid:',
+  '',
+  `  ❌ WRONG: \`${cwd}/wiki/Stack/host.md\``,
+  '            (mixes cwd path + vault-internal subpath — that folder',
+  '            does not exist; the cwd has no `wiki/` subdir)',
+  `  ❌ WRONG: \`${cwd}\\\\wiki\\\\Stack\\\\host.md\`  (same trap, all backslashes)`,
+  `  ✅ RIGHT: \`${ctx.vaultPath}\\\\wiki\\\\Stack\\\\host.md\`  (real vault path)`,
+  '  ✅ BEST:  `[[host]]`  (wikilink, basename resolution, no path concern)',
+  '',
+] : [];
+
 const nudge = [
   `INVESTIGATION_REFLEX (mode: ${ctx.mode}) — ${modeLine}`,
   '',
@@ -134,7 +187,7 @@ const nudge = [
   '',
   'User notes/pages themselves live under `wiki/...` (e.g. `wiki/people/`,',
   '`wiki/concepts/`, `wiki/projects/...`). Use the index to find them.',
-  '',
+  ...pathRulesBlock,
   'Recommended pre-answer flow:',
   '',
   `  1. ${indexReadHint}`,
