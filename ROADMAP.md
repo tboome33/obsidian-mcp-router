@@ -2,6 +2,19 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.11.5 — `wiki-query-first-nudge` UserPromptSubmit hook (shipped 2026-05-23)
+
+Closes the 3rd category of "Claude forgets a context rule at the moment of application" slip (after vault-link-linter v0.11.3 and doc-propagation-checker v0.11.4). New slip: in a vault-bound session, Claude answers user questions without first checking whether the topic has been discussed in the vault wiki. Same defense-in-depth pattern: convention + global CLAUDE.md + deterministic hook.
+
+- ✅ **`hooks/wiki-query-first-nudge.mjs`** — `UserPromptSubmit` hook. Detects vault workspace (`wiki/index.md` present) + substantive prompt (length, slash command, trivial regex) → injects 4-step pre-answer reminder via `additionalContext`.
+- ✅ **`skills/conventions/snippets/wiki-query-first.md`** — 7th installable convention (FR + EN).
+- ✅ **Global `~/.claude/CLAUDE.md`** — new section for default coverage across all sessions.
+- ✅ 15 tests. Activated on Roland's machine: settings.json + 10 vaults installed.
+
+Trigger: Roland 2026-05-23 — *"je veux créer une connexion RDP depuis mon PC maison vers mon PC cabinet via WireGuard"* dans une session DEDIBOX-vault. La session a lu `roadmap_dedibox.md` mais a manqué `wiki/Refs/dedibox-rdp-pc-cabinet.md` qui contenait la procédure exacte. Pattern reconnu : 3e slip de "recall règle context au moment de l'application", désormais codifié avec le même triple (convention + global + hook).
+
+Tests: **391/391** (was 376 at v0.11.4).
+
 ## ✅ v0.11.4 — `--install-hooks` family + `doc-propagation-checker` hook + new-hooks tips (shipped 2026-05-23)
 
 Closes Couche 1 + Couche 2 of the "router-as-assistant" vision: hooks shipped on disk but stayed dormant because activating them required hand-editing `~/.claude/settings.json`. This release ships the CLI + interactive prompt + new-hooks notification flow so users can opt in (or extend their selection) without ever touching JSON.

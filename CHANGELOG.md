@@ -8,6 +8,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.11.5] — 2026-05-23
+
+Closes the 3rd category of "Claude forgets a context rule at the moment of application" slip Roland has caught this year (after vault-link-linter v0.11.3 for clickable vault links and doc-propagation-checker v0.11.4 for post-commit doc drift). The new slip: in a vault-bound session, Claude answers user questions without first checking whether the topic has been discussed/documented in the vault wiki — wasting prior research, decisions, and references. Codified following the same 3-layer pattern: installable convention + global CLAUDE.md section + deterministic hook.
+
+### Added
+
+- **`hooks/wiki-query-first-nudge.mjs`** — new `UserPromptSubmit` hook. Fires BEFORE Claude sees the user's prompt. When the workspace is an Obsidian vault (detected by presence of `wiki/index.md`) AND the prompt looks substantive (not trivial follow-up, slash command, single-word ack), injects a reminder into Claude's context via `additionalContext` field (UserPromptSubmit spec). Reminder includes the 4-step pre-answer flow: (1) read `wiki/index.md`, (2) read relevant page directly, (3) `search_smart` for semantic-fit topics, (4) cite notes with click-to-open links. Conservative filtering: skips on length < 20 chars, slash command, regex match against trivial pattern (`oui|non|ok|d'?accord|merci|thanks|yes|no|continue|next|skip|pass|cancel|nevermind|nm`), and obviously empty prompts. 30s timeout respected (hook is ~10ms). Opt-out: `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true`.
+- **`skills/conventions/snippets/wiki-query-first.md`** — 7th installable convention (bilingual FR + EN). Detailed procedure, skip-conditions, anti-patterns, audit trail with Roland's DEDIBOX/RDP example. Installable via `/obsidian-router:conventions install wiki-query-first` on any vault.
+- **Global `~/.claude/CLAUDE.md` section "Wiki-query-first reflex"** — mirrors the convention as a globally-applied rule so it covers ALL sessions even without per-vault install. Same defense-in-depth pattern as `default-vault-health-check` (v0.10.0) and `roadmap-discipline` (v0.10.1).
+- **`tests/wiki-query-first-nudge.test.mjs`** — 15 tests covering: 10 silent cases (non-vault, empty/short/trivial prompt, slash command, opt-out env var, empty/malformed stdin, "OK"/"Continue" single-word) + 5 inject cases (substantive question, imperative, opt-out env var name visible in nudge, `CLAUDE_PROJECT_DIR` fallback, borderline-trivial with question mark > 20 chars).
+- **`hooks/hooks.example.json`** — new `UserPromptSubmit` block wired with the new hook.
+- **`skills/conventions/SKILL.md`** — convention mapping table extended 6 → 7 rows.
+
+### Activation
+
+Already done in this session's continuation: the hook is wired in Roland's `~/.claude/settings.json` `UserPromptSubmit` block. The convention is installed on all 10 configured vaults. The global CLAUDE.md section is in place. Fires from the next Claude Code restart onward.
+
+### Total test count: **391/391 passing** (was 376 at v0.11.4).
+
+### Trigger
+
+Roland 2026-05-23 observed in a DEDIBOX-vault session: he asked *"je veux créer une connexion RDP depuis mon PC maison vers mon PC cabinet via WireGuard"*. That session read `roadmap_dedibox.md` but missed `wiki/Refs/dedibox-rdp-pc-cabinet.md` which contained the exact procedure. He had to point manually: *"tu es allé consulter ceci `wiki/Refs/dedibox-rdp-pc-cabinet`?"*. The wiki-query-first reflex would have caught it — a `search_smart` on "RDP cabinet WireGuard" would have surfaced the note immediately. Pattern recognized: 3rd "context rule recall" slip this year, all 3 now codified with the same defense-in-depth approach.
+
+### Future enhancement (Couche 3 — multi-session)
+
+The `meta-config` skill (Phase 4.1) will let the user toggle these per-prompt hooks on/off without env vars or JSON editing. Tracked in [[router-ux-improvements-roadmap]].
+
 ## [0.11.4] — 2026-05-23
 
 Closes the "router-as-assistant" UX gap: hooks shipped on disk but stayed dormant because activating them required hand-editing `~/.claude/settings.json`. v0.11.4 ships a `--install-hooks` CLI family + `meta-setup` interactive prompt + new-hooks tips in the daily update check, so the user can opt in (or extend their selection) without ever touching JSON. Roland: *"il faut guider l'utilisateur pour qu'il active tout cela : mise à jour de la doc, git réguliers, liens valides vers les notes... Je veux que obsidian-router devienne un vrai assistant"* — this release closes Couche 1 + Couche 2 of that vision.

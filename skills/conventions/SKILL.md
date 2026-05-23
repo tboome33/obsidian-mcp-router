@@ -40,6 +40,7 @@ Mapping (initial library shipped with this skill):
 | `auto-enrichment.md` | `auto-enrichment` | `## Auto-enrichment (4 modes — \`ClaudeAsk\` / \`Hybrid\` / \`FullAuto\` / \`off\`)` |
 | `roadmap-discipline.md` | `roadmap-discipline` | `## Roadmap discipline — création + maintenance dans le vault courant` |
 | `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
+| `wiki-query-first.md` | `wiki-query-first` | `## Wiki-query-first reflex — check the vault BEFORE answering` |
 
 (Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
 
