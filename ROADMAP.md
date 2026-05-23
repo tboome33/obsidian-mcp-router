@@ -2,6 +2,19 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.11.6 — Workspace-bound vault mode (shipped 2026-05-23)
+
+Closes the v0.11.5 gap : hooks ne détectaient un vault context QUE quand cwd-IS-vault. Manquait le cas commun : workspace code/dev ASSOCIÉ à un vault. v0.11.6 introduit le mode `workspace-bound` via `OBSIDIAN_ROUTER_DEFAULT_VAULT` dans le `.env` du workspace.
+
+- ✅ **`hooks/_helpers/workspace-vault.mjs`** — module helper partagé (.env autoload + slug resolve + dual-mode context detection). Élimine duplication entre hooks.
+- ✅ **`hooks/wiki-query-first-nudge.mjs` dual-mode** — détection cwd-is-vault OR workspace-bound. Nudge mode-aware (Read vs MCP get_file selon le mode). Mentionne explicitement les 4 entry points canoniques (hot/index/log/overview).
+- ✅ **`hooks/hot-cache-load.mjs` dual-mode** — charge le hot.md du vault associé en mode workspace-bound, préfixé d'un marqueur HTML-comment expliquant l'origine.
+- ✅ **`scripts/setup-vault.mjs --link-workspace` + `--unlink-workspace`** — CLI pour binder un workspace à un vault sans éditer le `.env` à la main. Idempotent, valide slug + presence wiki/index.md.
+- ✅ Documentation : convention `wiki-query-first.md` + section globale `~/.claude/CLAUDE.md` refondues pour les 2 modes + 4 entry points + setup procedure.
+- ✅ 25 nouveaux tests (10 hot-cache-load + 8 wiki-query-first-nudge workspace-bound + 7 install-hooks --link-workspace). **416/416 ✅**.
+
+Trigger Roland : *"un workspace peut effectivement être un obsidian vault mais pas seulement. Un workspace peut être le développement d'une application complétement en dehors des repertoires du vault MAIS associé à un vault Obsidian"*. Pattern reconnu : la nuance était évidente après coup et le fix mature suit le même blueprint que v0.11.5.
+
 ## ✅ v0.11.5 — `wiki-query-first-nudge` UserPromptSubmit hook (shipped 2026-05-23)
 
 Closes the 3rd category of "Claude forgets a context rule at the moment of application" slip (after vault-link-linter v0.11.3 and doc-propagation-checker v0.11.4). New slip: in a vault-bound session, Claude answers user questions without first checking whether the topic has been discussed in the vault wiki. Same defense-in-depth pattern: convention + global CLAUDE.md + deterministic hook.

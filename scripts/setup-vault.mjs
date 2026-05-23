@@ -1295,6 +1295,12 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --uninstall-hooks                     Remove all router hooks from ~/.claude/settings.json
                                                               (preserves user-defined hooks)
   node setup-vault.mjs --hooks-status                        Report which router hooks are currently active
+  node setup-vault.mjs --link-workspace <path> <vault-slug>  Bind a code/dev workspace to a vault by writing
+                                                              OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug> into the
+                                                              workspace's .env. Activates workspace-bound mode
+                                                              for hot-cache-load + wiki-query-first-nudge hooks.
+  node setup-vault.mjs --unlink-workspace <path>             Remove the OBSIDIAN_ROUTER_DEFAULT_VAULT line from
+                                                              the workspace's .env (preserves other entries).
 `);
   process.exit(0);
 }
@@ -1362,6 +1368,119 @@ if (args[0] === '--uninstall-hooks') {
   for (const bn of result.removed) console.log(`    ${c('red', '-')} ${bn}`);
   console.log('');
   info('Restart Claude Code so the removed hooks stop firing.');
+  process.exit(0);
+}
+
+if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
+  // Bind a workspace (typically a code/dev project) to an Obsidian vault
+  // by writing `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` into the
+  // workspace's `.env`. This activates the v0.11.6+ "workspace-bound"
+  // mode in `hot-cache-load.mjs` (auto-loads the associated vault's
+  // hot.md) and `wiki-query-first-nudge.mjs` (injects pre-answer
+  // wiki-investigation reminder citing the associated vault).
+  //
+  // Args: --link-workspace <workspace-path> <vault-slug>
+  //       --unlink-workspace <workspace-path>
+  //
+  // Validation: vault-slug must exist in portRegistry AND the resolved
+  // vault must have a `wiki/index.md` (otherwise there's no point in
+  // binding — the hooks would skip silently anyway).
+  const op = args[0];
+  const wsArg = args[1];
+  if (!wsArg) fail(`${op} requires a workspace path argument`);
+  const wsPath = path.resolve(wsArg);
+  if (!fs.existsSync(wsPath)) fail(`Workspace path does not exist: ${wsPath}`);
+  if (!fs.statSync(wsPath).isDirectory()) fail(`Workspace path is not a directory: ${wsPath}`);
+  const envPath = path.join(wsPath, '.env');
+
+  // Sync inline dotenv upsert/remove (mirrors src/tools/lock.mjs lines
+  // 180-243 but sync — setup-vault.mjs is mostly sync, and async/await
+  // here would add no value).
+  function upsertEnvVarSync(file, key, value) {
+    let lines = [];
+    if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
+    let firstIdx = -1;
+    for (let i = 0; i < lines.length; i++) { if (keyRegex.test(lines[i])) { firstIdx = i; break; } }
+    const newLine = `${key}=${value}`;
+    if (firstIdx === -1) {
+      if (lines.length === 0 || lines[lines.length - 1] === '') {
+        const at = lines.length === 0 ? 0 : lines.length - 1;
+        lines.splice(at, 0, newLine);
+      } else {
+        lines.push(newLine);
+      }
+    } else {
+      lines[firstIdx] = newLine;
+    }
+    let out = lines.join('\n');
+    if (!out.endsWith('\n')) out += '\n';
+    fs.writeFileSync(file, out, 'utf8');
+  }
+  function removeEnvVarSync(file, key) {
+    if (!fs.existsSync(file)) return false;
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
+    const filtered = lines.filter((l) => !keyRegex.test(l));
+    if (filtered.length === lines.length) return false;
+    let out = filtered.join('\n');
+    if (!out.endsWith('\n')) out += '\n';
+    fs.writeFileSync(file, out, 'utf8');
+    return true;
+  }
+
+  if (op === '--unlink-workspace') {
+    const removed = removeEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
+    if (removed) {
+      ok(`Removed OBSIDIAN_ROUTER_DEFAULT_VAULT from ${envPath}`);
+      info('Restart Claude Code in this workspace so the hooks stop loading the previously-associated vault.');
+    } else {
+      info(`No OBSIDIAN_ROUTER_DEFAULT_VAULT entry in ${envPath} (or file absent). Nothing to do.`);
+    }
+    process.exit(0);
+  }
+
+  // --link-workspace : also requires the vault-slug arg
+  const vaultSlug = args[2];
+  if (!vaultSlug) fail('--link-workspace requires both <workspace-path> AND <vault-slug>');
+
+  const cfg = loadConfig();
+  const paths = Object.keys(cfg.portRegistry || {});
+  if (paths.length === 0) fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
+
+  // Resolve slug → vault path. Uses the same slug derivation as
+  // src/registry.mjs / hooks/_helpers/workspace-vault.mjs.
+  const vaultNames = cfg.vaultNames || {};
+  const targetSlug = vaultSlug.trim().toLowerCase();
+  let vaultPath = null;
+  for (const vp of paths) {
+    const slug = (vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase();
+    if (slug === targetSlug) { vaultPath = vp; break; }
+  }
+  if (!vaultPath) {
+    const knownSlugs = paths.map((vp) => vaultNames[vp] || defaultNameFromPath(vp)).join(', ');
+    fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownSlugs}`);
+  }
+  if (!fs.existsSync(path.join(vaultPath, 'wiki', 'index.md'))) {
+    fail(
+      `Vault "${vaultSlug}" exists in config but has no wiki/index.md at ${path.join(vaultPath, 'wiki', 'index.md')}.\n` +
+      `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill.`,
+    );
+  }
+
+  // Spaces in slug need quoting for shell-source compatibility (e.g.
+  // `set -a; source .env; set +a` in bash). The .env parser strips
+  // matched outer quotes on read.
+  const quotedValue = /\s/.test(vaultSlug) ? `"${vaultSlug}"` : vaultSlug;
+  upsertEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT', quotedValue);
+  ok(`Linked workspace ${wsPath}`);
+  console.log(`    ${c('green', '→')} ${envPath}`);
+  console.log(`    ${c('green', '→')} OBSIDIAN_ROUTER_DEFAULT_VAULT=${quotedValue}`);
+  console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
+  console.log('');
+  info('Restart Claude Code in this workspace to activate:');
+  info('  • hot-cache-load will print the associated vault\'s wiki/hot.md');
+  info('  • wiki-query-first-nudge will inject pre-answer reminders');
   process.exit(0);
 }
 

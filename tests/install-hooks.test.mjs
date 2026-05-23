@@ -250,6 +250,130 @@ describe('setup-vault.mjs --uninstall-hooks', () => {
 // --hooks-status
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// --link-workspace / --unlink-workspace (v0.11.6)
+// ---------------------------------------------------------------------------
+
+describe('setup-vault.mjs --link-workspace / --unlink-workspace (v0.11.6)', () => {
+  let lwWorkDir;
+  let validVault;        // vault with wiki/index.md (linkable)
+  let noWikiVault;       // vault in registry but no wiki/index.md (refuses)
+  let codeWorkspace;     // workspace to be linked
+  let lwConfigPath;
+
+  before(() => {
+    lwWorkDir = fs.mkdtempSync(path.join(workDir, 'lw-'));
+    validVault = path.join(lwWorkDir, 'my-vault');
+    fs.mkdirSync(path.join(validVault, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(validVault, 'wiki', 'index.md'), '# Index\n');
+
+    noWikiVault = path.join(lwWorkDir, 'empty-vault');
+    fs.mkdirSync(noWikiVault, { recursive: true });
+
+    codeWorkspace = path.join(lwWorkDir, 'code-ws');
+    fs.mkdirSync(codeWorkspace, { recursive: true });
+
+    lwConfigPath = path.join(lwWorkDir, 'config.json');
+    fs.writeFileSync(lwConfigPath, JSON.stringify({
+      portRegistry: { [validVault]: 28200, [noWikiVault]: 28201 },
+    }));
+  });
+
+  function runLink(args, env = {}) {
+    return spawnSync(process.execPath, [SCRIPT_PATH, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: lwConfigPath, ...env },
+    });
+  }
+
+  test('--link-workspace writes OBSIDIAN_ROUTER_DEFAULT_VAULT to workspace .env', () => {
+    const r = runLink(['--link-workspace', codeWorkspace, 'my-vault']);
+    assert.equal(r.status, 0, r.stderr);
+    const envContent = fs.readFileSync(path.join(codeWorkspace, '.env'), 'utf8');
+    assert.match(envContent, /OBSIDIAN_ROUTER_DEFAULT_VAULT=/);
+    assert.match(envContent, /my-vault/);
+  });
+
+  test('--link-workspace quotes the slug when it contains spaces', () => {
+    // Create a vault with a multi-word slug-style basename
+    const spacyDir = path.join(lwWorkDir, 'multi word vault');
+    fs.mkdirSync(path.join(spacyDir, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(spacyDir, 'wiki', 'index.md'), '# Index\n');
+
+    const spacyConfig = path.join(lwWorkDir, 'spacy-config.json');
+    fs.writeFileSync(spacyConfig, JSON.stringify({
+      portRegistry: { [spacyDir]: 28300 },
+    }));
+
+    const wsForSpacy = path.join(lwWorkDir, 'spacy-ws');
+    fs.mkdirSync(wsForSpacy, { recursive: true });
+
+    try {
+      const r = runLink(['--link-workspace', wsForSpacy, 'multi word vault'],
+        { OBSIDIAN_ROUTER_CONFIG: spacyConfig });
+      assert.equal(r.status, 0, r.stderr);
+      const envContent = fs.readFileSync(path.join(wsForSpacy, '.env'), 'utf8');
+      assert.match(envContent, /OBSIDIAN_ROUTER_DEFAULT_VAULT="multi word vault"/);
+    } finally {
+      fs.rmSync(spacyDir, { recursive: true, force: true });
+      fs.rmSync(wsForSpacy, { recursive: true, force: true });
+      fs.unlinkSync(spacyConfig);
+    }
+  });
+
+  test('--link-workspace preserves other keys in existing .env', () => {
+    const ws = fs.mkdtempSync(path.join(lwWorkDir, 'existing-env-'));
+    fs.writeFileSync(path.join(ws, '.env'),
+      'EXISTING_VAR=value\nANOTHER=other\n');
+    const r = runLink(['--link-workspace', ws, 'my-vault']);
+    assert.equal(r.status, 0, r.stderr);
+    const after = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+    assert.match(after, /EXISTING_VAR=value/);
+    assert.match(after, /ANOTHER=other/);
+    assert.match(after, /OBSIDIAN_ROUTER_DEFAULT_VAULT=my-vault/);
+  });
+
+  test('--link-workspace fails when vault-slug is not in portRegistry', () => {
+    const r = runLink(['--link-workspace', codeWorkspace, 'ghost-slug']);
+    assert.notEqual(r.status, 0);
+    const output = (r.stdout || '') + (r.stderr || '');
+    assert.match(output, /not in portRegistry/i);
+  });
+
+  test('--link-workspace fails when vault has no wiki/index.md', () => {
+    const r = runLink(['--link-workspace', codeWorkspace, 'empty-vault']);
+    assert.notEqual(r.status, 0);
+    const output = (r.stdout || '') + (r.stderr || '');
+    assert.match(output, /no wiki\/index\.md/i);
+  });
+
+  test('--link-workspace fails when workspace path does not exist', () => {
+    const r = runLink(['--link-workspace', '/this/does/not/exist/12345', 'my-vault']);
+    assert.notEqual(r.status, 0);
+    const output = (r.stdout || '') + (r.stderr || '');
+    assert.match(output, /does not exist/i);
+  });
+
+  test('--unlink-workspace removes ONLY OBSIDIAN_ROUTER_DEFAULT_VAULT line', () => {
+    const ws = fs.mkdtempSync(path.join(lwWorkDir, 'unlink-'));
+    fs.writeFileSync(path.join(ws, '.env'),
+      'KEEP=this\nOBSIDIAN_ROUTER_DEFAULT_VAULT=my-vault\nALSO_KEEP=that\n');
+    const r = runLink(['--unlink-workspace', ws]);
+    assert.equal(r.status, 0, r.stderr);
+    const after = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+    assert.match(after, /KEEP=this/);
+    assert.match(after, /ALSO_KEEP=that/);
+    assert.doesNotMatch(after, /OBSIDIAN_ROUTER_DEFAULT_VAULT/);
+  });
+
+  test('--unlink-workspace on workspace without .env reports no-op', () => {
+    const ws = fs.mkdtempSync(path.join(lwWorkDir, 'no-env-'));
+    const r = runLink(['--unlink-workspace', ws]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout + r.stderr, /Nothing to do|absent/i);
+  });
+});
+
 describe('setup-vault.mjs --hooks-status', () => {
   test('reports all hooks inactive on empty settings', () => {
     const r = runScript(['--hooks-status']);

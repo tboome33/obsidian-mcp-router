@@ -217,4 +217,141 @@ describe('wiki-query-first-nudge — inject (nudge) cases', () => {
     assert.equal(r.status, 0);
     assert.ok(r.parsed);
   });
+
+  test('nudge mentions all 4 canonical entry points (hot/index/log/overview)', () => {
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: vaultCwd,
+    });
+    assert.equal(r.status, 0);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    for (const entry of ['wiki/hot.md', 'wiki/index.md', 'wiki/log.md', 'wiki/overview.md']) {
+      assert.match(ctx, new RegExp(entry.replace('.', '\\.')), `nudge should mention ${entry}`);
+    }
+  });
+
+  test('nudge says cwd-is-vault for vault workspaces (mode label)', () => {
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: vaultCwd,
+    });
+    assert.equal(r.status, 0);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /mode: cwd-is-vault/);
+    assert.match(ctx, /workspace IS an Obsidian vault/);
+  });
 });
+
+// ---------------------------------------------------------------------------
+// v0.11.6 — workspace-bound mode (cwd is code project, .env links a vault)
+// ---------------------------------------------------------------------------
+
+describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
+  let codeWorkspace;
+  let linkedVault;
+  let configPath;
+
+  before(() => {
+    // Create a linked vault (separate from vaultCwd to avoid coupling
+    // with the cwd-is-vault tests)
+    linkedVault = fs.mkdtempSync(path.join(workDir, 'linked-vault-'));
+    fs.mkdirSync(path.join(linkedVault, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(linkedVault, 'wiki', 'index.md'), '# Linked Index\n');
+
+    // Create a code workspace (no wiki/)
+    codeWorkspace = fs.mkdtempSync(path.join(workDir, 'code-ws-'));
+
+    // Router config registering the linked vault
+    configPath = fs.mkdtempSync(path.join(workDir, 'cfg-')) + '/config.json';
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const slugFromPath = path.basename(linkedVault).replace(/^\./, '').toLowerCase();
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: { [linkedVault]: 28100 },
+    }));
+    // Stash slug for tests below
+    workspaceTestState = { codeWorkspace, linkedVault, slug: slugFromPath, configPath };
+  });
+
+  test('injects nudge when workspace .env links to a configured vault', () => {
+    const { codeWorkspace, slug, configPath } = workspaceTestState;
+    fs.writeFileSync(path.join(codeWorkspace, '.env'),
+      `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.parsed, `expected JSON output, got: ${r.stdout}`);
+    const ctx = r.parsed.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /mode: workspace-bound/);
+    assert.match(ctx, new RegExp(slug.replace(/-/g, '\\-')));
+  });
+
+  test('workspace-bound nudge instructs MCP get_file with vault: slug', () => {
+    const { codeWorkspace, slug, configPath } = workspaceTestState;
+    fs.writeFileSync(path.join(codeWorkspace, '.env'),
+      `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath },
+    });
+    assert.equal(r.status, 0);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /mcp__obsidian-router__get_file/);
+    assert.match(ctx, /vault:/);
+  });
+
+  test('silent when .env links to a slug not in portRegistry', () => {
+    const { codeWorkspace, configPath } = workspaceTestState;
+    fs.writeFileSync(path.join(codeWorkspace, '.env'),
+      `OBSIDIAN_ROUTER_DEFAULT_VAULT="ghost-vault"\n`);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '');
+  });
+
+  test('silent when cwd has no .env AND no env var set', () => {
+    const { codeWorkspace, configPath } = workspaceTestState;
+    // Make sure no .env exists
+    const envFile = path.join(codeWorkspace, '.env');
+    if (fs.existsSync(envFile)) fs.unlinkSync(envFile);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath, OBSIDIAN_ROUTER_DEFAULT_VAULT: '' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '');
+  });
+
+  test('process.env wins over .env file (dotenv semantics)', () => {
+    const { codeWorkspace, linkedVault, configPath } = workspaceTestState;
+    // .env points at a non-existent vault; process.env points at the real one
+    const realSlug = path.basename(linkedVault).replace(/^\./, '').toLowerCase();
+    fs.writeFileSync(path.join(codeWorkspace, '.env'),
+      `OBSIDIAN_ROUTER_DEFAULT_VAULT="ghost"\n`);
+
+    const r = runHook({
+      prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+      cwd: codeWorkspace,
+      env: { OBSIDIAN_ROUTER_CONFIG: configPath, OBSIDIAN_ROUTER_DEFAULT_VAULT: realSlug },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.parsed, `expected nudge with process.env winning: ${r.stdout}`);
+  });
+});
+
+// Module-level state shared between before() and tests in the
+// workspace-bound suite (Node test framework runs them in the same
+// process so this is safe).
+let workspaceTestState = null;

@@ -8,6 +8,42 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.11.6] — 2026-05-23
+
+Closes the v0.11.5 gap Roland surfaced: the new `wiki-query-first-nudge` hook only detected vault context when cwd ITSELF contained `wiki/index.md`, missing the common case where the workspace is a code/dev project ASSOCIATED with a vault (e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router` ↔ vault `opsidian-mcp-router et bridge`). v0.11.6 introduces **workspace-bound mode**: hooks resolve an associated vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in the workspace `.env`, and operate against THAT vault's wiki when cwd has none. Also closes the related gap on `hot-cache-load` (now reads associated vault's `wiki/hot.md` with a marker).
+
+### Added
+
+- **`hooks/_helpers/workspace-vault.mjs`** — new shared helper module. Exports `loadWorkspaceDotenv(cwd)`, `readRouterConfig()`, `routerConfigPath()`, `defaultNameFromPath(p)`, `resolveVaultBySlug(cfg, slug)`, `detectVaultContext(cwd, cfg)`. Pure functions where possible; I/O isolated to dotenv autoload + config read. Eliminates 3-way duplication of the same code across hooks. Used by `wiki-query-first-nudge.mjs` and `hot-cache-load.mjs`.
+- **`hooks/wiki-query-first-nudge.mjs` — dual-mode detection (v0.11.6)** — refactored to use `detectVaultContext()`. Returns one of `cwd-is-vault` / `workspace-bound` / null. Nudge text now mode-aware: in cwd-is-vault mode, instructs `Read("wiki/<file>")` (filesystem); in workspace-bound, instructs `mcp__obsidian-router__get_file({ vault: "<slug>", path: "wiki/<file>" })` (cwd has no wiki/). Nudge text explicitly enumerates the 4 canonical wiki entry points (hot/index/log/overview) with their purpose.
+- **`hooks/hot-cache-load.mjs` — workspace-bound mode (v0.11.6)** — refactored to use `detectVaultContext()`. In cwd-is-vault mode, prints `cwd/wiki/hot.md` (original behavior). In workspace-bound mode, prints the ASSOCIATED vault's `wiki/hot.md`, prefixed with an HTML-comment marker explaining the workspace ≠ vault setup and instructing Claude to use `mcp__obsidian-router__get_file` for further wiki reads (since `Read` on `wiki/X.md` would fail with ENOENT in workspace-bound). Silent exit when neither mode applies or when the resolved vault has `wiki/index.md` but no `wiki/hot.md` yet.
+- **`scripts/setup-vault.mjs --link-workspace <workspace-path> <vault-slug>`** — new CLI command to bind a code workspace to a vault. Writes `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` (auto-quoted when slug contains spaces) into the workspace's `.env`. Validates: workspace path exists + is a directory, vault-slug exists in `portRegistry`, vault has `wiki/index.md`. Preserves other `.env` keys via the same dotenv merge logic used by `lock_vault`. Idempotent.
+- **`scripts/setup-vault.mjs --unlink-workspace <workspace-path>`** — symmetric remove. Strips ONLY the `OBSIDIAN_ROUTER_DEFAULT_VAULT=` line, preserves all others. Silent no-op if .env absent or key not set.
+- **`tests/hot-cache-load.test.mjs`** (NEW) — 10 tests covering both modes (cwd-is-vault regression + workspace-bound activation, marker presence, stdin cwd field, env var fallback, silent on unresolvable slug, silent when vault has no hot.md yet, cwd-is-vault precedence over .env link).
+- **`tests/wiki-query-first-nudge.test.mjs`** extended with 8 new tests (+ workspace-bound suite): nudge mentions 4 entry points, mode label is "cwd-is-vault", workspace-bound activation, MCP get_file instructions in workspace-bound nudge, silent on unresolvable slug, silent without .env or env var, process.env wins over .env file.
+- **`tests/install-hooks.test.mjs`** extended with 8 new tests for `--link-workspace` / `--unlink-workspace`: write to fresh .env, quote spacy slugs, preserve other keys, fail on unknown slug / vault without wiki/index.md / non-existent workspace path, remove preserves other lines, no-op without .env.
+- **`skills/conventions/snippets/wiki-query-first.md`** — refreshed to document both modes + setup procedure (`--link-workspace`) + 4 entry points.
+- **`~/.claude/CLAUDE.md` global "Wiki-query-first reflex (universel)"** — same updates mirrored.
+
+### Total test count: **416/416 passing** (was 391 at v0.11.5).
+
+### Activation for Roland's setup
+
+Run from the router repo for each code workspace that's associated with a vault:
+```bash
+cd <router-repo>
+node scripts/setup-vault.mjs --link-workspace . "opsidian-mcp-router et bridge"
+# (already run on I:\DEVELOPPEMENT\obsidian-mcp-router during this session)
+
+# Repeat for other code workspaces (SMILE, PORTFOLIO-NICOLAS, etc.)
+```
+
+After restart, hot-cache-load auto-prints the associated vault's hot.md (with marker), and wiki-query-first-nudge fires with mode-aware instructions.
+
+### Trigger
+
+Roland 2026-05-23: *"un workspace peut être effectivement un obsidian vault mais pas seulement. Un workspace peut être le développement d'une application complétement en dehors des repertoires du vault MAIS associé à un vault Obsidian. Tu comprends la nuance ?"* — followed by *"les points d'entrée des vaults associés à un workspace : hot, index, log et overview seront t'ils bien pris en compte ?"*. Both gaps closed in this release.
+
 ## [0.11.5] — 2026-05-23
 
 Closes the 3rd category of "Claude forgets a context rule at the moment of application" slip Roland has caught this year (after vault-link-linter v0.11.3 for clickable vault links and doc-propagation-checker v0.11.4 for post-commit doc drift). The new slip: in a vault-bound session, Claude answers user questions without first checking whether the topic has been discussed/documented in the vault wiki — wasting prior research, decisions, and references. Codified following the same 3-layer pattern: installable convention + global CLAUDE.md section + deterministic hook.

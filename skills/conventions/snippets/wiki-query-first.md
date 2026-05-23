@@ -6,13 +6,27 @@ This rule tells Claude that **in a session where the workspace IS an Obsidian va
 
 ### Trigger
 
-Toute question substantielle de l'user dans une session vault-bound. Une question est "substantielle" si elle dépasse le suivi trivial (oui/non/ok/merci/continue/lettre seule), n'est pas une slash command (`/...`), et n'est pas un fix typo / control reply.
+Toute question substantielle de l'user dans une session **vault-bound** dans l'un des 2 modes :
+
+- **cwd-is-vault** : le workspace lui-même EST un vault Obsidian (cwd contient `wiki/index.md`).
+- **workspace-bound** (v0.11.6+) : le workspace est un projet code/dev ASSOCIÉ à un vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` dans le `.env` du workspace. Setup une fois via : `node <router-repo>/scripts/setup-vault.mjs --link-workspace <workspace-path> <vault-slug>`.
+
+Une question est "substantielle" si elle dépasse le suivi trivial (oui/non/ok/merci/continue/lettre seule), n'est pas une slash command (`/...`), et n'est pas un fix typo / control reply.
+
+### Les 4 entry points canoniques du vault
+
+Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki/` :
+
+- **`wiki/hot.md`** — cache de contexte récent, déjà chargé au session start via le hook `hot-cache-load` (en cwd-is-vault) ou via `hot-cache-load` workspace-bound (en associated mode, préfixé d'un marqueur indiquant la provenance).
+- **`wiki/index.md`** — catalogue complet des pages organisées par dossier/projet. Le point d'entrée principal pour scanner ce qui existe.
+- **`wiki/overview.md`** — résumé exécutif du vault (scope, conventions, état actuel).
+- **`wiki/log.md`** — historique append-only des opérations. Utile pour répondre à "qu'est-ce qui a changé récemment ?".
 
 ### Procédure obligatoire — pre-answer flow
 
-1. **Catalog scan** : lire `wiki/index.md` pour voir le catalogue des pages organisées par projet/dossier. Identifier les sections potentiellement liées au prompt.
-2. **Direct read** : si une page semble pertinente, la lire directement via `mcp__obsidian-router__get_file`.
-3. **Semantic search** : pour des sujets fit-by-meaning (pas par exact keyword match), lancer `mcp__obsidian-router__search_smart` avec les keywords du prompt (omit `vault:` pour utiliser le default vault).
+1. **Catalog scan** : lire `wiki/index.md`. En **cwd-is-vault**, via `Read("wiki/index.md")` (filesystem direct). En **workspace-bound**, via `mcp__obsidian-router__get_file({ vault: "<slug>", path: "wiki/index.md" })` — le cwd n'a pas de `wiki/`, seul le vault associé en a un.
+2. **Direct read** : si une page semble pertinente, la lire avec la même mécanique (`Read` ou `get_file` selon le mode).
+3. **Semantic search** : pour des sujets fit-by-meaning, lancer `mcp__obsidian-router__search_smart`. En **cwd-is-vault** omit `vault:` (utilise le default = cwd). En **workspace-bound** passer `vault: "<slug>"` explicite pour cibler le vault associé.
 4. **Cite + enrich** : référencer les notes trouvées dans la réponse en utilisant le format click-to-open (`[label](http://127.0.0.1:<insecurePort>/open/<URL-encoded-path>)` — voir la convention `Obsidian vault links` du CLAUDE.md global). Bâtir la réponse au-dessus du contexte existant plutôt que from scratch.
 
 ### Skip-conditions (légitimes — pas besoin de wiki-query)
@@ -31,7 +45,19 @@ Toute question substantielle de l'user dans une session vault-bound. Une questio
 
 ### Mécanisme technique
 
-Le hook `wiki-query-first-nudge.mjs` (UserPromptSubmit, v0.11.5+) injecte automatiquement un rappel dans le contexte de Claude au moment où l'user submit son prompt, SI le workspace est un vault ET le prompt est substantiel. Defense-in-depth contre l'oubli — la règle est dans le contexte (via cette convention installable + le `~/.claude/CLAUDE.md` global), mais le hook garantit que le trigger fire au bon moment, hors LLM attention loop.
+Le hook `wiki-query-first-nudge.mjs` (UserPromptSubmit, v0.11.5+) injecte automatiquement un rappel dans le contexte de Claude au moment où l'user submit son prompt, SI le workspace est un vault (cwd-is-vault) OU si workspace-bound via `OBSIDIAN_ROUTER_DEFAULT_VAULT` (v0.11.6+), ET si le prompt est substantiel. Le hook `hot-cache-load.mjs` (SessionStart, v0.11.6+) charge automatiquement le `wiki/hot.md` du vault associé en mode workspace-bound. Defense-in-depth contre l'oubli — la règle est dans le contexte (via cette convention installable + le `~/.claude/CLAUDE.md` global), mais le hook garantit que le trigger fire au bon moment, hors LLM attention loop.
+
+**Setup pour le mode workspace-bound** :
+```bash
+cd <router-repo>
+node scripts/setup-vault.mjs --link-workspace <workspace-path> "<vault-slug>"
+# → écrit OBSIDIAN_ROUTER_DEFAULT_VAULT="<vault-slug>" dans <workspace-path>/.env
+```
+
+Pour retirer le lien :
+```bash
+node scripts/setup-vault.mjs --unlink-workspace <workspace-path>
+```
 
 Opt-out per-session : `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true`.
 
