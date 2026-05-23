@@ -2,6 +2,33 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.12.2 — Verification + multi-location CLAUDE.md rewrite (Session 3, shipped 2026-05-23)
+
+Session 3 ferme l'arc v0.12.0 (3 sessions). Audit complet des 9 vaults migrés, conclusion : aucune dérive textuelle dans les CLAUDE.mds, le path swap de v0.12.1 + l'install précédente de v0.11.6 ont déjà tout aligné. Refresh des conventions = no-op. Verification end-to-end OK (le hook `wiki-query-first-nudge` a fired correctement en mode workspace-bound dans la session de verification).
+
+### Findings audit
+
+- **8/9 vaults** ont une CLAUDE.md, **tous propres** : 0 stale `wiki/<scaffold>.md` paths + 6 mentions workspace-bound (v0.11.6 convention déjà installée).
+- **1 vault** (SCI) n'a pas de CLAUDE.md — par choix de Roland (deleted in previous audit).
+- **wiki/ dirs** : 7/9 vaults n'en ont plus (cleanés post-migration), 2/9 préservés correctement avec user content (DEDIBOX = `wiki/Refs/`, project-router = `wiki/obsidian-mcp-router/`).
+- **CLAUDE.md placements détectés** : 4 vaults sous `Documentation/CLAUDE.md`, 4 vaults sous `wiki-meta/CLAUDE.md`. Pattern non-standard mais cohérent.
+
+### Code changes
+
+- ✅ **`rewriteClaudeMdScaffoldPaths()` étendu** — scan 3 emplacements communs (`<vault>/CLAUDE.md`, `<vault>/wiki-meta/CLAUDE.md`, `<vault>/Documentation/CLAUDE.md`). Returns total replacement count across all copies. Défensif pour les vaults futurs qui auraient un CLAUDE.md non-standard. Idempotent + backward-compatible.
+- ✅ **3 nouveaux tests** dans `tests/migrate-wiki-meta.test.mjs` : rewrite dans wiki-meta/CLAUDE.md, dans Documentation/CLAUDE.md, et across multiple copies en une seule run avec count cumulé.
+
+Tests: **434/434 ✅** (was 431 at v0.12.1 ; +3).
+
+### Arc v0.12.0 — closed
+
+3 releases sur 2026-05-23 :
+- **v0.12.0** — code refactor (clean break) + templates moved + tests + docs.
+- **v0.12.1** — migration script + run sur 10 vaults (9 migrés, 1 skipped).
+- **v0.12.2** — verification + multi-location CLAUDE.md fix.
+
+Layout `wiki-meta/` (scaffolds) vs `wiki/` (user content) est désormais la convention établie. Futurs scaffolds + conventions atterrissent dans `wiki-meta/` ; notes utilisateurs restent sous `wiki/`.
+
 ## ✅ v0.12.1 — Migration script + run sur les 10 vaults (Session 2, shipped 2026-05-23)
 
 Session 2 du rollout phasé v0.12.0. Ferme la "broken window" laissée à v0.12.0 : les 10 vaults existants étaient sur l'ancien layout `wiki/<scaffold>.md` et les hooks `hot-cache-load` + `wiki-query-first-nudge` y étaient silencieux. Cette release ship le script de migration + run.

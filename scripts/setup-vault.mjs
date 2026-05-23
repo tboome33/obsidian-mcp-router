@@ -271,16 +271,41 @@ function moveScaffold(vaultPath, filename, useGit) {
  * `wiki/X.md` mentions (user content like `wiki/decisions/foo.md` is
  * preserved).
  */
+/**
+ * Common locations where CLAUDE.md may live, in priority order:
+ *   1. `<vault>/CLAUDE.md` — standard Claude Code workspace location
+ *   2. `<vault>/wiki-meta/CLAUDE.md` — Roland's "meta lives in wiki-meta"
+ *      convention, observed on 5+ of his vaults post-migration
+ *   3. `<vault>/Documentation/CLAUDE.md` — another Roland convention for
+ *      a few vaults
+ *
+ * v0.12.2: extended from "just vault root" to also include wiki-meta/ and
+ * Documentation/ after the v0.12.1 migration audit revealed Roland's
+ * 9 vaults had CLAUDE.md scattered across these three locations. Returning
+ * an ARRAY of paths (all that exist) so the rewrite touches every copy
+ * instead of just the first one — defensive in case a user has multiple.
+ */
+function findClaudeMdCandidates(vaultPath) {
+  return [
+    path.join(vaultPath, 'CLAUDE.md'),
+    path.join(vaultPath, 'wiki-meta', 'CLAUDE.md'),
+    path.join(vaultPath, 'Documentation', 'CLAUDE.md'),
+  ].filter((p) => fs.existsSync(p));
+}
+
 function rewriteClaudeMdScaffoldPaths(vaultPath) {
-  const claudeMd = path.join(vaultPath, 'CLAUDE.md');
-  if (!fs.existsSync(claudeMd)) return 0;
-  const before = fs.readFileSync(claudeMd, 'utf8');
-  const after = before.replace(/wiki\/(hot|index|log|overview)\.md/g, 'wiki-meta/$1.md');
-  if (after === before) return 0;
-  fs.writeFileSync(claudeMd, after, 'utf8');
-  // Count the diff to report.
-  const count = (before.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
-  return count;
+  // v0.12.2: rewrite across ALL discovered CLAUDE.md copies (vault root,
+  // wiki-meta/, Documentation/). Returns the total replacement count
+  // across all files. Each file is read+rewritten+written atomically.
+  let total = 0;
+  for (const claudeMd of findClaudeMdCandidates(vaultPath)) {
+    const before = fs.readFileSync(claudeMd, 'utf8');
+    const after = before.replace(/wiki\/(hot|index|log|overview)\.md/g, 'wiki-meta/$1.md');
+    if (after === before) continue;
+    fs.writeFileSync(claudeMd, after, 'utf8');
+    total += (before.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
+  }
+  return total;
 }
 
 /**
@@ -378,13 +403,17 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
   }
 
   // Rewrite CLAUDE.md scaffold paths (idempotent).
+  // v0.12.2: searches vault root + wiki-meta/ + Documentation/ (see
+  // findClaudeMdCandidates) so vaults with non-standard CLAUDE.md
+  // placement still get their paths rewritten.
   if (dryRun) {
-    // Compute what WOULD change without writing.
-    const claudeMd = path.join(vaultPath, 'CLAUDE.md');
-    if (fs.existsSync(claudeMd)) {
+    // Compute what WOULD change across ALL discovered CLAUDE.md copies.
+    let total = 0;
+    for (const claudeMd of findClaudeMdCandidates(vaultPath)) {
       const content = fs.readFileSync(claudeMd, 'utf8');
-      result.claudeMdReplacements = (content.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
+      total += (content.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
     }
+    result.claudeMdReplacements = total;
   } else {
     result.claudeMdReplacements = rewriteClaudeMdScaffoldPaths(vaultPath);
   }

@@ -8,6 +8,49 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.2] — 2026-05-23
+
+Session 3 of the v0.12.0 phased rollout. Closes the three-session arc with verification + a defensive code improvement to the migration script.
+
+### Audit result on Roland's 9 migrated vaults (post-v0.12.1)
+
+Scanned every `CLAUDE.md` found within 2 levels of each vault root. Result:
+
+| Vault | CLAUDE.md location | Stale `wiki/<scaffold>.md` | `wiki-meta/` refs | workspace-bound mentions |
+|---|---|---|---|---|
+| .template | `Documentation/CLAUDE.md` | 0 | 25 | 6 |
+| TradingView | `Documentation/CLAUDE.md` | 0 | 25 | 6 |
+| Roland | `wiki-meta/CLAUDE.md` | 0 | 15 | 6 |
+| SCI DU SOURIRE | (none) | — | — | — |
+| portfolio.nicolasgalzy.fr | `wiki-meta/CLAUDE.md` | 0 | 25 | 6 |
+| Smile | `wiki-meta/CLAUDE.md` | 0 | 25 | 6 |
+| portfolio.ameliegalzy.fr | `Documentation/CLAUDE.md` | 0 | 25 | 6 |
+| DEDIBOX | `wiki-meta/CLAUDE.md` | 0 | 25 | 6 |
+| opsidian-mcp-router et bridge | `wiki-meta/CLAUDE.md` | 0 | 25 | 6 |
+
+**Findings**:
+- 8/9 vaults have a `CLAUDE.md`. The 9th (`SCI`) intentionally has none (deleted in a previous audit).
+- **All 8 are already current**: 0 stale `wiki/<scaffold>.md` paths + 6 workspace-bound mentions = the v0.11.6 convention text is present in every vault.
+- The "convention refresh" task originally planned for Session 3 is therefore a **no-op** — the path swap in v0.12.1 already cleaned scaffold paths, and the v0.11.6 install (run at the time) put the workspace-bound section in place across the fleet.
+- `wiki/` directories: 7 are gone (auto-cleaned post-migration), 2 (DEDIBOX + project-router) correctly preserved for user content (Refs/, Decisions/, project notes).
+- The `wiki-query-first-nudge` hook fired correctly in workspace-bound mode in the verification session — end-to-end functionality confirmed.
+
+### Changed
+
+- **`scripts/setup-vault.mjs` `rewriteClaudeMdScaffoldPaths(vaultPath)`** — extended from "vault root only" to scan three common locations: `<vault>/CLAUDE.md`, `<vault>/wiki-meta/CLAUDE.md`, `<vault>/Documentation/CLAUDE.md`. Rewrites scaffold paths in every copy found, returns the total replacement count across all. Defensive enhancement triggered by the Session 3 audit (the migration's path rewrite would otherwise miss Roland's vaults where CLAUDE.md is not at root). Idempotent and backward-compatible: vaults with CLAUDE.md at root continue to work exactly as before.
+- **`tests/migrate-wiki-meta.test.mjs`** — 3 new tests for the multi-location branch: rewrite in `wiki-meta/CLAUDE.md`, rewrite in `Documentation/CLAUDE.md`, rewrite across two CLAUDE.md copies at once with summed count.
+
+### Test count: **434/434 passing** (was 431 at v0.12.1; +3 multi-location tests).
+
+### Phased rollout v0.12.0 — closed
+
+Three releases over 2026-05-23:
+- **v0.12.0** — code refactor (hooks + scripts + src all probe `wiki-meta/`), templates moved, tests + docs updated. Clean break, no fallback.
+- **v0.12.1** — `setup-vault.mjs --migrate-wiki-meta` + batch form. Ran on Roland's 10 vaults: 9 migrated (1 git mv, 8 fs rename), 1 skipped (Coursera, never bootstrapped).
+- **v0.12.2** — verification + multi-location CLAUDE.md rewrite.
+
+The vault layout (`wiki-meta/` for scaffolds, `wiki/` for user content) is now the established convention. Future scaffolds and conventions land in `wiki-meta/`; user notes stay under `wiki/`.
+
 ## [0.12.1] — 2026-05-23
 
 Session 2 of the v0.12.0 phased rollout: ships the migration tooling and runs it across the 10 existing vaults. Closes the broken-window state left at v0.12.0 (hooks were silent on vaults still using the legacy `wiki/<scaffold>.md` layout).

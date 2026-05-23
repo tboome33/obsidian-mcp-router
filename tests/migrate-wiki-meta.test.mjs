@@ -225,6 +225,63 @@ describe('migrate-wiki-meta — dry-run', () => {
   });
 });
 
+describe('migrate-wiki-meta — multi-location CLAUDE.md (v0.12.2)', () => {
+  test('rewrites scaffold paths in <vault>/wiki-meta/CLAUDE.md (Roland layout)', () => {
+    // Roland's vaults often have CLAUDE.md UNDER wiki-meta/, not at root.
+    // v0.12.2's findClaudeMdCandidates should still find + rewrite it.
+    const vp = makeVault('legacy');
+    // Move CLAUDE.md into wiki-meta/ to simulate Roland's layout. Note:
+    // makeVault doesn't create CLAUDE.md by default; we need to place one
+    // explicitly under wiki-meta/ (which will exist after migration creates
+    // it). Easier: write a wiki-meta/CLAUDE.md upfront — the script will
+    // mkdir-p the dir.
+    fs.mkdirSync(path.join(vp, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(vp, 'wiki-meta', 'CLAUDE.md'),
+      `# Vault rules\n\nRead wiki/hot.md.\nThen wiki/index.md.\n`);
+
+    const r = runScript('--migrate-wiki-meta', vp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const after = fs.readFileSync(path.join(vp, 'wiki-meta', 'CLAUDE.md'), 'utf8');
+    assert.match(after, /wiki-meta\/hot\.md/);
+    assert.match(after, /wiki-meta\/index\.md/);
+    assert.doesNotMatch(after, /wiki\/(hot|index)\.md/);
+  });
+
+  test('rewrites scaffold paths in <vault>/Documentation/CLAUDE.md', () => {
+    // Other Roland vaults have CLAUDE.md under Documentation/.
+    const vp = makeVault('legacy');
+    fs.mkdirSync(path.join(vp, 'Documentation'), { recursive: true });
+    fs.writeFileSync(path.join(vp, 'Documentation', 'CLAUDE.md'),
+      `# Docs\n\nFile to wiki/log.md after each session.\n`);
+
+    const r = runScript('--migrate-wiki-meta', vp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const after = fs.readFileSync(path.join(vp, 'Documentation', 'CLAUDE.md'), 'utf8');
+    assert.match(after, /wiki-meta\/log\.md/);
+    assert.doesNotMatch(after, /wiki\/log\.md/);
+  });
+
+  test('rewrites across MULTIPLE CLAUDE.md copies in one run', () => {
+    // Edge case: vault has CLAUDE.md at BOTH root AND wiki-meta/. Both get
+    // rewritten in the same migration; reported count is the sum.
+    const claudeMdContent = `# x\nwiki/hot.md\nwiki/index.md\n`;
+    const vp = makeVault('legacy', { claudeMd: claudeMdContent });
+    fs.mkdirSync(path.join(vp, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(vp, 'wiki-meta', 'CLAUDE.md'), claudeMdContent);
+
+    const r = runScript('--migrate-wiki-meta', vp);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    // Total replacement count in output should be 4 (2 per file × 2 files)
+    assert.match(r.stdout, /rewrote 4 CLAUDE\.md path/);
+    // Both files updated
+    for (const p of [path.join(vp, 'CLAUDE.md'), path.join(vp, 'wiki-meta', 'CLAUDE.md')]) {
+      const after = fs.readFileSync(p, 'utf8');
+      assert.match(after, /wiki-meta\/hot\.md/);
+      assert.doesNotMatch(after, /wiki\/hot\.md/);
+    }
+  });
+});
+
 describe('migrate-wiki-meta — idempotency + force', () => {
   test('re-running on migrated vault is silent no-op', () => {
     const vp = makeVault('legacy');
