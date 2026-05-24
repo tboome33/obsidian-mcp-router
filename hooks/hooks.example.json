@@ -15,6 +15,10 @@
           {
             "type": "command",
             "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"<router-repo>/hooks/vault-doc-startup-check.mjs\""
           }
         ]
       }

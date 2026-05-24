@@ -43,7 +43,10 @@ function runHook({
   configPath = null,
 } = {}) {
   const projectDir = fs.mkdtempSync(path.join(workDir, 'proj-'));
-  fs.writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'test', version }));
+  // v0.13.7: detector resolves the wiki project folder from package.json
+  // `name`. Use the real router name so `wiki/obsidian-mcp-router/...`
+  // fixtures are correctly resolved.
+  fs.writeFileSync(path.join(projectDir, 'package.json'), JSON.stringify({ name: 'obsidian-mcp-router', version }));
   if (changelogContent !== null) {
     fs.writeFileSync(path.join(projectDir, 'CHANGELOG.md'), changelogContent);
   }
@@ -217,8 +220,11 @@ describe('doc-propagation-checker — nudge cases', () => {
       configPath: cfgPath,
     });
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /Vault wiki router-changelog\.md/);
-    assert.match(r.stdout, /doesn't mention v0\.11\.3/);
+    // v0.13.7: wording changed when the hook was refactored to use the
+    // shared doc-drift-detector. The new nudge uses VAULT_DOC_DRIFT
+    // tag + "wiki router-changelog.md doesn't have a `## v...` section".
+    assert.match(r.stdout, /wiki router-changelog\.md doesn't have a `## v0\.11\.3` section/);
+    assert.match(r.stdout, /VAULT_DOC_DRIFT/);
   });
 
   test('stdout includes opt-out env var name for discoverability', () => {

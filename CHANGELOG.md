@@ -8,6 +8,46 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.7] — 2026-05-24
+
+**Doc drift detection promoted from "happens to fire on commit" to "fires at every SessionStart"** — closes the recurring gap where the wiki documentation lagged the repo state across multiple commits because the user (or Claude) didn't see the per-commit nudge in time.
+
+Triggered by Roland on 2026-05-24 after manually catching 8 stale versions in `wiki/obsidian-mcp-router/router-changelog.md` (the wiki was at v0.12.2 while the repo had shipped v0.12.10): *"trouve une solution pour ne plus jamais oublier quelque que soit le workspace associé à un vault de mettre à jour la documentation. […] JE VEUX TOUT A JOUR, JE VEUX QUE CE VAULT SE REMPLISSE AU FUR ET A MESURE. QUE LES INFOS SOIENT CONSOLIDEES"*.
+
+### Added
+
+- **`hooks/_helpers/doc-drift-detector.mjs`** (NEW shared helper, ~330 LOC) — factored detection logic shared by two hooks. Detects 4 drift kinds against any (repo, vault) pair:
+  - `changelog-version`: wiki `router-changelog.md` doesn't have a `## v<current>` section.
+  - `changelog-cumulative`: the last 5 versions from repo `CHANGELOG.md` aren't all in the wiki — **catches the multi-version gap** (8 versions in one go was the trigger case).
+  - `index-version`: `wiki-meta/index.md` doesn't mention the current version.
+  - `project-router-version`: `wiki/<project>/project-router.md` frontmatter `current-version` ≠ repo version.
+  - `catalog-missing`: artifact basenames under `hooks/scripts/skills/commands/agents/templates/` aren't all referenced in the matching catalog page (`router-hooks.md`, `router-cheatsheet.md`, `router-skills.md`, `router-commands.md`, `router-agents.md`, `router-templates.md`).
+
+- **`orderedVaultCandidates(cwd, cfg)` helper** — fixes the pre-v0.13.7 bug in `doc-propagation-checker` where the vault iteration broke on the first match (usually `.template`) and never reached the actual project vault. New priority order: workspace-bound (via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in `<cwd>/.env`) → `cfg.defaultVault` → cwd-basename heuristic → others → `.template` last.
+
+- **`hooks/vault-doc-startup-check.mjs`** (NEW SessionStart hook) — fires at every Claude Code session start, runs the detector against the most relevant vault, surfaces drift as a `VAULT_DOC_STARTUP_DRIFT:` nudge in the SessionStart context. Independent of commit events — catches drift that accumulated over previous sessions (or got missed by `doc-propagation-checker`'s commit-time nudge). Fingerprint dedup at `<cwd>/.vault-meta/doc-drift-startup-fingerprint` prevents re-firing for the same un-actioned drift state.
+
+- **`tests/doc-drift-detector.test.mjs`** (NEW, 22 tests) — unit tests for the 5 detection kinds, vault selection ordering, catalog basename listing, fingerprint stability.
+
+### Changed
+
+- **`hooks/doc-propagation-checker.mjs`** — refactored to delegate vault-side drift detection to `doc-drift-detector.mjs`. Now reports ALL drift kinds (not just `changelog-version`), uses cumulative window check, iterates up to 2 relevant vaults (capped to avoid spam), uses `orderedVaultCandidates` for sane vault priority. Repo-level CHANGELOG/ROADMAP/Unreleased checks unchanged.
+
+- **`hooks/hooks.example.json`** — adds `vault-doc-startup-check.mjs` to the `SessionStart` event (matcher `startup|resume|clear`, alongside the existing `hot-cache-load`, `check-router-update`, `session-auto-journal`).
+
+- **`tests/doc-propagation-checker.test.mjs`** — assertion strings updated to match the new `VAULT_DOC_DRIFT:` nudge format from the shared detector. Test fixture's `package.json name` changed to `obsidian-mcp-router` so the detector finds the matching wiki project folder.
+
+### Backward compatibility
+
+- Both hooks honor the existing `OBSIDIAN_ROUTER_NO_DOC_PROPAGATION_CHECK=true` opt-out env var (one flag for both).
+- `vault-doc-startup-check.mjs` additionally supports `OBSIDIAN_ROUTER_NO_DOC_STARTUP_CHECK=true` for selective opt-out (e.g. silence SessionStart while keeping the commit-time check).
+- Vaults without `wiki/<project>/router-changelog.md` are silently skipped — the hook never crashes on partial wiki scaffolding.
+- Test count: **791/791 passing** (+22 new doc-drift-detector tests, +1 reused assertion in propagation-checker).
+
+### What this closes
+
+The user's exact pain — never again missing the wiki update for a shipped commit, regardless of which workspace+vault pair you're working in. The drift is surfaced **at the start of every session**, not just at commit time, so even if the user re-opens a session 3 days later without committing, they see the accumulated drift report and can consolidate before doing anything else.
+
 ## [0.13.6] — 2026-05-24 — A.1 hardening (3 correctness bugs from mini-review+ on 599514d)
 
 Hardening pass on the 12 newly-shipped Wave-1 filters. mini-`/review+` on commit `599514d` (v0.13.5 A.1 completion) caught **3 silent correctness bugs** in the adapted-from-Clipper filters — all reproduced by exec. Fixed before Phase D LaTeX starts (which now shifts to v0.13.7 cumulatively).
