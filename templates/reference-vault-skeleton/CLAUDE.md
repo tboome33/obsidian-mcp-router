@@ -12,7 +12,7 @@ This vault is a Karpathy-style **LLM wiki** in **personal mode**. Treat it as a 
 The wiki is split into TWO sibling directories (v0.12.0+):
 
 - **`wiki-meta/`** holds the 4 scaffolding files — `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`. These are catalog + recent-context cache + operation log + executive summary.
-- **`wiki/`** holds user content — one folder per type (`wiki/People/`, `wiki/Concepts/`, `wiki/Sessions/`, etc., described below).
+- **`wiki/`** holds user content — one folder per type (`wiki/People/`, `wiki/Concepts/`, `wiki-meta/Sessions/`, etc., described below).
 
 Keeping scaffolds separate from notes makes both easier to spot in Obsidian and keeps the visible `wiki/` tree focused on real content.
 
@@ -25,11 +25,13 @@ Keeping scaffolds separate from notes makes both easier to spot in Obsidian and 
 
 Use the `obsidian-router` MCP for all reads/writes (`mcp__obsidian-router__get_file`, `mcp__obsidian-router__write_file`, etc.). Native `Read`/`Write` only work when the project IS the vault — the router-prefixed tools are multi-vault and cross-project safe.
 
-## Folder conventions (all under `wiki/`)
+## Folder conventions
+
+User content lives under `wiki/<folder>/`. Auto-generated scaffolds (including the session journals) live under `wiki-meta/` so they don't clutter the user-content tree.
 
 - `wiki/People/` — one file per person. Frontmatter: `type: person`, optional `relationship`, `since`, `tags`.
 - `wiki/Concepts/` — one file per idea/framework. Frontmatter: `type: concept`, `tags`.
-- `wiki/Sessions/` — daily notes and chat logs. Filename `YYYY-MM-DD.md` for daily, free-form for ad-hoc. Frontmatter: `type: session`, `date`.
+- `wiki-meta/Sessions/` — **auto-generated** session journals (one file per Claude Code session, written by `session-auto-journal.mjs` hook v0.12.8+). Filename `YYYY-MM-DD-HHMM-<workspace>-<sessionid>.md`. NOT user-edited — for manual day-notes use `wiki/Daily/` or similar. Frontmatter: `type: session`, `date`, `session-id`, `workspace`.
 - `wiki/Decisions/` — one file per decision. Frontmatter: `type: decision`, `date`, `status`.
 - `wiki/Refs/` — external sources. Frontmatter: `type: reference`, `url`, `author`, `accessed`.
 - `wiki/Projects/` — personal threads. Frontmatter: `type: project`, `status`.

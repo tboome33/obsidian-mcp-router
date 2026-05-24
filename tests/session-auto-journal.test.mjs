@@ -64,7 +64,7 @@ after(() => {
 
 beforeEach(() => {
   // Wipe Sessions/ from the vault between tests so each test starts fresh
-  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  const sessionsDir = path.join(vaultDir, 'wiki-meta', 'Sessions');
   if (fs.existsSync(sessionsDir)) {
     fs.rmSync(sessionsDir, { recursive: true, force: true });
   }
@@ -120,7 +120,7 @@ function runHook({
 }
 
 function findJournal() {
-  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  const sessionsDir = path.join(vaultDir, 'wiki-meta', 'Sessions');
   if (!fs.existsSync(sessionsDir)) return null;
   const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.md'));
   if (files.length === 0) return null;
@@ -129,7 +129,7 @@ function findJournal() {
 }
 
 function listJournals() {
-  const sessionsDir = path.join(vaultDir, 'wiki', 'Sessions');
+  const sessionsDir = path.join(vaultDir, 'wiki-meta', 'Sessions');
   if (!fs.existsSync(sessionsDir)) return [];
   return fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.md'));
 }
@@ -267,7 +267,7 @@ describe('session-auto-journal — workspace-bound mode', () => {
     assert.ok(content, 'journal should be in the linked vault');
     assert.match(content, /workspace: code-workspace/);
     // The journal should NOT be in the code workspace
-    assert.equal(fs.existsSync(path.join(codeWorkspace, 'wiki', 'Sessions')), false);
+    assert.equal(fs.existsSync(path.join(codeWorkspace, 'wiki-meta', 'Sessions')), false);
   });
 });
 
@@ -424,6 +424,89 @@ describe('session-auto-journal — review+ pass 1 regressions', () => {
     const filesAfter = listJournals();
     assert.equal(filesAfter.length, 1, 'still exactly one journal file');
     assert.equal(after, before, 'journal file content must not change on idempotent resume');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.12.8 — log.md auto-append on SessionEnd
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
+  // Small helper: write a minimal wiki-meta/log.md so the hook has a file to append to.
+  function ensureLogMd() {
+    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Log\n\nAppend-only.\n', 'utf8');
+    return logPath;
+  }
+
+  test('SessionEnd appends one parseable line to wiki-meta/log.md with verb session, wikilink, objective, result', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'log-test-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'log-test-1',
+      prompt: 'add a new MCP tool for fetching weather data',
+    });
+    runHook({
+      event: 'PostToolUse', cwd: vaultDir, sessionId: 'log-test-1',
+      toolName: 'Write', toolInput: { file_path: '/foo/weather.mjs' },
+    });
+    runHook({
+      event: 'PostToolUse', cwd: vaultDir, sessionId: 'log-test-1',
+      toolName: 'Bash', toolInput: { command: 'npm test' },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'log-test-1', reason: 'logout' });
+
+    const logContent = fs.readFileSync(logPath, 'utf8');
+    // Verb prefix + wikilink to the journal basename
+    assert.match(logContent, /— session — \[\[\d{4}-\d{2}-\d{2}-\d{4}-[^\]]+\]\] — /,
+      'log.md should contain the verb-prefixed line with a wikilink to the session');
+    // Objective derived from first user prompt
+    assert.match(logContent, /add a new MCP tool for fetching weather data/,
+      'objective should be the first user prompt');
+    // Result line (indented continuation arrow)
+    assert.match(logContent, /\n {2}→ /,
+      'result should appear on the indented continuation line');
+    // Result mentions the counters we generated
+    assert.match(logContent, /1 writes/);
+    assert.match(logContent, /1 bash/);
+    assert.match(logContent, /first bash: npm test/);
+  });
+
+  test('SessionEnd log.md append is idempotent (basename grep dedup)', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'idemp-test-1' });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'idemp-test-1', reason: 'logout' });
+    const after1 = fs.readFileSync(logPath, 'utf8');
+    const count1 = (after1.match(/— session —/g) || []).length;
+    assert.equal(count1, 1, 'one session line after first SessionEnd');
+
+    // Re-trigger SessionEnd somehow (e.g., dual-fired event): we manually call
+    // the hook handler again. The dedup grep on the basename should prevent dup.
+    // Note: in practice the state JSON has been deleted, so this 2nd call would
+    // be a no-op anyway — but the dedup is an additional safety net we want.
+    // Simulate the un-deleted-state case by re-creating state from disk and
+    // re-running. Simpler: just run a 2nd SessionStart+SessionEnd for the same
+    // session_id to force a 2nd append attempt.
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'idemp-test-1' });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'idemp-test-1', reason: 'logout' });
+    const after2 = fs.readFileSync(logPath, 'utf8');
+    const count2 = (after2.match(/— session —/g) || []).length;
+    assert.equal(count2, 1, 'still one session line after re-trigger (dedup by basename)');
+  });
+
+  test('SessionEnd silent-skips when wiki-meta/log.md absent (no crash, no creation)', () => {
+    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
+    // Ensure log.md does NOT exist
+    if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
+
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'no-log-test-1' });
+    const r = runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'no-log-test-1', reason: 'logout' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(logPath), false, 'log.md should NOT be created by the hook (wiki skill owns scaffolding)');
+    // But the journal file itself should still exist (the recap + frontmatter rewrite happened)
+    const journal = readJournal();
+    assert.ok(journal, 'journal file should still exist');
+    assert.match(journal, /status: closed/, 'journal frontmatter should still be closed');
   });
 });
 

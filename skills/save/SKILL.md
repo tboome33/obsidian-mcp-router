@@ -13,7 +13,7 @@ The most-used wiki skill. Turn the current conversation into a wiki page in seco
 - "/save <name>" — file with an explicit slug instead of inferred one
 - "save this decision" / "ADR this" — file as a decision/ADR with that frontmatter type
 
-> ⚠️ **`/save` no longer files to `wiki/Sessions/`** (router v0.12.4+). That folder is owned by the **`session-auto-journal.mjs` hook** which writes one chronological file per Claude Code session automatically. Use `/save` for **polished, type-classified outputs** that deserve a permanent document — decisions, answers, references, techniques, ADRs, ideas. If the user says "save this session" or "save the whole conversation", redirect: the auto-journal already captures the raw chronology; ask which polished insight they want to extract.
+> ⚠️ **`/save` no longer files to `wiki-meta/Sessions/`** (router v0.12.8+; was `wiki/Sessions/` in v0.12.4–v0.12.7). That folder is owned by the **`session-auto-journal.mjs` hook** which writes one chronological file per Claude Code session automatically AND auto-appends a 2-line summary (objectif + résultat) to `wiki-meta/log.md` at SessionEnd. Use `/save` for **polished, type-classified outputs** that deserve a permanent document — decisions, answers, references, techniques, ADRs, ideas. If the user says "save this session" or "save the whole conversation", redirect: the auto-journal already captures the raw chronology + a log summary; ask which polished insight they want to extract.
 
 ## When NOT to use
 
@@ -36,7 +36,7 @@ Three flavors (the `session` flavor is **deprecated** — auto-journal hook owns
 - **Specific insight** — "save this decision" / "save this technique" / "ADR this". The user is pointing at a discrete thing. Type matches what they said (`decision`, `technique`, `idea`, `runbook`, `adr`).
 - **Reference / runbook** — "save this as a ref" or the conversation produced a how-to. Type: `reference`.
 
-If the user says "/save" alone with no qualifier (intending "the whole session"), redirect them: *"The auto-journal already captures the chronology in `wiki/Sessions/<today>-...md`. Which polished insight from this session do you want extracted into a permanent document? (decision / answer / reference / technique / ADR)"*.
+If the user says "/save" alone with no qualifier (intending "the whole session"), redirect them: *"The auto-journal already captures the chronology in `wiki-meta/Sessions/<today>-...md` AND a 2-line summary in `wiki-meta/log.md`. Which polished insight from this session do you want extracted into a permanent document? (decision / answer / reference / technique / ADR)"*.
 
 If ambiguous, ask one short question. Don't save the wrong thing.
 
@@ -59,7 +59,7 @@ Default folders by type:
 - `idea` → `wiki/ideas/`
 - Else → `wiki/notes/` as fallback
 
-**Never** route to `wiki/Sessions/` — that folder is owned by `session-auto-journal.mjs` (router v0.12.4+). If a `session` type slips through somehow, treat it as `answer` or `reference` and pick the more appropriate folder.
+**Never** route to `wiki-meta/Sessions/` — that folder is owned by `session-auto-journal.mjs` (router v0.12.8+; was `wiki/Sessions/` in v0.12.4–v0.12.7). If a `session` type slips through somehow, treat it as `answer` or `reference` and pick the more appropriate folder.
 
 If the wiki has a different convention (look at `wiki-meta/index.md` structure to detect), match that.
 
@@ -158,6 +158,16 @@ This is the "compounding" property: every saved page becomes more findable from 
 - `index.md` — append a row under the section matching the type
 - `log.md` — `- YYYY-MM-DD HH:MM — save — wiki/<folder>/<slug>.md — <type>: <one-line summary>`
 - `hot.md` — replace `## Recent Changes` to mention this save
+
+### 8b. Optional cross-link to the active session journal (v0.12.8+)
+
+If `~/.claude/obsidian-mcp-router/session-journals/<session-id>.json` exists (the current Claude Code session is being journaled by the `session-auto-journal.mjs` hook), propose to suffix the `log.md` save entry with a wikilink back to the session file. Format:
+
+```
+- YYYY-MM-DD HH:MM — save — wiki/<folder>/<slug>.md — <type>: <summary> · session [[<session-basename-sans-md>]]
+```
+
+The basename is the journal file under `wiki-meta/Sessions/` (e.g. `2026-05-24-1103-obsidian-mcp-router-8f4`). This lets a reader of `log.md` jump from the polished save document to the raw chronology of the session that produced it. Optional — only do it if the conversation context made it clear which session this save belongs to. Skip silently if the state JSON doesn't exist (session journaling not active or hook disabled).
 
 ### 9. Output
 

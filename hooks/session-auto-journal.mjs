@@ -3,29 +3,43 @@
  * session-auto-journal.mjs
  *
  * Multi-event hook that auto-writes one journal file per Claude Code
- * session under `<vault>/wiki/Sessions/`. Complements (does NOT replace)
- * the manual `/save` skill: this hook owns the chronological per-session
- * journal; `/save` owns polished, type-classified documents in
- * `wiki/Decisions/`, `wiki/Refs/`, `wiki/Answers/`, etc.
+ * session under `<vault>/wiki-meta/Sessions/` (v0.12.8+; was `wiki/Sessions/`
+ * in v0.12.4–v0.12.7). Complements (does NOT replace) the manual `/save`
+ * skill: this hook owns the chronological per-session journal AND the
+ * auto-append of a 2-line summary to `wiki-meta/log.md` at SessionEnd;
+ * `/save` owns polished, type-classified documents in `wiki/Decisions/`,
+ * `wiki/Refs/`, `wiki/Answers/`, etc.
  *
  * Dispatches on `hook_event_name` from the stdin JSON payload:
  *
  *   - SessionStart:      create `<date>-<HHMM>-<workspace-slug>.md` with
  *                        an open frontmatter; record state.
  *   - UserPromptSubmit:  append `## HH:MM — User prompt` + verbatim prompt.
+ *                        Captures `firstUserPrompt` (used as "objectif"
+ *                        in the log.md entry).
  *   - PostToolUse:       append `### HH:MM — tool: <name>` + concise args
  *                        for write-flavored tools (Write/Edit/Bash/MCP
  *                        write/patch/append). Reads skipped.
  *   - SessionEnd:        append closure marker, update frontmatter
- *                        `status: closed` + `ended-at` + `duration`, and
+ *                        `status: closed` + `ended-at` + `duration`,
  *                        prepend a heuristic recap section right after
- *                        frontmatter (counts of prompts/tools, files
- *                        touched, bash highlights). Delete state file.
+ *                        frontmatter, and append a single 2-line entry
+ *                        to `wiki-meta/log.md` with the format:
+ *                          - YYYY-MM-DD HH:MM — session — [[<basename>]] — <obj>
+ *                            → <result one-line>
+ *                        Idempotent via basename grep. Delete state file.
  *
  * Vault target (per workspace-bound design, picked 2026-05-23):
- *   - cwd-is-vault:    write under `<cwd>/wiki/Sessions/`
- *   - workspace-bound: write under `<associated-vault>/wiki/Sessions/`
+ *   - cwd-is-vault:    write under `<cwd>/wiki-meta/Sessions/`
+ *   - workspace-bound: write under `<associated-vault>/wiki-meta/Sessions/`
  *   - else:            silent exit (the workspace has no associated vault)
+ *
+ * Version history:
+ *   - v0.12.4: introduced (wiki/Sessions/)
+ *   - v0.12.5: path-disambiguation convention + PATH RESOLUTION RULES
+ *   - v0.12.6: /review+ hardening (8 fixes including filename collision)
+ *   - v0.12.8: relocated wiki/Sessions/ → wiki-meta/Sessions/,
+ *              + auto-append of 2-line summary to wiki-meta/log.md on SessionEnd
  *
  * State management: one JSON file per active session at
  * `~/.claude/obsidian-mcp-router/session-journals/<session-id>.json`.
@@ -269,7 +283,11 @@ function ensureJournalForSession(payload) {
   // on resume); different session_ids produce different filenames.
   const sessionIdShort = String(sessionId).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) || 'session0';
   const filename = `${dateIso}-${hh}-${slug}-${sessionIdShort}.md`;
-  const sessionsDir = path.join(ctx.vaultPath, 'wiki', 'Sessions');
+  // v0.12.8: Sessions/ now lives under wiki-meta/ (was wiki/ in v0.12.4–v0.12.7).
+  // It's an auto-generated scaffold, not user content — consistent with the
+  // v0.12.0 separation. Migration of legacy `wiki/Sessions/` is opt-in via
+  // `setup-vault.mjs --migrate-sessions-to-wiki-meta`.
+  const sessionsDir = path.join(ctx.vaultPath, 'wiki-meta', 'Sessions');
   const journalPath = path.join(sessionsDir, filename);
 
   try { fs.mkdirSync(sessionsDir, { recursive: true }); }
@@ -341,6 +359,13 @@ function handleUserPromptSubmit(payload) {
   appendToJournal(state, block);
 
   state.counters.prompts = (state.counters.prompts || 0) + 1;
+  // v0.12.8: capture the first non-empty user prompt's first line as the
+  // session "objectif" — used in the log.md entry composed at SessionEnd.
+  // Bounded to ~120 chars so a long prompt doesn't blow the log line.
+  if (!state.firstUserPrompt) {
+    const firstLine = (promptRaw.split('\n').find((l) => l.trim()) || '').trim();
+    if (firstLine) state.firstUserPrompt = truncate(firstLine, 120);
+  }
   writeState(state);
 }
 
@@ -468,6 +493,65 @@ function insertRecapAfterFrontmatter(state, recap) {
   catch { /* swallow */ }
 }
 
+// v0.12.8: compose a one-line "objectif" + "résultat" summary used by the
+// log.md auto-append. The objective is the first user prompt (captured at
+// UserPromptSubmit); the result is a compact heuristic from the counters
+// already collected during the session — same data buildRecap() uses, but
+// flattened to a single line that fits in a markdown log entry.
+function buildLogLineSummary(state, endedAt) {
+  const objective = (state.firstUserPrompt && state.firstUserPrompt.trim())
+    || '(no user prompt captured)';
+
+  const c = state.counters || {};
+  const parts = [];
+  if (c.writes) parts.push(`${c.writes} writes`);
+  if (c.mcpWrites) parts.push(`${c.mcpWrites} mcp writes`);
+  if (c.bash) parts.push(`${c.bash} bash`);
+  const fileCount = (state.files || []).length;
+  if (fileCount) parts.push(`${fileCount} files`);
+  // Add the first bash highlight as a quick "what happened" anchor.
+  const bashHint = (state.bashHighlights || [])[0];
+  if (bashHint) parts.push(`first bash: ${truncate(bashHint, 60)}`);
+  const duration = humanDuration(state.startedAt, endedAt);
+  parts.push(duration);
+
+  const result = parts.length ? parts.join(' · ') : 'no-op session';
+  return { objective, result };
+}
+
+// v0.12.8: append a 2-line entry to <vault>/wiki-meta/log.md at SessionEnd.
+// Format A (Karpathy-strict, validated 2026-05-24):
+//   - YYYY-MM-DD HH:MM — session — [[<basename>]] — <objectif>
+//     → <résultat one-line>
+//
+// Idempotent: if a line containing the journal basename already exists in
+// log.md, do nothing (prevents dup on accidental re-trigger of SessionEnd).
+// Silent skip if log.md is absent — the wiki scaffold (`wiki` skill) is
+// responsible for creating it, not this hook.
+function appendLogMdEntry(state, endedAt) {
+  const logPath = path.join(state.vaultPath, 'wiki-meta', 'log.md');
+  let existing;
+  try { existing = fs.readFileSync(logPath, 'utf8'); }
+  catch { return; /* log.md absent — silent skip */ }
+
+  // Basename (without .md) used as the wikilink target AND the dedup grep key.
+  const basename = path.basename(state.journalPath, '.md');
+  if (existing.includes(`[[${basename}]]`)) return; // already logged
+
+  const { objective, result } = buildLogLineSummary(state, endedAt);
+  const date = endedAt.slice(0, 10); // YYYY-MM-DD from ISO
+  const t = new Date(endedAt);
+  const hhmmStr = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
+
+  // Escape pipe chars that would break markdown rendering if the prompt had them.
+  const safeObjective = objective.replace(/\|/g, '\\|');
+  const safeResult = result.replace(/\|/g, '\\|');
+
+  const entry = `\n- ${date} ${hhmmStr} — session — [[${basename}]] — ${safeObjective}\n  → ${safeResult}\n`;
+  try { fs.appendFileSync(logPath, entry, 'utf8'); }
+  catch { /* swallow — never block Claude Code */ }
+}
+
 function handleSessionEnd(payload) {
   const sessionId = payload.session_id || '';
   const state = readState(sessionId);
@@ -484,6 +568,10 @@ function handleSessionEnd(payload) {
 
   // Frontmatter status: closed + ended-at + duration
   rewriteFrontmatter(state, endedAt);
+
+  // v0.12.8: append a single 2-line entry to wiki-meta/log.md.
+  // Idempotent + silent on missing log.md.
+  appendLogMdEntry(state, endedAt);
 
   deleteState(sessionId);
 }

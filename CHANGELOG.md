@@ -8,6 +8,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.8] — 2026-05-24
+
+Adopts the Karpathy "Indexing and logging" pattern to the v0.12.4 `session-auto-journal.mjs` hook: **`wiki-meta/log.md` now receives a 2-line summary per session at SessionEnd**, with a wikilink back to the detailed journal file. Also relocates `Sessions/` from `wiki/` to `wiki-meta/` (cohérent avec la séparation v0.12.0 scaffolds vs user content). Motivation: 2026-05-24 conversation where Roland linked to [Karpathy's wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and asked for "un résumé de ce qui a été fait dans la session avec l'objectif de départ et le résultat" in log.md, with the detail living in the corresponding session file.
+
+### Changed
+
+- **`hooks/session-auto-journal.mjs`**: writes session journals to `<vault>/wiki-meta/Sessions/<date>-<HHMM>-<workspace>-<sessionid>.md` (was `<vault>/wiki/Sessions/...` in v0.12.4–v0.12.7). The folder move makes the auto-generated journal a scaffold (under `wiki-meta/`), not user content — consistent with the v0.12.0 layout. Hook header documents the version history of the path.
+- **`templates/wiki-meta/log.md`**: added `session` and `migrate` to the verbs list + 2-line note documenting the 2-line auto-generated entry format and pointing to `/save` for LLM-polish upgrades.
+- **`skills/save/SKILL.md`**: 4 doc edits — bumps the `wiki/Sessions/` references to `wiki-meta/Sessions/` and the version `v0.12.4+ → v0.12.8+`. New optional step 8b: when `/save` is invoked during an active journaled session, propose to suffix the save's log.md entry with ` · session [[<session-basename>]]` for cross-navigation between polished doc and raw chronology.
+
+### Added
+
+- **Auto-append to `wiki-meta/log.md` at SessionEnd** (hook): every session now lands a single 2-line entry in the log, format `- YYYY-MM-DD HH:MM — session — [[<basename>]] — <objectif>\n  → <résultat one-line>`. The objective is the first user prompt of the session (captured at the first `UserPromptSubmit`, truncated to 120 chars); the result is heuristic — counters (writes / bash / mcp writes / files) + first bash highlight + duration. Idempotent via basename grep on log.md (prevents dup on re-trigger). Silent skip when log.md is absent (wiki scaffold's responsibility). 0 API call, 0 dep — the heuristic recap from v0.12.4 already collects all the data needed. Quality-curious users can upgrade specific entries via `/save` (LLM-polish path documented in step 9 of save SKILL.md, planned for v0.12.9).
+- **`firstUserPrompt` state capture**: hook now tracks the first non-empty user-prompt's first line at `UserPromptSubmit` (truncated to 120 chars, bounded). Used by `buildLogLineSummary()` to produce the "objectif" half of the log.md entry. Persisted in the per-session state JSON so it survives the cross-event boundary.
+- **`scripts/setup-vault.mjs --migrate-sessions-to-wiki-meta <vault>`** + **`--migrate-all-sessions-to-wiki-meta`**: opt-in migration tool for vaults whose `Sessions/` still lives under `wiki/`. Detects 4 states (legacy, fresh, both-overlap, empty). Uses `git mv` when `.git/` is present, falls back to `fs.renameSync` then per-file copy+unlink for cross-device cases. Idempotent. Per-file dedup on overlap (refuses to clobber existing files in target, leaves conflicts in source for manual review). Appends a `migrate` line to `wiki-meta/log.md` documenting the move. Reuses the structural pattern of v0.12.1's `--migrate-wiki-meta` for consistency.
+- **`scripts/backfill-log-from-sessions.mjs`** (+ `npm run backfill-log` shortcut): opt-in one-shot script that walks a vault's `wiki-meta/Sessions/*.md` (closed sessions only), reconstructs an objective/résultat pair from each session's frontmatter + auto-recap block, and appends missing log.md entries in chronological order (sorted by `started-at`). Idempotent via basename grep. Marks backfilled entries with an HTML comment `<!-- backfilled YYYY-MM-DD -->` for audit trail. Useful for vaults whose Sessions/ predate v0.12.8.
+- **`tests/migrate-sessions-to-wiki-meta.test.mjs`** (7 new tests): plain rename, git mv branch, fresh (already-migrated), both-overlap merge with conflict, empty (skipped), non-existent vault, --dry-run.
+- **`tests/session-auto-journal.test.mjs`** (+3 new tests in new `v0.12.8 log.md auto-append` describe block): SessionEnd appends a parseable line with verb/wikilink/objective/result, idempotent dedup, silent-skip when log.md absent.
+
+### Backward compatibility
+
+- Vaults with `wiki/Sessions/` (DEDIBOX as of writing) continue to work — new sessions write to the new `wiki-meta/Sessions/` location (auto-created), while the legacy folder stays as-is until the opt-in `--migrate-sessions-to-wiki-meta` is run. No code reads the legacy path anymore.
+- Vaults without the hook installed (or with opt-out `OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=true`) are unaffected.
+- Vaults without `wiki-meta/log.md` (rare — wiki scaffold not yet run) silently skip the log.md append; the journal file itself is still written normally.
+
+### Test count: **476/476 passing** (was 466 at v0.12.7; +10 tests: 3 hook log.md + 7 migration).
+
 ## [0.12.7] — 2026-05-24
 
 UX overhaul of the vault-attach flow. Three main changes: (1) renamed `meta-add-vault` to `meta-attach-vault` because the dominant case is attaching a vault to an existing code/dev workspace, not raw vault registration. (2) `setup-vault.mjs` now scaffolds the `wiki/` + `wiki/sessions/` + `wiki-meta/{index,hot,overview,log}.md` structure inline at provisioning time, so a freshly-bootstrapped vault is immediately ready for workspace-bound mode (the `--link-workspace` flow requires `wiki-meta/index.md` to exist — pre-v0.12.7 this was a separate manual `/obsidian-router:wiki` step). (3) `--link-workspace <ws-path>` is now also a flag of the main bootstrap subcommand, so `setup-vault.mjs <vault-path> --link-workspace <cwd>` does the provisioning + binding in one shot (single permission prompt vs. two separate invocations). The new wizard is **didactic by design**: every Bash call is preceded by a 2-3 line explanation in chat, and Bash `description` arguments are full-sentence intentions in the user's language (not cryptic command labels).

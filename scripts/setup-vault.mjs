@@ -445,6 +445,177 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
   return result;
 }
 
+/**
+ * v0.12.8: Migrate a vault's `wiki/Sessions/` directory to `wiki-meta/Sessions/`.
+ *
+ * Background: the `session-auto-journal.mjs` hook (introduced v0.12.4) initially
+ * wrote session journals to `wiki/Sessions/`. v0.12.8 relocated them under
+ * `wiki-meta/` to align with the v0.12.0 separation (auto-generated scaffolds
+ * vs user content). Existing vaults with `wiki/Sessions/` populated need their
+ * sessions physically relocated.
+ *
+ * Returns { status, sessionsMoved, mode, error? }.
+ * `status` ∈ 'migrated' | 'already-migrated' | 'merged' | 'skipped' | 'failed'.
+ *
+ * State table:
+ *   - `wiki/Sessions/` absent, `wiki-meta/Sessions/` absent     → 'skipped'  (no-op)
+ *   - `wiki/Sessions/` absent, `wiki-meta/Sessions/` present   → 'already-migrated'
+ *   - `wiki/Sessions/` present, `wiki-meta/Sessions/` absent   → 'migrated' (full rename)
+ *   - `wiki/Sessions/` present, `wiki-meta/Sessions/` present  → 'merged'   (per-file move, skip duplicates)
+ *
+ * Options:
+ *   - `dryRun: true` — only report what would happen, don't touch filesystem.
+ *   - `quiet: true`  — suppress per-vault success messages (batch mode uses this).
+ *
+ * NB: `force` is not supported because there's no idempotent re-run risk — the
+ * function detects state via filesystem presence + per-file dedup.
+ */
+function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
+  const { dryRun = false, quiet = false } = opts;
+  const result = {
+    vaultPath,
+    status: 'failed',
+    sessionsMoved: [],
+    sessionsSkipped: [], // already present in target — kept in source as conflicts
+    mode: null,
+    error: null,
+  };
+
+  if (!fs.existsSync(vaultPath) || !fs.statSync(vaultPath).isDirectory()) {
+    result.error = `vault path does not exist or is not a directory: ${vaultPath}`;
+    return result;
+  }
+
+  const srcDir = path.join(vaultPath, 'wiki', 'Sessions');
+  const dstDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
+  const srcExists = fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory();
+  const dstExists = fs.existsSync(dstDir) && fs.statSync(dstDir).isDirectory();
+
+  if (!srcExists && !dstExists) {
+    result.status = 'skipped';
+    result.error = 'no wiki/Sessions/ nor wiki-meta/Sessions/ — nothing to migrate';
+    if (!quiet) info(`${vaultPath} — no Sessions/ directory found, skipping.`);
+    return result;
+  }
+  if (!srcExists && dstExists) {
+    result.status = 'already-migrated';
+    if (!quiet) info(`${vaultPath} — already on wiki-meta/Sessions/, nothing to do.`);
+    return result;
+  }
+
+  // From here on: srcExists === true.
+  const useGit = vaultIsGitRepo(vaultPath);
+  result.mode = useGit ? 'git' : 'fs';
+
+  // Case 1: dst absent → full rename of the directory (fast path).
+  if (!dstExists) {
+    if (dryRun) {
+      const srcFiles = fs.readdirSync(srcDir).filter((f) => f.endsWith('.md'));
+      result.sessionsMoved = srcFiles.map((f) => ({ file: f, mode: result.mode, dryRun: true }));
+      result.status = 'migrated';
+      if (!quiet) info(`[DRY-RUN] ${vaultPath} — would rename wiki/Sessions/ → wiki-meta/Sessions/ via ${result.mode} (${srcFiles.length} files).`);
+      return result;
+    }
+
+    // Ensure wiki-meta/ exists (parent of the target).
+    const wikiMetaParent = path.join(vaultPath, 'wiki-meta');
+    if (!fs.existsSync(wikiMetaParent)) fs.mkdirSync(wikiMetaParent, { recursive: true });
+
+    if (useGit) {
+      const gitRes = spawnSync('git', ['mv', 'wiki/Sessions', 'wiki-meta/Sessions'], {
+        cwd: vaultPath, encoding: 'utf8',
+      });
+      if (gitRes.status !== 0) {
+        // Fallback: fs.rename (history won't preserve as nicely but works).
+        try { fs.renameSync(srcDir, dstDir); result.mode = 'fs (git fallback)'; }
+        catch (err) { result.error = `git mv failed (${gitRes.stderr.trim()}), fs.rename fallback also failed: ${err.message}`; return result; }
+      }
+    } else {
+      try { fs.renameSync(srcDir, dstDir); }
+      catch (err) {
+        // Cross-device link error → copy + unlink per file.
+        if (err.code === 'EXDEV') {
+          try { fs.mkdirSync(dstDir, { recursive: true });
+            for (const f of fs.readdirSync(srcDir)) {
+              fs.copyFileSync(path.join(srcDir, f), path.join(dstDir, f));
+              fs.unlinkSync(path.join(srcDir, f));
+            }
+            fs.rmdirSync(srcDir);
+            result.mode = 'fs (cross-device copy)';
+          } catch (err2) { result.error = `cross-device fallback failed: ${err2.message}`; return result; }
+        } else {
+          result.error = `fs.rename failed: ${err.message}`;
+          return result;
+        }
+      }
+    }
+
+    const movedFiles = fs.readdirSync(dstDir).filter((f) => f.endsWith('.md'));
+    result.sessionsMoved = movedFiles.map((f) => ({ file: f, mode: result.mode }));
+    result.status = 'migrated';
+  } else {
+    // Case 2: both src and dst exist → merge per-file, skip dup, then rmdir if empty.
+    const srcFiles = fs.readdirSync(srcDir).filter((f) => f.endsWith('.md'));
+    for (const f of srcFiles) {
+      const dstFile = path.join(dstDir, f);
+      if (fs.existsSync(dstFile)) {
+        // Conflict: don't clobber. Leave in source for manual review.
+        result.sessionsSkipped.push({ file: f, reason: 'target already exists' });
+        continue;
+      }
+      if (dryRun) {
+        result.sessionsMoved.push({ file: f, mode: result.mode, dryRun: true });
+        continue;
+      }
+      const srcFile = path.join(srcDir, f);
+      if (useGit) {
+        const gitRes = spawnSync('git', ['mv', path.join('wiki', 'Sessions', f), path.join('wiki-meta', 'Sessions', f)], {
+          cwd: vaultPath, encoding: 'utf8',
+        });
+        if (gitRes.status !== 0) {
+          try { fs.renameSync(srcFile, dstFile); result.sessionsMoved.push({ file: f, mode: 'fs (git fallback)' }); }
+          catch (err) { result.sessionsSkipped.push({ file: f, reason: `move failed: ${err.message}` }); continue; }
+        } else {
+          result.sessionsMoved.push({ file: f, mode: 'git' });
+        }
+      } else {
+        try { fs.renameSync(srcFile, dstFile); result.sessionsMoved.push({ file: f, mode: 'fs' }); }
+        catch (err) { result.sessionsSkipped.push({ file: f, reason: `move failed: ${err.message}` }); continue; }
+      }
+    }
+    // If srcDir is now empty AND no skips → rmdir
+    if (!dryRun && fs.readdirSync(srcDir).length === 0) {
+      try { fs.rmdirSync(srcDir); } catch { /* swallow */ }
+    }
+    result.status = result.sessionsSkipped.length > 0 ? 'merged' : 'migrated';
+  }
+
+  // Append a migration line to wiki-meta/log.md (if present).
+  if (!dryRun) {
+    const logMd = path.join(vaultPath, 'wiki-meta', 'log.md');
+    if (fs.existsSync(logMd)) {
+      const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
+      const line = (
+        `\n- ${ts} — migrate — wiki/Sessions/ → wiki-meta/Sessions/ — ` +
+        `router v0.12.8 layout (${result.sessionsMoved.length} sessions via ${result.mode}` +
+        (result.sessionsSkipped.length ? `, ${result.sessionsSkipped.length} skipped due to conflicts` : '') +
+        `)\n`
+      );
+      fs.appendFileSync(logMd, line, 'utf8');
+    }
+  }
+
+  if (!quiet) {
+    if (dryRun) {
+      info(`[DRY-RUN] ${vaultPath} — would move ${result.sessionsMoved.length} sessions via ${result.mode} (${result.sessionsSkipped.length} would skip).`);
+    } else {
+      const action = result.status === 'merged' ? 'merged' : 'migrated';
+      ok(`${vaultPath} — ${action} ${result.sessionsMoved.length} sessions via ${result.mode}${result.sessionsSkipped.length ? `, ${result.sessionsSkipped.length} skipped (conflicts)` : ''}.`);
+    }
+  }
+  return result;
+}
+
 function printStatus() {
   const cfg = loadConfig();
   console.log(c('bold', '\nobsidian-mcp-router — current configuration\n'));
@@ -1823,6 +1994,14 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --migrate-all-wiki-meta               Same migration, run on every vault in
                                                               portRegistry. Reports per-vault status; non-zero
                                                               exit if any vault fails.
+  node setup-vault.mjs --migrate-sessions-to-wiki-meta <path> Migrate ONE vault from wiki/Sessions/ to
+                                                              wiki-meta/Sessions/ (v0.12.8+, was wiki/Sessions/
+                                                              in v0.12.4–v0.12.7). Uses git mv if .git/ exists.
+                                                              If both dirs exist, merges per-file skipping
+                                                              conflicts. Idempotent. Add --dry-run to preview.
+  node setup-vault.mjs --migrate-all-sessions-to-wiki-meta   Same Sessions/ migration, run on every vault in
+                                                              portRegistry. Reports per-vault status; non-zero
+                                                              exit if any vault fails.
   node setup-vault.mjs --link-workspace <path> <vault-slug>  Bind a code/dev workspace to a vault by writing
                                                               OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug> into the
                                                               workspace's .env. Activates workspace-bound mode
@@ -2044,6 +2223,92 @@ if (args[0] === '--migrate-wiki-meta' || args[0] === '--migrate-all-wiki-meta') 
     }
   } else {
     console.log(`  ${c('gray', 'failed:          0')}`);
+  }
+
+  if (dryRun) {
+    console.log('');
+    info('Dry-run only — re-run without --dry-run to apply.');
+  }
+
+  process.exit(summary.failed > 0 ? 1 : 0);
+}
+
+if (args[0] === '--migrate-sessions-to-wiki-meta' || args[0] === '--migrate-all-sessions-to-wiki-meta') {
+  // v0.12.8 — migrate vaults from wiki/Sessions/ (v0.12.4–v0.12.7) to
+  // wiki-meta/Sessions/. Cohérent avec la séparation v0.12.0 (scaffolds
+  // auto-générés sous wiki-meta/, user content sous wiki/).
+  //
+  // Single-vault form:  --migrate-sessions-to-wiki-meta <vault-path>
+  // Batch form:         --migrate-all-sessions-to-wiki-meta
+  //
+  // Shared flags: --dry-run (preview only, no fs writes)
+  const dryRun = args.includes('--dry-run');
+  const isBatch = args[0] === '--migrate-all-sessions-to-wiki-meta';
+
+  if (!isBatch) {
+    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--'));
+    if (!vaultArg) {
+      fail('--migrate-sessions-to-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-sessions-to-wiki-meta <vault-path> [--dry-run]');
+    }
+    const abs = path.resolve(vaultArg);
+    const res = migrateSessionsToWikiMeta(abs, { dryRun });
+    if (res.status === 'failed') fail(`Migration failed for ${abs}:\n   ${res.error}`);
+    if (res.status === 'merged' && res.sessionsSkipped.length > 0) {
+      warn('Some files were not moved due to name conflicts (already exist in target):');
+      for (const s of res.sessionsSkipped) {
+        warn(`  - ${s.file}: ${s.reason}`);
+      }
+      warn('Inspect manually and remove or rename the source copies in wiki/Sessions/.');
+    }
+    process.exit(0);
+  }
+
+  // Batch mode: iterate over portRegistry.
+  const cfg = loadConfig();
+  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  if (vaultPaths.length === 0) {
+    fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
+  }
+
+  console.log(c('bold',
+    `\n${dryRun ? '[DRY-RUN] ' : ''}Migrating Sessions/ for ${vaultPaths.length} vault(s) to wiki-meta/Sessions/...\n`));
+
+  const summary = { migrated: 0, 'already-migrated': 0, merged: 0, skipped: 0, failed: 0 };
+  const failures = [];
+  const merges = [];
+  for (const vp of vaultPaths) {
+    const res = migrateSessionsToWikiMeta(vp, { dryRun, quiet: false });
+    summary[res.status] = (summary[res.status] || 0) + 1;
+    if (res.status === 'failed') {
+      failures.push({ vaultPath: vp, error: res.error });
+      warn(`${vp} — FAILED: ${res.error}`);
+    }
+    if (res.status === 'merged' && res.sessionsSkipped.length > 0) {
+      merges.push({ vaultPath: vp, skipped: res.sessionsSkipped });
+    }
+  }
+
+  console.log('');
+  console.log(c('bold', 'Batch summary:'));
+  console.log(`  ${c('green', 'migrated:        ' + (summary.migrated || 0))}`);
+  console.log(`  ${c('gray',  'already-migrated: ' + (summary['already-migrated'] || 0))}`);
+  console.log(`  ${c('yellow', 'merged (with conflicts): ' + (summary.merged || 0))}`);
+  console.log(`  ${c('gray',  'skipped (no Sessions/):  ' + (summary.skipped || 0))}`);
+  if (summary.failed > 0) {
+    console.log(`  ${c('red', 'failed:          ' + summary.failed)}`);
+    console.log('');
+    for (const f of failures) {
+      console.log(`    ${c('red', '✗')} ${f.vaultPath}`);
+      console.log(`      ${c('gray', f.error)}`);
+    }
+  }
+  if (merges.length > 0) {
+    console.log('');
+    console.log(c('yellow', 'Merge conflicts (files left in source for manual review):'));
+    for (const m of merges) {
+      console.log(`  ${m.vaultPath}:`);
+      for (const s of m.skipped) console.log(`    - ${s.file}: ${s.reason}`);
+    }
   }
 
   if (dryRun) {
