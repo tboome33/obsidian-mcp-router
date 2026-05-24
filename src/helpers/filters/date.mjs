@@ -38,28 +38,29 @@ export function date(str, format) {
   // day in the publisher's mind", not "an instant in UTC". For everything
   // else (full ISO with time, RFC2822, etc.) keep the prior behavior:
   // parse as instant, format in local TZ.
-  const dateOnlyMatch = input !== 'now' && /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
+  // ISO date prefix matcher handles BOTH date-only `2026-05-24` AND ISO
+  // datetimes `2026-05-24T10:30:00Z` (v0.13.1 hardening, codex post-commit
+  // finding P: pre-v0.13.1 the calendar validation only covered date-only,
+  // so `date('2026-02-31T00:00:00Z')` slipped through to `new Date()` and
+  // V8 rolled it forward to March 3).
+  const isoPrefix = input !== 'now' && /^(\d{4})-(\d{2})-(\d{2})(T|$)/.exec(input);
   let source;
   if (input === 'now') {
     source = new Date();
-  } else if (dateOnlyMatch) {
-    // Local-calendar construction avoids the UTC-midnight shift, BUT
-    // `new Date(y, m-1, d)` silently rolls over invalid components
-    // (`date('2026-13-01')` → 2027-01-01, `date('2026-02-31')` → 2026-03-03).
-    // The documented contract is "unparseable inputs return unchanged",
-    // so validate components against real calendar ranges before
-    // constructing the Date. Review+ pass 4 finding J (codex P2).
-    const y = Number.parseInt(dateOnlyMatch[1], 10);
-    const m = Number.parseInt(dateOnlyMatch[2], 10);
-    const d = Number.parseInt(dateOnlyMatch[3], 10);
-    // Days-per-month with leap-year handling (Feb 29 in a leap year is OK,
-    // Feb 29 in a non-leap year is NOT).
+  } else if (isoPrefix) {
+    const y = Number.parseInt(isoPrefix[1], 10);
+    const m = Number.parseInt(isoPrefix[2], 10);
+    const d = Number.parseInt(isoPrefix[3], 10);
+    // Days-per-month with leap-year handling.
     const leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
     const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     if (m < 1 || m > 12 || d < 1 || d > dim[m - 1]) {
       return input; // structurally well-formed but calendar-invalid
     }
-    source = new Date(y, m - 1, d);
+    // For date-only inputs (no `T`), build via local-calendar constructor
+    // to avoid the UTC-midnight TZ shift (Fix B#A / pass-1). For ISO
+    // datetimes, defer to `new Date(input)` which uses the explicit TZ.
+    source = isoPrefix[4] === 'T' ? new Date(input) : new Date(y, m - 1, d);
   } else {
     source = new Date(input);
   }

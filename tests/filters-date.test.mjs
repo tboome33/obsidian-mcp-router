@@ -77,6 +77,23 @@ describe('date — REGRESSION (review+ pass 4 / codex J): calendar-invalid date-
   test('accepts Feb 29 in century leap years (divisible by 400)', () => {
     assert.equal(date('2000-02-29'), '2000-02-29');
   });
+
+  test('REGRESSION (v0.13.1 / codex post-commit P): ISO datetime with invalid day is rejected too', () => {
+    // Pre-v0.13.1 the date-only branch validated, but full ISO datetimes
+    // fell through to `new Date(input)` which V8 silently rolled forward.
+    // `date('2026-02-31T00:00:00Z')` was returning `'2026-03-03'`.
+    assert.equal(date('2026-02-31T00:00:00Z'), '2026-02-31T00:00:00Z');
+    assert.equal(date('2026-13-15T10:00:00Z'), '2026-13-15T10:00:00Z');
+    assert.equal(date('2026-04-31T12:30:45.123Z'), '2026-04-31T12:30:45.123Z');
+  });
+
+  test('REGRESSION (v0.13.1): valid ISO datetimes still pass through correctly', () => {
+    // Sanity check that the new ISO-prefix-validation doesn't reject valid
+    // inputs. Format depends on local TZ for the day component; we just
+    // assert the year-month part is preserved.
+    assert.match(date('2026-02-28T00:00:00Z'), /^2026-02-2[78]$/);
+    assert.match(date('2024-02-29T12:00:00Z'), /^2024-02-29$/);
+  });
 });
 
 describe('date — custom format tokens', () => {

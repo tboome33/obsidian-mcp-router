@@ -515,6 +515,78 @@ describe('extractMetadata — REGRESSION (review+ pass 5 / codex P2)', () => {
   });
 });
 
+describe('extractMetadata — REGRESSION (v0.13.1 post-commit codex)', () => {
+  test('codex O: normalizeDate rejects calendar-invalid ISO dates instead of rolling forward', () => {
+    // Pre-v0.13.1: `<meta property="article:published_time" content="2026-02-31">`
+    // → V8 normalized to 2026-03-03 → fabricated date in frontmatter.
+    // Post-v0.13.1: round-trip validation rejects, raw value flows
+    // through cleanScalar (which trims/sanitizes but doesn't normalize).
+    const html = `<html><head>
+      <meta property="article:published_time" content="2026-02-31">
+    </head></html>`;
+    const meta = extractMetadata(html);
+    // Either null (after cleanScalar treats it as non-canonical) or the
+    // raw input — what's forbidden is the fabricated `2026-03-03`.
+    assert.notEqual(meta.published, '2026-03-03');
+  });
+
+  test('codex O: ISO datetime with invalid day also rejected (no V8 rollover)', () => {
+    const html = `<html><head>
+      <meta property="article:published_time" content="2026-02-31T00:00:00Z">
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.notEqual(meta.published, '2026-03-03');
+  });
+
+  test('codex O: valid ISO dates still normalize correctly', () => {
+    const html = `<html><head>
+      <meta property="article:published_time" content="2026-05-24T10:30:00Z">
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.equal(meta.published, '2026-05-24');
+  });
+
+  test('codex Q: JSON-LD type attribute with charset parameter is accepted', () => {
+    // Pre-v0.13.1: `type="application/ld+json; charset=utf-8"` was skipped.
+    const html = `<html><head>
+      <script type="application/ld+json; charset=utf-8">
+      {"@type":"Article","headline":"Charset article"}
+      </script>
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.equal(meta.title, 'Charset article');
+  });
+
+  test('codex Q: JSON-LD type attribute with whitespace around = is accepted', () => {
+    const html = `<html><head>
+      <script type = "application/ld+json">
+      {"@type":"Article","headline":"Whitespace article"}
+      </script>
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.equal(meta.title, 'Whitespace article');
+  });
+
+  test('codex S: data-content does NOT shadow real content attribute', () => {
+    // Pre-v0.13.1: `\bcontent` matched the suffix of `data-content`, so
+    // a tag with both attributes had `data-content` treated as the
+    // canonical metadata value.
+    const html = `<html><head>
+      <meta property="og:title" content="Real Title" data-content="Draft">
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.equal(meta.title, 'Real Title');
+  });
+
+  test('codex S: data-property does NOT shadow real property attribute', () => {
+    const html = `<html><head>
+      <meta data-property="og:fake" property="og:title" content="Real Title">
+    </head></html>`;
+    const meta = extractMetadata(html);
+    assert.equal(meta.title, 'Real Title');
+  });
+});
+
 describe('_internals — normalizeDate', () => {
   test('ISO 8601 → YYYY-MM-DD', () => {
     assert.equal(_internals.normalizeDate('2026-05-24T10:00:00Z'), '2026-05-24');

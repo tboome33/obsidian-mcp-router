@@ -152,7 +152,14 @@ export function extractMetadata(html, body) {
  */
 function extractJsonLd(html) {
   const out = [];
-  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  // Accept the spec-legal variations in MIME-type attribute formatting:
+  //   - whitespace around `=`:               `type = "application/ld+json"`
+  //   - charset/profile parameters:          `type="application/ld+json; charset=utf-8"`
+  //   - single OR double quotes:             `type='application/ld+json'`
+  // Pre-v0.13.1 the regex required the exact string `type="application/ld+json"`
+  // with no whitespace and no parameters; pages using either valid variation
+  // silently bypassed the extractor. Review+ post-commit finding Q (codex P2).
+  const re = /<script[^>]*type\s*=\s*["']application\/ld\+json[^"']*["'][^>]*>([\s\S]*?)<\/script>/gi;
   let m;
   while ((m = re.exec(html)) !== null) {
     const raw = m[1].trim();
@@ -304,8 +311,15 @@ function pickImage(jsonLd) {
 function parseMetaTagAttrs(tagText) {
   // Match attr=value where value is delimited by the same quote it opened
   // with. Backreference `\1` enforces matching open/close.
+  //
+  // The leading `(?:^|\s)` (instead of `\b`) ensures we match the WHOLE
+  // attribute name and not a suffix of `data-content` / `data-property` /
+  // `og:content` etc. Pre-v0.13.1 the `\b` boundary was satisfied between
+  // `-` and `c`, so a tag like `<meta property="og:title" data-content="Draft">`
+  // would parse `data-content` as `content` and surface "Draft" as the
+  // title. Review+ post-commit finding S (codex P3).
   const attrRe = (attrName) =>
-    new RegExp(`\\b${attrName}\\s*=\\s*(["'])((?:(?!\\1).)*)\\1`, 'i');
+    new RegExp(`(?:^|\\s)${attrName}\\s*=\\s*(["'])((?:(?!\\1).)*)\\1`, 'i');
   const propMatch = attrRe('property').exec(tagText);
   const nameMatch = attrRe('name').exec(tagText);
   const contentMatch = attrRe('content').exec(tagText);
@@ -378,18 +392,60 @@ function extractHtmlLang(html) {
 // -----------------------------------------------------------------------------
 
 /**
- * Normalize a date string to ISO `YYYY-MM-DD` if parseable, else return the
- * original. Schema.org `datePublished` is conventionally ISO 8601 but in the
- * wild may be RFC 2822 or freeform — we accept what `new Date()` accepts.
+ * Normalize a date string to ISO `YYYY-MM-DD` if parseable AND calendar-valid,
+ * else return the original. Schema.org `datePublished` is conventionally
+ * ISO 8601 but in the wild may be RFC 2822 or freeform — we accept what
+ * `new Date()` accepts, then verify the parsed value round-trips correctly.
+ *
+ * Why the round-trip check (v0.13.1 hardening, codex post-commit finding O):
+ * V8 silently rolls invalid calendar days forward — `new Date('2026-02-31')`
+ * yields a valid `Date` for March 3 (Feb 28 + 3). Without the round-trip
+ * verification, this helper would fabricate `2026-03-03` into the source
+ * page frontmatter that's meant to be the deterministic ground truth.
+ *
+ * Validation strategy: extract the ISO date prefix (`YYYY-MM-DD`) from the
+ * input if present, parse against real days-per-month + leap-year rule, and
+ * refuse if the components don't match. Inputs without an ISO date prefix
+ * (RFC 2822, freeform) still go through V8 and get formatted in UTC — V8's
+ * rollover only bites on the YYYY-MM-DD prefix case which is the dominant
+ * shape in `datePublished` / `article:published_time`.
  */
 function normalizeDate(value) {
   if (!value || typeof value !== 'string') return null;
+
+  // Strict pre-validation of the YYYY-MM-DD prefix (handles both date-only
+  // `2026-02-31` and ISO datetimes `2026-02-31T00:00:00Z`).
+  const prefixMatch = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  if (prefixMatch) {
+    const y = Number.parseInt(prefixMatch[1], 10);
+    const m = Number.parseInt(prefixMatch[2], 10);
+    const day = Number.parseInt(prefixMatch[3], 10);
+    if (!isCalendarValidDate(y, m, day)) {
+      return value; // surface invalid input verbatim — caller will sanitize
+    }
+  }
+
   const d = new Date(value);
-  if (isNaN(d.getTime())) return value; // surface as-is rather than null
+  if (isNaN(d.getTime())) return value;
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+/**
+ * Shared helper: is `(y, m, d)` a real calendar date (m in 1-12, d in
+ * 1-daysInMonth, leap-year rule for Feb)? Duplicated in
+ * `src/helpers/filters/date.mjs` — both call sites need identical
+ * semantics (cf. review+ post-commit Fix O + P). Kept inline rather than
+ * factored into a shared module to keep `meta-extractor.mjs` dep-free.
+ */
+function isCalendarValidDate(y, m, d) {
+  if (!Number.isInteger(y) || !Number.isInteger(m) || !Number.isInteger(d)) return false;
+  if (m < 1 || m > 12 || d < 1) return false;
+  const leap = (y % 4 === 0 && y % 100 !== 0) || (y % 400 === 0);
+  const dim = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return d <= dim[m - 1];
 }
 
 // Common HTML entity decoder. Covers the entities publishers actually

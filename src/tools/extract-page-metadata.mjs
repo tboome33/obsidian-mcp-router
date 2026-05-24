@@ -21,15 +21,21 @@
  *         site, lang, description, wordCount, readingMinutes}`.
  *
  * NOT YET registered in `src/index.mjs` TOOL_REGISTRY — registration ships
- * with Phase A.4 (v0.13.0 commit). Until then, this file is dead code,
- * importable only by tests and the wiki-ingest skill via direct require.
+ * with Phase B (v0.13.2, defuddle skill upgrade that calls this tool).
+ * Until then, this file is dead code, importable only by tests and (later)
+ * the wiki-ingest skill via direct require.
+ *
+ * v0.13.1 hardening: file renamed from `extractPageMetadata.mjs` to
+ * `extract-page-metadata.mjs` to align with the kebab-case convention of
+ * every other file in `src/tools/`. User-Agent string updated to match the
+ * shipped package version.
  */
 
 import { request } from 'undici';
 import { extractMetadata } from '../helpers/meta-extractor.mjs';
 import { validateUrl, assertHostnameNotPrivate } from '../markdownify/utils.mjs';
 
-const USER_AGENT = 'obsidian-mcp-router/0.13.0-dev (+https://github.com/tboome33/obsidian-mcp-router)';
+const USER_AGENT = 'obsidian-mcp-router/0.13.1 (+https://github.com/tboome33/obsidian-mcp-router)';
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_HTML_BYTES = 5 * 1024 * 1024; // 5 MiB — Wikipedia featured articles are <2 MiB
 const MAX_REDIRECTS = 5; // industry-standard cap; matches `fetch` and `curl` defaults

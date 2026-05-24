@@ -8,6 +8,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.1] — 2026-05-24 — Phase A hardening (post-commit `/review+` findings)
+
+Post-commit hardening pass triggered by `/review+` on the freshly-landed v0.13.0 commit. The 5-pass pre-commit cycle had cleared all P1/P2 it found, but a fresh post-commit review surfaced 5 new findings + 3 NITs that the pre-commit passes had missed (the post-commit codex saw the commit as a unit, not piecewise). All fixed before Phase B starts (which will be v0.13.2 — original roadmap shifted by one patch level).
+
+### Changed
+
+- **`src/tools/extractPageMetadata.mjs` → `src/tools/extract-page-metadata.mjs`** (N2): renamed to align with the kebab-case convention of every other file in `src/tools/`. Tool definition exported name (`extract_page_metadata`) unchanged. Done via `git mv` so history is preserved.
+- **`src/tools/extract-page-metadata.mjs:32`** (N1): User-Agent string `0.13.0-dev` → `0.13.1` (now matches the shipped package version). The pre-v0.13.1 dev-suffix was a development leftover.
+- **`src/tools/extract-page-metadata.mjs:23-29` JSDoc** (N3): "registration ships with Phase A.4" corrected to "Phase B (v0.13.2, defuddle skill upgrade)". The original JSDoc referenced an intermediate plan that changed; this one matches the actual roadmap now.
+- **`src/helpers/meta-extractor.mjs` normalizeDate** (codex O, P2): added ISO-date-prefix calendar validation. Pre-v0.13.1 V8 silently rolled invalid days forward — `article:published_time="2026-02-31"` produced fabricated `2026-03-03` in frontmatter. Now the round-trip check rejects calendar-invalid prefixes; raw input flows through `cleanScalar` (which neutralizes any embedded injection markup).
+- **`src/helpers/filters/date.mjs`** (codex P, P2): extended pass-5 calendar-validation from `YYYY-MM-DD` date-only to ALSO cover ISO datetimes with a `T` separator (`YYYY-MM-DDTHH:mm:ss…`). `date('2026-02-31T00:00:00Z')` now returns the input unchanged instead of V8-rolled `'2026-03-03'`.
+- **`src/helpers/meta-extractor.mjs:155-165` JSON-LD type regex** (codex Q, P2): relaxed from `type="application/ld+json"` strict to `type\s*=\s*["']application/ld+json[^"']*["']` so the extractor handles spec-legal variations: whitespace around `=` and charset/profile parameters (`type="application/ld+json; charset=utf-8"`). Pages using either valid variation no longer silently bypass JSON-LD extraction.
+- **`src/helpers/meta-extractor.mjs` parseMetaTagAttrs** (codex S, P3): attribute-name boundary changed from `\b` to `(?:^|\s)`. The `\b` boundary was satisfied between `-` and `c` in `data-content`, so a tag like `<meta property="og:title" content="Real" data-content="Draft">` had `data-content` shadowing `content` and surfaced `"Draft"` as the title. The leading whitespace/start-of-tag boundary fixes the false-match.
+
+### Added
+
+- **`NOTICE`** (codex R, P2 — license compliance): added MIT attribution section for the obsidian-clipper port (5 filter files + meta-extractor pattern). Mirrors the existing markdownify-mcp / Karpathy LLM-wiki credit sections — same format, full MIT license text, file-by-file mapping with explicit note that `slug.mjs` is homegrown and the SSRF/injection hardenings in meta-extractor are original to this project. Without this section, redistributing the package would have been MIT-noncompliant.
+- **`tests/filters-date.test.mjs`** (+2 cases): ISO datetime with invalid day rejected; valid ISO datetime passes through.
+- **`tests/meta-extractor.test.mjs`** (+7 cases): normalizeDate calendar-invalid (date-only + ISO datetime), valid ISO normalization, JSON-LD type with charset parameter, JSON-LD type with whitespace around `=`, data-content does not shadow content, data-property does not shadow property.
+
+### Backward compatibility
+
+- File rename `extractPageMetadata.mjs → extract-page-metadata.mjs` is **internal only** — the file is not yet registered in `TOOL_REGISTRY`, no consumers exist outside tests, no external import path changes.
+- All previously-correct inputs still produce identical outputs. The behavioral changes ONLY affect inputs that were previously incorrectly accepted (calendar-invalid dates, JSON-LD type variants, data-* attributes).
+
+### Test count: **634/634 passing** (was 625 at v0.13.0; +9 hardening regression tests).
+
 ## [0.13.0] — 2026-05-24 — obsidian-clipper Phase A (foundation)
 
 Phase A of the obsidian-clipper feature-borrowing roadmap (see [[obsidian-clipper-roadmap]] in the associated vault). Adds the deterministic helpers that will be consumed by Phase B (`wiki-ingest` skill upgrade) to fix the "fabricated dates / missed author" pain documented in the [[wiki-ingest]] skill anti-patterns. Zero behavioral change in existing skills — these helpers are purely additive.
