@@ -47,6 +47,10 @@ import {
   TOOL_DEFINITION as EXTRACT_PAGE_METADATA_TOOL_DEFINITION,
   handleExtractPageMetadata,
 } from './tools/extract-page-metadata.mjs';
+import {
+  TOOL_DEFINITION as PROPOSE_LINKED_SOURCES_TOOL_DEFINITION,
+  handleProposeLinkedSources,
+} from './tools/propose-linked-sources.mjs';
 
 // Read package version once at module load. Fixes IMP-2 (handshake reported
 // stale '0.8.2' instead of package.json version). Read synchronously at import
@@ -594,6 +598,10 @@ const TOOLS = [
   // WRITE_TOOL_NAMES below so OBSIDIAN_ROUTER_READONLY keeps it exposed
   // (deterministic frontmatter input is the whole point of pre-ingestion).
   EXTRACT_PAGE_METADATA_TOOL_DEFINITION,
+  // Linked-sources proposer (Phase C of obsidian-clipper port, v0.13.3).
+  // Scans a webpage's body for hyperlinks worth proposing for recursive
+  // ingestion. Read-only — excluded from WRITE_TOOL_NAMES.
+  PROPOSE_LINKED_SOURCES_TOOL_DEFINITION,
 ];
 
 /**
@@ -642,6 +650,8 @@ const TOOL_HANDLERS = {
   git_repo_to_markdown: (reg, args) => gitRepoToMarkdown(reg, args),
   // v0.13.2 Phase B — deterministic page-metadata extractor.
   extract_page_metadata: (_reg, args) => handleExtractPageMetadata(args),
+  // v0.13.3 Phase C — linked-sources proposer for recursive ingestion.
+  propose_linked_sources: (_reg, args) => handleProposeLinkedSources(args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at

@@ -75,6 +75,7 @@ site: <metadata.site>            # publisher / site name if available, else abse
 description: <metadata.description>  # 1-line summary from og:description / meta
 word_count: <metadata.wordCount>     # int
 reading_minutes: <metadata.readingMinutes>  # int (ceil(wordCount/220))
+related_source: "[[<parent-slug>]]"  # ONLY if this ingestion is a child of a link-following parent (Phase C, v0.13.3+). Omit otherwise.
 tags: [<source-type>, <topic-tags>]
 source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ---
@@ -96,6 +97,63 @@ Body structure (heading hierarchy is MANDATORY — see vault `CLAUDE.md` section
 Never produce a flat body without H2 sections — Outline plugin relies on the structure for navigation.
 
 Use `mcp__obsidian-router__write_file` with `ifNew: true`. If a page with this slug already exists, **stop and ask** — never silently overwrite.
+
+### 4.5 Propose linked sources (v0.13.3+, Phase C obsidian-clipper port)
+
+For URL sources, after the source page is filed but BEFORE you start the entity/concept extraction in step 5, scan the page's body for hyperlinks worth proposing for **recursive ingestion**. This is the user-in-the-loop "Ask mode" of link-following ingestion — you don't follow links autonomously, you present candidates and let the user pick.
+
+**Skip this step if**:
+- The source is a local file or pasted text (no `<a href>` to scan — no candidates).
+- The user explicitly said "don't follow links" / "skip linked sources" / "just ingest this one page".
+- This ingestion is ALREADY a child of a parent link-following ingestion (avoid recursive depth — Phase C is Level 1 / depth 1 only).
+
+**Procedure**:
+
+1. **Call the MCP tool** `mcp__obsidian-router__propose_linked_sources({url})` — it returns a JSON payload `{baseUrl, count, candidates: [{href, text, contextSnippet, score, sourceSection, sameDomain}]}`. The candidates are already sorted by score descending and capped at 30. Scoring : `+2` same domain, `+3` in a "Related"/"See also"/"Voir aussi" section, `-5` social/boilerplate hostname.
+
+2. **If `count === 0`**, skip silently (no candidates worth presenting) and move on to step 5.
+
+3. **Present the top 10-15 candidates** to the user, format:
+   ```
+   La page mentionne <count> liens hypertextes connexes. Veux-tu aussi en ingérer ?
+   
+   [ ] 1. <text>
+            · score <score> · <sourceSection or "body"> · <href>
+            · "<contextSnippet>"
+   [ ] 2. ...
+   
+   Réponds avec les numéros à ingérer (ex: "1, 3, 5"), "tous", ou "aucun".
+   ```
+   Truncate `contextSnippet` to ~60 chars for readability. Highlight `sameDomain: true` and `sourceSection != null` visually (e.g. bold or emoji prefix).
+
+4. **Wait for user response**. Accept :
+   - `"1, 3, 5"` / `"1 3 5"` / `"1-3"` → ingest those indices
+   - `"tous"` / `"all"` → ingest all candidates shown
+   - `"aucun"` / `"none"` / no response / "skip" → skip, continue to step 5
+   - Free text reformulation → re-present with the user's filter applied
+
+5. **For each retained candidate**, fan-out via the **`wiki-ingest` sub-agent** (`agents/wiki-ingest.md`) — one sub-agent per URL, parallel execution. Pass through the `parent_source_slug` so each child knows its parent. The sub-agent does the full ingestion of its URL but **MUST NOT** itself trigger step 4.5 again (Level 1 = depth 1; no recursion).
+
+6. **For each child source page created**, add `related_source: [[<parent-source-slug>]]` to its frontmatter. This is the link back to the parent that initiated the recursive ingestion.
+
+7. **Update the parent source page** with a new section `## Linked sources` listing the child wikilinks:
+   ```markdown
+   ## Linked sources
+   
+   These sources were ingested in the same session via link-following from this page:
+   
+   - [[sources/<child1-slug>]] — <child1-title>
+   - [[sources/<child2-slug>]] — <child2-title>
+   ```
+   Use `mcp__obsidian-router__patch_file` with `operation: append`, `targetType: heading`, `target: "Linked sources"` (or `append_to_file` to create the heading if it doesn't exist).
+
+8. **Log a consolidated entry** in `wiki-meta/log.md`: `- YYYY-MM-DD HH:MM — ingest+links — <parent-title> + N linked sources`.
+
+**Anti-patterns** :
+- Do NOT auto-follow links without user confirmation. Level 2 ("auto-follow with cap") is explicitly deferred to a future phase — Level 1 is **ask mode only**.
+- Do NOT chain `propose_linked_sources` recursively (child's children, grandchildren) — depth limit is 1 in Phase C. If the user wants depth 2+, they can re-trigger the skill on a child page.
+- Do NOT skip the `related_source` frontmatter on children — that's the only mechanism that traces the tree of linked ingestions for later navigation.
+- Do NOT ingest candidates with `score < 0` without explicit user opt-in (they're in the social/boilerplate blocklist for a reason).
 
 ### 5. Create or update entity/concept pages
 

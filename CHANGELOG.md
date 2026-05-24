@@ -8,6 +8,50 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.3] — 2026-05-24 — obsidian-clipper Phase C (link-following ingestion, Level 1 "Ask mode")
+
+Phase C of the obsidian-clipper feature-borrowing roadmap. Extends URL ingestion to **propose related hyperlinks** from the page body for recursive ingestion, ranked by heuristic score (same-domain +2, "Related"/"See also" section +3, social/boilerplate hostname -5). The user picks which candidates to also ingest — Level 1 "Ask mode" only, no auto-follow. Fan-out via the existing `wiki-ingest` sub-agent. Frontmatter `related_source: [[parent-slug]]` traces the parent-child tree.
+
+**Inserted before LaTeX preservation** per Roland's request 2026-05-24 — link-following adds value to ALL URL ingestions, LaTeX is niche to math pages. Original Phase C (LaTeX) becomes Phase D, and downstream phases shift by one letter.
+
+**Why Level 1 only**: 3 ambition levels were scoped (Ask mode, Auto-follow with cap, Smart LLM selection). Level 1 is the safe foundation — user always validates the candidate list before any extra fetch happens. Levels 2 and 3 are deferred to dedicated phases if usage patterns justify (e.g. "I always pick same-domain links" → graduate to Level 2 auto-follow with same-domain cap).
+
+### Added
+
+- **`src/helpers/link-extractor.mjs`** — `extractLinks(html, baseUrl, opts)` parses `<a href>` from HTML with heuristic scoring. Strips semantic boilerplate (`<nav>`, `<footer>`, `<aside>`, `<header>`) before scan. Quote-aware tag matcher + backreference attribute extractor (cf. Phase A finding E lessons). Hard-skips fragment-only, `mailto:`, `tel:`, `javascript:`, `data:`, `file:`, `ftp:`. Dedup by canonical href (lowercased hostname, no fragment, trailing-slash stripped). HTML entities decoded + agentic-injection markers neutralized on display text (cf. Phase A findings B#C + A#15). Output sorted by score descending, capped at `maxCandidates` (default 30).
+- **`src/tools/propose-linked-sources.mjs`** — MCP tool wrapper around the extractor. Accepts `{url}` (fetched via undici with SSRF guards + redirect re-SSRF per hop, max 5 hops) or `{html, baseUrl}` (raw input, no I/O). Returns `{baseUrl, count, candidates}` JSON-stringified in the standard MCP content block.
+- **`extract_page_metadata` + `propose_linked_sources`** both registered in `src/index.mjs` TOOL_REGISTRY (TOOLS + TOOL_HANDLERS dispatch). Boot-time cross-check validates the wiring. Both excluded from `WRITE_TOOL_NAMES` (no vault mutation).
+- **`skills/wiki-ingest/SKILL.md`** new step 4.5 "Propose linked sources" (between file source step 4 and entity extraction step 5). Full procedure documented: call `propose_linked_sources`, present top 10-15 to user, accept input formats ("1, 3, 5" / "tous" / "aucun"), fan-out via existing `wiki-ingest` sub-agent (1 per retained URL, parallel), set child frontmatter `related_source: [[parent]]`, append parent page's `## Linked sources` section, consolidated log entry. Hard depth limit of 1 (sub-agents MUST NOT trigger step 4.5 themselves).
+- **`skills/wiki-ingest/SKILL.md`** frontmatter spec updated with the `related_source: "[[parent-slug]]"` field (optional, only set on children of a link-following parent).
+- **`tests/link-extractor.test.mjs`** (42 cases) — Karpathy fixture (Related section + cross-domain), Wikipedia fixture (See also section + External links un-bonus), degraded (no links), TRICKY fixture (nav strip + scheme skips + dedup canonical + single-quoted href + apostrophe-in-text + injection neutralizer post-decode), robustness (empty/null html, invalid baseUrl, maxCandidates cap, image-only anchor skip), scoring (social blocklist, same-domain bonus, cross-domain plain), `_internals` smoke tests for splitByHeadings + resolveAndNormalize + headingMatchesRelated + matchesSocialBlocklist.
+- **`tests/propose-linked-sources.test.mjs`** (14 cases) — TOOL_DEFINITION shape, input XOR validation (url + html mutually exclusive, html requires baseUrl), hermetic html branch (full scoring, maxCandidates cap, empty page), URL SSRF refusal (non-http(s), loopback, malformed), wiring boot-time check (TOOLS + TOOL_HANDLERS contain `propose_linked_sources`, not in WRITE_TOOL_NAMES).
+- **`package.json`** test script extended with both new test files.
+
+### Anti-patterns documented in skill
+
+- Do NOT auto-follow links without user confirmation (Level 2 deferred).
+- Do NOT chain `propose_linked_sources` recursively in sub-agents (depth limit = 1 in Phase C).
+- Do NOT skip the `related_source` frontmatter on children (mechanism that traces the tree).
+- Do NOT ingest candidates with `score < 0` without explicit user opt-in (blocklist).
+
+### Synergy with the 🔮 router-aware browser extension idea
+
+Phase C lays the conceptual foundations of recursive ingestion that a future browser extension would exploit natively (the extension has DOM access — link extraction is trivial, and the parent-child relation model in frontmatter is what the extension would write). See [[obsidian-clipper#-idée-à-étudier--extension-navigateur-router-aware]] in the vault brainstorming.
+
+### Backward compatibility
+
+- Step 4.5 is additive — existing wiki-ingest invocations (without explicit link-following) skip it silently (no candidates → no UI, no user prompt).
+- Frontmatter `related_source` is OPTIONAL — root sources (not children of a link-following parent) omit the field entirely.
+- The new MCP tools (`propose_linked_sources`, `extract_page_metadata` from v0.13.2) are read-only and excluded from `WRITE_TOOL_NAMES`, so `OBSIDIAN_ROUTER_READONLY` deployments stay useful.
+
+### Deferred to future phases
+
+- **Level 2 (auto-follow with cap)** — flag opt-in `--follow-links depth=1 max-pages=5 same-domain=true`. Activatable if usage patterns show systematic user choices.
+- **Level 3 (smart LLM selection)** — per-link LLM judgment via `extract_page_metadata` light pre-scoring. Probably a v0.14.x candidate.
+- **Recursive depth > 1** — Phase C is depth-1 only. Higher depth needs more design (cycle detection, budget enforcement, UX).
+
+### Test count: **703/703 passing** (was 647 at v0.13.2; +56 new tests: 42 link-extractor + 14 propose-linked-sources).
+
 ## [0.13.2] — 2026-05-24 — obsidian-clipper Phase B (pipeline upgrade)
 
 Phase B of the obsidian-clipper feature-borrowing roadmap. Wires the v0.13.0 helpers into the actual ingestion pipeline: registers `extract_page_metadata` as a real MCP tool, updates the `defuddle` skill to call it alongside the markdown cleanup, and updates the `wiki-ingest` skill to assemble source-page frontmatter DETERMINISTICALLY from the extracted metadata before Claude touches the body. End of the "fabricated dates / missed author" pain documented in the wiki-ingest skill anti-patterns.
