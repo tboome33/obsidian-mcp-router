@@ -8,6 +8,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.2] — 2026-05-24 — obsidian-clipper Phase B (pipeline upgrade)
+
+Phase B of the obsidian-clipper feature-borrowing roadmap. Wires the v0.13.0 helpers into the actual ingestion pipeline: registers `extract_page_metadata` as a real MCP tool, updates the `defuddle` skill to call it alongside the markdown cleanup, and updates the `wiki-ingest` skill to assemble source-page frontmatter DETERMINISTICALLY from the extracted metadata before Claude touches the body. End of the "fabricated dates / missed author" pain documented in the wiki-ingest skill anti-patterns.
+
+### Added
+
+- **`extract_page_metadata` MCP tool registered** in `src/index.mjs` TOOL_REGISTRY (TOOLS array + TOOL_HANDLERS dispatch). Input schema accepts `url` (fetched via undici with SSRF guards + redirect handling, max 5 hops) OR `html` (raw, no I/O). Output is a JSON-stringified `{title, author, published, image, site, lang, description, wordCount, readingMinutes}` block. Excluded from `WRITE_TOOL_NAMES` since it doesn't touch any vault — `OBSIDIAN_ROUTER_READONLY` keeps it exposed. The boot-time TOOLS/TOOL_HANDLERS cross-check validates the wiring automatically.
+- **`tests/extract-page-metadata.test.mjs`** (13 cases): TOOL_DEFINITION shape, handler input validation (mutually-exclusive `url`/`html`, neither required, both forbidden), hermetic `html` input branch (full metadata, no-metadata fallback, body override), URL SSRF refusal (non-http(s) scheme, private IP literal, malformed), boot-time wiring cross-check (TOOLS/TOOL_HANDLERS contain the new entry).
+- **`package.json`** test script extended with `tests/extract-page-metadata.test.mjs`.
+
+### Changed
+
+- **`skills/defuddle/SKILL.md`**: new step 2.5 "Extract deterministic metadata" — after defuddle returns clean markdown, the skill ALSO calls `extract_page_metadata` on the same URL. Output of the skill is now `{markdown, metadata}` instead of just `markdown`. Added explicit rationale ("why two calls instead of one combined tool: clean separation of concerns") and anti-pattern ("do NOT infer title/author/published when the meta extractor returned non-null").
+- **`skills/wiki-ingest/SKILL.md`** step 1 (acquire): URL inputs now route through `defuddle` (v0.13.2+) which returns the metadata block, or directly call `extract_page_metadata` if the URL is already clean. Local files / pasted text still fall back to Claude inference (no metadata signal available).
+- **`skills/wiki-ingest/SKILL.md`** step 4 (file source): frontmatter for URL sources is now assembled DETERMINISTICALLY from the metadata block. New mandatory fields when present: `published`, `lang`, `image`, `site`, `description`, `word_count`, `reading_minutes`. The slug filename uses `slug(title, {maxLen:80})` from the v0.13.0 filter library. Anti-pattern updated: do NOT re-infer fields the metadata block populated.
+
+### Backward compatibility
+
+- The `webpageToMarkdown` MCP tool (`src/tools/convert.mjs`) is **unchanged** — still returns a markdown string for backward compat. Pipeline composition lives in the skills, not in the tool layer. This was a deliberate scope decision vs. the roadmap's initial `{markdown, metadata}` shape proposal: simpler, no breaking change, no `flat: true` legacy flag needed.
+- Local file / pasted text inputs to `wiki-ingest` continue to use the pre-v0.13.2 inference path (no metadata block available — no signal to be deterministic about).
+- The `extract_page_metadata` tool returns a hermetic JSON-stringified payload; downstream consumers that JSON.parse the `content[0].text` get the structured object.
+
+### Test count: **647/647 passing** (was 634 at v0.13.1; +13 integration tests for the new tool + wiring).
+
 ## [0.13.1] — 2026-05-24 — Phase A hardening (post-commit `/review+` findings)
 
 Post-commit hardening pass triggered by `/review+` on the freshly-landed v0.13.0 commit. The 5-pass pre-commit cycle had cleared all P1/P2 it found, but a fresh post-commit review surfaced 5 new findings + 3 NITs that the pre-commit passes had missed (the post-commit codex saw the commit as a unit, not piecewise). All fixed before Phase B starts (which will be v0.13.2 — original roadmap shifted by one patch level).

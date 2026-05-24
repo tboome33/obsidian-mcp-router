@@ -29,9 +29,9 @@ Take a source (URL, local file path, or pasted text) and do the structured work 
 
 ### 1. Acquire the source content
 
-- **URL**: use `WebFetch` (or the `defuddle` skill first if it's a noisy webpage with ads/nav).
-- **Local file**: prefer `mcp__obsidian-router__get_file` if the file is inside a vault; else `Read`.
-- **Pasted text**: use what the user gave you.
+- **URL**: use the `defuddle` skill (v0.13.2+) — it returns `{markdown, metadata}` with deterministic title/author/published/image/site/lang/description/wordCount/readingMinutes from Schema.org/OG/meta tags. If you bypass defuddle for some reason (e.g. URL is already clean markdown), call `mcp__obsidian-router__extract_page_metadata({url})` directly to get the metadata block — it's the input to step 4's deterministic frontmatter.
+- **Local file**: prefer `mcp__obsidian-router__get_file` if the file is inside a vault; else `Read`. No metadata block in this case — fall back to inference.
+- **Pasted text**: use what the user gave you. No metadata block — fall back to inference.
 
 If acquisition fails, surface the error and stop. Don't ingest a partial source.
 
@@ -59,19 +59,30 @@ Output a 1-paragraph plan to the user before writing files. They can correct mis
 
 ### 4. File the source itself
 
-Create `wiki/sources/<slugified-title>.md` with frontmatter:
+Create `wiki/sources/<slugified-title>.md` with frontmatter. **For URL sources (v0.13.2+, Phase B obsidian-clipper port)**, the frontmatter is assembled DETERMINISTICALLY from the metadata block returned by `defuddle` (step 1) or `extract_page_metadata` — Claude does NOT infer these fields:
 
 ```yaml
 ---
 type: source
-title: "<exact title>"
-url: <url or path>
-ingested_at: <ISO date>
-authors: [<...>]
+title: "<metadata.title or <title> tag>"
+url: <canonical URL>
+ingested_at: <ISO timestamp now>
+authors: [<metadata.author>]    # may be array if multiple; otherwise single string
+published: <metadata.published>  # ISO YYYY-MM-DD if available, else absent
+lang: <metadata.lang>            # e.g. "en", "fr-FR" — if detected
+image: <metadata.image>          # cover image URL if available, else absent
+site: <metadata.site>            # publisher / site name if available, else absent
+description: <metadata.description>  # 1-line summary from og:description / meta
+word_count: <metadata.wordCount>     # int
+reading_minutes: <metadata.readingMinutes>  # int (ceil(wordCount/220))
 tags: [<source-type>, <topic-tags>]
 source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ---
 ```
+
+**Anti-pattern**: do NOT fabricate or re-infer `title` / `author` / `published` / `lang` / `image` / `site` / `description` when the metadata block returned a non-null value. The whole point of the v0.13.2 pipeline is to make these deterministic. Use `slug(title, {maxLen:80})` from `src/helpers/filters/slug.mjs` to generate the filename — never improvise.
+
+**Fallback**: if the source is a local file or pasted text (no metadata block), infer title and structural fields from the content as before. The `published` / `lang` / `image` / `site` fields are omitted from the frontmatter when no signal exists (do NOT emit `null` or empty string — just leave the line out).
 
 The source page itself is `extracted` — the body is a faithful summary/quote of an external document. For entity/concept pages spawned from this source (step 5), the provenance varies — use `inferred` when Claude derived the page from cues in the source, `claude_synthesized` when the page is pure synthesis with no direct textual basis. When in doubt, prefer the more conservative tag (`claude_synthesized` over `inferred`, `inferred` over `extracted`).
 
@@ -137,7 +148,7 @@ Compact summary:
 - Don't create pages with no body beyond the title. If you can't write 2 sentences about an entity, skip it — it'll resurface naturally if it matters.
 - Don't ingest before step 3 (page plan). Surfacing the plan first saves rework.
 - Don't use `Write`/`Edit` natively — always go through the router so this works cross-project.
-- Don't fabricate frontmatter dates. If the source has no date, omit the field.
+- Don't fabricate frontmatter dates. If the source has no date, omit the field. (v0.13.2+: the metadata block from `defuddle` / `extract_page_metadata` is the deterministic source of truth — never re-infer fields it already populated.)
 
 ## Quirks
 

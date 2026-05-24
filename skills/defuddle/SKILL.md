@@ -34,12 +34,26 @@ Quick sanity checks:
 - Length: if the cleaned output is < 200 chars or > 50K chars, something probably went sideways. Surface to the user with the URL and offer to retry or fall back to raw fetch.
 - Title presence: a defuddled article should start with an H1 (the title) or a clear opening paragraph. If it starts mid-sentence, defuddle was too aggressive — flag and offer raw.
 
+### 2.5 Extract deterministic metadata (v0.13.2+, Phase B obsidian-clipper port)
+
+After defuddle returns clean markdown, ALSO call `mcp__obsidian-router__extract_page_metadata({url})` (or `{html}` if you already have the raw HTML cached) to pull structured metadata that the LLM should NOT have to infer:
+
+- `title`, `author`, `published`, `image` (cover), `site` (publisher), `lang`, `description`
+- `wordCount`, `readingMinutes` (derived)
+
+This populates the source-page frontmatter deterministically downstream (see `wiki-ingest` step 4). The extractor parses Schema.org JSON-LD + OpenGraph + meta tags in priority order; values that come back as `null` mean none of those signals were present, and the consumer falls back to inferring from the body — but only as last resort.
+
+**Why two calls (defuddle + extract_page_metadata) instead of one combined tool**: clean separation of concerns. `defuddle` strips chrome and returns prose; `extract_page_metadata` parses structured signals from the same URL. Each is independently useful, and a future client could call only one.
+
+**Anti-pattern**: do NOT infer `title` / `author` / `published` when the meta extractor has returned non-null values for those fields. The whole point of the extractor is to make these deterministic — re-inferring undoes that.
+
 ### 3. Hand off to the consumer
 
-Defuddle is rarely a terminal action. The output is the input to the next skill:
-- If invoked from `wiki-ingest`: return the cleaned markdown so wiki-ingest can do its structured extraction.
+Defuddle is rarely a terminal action. The output is the input to the next skill. Return an object `{markdown, metadata}` (the markdown from step 1, the metadata from step 2.5) so the consumer doesn't have to re-fetch:
+
+- If invoked from `wiki-ingest`: return `{markdown, metadata}` so wiki-ingest can assemble deterministic frontmatter (step 4 of that skill) before Claude touches the body.
 - If invoked from `autoresearch`: same.
-- If invoked directly by the user ("defuddle <url>"): show them the cleaned content, ask "ingest this?" — if yes, hand off to `wiki-ingest`.
+- If invoked directly by the user ("defuddle <url>"): show them the cleaned content + a compact metadata header (title / author / published / wordCount), ask "ingest this?" — if yes, hand off to `wiki-ingest`.
 
 ## Caching (optional, not required for v1)
 
