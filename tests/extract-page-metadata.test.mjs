@@ -73,35 +73,44 @@ describe('extract-page-metadata — handler with html input (hermetic)', () => {
       <meta property="og:site_name" content="ExampleSite">
     </head><body><p>One two three four five.</p></body></html>`;
     const result = await handleExtractPageMetadata({ html });
-    assert.ok(Array.isArray(result.content));
-    assert.equal(result.content.length, 1);
-    assert.equal(result.content[0].type, 'text');
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.title, 'OG Title');
-    assert.equal(parsed.author, 'Alice');
-    assert.equal(parsed.published, '2026-05-24');
-    assert.equal(parsed.site, 'ExampleSite');
-    assert.equal(parsed.lang, 'en');
-    assert.ok(parsed.wordCount > 0);
+    // v0.13.4: handler returns RAW payload (no {content:[...]} wrap).
+    // The router's wrapResult does the MCP-shape wrap; pre-v0.13.4
+    // returning {content:[...]} from the handler caused double-wrap.
+    assert.equal(result.title, 'OG Title');
+    assert.equal(result.author, 'Alice');
+    assert.equal(result.published, '2026-05-24');
+    assert.equal(result.site, 'ExampleSite');
+    assert.equal(result.lang, 'en');
+    assert.ok(result.wordCount > 0);
   });
 
   test('html with no metadata returns all-null structured response', async () => {
     const html = '<html><head><title>X</title></head><body><p>hi</p></body></html>';
     const result = await handleExtractPageMetadata({ html });
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.title, 'X');
-    assert.equal(parsed.author, null);
-    assert.equal(parsed.published, null);
+    assert.equal(result.title, 'X');
+    assert.equal(result.author, null);
+    assert.equal(result.published, null);
   });
 
   test('body input overrides word-count source when provided', async () => {
     const html = '<html><head><title>x</title></head><body><p>one two three</p></body></html>';
     const bigBody = 'word '.repeat(1000).trim();
     const result = await handleExtractPageMetadata({ html, body: bigBody });
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.wordCount, 1000);
+    assert.equal(result.wordCount, 1000);
     // ceil(1000/220) = 5
-    assert.equal(parsed.readingMinutes, 5);
+    assert.equal(result.readingMinutes, 5);
+  });
+
+  test('REGRESSION (v0.13.4): handler returns raw payload, not pre-wrapped {content:[...]}', async () => {
+    // Pre-v0.13.4 the handler returned `{content:[{type:'text', text:
+    // JSON.stringify(...)}]}` and then the router's wrapResult re-wrapped
+    // it, so MCP clients saw `{"content":[...]}` as the actual text
+    // instead of the documented payload. Verify the handler now returns
+    // the raw object.
+    const result = await handleExtractPageMetadata({ html: '<title>x</title>' });
+    assert.ok(!('content' in result), 'handler must NOT return a {content:[...]} envelope');
+    assert.ok('title' in result);
+    assert.ok('wordCount' in result);
   });
 });
 

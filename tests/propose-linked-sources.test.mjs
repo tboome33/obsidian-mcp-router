@@ -75,20 +75,18 @@ describe('propose-linked-sources — hermetic html branch', () => {
       html,
       baseUrl: 'https://example.com/page',
     });
-    assert.ok(Array.isArray(result.content));
-    assert.equal(result.content[0].type, 'text');
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.baseUrl, 'https://example.com/page');
-    assert.equal(parsed.count, 3);
-    assert.equal(parsed.candidates.length, 3);
+    // v0.13.4: handler returns RAW payload (no {content:[...]} wrap).
+    assert.equal(result.baseUrl, 'https://example.com/page');
+    assert.equal(result.count, 3);
+    assert.equal(result.candidates.length, 3);
     // C in "Related" section: +2 same-domain + +3 related = 5
-    const c = parsed.candidates.find((x) => x.href === 'https://example.com/c');
+    const c = result.candidates.find((x) => x.href === 'https://example.com/c');
     assert.equal(c.score, 5);
     // A in body: +2 same-domain = 2
-    const a = parsed.candidates.find((x) => x.href === 'https://example.com/a');
+    const a = result.candidates.find((x) => x.href === 'https://example.com/a');
     assert.equal(a.score, 2);
     // B cross-domain: 0
-    const b = parsed.candidates.find((x) => x.href === 'https://other.com/b');
+    const b = result.candidates.find((x) => x.href === 'https://other.com/b');
     assert.equal(b.score, 0);
   });
 
@@ -102,9 +100,8 @@ describe('propose-linked-sources — hermetic html branch', () => {
       baseUrl: 'https://example.com/',
       maxCandidates: 3,
     });
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.candidates.length, 3);
-    assert.equal(parsed.count, 3);
+    assert.equal(result.candidates.length, 3);
+    assert.equal(result.count, 3);
   });
 
   test('empty html returns empty candidates list', async () => {
@@ -112,9 +109,19 @@ describe('propose-linked-sources — hermetic html branch', () => {
       html: '<p>nothing</p>',
       baseUrl: 'https://example.com/',
     });
-    const parsed = JSON.parse(result.content[0].text);
-    assert.equal(parsed.count, 0);
-    assert.deepEqual(parsed.candidates, []);
+    assert.equal(result.count, 0);
+    assert.deepEqual(result.candidates, []);
+  });
+
+  test('REGRESSION (v0.13.4): handler returns raw payload, not pre-wrapped {content:[...]}', async () => {
+    const result = await handleProposeLinkedSources({
+      html: '<p>x</p>',
+      baseUrl: 'https://example.com/',
+    });
+    assert.ok(!('content' in result), 'handler must NOT return a {content:[...]} envelope');
+    assert.ok('baseUrl' in result);
+    assert.ok('count' in result);
+    assert.ok('candidates' in result);
   });
 });
 

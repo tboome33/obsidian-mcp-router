@@ -8,6 +8,52 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.4] — 2026-05-24 — Phase C hardening (mini-review+ findings on caa9463)
+
+Hardening pass triggered by `mini-/review+` on the freshly-landed v0.13.3 commit (`caa9463`). Both reviewers (Claude Code Reviewer subagent + codex) flagged 1 P1 SSRF gap + 4 P2 + 4 P3 — same pattern as the v0.13.0 → v0.13.1 cycle (post-commit codex sees integration-level bugs that piecewise pre-commit review misses). All P1 + P2 fixed before Phase D LaTeX starts (which shifts to v0.13.5 again).
+
+**Phase D LaTeX version shift** (cumulative): originally v0.13.3 in initial roadmap → v0.13.4 after Phase C insertion → **v0.13.5** after this hardening. Roadmap follow-up still tracked in vault.
+
+### Changed
+
+#### Security
+
+- **SSRF TOCTOU closed for both extract_page_metadata and propose_linked_sources MCP tools** (codex P1). Pre-v0.13.4 the 2-stage guard (`validateUrl` sync + `assertHostnameNotPrivate` async DNS) had a TOCTOU window between the DNS check and undici's getaddrinfo at connect time. A DNS-rebinding host or one with mixed public/private answers could pass the check and then have undici resolve/connect to a private IP. Now closed via a **pinned-IP undici Dispatcher** (the same pattern `src/markdownify/markitdown.mjs safeFetch` has carried since v0.11.1): `Agent({connect: {lookup: (_h, _o, cb) => cb(null, address, family)}})` ensures the connector cannot re-resolve. Per-hop re-pin in the redirect loop, so chained redirects through hostile DNS still get refused at the final hop.
+
+#### MCP wire-format
+
+- **Handler wrapResult double-wrap fixed for both tools** (codex P2 — CRITICAL). Pre-v0.13.4 both `handleExtractPageMetadata` and `handleProposeLinkedSources` returned a pre-wrapped `{content: [{type:'text', text: JSON.stringify(...)}]}` shape. But the router's `wrapResult` in src/index.mjs re-wraps every handler's return value, so MCP clients saw the actual response text as `{"content":[{"type":"text","text":"<original payload>"}]}` — a nested envelope instead of the documented payload. Tests didn't catch it because they called the handlers directly (bypassing the dispatcher). Fix: handlers return the **raw payload object** now. Tests updated + 2 regression tests added (one per tool) that assert `!('content' in result)`.
+
+#### link-extractor.mjs heuristic bugs
+
+- **Dedup keeps highest-scoring duplicate** (convergent finding: Reviewer A P2 + codex P2). Pre-v0.13.4: same canonical href appearing in body AND in a Related section was dropped first-wins, losing the +3 bonus. Now a `Map<canonical, candidate>` keeps the candidate with the higher score per canonical href.
+- **href HTML entities decoded BEFORE URL normalization** (codex P2). Pre-v0.13.4: `<a href="/search?q=a&amp;b=2">` produced canonical URL `https://…/search?q=a&amp;b=2`, so the downstream request would have param `amp;b` instead of `b`. Now `decodeEntities(rawHref)` runs first.
+- **Quoted `>` in attribute before href no longer truncates the tag-open slice** (codex P2). Pre-v0.13.4: `<a title="2 > 1" href="/x">` was sliced at the inner `>`, missing the `href` entirely. Fix: use a quote-aware `A_OPEN_RE` sub-match instead of `indexOf('>')`.
+- **Social blocklist recognizes `www.*` / `m.*` / `mobile.*` prefixes** (Reviewer A P3). Pre-v0.13.4: `https://www.twitter.com/x` scored 0 instead of -5. Now hostnames are normalized (`.replace(/^(www|m|mobile)\./, '')`) before set lookup.
+- **`headingMatchesRelated` is Unicode-NFC-normalized** (Reviewer A P3). A heading like `"À lire aussi"` arriving in NFD form (combining-grave detached) now matches the NFC keyword `"à lire aussi"` in the lookup table.
+
+#### Refactor
+
+- **`src/helpers/safe-fetch-html.mjs`** — extracted shared SSRF-safe fetch helper (DRY-cleanup that had been tracked as TODO since v0.13.2). Both `extract_page_metadata` and `propose_linked_sources` now use it. Returns `{html, finalUrl}` so callers know the post-redirect canonical URL (needed for same-domain scoring in link-extractor).
+- **`src/helpers/pkg-version.mjs`** — extracted shared package-version read + `USER_AGENT` string (Reviewer A P3). Eliminates the drift between the per-tool hardcoded UA strings (`0.13.0-dev`, `0.13.1`, `0.13.3` were all in play across releases). `src/index.mjs` now imports `PKG_VERSION` from this helper instead of doing its own JSON.parse inline.
+
+#### Skill / sub-agent depth-1 enforcement
+
+- **`agents/wiki-ingest.md`** — added explicit anti-pattern: "Don't trigger link-following step 4.5 of the wiki-ingest skill. Depth limit is 1 in Phase C: parent triggers step 4.5, children (you) don't recurse." (Reviewer A P3 — pre-v0.13.4 the depth-1 promise was only enforced by the orchestrator skill instruction; sub-agents could technically re-trigger step 4.5. Now explicit in the sub-agent prompt.)
+
+### Added
+
+- **`tests/extract-page-metadata.test.mjs`** (+1 regression case): handler returns raw payload, not pre-wrapped envelope.
+- **`tests/propose-linked-sources.test.mjs`** (+1 regression case): same as above for propose tool.
+- **`tests/link-extractor.test.mjs`** (+5 regression cases): dedup-max-wins, href entity decode, quoted-`>` in tag-open, www.*/m./mobile.* social blocklist normalization, Unicode-NFC heading match.
+
+### Backward compatibility
+
+- **MCP wire-format change** is technically a "fix to a bug" but it IS a behavioral change for clients that were JSON-parsing the (broken) double-wrapped response. Any client that relied on parsing `JSON.parse(content[0].text)` to get `{"content":[...]}` and digging into the nested text was already broken. Documented in the breaking-change section of the wiki-ingest skill upgrade notes.
+- **Sub-agent skip of step 4.5** is additive — sub-agents that ignored step 4.5 (any pre-v0.13.4 sub-agent) continue to work; the explicit instruction just hardens the soft enforcement that was already implicit.
+
+### Test count: **710/710 passing** (was 703 at v0.13.3; +7 hardening regression tests).
+
 ## [0.13.3] — 2026-05-24 — obsidian-clipper Phase C (link-following ingestion, Level 1 "Ask mode")
 
 Phase C of the obsidian-clipper feature-borrowing roadmap. Extends URL ingestion to **propose related hyperlinks** from the page body for recursive ingestion, ranked by heuristic score (same-domain +2, "Related"/"See also" section +3, social/boilerplate hostname -5). The user picks which candidates to also ingest — Level 1 "Ask mode" only, no auto-follow. Fan-out via the existing `wiki-ingest` sub-agent. Frontmatter `related_source: [[parent-slug]]` traces the parent-child tree.

@@ -285,6 +285,72 @@ describe('extractLinks — security (defense against agentic-marker injection in
 // _internals smoke tests
 // -----------------------------------------------------------------------------
 
+describe('extractLinks — REGRESSION (v0.13.4 / mini-review+ on caa9463)', () => {
+  test('codex P2: dedup keeps HIGHEST-scoring duplicate (not first-wins)', () => {
+    // Same canonical href appears once in body, once in "Related" section.
+    // Pre-v0.13.4: first occurrence (body, score 2) wins, the Related
+    // occurrence (score 5) is silently dropped.
+    // Post-v0.13.4: dedup-MAX-wins keeps the Related one.
+    const html = `<article>
+      <p>Body mention: <a href="/x">X first</a>.</p>
+      <h2>Related</h2>
+      <ul><li><a href="/x">X again</a></li></ul>
+    </article>`;
+    const links = extractLinks(html, 'https://example.com/');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].score, 5); // same-domain (+2) + Related (+3)
+    assert.equal(links[0].sourceSection, 'Related');
+  });
+
+  test('codex P2: href with &amp; HTML entity is decoded BEFORE URL normalization', () => {
+    // Pre-v0.13.4: href="/search?q=a&amp;b=2" produced canonical URL
+    // with literal `&amp;b=2`, so the request would have param `amp;b`
+    // instead of the intended `b`.
+    const html = '<p><a href="/search?q=a&amp;b=2">search</a></p>';
+    const links = extractLinks(html, 'https://example.com/');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, 'https://example.com/search?q=a&b=2');
+  });
+
+  test('codex P2: quoted > in attribute BEFORE href does not truncate the tag-open slice', () => {
+    // Pre-v0.13.4: `tagOpen = m[0].slice(0, m[0].indexOf('>') + 1)`
+    // truncated at the inner `>` of `title="2 > 1"`, so the `href`
+    // attribute (which came AFTER title) was never extracted and the
+    // link was lost.
+    const html = '<p><a title="2 > 1" href="/x">link</a></p>';
+    const links = extractLinks(html, 'https://example.com/');
+    assert.equal(links.length, 1);
+    assert.equal(links[0].href, 'https://example.com/x');
+  });
+
+  test('Reviewer A P3: social blocklist recognizes www.* / m.* / mobile.* prefixes', () => {
+    const html = `
+      <p>www: <a href="https://www.twitter.com/x">tw1</a>.</p>
+      <p>m: <a href="https://m.facebook.com/y">fb1</a>.</p>
+      <p>mobile: <a href="https://mobile.twitter.com/z">tw2</a>.</p>
+      <p>bare: <a href="https://twitter.com/a">tw3</a>.</p>
+    `;
+    const links = extractLinks(html, 'https://example.com/');
+    // All four should score -5 (social blocklist hit).
+    assert.equal(links.length, 4);
+    for (const l of links) {
+      assert.equal(l.score, -5, `${l.href} should match social blocklist via prefix-normalize`);
+    }
+  });
+
+  test('Reviewer A P3: heading match is Unicode-NFC-normalized', () => {
+    // "À" in NFD form (U+0041 LATIN CAPITAL A + U+0300 COMBINING GRAVE).
+    // Pre-v0.13.4: lowercase'd to NFD "à lire aussi" which didn't substring-match
+    // the NFC keyword "à lire aussi" in the table.
+    const NFD_HEADING = 'À lire aussi';
+    const html = `<h2>${NFD_HEADING}</h2><p><a href="/x">x</a></p>`;
+    const links = extractLinks(html, 'https://example.com/');
+    assert.equal(links.length, 1);
+    // Should get the Related bonus (+3) on top of same-domain (+2) = 5.
+    assert.equal(links[0].score, 5);
+  });
+});
+
 describe('_internals — splitByHeadings', () => {
   test('null heading for pre-heading content', () => {
     const sections = _internals.splitByHeadings('<p>intro</p><h1>Title</h1><p>body</p>');

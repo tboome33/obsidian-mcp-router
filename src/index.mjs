@@ -52,12 +52,12 @@ import {
   handleProposeLinkedSources,
 } from './tools/propose-linked-sources.mjs';
 
-// Read package version once at module load. Fixes IMP-2 (handshake reported
-// stale '0.8.2' instead of package.json version). Read synchronously at import
-// time — runs once, can't drift from package.json.
-const PKG_VERSION = JSON.parse(
-  fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-).version;
+// Single-source-of-truth for the package version (v0.13.4+). Extracted
+// to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
+// propose_linked_sources) can share the User-Agent string without
+// circular imports or duplicated reads. Pre-v0.13.4 each tool hardcoded
+// the version string and drifted across releases.
+import { PKG_VERSION } from './helpers/pkg-version.mjs';
 
 const TOOLS = [
   {

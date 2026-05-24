@@ -34,3 +34,4 @@ Anti-patterns:
 - Don't fail silently on a partial fetch — return an error report instead of a half-ingested wiki.
 - Don't create entity pages with no body. If you can't write 2 sentences about an entity from this source alone, skip the page; the orchestrator may aggregate later.
 - Don't fan out further. You're a leaf worker.
+- **Don't trigger link-following step 4.5 of the wiki-ingest skill** (introduced v0.13.3 Phase C). If your source URL has hyperlinks the user might want ingested, that's the orchestrator's decision via the parent skill flow — not yours. Skip step 4.5 entirely. Depth limit is 1 in Phase C: parent triggers step 4.5, children (you) don't recurse. The orchestrator hardens this by setting `related_source` in the dispatch context — if you see that field, you ARE a child, definitely skip step 4.5.

@@ -84,8 +84,12 @@ export function extractLinks(html, baseUrl, opts = {}) {
   // applied per-section based on a substring match on the heading text.
   const sections = splitByHeadings(stripped);
 
-  const seen = new Set();
-  const out = [];
+  // Dedup-MAX-wins (cf. v0.13.4 review+ finding P2): the same canonical
+  // href can appear in body AND in a Related section. Pre-v0.13.4 used
+  // a Set-based "first-wins" dedup, which dropped the higher-scoring
+  // Related occurrence. Now: keep the candidate with the highest score
+  // per canonical href.
+  const byCanonical = new Map();
   for (const section of sections) {
     const isRelated =
       section.heading != null && headingMatchesRelated(section.heading);
@@ -94,27 +98,29 @@ export function extractLinks(html, baseUrl, opts = {}) {
       const resolved = resolveAndNormalize(anchor.href, base);
       if (!resolved) continue;
 
-      // Dedup canonical href across sections.
-      if (seen.has(resolved.canonical)) continue;
-      seen.add(resolved.canonical);
-
       let score = 0;
       const sameDomain = resolved.hostname === base.hostname;
       if (sameDomain) score += 2;
       if (isRelated) score += 3;
       if (matchesSocialBlocklist(resolved.hostname)) score -= 5;
 
-      out.push({
+      const candidate = {
         href: resolved.canonical,
         text: anchor.text,
         contextSnippet: anchor.contextSnippet,
         score,
         sourceSection: section.heading,
         sameDomain,
-      });
+      };
+
+      const prev = byCanonical.get(resolved.canonical);
+      if (!prev || prev.score < score) {
+        byCanonical.set(resolved.canonical, candidate);
+      }
     }
   }
 
+  const out = [...byCanonical.values()];
   out.sort((a, b) => b.score - a.score);
   return out.slice(0, maxCandidates);
 }
@@ -149,6 +155,11 @@ function splitByHeadings(html) {
 
 // Quote-aware `<a>` tag matcher, capped at 4 KB per tag.
 const A_TAG_RE = /<a\b(?:[^>"']|"[^"]*"|'[^']*'){0,4096}>([\s\S]*?)<\/a>/gi;
+// Quote-aware opening-tag matcher (no inner, no closing) for slicing
+// the opening tag out of an A_TAG_RE match without falling on a quoted
+// `>` (cf. v0.13.4 review+ finding P2: `<a title="2 > 1" href="/x">`
+// was truncated at the inner `>` by the previous `indexOf('>')` approach).
+const A_OPEN_RE = /<a\b(?:[^>"']|"[^"]*"|'[^']*'){0,4096}>/i;
 
 /**
  * Yield each `<a>` anchor in `content` with its href, display text,
@@ -156,10 +167,19 @@ const A_TAG_RE = /<a\b(?:[^>"']|"[^"]*"|'[^']*'){0,4096}>([\s\S]*?)<\/a>/gi;
  */
 function* iterateAnchors(content) {
   for (const m of content.matchAll(A_TAG_RE)) {
-    const tagOpen = m[0].slice(0, m[0].indexOf('>') + 1);
+    // Slice the opening tag using a quote-aware sub-match so a quoted
+    // `>` in an attribute before `href` doesn't truncate the slice.
+    const openMatch = A_OPEN_RE.exec(m[0]);
+    if (!openMatch) continue; // shouldn't happen if A_TAG_RE matched, defensive
+    const tagOpen = openMatch[0];
     const innerHtml = m[1];
-    const href = extractAttr(tagOpen, 'href');
-    if (!href) continue;
+    const rawHref = extractAttr(tagOpen, 'href');
+    if (!rawHref) continue;
+    // Decode HTML entities in href BEFORE URL normalization (cf. v0.13.4
+    // review+ finding P2: `<a href="/search?q=a&amp;b=2">` was producing
+    // a canonical URL with literal `&amp;b=2` query param, breaking the
+    // downstream request).
+    const href = decodeEntities(rawHref);
     const text = cleanText(innerHtml);
     if (!text) continue; // skip image-only or empty-text anchors
     const contextSnippet = buildContextSnippet(content, m.index, m[0].length);
@@ -265,7 +285,12 @@ const RELATED_HEADING_KEYWORDS = [
 ];
 
 function headingMatchesRelated(heading) {
-  const norm = heading.toLowerCase();
+  // NFC normalize before case-folding so a heading like "À lire aussi"
+  // (which can arrive as NFD with the combining-grave detached) matches
+  // the NFC keyword "à lire aussi" in the lookup table. Real-world
+  // impact is small (most sites serve NFC) but zero-cost defense.
+  // v0.13.4 review+ finding P3 (Reviewer A).
+  const norm = heading.normalize('NFC').toLowerCase();
   return RELATED_HEADING_KEYWORDS.some((kw) => norm.includes(kw));
 }
 
@@ -298,7 +323,13 @@ const SOCIAL_BLOCKLIST = new Set([
 
 function matchesSocialBlocklist(hostname) {
   if (!hostname) return false;
-  return SOCIAL_BLOCKLIST.has(hostname.toLowerCase());
+  // Normalize common subdomain prefixes (www.*, m.*, mobile.*) before
+  // lookup so `www.twitter.com` matches the blocklist entry `twitter.com`.
+  // Pre-v0.13.4 only the bare host was matched, so users who wrote
+  // `https://www.twitter.com/x` got score 0 instead of -5.
+  // v0.13.4 review+ finding P3 (Reviewer A).
+  const stripped = hostname.toLowerCase().replace(/^(www|m|mobile)\./, '');
+  return SOCIAL_BLOCKLIST.has(stripped);
 }
 
 // -----------------------------------------------------------------------------
