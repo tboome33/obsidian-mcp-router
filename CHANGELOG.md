@@ -8,6 +8,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.8] — 2026-05-24 — A.1 hardening pass 2 (codex post-commit on 300f161)
+
+Second hardening pass on the A.1 filter library. Originally targeted for v0.13.7 but a concurrent session shipped `vault-doc-startup-check` (f81d9de) under that number first — this work re-tags to v0.13.8.
+
+mini-`/review+` on `300f161` (v0.13.6 A.1 hardening) caught **2 additional P2 findings** that the v0.13.6 round had missed. **Codex pattern continues to pay off** — every post-commit pass on this Phase A→C series has surfaced real bugs:
+
+| commit | codex post-commit findings |
+|---|---|
+| `ae1986c` v0.13.0 | 5 P2 (sanitize bypass, TZ shift, reserved-name leak, HTML entities, JSON-LD type regex) |
+| `caa9463` v0.13.3 | 1 P1 + 4 P2 (wrapResult double-wrap, dedup, entity decode in href, quoted `>` in tag-open) |
+| `493adce` v0.13.4 | 1 P1 (Node-20+ `lookup.opts.all` array convention — fetch URL totalement cassé en prod) |
+| `599514d` v0.13.5 | codex hit OpenAI quota; Reviewer A found 3 P1/P2 (date_modify month roll, duration token boundary, strip_md unanchored) |
+| `300f161` v0.13.6 | **this commit** — 2 P2 (duration whitelist, strip_md indent) |
+
+### Changed
+
+- **`src/helpers/filters/duration.mjs` G (P2)** — letter-whitelist precondition. The v0.13.6 lookbehind/lookahead boundary was insufficient for formats like `'hh:mm'`: `mm` was preceded by `:` (non-letter) and followed by end-of-string (non-letter), so it still matched → result `'hh:01'` instead of preserved `'hh:mm'`. **Fix**: pre-pass over format — if ANY letter is outside the canonical token set `Hms` (case-sensitive), bail out and return format literal. More predictable than the v0.13.6 boundary-only approach.
+  - **Trade-off / behavioral change**: a marginal v0.13.6 capability is lost. Pre-v0.13.8 `duration('3600', 'H total')` → `'1 total'` (the lone `H` was tokenized between non-letter delimiters). Post-v0.13.8: `'H total'` literal (because `total` has non-Hms letters → bail). Test updated.
+  - **Net benefit**: `'hh:mm'`, `'MM:SS'`, `'H:mm sec'`, etc. all behave predictably now (literal preserved instead of partial replacement).
+- **`src/helpers/filters/strip_md.mjs` H (P2)** — table indent tolerance per markdown spec. Pre-v0.13.8 the strict `/^\|...` regex missed valid indented table rows like `  | col1 | col2 |`. Markdown allows 0-3 leading spaces (or a tab) before block-level syntax. **Fix**: `/^[ \t]{0,3}\|.*\|\s*$/gm`. 4+ leading spaces = code block (preserved as-is, not stripped as table).
+
+### Added
+
+- **`tests/filters-wave1-rest.test.mjs`** (+2 regression cases): lowercase `hh:mm` / `MM:SS` formats preserved as literals (whitelist-bail), indented tables (0-3 spaces / 1 tab) stripped, deeply-indented `    |...|` preserved as code block.
+
+### Note on commit `e9d5e82`
+
+The commit title and body reference v0.13.7. That was the intent at commit time — the concurrent v0.13.7 shipping was discovered post-commit. The code in `e9d5e82` is the actual content of v0.13.8 (this entry). No `git revert` / amend needed — the commit history reflects the order of events, this CHANGELOG entry is the canonical version mapping.
+
+### Backward compatibility
+
+- `duration` whitelist change is a behavioral change for formats with non-Hms letters. Only `'H total'` test case was affected and updated to assert the new (stricter, more predictable) behavior.
+- `strip_md` indent fix is a pure bug fix — previously valid indented tables were missed.
+- Phase D LaTeX cumulatively shifts to **v0.13.9**.
+
+### Test count: **793/793 passing** (was 769 at v0.13.6; +24 includes the 2 v0.13.8 regressions + tests from the concurrent v0.13.7 work).
+
 ## [0.13.7] — 2026-05-24
 
 **Doc drift detection promoted from "happens to fire on commit" to "fires at every SessionStart"** — closes the recurring gap where the wiki documentation lagged the repo state across multiple commits because the user (or Claude) didn't see the per-commit nudge in time.
