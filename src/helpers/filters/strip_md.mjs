@@ -27,7 +27,12 @@ export function strip_md(str) {
   s = s.replace(/^[-*+] (\[[x ]\] )?/gm, '');             // task lists / list items
   s = s.replace(/^([-*_]){3,}\s*$/gm, '');                // horizontal rules
   s = s.replace(/^>\s+/gm, '');                           // blockquotes
-  s = s.replace(/\|.*\|/g, '');                           // tables (removed entirely)
+  // Tables: anchor the regex to full lines so a paragraph containing
+  // pipes (math `P(A|B)`, regex `[a|b]`, CLI `cmd | grep`) doesn't
+  // get its middle segment silently erased. Pre-v0.13.6 the unanchored
+  // pattern was a port-of-Clipper-bug that we now diverge from.
+  // Reviewer A finding F3.
+  s = s.replace(/^\|.*\|\s*$/gm, '');                     // tables (full table lines only)
   s = s.replace(/([~^])(\w+)\1/g, '$2');                  // sub/superscript
   s = s.replace(/:[a-z_]+:/g, '');                        // emoji shortcodes
   s = s.replace(/<[^>]+>/g, '');                          // raw HTML

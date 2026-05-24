@@ -82,6 +82,35 @@ describe('strip_md', () => {
   test('removes wikilinks (keeps alias if present)', () => {
     assert.equal(strip_md('See [[page]] and [[other|alias]].'), 'See page and alias.');
   });
+
+  test('REGRESSION (v0.13.6 / F3): pipes in body text are preserved (only full table lines stripped)', () => {
+    // Pre-v0.13.6: `\|.*\|/g` matched any line with 2+ pipes, erasing
+    // the middle. Now anchored to full table lines (^|...|$).
+    assert.equal(
+      strip_md('see this | a | b | row'),
+      'see this | a | b | row',
+    );
+    // Math notation P(A|B) preserved.
+    assert.equal(
+      strip_md('Conditional probability P(A|B) is fundamental'),
+      'Conditional probability P(A|B) is fundamental',
+    );
+    // CLI pipe preserved.
+    assert.equal(
+      strip_md('run `ls | grep foo` to filter'),
+      'run ls | grep foo to filter',
+    );
+  });
+
+  test('REGRESSION (v0.13.6 / F3): actual table lines still stripped', () => {
+    const input = 'Body text\n| col1 | col2 |\n| --- | --- |\n| a | b |\nMore body';
+    const out = strip_md(input);
+    assert.match(out, /Body text/);
+    assert.match(out, /More body/);
+    // The 3 table lines are stripped.
+    assert.doesNotMatch(out, /\| col1/);
+    assert.doesNotMatch(out, /\| a \| b/);
+  });
 });
 
 describe('blockquote', () => {
@@ -187,6 +216,28 @@ describe('date_modify', () => {
   test('calendar-invalid input → return input', () => {
     assert.equal(date_modify('2026-02-31', '+1 day'), '2026-02-31');
   });
+
+  test('REGRESSION (v0.13.6 / F1a): Jan 31 + 1 month clamps to last day of Feb (not roll over to Mar)', () => {
+    // Pre-v0.13.6: JS Date.setMonth(0->1) on Jan 31 silently rolled
+    // forward to Mar 3 (Feb 28 + 3). Clamp now keeps the result in Feb.
+    assert.equal(date_modify('2026-01-31', '+1 month'), '2026-02-28');
+    // 2024 is a leap year — Feb has 29 days, so Jan 31 → Feb 29.
+    assert.equal(date_modify('2024-01-31', '+1 month'), '2024-02-29');
+  });
+
+  test('REGRESSION (v0.13.6 / F1b): Feb 29 leap + 1 year clamps to Feb 28 of non-leap year', () => {
+    // Pre-v0.13.6: setFullYear(2024 -> 2025) on Feb 29 silently rolled
+    // to Mar 1. Clamp now keeps the result in Feb.
+    assert.equal(date_modify('2024-02-29', '+1 year'), '2025-02-28');
+    // Going to another leap year preserves Feb 29.
+    assert.equal(date_modify('2024-02-29', '+4 years'), '2028-02-29');
+  });
+
+  test('REGRESSION (v0.13.6 / F1): mid-month dates roll over months normally', () => {
+    // Sanity check: the clamp doesn't break common cases.
+    assert.equal(date_modify('2026-05-15', '+1 month'), '2026-06-15');
+    assert.equal(date_modify('2026-05-15', '-1 month'), '2026-04-15');
+  });
 });
 
 describe('duration', () => {
@@ -204,6 +255,26 @@ describe('duration', () => {
   });
   test('non-parseable → return input', () => {
     assert.equal(duration('not a duration'), 'not a duration');
+  });
+
+  test('REGRESSION (v0.13.6 / F2): literal letters in format string are preserved (no mid-word token match)', () => {
+    // Pre-v0.13.6: `format='Hours'` had its `H` matched (preceded by
+    // start) and replaced → `1our0`. Token boundary now requires non-
+    // letter chars on both sides.
+    assert.equal(duration('3600', 'Hours'), 'Hours');
+    // `seconds` with `s` only matched at isolation — both `s`s are
+    // bordered by letters, so no replacement.
+    assert.equal(duration('90', 'seconds'), 'seconds');
+    // `H total` — `H` followed by space is OK on the right (non-letter),
+    // preceded by start (non-letter) — matches → "1 total" (1 hour).
+    assert.equal(duration('3600', 'H total'), '1 total');
+  });
+
+  test('REGRESSION (v0.13.6 / F2): canonical formats still work', () => {
+    // The standard formats Clipper supports continue to replace correctly.
+    assert.equal(duration('3690', 'HH:mm:ss'), '01:01:30');
+    assert.equal(duration('3690', 'H:mm:ss'), '1:01:30');
+    assert.equal(duration('90', 'mm:ss'), '01:30');
   });
 });
 

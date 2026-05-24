@@ -8,6 +8,50 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.6] — 2026-05-24 — A.1 hardening (3 correctness bugs from mini-review+ on 599514d)
+
+Hardening pass on the 12 newly-shipped Wave-1 filters. mini-`/review+` on commit `599514d` (v0.13.5 A.1 completion) caught **3 silent correctness bugs** in the adapted-from-Clipper filters — all reproduced by exec. Fixed before Phase D LaTeX starts (which now shifts to v0.13.7 cumulatively).
+
+Note: codex pass hit its OpenAI usage limit on this review (HTTP 403 quota exceeded), so only Reviewer A's findings are included here. The findings are concrete (proven by exec), high-quality, and all P1/P2 — no need to wait for codex retry.
+
+### Changed
+
+- **`src/helpers/filters/date_modify.mjs` F1 (P1, silent correctness)** — month and year shifts now CLAMP the day to the last valid day of the target month, instead of letting JS `Date.setMonth` roll over. Pre-v0.13.6:
+  - `date_modify('2026-01-31', '+1 month')` → `'2026-03-03'` ❌ (Feb 28 + 3, silent overflow)
+  - `date_modify('2024-02-29', '+1 year')` → `'2025-03-01'` ❌ (Feb 29 non-existent in non-leap year 2025)
+  Post-v0.13.6:
+  - `date_modify('2026-01-31', '+1 month')` → `'2026-02-28'` ✅
+  - `date_modify('2024-02-29', '+1 year')` → `'2025-02-28'` ✅
+  - `date_modify('2024-02-29', '+4 years')` → `'2028-02-29'` ✅ (next leap year preserved)
+  Implementation: new private `shiftMonthClamped(date, monthDelta)` helper — sets day to 1 first (always valid), shifts month, then clamps day to last-day-of-new-month.
+
+- **`src/helpers/filters/duration.mjs` F2 (P1, silent correctness)** — token replacement now requires non-letter boundaries on both sides. Pre-v0.13.6 the unbounded `replace(/HH|H|mm|m|ss|s/g, …)` matched mid-word. Reproduced:
+  - `duration('3600', 'Hours')` → `'1our0'` ❌ (the `H` of `Hours` matched, replaced by `1`, the `s` matched, replaced by `0`)
+  - `duration('3690', 'hh:mm')` → `'hh:01'` ❌ (the `mm` matched even though it sat after `:` after `h` which is a letter)
+  Post-v0.13.6:
+  - `duration('3600', 'Hours')` → `'Hours'` ✅ (no match — `H` is followed by a letter)
+  - `duration('3690', 'hh:mm')` → `'hh:mm'` ✅ (no match — `mm` is preceded by `:` then `h` non-token; the regex correctly rejects)
+  Implementation: `/(?<![A-Za-z])(HH|H|mm|m|ss|s)(?![A-Za-z])/g` with lookbehind+lookahead boundaries.
+
+- **`src/helpers/filters/strip_md.mjs` F3 (P2, silent erasure)** — table-stripping regex now anchored to full table lines. Pre-v0.13.6 the unanchored `\|.*\|/g` (port-of-Clipper-bug) matched any line with 2+ pipes:
+  - `strip_md('see this | a | b | row')` → `'see this  row'` ❌ (middle erased)
+  - Math notation `P(A|B)` would have its middle wiped if it had a 2nd pipe in the same line.
+  Post-v0.13.6: anchored `/^\|.*\|\s*$/gm` — only matches lines that start AND end with `|`. Body text with arbitrary pipes is preserved:
+  - `strip_md('Conditional P(A|B) is...')` → `'Conditional P(A|B) is...'` ✅
+  - `strip_md('run \`ls | grep foo\` to filter')` → preserves the pipe ✅
+  - Real table lines (`| col1 | col2 |`) still stripped ✅. We diverge from Clipper here intentionally — their unanchored version is a correctness bug they may want to fix upstream eventually.
+
+### Added
+
+- **`tests/filters-wave1-rest.test.mjs`** (+7 regression cases): Jan31+1month clamp, leap-year +1year clamp, leap-to-leap +4years preservation, mid-month sanity check, literal letters in duration format preserved, canonical duration formats still work, body pipes preserved, real table lines still stripped.
+
+### Backward compatibility
+
+- All 3 fixes are bug fixes — they produce **correct** outputs where pre-v0.13.6 produced silently wrong ones. No client that relied on the buggy behavior is at risk except in the F3 case where a body containing 2+ pipes would no longer be (erroneously) stripped. That's a feature, not a regression.
+- Phase D LaTeX cumulatively shifts: original v0.13.3 → v0.13.4 (Phase C insert) → v0.13.5 (Phase C hardening) → v0.13.6 (A.1 complete) → **v0.13.7** (this hardening) → eventually Phase D.
+
+### Test count: **769/769 passing** (was 762 at v0.13.5; +7 regression tests).
+
 ## [0.13.5] — 2026-05-24 — A.1 completion (12 remaining Wave-1 filters) + critical Node-20+ fetch fix
 
 Two changes bundled here:

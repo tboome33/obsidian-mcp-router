@@ -51,8 +51,18 @@ export function date_modify(str, param) {
 
   const sign = op === '+' ? 1 : -1;
   switch (unit) {
-    case 'year': date.setFullYear(date.getFullYear() + sign * n); break;
-    case 'month': date.setMonth(date.getMonth() + sign * n); break;
+    case 'year':
+      // Clamp day to last-of-target-month so `Feb 29 leap + 1 year`
+      // doesn't roll over to `Mar 1` of a non-leap year.
+      // v0.13.6 hardening (Reviewer A finding F1b).
+      shiftMonthClamped(date, sign * n * 12);
+      break;
+    case 'month':
+      // Clamp day to last-of-target-month so `Jan 31 + 1 month` doesn't
+      // roll over to `Mar 3` (JS Date.setMonth's silent normalization
+      // behavior). v0.13.6 hardening (Reviewer A finding F1a).
+      shiftMonthClamped(date, sign * n);
+      break;
     case 'week': date.setDate(date.getDate() + sign * n * 7); break;
     case 'day': date.setDate(date.getDate() + sign * n); break;
     case 'hour': date.setHours(date.getHours() + sign * n); break;
@@ -63,4 +73,23 @@ export function date_modify(str, param) {
 
   const pad2 = (x) => String(x).padStart(2, '0');
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+/**
+ * Shift `date` by `monthDelta` months, clamping the day to the last
+ * valid day of the target month. Avoids JS Date.setMonth's silent
+ * roll-over to the following month when the source day doesn't exist
+ * in the target (`Jan 31 + 1 month` → not `Feb 31` → ends up `Mar 3`,
+ * or `Feb 29 leap + 1 year` → not `Feb 29 non-leap` → ends up `Mar 1`).
+ *
+ * Algorithm: set day=1 first (always valid), then set month, then
+ * compute last day of new month, then clamp.
+ */
+function shiftMonthClamped(date, monthDelta) {
+  const originalDay = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + monthDelta);
+  // Last day of the new month = day 0 of (month+1).
+  const lastDayOfNewMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  date.setDate(Math.min(originalDay, lastDayOfNewMonth));
 }

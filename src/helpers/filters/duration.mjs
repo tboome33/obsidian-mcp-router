@@ -81,6 +81,12 @@ function formatDuration(totalSeconds, format) {
     ss: pad2(seconds),
     s: seconds.toString(),
   };
-  // Match longest tokens first.
-  return fmt.replace(/HH|H|mm|m|ss|s/g, (m) => replacements[m]);
+  // Token boundary lookbehind+lookahead so a literal `Hours` in the
+  // format doesn't get its `H` replaced (pre-v0.13.6 the unbounded
+  // pattern produced `1our0` from `Hours`). Tokens must be surrounded
+  // by non-letter chars (or string boundaries). Reviewer A finding F2.
+  return fmt.replace(
+    /(?<![A-Za-z])(HH|H|mm|m|ss|s)(?![A-Za-z])/g,
+    (m) => replacements[m],
+  );
 }
