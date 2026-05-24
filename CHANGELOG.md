@@ -8,6 +8,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.5] — 2026-05-24 — A.1 completion (12 remaining Wave-1 filters) + critical Node-20+ fetch fix
+
+Two changes bundled here:
+
+1. **Codex P1 (CRITICAL) — `safe-fetch-html.mjs` lookup callback fixed for Node 20+**. The mini-`/review+` on commit `493adce` (v0.13.4 hardening) caught that the pinned-IP custom `lookup` callback returned `(null, address, family)` scalar — but on Node 20+ where `autoSelectFamily` is on by default, undici calls `lookup(host, opts, cb)` with `opts.all === true` and expects the callback to receive an **array** of `{address, family}` records (happy-eyeballs v2). Returning scalar in that branch made undici fail with `ERR_INVALID_IP_ADDRESS` before connecting, so **every URL-input fetch through `extract_page_metadata` and `propose_linked_sources` was broken in production**. Tests didn't catch it because they used the `html` input branch (no fetch). Fix: handle both calling conventions in the same callback.
+
+2. **A.1 completion** — the remaining 12 Wave-1 filters shipped (the 5 pivots landed in v0.13.0 — see `safe_name`, `slug`, `kebab`, `wikilink`, `date`). The filter library is now complete at 17/17 Wave-1 filters. Wave 2 (33 more filters) stays Phase H backlog.
+
+### Added
+
+- **`src/helpers/filters/decode_uri.mjs`** — `decodeURIComponent` with safe fallback on malformed input. Direct port from Clipper.
+- **`src/helpers/filters/length.mjs`** — count chars (string) / items (JSON array) / keys (JSON object). Returns string per Clipper convention. Direct port.
+- **`src/helpers/filters/strip_tags.mjs`** — strip HTML tags with optional allow-list. Decodes common entities. Direct port.
+- **`src/helpers/filters/strip_md.mjs`** — strip markdown formatting (links, bold, italic, headers, code, lists, blockquotes, tables, wikilinks, etc.). Direct port.
+- **`src/helpers/filters/blockquote.mjs`** — prefix each line with `> ` (nested arrays → nested depth). Direct port.
+- **`src/helpers/filters/callout.mjs`** — wrap content in Obsidian callout `> [!type] title\n> body` with fold marker. Direct port.
+- **`src/helpers/filters/footnote.mjs`** — JSON array → `[^N]: item`, JSON object → `[^kebab-key]: value`. Direct port.
+- **`src/helpers/filters/image.mjs`** — URL (or JSON of URLs) → markdown `![alt](url)` syntax. Adapted port (inline `escapeMd` for the 4 syntactic chars, no upstream `escapeMarkdown` dep).
+- **`src/helpers/filters/table.mjs`** — JSON object / array of objects / array of arrays / flat array → markdown table. Custom headers via param. Direct port.
+- **`src/helpers/filters/date_modify.mjs`** — add/subtract a duration from a date. Adapted port — native `Date` arithmetic instead of `dayjs` dep. Calendar-validated (same strategy as `date.mjs` Fix J).
+- **`src/helpers/filters/duration.mjs`** — format ISO 8601 duration or bare seconds as `HH:mm:ss`. Adapted port — native arithmetic, no `dayjs/plugin/duration`.
+- **`src/helpers/filters/markdown.mjs`** — **simplified** HTML→markdown converter. Clipper's version delegates to `defuddle/full` which the router doesn't bundle (defuddle is invoked separately via WebFetch in the `defuddle` skill). The ported filter covers the common cases (headings, paragraphs, lists, links, images, bold/italic, code, blockquote, entity decode) — sufficient for use cases that don't need full-fidelity conversion. For high-fidelity webpage→markdown, the wiki-ingest skill calls defuddle directly. Documented in the filter's JSDoc.
+- **`src/helpers/filters/index.mjs`** updated: 17/17 filters exported by name + included in `FILTERS` map for programmatic lookup.
+- **`tests/filters-wave1-rest.test.mjs`** (~50 cases, 3-5 per filter) — happy paths + edge cases + Clipper-parity behavior for each of the 12 new filters.
+- **`package.json`** test script extended with the new test file.
+
+### Changed
+
+- **`src/helpers/safe-fetch-html.mjs`** — `lookup` callback now returns an array `[{address, family}]` when `opts.all === true` (Node 20+ `autoSelectFamily` branch) AND scalar `(null, address, family)` when `opts.all` is falsy (legacy / explicitly-disabled branch). Both conventions covered, so the helper works across all undici versions and Node runtimes.
+
+### Backward compatibility
+
+- All 12 new filters are additive — no existing API touched.
+- The `safe-fetch-html` lookup fix is a pure bugfix (no API change) — URL-input fetches that were broken now work.
+
+### Test count: **762/762 passing** (was 710 at v0.13.4; +52 new tests: ~50 filter cases).
+
 ## [0.13.4] — 2026-05-24 — Phase C hardening (mini-review+ findings on caa9463)
 
 Hardening pass triggered by `mini-/review+` on the freshly-landed v0.13.3 commit (`caa9463`). Both reviewers (Claude Code Reviewer subagent + codex) flagged 1 P1 SSRF gap + 4 P2 + 4 P3 — same pattern as the v0.13.0 → v0.13.1 cycle (post-commit codex sees integration-level bugs that piecewise pre-commit review misses). All P1 + P2 fixed before Phase D LaTeX starts (which shifts to v0.13.5 again).

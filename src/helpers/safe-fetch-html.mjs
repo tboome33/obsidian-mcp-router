@@ -76,7 +76,23 @@ export async function safeFetchHtml(url, opts = {}) {
     // to a different (private) IP.
     const dispatcher = new Agent({
       connect: {
-        lookup: (_host, _opts, cb) => cb(null, address, family),
+        // CRITICAL: handle the two `lookup` calling conventions Node uses.
+        // On Node 20+ (the supported runtime), `net.connect` enables
+        // `autoSelectFamily` by default and calls the custom lookup with
+        // `opts.all === true`, expecting the callback to receive an
+        // ARRAY of `{address, family}` records (the "happy eyeballs" v2
+        // algorithm tries them in order). Returning scalar `(err, address,
+        // family)` in that branch makes undici fail with
+        // `ERR_INVALID_IP_ADDRESS` BEFORE connecting — every URL-input
+        // fetch was broken pre-v0.13.5. Codex P1 finding on the v0.13.4
+        // hardening commit.
+        lookup: (_host, opts, cb) => {
+          if (opts && opts.all) {
+            cb(null, [{ address, family }]);
+          } else {
+            cb(null, address, family);
+          }
+        },
       },
     });
 
@@ -124,6 +140,13 @@ export async function safeFetchHtml(url, opts = {}) {
       };
     } finally {
       clearTimeout(timer);
+      // Close the per-hop dispatcher so undici releases its socket pool.
+      // Without this, redirect chains accumulate Agents that survive
+      // until Node GC (potentially ~2 min on TCP timeout). Reviewer A
+      // P2 finding on the v0.13.4 hardening commit (mini-review+ on
+      // `493adce`). Same pattern probably wanted in markdownify's
+      // `safeFetch` — tracked as a separate follow-up.
+      try { await dispatcher.close(); } catch { /* ignore — best-effort cleanup */ }
     }
   }
 

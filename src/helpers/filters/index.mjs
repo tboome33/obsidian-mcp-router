@@ -1,11 +1,15 @@
 /**
- * Filter library — Wave 1 of the obsidian-clipper port (v0.13.0).
+ * Filter library — Wave 1 of the obsidian-clipper port (v0.13.0 +
+ * v0.13.5 A.1 completion).
  *
- * 5 of the 17 planned Wave 1 filters shipped so far (checkpoint of
- * Phase A in [[obsidian-clipper-roadmap]]). Remaining 12 ship in
- * follow-up work:
- *   decode_uri, markdown, callout, blockquote, footnote, table,
- *   strip_tags, strip_md, image, date_modify, duration, length.
+ * All 17 Wave-1 filters now shipped:
+ *
+ *   Filename/slug    : safe_name, slug, kebab, wikilink
+ *   URL              : decode_uri
+ *   Markdown enriched: markdown, callout, blockquote, footnote, table
+ *                      strip_tags, strip_md, image
+ *   Dates            : date, date_modify, duration
+ *   Misc             : length
  *
  * Wave 2 (33 more filters) is Phase H backlog — activated on demand.
  * (Was "Phase G" pre-2026-05-24; shifted to H when Phase C
@@ -23,8 +27,24 @@ import { kebab } from './kebab.mjs';
 import { wikilink } from './wikilink.mjs';
 import { date } from './date.mjs';
 import { slug } from './slug.mjs';
+import { decode_uri } from './decode_uri.mjs';
+import { markdown } from './markdown.mjs';
+import { callout } from './callout.mjs';
+import { blockquote } from './blockquote.mjs';
+import { footnote } from './footnote.mjs';
+import { table } from './table.mjs';
+import { strip_tags } from './strip_tags.mjs';
+import { strip_md } from './strip_md.mjs';
+import { image } from './image.mjs';
+import { date_modify } from './date_modify.mjs';
+import { duration } from './duration.mjs';
+import { length } from './length.mjs';
 
-export { safe_name, kebab, wikilink, date, slug };
+export {
+  safe_name, kebab, wikilink, date, slug,
+  decode_uri, markdown, callout, blockquote, footnote, table,
+  strip_tags, strip_md, image, date_modify, duration, length,
+};
 
 export const FILTERS = {
   safe_name,
@@ -32,4 +52,16 @@ export const FILTERS = {
   wikilink,
   date,
   slug,
+  decode_uri,
+  markdown,
+  callout,
+  blockquote,
+  footnote,
+  table,
+  strip_tags,
+  strip_md,
+  image,
+  date_modify,
+  duration,
+  length,
 };
