@@ -3,7 +3,7 @@
  * vault-link-linter.mjs
  *
  * Stop hook. Scans the assistant's last response text for vault-file
- * mentions that DON'T use the click-to-open link format documented in
+ * mentions that violate the click-to-open link convention documented in
  * `~/.claude/CLAUDE.md` ("Obsidian vault links" section). If violations
  * are found, blocks the response (exit 2) with a helpful stderr message
  * listing each violation and the corrected form — Claude then regenerates
@@ -17,16 +17,28 @@
  * attention loop, in the same spirit as `wiki-autocommit` and
  * `check-router-update`.
  *
- * Detection logic (avoiding false positives):
- *   - Strip fenced code blocks (```...```) and inline code (`...`).
- *   - Find markdown links `[label](href)` where:
- *     - `href` has no scheme (no `http://`, `https://`, `obsidian://`, etc.)
- *     - `href` ends in `.md`
- *     - `href` is relative (no leading `/` or `<drive>:` on Windows)
- *   - For each candidate, verify it points at a real file inside ANY
- *     configured vault (read `portRegistry` from the router config).
- *     This filesystem check is the actual safety net — if the path
- *     doesn't resolve to a vault file, it's not flagged.
+ * Two violation kinds are detected (avoiding false positives by stripping
+ * fenced code blocks, indented code, and inline code spans first):
+ *
+ *   1. **`bare-path`** (v0.11.3 — original) — markdown links `[label](href)`
+ *      where `href` has no scheme, ends in `.md`, and is relative. Each
+ *      candidate is verified against the filesystem to confirm it points
+ *      at a real file inside an active vault (no false flag on prose
+ *      paths that happen to look like .md links). Suggestion is the full
+ *      click-to-open URL built from the vault's `insecurePort`.
+ *
+ *   2. **`wrong-port`** (v0.12.8 — added after Roland incident 2026-05-24
+ *      where Claude generated `http://127.0.0.1:27143/...` instead of
+ *      `27142` for the `opsidian-mcp-router et bridge` vault) — markdown
+ *      links of the form
+ *      `[label](http(s)://127.0.0.1:<port>/open/<encoded-path>)` where
+ *      `<port>` doesn't match the actual `insecurePort` (for http) /
+ *      `port` (for https) read from the target vault's
+ *      `.obsidian/plugins/obsidian-local-rest-api/data.json`. Pre-v0.12.8
+ *      these slipped through because the scheme-skip guard at the
+ *      bare-path stage treated any `http://`-prefixed href as
+ *      "already in the correct format". The v0.12.8 extension verifies
+ *      the port instead of assuming it.
  *
  * Exit codes:
  *   0  — no violations (or env var opt-out, or recursion guard)
@@ -199,28 +211,53 @@ function stripCode(s) {
 const stripped = stripCode(text);
 
 // ---- Find candidate vault-file links ----------------------------------
-// Pattern: [label](href.md) where href has no scheme and is relative.
+// Two scan passes:
+//
+//   Pass 1 (bare-path)  — `[label](href.md)` where href has no scheme
+//                          and is relative. Existing v0.11.3 behavior.
+//   Pass 2 (wrong-port) — `[label](http(s)://127.0.0.1:<port>/open/<encoded-path>)`
+//                          where the port may be wrong. Added v0.12.8.
+//
 // We do NOT scan for bare path tokens outside markdown links — too many
 // false positives (paths inside conversational sentences, etc.). Markdown
 // links are the explicit "I'm linking this file for the user" signal;
 // they're what the convention targets.
 const LINK_PATTERN = /\[([^\]\n]+)\]\(([^)\n]+\.md)\)/g;
-const candidates = [];
+const bareCandidates = [];
 for (const m of stripped.matchAll(LINK_PATTERN)) {
   const label = m[1];
   const href = m[2].trim();
 
   // Skip if href has a scheme (http://, https://, obsidian://, mailto:, etc.)
+  // These are picked up by the click-to-open pass below (if they're
+  // click-to-open URLs) or are intentional external links (skip silently).
   if (/^[a-z][a-z0-9+.-]*:/i.test(href)) continue;
   // Skip absolute paths (POSIX leading /, Windows drive C:\... or UNC \\...)
   if (href.startsWith('/') || /^[a-z]:[\\/]/i.test(href) || href.startsWith('\\\\')) continue;
   // Skip wikilinks-mistakenly-written-as-md-links (unlikely but defensive)
   if (href.startsWith('#')) continue;
 
-  candidates.push({ label, href });
+  bareCandidates.push({ label, href });
 }
 
-if (candidates.length === 0) process.exit(0);
+// Pass 2 — click-to-open URLs that may carry a wrong port. The path
+// component can include any non-paren, non-whitespace chars (typically
+// percent-encoded `/` as `%2F`, the filename, and the `.md` suffix —
+// but we don't require `.md` here because the bridge `/open/*` endpoint
+// in principle accepts any vault file extension).
+const CLICK_TO_OPEN_PATTERN =
+  /\[([^\]\n]+)\]\((https?):\/\/127\.0\.0\.1:(\d+)\/open\/([^)\s\n]+)\)/g;
+const clickToOpenCandidates = [];
+for (const m of stripped.matchAll(CLICK_TO_OPEN_PATTERN)) {
+  clickToOpenCandidates.push({
+    label: m[1],
+    scheme: m[2],
+    actualPort: Number.parseInt(m[3], 10),
+    encodedPath: m[4],
+  });
+}
+
+if (bareCandidates.length === 0 && clickToOpenCandidates.length === 0) process.exit(0);
 
 // ---- Resolve which vault each candidate belongs to --------------------
 // Read the router config (same lookup order as the router binary and
@@ -448,68 +485,146 @@ function vaultPortInfo(vaultPath) {
 }
 
 // ---- Build the correction list ----------------------------------------
+
+/**
+ * Compose the canonical click-to-open suggestion for a given (label,
+ * relative-path, vault) triplet. Returns the markdown link string, or
+ * null if the vault's REST API plugin doesn't expose enough info to build
+ * one. Centralized here so both violation kinds emit consistent fixes.
+ */
+function composeSuggestion(label, decodedHref, info) {
+  // Encode for the URL: percent-encode segment by segment to preserve `/`
+  // as `%2F` (the bridge plugin expects the path in URL-encoded form).
+  // We use the already-decoded href from `findOwningVault` (which used
+  // safeDecodeURI). A fresh decodeURIComponent here would throw URIError
+  // on filenames containing literal `%` (e.g. `wiki/100% done.md` —
+  // codex P2 review finding).
+  const encodedPath = decodedHref.split(/[\\/]/).map(encodeURIComponent).join('%2F');
+
+  if (info.enableInsecureServer && info.insecurePort) {
+    return `[${label}](http://127.0.0.1:${info.insecurePort}/open/${encodedPath})`;
+  }
+  if (info.port) {
+    // HTTPS fallback — Bitdefender/Kaspersky/ESET may silently drop
+    // self-signed HTTPS loopback (see CLAUDE.md global). Flag the caveat.
+    return `[${label}](https://127.0.0.1:${info.port}/open/${encodedPath})  ` +
+      `# ⚠️ HTTPS fallback — enable insecureServer in this vault's data.json for reliable click-to-open`;
+  }
+  // Plugin data.json missing port info; can't build a suggestion.
+  return null;
+}
+
 const violations = [];
-for (const c of candidates) {
+
+// Pass 1 — bare-path violations (no scheme on a relative .md href).
+for (const c of bareCandidates) {
   const owner = findOwningVault(c.href);
   if (!owner) continue;
   const { vault, decodedHref } = owner;
   const info = vaultPortInfo(vault);
   if (!info) continue;
 
-  // Encode for the URL: percent-encode segment by segment to preserve `/`
-  // as `%2F` (the bridge plugin expects the path in URL-encoded form).
-  // Reuse `decodedHref` from findOwningVault — that one was decoded via
-  // safeDecodeURI (never throws). Doing a fresh decodeURIComponent here
-  // would throw URIError on filenames containing literal `%` (e.g.
-  // `wiki/100% done.md` — codex P2 review finding).
-  const encodedPath = decodedHref.split(/[\\/]/).map(encodeURIComponent).join('%2F');
-
-  let suggested;
-  if (info.enableInsecureServer && info.insecurePort) {
-    suggested = `[${c.label}](http://127.0.0.1:${info.insecurePort}/open/${encodedPath})`;
-  } else if (info.port) {
-    // HTTPS fallback — Bitdefender/Kaspersky/ESET may silently drop
-    // self-signed HTTPS loopback (see CLAUDE.md global). Flag the caveat.
-    suggested = `[${c.label}](https://127.0.0.1:${info.port}/open/${encodedPath})  ` +
-      `# ⚠️ HTTPS fallback — enable insecureServer in this vault's data.json for reliable click-to-open`;
-  } else {
-    // Plugin data.json missing port info; skip the suggestion but still flag.
-    suggested = null;
-  }
-
   violations.push({
+    kind: 'bare-path',
     label: c.label,
     bareHref: c.href,
-    suggested,
+    suggested: composeSuggestion(c.label, decodedHref, info),
     vault,
+  });
+}
+
+// Pass 2 — click-to-open URLs with the wrong port (v0.12.8).
+//
+// Logic: extract the (scheme, port, encodedPath) from the URL, resolve
+// the owning vault from the path, read the vault's REST API plugin
+// `data.json`, and compare against the expected port for the scheme.
+// If the expected port matches the actual port, the URL is correct —
+// no violation. Otherwise flag it and propose the canonical version.
+//
+// Edge cases handled:
+//   - Path doesn't resolve to any active vault → skip silently (a
+//     hallucinated URL that doesn't reference a real file isn't this
+//     hook's concern; matches the bare-path skip behavior).
+//   - Vault's data.json unreadable → skip (can't verify either way).
+//   - http:// scheme but the vault has `enableInsecureServer: false`
+//     → flag as violation (the URL won't work anyway because the HTTP
+//     server isn't listening); the suggestion will route through
+//     `composeSuggestion` which surfaces the HTTPS fallback.
+//   - https:// with a port that matches `insecurePort` but not `port`
+//     → flag (user clearly intended HTTPS, port is wrong for HTTPS).
+for (const c of clickToOpenCandidates) {
+  const owner = findOwningVault(c.encodedPath);
+  if (!owner) continue;
+  const { vault, decodedHref } = owner;
+  const info = vaultPortInfo(vault);
+  if (!info) continue;
+
+  let expectedPort;
+  let portIsValid;
+  if (c.scheme === 'http') {
+    expectedPort = info.insecurePort;
+    // http only valid if insecureServer enabled AND port matches.
+    portIsValid = info.enableInsecureServer && expectedPort === c.actualPort;
+  } else {
+    expectedPort = info.port;
+    portIsValid = expectedPort === c.actualPort;
+  }
+
+  if (portIsValid) continue; // correct URL — no violation
+
+  violations.push({
+    kind: 'wrong-port',
+    label: c.label,
+    bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}/open/${c.encodedPath}`,
+    suggested: composeSuggestion(c.label, decodedHref, info),
+    vault,
+    scheme: c.scheme,
+    actualPort: c.actualPort,
+    expectedPort,
   });
 }
 
 if (violations.length === 0) process.exit(0);
 
 // ---- Compose bilingual stderr feedback --------------------------------
+const barePathCount = violations.filter((v) => v.kind === 'bare-path').length;
+const wrongPortCount = violations.filter((v) => v.kind === 'wrong-port').length;
+
 const lines = [];
 lines.push('[obsidian-mcp-router/vault-link-linter] Convention violation');
 lines.push('');
-lines.push(`FR — ${violations.length} fichier(s) vault mentionné(s) sans format click-to-open dans ta dernière réponse.`);
-lines.push(`EN — ${violations.length} vault file(s) mentioned without click-to-open format in your last response.`);
+lines.push(`FR — ${violations.length} violation(s) du format click-to-open dans ta dernière réponse :`);
+if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/open/...`);
+if (wrongPortCount) lines.push(`  • ${wrongPortCount} URL(s) click-to-open avec un mauvais port`);
+lines.push('');
+lines.push(`EN — ${violations.length} click-to-open convention violation(s) in your last response:`);
+if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/open/... format`);
+if (wrongPortCount) lines.push(`  • ${wrongPortCount} click-to-open URL(s) with the wrong port`);
 lines.push('');
 lines.push('Violations + corrections :');
 for (const v of violations) {
-  lines.push(`  • [${v.label}](${v.bareHref})`);
+  const tag = v.kind === 'wrong-port' ? '[wrong-port] ' : '[bare-path]  ';
+  lines.push(`  ${tag}• [${v.label}](${v.bareHref})`);
+  if (v.kind === 'wrong-port') {
+    lines.push(`                used port ${v.actualPort}, expected ${v.expectedPort ?? '?'} for ${v.scheme} (vault ${path.basename(v.vault)})`);
+  }
   if (v.suggested) {
-    lines.push(`    → ${v.suggested}`);
+    lines.push(`               → ${v.suggested}`);
   } else {
-    lines.push(`    → (could not look up the vault's port — fix manually per ~/.claude/CLAUDE.md)`);
+    lines.push('               → (could not look up the vault\'s port — fix manually per ~/.claude/CLAUDE.md)');
   }
 }
 lines.push('');
-lines.push('Why : a bare relative path is not clickable in Claude Code. The');
-lines.push('http://127.0.0.1:<insecurePort>/open/<URL-encoded-path> format is');
-lines.push('dispatched to the browser, which hits the obsidian-mcp-router-bridge');
-lines.push('plugin and Obsidian navigates to the file (1 click → file opens).');
-lines.push('See ~/.claude/CLAUDE.md section "Obsidian vault links" for the full');
-lines.push('convention. Please regenerate your response with the corrected links.');
+lines.push('Why : a bare relative path is not clickable in Claude Code, and');
+lines.push('a click-to-open URL with the wrong port silently fails (browser');
+lines.push('hits nothing on 127.0.0.1:<wrong-port>). The correct format is');
+lines.push('http://127.0.0.1:<insecurePort>/open/<URL-encoded-path> where');
+lines.push('<insecurePort> is read from the TARGET vault\'s data.json');
+lines.push('(.obsidian/plugins/obsidian-local-rest-api/data.json). The port');
+lines.push('differs per vault — NEVER reuse a port memorized from another');
+lines.push('vault or session. See ~/.claude/CLAUDE.md section "Obsidian');
+lines.push('vault links" for the full convention. Please regenerate your');
+lines.push('response with the corrected links.');
 lines.push('');
 lines.push('Opt-out (per-session): OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true');
 

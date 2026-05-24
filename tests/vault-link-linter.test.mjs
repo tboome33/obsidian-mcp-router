@@ -195,7 +195,11 @@ describe('vault-link-linter — block cases', () => {
     const text = 'Files: [log](wiki/log.md) and [page](wiki/sub/page.md).';
     const r = runLinter(text);
     assert.equal(r.status, 2);
-    assert.match(r.stderr, /2 vault file/);
+    // v0.12.8 reworded preamble: "2 violation(s)" + per-kind breakdown line
+    // "2 vault link(s) missing the http://...". The exact count + EN
+    // breakdown line proves both links were detected.
+    assert.match(r.stderr, /2 violation\(s\)/);
+    assert.match(r.stderr, /2 vault link\(s\) missing/);
     assert.match(r.stderr, /wiki%2Flog\.md/);
     assert.match(r.stderr, /wiki%2Fsub%2Fpage\.md/);
   });
@@ -593,6 +597,114 @@ describe('vault-link-linter — block cases', () => {
     } finally {
       fs.writeFileSync(dataJsonPath, original);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.12.8 — wrong-port detection (the original cause of this issue:
+// Roland incident 2026-05-24 where Claude generated port 27143 instead of
+// the actual 27142). Pre-v0.12.8 these slipped past the linter because the
+// scheme-skip guard treated any `http://`-prefixed href as "already
+// correct format". The extension verifies the port instead of assuming it.
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — wrong-port detection (v0.12.8)', () => {
+  test('blocks when http:// scheme has WRONG port (was 27143, expected 27142)', () => {
+    const r = runLinter(
+      'See [log](http://127.0.0.1:27143/open/wiki%2Flog.md) for details.',
+    );
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /wrong-port/);
+    assert.match(r.stderr, /used port 27143/);
+    assert.match(r.stderr, /expected 27142/);
+    // Suggestion uses the correct port.
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md/);
+  });
+
+  test('passes when http:// scheme has CORRECT port', () => {
+    const r = runLinter(
+      'See [log](http://127.0.0.1:27142/open/wiki%2Flog.md) for details.',
+    );
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('blocks when https:// scheme has WRONG port (used insecurePort instead of port)', () => {
+    // Mixing up `port` (https, 27132) and `insecurePort` (http, 27142):
+    // user wrote https:// but with the http port. Common mistake.
+    const r = runLinter(
+      'See [log](https://127.0.0.1:27142/open/wiki%2Flog.md).',
+    );
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /wrong-port/);
+    assert.match(r.stderr, /used port 27142/);
+    assert.match(r.stderr, /expected 27132/);
+  });
+
+  test('passes when https:// scheme has CORRECT port', () => {
+    const r = runLinter(
+      'See [log](https://127.0.0.1:27132/open/wiki%2Flog.md).',
+    );
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('blocks when http:// is used but vault has enableInsecureServer=false', () => {
+    // Even with the "right" insecurePort, http:// won't work if the
+    // insecure server isn't listening. Flag and route through HTTPS fallback.
+    const dataJsonPath = path.join(
+      vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+    );
+    const original = fs.readFileSync(dataJsonPath, 'utf8');
+    try {
+      fs.writeFileSync(
+        dataJsonPath,
+        JSON.stringify({ port: 27132, insecurePort: 27142, enableInsecureServer: false }),
+      );
+      const r = runLinter(
+        'See [log](http://127.0.0.1:27142/open/wiki%2Flog.md).',
+      );
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /wrong-port/);
+      // Suggestion is the HTTPS fallback (insecure server disabled).
+      assert.match(r.stderr, /https:\/\/127\.0\.0\.1:27132\/open\/wiki%2Flog\.md/);
+    } finally {
+      fs.writeFileSync(dataJsonPath, original);
+    }
+  });
+
+  test('mixed violations — bare-path + wrong-port — both listed in stderr', () => {
+    const text =
+      'Bare: [a](wiki/log.md) and wrong-port: [b](http://127.0.0.1:27143/open/wiki%2Fsub%2Fpage.md).';
+    const r = runLinter(text);
+    assert.equal(r.status, 2);
+    // Preamble shows both kinds in the breakdown.
+    assert.match(r.stderr, /1 vault link\(s\) missing/);
+    assert.match(r.stderr, /1 click-to-open URL\(s\) with the wrong port/);
+    // Both violations and their tags appear.
+    assert.match(r.stderr, /\[bare-path\]/);
+    assert.match(r.stderr, /\[wrong-port\]/);
+    // Both suggestions reference the correct port.
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md/);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Fsub%2Fpage\.md/);
+  });
+
+  test('passes wrong-port URL whose path does NOT resolve to any vault (silent skip)', () => {
+    // A click-to-open URL referencing a non-existent file shouldn't fail
+    // the lint — that's a different kind of bug (hallucinated path) and
+    // outside this hook's concern. Matches bare-path behavior.
+    const r = runLinter(
+      'See [missing](http://127.0.0.1:27143/open/wiki%2Fnonexistent.md).',
+    );
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('wrong-port stderr names the offending vault (basename)', () => {
+    const r = runLinter(
+      'See [log](http://127.0.0.1:27143/open/wiki%2Flog.md).',
+    );
+    assert.equal(r.status, 2);
+    // The vault basename (fake-vault from the test fixture) appears in
+    // the per-violation explainer line.
+    assert.match(r.stderr, /vault fake-vault/);
   });
 });
 

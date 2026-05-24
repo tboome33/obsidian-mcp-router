@@ -8,6 +8,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.9] — 2026-05-24
+
+Extends `hooks/vault-link-linter.mjs` to detect **click-to-open URLs with the wrong port** — the original v0.11.3 implementation only caught the "bare-path missing scheme" case and skipped any href that already had an `http(s)://` prefix (assumed correct). That assumption let through URLs like `http://127.0.0.1:27143/open/...` when the target vault's actual `insecurePort` was `27142` — silently broken links that look right but hit nothing.
+
+Motivation: 2026-05-24 incident with Roland on the `opsidian-mcp-router et bridge` vault. Claude generated 4 click-to-open links with port `27143` instead of `27142` (memorized port from a different vault, never re-read the target vault's `data.json`). Convention in `~/.claude/CLAUDE.md` already said "never guess the port" — but conventions rely on attention. This release moves the enforcement OUTSIDE the LLM attention loop into the deterministic Stop hook, in the same spirit as `wiki-autocommit` and `vault-link-linter`'s original purpose.
+
+### Changed
+
+- **`hooks/vault-link-linter.mjs`**: adds a 2nd scan pass `CLICK_TO_OPEN_PATTERN` matching `[label](http(s)://127.0.0.1:<port>/open/<encoded-path>)`. For each match, resolves the owning vault from the path, reads the vault's `.obsidian/plugins/obsidian-local-rest-api/data.json`, and compares the URL's port against `insecurePort` (for `http://`) or `port` (for `https://`). On mismatch, emits a `[wrong-port]` violation with the canonical correction. Also flags `http://` URLs targeting vaults that have `enableInsecureServer: false` (the insecure server isn't listening regardless of port match).
+- **Stderr message reworked**: now distinguishes the two violation kinds with `[bare-path]` and `[wrong-port]` tags, splits the preamble into a per-kind breakdown (`N vault link(s) missing format` + `M click-to-open URL(s) with the wrong port`), and adds a dedicated explainer line for wrong-port cases showing `used port X, expected Y for <scheme> (vault Z)`. The "Why" paragraph at the bottom now mentions both failure modes and reiterates the per-vault nature of the port (never reuse from another vault/session).
+- **`composeSuggestion(label, decodedHref, info)` helper extracted** in the hook — centralizes the URL-building logic (encoding + http-vs-https branching) so both violation kinds emit consistent fixes.
+
+### Added
+
+- **`tests/vault-link-linter.test.mjs`** (+8 new tests in new `wrong-port detection (v0.12.8)` describe block — header references v0.12.8 because the design started there, but the change lands in v0.12.9): correct-http-port passes, wrong-http-port blocks (with `used 27143, expected 27142` in stderr), correct-https-port passes, wrong-https-port blocks (mixing up `port` vs `insecurePort`), http-with-disabled-insecureServer blocks (suggests HTTPS fallback), mixed bare-path + wrong-port (both kinds listed with tags), wrong-port URL with unresolvable path silently skips, stderr names the vault basename.
+
+### Backward compatibility
+
+- The hook stays opt-out via the existing `OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true` env var (unchanged from v0.11.3).
+- All 33 pre-existing tests for the hook still pass — only one was edited (the "multiple bare-path links" test had matched on the old wording `2 vault file` which was replaced by `2 violation(s)` + per-kind breakdown; the test now asserts both `2 violation(s)` and `2 vault link(s) missing` to verify the count survives the reword).
+- URLs that were already correct (matching the vault's actual port) are unaffected — they continue to pass silently. Only port-mismatched URLs newly trigger exit 2.
+
+### Test count: **484/484 passing** (was 476 at v0.12.8; +8 wrong-port tests).
+
 ## [0.12.8] — 2026-05-24
 
 Adopts the Karpathy "Indexing and logging" pattern to the v0.12.4 `session-auto-journal.mjs` hook: **`wiki-meta/log.md` now receives a 2-line summary per session at SessionEnd**, with a wikilink back to the detailed journal file. Also relocates `Sessions/` from `wiki/` to `wiki-meta/` (cohérent avec la séparation v0.12.0 scaffolds vs user content). Motivation: 2026-05-24 conversation where Roland linked to [Karpathy's wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) and asked for "un résumé de ce qui a été fait dans la session avec l'objectif de départ et le résultat" in log.md, with the detail living in the corresponding session file.
