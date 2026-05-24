@@ -137,7 +137,7 @@ See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
 | `/obsidian-router:meta-setup` | Bootstrap the router on a fresh machine (clone, npm link, register MCP) | *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* / *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* |
-| `/obsidian-router:meta-add-vault` | Interactive flow to add a vault (local via `setup-vault.mjs`, or remote) | *"add a vault to the router"*, *"connect my remote vault"* / *"ajoute un vault au router"*, *"connecte mon vault distant"* |
+| `/obsidian-router:meta-attach-vault` | Interactive wizard to attach a vault to a workspace (default), bootstrap a standalone vault, or register a remote vault. Provisions plugins + scaffolds wiki + binds `.env` + edits `.gitignore` + conventions picker. | *"set up Obsidian for this project"*, *"attach a vault to this workspace"*, *"connect my remote vault"* / *"configure Obsidian pour ce projet"*, *"attache un vault à ce workspace"*, *"connecte mon vault distant"* |
 | `/obsidian-router:meta-status` | Health-check every vault with per-issue fix hints | *"diagnose the router"*, *"are my vaults reachable"* / *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* |
 
 ### 📚 10 knowledge-management commands (Karpathy-style LLM-wiki)
@@ -823,7 +823,7 @@ Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le c
 | Commande | Effet | Phrases déclencheuses |
 |---|---|---|
 | `/obsidian-router:meta-setup` | Bootstrap du router sur une machine neuve (clone, npm link, registration MCP) | *"installe le router"*, *"setup obsidian-mcp-router sur cette machine"* / *"install the router"*, *"bootstrap obsidian-mcp-router on this machine"* |
-| `/obsidian-router:meta-add-vault` | Flux interactif pour ajouter un vault (local via `setup-vault.mjs`, ou distant) | *"ajoute un vault au router"*, *"connecte mon vault distant"* / *"add a vault to the router"*, *"connect my remote vault"* |
+| `/obsidian-router:meta-attach-vault` | Wizard interactif pour attacher un vault à un workspace (cas courant), bootstrapper un vault standalone, ou enregistrer un vault distant. Provisionne plugins + scaffolde wiki + lie `.env` + édite `.gitignore` + picker de conventions. | *"configure Obsidian pour ce projet"*, *"attache un vault à ce workspace"*, *"connecte mon vault distant"* / *"set up Obsidian for this project"*, *"attach a vault to this workspace"*, *"connect my remote vault"* |
 | `/obsidian-router:meta-status` | Health-check de chaque vault avec hints de fix par catégorie d'erreur | *"diagnostique le router"*, *"mes vaults sont-ils accessibles"* / *"diagnose the router"*, *"are my vaults reachable"* |
 
 #### 📚 10 commandes de gestion de connaissances (LLM-wiki façon Karpathy)

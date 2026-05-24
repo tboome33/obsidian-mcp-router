@@ -8,6 +8,80 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.7] — 2026-05-24
+
+UX overhaul of the vault-attach flow. Three main changes: (1) renamed `meta-add-vault` to `meta-attach-vault` because the dominant case is attaching a vault to an existing code/dev workspace, not raw vault registration. (2) `setup-vault.mjs` now scaffolds the `wiki/` + `wiki/sessions/` + `wiki-meta/{index,hot,overview,log}.md` structure inline at provisioning time, so a freshly-bootstrapped vault is immediately ready for workspace-bound mode (the `--link-workspace` flow requires `wiki-meta/index.md` to exist — pre-v0.12.7 this was a separate manual `/obsidian-router:wiki` step). (3) `--link-workspace <ws-path>` is now also a flag of the main bootstrap subcommand, so `setup-vault.mjs <vault-path> --link-workspace <cwd>` does the provisioning + binding in one shot (single permission prompt vs. two separate invocations). The new wizard is **didactic by design**: every Bash call is preceded by a 2-3 line explanation in chat, and Bash `description` arguments are full-sentence intentions in the user's language (not cryptic command labels).
+
+Motivation: 2026-05-24 conversation with Roland. He reported cryptic permission prompts during vault setup ("Check template vault layout vs new vault" / "Provision SchoolMouv vault (install plugins, scaffolds, register in router config)") that didn't explain what was about to happen, noted that scaffolds had to be created in a second step, and that he generally builds workspace-first (vault is created FOR a code project, not standalone). The fix codifies workspace-first as the default flow, bundles the scaffolds + workspace-link into provisioning, and adds a conventions picker step so the new vault inherits the globally-active behavior rules without a separate `/obsidian-router:conventions install` round-trip.
+
+### Added
+
+#### `scaffoldWikiMeta()` in `setup-vault.mjs` (creates wiki structure inline)
+
+- New helper function `scaffoldWikiMeta(vaultPath)` (`scripts/setup-vault.mjs:772`): creates `wiki/`, `wiki/sessions/`, and the 4 `wiki-meta/{index,hot,overview,log}.md` scaffolds from `templates/wiki-meta/`, substituting `{{TIMESTAMP}}` and `{{VAULT_PATH}}` placeholders. Idempotent — existing files are preserved.
+- Called from `setupVault()` (right before `writeEnvFile`) so every `setup-vault.mjs <vault-path>` invocation produces a vault that's immediately bind-ready for workspace-bound mode.
+- `--force` is intentionally NOT honored — scaffolds become user content (the wiki accretes notes, log gets entries, hot.md tracks recent work). `--force` on existing wiki state would wipe user work. Doc-block on the function explains the deliberate divergence from `cloneRootDocs` / `cloneSmartEnv` / `cloneSnippets` behavior.
+- Does NOT touch `CLAUDE.md` — that's owned by the `meta-attach-vault` conventions-picker step (and by the `/obsidian-router:wiki` skill for the wiki block).
+
+#### Inline `--link-workspace <ws-path>` flag on the main bootstrap subcommand
+
+- New helper `linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts })` (`scripts/setup-vault.mjs:700`): performs the validation + `.env` upsert that was previously inlined in the standalone CLI handler. Hoisted to module scope so it can be called from BOTH the standalone `--link-workspace <ws> <slug>` subcommand AND the inline `--link-workspace <ws>` flag of `setup-vault.mjs <vault-path>`.
+- Similarly hoisted `upsertEnvVarSync` and `removeEnvVarSync` to module scope (were nested inside the CLI dispatcher) — same logic, just reusable. Sync (mirrors `src/tools/lock.mjs` async equivalent), regex-escapes keys, preserves trailing newline.
+- New CLI arg-parsing branch (`scripts/setup-vault.mjs:2092`): when `--link-workspace <ws-path>` appears in the main bootstrap subcommand, parse the value, **skip the consumed positional** (regression guard: `args.find(a => !a.startsWith('--'))` would have stolen `<ws-path>` as the vault arg otherwise), and pass `linkWorkspace: <ws-path>` to `setupVault()`. Slug is derived from the vault path via the same `defaultNameFromPath()` the router uses at runtime, so the `.env` line and the runtime resolution agree.
+- Standalone `--link-workspace <ws> <slug>` subcommand (CLI dispatcher) refactored to call the new helper instead of inlining the logic — net: removed ~60 lines of duplication.
+- Help text (`--help`) updated with the new flag.
+
+#### `meta-attach-vault` skill (replaces `meta-add-vault`)
+
+- New skill at `skills/meta-attach-vault/SKILL.md` with three flows behind one wizard:
+  - **Workspace-first (default, ~95% of cases)** — context detection (`.git/`? `.obsidian/`? `OBSIDIAN_ROUTER_DEFAULT_VAULT` already set?) → if no `.git/`, **plain-words explanation of what git is for** (versioning, secrets protection, sharing) + offered `git init` → vault path proposal (default `C:\VAULTS\<basename-cwd-as-is>`, modifiable, with garde-fou explaining why it lives OUTSIDE the workspace) → **single** `setup-vault.mjs <vault-path> --link-workspace <cwd>` call (provisions + binds in one prompt) → workspace `.gitignore` edit (idempotent, under `# obsidian-mcp-router` marker comment) → **conventions picker via `AskUserQuestion multiSelect`** with 4 recommended (`roadmap-discipline`, `default-vault-health-check`, `wiki-query-first`, `path-disambiguation`) + 4 opt-in (`source-type`, `bilingual`, `heading-hierarchy`, `auto-enrichment`) installed via `/obsidian-router:conventions install <id>` (not raw `append_to_file` — preserves the H2-heading idempotency guard) → final reminders with the `openUri` field from `list_vaults` (pre-encoded for spaces/accents, no hand-composed `obsidian://` URI).
+  - **Standalone (rare)** — same as workspace-first but skips git/linking/gitignore steps. For vaults that aren't tied to any project (personal journal style).
+  - **Remote (existing flow, preserved)** — register a vault that already runs elsewhere (NAS, VPS, Cloudflare Tunnel). No change from the v0.12.6 `meta-add-vault` remote flow.
+- **Style rules baked into the skill** — every Bash call gets a 2-3 line pre-flight explanation in chat (what's about to run, why, what files will be touched) + a full-sentence `description` argument in FR/EN matching the user's language (e.g., `"Provisionner le vault SchoolMouv ET lier le workspace mon-projet : installer les plugins Obsidian, allouer un port, générer une clé API, scaffolder wiki/wiki-meta/, écrire .env + .mcp.json, enregistrer dans ~/.claude/obsidian-mcp-router/config.json, et ajouter OBSIDIAN_ROUTER_DEFAULT_VAULT=schoolmouv dans mon-projet/.env"`). Replaces the v0.12.6 anti-pattern of cryptic command-label descriptions surfaced through the permission prompt.
+
+#### `meta-attach-vault` slash command
+
+- New `commands/meta-attach-vault.md` mirrors the skill: documents the three flows, the new triggers (EN + FR), and the wizard's 7 wired-up steps for workspace-first.
+
+#### Regression tests (6, in `tests/scaffold-wiki-meta.test.mjs`)
+
+- `scaffoldWikiMeta — fresh bootstrap creates wiki/, wiki/sessions/, and 4 wiki-meta scaffolds` — end-to-end CLI spawn, asserts directory structure + 4 scaffolds present + placeholders substituted + log.md has the initial scaffold entry.
+- `scaffoldWikiMeta — re-bootstrapping preserves existing scaffolds (idempotent)` — user marker injected before re-run survives the second bootstrap.
+- `--link-workspace — bootstrap + writes OBSIDIAN_ROUTER_DEFAULT_VAULT to workspace .env` — verifies the slug derivation matches the vault basename and the `.env` line is correctly upserted.
+- `--link-workspace — non-existent workspace path → fails fast` — guard against silent failures.
+- `--link-workspace — without a value → fails fast with explicit error` — CLI parsing guard.
+- `--link-workspace — positional vault arg is not stolen by --link-workspace value` — regression guard for the `args.find()` consumption bug.
+
+### Changed
+
+- **Skill renamed**: `skills/meta-add-vault/SKILL.md` → `skills/meta-attach-vault/SKILL.md` (skill deleted on disk; the new skill carries all the old trigger phrases plus new attach-flavored ones to preserve muscle memory).
+- **Command renamed**: `commands/meta-add-vault.md` → `commands/meta-attach-vault.md`.
+- **References updated** across the codebase: `README.md` (lines 140 + 826 entry tables), `docs/quick-reference-fr.html` (line 306), `docs/quick-reference-en.html` (line 306), `docs/announcements.md` (line 25 commands list), `commands/meta-setup.md` (cross-reference), `commands/meta-sync-template.md` (companion-commands list), `skills/meta-setup/SKILL.md` (cross-reference), `skills/meta-sync-template/SKILL.md` (don't section + companion-skills list), `skills/auto-mode/SKILL.md` (push-back-if hint), `.claude-plugin/marketplace.json` (descriptions × 2), `.claude-plugin/plugin.json` (description). Historical mentions in `CHANGELOG.md` are preserved as-is.
+- **Marketplace + plugin manifests bumped** to `0.12.7` from `0.12.2` (the manifests were lagging behind the package version — synced as part of this release).
+- **Test count**: 459/459 passing (453 pre-existing + 6 new in `tests/scaffold-wiki-meta.test.mjs`). `package.json` test script updated to include the new file.
+
+### Migration
+
+Existing scripts and muscle memory:
+- The natural-language triggers from `meta-add-vault` (*"add a vault to the router"*, *"ajoute un vault au router"*, etc.) all match the new skill — no relearning required.
+- The slash command `/obsidian-router:meta-add-vault` no longer exists. Use `/obsidian-router:meta-attach-vault`.
+- Existing vaults bootstrapped via pre-v0.12.7 `setup-vault.mjs` keep working. They just won't have the scaffolds auto-created; run `/obsidian-router:wiki` on them to add the scaffolds (same as before).
+- The conventions picker in the wizard is opt-in per convention — users who want to skip can deselect all 8 and configure later via `/obsidian-router:conventions install <id>`.
+- The standalone `setup-vault.mjs --link-workspace <ws> <slug>` subcommand still works for re-linking an existing vault to a different workspace (or first-time binding after a pre-v0.12.7 bootstrap).
+
+### `/review+` hardening (3 passes, Code Reviewer subagent + codex)
+
+`/review+` ran 3 passes (Code Reviewer subagent + `codex review` per pass), surfacing 6 findings across passes 1 and 2; all addressed with 7 regression tests added.
+
+- **[IMPORTANT — pass 1 codex P2 #2]** Early validation of `--link-workspace` path in `setupVault()`. Pre-fix, an invalid `--link-workspace` value only failed AFTER plugins were cloned + port allocated + `config.json` updated, leaving an orphan registry entry. Fix validates the workspace path BEFORE any mutation. Regression test snapshot the `portRegistry` and vault dir absence on refusal.
+- **[IMPORTANT — pass 1 codex P2 #1 → refined in pass 2]** Legacy `wiki/<scaffold>.md` layout guard before `scaffoldWikiMeta()`. Initial pass-1 fix used `detectVaultMigrationState() === 'legacy' || 'partial'` placed before the scaffold call — pass 2 codex caught two issues: (a) the guard still fired AFTER plugin clone (same anti-pattern as #2 above), and (b) `'partial'` also matches the benign repair case of "some `wiki-meta/*.md` exist, no legacy files" which `scaffoldWikiMeta` handles idempotently. Pass-2 fix moved the guard to right after `mkdirSync(abs)` and narrowed the refusal condition to `legacyScaffolds.length > 0` (any of the 4 `wiki/<scaffold>.md` present). Regression test asserts no side-effects on refusal + the partial-meta-only state is repaired, not refused.
+- **[IMPORTANT — pass 1 codex P2 #3]** Inline `--link-workspace` slug derivation now honors `cfg.vaultNames[abs]` before falling back to `defaultNameFromPath(abs)`. Pre-fix, an existing vault with a custom name configured would get the basename written to the workspace `.env` and the workspace-bound hooks (which resolve `vaultNames[vp] || defaultNameFromPath(vp)`) would fail to find the binding. Regression test pre-registers a custom `vaultNames` entry and asserts the `.env` content uses the custom name.
+- **[IMPORTANT — pass 1 Reviewer A #1]** Rebind warning in `linkWorkspaceToVault()`. Pre-fix, overwriting an existing `OBSIDIAN_ROUTER_DEFAULT_VAULT=<old-slug>` with a new slug was silent — exactly the UX antipattern this commit set out to fix. Now reads the previous value (handles quoted/unquoted/whitespace edge cases), warns if different. Two regression tests: rebind to different slug → warns, re-bind to same slug → silent.
+- **[NIT — pass 1 Reviewer A #5]** Missing wiki-meta scaffold template now triggers a `warn()` instead of silent `continue` — guards against drift if `WIKI_META_SCAFFOLDS` gains an entry without a matching template file.
+- **[NIT — pass 1 Reviewer A #4]** Fixture-vault label changed from `REF-KEY-DO-NOT-LEAK` to `fixture-test-key-not-real` (cosmetic — avoids secret-scanner false-positives).
+
+Final test count: **466/466 passing** (453 pre-existing + 6 v0.12.7 base + 7 review+ regression tests). Both reviewers concluded "OK to merge" at pass 3 with zero new findings.
+
 ## [0.12.6] — 2026-05-23
 
 `/review+` hardening pass over v0.12.4's `session-auto-journal` hook (the path-disambiguation work landed independently as v0.12.5 — this release is the parallel review audit's output). Two-pass audit (Code Reviewer subagent + `codex review --commit`) surfaced 7 priority findings on pass 1 + 1 fresh finding on pass 2 (codex caught that the first fallback fix still collided — see the last "Fixed" bullet for the iteration). All 8 addressed with 7 regression tests. Test count: **453/453 passing** (was 452 after v0.12.5 + 1 fresh fallback-collision test added in this pass).

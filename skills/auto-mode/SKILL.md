@@ -48,7 +48,7 @@ When the user's intent is the BEHAVIOR rather than the mode name:
 ## Push back if
 
 - The mode name is missing or ambiguous → ask with the list of valid modes plus their one-line descriptions.
-- The user is in a workspace where no vault is bound (no `VAULT_PATH` in `.env`, no explicit opt-in) → tell them the mode is set but auto-enrichment will stay silent until a vault is bound. Suggest `/obsidian-router:meta-add-vault` or pasting the consigne into a Claude Desktop Project's instructions.
+- The user is in a workspace where no vault is bound (no `VAULT_PATH` in `.env`, no explicit opt-in) → tell them the mode is set but auto-enrichment will stay silent until a vault is bound. Suggest `/obsidian-router:meta-attach-vault` or pasting the consigne into a Claude Desktop Project's instructions.
 
 ## Homedir refusal caveat (persist mode only)
 

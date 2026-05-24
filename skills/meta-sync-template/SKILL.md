@@ -169,7 +169,7 @@ If a vault is currently online (Obsidian was running) and a plugin was added, me
 - Don't pass `--force` silently. Ask once in step 5.
 - Don't try to update `data.json` (port + API key). That's per-vault state — for vaults that already have the plugin, the script preserves their own data.json across re-clones (`setup-vault.mjs:835-842`); for vaults missing the plugin, the script refuses to copy it at all and asks the user to bootstrap them first.
 - Don't gate on online status. Sync works offline; the status column in the picker is informational only.
-- Don't write to the router config file. This skill is **execution-only** — config edits live in `meta-add-vault` / manual edits.
+- Don't write to the router config file. This skill is **execution-only** — config edits live in `meta-attach-vault` / manual edits.
 - Don't try to bypass the script's safety refusals (e.g. by manually copying plugin folders to "fix" a REST-less vault). The script refuses these for a reason — bootstrap the target via plain `setup-vault.mjs "<path>"` first, then re-run the sync.
 
 ## When this skill fails
@@ -187,4 +187,4 @@ If a vault is currently online (Obsidian was running) and a plugin was added, me
 
 - **`meta-status`** — pre-flight check: who's online, who's offline, who has missing API keys.
 - **`meta-setup`** — install the router itself (clone + `npm link`).
-- **`meta-add-vault`** — add a new vault to the registry (interactive, local or remote).
+- **`meta-attach-vault`** — attach a new vault to a workspace (or standalone / remote) — interactive wizard.

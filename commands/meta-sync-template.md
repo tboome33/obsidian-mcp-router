@@ -31,4 +31,4 @@ The sync is filesystem-based — **offline vaults are propagated too**. Per-vaul
 
 - [`/obsidian-router:meta-status`](./meta-status.md) — pre-flight check (online/offline/missing API keys)
 - [`/obsidian-router:meta-setup`](./meta-setup.md) — install the router itself
-- [`/obsidian-router:meta-add-vault`](./meta-add-vault.md) — register a new vault
+- [`/obsidian-router:meta-attach-vault`](./meta-attach-vault.md) — attach a new vault (workspace-first wizard)

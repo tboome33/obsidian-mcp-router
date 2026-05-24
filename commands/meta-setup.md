@@ -79,7 +79,7 @@ Restart Claude Code. Type `/obsidian-router:` to see the autocomplete list.
 
 ## Add a remote vault (optional)
 
-For an interactive walkthrough of adding any vault (local or remote), use the companion skill **`meta-add-vault`**. For diagnostic checks of all configured vaults, use **`meta-status`**.
+For an interactive walkthrough of attaching any vault (workspace-first, standalone, or remote), use the companion skill **`meta-attach-vault`**. For diagnostic checks of all configured vaults, use **`meta-status`**.
 
 ## Troubleshooting
 

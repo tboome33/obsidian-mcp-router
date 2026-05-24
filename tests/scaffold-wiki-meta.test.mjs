@@ -1,0 +1,488 @@
+/**
+ * Tests for v0.12.7 setup-vault.mjs additions:
+ *
+ *   1. `scaffoldWikiMeta()` — bootstrap creates wiki/, wiki/sessions/, and the
+ *      4 wiki-meta scaffolds (index/hot/overview/log.md) from templates with
+ *      {{TIMESTAMP}} + {{VAULT_PATH}} substituted. Idempotent across re-runs.
+ *
+ *   2. Inline `--link-workspace <ws-path>` flag — bootstrap + bind in one shot.
+ *      Writes OBSIDIAN_ROUTER_DEFAULT_VAULT=<derived-slug> to <ws>/.env.
+ *
+ * Strategy: spawn the real CLI script with fixture vaults under temp dirs,
+ * point OBSIDIAN_ROUTER_CONFIG at a temp config.json — same pattern as
+ * setup-vault-safety.test.mjs.
+ */
+
+import { test, describe, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REPO_ROOT = path.resolve(__dirname, '..');
+const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'setup-vault.mjs');
+
+// ---------------------------------------------------------------------------
+// Fixture helper: build a minimal reference vault with all REQUIRED_PLUGINS
+// present (obsidian-local-rest-api + mcp-router-bridge) so `setupVault()`
+// doesn't fail. Keeps the per-plugin bodies tiny.
+// ---------------------------------------------------------------------------
+function buildReferenceVault(refPath) {
+  fs.mkdirSync(path.join(refPath, '.obsidian', 'plugins', 'obsidian-local-rest-api'), { recursive: true });
+  fs.writeFileSync(
+    path.join(refPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+    JSON.stringify({ apiKey: 'fixture-test-key-not-real', port: 27123 }),
+  );
+  fs.writeFileSync(
+    path.join(refPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'main.js'),
+    '// rest-api stub',
+  );
+  fs.mkdirSync(path.join(refPath, '.obsidian', 'plugins', 'mcp-router-bridge'), { recursive: true });
+  fs.writeFileSync(
+    path.join(refPath, '.obsidian', 'plugins', 'mcp-router-bridge', 'main.js'),
+    '// bridge stub',
+  );
+  fs.writeFileSync(
+    path.join(refPath, '.obsidian', 'plugins', 'mcp-router-bridge', 'manifest.json'),
+    JSON.stringify({ id: 'mcp-router-bridge', version: '0.2.0' }),
+  );
+}
+
+function spawnScript(args, env = {}) {
+  return spawnSync(
+    process.execPath,
+    [SCRIPT_PATH, ...args],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// scaffoldWikiMeta — fresh vault should get the 4 scaffolds + dirs
+// ---------------------------------------------------------------------------
+
+describe('scaffoldWikiMeta — end-to-end via setup-vault.mjs <path>', () => {
+  let workDir;
+  let referenceVault;
+  let targetVault;
+  let configPath;
+
+  before(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scaffold-test-'));
+    referenceVault = path.join(workDir, '.template');
+    targetVault = path.join(workDir, 'target');
+    configPath = path.join(workDir, 'config.json');
+
+    buildReferenceVault(referenceVault);
+    fs.writeFileSync(configPath, JSON.stringify({
+      referenceVault,
+      portRegistry: {},
+      portStart: 27200,
+    }, null, 2));
+  });
+
+  after(() => {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test('fresh bootstrap creates wiki/, wiki/sessions/, and 4 wiki-meta scaffolds', () => {
+    const result = spawnScript([targetVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr=${result.stderr}`);
+
+    // Wiki directory structure
+    assert.ok(fs.existsSync(path.join(targetVault, 'wiki')), 'wiki/ should exist');
+    assert.ok(fs.statSync(path.join(targetVault, 'wiki')).isDirectory(), 'wiki/ should be a directory');
+    assert.ok(fs.existsSync(path.join(targetVault, 'wiki', 'sessions')), 'wiki/sessions/ should exist');
+    assert.ok(fs.statSync(path.join(targetVault, 'wiki', 'sessions')).isDirectory(), 'wiki/sessions/ should be a directory');
+
+    // 4 wiki-meta scaffolds
+    for (const scaffold of ['index.md', 'hot.md', 'log.md', 'overview.md']) {
+      const p = path.join(targetVault, 'wiki-meta', scaffold);
+      assert.ok(fs.existsSync(p), `wiki-meta/${scaffold} should exist`);
+      const content = fs.readFileSync(p, 'utf8');
+      // No placeholders left
+      assert.ok(!content.includes('{{TIMESTAMP}}'), `${scaffold} should not contain {{TIMESTAMP}} placeholder`);
+      assert.ok(!content.includes('{{VAULT_PATH}}'), `${scaffold} should not contain {{VAULT_PATH}} placeholder`);
+    }
+
+    // hot.md should have a timestamp substituted (template has `## Last Updated\n\n{{TIMESTAMP}}`)
+    const hotContent = fs.readFileSync(path.join(targetVault, 'wiki-meta', 'hot.md'), 'utf8');
+    assert.match(hotContent, /Last Updated/);
+    assert.match(hotContent, /\d{4}-\d{2}-\d{2}/, 'hot.md should have an ISO date inserted');
+
+    // log.md should have the initial bootstrap entry
+    const logContent = fs.readFileSync(path.join(targetVault, 'wiki-meta', 'log.md'), 'utf8');
+    assert.match(logContent, /scaffold/);
+    assert.match(logContent, /\d{4}-\d{2}-\d{2}/, 'log.md should have an ISO date inserted');
+  });
+
+  test('re-bootstrapping preserves existing scaffolds (idempotent)', () => {
+    // Modify an existing scaffold to confirm it's NOT overwritten on re-run
+    const indexPath = path.join(targetVault, 'wiki-meta', 'index.md');
+    const userMarker = '<!-- USER-EDITED-CONTENT-DO-NOT-OVERWRITE -->\n';
+    fs.writeFileSync(indexPath, userMarker + fs.readFileSync(indexPath, 'utf8'));
+
+    const result = spawnScript([targetVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr=${result.stderr}`);
+
+    const after = fs.readFileSync(indexPath, 'utf8');
+    assert.ok(after.includes(userMarker), 'user-edited content must be preserved across re-bootstrap');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline --link-workspace flag — bootstrap + bind in one command
+// ---------------------------------------------------------------------------
+
+describe('setup-vault.mjs <vault> --link-workspace <ws> (v0.12.7+)', () => {
+  let workDir;
+  let referenceVault;
+  let targetVault;
+  let workspace;
+  let configPath;
+
+  before(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'inline-link-test-'));
+    referenceVault = path.join(workDir, '.template');
+    targetVault = path.join(workDir, 'attached-vault');
+    workspace = path.join(workDir, 'my-code-repo');
+    configPath = path.join(workDir, 'config.json');
+
+    buildReferenceVault(referenceVault);
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      referenceVault,
+      portRegistry: {},
+      portStart: 27210,
+    }, null, 2));
+  });
+
+  after(() => {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test('bootstrap + --link-workspace writes OBSIDIAN_ROUTER_DEFAULT_VAULT to workspace .env', () => {
+    const result = spawnScript(
+      [targetVault, '--link-workspace', workspace],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr=${result.stderr}`);
+
+    // Vault should be bootstrapped (scaffolds present — pre-req for link)
+    assert.ok(
+      fs.existsSync(path.join(targetVault, 'wiki-meta', 'index.md')),
+      'vault should have wiki-meta/index.md (required by link step)',
+    );
+
+    // Workspace .env should contain the binding line
+    const envPath = path.join(workspace, '.env');
+    assert.ok(fs.existsSync(envPath), 'workspace .env should exist');
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    assert.match(
+      envContent,
+      /^OBSIDIAN_ROUTER_DEFAULT_VAULT=attached-vault/m,
+      `expected slug "attached-vault" derived from basename; got:\n${envContent}`,
+    );
+
+    // Recap line should mention the link
+    const output = (result.stdout || '') + (result.stderr || '');
+    assert.match(output, /Linked WS|Linked workspace/i, 'output should confirm the workspace was linked');
+  });
+
+  test('--link-workspace with non-existent workspace path → fails fast', () => {
+    const bogusWs = path.join(workDir, 'does-not-exist-' + Date.now());
+    const freshVault = path.join(workDir, 'fresh-vault-' + Date.now());
+    const result = spawnScript(
+      [freshVault, '--link-workspace', bogusWs],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.notEqual(result.status, 0, 'should exit non-zero when workspace path missing');
+    const output = (result.stdout || '') + (result.stderr || '');
+    assert.match(output, /Workspace path does not exist/i);
+  });
+
+  test('--link-workspace without a value → fails fast with explicit error', () => {
+    const result = spawnScript(
+      [path.join(workDir, 'whatever'), '--link-workspace'],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.notEqual(result.status, 0, 'should exit non-zero when --link-workspace value missing');
+    const output = (result.stdout || '') + (result.stderr || '');
+    assert.match(output, /--link-workspace requires a workspace path argument/i);
+  });
+
+  test('positional vault arg is not stolen by --link-workspace value', () => {
+    // Regression guard: when CLI is `setup-vault.mjs <vault> --link-workspace <ws>`,
+    // the vaultArg.find() must skip the value at lwIdx+1 — otherwise it could
+    // pick up <ws> as the vault path and bootstrap the wrong directory.
+    const vaultAt = path.join(workDir, 'positional-vault-' + Date.now());
+    const wsAt = path.join(workDir, 'positional-ws-' + Date.now());
+    fs.mkdirSync(wsAt, { recursive: true });
+
+    const result = spawnScript(
+      [vaultAt, '--link-workspace', wsAt],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr=${result.stderr}`);
+
+    // The vault must be at vaultAt, NOT at wsAt
+    assert.ok(fs.existsSync(path.join(vaultAt, '.obsidian')), 'vault should be bootstrapped at the positional path');
+    assert.ok(!fs.existsSync(path.join(wsAt, '.obsidian')), 'workspace path must NOT be confused for vault path');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// review+ pass 1 — regression guards for the 4 IMPORTANT fixes
+// ---------------------------------------------------------------------------
+
+describe('setup-vault.mjs review+ pass 1 hardening', () => {
+  let workDir;
+  let referenceVault;
+  let configPath;
+
+  before(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-hardening-'));
+    referenceVault = path.join(workDir, '.template');
+    configPath = path.join(workDir, 'config.json');
+
+    buildReferenceVault(referenceVault);
+    fs.writeFileSync(configPath, JSON.stringify({
+      referenceVault,
+      portRegistry: {},
+      portStart: 27300,
+      vaultNames: {},
+    }, null, 2));
+  });
+
+  after(() => {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  // ----- codex P2 #2 — early --link-workspace validation -----
+
+  test('REGRESSION (codex P2 #2): invalid --link-workspace path fails BEFORE any vault mutation', () => {
+    const freshVault = path.join(workDir, 'codex-p2-2-vault');
+    const bogusWs = path.join(workDir, 'codex-p2-2-does-not-exist');
+
+    // Sanity: snapshot the portRegistry BEFORE running.
+    const before = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const registryBefore = JSON.stringify(before.portRegistry);
+
+    const result = spawnScript(
+      [freshVault, '--link-workspace', bogusWs],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.notEqual(result.status, 0, 'should exit non-zero');
+    const output = (result.stdout || '') + (result.stderr || '');
+    assert.match(output, /Workspace path does not exist/i);
+
+    // Critical: vault directory must NOT have been created, registry must NOT
+    // have been mutated. Pre-v0.12.7 hardening, validation happened AFTER
+    // bootstrap → orphan vault entry left behind.
+    assert.ok(!fs.existsSync(freshVault), 'vault directory must not be created when link target invalid');
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.equal(JSON.stringify(after.portRegistry), registryBefore, 'portRegistry must not have been mutated');
+  });
+
+  // ----- codex P2 #1 — legacy wiki layout detection -----
+
+  test('REGRESSION (codex P2 #1): refuses to scaffold over a legacy wiki/ layout', () => {
+    const legacyVault = path.join(workDir, 'codex-p2-1-legacy');
+    fs.mkdirSync(path.join(legacyVault, 'wiki'), { recursive: true });
+    // Plant legacy scaffolds
+    for (const f of ['hot.md', 'index.md', 'log.md', 'overview.md']) {
+      fs.writeFileSync(path.join(legacyVault, 'wiki', f), `# legacy ${f}\n`);
+    }
+
+    const result = spawnScript([legacyVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.notEqual(result.status, 0, 'should refuse on legacy layout');
+    const output = (result.stdout || '') + (result.stderr || '');
+    assert.match(output, /legacy scaffold/i);
+    assert.match(output, /--migrate-wiki-meta/);
+
+    // Critical: must NOT have created wiki-meta/ (would create 'partial' state)
+    assert.ok(
+      !fs.existsSync(path.join(legacyVault, 'wiki-meta')),
+      'wiki-meta/ must NOT be created when refusing on legacy layout',
+    );
+  });
+
+  // ----- codex pass 2 P2 #1 — refusal must fire BEFORE plugin clone -----
+
+  test('REGRESSION (codex pass 2 P2 #1): legacy refusal fires before plugin clone (no side effects)', () => {
+    // Pre-v0.12.7 pass 2 hardening, the legacy guard fired AFTER plugin clone
+    // + patchRestApiData + cloneRootDocs — leaving a partially bootstrapped
+    // vault on refusal. Pass-2 fix moves the guard to right after mkdirSync,
+    // before any mutation. This test plants a legacy layout + asserts that on
+    // refusal: (a) the plugins dir is NOT populated, (b) .obsidian/app.json is
+    // NOT created, (c) the portRegistry is NOT mutated.
+    const legacyVault = path.join(workDir, 'codex-pass2-no-side-effects');
+    fs.mkdirSync(path.join(legacyVault, 'wiki'), { recursive: true });
+    for (const f of ['hot.md', 'index.md', 'log.md', 'overview.md']) {
+      fs.writeFileSync(path.join(legacyVault, 'wiki', f), `# legacy ${f}\n`);
+    }
+
+    const cfgBefore = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const registryBefore = JSON.stringify(cfgBefore.portRegistry);
+
+    const result = spawnScript([legacyVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.notEqual(result.status, 0, 'must refuse on legacy layout');
+
+    // (a) No plugins cloned into the target
+    assert.ok(
+      !fs.existsSync(path.join(legacyVault, '.obsidian', 'plugins', 'obsidian-local-rest-api')),
+      'obsidian-local-rest-api must NOT be cloned when legacy guard fires',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(legacyVault, '.obsidian', 'plugins', 'mcp-router-bridge')),
+      'mcp-router-bridge must NOT be cloned when legacy guard fires',
+    );
+
+    // (b) No app.json created (the post-clone step)
+    assert.ok(
+      !fs.existsSync(path.join(legacyVault, '.obsidian', 'app.json')),
+      'app.json must NOT be created when legacy guard fires',
+    );
+
+    // (c) portRegistry untouched
+    const cfgAfter = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    assert.equal(
+      JSON.stringify(cfgAfter.portRegistry),
+      registryBefore,
+      'portRegistry must NOT be mutated when legacy guard fires',
+    );
+  });
+
+  // ----- codex pass 2 P2 #2 — partial-meta-only is repaired idempotently -----
+
+  test('REGRESSION (codex pass 2 P2 #2): partial wiki-meta/ (no legacy) is repaired, not refused', () => {
+    // Pre-v0.12.7 pass 2 hardening, the migration-state guard refused on
+    // 'partial' — but 'partial' is also the state of a vault that has SOME
+    // wiki-meta/*.md and NO legacy files (e.g. user manually created index.md
+    // and overview.md but not hot.md/log.md). That's a legitimate idempotent
+    // repair case; scaffoldWikiMeta() handles it natively. Pass-2 fix narrows
+    // the refusal trigger to "any legacy wiki/<scaffold>.md present".
+    const partialVault = path.join(workDir, 'codex-pass2-partial-meta-only');
+    fs.mkdirSync(path.join(partialVault, 'wiki-meta'), { recursive: true });
+    // Plant 2 of the 4 scaffolds with a user marker so we can verify they're
+    // preserved (not overwritten by scaffoldWikiMeta).
+    const userMarker = '<!-- USER-CREATED-DO-NOT-OVERWRITE -->\n';
+    fs.writeFileSync(path.join(partialVault, 'wiki-meta', 'index.md'), userMarker + '# my custom index\n');
+    fs.writeFileSync(path.join(partialVault, 'wiki-meta', 'overview.md'), userMarker + '# my custom overview\n');
+
+    const result = spawnScript([partialVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.equal(result.status, 0, `must succeed on partial-meta-only state. stderr=${result.stderr}`);
+
+    // The 2 user-created files must be preserved verbatim
+    assert.ok(
+      fs.readFileSync(path.join(partialVault, 'wiki-meta', 'index.md'), 'utf8').includes(userMarker),
+      'user-created index.md must be preserved',
+    );
+    assert.ok(
+      fs.readFileSync(path.join(partialVault, 'wiki-meta', 'overview.md'), 'utf8').includes(userMarker),
+      'user-created overview.md must be preserved',
+    );
+
+    // The 2 missing scaffolds must be created from templates
+    assert.ok(
+      fs.existsSync(path.join(partialVault, 'wiki-meta', 'hot.md')),
+      'missing hot.md must be created from template',
+    );
+    assert.ok(
+      fs.existsSync(path.join(partialVault, 'wiki-meta', 'log.md')),
+      'missing log.md must be created from template',
+    );
+  });
+
+  // ----- codex P2 #3 — vaultNames lookup for inline link slug -----
+
+  test('REGRESSION (codex P2 #3): inline --link-workspace honors cfg.vaultNames for custom-named vault', () => {
+    // Pre-register the vault path with a custom name in vaultNames.
+    const customVault = path.join(workDir, 'codex-p2-3-vault-with-custom-name');
+    const customName = 'my-special-vault-name';
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    cfg.vaultNames = cfg.vaultNames || {};
+    cfg.vaultNames[customVault] = customName;
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
+
+    const ws = path.join(workDir, 'codex-p2-3-ws');
+    fs.mkdirSync(ws, { recursive: true });
+
+    const result = spawnScript(
+      [customVault, '--link-workspace', ws],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(result.status, 0, `expected exit 0, got ${result.status}. stderr=${result.stderr}`);
+
+    // The .env line must contain the CUSTOM name, not the basename.
+    const envContent = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+    const lines = envContent.split(/\r?\n/);
+    assert.ok(
+      lines.includes(`OBSIDIAN_ROUTER_DEFAULT_VAULT=${customName}`),
+      `expected OBSIDIAN_ROUTER_DEFAULT_VAULT=${customName} in .env; got:\n${envContent}`,
+    );
+    // And NOT the basename-derived default
+    const basename = path.basename(customVault).toLowerCase();
+    assert.ok(
+      !lines.includes(`OBSIDIAN_ROUTER_DEFAULT_VAULT=${basename}`),
+      `must NOT use the basename "${basename}" when vaultNames is configured`,
+    );
+  });
+
+  // ----- Reviewer A IMPORTANT #1 — silent rebind warning -----
+
+  test('REGRESSION (Reviewer A #1): warns when --link-workspace rebinds to a different slug', () => {
+    const vaultA = path.join(workDir, 'reviewer-a-1-vault-a');
+    const vaultB = path.join(workDir, 'reviewer-a-1-vault-b');
+    const ws = path.join(workDir, 'reviewer-a-1-ws');
+    fs.mkdirSync(ws, { recursive: true });
+
+    // First bind: vault A
+    const firstBind = spawnScript(
+      [vaultA, '--link-workspace', ws],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(firstBind.status, 0, `first bind should succeed. stderr=${firstBind.stderr}`);
+    const envAfterFirst = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+    assert.match(envAfterFirst, /OBSIDIAN_ROUTER_DEFAULT_VAULT=reviewer-a-1-vault-a/);
+
+    // Second bind: vault B — should warn about rebind
+    const secondBind = spawnScript(
+      [vaultB, '--link-workspace', ws],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(secondBind.status, 0, `second bind should succeed. stderr=${secondBind.stderr}`);
+    const output = (secondBind.stdout || '') + (secondBind.stderr || '');
+    assert.match(output, /Rebinding workspace/i, 'rebind warning expected');
+    assert.match(output, /reviewer-a-1-vault-a/i, 'previous slug must be mentioned in warning');
+    assert.match(output, /reviewer-a-1-vault-b/i, 'new slug must be mentioned in warning');
+
+    // And the .env line is properly updated.
+    const envAfterSecond = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+    assert.match(envAfterSecond, /OBSIDIAN_ROUTER_DEFAULT_VAULT=reviewer-a-1-vault-b/);
+  });
+
+  test('REGRESSION (Reviewer A #1): re-binding to the same slug does NOT warn', () => {
+    const vault = path.join(workDir, 'reviewer-a-1-same-vault');
+    const ws = path.join(workDir, 'reviewer-a-1-same-ws');
+    fs.mkdirSync(ws, { recursive: true });
+
+    // First bind
+    spawnScript([vault, '--link-workspace', ws], { OBSIDIAN_ROUTER_CONFIG: configPath });
+
+    // Re-bind to the SAME vault — should NOT print the rebind warning
+    const reBind = spawnScript(
+      [vault, '--link-workspace', ws],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(reBind.status, 0);
+    const output = (reBind.stdout || '') + (reBind.stderr || '');
+    assert.doesNotMatch(output, /Rebinding workspace/i, 'no rebind warning when slug unchanged');
+  });
+});

@@ -638,6 +638,124 @@ function writeMcpJson(vaultPath, force) {
   ok(`Wrote ${mcpPath}${usingCustomConfig ? ` (with --config ${CONFIG_PATH})` : ''}`);
 }
 
+// ---------------------------------------------------------------------------
+// .env upsert / remove (sync) — hoisted to module scope in v0.12.7 so that
+// setupVault() can call them inline (for the --link-workspace flag) AND the
+// standalone --link-workspace / --unlink-workspace CLI handler can keep using
+// the same logic.
+//
+// Mirrors src/tools/lock.mjs's env-file editing but stays sync — this script
+// is mostly sync, and async/await here adds no value.
+// ---------------------------------------------------------------------------
+function upsertEnvVarSync(file, key, value) {
+  let lines = [];
+  if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
+  let firstIdx = -1;
+  for (let i = 0; i < lines.length; i++) { if (keyRegex.test(lines[i])) { firstIdx = i; break; } }
+  const newLine = `${key}=${value}`;
+  if (firstIdx === -1) {
+    if (lines.length === 0 || lines[lines.length - 1] === '') {
+      const at = lines.length === 0 ? 0 : lines.length - 1;
+      lines.splice(at, 0, newLine);
+    } else {
+      lines.push(newLine);
+    }
+  } else {
+    lines[firstIdx] = newLine;
+  }
+  let out = lines.join('\n');
+  if (!out.endsWith('\n')) out += '\n';
+  fs.writeFileSync(file, out, 'utf8');
+}
+
+function removeEnvVarSync(file, key) {
+  if (!fs.existsSync(file)) return false;
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+  const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
+  const filtered = lines.filter((l) => !keyRegex.test(l));
+  if (filtered.length === lines.length) return false;
+  let out = filtered.join('\n');
+  if (!out.endsWith('\n')) out += '\n';
+  fs.writeFileSync(file, out, 'utf8');
+  return true;
+}
+
+/**
+ * Bind a workspace to a vault by writing `OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug>`
+ * to the workspace's `.env`. Used by:
+ *   - The standalone `--link-workspace` CLI subcommand (after resolving slug → path
+ *     via portRegistry)
+ *   - The inline `--link-workspace <ws-path>` flag of the main bootstrap
+ *     subcommand (vault path is already known — slug derived via defaultNameFromPath)
+ *
+ * Validates:
+ *   - workspacePath exists and is a directory
+ *   - vaultPath has `wiki-meta/index.md` (otherwise the workspace-bound hooks
+ *     would skip silently, making the link pointless)
+ *
+ * On `opts.quiet`, suppresses the success log lines (used by setupVault inline
+ * call which has its own final recap).
+ */
+function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }) {
+  if (!fs.existsSync(workspacePath)) fail(`Workspace path does not exist: ${workspacePath}`);
+  if (!fs.statSync(workspacePath).isDirectory()) fail(`Workspace path is not a directory: ${workspacePath}`);
+
+  const indexMd = path.join(vaultPath, 'wiki-meta', 'index.md');
+  if (!fs.existsSync(indexMd)) {
+    fail(
+      `Vault at ${vaultPath} has no wiki-meta/index.md (expected: ${indexMd}).\n` +
+      `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill, or if the vault is\n` +
+      `   on the legacy \`wiki/{hot,index,log,overview}.md\` layout (pre-v0.12.0), migrate it\n` +
+      `   with \`setup-vault.mjs --migrate-wiki-meta <vault-path>\` (shipped in v0.12.1).`,
+    );
+  }
+
+  // Spaces in slug need quoting for shell-source compatibility (e.g.
+  // `set -a; source .env; set +a` in bash). The .env parser strips
+  // matched outer quotes on read.
+  const quotedValue = /\s/.test(vaultSlug) ? `"${vaultSlug}"` : vaultSlug;
+  const envPath = path.join(workspacePath, '.env');
+
+  // Rebind detection (review+ pass 1 Reviewer A IMPORTANT #1) — silently
+  // overwriting an existing binding is exactly the UX antipattern this commit
+  // sets out to fix. Read the previous value (if any) and surface a warning
+  // when we're about to switch the workspace from vault A to vault B. The
+  // upsert itself is unchanged; the warn fires before it.
+  let previousSlug = null;
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+    for (const line of lines) {
+      const m = line.match(/^\s*OBSIDIAN_ROUTER_DEFAULT_VAULT\s*=\s*(.*?)\s*$/);
+      if (m) {
+        // Strip matched outer quotes (mirrors dotenv parser).
+        let value = m[1];
+        const quoted = value.match(/^"(.*)"$|^'(.*)'$/);
+        if (quoted) value = quoted[1] ?? quoted[2];
+        previousSlug = value;
+        break;
+      }
+    }
+  }
+  if (previousSlug && previousSlug !== vaultSlug && !opts.quiet) {
+    warn(
+      `Rebinding workspace ${workspacePath} from vault "${previousSlug}" to "${vaultSlug}".\n` +
+      `   The previous binding will be replaced. If this is unintended (typo, wrong cwd),\n` +
+      `   abort now and inspect ${envPath} manually.`,
+    );
+  }
+
+  upsertEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT', quotedValue);
+
+  if (!opts.quiet) {
+    ok(`Linked workspace ${workspacePath}`);
+    console.log(`    ${c('green', '→')} ${envPath}`);
+    console.log(`    ${c('green', '→')} OBSIDIAN_ROUTER_DEFAULT_VAULT=${quotedValue}`);
+    console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
+  }
+  return { envPath, vaultSlug, vaultPath, previousSlug };
+}
+
 function appendGitignore(vaultPath) {
   const giPath = path.join(vaultPath, '.gitignore');
   const lines = ['.env', '.mcp.json', '.smart-env/'];
@@ -648,6 +766,83 @@ function appendGitignore(vaultPath) {
   const sep = existing && !existing.endsWith('\n') ? '\n' : '';
   fs.writeFileSync(giPath, existing + sep + toAdd.join('\n') + '\n');
   ok(`Appended ${toAdd.join(', ')} to .gitignore`);
+}
+
+// ---------------------------------------------------------------------------
+// v0.12.7 — Wiki scaffolding at vault bootstrap time
+// ---------------------------------------------------------------------------
+//
+// Pre-v0.12.7, the 4 wiki-meta scaffolds (index/hot/overview/log.md) were
+// created only by the `/obsidian-router:wiki` skill — a separate manual step
+// after vault bootstrap. The `meta-attach-vault` wizard now bundles it into
+// the provisioning step so a freshly-bootstrapped vault is immediately ready
+// for workspace-bound mode (hot-cache-load + wiki-query-first-nudge hooks
+// depend on `wiki-meta/index.md` existing; without it, --link-workspace
+// refuses to bind — see `linkWorkspaceToVault()` above).
+//
+// Behavior:
+//   - Creates `wiki/` and `wiki/sessions/` (idempotent: `mkdir -p`).
+//   - Copies the 4 scaffolds from `templates/wiki-meta/` into the target
+//     vault's `wiki-meta/`, substituting {{TIMESTAMP}} and {{VAULT_PATH}}.
+//   - Existing files at the destination are preserved (no clobber).
+//
+// `--force` is intentionally NOT honored here. Other clone helpers
+// (`cloneRootDocs`, `cloneSmartEnv`, `cloneSnippets`) overwrite on --force
+// because the source-of-truth lives in the reference vault. The scaffolds
+// are different: they become USER CONTENT the moment they're first written
+// (the wiki accretes notes, the log gets entries, hot.md tracks recent work).
+// Re-running setup-vault.mjs --force on an active vault should NOT wipe the
+// user's wiki state. If someone genuinely needs to reset a scaffold, they
+// delete the file by hand and re-run — that path is explicit and traceable
+// via git.
+//
+// Does NOT touch CLAUDE.md — that's owned by the `meta-attach-vault`
+// conventions-picker step (and by the `wiki` skill for the wiki block).
+function scaffoldWikiMeta(vaultPath) {
+  const wikiDir = path.join(vaultPath, 'wiki');
+  const sessionsDir = path.join(wikiDir, 'sessions');
+  const metaDir = path.join(vaultPath, 'wiki-meta');
+  const templatesDir = path.join(REPO_ROOT, 'templates', 'wiki-meta');
+
+  if (!fs.existsSync(templatesDir)) {
+    warn(`Wiki-meta templates not found at ${templatesDir} — skipping scaffold.`);
+    return;
+  }
+
+  fs.mkdirSync(wikiDir, { recursive: true });
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.mkdirSync(metaDir, { recursive: true });
+
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
+  let created = 0;
+  let preserved = 0;
+  for (const scaffold of WIKI_META_SCAFFOLDS) {
+    const dst = path.join(metaDir, scaffold);
+    if (fs.existsSync(dst)) {
+      preserved++;
+      continue;
+    }
+    const src = path.join(templatesDir, scaffold);
+    if (!fs.existsSync(src)) {
+      // Loud-fail rather than silently skipping: if WIKI_META_SCAFFOLDS gains
+      // a new entry without a matching template file, this catches it on the
+      // next bootstrap instead of letting the partial scaffold ship silently.
+      // (review+ pass 1 Reviewer A NIT #5)
+      warn(`Wiki-meta scaffold template missing at ${src} — not creating ${scaffold} in target vault. Add the template file to fix.`);
+      continue;
+    }
+    const content = fs.readFileSync(src, 'utf8')
+      .replace(/\{\{TIMESTAMP\}\}/g, timestamp)
+      .replace(/\{\{VAULT_PATH\}\}/g, vaultPath);
+    fs.writeFileSync(dst, content);
+    created++;
+  }
+
+  if (created > 0) {
+    ok(`Scaffolded wiki structure: wiki/, wiki/sessions/, wiki-meta/ (${created} file${created > 1 ? 's' : ''} created${preserved > 0 ? `, ${preserved} preserved` : ''})`);
+  } else if (preserved > 0) {
+    info(`Wiki scaffolds already present (${preserved} file${preserved > 1 ? 's' : ''} preserved)`);
+  }
 }
 
 // Files OR directories at the root of the reference vault to clone to new vaults.
@@ -1000,10 +1195,48 @@ function setupVault(vaultPath, opts = {}) {
     fail(`Reference vault no longer exists: ${cfg.referenceVault}`);
   }
 
+  // v0.12.7 — early validation of `--link-workspace <ws-path>` (review+ pass 1
+  // codex P2 #2). Without this, a typo in --link-workspace would still let the
+  // provisioning succeed (plugins cloned, port allocated, registry updated)
+  // and only fail at the very end on `linkWorkspaceToVault()`, leaving an
+  // orphan registry entry pointing at a vault that was never bound to a
+  // workspace. We fail HERE so the user sees the typo before any state mutation.
+  if (opts.linkWorkspace) {
+    const wsResolved = path.resolve(opts.linkWorkspace);
+    if (!fs.existsSync(wsResolved)) {
+      fail(`Workspace path does not exist: ${wsResolved} (passed via --link-workspace)`);
+    }
+    if (!fs.statSync(wsResolved).isDirectory()) {
+      fail(`Workspace path is not a directory: ${wsResolved} (passed via --link-workspace)`);
+    }
+  }
+
   const abs = path.resolve(vaultPath);
   if (!fs.existsSync(abs)) {
     fs.mkdirSync(abs, { recursive: true });
     ok(`Created vault directory: ${abs}`);
+  }
+
+  // Legacy wiki layout guard (review+ pass 2 codex P2 #1, refines pass 1 #1).
+  // Placed BEFORE any vault mutation (plugin clone, patchRestApiData, root-docs
+  // copy) so a legacy-layout vault fails fast with zero side-effects — pre-fix,
+  // the check ran AFTER cloning, leaving a partially bootstrapped vault on
+  // refusal. Refines pass 1's `migrationState === 'legacy'` check: now refuses
+  // whenever ANY of the 4 wiki/<scaffold>.md exists (the only condition that
+  // makes adding wiki-meta/ alongside dangerous — it would create a 'partial'
+  // state that --migrate-wiki-meta then refuses). Vaults with ONLY some
+  // wiki-meta/*.md files (and no legacy files) are repaired idempotently by
+  // scaffoldWikiMeta() below — no refusal needed (codex P2 #2).
+  const legacyScaffolds = WIKI_META_SCAFFOLDS.filter((f) =>
+    fs.existsSync(path.join(abs, 'wiki', f)));
+  if (legacyScaffolds.length > 0) {
+    fail(
+      `Vault at ${abs} still has legacy scaffold(s): wiki/${legacyScaffolds.join(', wiki/')}.\n` +
+      `   Refusing to scaffold wiki-meta/ alongside — that would create a 'partial'\n` +
+      `   migration state that --migrate-wiki-meta later refuses.\n` +
+      `   Fix: migrate first, then re-run setup-vault.mjs:\n` +
+      `      node "${fileURLToPath(import.meta.url)}" --migrate-wiki-meta "${abs}"`
+    );
   }
 
   // BEFORE cloning anything: snapshot pre-existing REST API config in target
@@ -1080,6 +1313,13 @@ function setupVault(vaultPath, opts = {}) {
   // Clone root-level docs (README.md etc.) from reference
   cloneRootDocs(cfg.referenceVault, abs, opts.force);
 
+  // Wiki scaffolding (v0.12.7+) — creates wiki/, wiki/sessions/, and the
+  // 4 wiki-meta scaffolds so workspace-bound mode works out of the box.
+  // Idempotent: existing wiki-meta/*.md files are preserved, missing ones are
+  // created. The legacy-layout refusal that protects this step lives earlier
+  // (just after `mkdirSync(abs)`) so a legacy vault never gets here.
+  scaffoldWikiMeta(abs);
+
   // Project config files
   writeEnvFile(abs, apiKey, port, opts.force);
   writeMcpJson(abs, opts.force);
@@ -1089,11 +1329,37 @@ function setupVault(vaultPath, opts = {}) {
   cfg.portRegistry[abs] = port;
   saveConfig(cfg);
 
+  // Optional workspace link (v0.12.7+) — when invoked with
+  // `--link-workspace <ws-path>` as a flag of the main bootstrap subcommand,
+  // bind the workspace to this newly-provisioned vault in one shot. Saves a
+  // second permission prompt vs. having to re-invoke setup-vault.mjs
+  // --link-workspace separately. Slug is derived from the vault path via the
+  // same defaultNameFromPath() that the router itself uses, so the .env line
+  // and the runtime resolution agree.
+  let linkResult = null;
+  if (opts.linkWorkspace) {
+    // Honor a configured custom name for this vault path before falling back
+    // to the basename-derived default. Otherwise an existing vault registered
+    // with `cfg.vaultNames[abs] = "<custom>"` would get the basename written
+    // into the workspace .env, and the workspace-bound hooks (which resolve
+    // `vaultNames[vp] || defaultNameFromPath(vp)`) would never see it.
+    // (review+ pass 1 codex P2 #3)
+    const slug = (cfg.vaultNames && cfg.vaultNames[abs]) || defaultNameFromPath(abs);
+    linkResult = linkWorkspaceToVault({
+      workspacePath: path.resolve(opts.linkWorkspace),
+      vaultPath: abs,
+      vaultSlug: slug,
+    });
+  }
+
   console.log('');
   console.log(c('bold', c('green', '✓ Vault setup complete')));
   console.log(`  Path:        ${abs}`);
   console.log(`  Port:        ${port}`);
   console.log(`  API key:     ${apiKey.slice(0, 12)}…  ${c('gray', '(full value in .env)')}`);
+  if (linkResult) {
+    console.log(`  Linked WS:   ${path.resolve(opts.linkWorkspace)}  ${c('gray', `(slug=${linkResult.vaultSlug})`)}`);
+  }
   console.log('');
   console.log(c('bold', 'Next steps:'));
   console.log(`  1. Open Obsidian → File → ${c('cyan', 'Open another vault')} → ${abs}`);
@@ -1524,6 +1790,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs <vault-path>                          Bootstrap a vault.
                                                               If vault already has a REST API port + apiKey
                                                               they are preserved (= adoption mode).
+  node setup-vault.mjs <vault-path> --link-workspace <ws>    Bootstrap a vault AND bind workspace <ws> to it
+                                                              in one shot (writes OBSIDIAN_ROUTER_DEFAULT_VAULT
+                                                              in <ws>/.env). Single permission prompt vs. two
+                                                              separate invocations. (v0.12.7+)
   node setup-vault.mjs <vault-path> --regenerate             Force fresh port + apiKey even if existing
   node setup-vault.mjs <vault-path> --force                  Overwrite existing files (.env, .mcp.json, README, etc.)
   node setup-vault.mjs <vault-path> --sync-plugins           Sync new plugins from reference vault
@@ -1630,24 +1900,21 @@ if (args[0] === '--uninstall-hooks') {
 }
 
 if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
-  // Bind a workspace (typically a code/dev project) to an Obsidian vault
-  // by writing `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` into the
-  // workspace's `.env`. This activates the v0.11.6+ "workspace-bound"
-  // mode in `hot-cache-load.mjs` (auto-loads the associated vault's
-  // hot.md) and `wiki-query-first-nudge.mjs` (injects pre-answer
-  // wiki-investigation reminder citing the associated vault).
+  // Standalone subcommand — bind/unbind a workspace to a vault that's ALREADY
+  // in portRegistry (i.e. was bootstrapped in a previous run). For the
+  // one-shot "bootstrap + link in a single command" flow, pass `--link-workspace
+  // <ws-path>` as a flag of the main `setup-vault.mjs <vault-path>` subcommand
+  // instead (v0.12.7+).
+  //
+  // Activates the v0.11.6+ "workspace-bound" mode in `hot-cache-load.mjs`
+  // (auto-loads the associated vault's hot.md) and `wiki-query-first-nudge.mjs`
+  // (injects pre-answer wiki-investigation reminder citing the associated vault).
   //
   // Args: --link-workspace <workspace-path> <vault-slug>
   //       --unlink-workspace <workspace-path>
   //
-  // Validation: vault-slug must exist in portRegistry AND the resolved
-  // vault must have a `wiki-meta/index.md` (otherwise there's no point in
-  // binding — the hooks would skip silently anyway).
-  //
-  // v0.12.0: scaffold-detection probe is `wiki-meta/index.md` (was
-  // `wiki/index.md` pre-v0.12.0). Vaults still on the old layout need
-  // `setup-vault.mjs --migrate-wiki-meta <vault>` first (shipped in
-  // v0.12.1 — Session 2 of the phased rollout).
+  // Both upsertEnvVarSync / removeEnvVarSync and the link-workspace core logic
+  // live at module scope (hoisted in v0.12.7) — see `linkWorkspaceToVault()`.
   const op = args[0];
   const wsArg = args[1];
   if (!wsArg) fail(`${op} requires a workspace path argument`);
@@ -1655,42 +1922,6 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   if (!fs.existsSync(wsPath)) fail(`Workspace path does not exist: ${wsPath}`);
   if (!fs.statSync(wsPath).isDirectory()) fail(`Workspace path is not a directory: ${wsPath}`);
   const envPath = path.join(wsPath, '.env');
-
-  // Sync inline dotenv upsert/remove (mirrors src/tools/lock.mjs lines
-  // 180-243 but sync — setup-vault.mjs is mostly sync, and async/await
-  // here would add no value).
-  function upsertEnvVarSync(file, key, value) {
-    let lines = [];
-    if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
-    let firstIdx = -1;
-    for (let i = 0; i < lines.length; i++) { if (keyRegex.test(lines[i])) { firstIdx = i; break; } }
-    const newLine = `${key}=${value}`;
-    if (firstIdx === -1) {
-      if (lines.length === 0 || lines[lines.length - 1] === '') {
-        const at = lines.length === 0 ? 0 : lines.length - 1;
-        lines.splice(at, 0, newLine);
-      } else {
-        lines.push(newLine);
-      }
-    } else {
-      lines[firstIdx] = newLine;
-    }
-    let out = lines.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(file, out, 'utf8');
-  }
-  function removeEnvVarSync(file, key) {
-    if (!fs.existsSync(file)) return false;
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
-    const filtered = lines.filter((l) => !keyRegex.test(l));
-    if (filtered.length === lines.length) return false;
-    let out = filtered.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(file, out, 'utf8');
-    return true;
-  }
 
   if (op === '--unlink-workspace') {
     const removed = removeEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
@@ -1724,24 +1955,8 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
     const knownSlugs = paths.map((vp) => vaultNames[vp] || defaultNameFromPath(vp)).join(', ');
     fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownSlugs}`);
   }
-  if (!fs.existsSync(path.join(vaultPath, 'wiki-meta', 'index.md'))) {
-    fail(
-      `Vault "${vaultSlug}" exists in config but has no wiki-meta/index.md at ${path.join(vaultPath, 'wiki-meta', 'index.md')}.\n` +
-      `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill, or if the vault is\n` +
-      `   on the legacy \`wiki/{hot,index,log,overview}.md\` layout (pre-v0.12.0), migrate it\n` +
-      `   with \`setup-vault.mjs --migrate-wiki-meta <vault-path>\` (shipped in v0.12.1).`,
-    );
-  }
 
-  // Spaces in slug need quoting for shell-source compatibility (e.g.
-  // `set -a; source .env; set +a` in bash). The .env parser strips
-  // matched outer quotes on read.
-  const quotedValue = /\s/.test(vaultSlug) ? `"${vaultSlug}"` : vaultSlug;
-  upsertEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT', quotedValue);
-  ok(`Linked workspace ${wsPath}`);
-  console.log(`    ${c('green', '→')} ${envPath}`);
-  console.log(`    ${c('green', '→')} OBSIDIAN_ROUTER_DEFAULT_VAULT=${quotedValue}`);
-  console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
+  linkWorkspaceToVault({ workspacePath: wsPath, vaultPath, vaultSlug });
   console.log('');
   info('Restart Claude Code in this workspace to activate:');
   info('  • hot-cache-load will print the associated vault\'s wiki-meta/hot.md');
@@ -1950,7 +2165,29 @@ if (args[0] === '--bootstrap-reference') {
 const force = args.includes('--force');
 const quiet = args.includes('--quiet');
 const regenerate = args.includes('--regenerate');
-const vaultArg = args.find((a) => !a.startsWith('--'));
+
+// v0.12.7+ — inline `--link-workspace <ws-path>` flag of the main bootstrap
+// subcommand. When present, setupVault() binds the workspace to the
+// freshly-provisioned vault in one shot (single permission prompt vs. two).
+// The standalone `--link-workspace <ws-path> <slug>` subcommand (above) keeps
+// working for the re-link case where the vault is already registered.
+let linkWorkspaceFlag = null;
+const lwIdx = args.indexOf('--link-workspace');
+if (lwIdx !== -1) {
+  const value = args[lwIdx + 1];
+  if (!value || value.startsWith('--')) {
+    fail('--link-workspace requires a workspace path argument (e.g. `--link-workspace /path/to/repo`).');
+  }
+  linkWorkspaceFlag = value;
+}
+
+// Positional vault arg: skip the value consumed by --link-workspace so a path
+// like `--link-workspace /home/user/proj` is not mistaken for the vault path.
+const vaultArg = args.find((a, i) => {
+  if (a.startsWith('--')) return false;
+  if (lwIdx !== -1 && i === lwIdx + 1) return false;
+  return true;
+});
 if (!vaultArg) fail('No vault path provided');
 
 if (args.includes('--sync-plugins')) {
@@ -1958,4 +2195,4 @@ if (args.includes('--sync-plugins')) {
   process.exit(0);
 }
 
-setupVault(vaultArg, { force, regenerate });
+setupVault(vaultArg, { force, regenerate, linkWorkspace: linkWorkspaceFlag });

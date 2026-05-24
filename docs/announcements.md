@@ -22,7 +22,7 @@ What you get:
 - Local + remote vaults treated identically (URL + API key in config = done)
 - Cross-vault search: `vault: "*"` fans out to all vaults in parallel
 - Lock mode (single-vault session isolation, useful for sensitive work or shared installs)
-- 30 slash commands packaged as a Claude Code plugin, organized in 5 categories (`discover` / `read` / `write` / `manage` / `template` for the 14 wrappers, plus state-management (`lock` / `unlock` / `auto-mode`), conversational helpers (`meta-setup` / `meta-add-vault` / `meta-status`), and a 10-command Karpathy-style LLM-wiki workflow on top)
+- 30 slash commands packaged as a Claude Code plugin, organized in 5 categories (`discover` / `read` / `write` / `manage` / `template` for the 14 wrappers, plus state-management (`lock` / `unlock` / `auto-mode`), conversational helpers (`meta-setup` / `meta-attach-vault` / `meta-status`), and a 10-command Karpathy-style LLM-wiki workflow on top)
 - Auto-enrichment Phase 1 (4-mode dial) — Claude proactively suggests wiki saves at three natural conversation beats (validation pin, result-obtained digest, topic-switch checkpoint)
 
 It's a multi-vault router, not a workflow tool — domain-agnostic. The Karpathy-style LLM-wiki workflow ships as an optional layer on top, but the router itself works for any vault content (personal notes, research, business docs, whatever).
