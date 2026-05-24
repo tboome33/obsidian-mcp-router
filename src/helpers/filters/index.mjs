@@ -7,7 +7,9 @@
  *   decode_uri, markdown, callout, blockquote, footnote, table,
  *   strip_tags, strip_md, image, date_modify, duration, length.
  *
- * Wave 2 (33 more filters) is Phase G backlog — activated on demand.
+ * Wave 2 (33 more filters) is Phase H backlog — activated on demand.
+ * (Was "Phase G" pre-2026-05-24; shifted to H when Phase C
+ * link-following was inserted before LaTeX.)
  *
  * Export shape:
  *   - Named exports (recommended): `import { slug } from '.../filters/index.mjs'`

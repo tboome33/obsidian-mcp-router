@@ -4,7 +4,9 @@
  * `src/utils/filters/wikilink.ts` (MIT) — the JSON-input branch from
  * Clipper (used by their template engine to wrap arrays of links) is
  * dropped because the router has no template engine consumer for it yet.
- * Add it back when Phase G ships the rest of the filter library.
+ * Add it back when Phase H ships the rest of the filter library.
+ * (Was "Phase G" pre-2026-05-24; shifted to H when Phase C
+ * link-following was inserted before LaTeX.)
  *
  *   wikilink("foo")          → "[[foo]]"
  *   wikilink("foo", "bar")   → "[[foo|bar]]"
