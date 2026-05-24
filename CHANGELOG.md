@@ -8,6 +8,80 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.0] — 2026-05-24 — obsidian-clipper Phase A (foundation)
+
+Phase A of the obsidian-clipper feature-borrowing roadmap (see [[obsidian-clipper-roadmap]] in the associated vault). Adds the deterministic helpers that will be consumed by Phase B (`wiki-ingest` skill upgrade) to fix the "fabricated dates / missed author" pain documented in the [[wiki-ingest]] skill anti-patterns. Zero behavioral change in existing skills — these helpers are purely additive.
+
+**Shipped after a 5-pass `/review+` cycle** (Claude Code Reviewer subagent × codex × 5 rounds). Pass log:
+- Pass 1: 1 BLOCKER (SSRF), 4 IMPORTANT prouvés (sanitize bypass, TZ-bug, reserved-name leak, HTML entities), 4 IMPORTANT secondaires, 7 NITs.
+- Pass 2: codex pass 2 found 3 nouveaux P2 (tier-scoring, quote-delimiter, redirect handling) + 1 P3 (slug truncate trim).
+- Pass 3: 4 codex fixes + 1 regression repair (META_TAG_RE quote-aware).
+- Pass 4: codex pass 4 found 2 P1 (published bypass sanitize, cleanScalar non-string bypass) + 2 P2 (date calendar-invalid roll-forward, tests not wired in `npm test`).
+- Pass 5: 4 codex pass-4 fixes + codex pass 5 found 2 P2 (blank fallback short-circuit, array-wrapped @graph not flattened) — both fixed.
+- All P1 + P2 findings resolved. Some NITs deferred to Phase A.4 hardening (see roadmap "Follow-ups").
+
+### Added
+
+#### Filter library (5 of 17 planned Wave 1 filters)
+
+- **`src/helpers/filters/safe_name.mjs`** — port from `obsidian-clipper/src/utils/filters/safe_name.ts` (MIT). Sanitizes a string for cross-OS filename safety. Modes: `windows` / `mac` / `linux` / default (conservative union). Reserved-name re-check post-truncate to catch `'CON '` → `'_CON'` (pre-pass-1 bug surfaced by codex).
+- **`src/helpers/filters/kebab.mjs`** — direct port. `fooBar baz_qux` → `foo-bar-baz-qux`.
+- **`src/helpers/filters/wikilink.mjs`** — simplified port (Clipper's JSON-input branch dropped — no consumer in the router). `wikilink('foo', 'Bar')` → `[[foo|Bar]]`.
+- **`src/helpers/filters/date.mjs`** — port WITHOUT `dayjs` dep, native `Date` only. Compatible format-token subset (YYYY, MM, DD, HH, mm, ss + 1-2 digit variants). Local-calendar construction for date-only `YYYY-MM-DD` inputs to avoid the UTC-midnight TZ shift (pre-pass-1 bug: `date("2026-05-24")` returned `'2026-05-23'` under `TZ=America/New_York`). Calendar-validation against real days-per-month + leap-year rule rejects `'2026-13-01'` and `'2026-02-31'` rather than silently rolling over (pre-pass-5 bug).
+- **`src/helpers/filters/slug.mjs`** — NOT a port (Clipper has no slug filter — relies on `safe_name | kebab` chained in templates). Pipeline: NFKD ASCII-fold + Obsidian-markup strip + non-alphanum→`-` + collapse + lowercase + maxLen (default 80). Re-trim `-` post-truncate to honor the no-trailing-hyphen contract (pre-pass-3 bug).
+- **`src/helpers/filters/index.mjs`** — re-exports + map `FILTERS` for programmatic lookup.
+
+#### Deterministic metadata extractor
+
+- **`src/helpers/meta-extractor.mjs`** — `extractMetadata(html, body?)` parses Schema.org JSON-LD + OpenGraph + meta tags + `<title>` in priority order (strict article types before generic page-shell). Computes `wordCount` + `readingMinutes` from body or stripped-HTML. Returns `{title, author, published, image, site, lang, description, wordCount, readingMinutes}`. Pure regex parsing (no DOMParser dep, no jsdom/cheerio/linkedom). Hardened over 5 review passes:
+  - SSRF-safe via callers — extractor itself is pure (no I/O)
+  - HTML entities decoded before sanitize (named: `amp/lt/gt/quot/apos/nbsp` + numeric `&#NNN;` + hex `&#xHH;`)
+  - Prompt-injection markers neutralized in scalar fields (subset of `src/helpers/sanitize.mjs` agentic-marker blocklist, inlined dep-free)
+  - Non-string JSON-LD values (arrays, objects) stringified BEFORE the sanitize pipeline (not after)
+  - `published` field wrapped in `cleanScalar` so malicious `article:published_time` doesn't bypass sanitize
+  - `META_TAG_RE` quote-aware: handles `>` inside `content="..."` (e.g. `content="<tool_use>"`)
+  - `parseMetaTagAttrs` uses backreference quote-delimiter so apostrophes inside double-quoted values are preserved (`<meta content="Bob's post">` → `"Bob's post"`)
+  - `pickArticleNode` tier-scoring: strict ARTICLE_TYPES (Article, NewsArticle, BlogPosting, …) preferred over generic fallbacks (WebPage, CreativeWork)
+  - `extractJsonLd` flattens `@graph` wrappers both at top-level AND inside top-level array elements
+  - `pickNonBlank` helper for fallback chains so a defined-but-blank higher-priority signal doesn't short-circuit lower-priority tiers
+
+#### MCP tool wrapper
+
+- **`src/tools/extractPageMetadata.mjs`** — wraps `extractMetadata` as MCP tool. Accepts `{url}` (fetched via `undici`) or `{html}` (raw input). **NOT YET registered** in `src/index.mjs` TOOL_REGISTRY — registration is part of Phase B (skill integration). Hardened:
+  - SSRF defense via `validateUrl()` + `assertHostnameNotPrivate()` from `src/markdownify/utils.mjs` (re-used existing helpers; no new code surface)
+  - Manual redirect loop with re-SSRF at each hop (max 5 hops, matches `curl`/`fetch` defaults). Per-hop re-validation handles `evil.com → http://attacker.com → http://127.0.0.1/...` chains
+  - Timeout 10s via AbortController, body size cap 5 MiB
+  - Documented residual DNS-rebinding TOCTOU as Phase A.4 hardening (mitigation = custom undici dispatcher pinning the connect target; cf. `safeFetch` pattern in markdownify)
+
+#### Tests
+
+- **`tests/filters-safe-name.test.mjs`** (24 cases incl. 5 pass-1 regressions + 1 pass-5 regression for Windows reserved-name leak)
+- **`tests/filters-kebab.test.mjs`** (7 cases)
+- **`tests/filters-wikilink.test.mjs`** (9 cases)
+- **`tests/filters-date.test.mjs`** (17 cases incl. 1 pass-1 TZ-independence regression + 6 pass-5 calendar-validation regressions)
+- **`tests/filters-slug.test.mjs`** (13 cases incl. 1 pass-3 truncate-on-sep regression)
+- **`tests/meta-extractor.test.mjs`** (51 cases incl. 5 pass-1 regressions for entity decode + injection neutralize + pickArticleNode strict, 6 pass-3 regressions for tier-scoring + quote-aware + apostrophe + angle-bracket, 3 pass-4 regressions for published bypass + non-string bypass + object stringify, 5 pass-5 regressions for blank fallback + array-wrapped @graph)
+
+### Changed
+
+- **`package.json`**: version `0.12.10` → `0.13.0` (minor bump — additive features, zero break). `test` script extended with the 6 new test files (regression: codex pass 4 flagged that pre-pass-5 the new tests weren't exercised by CI).
+
+### Backward compatibility
+
+- All new files are additive — no existing skill / tool / helper modified.
+- `wiki-ingest` and `defuddle` skills are untouched — they'll consume these helpers in Phase B (v0.13.1) per the roadmap.
+- `extractPageMetadata` is created but NOT registered in TOOL_REGISTRY — no new MCP tool exposed to clients yet.
+
+### Follow-ups for Phase A.4 hardening (tracked in vault [[obsidian-clipper-roadmap]])
+
+- A#3 slug NFKD codepoints — currently literal in the source, fragile to NFC normalization on save. Fix needs an editor that supports `̀-ͯ` escape rewriting.
+- A#4 catastrophic backtracking defense-in-depth — cap `extractTitleTag` regex body.
+- A#6 undici `bodyTimeout` / `headersTimeout` natifs in addition to `AbortController.signal`.
+- NIT pass-4 `extractHtmlLang` / `extractTitleTag` chain to `cleanScalar` for defense-in-depth.
+- NIT pass-5 `cleanScalar` `String(v)` try/catch for exotic objects with throwing toString (negligible risk in JSON.parse pipeline, but harden if helper externalizes).
+
+### Test count: **625/625 passing** (was 528 at v0.12.10; +97 new tests across 6 new test files).
+
 ## [0.12.10] — 2026-05-24
 
 `/review+` hardening pass on v0.12.8's session-log auto-append. Two reviewers: Code Reviewer subagent (5 IMPORTANT + 3 NIT) + `codex review --commit 91a0070` (4 additional findings — 3 IMPORTANT + 1 NIT). All 9 actionable findings addressed with 21 regression tests. Test suite: **506/506 passing** (was 485 after v0.12.9; +21 tests: 6 hook sanitize/multiline/tz + 1 migration B1 + 14 backfill).
