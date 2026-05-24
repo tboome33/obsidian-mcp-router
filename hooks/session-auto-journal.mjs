@@ -493,6 +493,31 @@ function insertRecapAfterFrontmatter(state, recap) {
   catch { /* swallow */ }
 }
 
+// v0.12.9 (review+ pass 1 — A1): sanitize a string before insertion as
+// the human-readable portion of a log.md entry. Defends against four
+// markdown-injection vectors that would corrupt the surrounding bullet:
+//   1. `|`        → would break markdown tables (kept from v0.12.8)
+//   2. `[[`/`]]` → would create parasitic wikilinks pointing wherever
+//   3. `<!--`     → would open an HTML comment hiding subsequent log lines
+//   4. leading `- `/`* `/`# `/`> ` → would create a new bullet/heading/quote
+//
+// Strategy : insert U+200B (zero-width space) between the chars that compose
+// each opening token. ZWSP is invisible in Obsidian's rendered preview AND
+// in monospace source view, so the displayed text is unchanged for
+// well-behaved input but the parser can no longer recognize the token.
+function sanitizeForLogEntry(s) {
+  if (s == null) return '';
+  let out = String(s);
+  out = out.replace(/\|/g, '\\|');
+  out = out.replace(/\[\[/g, '[​[');
+  out = out.replace(/\]\]/g, ']​]');
+  out = out.replace(/<!--/g, '<​!--');
+  out = out.replace(/-->/g, '-​->');
+  // Neutralize a leading markdown structural char (bullet, heading, quote).
+  out = out.replace(/^(\s*)([-*#>])/, (_m, ws, ch) => `${ws}\\${ch}`);
+  return out;
+}
+
 // v0.12.8: compose a one-line "objectif" + "résultat" summary used by the
 // log.md auto-append. The objective is the first user prompt (captured at
 // UserPromptSubmit); the result is a compact heuristic from the counters
@@ -510,8 +535,14 @@ function buildLogLineSummary(state, endedAt) {
   const fileCount = (state.files || []).length;
   if (fileCount) parts.push(`${fileCount} files`);
   // Add the first bash highlight as a quick "what happened" anchor.
+  // v0.12.10 (review+ pass 1 — codex P2-1): collapse any embedded newlines
+  // and runs of whitespace to a single space so a multiline heredoc/script
+  // doesn't break the 2-line log entry format.
   const bashHint = (state.bashHighlights || [])[0];
-  if (bashHint) parts.push(`first bash: ${truncate(bashHint, 60)}`);
+  if (bashHint) {
+    const flat = bashHint.replace(/\s+/g, ' ').trim();
+    parts.push(`first bash: ${truncate(flat, 60)}`);
+  }
   const duration = humanDuration(state.startedAt, endedAt);
   parts.push(duration);
 
@@ -539,13 +570,27 @@ function appendLogMdEntry(state, endedAt) {
   if (existing.includes(`[[${basename}]]`)) return; // already logged
 
   const { objective, result } = buildLogLineSummary(state, endedAt);
-  const date = endedAt.slice(0, 10); // YYYY-MM-DD from ISO
+  // v0.12.10 (review+ pass 1 — codex P2-2): derive BOTH the date AND the
+  // time from the same Date instance (local timezone) so a SessionEnd at
+  // 00:30 Europe/Paris doesn't get UTC date 2026-05-24 + local time 00:30
+  // = 2026-05-24 00:30 (wrong day, misorders the log vs the journal
+  // filename which uses local-time `hhmm`). Both must come from the same
+  // wall clock.
   const t = new Date(endedAt);
+  const date = `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`;
   const hhmmStr = `${pad2(t.getHours())}:${pad2(t.getMinutes())}`;
 
-  // Escape pipe chars that would break markdown rendering if the prompt had them.
-  const safeObjective = objective.replace(/\|/g, '\\|');
-  const safeResult = result.replace(/\|/g, '\\|');
+  // v0.12.9 (review+ pass 1 fix — Reviewer A A1): sanitize user-controlled
+  // text written into log.md so a prompt containing markdown active syntax
+  // can't corrupt the log structure or spawn parasitic wikilinks/comments.
+  // Specifically guards against:
+  //   - `|`  → breaks markdown tables (was already escaped in v0.12.8)
+  //   - `[[X]]` → parasitic wikilinks (insert U+200B zero-width joiner)
+  //   - `<!--` / `-->` → opens/closes HTML comments hiding content
+  //   - leading `- ` / `* ` / `# ` / `> ` on the first char → creates a
+  //     new bullet/heading/quote that breaks the entry's structure
+  const safeObjective = sanitizeForLogEntry(objective);
+  const safeResult = sanitizeForLogEntry(result);
 
   const entry = `\n- ${date} ${hhmmStr} — session — [[${basename}]] — ${safeObjective}\n  → ${safeResult}\n`;
   try { fs.appendFileSync(logPath, entry, 'utf8'); }

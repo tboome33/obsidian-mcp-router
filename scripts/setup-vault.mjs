@@ -534,15 +534,29 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
       try { fs.renameSync(srcDir, dstDir); }
       catch (err) {
         // Cross-device link error → copy + unlink per file.
+        // v0.12.9 (review+ pass 1 — E2): track files already moved so the
+        // error message tells the operator exactly which files crossed
+        // safely (no rollback is possible after the unlink, but the
+        // partial state must be visible for resume).
         if (err.code === 'EXDEV') {
-          try { fs.mkdirSync(dstDir, { recursive: true });
+          const moved = [];
+          try {
+            fs.mkdirSync(dstDir, { recursive: true });
             for (const f of fs.readdirSync(srcDir)) {
               fs.copyFileSync(path.join(srcDir, f), path.join(dstDir, f));
               fs.unlinkSync(path.join(srcDir, f));
+              moved.push(f);
             }
             fs.rmdirSync(srcDir);
             result.mode = 'fs (cross-device copy)';
-          } catch (err2) { result.error = `cross-device fallback failed: ${err2.message}`; return result; }
+          } catch (err2) {
+            result.error = (
+              `cross-device fallback failed after moving ${moved.length} file(s)` +
+              (moved.length ? ` (${moved.join(', ')})` : '') +
+              `: ${err2.message}. Re-run --migrate-sessions-to-wiki-meta to resume on the remaining files.`
+            );
+            return result;
+          }
         } else {
           result.error = `fs.rename failed: ${err.message}`;
           return result;
@@ -569,7 +583,11 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
       }
       const srcFile = path.join(srcDir, f);
       if (useGit) {
-        const gitRes = spawnSync('git', ['mv', path.join('wiki', 'Sessions', f), path.join('wiki-meta', 'Sessions', f)], {
+        // v0.12.9 (review+ pass 1 — E1): pass forward-slash paths to git mv
+        // explicitly. Git accepts both on Windows but forward-slash is
+        // unambiguous and matches the textual rename semantics git uses
+        // internally — avoids any quoting surprises on paths with spaces.
+        const gitRes = spawnSync('git', ['mv', `wiki/Sessions/${f}`, `wiki-meta/Sessions/${f}`], {
           cwd: vaultPath, encoding: 'utf8',
         });
         if (gitRes.status !== 0) {
@@ -590,8 +608,11 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
     result.status = result.sessionsSkipped.length > 0 ? 'merged' : 'migrated';
   }
 
-  // Append a migration line to wiki-meta/log.md (if present).
-  if (!dryRun) {
+  // Append a migration line to wiki-meta/log.md (if present AND something
+  // actually moved). v0.12.9 (review+ pass 1 — B1): skip the append when
+  // 0 sessions were moved (`merged` status with only conflicts) so a user
+  // who re-runs the script doesn't spam log.md with empty-action lines.
+  if (!dryRun && result.sessionsMoved.length > 0) {
     const logMd = path.join(vaultPath, 'wiki-meta', 'log.md');
     if (fs.existsSync(logMd)) {
       const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);

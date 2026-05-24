@@ -35,7 +35,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const CONFIG_PATH = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
+// v0.12.10 (review+ pass 1 — codex P2-3): honor OBSIDIAN_ROUTER_CONFIG
+// like setup-vault.mjs and the hooks do, so users with a custom router
+// config (CI, sandbox tests, multi-profile) don't get silently routed to
+// the default config and backfill the wrong vaults.
+function resolveConfigPath() {
+  if (process.env.OBSIDIAN_ROUTER_CONFIG) {
+    return path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG);
+  }
+  return path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
+}
+const CONFIG_PATH = resolveConfigPath();
 
 const COLORS = { reset: '\x1b[0m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m', gray: '\x1b[90m', bold: '\x1b[1m' };
 const c = (color, s) => `${COLORS[color]}${s}${COLORS.reset}`;
@@ -125,8 +135,12 @@ function reconstructEntry(sessionPath) {
   const fm = parseFrontmatter(content) || {};
   if (fm.status && fm.status !== 'closed') return null; // skip open sessions
 
-  // Objective: frontmatter firstUserPrompt → chrono prompt → fallback
+  // Objective: frontmatter firstUserPrompt → frontmatter prompt (legacy
+  // pre-v0.12.8 sessions or manual notes) → chrono prompt → fallback.
+  // v0.12.10 (review+ pass 1 — codex P3): the header documented `prompt:`
+  // as a fallback but the code skipped it — adding now.
   const objective = (fm.firstUserPrompt && fm.firstUserPrompt.trim())
+    || (fm.prompt && fm.prompt.trim())
     || extractFirstPrompt(content)
     || '(historical session — no objective captured)';
 
@@ -143,8 +157,12 @@ function reconstructEntry(sessionPath) {
   const dt = fm['started-at'] ? new Date(fm['started-at']) : null;
   let dateStr, timeStr;
   if (dt && !isNaN(dt.getTime())) {
-    dateStr = dt.toISOString().slice(0, 10);
-    timeStr = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+    // v0.12.10 (review+ pass 1 — codex P2-2): derive date AND time from the
+    // same local-tz Date instance — mixing UTC date + local hours creates a
+    // wrong-day entry near local midnight.
+    const pad2 = (n) => String(n).padStart(2, '0');
+    dateStr = `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+    timeStr = `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
   } else {
     // Fallback: parse from filename `YYYY-MM-DD-HHMM-...`
     const fm2 = basename.match(/^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})/);
@@ -152,8 +170,20 @@ function reconstructEntry(sessionPath) {
     timeStr = fm2 ? `${fm2[2]}:${fm2[3]}` : '00:00';
   }
 
-  const safeObj = objective.replace(/\|/g, '\\|');
-  const safeRes = result.replace(/\|/g, '\\|');
+  // v0.12.9 (review+ pass 1 — A1): mirror the sanitize from
+  // hooks/session-auto-journal.mjs's `sanitizeForLogEntry` — defends
+  // against markdown-injection from historical user prompts that get
+  // surfaced into log.md via the backfill. Keep this in sync with the
+  // hook function (no shared module yet — duplication acceptable for now).
+  const sanitize = (s) => String(s == null ? '' : s)
+    .replace(/\|/g, '\\|')
+    .replace(/\[\[/g, '[​[')
+    .replace(/\]\]/g, ']​]')
+    .replace(/<!--/g, '<​!--')
+    .replace(/-->/g, '-​->')
+    .replace(/^(\s*)([-*#>])/, (_m, ws, ch) => `${ws}\\${ch}`);
+  const safeObj = sanitize(objective);
+  const safeRes = sanitize(result);
   const backfillDate = new Date().toISOString().slice(0, 10);
   const entry = (
     `\n- ${dateStr} ${timeStr} — session — [[${basename}]] — ${safeObj}\n` +

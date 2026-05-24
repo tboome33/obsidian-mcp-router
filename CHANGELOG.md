@@ -8,6 +8,42 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.12.10] — 2026-05-24
+
+`/review+` hardening pass on v0.12.8's session-log auto-append. Two reviewers: Code Reviewer subagent (5 IMPORTANT + 3 NIT) + `codex review --commit 91a0070` (4 additional findings — 3 IMPORTANT + 1 NIT). All 9 actionable findings addressed with 21 regression tests. Test suite: **506/506 passing** (was 485 after v0.12.9; +21 tests: 6 hook sanitize/multiline/tz + 1 migration B1 + 14 backfill).
+
+### Fixed
+
+- **Markdown injection in log.md entries** (`hooks/session-auto-journal.mjs:545-560` + `scripts/backfill-log-from-sessions.mjs:155-170` — Reviewer A A1): v0.12.8 only escaped `|`; a user prompt containing `[[evil]]`, `<!-- hidden`, or starting with `- ` could spawn parasitic wikilinks, hide subsequent log lines under an HTML comment, or break the entry's bullet structure. New `sanitizeForLogEntry()` helper in the hook (and a mirrored inline function in the backfill script) inserts U+200B zero-width space inside `[[` / `]]` / `<!--` / `-->` tokens (invisible in Obsidian rendered + source view) and backslash-escapes a leading markdown structural char. Pipe escape from v0.12.8 preserved.
+
+- **Spam in log.md on re-running `--migrate-sessions-to-wiki-meta` with conflicts** (`scripts/setup-vault.mjs:606` — Reviewer A B1): if a vault had `both-overlap` state with conflict files left in source, every re-run produced a new `migrate` line in log.md (`0 sessions moved, M skipped`). Now the log append is gated by `result.sessionsMoved.length > 0` — empty-action runs stay silent.
+
+- **EXDEV fallback opacity** (`scripts/setup-vault.mjs:534-557` — Reviewer A E2): the cross-device fallback (copy-then-unlink per file) had no rollback if a mid-loop failure left the source partially drained. Error message now lists the files already moved and explicitly invites a re-run to resume (`--migrate-sessions-to-wiki-meta` is idempotent — the second pass hits `both-overlap` cleanly).
+
+- **`git mv` argument fragility with paths containing spaces** (`scripts/setup-vault.mjs:578-583` — Reviewer A E1): the per-file branch of `migrateSessionsToWikiMeta` used `path.join('wiki', 'Sessions', f)` which produces backslash paths on Windows. Git accepts both but forward-slash is unambiguous and matches git's internal textual rename semantics — switched to template literals `wiki/Sessions/${f}` for portability.
+
+- **Multiline Bash hints stretched log entries beyond 2 lines** (`hooks/session-auto-journal.mjs:537-545` — codex P2-1): if the first Bash tool call of a session was a heredoc or multi-line script, its embedded `\n` chars leaked into the `first bash: ...` portion of the result, breaking the parseable 2-line entry contract. Collapse all whitespace runs to single spaces with `.replace(/\s+/g, ' ').trim()` before applying the 60-char truncate.
+
+- **Timezone mix between log date and time near local midnight** (`hooks/session-auto-journal.mjs:566-573` + `scripts/backfill-log-from-sessions.mjs:158-166` — codex P2-2): date came from `endedAt.slice(0, 10)` (UTC) while time came from `t.getHours()` (local). In Europe/Paris at 00:30 local, this produced `2026-05-24 00:30` for a session that actually ran on the 25th, breaking sort order and disagreeing with the journal filename. Now both date and time derive from the same local-tz `Date` instance (matches the filename convention from v0.12.4).
+
+- **`OBSIDIAN_ROUTER_CONFIG` env var ignored by backfill script** (`scripts/backfill-log-from-sessions.mjs:37-49` — codex P2-3): the hardcoded `CONFIG_PATH` bypassed the env override that `setup-vault.mjs` and the hooks honor. Multi-profile or CI users hit the wrong config silently. Now resolved via `resolveConfigPath()` mirroring the setup-vault pattern.
+
+- **`fm.prompt` documented as a backfill fallback but never used** (`scripts/backfill-log-from-sessions.mjs:128-135` — codex P3): the script's header listed `prompt:` as the fallback after `firstUserPrompt:` but the code skipped it, falling through to the chrono scan and then the historical-fallback message. Migrated/manual session notes with only `prompt:` lost their objective. Added the fallback in the right order.
+
+### Added (regression tests)
+
+- **`tests/backfill-log-from-sessions.test.mjs`** (NEW, 15 tests) — covers the entire script that had zero test coverage at v0.12.8: nominal backfill (with wikilink + objective + result), idempotence, `--dry-run` no-write guarantee, open-session skip, recap-absent fallback, no-firstUserPrompt fallback, chrono extraction rescue, 3 markdown-injection sanitize cases (`[[evil]]`, leading `- `, `<!--`), missing `--vault` arg error, unknown-slug error, missing log.md silent skip, `fm.prompt` fallback, `OBSIDIAN_ROUTER_CONFIG` env honored. Added to `npm test` runner.
+
+- **`tests/session-auto-journal.test.mjs`** (+6 tests in new `v0.12.9 review+ pass 1 regressions` describe): `[[wikilink]]` injection neutralized, leading `- ` escaped, `<!--` neutralized, multiline bash hint collapsed (codex P2-1), local-tz date/time consistency (codex P2-2), pipe escape regression (preserves v0.12.8 behavior).
+
+- **`tests/migrate-sessions-to-wiki-meta.test.mjs`** (+1 test): B1 regression — re-running on `both-overlap` with conflicts does not duplicate the log.md `migrate` line.
+
+### Deferred to follow-up (NIT, tracked but out of scope)
+
+- **A2** — validate `--vault <path>` against `portRegistry` in `backfill-log-from-sessions.mjs` (currently accepts any absolute existing dir; safe because `appendFileSync` only targets `wiki-meta/log.md`).
+- **A3** — document YAML scalar-only limitation of the backfill script's `parseFrontmatter` (acceptable in practice — hook only writes scalars).
+- **D4** — extract a shared `parseFrontmatter` helper under `hooks/_helpers/` (3 ad-hoc implementations exist now: hook, backfill, migrate script).
+
 ## [0.12.9] — 2026-05-24
 
 Extends `hooks/vault-link-linter.mjs` to detect **click-to-open URLs with the wrong port** — the original v0.11.3 implementation only caught the "bare-path missing scheme" case and skipped any href that already had an `http(s)://` prefix (assumed correct). That assumption let through URLs like `http://127.0.0.1:27143/open/...` when the target vault's actual `insecurePort` was `27142` — silently broken links that look right but hit nothing.

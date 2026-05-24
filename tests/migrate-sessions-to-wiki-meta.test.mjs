@@ -177,6 +177,21 @@ describe('migrate-sessions-to-wiki-meta — single vault, edge states', () => {
     assert.match(out, /does not exist|not a directory/i);
   });
 
+  test('B1 (v0.12.9) — re-run on both-overlap with conflicts does not spam log.md', () => {
+    const vp = makeVault('both-overlap');
+    // 1st run: moves 2 of 3 (1 conflict remains in src)
+    runScript('--migrate-sessions-to-wiki-meta', vp);
+    const log1 = fs.readFileSync(path.join(vp, 'wiki-meta', 'log.md'), 'utf8');
+    const lines1 = (log1.match(/— migrate — wiki\/Sessions\//g) || []).length;
+    assert.equal(lines1, 1, '1st run should log once (moved 2 files)');
+
+    // 2nd run: nothing to move (only the conflict file remains, still conflicts)
+    runScript('--migrate-sessions-to-wiki-meta', vp);
+    const log2 = fs.readFileSync(path.join(vp, 'wiki-meta', 'log.md'), 'utf8');
+    const lines2 = (log2.match(/— migrate — wiki\/Sessions\//g) || []).length;
+    assert.equal(lines2, 1, '2nd run must NOT add a 2nd log line when sessionsMoved is empty');
+  });
+
   test('--dry-run: previews without touching the filesystem', () => {
     const vp = makeVault('legacy');
     const r = runScript('--migrate-sessions-to-wiki-meta', vp, '--dry-run');

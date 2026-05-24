@@ -510,3 +510,118 @@ describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// v0.12.9 — /review+ pass 1 regression tests
+// ---------------------------------------------------------------------------
+
+describe('session-auto-journal — v0.12.9 review+ pass 1 regressions', () => {
+  function ensureLogMd() {
+    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Log\n', 'utf8');
+    return logPath;
+  }
+
+  test('A1 — objective with [[wikilink]] gets ZWSP-escaped (no parasitic link)', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'inj-wiki-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'inj-wiki-1',
+      prompt: 'malicious payload [[secret-page]] here',
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'inj-wiki-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    // Original unescaped form must NOT appear (would create a wikilink to secret-page)
+    assert.doesNotMatch(log, /malicious payload \[\[secret-page\]\] here/);
+    // But the visible text must still appear (so the user sees what was attempted)
+    assert.match(log, /malicious payload/);
+    assert.match(log, /secret-page/);
+  });
+
+  test('A1 — objective starting with "- " gets escaped (does not spawn a sub-bullet)', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'inj-bullet-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'inj-bullet-1',
+      prompt: '- inject a new bullet at top level',
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'inj-bullet-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.match(log, /\\- inject a new bullet/, 'leading dash must be backslash-escaped');
+  });
+
+  test('A1 — objective with <!-- gets ZWSP-escaped (does not hide log content)', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'inj-comment-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'inj-comment-1',
+      prompt: 'open comment <!-- that hides everything after',
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'inj-comment-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.doesNotMatch(log, /<!-- that hides/, 'raw comment opener must be neutralized');
+  });
+
+  test('codex P2-1 — multiline bash hint is collapsed to a single line in the result', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'multiline-bash-1' });
+    runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'multiline-bash-1',
+      toolName: 'Bash',
+      toolInput: { command: 'cat <<EOF\nline1\nline2\nEOF' },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'multiline-bash-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    // The log entry must be exactly 2 markdown lines (after the leading \n).
+    // Extract the entry for our session and split into lines.
+    // Find OUR session's entry by basename (filename = YYYY-MM-DD-HHMM-<workspace>-<sessionidshort>.md
+    // where sessionidshort = first 8 alphanum chars of 'multiline-bash-1' = 'multilin').
+    const filename = listJournals()[0].replace(/\.md$/, '');
+    const entryMatch = log.match(new RegExp(`\\n(- \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} — session — \\[\\[${filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\] — [^\\n]+\\n  → [^\\n]+\\n)`));
+    assert.ok(entryMatch, `should find the session entry for ${filename}, log was:\n${log}`);
+    const entry = entryMatch[1];
+    // 2 lines expected (header + arrow continuation); no stray newlines from the heredoc
+    const lines = entry.trimEnd().split('\n');
+    assert.equal(lines.length, 2, `expected 2 lines, got ${lines.length}:\n${entry}`);
+    // The collapsed bash hint should appear as 'cat <<EOF line1 line2 EOF' (spaces, not newlines)
+    assert.match(log, /first bash: cat <<EOF line1 line2 EOF/);
+  });
+
+  test('codex P2-2 — log date and time derive from the same local Date (no UTC/local mix)', () => {
+    // We can't easily force the timezone in node:test, but we can verify
+    // that the date and time both correspond to the same local moment by
+    // checking they agree with `new Date().toLocaleString()` semantics.
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'tz-test-1' });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'tz-test-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    const m = log.match(/\n- (\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) — session — \[\[[^\]]+\]\]/);
+    assert.ok(m, 'should find a session entry with date+time');
+    const [, y, mo, d, h, mi] = m.map((x) => Number(x));
+    const now = new Date();
+    // Sanity: the recorded date must equal today's local date (we just ran).
+    assert.equal(y, now.getFullYear(), 'year must match local today');
+    assert.equal(mo, now.getMonth() + 1, 'month must match local today');
+    assert.equal(d, now.getDate(), 'day must match local TODAY (not UTC)');
+    // Hours should match local now (within ±1 minute tolerance for slow tests).
+    assert.ok(Math.abs(h - now.getHours()) <= 1, `hour ${h} should be within ±1 of local now ${now.getHours()}`);
+    // Bonus: the date in log must match the date prefix in the filename (also local).
+    const files = listJournals();
+    const filenameDate = files[0].match(/^(\d{4}-\d{2}-\d{2})/)[1];
+    assert.equal(`${m[1]}-${m[2]}-${m[3]}`, filenameDate, 'log entry date must match filename date');
+  });
+
+  test('A1 — pipe chars still escaped (regression from v0.12.8)', () => {
+    const logPath = ensureLogMd();
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'inj-pipe-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'inj-pipe-1',
+      prompt: 'objective with | pipe chars',
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'inj-pipe-1', reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.match(log, /objective with \\\| pipe chars/);
+  });
+});
+
