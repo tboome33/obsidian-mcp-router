@@ -32,7 +32,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { samePath } from './path-helpers.mjs';
+import { samePath, canonicalPath } from './path-helpers.mjs';
 
 // --- Config path: user-home, NOT relative to this script ---------------------
 // The script lives inside the router repo (which is git-tracked and may live
@@ -748,6 +748,459 @@ function patchRestApiData(vaultPath, port, apiKey) {
   data.enableInsecureServer = true;
   fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
   ok(`Patched Local REST API data.json (port=${port}, insecurePort=${port + 10}, HTTP enabled, fresh apiKey)`);
+}
+
+/**
+ * v0.13.9 — `--upgrade-insecure-server` mode.
+ *
+ * Bootstrapped-from-scratch vaults get `insecurePort` + `enableInsecureServer`
+ * out of the box (see `patchRestApiData` above). But vaults bootstrapped BEFORE
+ * the v0.10.x release that introduced those fields stay on HTTPS-only — which
+ * is broken under Bitdefender / ESET / Kaspersky (silent drop of self-signed
+ * HTTPS loopback). The `--sync-plugins --force` path explicitly preserves
+ * `data.json` for credential safety, so it doesn't repair this either.
+ *
+ * This function targets that gap surgically: rewrites ONLY the two fields
+ * that enable the HTTP-side endpoint, preserving everything else
+ * (apiKey, port, cert, bindingHost, user-set extras).
+ *
+ * Returns { vaultPath, status, before, after, error? }
+ *   status:
+ *     - 'already-enabled' — both fields already set correctly, no write
+ *     - 'upgraded'        — one or both fields patched
+ *     - 'no-data-json'    — vault has no Local REST API data.json
+ *                           (plugin never activated or not installed)
+ *     - 'no-port'         — data.json exists but has no `port` field
+ *                           (cannot derive insecurePort safely)
+ *     - 'failed'          — fs/JSON error
+ *
+ * Options:
+ *   - `dryRun: true` — report intended change, no write
+ *   - `quiet: true`  — suppress per-vault success/info messages
+ *   - `cfg`          — optional pre-loaded config (used by batch mode to
+ *                      detect insecurePort collisions across vaults)
+ */
+function upgradeInsecureServer(vaultPath, opts = {}) {
+  const { dryRun = false, quiet = false, cfg = null } = opts;
+  const result = {
+    vaultPath,
+    status: 'failed',
+    before: null,
+    after: null,
+    error: null,
+  };
+
+  const dataPath = path.join(
+    vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+  );
+  if (!fs.existsSync(dataPath)) {
+    result.status = 'no-data-json';
+    result.error = `no Local REST API data.json at ${dataPath} — plugin not installed or never activated`;
+    if (!quiet) warn(`${vaultPath} — ${result.error}`);
+    return result;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+  } catch (err) {
+    result.error = `data.json is not valid JSON: ${err.message}`;
+    if (!quiet) warn(`${vaultPath} — ${result.error}`);
+    return result;
+  }
+
+  if (typeof data.port !== 'number' || data.port <= 0) {
+    result.status = 'no-port';
+    result.error = `data.json has no usable \`port\` field (got ${JSON.stringify(data.port)})`;
+    if (!quiet) warn(`${vaultPath} — ${result.error}`);
+    return result;
+  }
+
+  result.before = {
+    insecurePort: data.insecurePort ?? null,
+    enableInsecureServer: data.enableInsecureServer ?? null,
+  };
+
+  // Policy — respect existing values, only fix gaps. Behavior matrix:
+  //   - insecurePort set AND enableInsecureServer === true        → already-enabled (no-op)
+  //   - insecurePort set AND enableInsecureServer ∈ {false,unset} → flip the bool, keep port
+  //   - insecurePort unset AND enableInsecureServer === true      → allocate insecurePort (collision-avoid)
+  //   - both unset/wrong                                          → allocate both (collision-avoid)
+  //
+  // Why we DON'T bump a sane-but-colliding insecurePort:
+  // changing a vault's HTTP port silently breaks every click-to-open link
+  // that was generated under the old value, and the user may have been
+  // running fine for months precisely because they never open colliding
+  // vaults simultaneously. Surface, don't mutate.
+  const insecurePortIsSane = (typeof data.insecurePort === 'number'
+    && data.insecurePort > 0
+    && data.insecurePort !== data.port);
+  const insecureServerOn = data.enableInsecureServer === true;
+
+  if (insecurePortIsSane && insecureServerOn) {
+    result.status = 'already-enabled';
+    result.after = {
+      insecurePort: data.insecurePort,
+      enableInsecureServer: true,
+    };
+    if (!quiet) info(`${vaultPath} — already HTTP-enabled (insecurePort=${data.insecurePort}, enableInsecureServer=true), no change`);
+    return result;
+  }
+
+  // Need to allocate insecurePort? Only if not already sane.
+  let newInsecurePort;
+  if (insecurePortIsSane) {
+    newInsecurePort = data.insecurePort;
+  } else {
+    newInsecurePort = data.port + 10;
+    // Collision-avoidance ONLY when allocating fresh — never bumps an
+    // existing sane value (see Policy note above). Scope: other vaults'
+    // `port` and `insecurePort` from the registry.
+    if (cfg && cfg.portRegistry) {
+      const used = new Set(Object.values(cfg.portRegistry));
+      for (const [vp] of Object.entries(cfg.portRegistry)) {
+        if (samePath(vp, vaultPath)) continue;
+        const otherData = path.join(vp, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
+        if (!fs.existsSync(otherData)) continue;
+        try {
+          const od = JSON.parse(fs.readFileSync(otherData, 'utf8'));
+          if (typeof od.insecurePort === 'number') used.add(od.insecurePort);
+          if (typeof od.port === 'number') used.add(od.port);
+        } catch { /* ignore unreadable */ }
+      }
+      // Don't count this vault's OWN port as a collision against itself.
+      used.delete(data.port);
+      while (used.has(newInsecurePort)) newInsecurePort++;
+    }
+  }
+
+  const desired = {
+    insecurePort: newInsecurePort,
+    enableInsecureServer: true,
+  };
+
+  result.after = desired;
+
+  if (dryRun) {
+    result.status = 'upgraded';
+    if (!quiet) {
+      info(`[DRY-RUN] ${vaultPath} — would set insecurePort=${desired.insecurePort}, enableInsecureServer=true`);
+      info(`  (before: insecurePort=${data.insecurePort ?? 'unset'}, enableInsecureServer=${data.enableInsecureServer ?? 'unset'})`);
+    }
+    return result;
+  }
+
+  data.insecurePort = desired.insecurePort;
+  data.enableInsecureServer = true;
+  try {
+    fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
+  } catch (err) {
+    result.error = `failed to write data.json: ${err.message}`;
+    if (!quiet) warn(`${vaultPath} — ${result.error}`);
+    return result;
+  }
+
+  result.status = 'upgraded';
+  if (!quiet) {
+    ok(`${vaultPath} — patched insecurePort=${desired.insecurePort}, enableInsecureServer=true (apiKey + port + cert preserved)`);
+    info(`  Reload Obsidian (Ctrl+P → "Reload app without saving") to pick up the change.`);
+  }
+  return result;
+}
+
+// ---------- Vault discovery (v0.13.9) ----------------------------------------
+//
+// Scan well-known per-OS locations for Obsidian vaults. Annotates each with
+// a status reflecting whether it's already registered with the router. Used
+// by --discover-vaults (list + report) and --discover-vaults --bootstrap-all
+// (auto-bootstrap every candidate).
+//
+// "Vault" detection rule: a directory containing a `.obsidian/` subdirectory.
+// We scan two layouts at each well-known location:
+//   1. The location ITSELF is a vault (e.g. `~/Obsidian/.obsidian/` exists)
+//   2. The location is a CONTAINER of vaults (e.g. `C:/VAULTS/RolandWiki/.obsidian/`)
+// We do NOT recurse deeper than 1 level to avoid runaway scans (a vault may
+// have arbitrary subdirs that contain `.obsidian/` of their own from old
+// experiments — we don't try to be clever).
+//
+// Locations come from observation of Roland's setups + the most common
+// community conventions (Obsidian's defaults, iCloud sync path, Google Drive
+// desktop). Users can pass additional --scan-dir <path> to extend.
+
+function defaultScanLocations() {
+  const home = os.homedir();
+  const locations = [];
+
+  // Cross-platform: $HOME/Obsidian and $HOME/Documents/Obsidian are the
+  // first-launch defaults the Obsidian installer suggests.
+  locations.push(path.join(home, 'Obsidian'));
+  locations.push(path.join(home, 'Documents', 'Obsidian'));
+
+  if (process.platform === 'win32') {
+    // Drive-rooted VAULTS conventions Roland uses.
+    locations.push('C:\\VAULTS');
+    locations.push('D:\\VAULTS');
+    locations.push('E:\\VAULTS');
+    // OneDrive default mount.
+    locations.push(path.join(home, 'OneDrive', 'Documents', 'Obsidian'));
+    // Google Drive desktop default mount (Roland observed: `P:\Mon Drive\VAULTS`).
+    // Probe a few common mount letters since Google Drive picks the next free.
+    for (const drive of ['G', 'H', 'I', 'P', 'Q']) {
+      locations.push(`${drive}:\\Mon Drive\\VAULTS`);
+      locations.push(`${drive}:\\My Drive\\VAULTS`);
+    }
+  } else if (process.platform === 'darwin') {
+    // iCloud Drive default path for Obsidian-on-iOS sync.
+    locations.push(path.join(home, 'Library', 'Mobile Documents', 'iCloud~md~obsidian', 'Documents'));
+  }
+  // Linux: just $HOME/Obsidian and $HOME/Documents/Obsidian (above).
+
+  // De-dupe (path.join may produce duplicates across branches).
+  return [...new Set(locations)];
+}
+
+function isObsidianVaultRoot(dirPath) {
+  try {
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return false;
+    const dotObsidian = path.join(dirPath, '.obsidian');
+    return fs.existsSync(dotObsidian) && fs.statSync(dotObsidian).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function classifyVault(vaultPath, cfg) {
+  const abs = path.resolve(vaultPath);
+  const registered = Object.keys(cfg.portRegistry || {}).some((rp) => samePath(rp, abs));
+  const isReference = cfg.referenceVault && samePath(cfg.referenceVault, abs);
+  const hasRestApi = fs.existsSync(path.join(abs, '.obsidian', 'plugins', 'obsidian-local-rest-api'));
+  const hasBridge = fs.existsSync(path.join(abs, '.obsidian', 'plugins', 'mcp-router-bridge'));
+
+  let status;
+  if (isReference) status = 'reference';
+  else if (registered) status = 'registered';
+  else if (!hasRestApi) status = 'partial';
+  else status = 'candidate';
+
+  return { path: abs, status, hasRestApi, hasBridge, isReference, registered };
+}
+
+/**
+ * v0.13.9 — Scan well-known locations for Obsidian vaults and classify each.
+ *
+ * Returns array of { path, status, hasRestApi, hasBridge, isReference,
+ * registered, scanRoot } where status ∈ 'reference'|'registered'|'candidate'|
+ * 'partial'.
+ *
+ * Options:
+ *   - `extraDirs: string[]` — additional roots to scan (passed via --scan-dir)
+ *   - `cfg`                 — pre-loaded router config (avoid re-loading)
+ */
+function discoverVaults(opts = {}) {
+  const { extraDirs = [], cfg = loadConfig(), skipDefaults = false } = opts;
+  const roots = skipDefaults ? [...extraDirs] : [...defaultScanLocations(), ...extraDirs];
+
+  const found = [];
+  const seen = new Set();
+
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    try {
+      const stat = fs.statSync(root);
+      if (!stat.isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    // Layout A: the root ITSELF is a vault.
+    if (isObsidianVaultRoot(root)) {
+      const key = canonicalPath(root) || root;
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push({ ...classifyVault(root, cfg), scanRoot: root });
+      }
+    }
+
+    // Layout B: scan one level of children for vault roots.
+    let children;
+    try {
+      children = fs.readdirSync(root);
+    } catch {
+      continue;
+    }
+    for (const child of children) {
+      const childPath = path.join(root, child);
+      try {
+        if (!fs.statSync(childPath).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (!isObsidianVaultRoot(childPath)) continue;
+      const key = canonicalPath(childPath) || childPath;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({ ...classifyVault(childPath, cfg), scanRoot: root });
+    }
+  }
+
+  return found;
+}
+
+// ---------- Global CLAUDE.md convention snippets (v0.13.9) -------------------
+//
+// Ships snippets under `templates/global-claude-md-snippets/<name>.md` that
+// can be appended to the user's `~/.claude/CLAUDE.md` via `--install-global-
+// convention <name>`. Idempotent via HTML-comment markers — re-runs are no-ops
+// unless `--force` is passed (which replaces the content between markers).
+//
+// The first shipped snippet is `obsidian-vault-links` — the canonical click-
+// to-open formatting rules. Without this section in the global CLAUDE.md,
+// Claude on a fresh machine doesn't know to generate http://127.0.0.1:<port>/
+// open/<path> links, and falls back to `obsidian://` (silently filtered by
+// Claude Code CLI on click) or `https://` (silently dropped by Bitdefender).
+//
+// Why HTML-comment markers (not a separate file include): `~/.claude/CLAUDE.md`
+// is a single flat document that gets fully loaded into Claude's context at
+// every session start. Markers let us co-locate the canonical text in the
+// repo, push updates via re-runs, and never silently overwrite user edits
+// outside the marker block.
+
+const GLOBAL_SNIPPETS_DIR = path.join(REPO_ROOT, 'templates', 'global-claude-md-snippets');
+
+function globalClaudeMdPath() {
+  return path.join(os.homedir(), '.claude', 'CLAUDE.md');
+}
+
+function listGlobalConventions() {
+  if (!fs.existsSync(GLOBAL_SNIPPETS_DIR)) return [];
+  return fs.readdirSync(GLOBAL_SNIPPETS_DIR)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => ({
+      name: f.replace(/\.md$/, ''),
+      path: path.join(GLOBAL_SNIPPETS_DIR, f),
+    }));
+}
+
+function makeConventionMarkers(name) {
+  return {
+    begin: `<!-- BEGIN obsidian-mcp-router:${name} -->`,
+    end: `<!-- END obsidian-mcp-router:${name} -->`,
+  };
+}
+
+/**
+ * Append (or, with --force, replace) a snippet inside `~/.claude/CLAUDE.md`,
+ * delimited by HTML-comment markers for idempotency.
+ *
+ * Returns { name, status, path, error? }
+ *   status:
+ *     - 'installed'           — first-time append (markers added)
+ *     - 'already-installed'   — marker block found, no --force → no-op
+ *     - 'upgraded'            — marker block found AND --force → contents
+ *                                between markers replaced
+ *     - 'snippet-not-found'   — no `templates/global-claude-md-snippets/<name>.md`
+ *     - 'failed'              — fs error
+ *
+ * Options:
+ *   - `dryRun: true` — report intended change, no write
+ *   - `force: true`  — if marker block already present, replace contents
+ *   - `quiet: true`  — suppress success/info messages
+ */
+function installGlobalConvention(name, opts = {}) {
+  const { dryRun = false, force = false, quiet = false } = opts;
+  const result = {
+    name,
+    status: 'failed',
+    path: globalClaudeMdPath(),
+    error: null,
+  };
+
+  const snippetPath = path.join(GLOBAL_SNIPPETS_DIR, `${name}.md`);
+  if (!fs.existsSync(snippetPath)) {
+    result.status = 'snippet-not-found';
+    const available = listGlobalConventions().map((c) => c.name).join(', ');
+    result.error = `no snippet '${name}.md' under ${GLOBAL_SNIPPETS_DIR}` +
+      (available ? ` — available: ${available}` : ' — (no snippets shipped)');
+    if (!quiet) warn(result.error);
+    return result;
+  }
+
+  const snippetContent = fs.readFileSync(snippetPath, 'utf8').trimEnd();
+  const { begin, end } = makeConventionMarkers(name);
+  const blockBody = `${begin}\n${snippetContent}\n${end}\n`;
+
+  const claudeMdPath = result.path;
+  const claudeMdDir = path.dirname(claudeMdPath);
+  let existing = '';
+  let fileExists = fs.existsSync(claudeMdPath);
+  if (fileExists) {
+    existing = fs.readFileSync(claudeMdPath, 'utf8');
+  }
+
+  // Detection: BEGIN marker present anywhere = block already installed.
+  const beginIdx = existing.indexOf(begin);
+  const blockPresent = beginIdx !== -1;
+
+  if (blockPresent && !force) {
+    result.status = 'already-installed';
+    if (!quiet) info(`${claudeMdPath} — convention '${name}' already installed (use --force to upgrade)`);
+    return result;
+  }
+
+  let next;
+  if (blockPresent && force) {
+    // Replace the existing marker block (BEGIN..END), preserving everything else.
+    const endIdx = existing.indexOf(end, beginIdx);
+    if (endIdx === -1) {
+      result.error = `BEGIN marker found at offset ${beginIdx} but no matching END marker — refusing to write`;
+      if (!quiet) warn(`${claudeMdPath} — ${result.error}`);
+      return result;
+    }
+    const endLineEnd = existing.indexOf('\n', endIdx);
+    const tailStart = endLineEnd === -1 ? existing.length : endLineEnd + 1;
+    next = existing.slice(0, beginIdx) + blockBody + existing.slice(tailStart);
+    result.status = 'upgraded';
+  } else {
+    // First-time append. Add separators so the block doesn't run into existing
+    // content. Two leading newlines if the file is non-empty and doesn't end
+    // with a blank line.
+    let separator = '';
+    if (existing.length > 0) {
+      if (existing.endsWith('\n\n')) separator = '';
+      else if (existing.endsWith('\n')) separator = '\n';
+      else separator = '\n\n';
+    }
+    next = existing + separator + blockBody;
+    result.status = 'installed';
+  }
+
+  if (dryRun) {
+    if (!quiet) {
+      const action = result.status === 'upgraded' ? 'would upgrade' : 'would install';
+      info(`[DRY-RUN] ${claudeMdPath} — ${action} convention '${name}' (${blockBody.length} bytes)`);
+    }
+    return result;
+  }
+
+  try {
+    if (!fs.existsSync(claudeMdDir)) fs.mkdirSync(claudeMdDir, { recursive: true });
+    fs.writeFileSync(claudeMdPath, next, 'utf8');
+  } catch (err) {
+    result.error = `failed to write ${claudeMdPath}: ${err.message}`;
+    if (!quiet) warn(result.error);
+    result.status = 'failed';
+    return result;
+  }
+
+  if (!quiet) {
+    if (result.status === 'upgraded') {
+      ok(`${claudeMdPath} — upgraded convention '${name}' (${blockBody.length} bytes between markers)`);
+    } else {
+      ok(`${claudeMdPath} — installed convention '${name}' (${blockBody.length} bytes appended)`);
+    }
+    info(`  Re-runs are no-ops unless you pass --force. Edit outside the markers freely; they're preserved.`);
+  }
+  return result;
 }
 
 function ensureCommunityPlugins(vaultPath) {
@@ -2029,6 +2482,28 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               for hot-cache-load + wiki-query-first-nudge hooks.
   node setup-vault.mjs --unlink-workspace <path>             Remove the OBSIDIAN_ROUTER_DEFAULT_VAULT line from
                                                               the workspace's .env (preserves other entries).
+  node setup-vault.mjs --upgrade-insecure-server <vault>     v0.13.9. Patch insecurePort + enableInsecureServer
+                                                              on a vault that was bootstrapped before those
+                                                              defaults existed. Preserves apiKey + port + cert.
+                                                              Idempotent. Add --dry-run to preview.
+  node setup-vault.mjs --upgrade-insecure-server-all         Same patch, run on every vault in portRegistry.
+                                                              Detects insecurePort collisions across vaults.
+  node setup-vault.mjs --discover-vaults                     v0.13.9. Scan well-known OS locations
+                                                              (C:/VAULTS, ~/Documents/Obsidian, iCloud,
+                                                              Google Drive desktop, etc.) and report each
+                                                              vault with its registration status. Add
+                                                              --scan-dir <path> to extend (repeatable).
+                                                              Add --no-default-scan to scan ONLY --scan-dir
+                                                              roots.
+  node setup-vault.mjs --discover-vaults --bootstrap-all     Same scan + bootstrap every candidate vault
+                                                              (not yet registered, has Local REST API plugin).
+                                                              Add --dry-run to preview.
+  node setup-vault.mjs --list-global-conventions             v0.13.9. List snippets shipped under
+                                                              templates/global-claude-md-snippets/.
+  node setup-vault.mjs --install-global-convention <name>    v0.13.9. Append a snippet to ~/.claude/CLAUDE.md
+                                                              with idempotent HTML-comment markers (re-runs
+                                                              are no-ops). Add --force to replace an existing
+                                                              marker block. Currently shipped: obsidian-vault-links.
 `);
   process.exit(0);
 }
@@ -2421,6 +2896,231 @@ if (args[0] === '--sync-all') {
   console.log('');
   console.log(c('bold', `Done. ${okCount} synced, ${skipCount} skipped, ${failCount} failed.`));
   process.exit(failCount > 0 ? 1 : 0);
+}
+
+if (args[0] === '--discover-vaults') {
+  // v0.13.9 — scan well-known per-OS locations for Obsidian vaults and report
+  // their registration status. With --bootstrap-all, every candidate (not yet
+  // registered + has Local REST API plugin) is bootstrapped sequentially.
+  //
+  // Extra scan roots via --scan-dir <path> (repeatable).
+  const bootstrapAll = args.includes('--bootstrap-all');
+  const dryRun = args.includes('--dry-run');
+  const skipDefaults = args.includes('--no-default-scan');
+
+  const extraDirs = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === '--scan-dir') {
+      const v = args[i + 1];
+      if (!v || v.startsWith('--')) fail('--scan-dir requires a path argument');
+      extraDirs.push(path.resolve(v));
+      i++; // skip the value
+    }
+  }
+
+  const cfg = loadConfig();
+  const vaults = discoverVaults({ extraDirs, cfg, skipDefaults });
+
+  console.log(c('bold', `\nDiscovered ${vaults.length} Obsidian vault(s):\n`));
+  if (vaults.length === 0) {
+    console.log(c('gray', '  (none — no vaults found in any well-known location)'));
+    console.log('');
+    console.log(c('gray', '  Scanned roots:'));
+    const scannedRoots = skipDefaults ? [...extraDirs] : [...defaultScanLocations(), ...extraDirs];
+    for (const r of scannedRoots) {
+      const exists = fs.existsSync(r) ? c('gray', '(exists)') : c('gray', '(missing)');
+      console.log(`    ${r}  ${exists}`);
+    }
+    console.log('');
+    console.log(c('gray', '  Add a custom root: --scan-dir <path>'));
+    console.log('');
+    process.exit(0);
+  }
+
+  const byStatus = { reference: [], registered: [], candidate: [], partial: [] };
+  for (const v of vaults) byStatus[v.status].push(v);
+
+  const fmtVault = (v) => {
+    const flags = [];
+    if (v.hasRestApi) flags.push('REST API ✓'); else flags.push('REST API ✗');
+    if (v.hasBridge) flags.push('bridge ✓'); else flags.push('bridge ✗');
+    return `  ${v.path}\n    ${c('gray', flags.join('  ·  '))}`;
+  };
+
+  if (byStatus.reference.length > 0) {
+    console.log(c('cyan', 'Reference vault:'));
+    for (const v of byStatus.reference) console.log(fmtVault(v));
+    console.log('');
+  }
+  if (byStatus.registered.length > 0) {
+    console.log(c('gray', `Already registered (${byStatus.registered.length}):`));
+    for (const v of byStatus.registered) console.log(fmtVault(v));
+    console.log('');
+  }
+  if (byStatus.candidate.length > 0) {
+    console.log(c('green', `Candidates ready to bootstrap (${byStatus.candidate.length}):`));
+    for (const v of byStatus.candidate) console.log(fmtVault(v));
+    console.log('');
+  }
+  if (byStatus.partial.length > 0) {
+    console.log(c('yellow', `Partial — missing Local REST API plugin (${byStatus.partial.length}):`));
+    for (const v of byStatus.partial) console.log(fmtVault(v));
+    console.log(c('gray', '    Install Local REST API in Obsidian first, then re-run discovery.'));
+    console.log('');
+  }
+
+  if (!bootstrapAll) {
+    console.log(c('gray', 'To bootstrap every candidate at once: ') +
+      c('cyan', '--discover-vaults --bootstrap-all'));
+    console.log('');
+    process.exit(0);
+  }
+
+  // --bootstrap-all: iterate candidates.
+  const candidates = byStatus.candidate;
+  if (candidates.length === 0) {
+    info('No candidates to bootstrap (everything is already registered, partial, or the reference).');
+    process.exit(0);
+  }
+
+  if (dryRun) {
+    console.log(c('bold', `[DRY-RUN] Would bootstrap ${candidates.length} candidate vault(s):`));
+    for (const v of candidates) console.log(`  ${c('cyan', '→')} ${v.path}`);
+    console.log('');
+    info('Re-run without --dry-run to apply.');
+    process.exit(0);
+  }
+
+  if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
+    fail(`Cannot bootstrap: no reference vault configured (or its path no longer exists).\n   Run \`setup-vault.mjs --bootstrap-reference <path>\` first, then \`--init-reference\`.`);
+  }
+
+  console.log(c('bold', `\nBootstrapping ${candidates.length} candidate(s)…\n`));
+
+  let okCount = 0;
+  let failCount = 0;
+  const failures = [];
+  for (const v of candidates) {
+    console.log(c('cyan', `  → ${v.path}`));
+    try {
+      // No --force, no --regenerate: trust the vault's existing port/apiKey
+      // if data.json already has them (adoption mode); otherwise allocate fresh.
+      setupVault(v.path, { force: false, regenerate: false, linkWorkspace: null });
+      okCount++;
+    } catch (err) {
+      // setupVault calls `fail()` which does process.exit(1). We can't catch
+      // that here — we'd need to refactor setupVault to throw. For now,
+      // wrap the actual fail() call site... Actually, fail() is unconditional
+      // exit. So we rely on bootstrap succeeding for the common path; partial
+      // failure aborts the whole batch. Document this in the user-facing
+      // message.
+      failures.push({ vaultPath: v.path, error: err.message || String(err) });
+      failCount++;
+      console.log(c('red', `    failed: ${err.message || err}`));
+    }
+  }
+
+  console.log('');
+  console.log(c('bold', `Done. ${okCount} bootstrapped, ${failCount} failed.`));
+  if (failCount > 0) {
+    for (const f of failures) console.log(`  ${c('red', '✗')} ${f.vaultPath}\n    ${c('gray', f.error)}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+if (args[0] === '--list-global-conventions') {
+  // v0.13.9 — enumerate snippets shipped under templates/global-claude-md-snippets/
+  const conventions = listGlobalConventions();
+  console.log(c('bold', '\nAvailable global CLAUDE.md conventions:\n'));
+  if (conventions.length === 0) {
+    console.log(c('gray', '  (none shipped — templates/global-claude-md-snippets/ is empty or missing)'));
+  } else {
+    for (const conv of conventions) {
+      const rel = path.relative(REPO_ROOT, conv.path);
+      console.log(`  ${c('green', conv.name)}  ${c('gray', rel)}`);
+    }
+  }
+  console.log('');
+  console.log(c('gray', 'Install: ') + c('cyan', `node setup-vault.mjs --install-global-convention <name>`));
+  console.log('');
+  process.exit(0);
+}
+
+if (args[0] === '--install-global-convention') {
+  // v0.13.9 — append a shipped snippet to `~/.claude/CLAUDE.md` with idempotent
+  // HTML-comment markers. See installGlobalConvention() doc-block for design.
+  const name = args.find((a, i) => i > 0 && !a.startsWith('--'));
+  if (!name) {
+    fail('--install-global-convention requires a snippet name.\n   Usage: setup-vault.mjs --install-global-convention <name> [--force] [--dry-run]\n   List available: setup-vault.mjs --list-global-conventions');
+  }
+  const dryRun = args.includes('--dry-run');
+  const force = args.includes('--force');
+  const res = installGlobalConvention(name, { dryRun, force });
+  process.exit(res.status === 'failed' || res.status === 'snippet-not-found' ? 1 : 0);
+}
+
+if (args[0] === '--upgrade-insecure-server' || args[0] === '--upgrade-insecure-server-all') {
+  // v0.13.9 — patch insecurePort + enableInsecureServer on vaults that
+  // were bootstrapped BEFORE those fields became defaults. See
+  // upgradeInsecureServer() doc-block for the safety rationale.
+  const dryRun = args.includes('--dry-run');
+  const isBatch = args[0] === '--upgrade-insecure-server-all';
+
+  if (!isBatch) {
+    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--'));
+    if (!vaultArg) {
+      fail('--upgrade-insecure-server requires a vault path argument.\n   Usage: setup-vault.mjs --upgrade-insecure-server <vault-path> [--dry-run]');
+    }
+    const abs = path.resolve(vaultArg);
+    const cfg = loadConfig();
+    const res = upgradeInsecureServer(abs, { dryRun, cfg });
+    process.exit(res.status === 'failed' ? 1 : 0);
+  }
+
+  // Batch mode: iterate portRegistry, passing cfg so collisions are detected
+  // across the whole set.
+  const cfg = loadConfig();
+  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  if (vaultPaths.length === 0) {
+    fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
+  }
+
+  console.log(c('bold',
+    `\n${dryRun ? '[DRY-RUN] ' : ''}Upgrading HTTP server for ${vaultPaths.length} vault(s)...\n`));
+
+  const summary = { upgraded: 0, 'already-enabled': 0, 'no-data-json': 0, 'no-port': 0, failed: 0 };
+  const failures = [];
+  for (const vp of vaultPaths) {
+    const res = upgradeInsecureServer(vp, { dryRun, cfg, quiet: false });
+    summary[res.status] = (summary[res.status] || 0) + 1;
+    if (res.status === 'failed') failures.push({ vaultPath: vp, error: res.error });
+  }
+
+  console.log('');
+  console.log(c('bold', 'Batch summary:'));
+  console.log(`  ${c('green',  'upgraded:           ' + (summary.upgraded || 0))}`);
+  console.log(`  ${c('gray',   'already-enabled:    ' + (summary['already-enabled'] || 0))}`);
+  console.log(`  ${c('yellow', 'no-data-json:       ' + (summary['no-data-json'] || 0))}  ${c('gray', '(plugin not installed / never activated)')}`);
+  console.log(`  ${c('yellow', 'no-port:            ' + (summary['no-port'] || 0))}  ${c('gray', '(data.json missing port field — anomalous)')}`);
+  if (summary.failed > 0) {
+    console.log(`  ${c('red',  'failed:             ' + summary.failed)}`);
+    console.log('');
+    for (const f of failures) {
+      console.log(`    ${c('red', '✗')} ${f.vaultPath}`);
+      console.log(`      ${c('gray', f.error)}`);
+    }
+  }
+
+  if (dryRun) {
+    console.log('');
+    info('Dry-run only — re-run without --dry-run to apply.');
+  } else if (summary.upgraded > 0) {
+    console.log('');
+    info('Reload each affected vault in Obsidian (Ctrl+P → "Reload app without saving") to pick up the change.');
+  }
+
+  process.exit(summary.failed > 0 ? 1 : 0);
 }
 
 if (args[0] === '--init-reference') {

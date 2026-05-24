@@ -8,6 +8,38 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.9] — 2026-05-25 — Fresh-machine click-to-open: 3 setup gaps closed
+
+Closes the three structural gaps that made a fresh-machine install **fail to produce working click-to-open links out of the box**, even though the bridge plugin, Local REST API, and the convention all existed. Trigger: Roland asking *"pourquoi ce n'est pas configuré d'office sur une nouvelle machine quand j'installe le routeur ?!"* (2026-05-25).
+
+The three gaps and their fixes:
+
+1. **Vaults bootstrapped before v0.10.x stay HTTPS-only** — `patchRestApiData()` writes `insecurePort` + `enableInsecureServer: true` at bootstrap time, but `--sync-plugins --force` deliberately preserves `data.json` for credential safety, so it doesn't backfill those fields. Without them, vaults fall back to HTTPS-only, which Bitdefender / ESET / Kaspersky silently drop. → **New mode `--upgrade-insecure-server[-all]`**: patches ONLY those two fields, preserves apiKey + port + cert + everything else. Idempotent. Respects user-set `insecurePort` even if it collides with another vault (surface, don't mutate). Batch mode iterates `portRegistry` and detects collisions across vaults when allocating fresh.
+
+2. **The global `~/.claude/CLAUDE.md` convention isn't propagated** — the "Obsidian vault links" section that tells Claude to emit `http://127.0.0.1:<insecurePort>/open/<path>` lives in the user's private global CLAUDE.md, which is per-machine. On a fresh machine Claude generates `obsidian://` URIs (filtered by Claude Code CLI on click) or `https://` (dropped by Bitdefender), so the user gets dead links. → **New mode `--install-global-convention <name>`** + companion `--list-global-conventions`. Appends a snippet shipped under `templates/global-claude-md-snippets/` to `~/.claude/CLAUDE.md` with HTML-comment markers (`<!-- BEGIN obsidian-mcp-router:<name> -->` … `<!-- END ... -->`) for idempotency. Re-runs are no-ops; `--force` replaces the marker block while preserving surrounding user edits. Initial snippet shipped: `obsidian-vault-links`.
+
+3. **`meta-setup` skill doesn't discover vaults** — installing the router (`meta-setup`) does `npm link` + Claude Code registration but touches no vault. The user must manually run `setup-vault.mjs <path>` for each pre-existing vault, easy to skip. → **New mode `--discover-vaults [--bootstrap-all]`**: scans well-known per-OS locations (`C:/VAULTS`, `~/Documents/Obsidian`, `~/Obsidian`, iCloud `Mobile Documents/iCloud~md~obsidian/Documents`, Google Drive desktop `<drive>:\Mon Drive\VAULTS` etc.) for directories with `.obsidian/`, classifies each as `reference` | `registered` | `candidate` | `partial`. `--bootstrap-all` then bootstraps every candidate sequentially. `--no-default-scan` + `--scan-dir <path>` (repeatable) let the caller target a custom root.
+
+### Added
+
+- **`scripts/setup-vault.mjs`** (new functions + CLI modes):
+  - `upgradeInsecureServer(vaultPath, opts)` — patch `insecurePort` + `enableInsecureServer` surgically. Behavior matrix: sane+true → no-op; sane+false → flip bool; unset → allocate (collision-avoid in batch). Modes: `--upgrade-insecure-server <path>` and `--upgrade-insecure-server-all`, both with `--dry-run`.
+  - `installGlobalConvention(name, opts)` + `listGlobalConventions()` — append a shipped snippet to `~/.claude/CLAUDE.md` with HTML-comment markers. Modes: `--install-global-convention <name>` (with `--force` and `--dry-run`), `--list-global-conventions`.
+  - `discoverVaults(opts)` + `defaultScanLocations()` + `classifyVault()` — scan well-known + extra dirs, classify each found vault. Modes: `--discover-vaults` (with `--bootstrap-all`, `--dry-run`, `--scan-dir <path>` repeatable, `--no-default-scan`).
+- **`templates/global-claude-md-snippets/obsidian-vault-links.md`** (NEW) — the canonical click-to-open formatting convention, shipped as a re-installable snippet for `--install-global-convention`.
+- **`tests/upgrade-insecure-server.test.mjs`** (NEW, 12 tests) — single + batch modes, idempotency, dry-run, collision-avoidance, edge cases (missing data.json, corrupt JSON, missing port, self-collision).
+- **`tests/install-global-convention.test.mjs`** (NEW, 9 tests) — first-time install, append to existing CLAUDE.md, idempotency, `--force` upgrade preserving surrounding content, dry-run, snippet-not-found, missing-END-marker refusal.
+- **`tests/discover-vaults.test.mjs`** (NEW, 10 tests) — detection by `.obsidian/`, classification (candidate/registered/reference/partial), `--scan-dir` extension, `--no-default-scan` isolation, `--bootstrap-all` dry-run, edge cases (no reference vault, 0 candidates).
+
+### Test count: **824/824 passing** (was 793 at v0.13.8; +31 from the 3 new test files).
+
+### Backward compatibility
+
+- All 3 new modes are opt-in; no behavior change for existing `setup-vault.mjs <path>`, `--sync-plugins`, `--sync-all`, or `--bootstrap-reference` paths.
+- `--upgrade-insecure-server[-all]` never bumps a sane existing `insecurePort` (even on collision) — surface the collision via report, never mutate.
+- `--install-global-convention` never overwrites content outside marker blocks; re-running is always safe.
+- `--discover-vaults` is read-only by default; only `--bootstrap-all` writes.
+
 ## [0.13.8] — 2026-05-24 — A.1 hardening pass 2 (codex post-commit on 300f161)
 
 Second hardening pass on the A.1 filter library. Originally targeted for v0.13.7 but a concurrent session shipped `vault-doc-startup-check` (f81d9de) under that number first — this work re-tags to v0.13.8.

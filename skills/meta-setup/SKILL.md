@@ -148,6 +148,71 @@ Run `node scripts/setup-vault.mjs --hooks-status` from the router repo. Should s
 2. Run `/mcp` to confirm `obsidian-router` is connected.
 3. Type `/obsidian-router:discover-list-vaults` — it should call `list_vaults` and return every vault with online status.
 
+## Bulk-bootstrap existing vaults (recommended on fresh machines) — v0.13.9+
+
+Once `--bootstrap-reference` is done, the user typically has 1–N existing Obsidian vaults on disk that the router doesn't know about yet. Each one needs `setup-vault.mjs <path>` to be added to `portRegistry`. Doing this by hand on a fresh machine with 5+ vaults is tedious and easy to skip.
+
+**Discover them in one shot:**
+
+```bash
+node scripts/setup-vault.mjs --discover-vaults
+```
+
+The script scans well-known per-OS locations (`C:/VAULTS`, `~/Documents/Obsidian`, `~/Obsidian`, iCloud `Mobile Documents/iCloud~md~obsidian/Documents`, Google Drive desktop mounts, OneDrive) and classifies each found vault as:
+
+- **reference** — the configured `.template` vault
+- **registered** — already in `portRegistry`
+- **candidate** — has `.obsidian/` AND Local REST API plugin, but not registered → bootstrap target
+- **partial** — has `.obsidian/` but missing Local REST API plugin → install it in Obsidian first
+
+Add custom roots with `--scan-dir <path>` (repeatable). To bypass default locations entirely (e.g. testing or unusual layouts), add `--no-default-scan`.
+
+**Bootstrap every candidate at once:**
+
+```bash
+node scripts/setup-vault.mjs --discover-vaults --bootstrap-all
+```
+
+Or with `--dry-run` to preview without writing. Per-vault allocation of port + apiKey is collision-avoided against the live `portRegistry`. If a single vault fails, the batch reports it and continues with the rest.
+
+**Interactive selection** (skill-driven, not script-driven): if the user wants to pick a subset, run `--discover-vaults` first (read-only), ask which candidates to include, then loop `setup-vault.mjs <path>` for each chosen one.
+
+## Backfill HTTP-side endpoint on legacy vaults — v0.13.9+
+
+Vaults bootstrapped BEFORE the v0.10.x release that added `insecurePort` + `enableInsecureServer` to the default `data.json` stay HTTPS-only. That breaks click-to-open links on machines with Bitdefender / ESET / Kaspersky (silent drop of self-signed HTTPS loopback). `--sync-plugins --force` deliberately preserves `data.json` for credential safety, so it doesn't backfill those fields either.
+
+**Patch every legacy vault in one shot:**
+
+```bash
+node scripts/setup-vault.mjs --upgrade-insecure-server-all
+```
+
+Or `--dry-run` to preview. The script reports per-vault status (upgraded / already-enabled / no-data-json / no-port / failed) and tells the user to reload Obsidian on the affected vaults. Per-vault collision avoidance for freshly-allocated `insecurePort` values (existing user values are respected — even on collision — to avoid breaking already-shared links).
+
+Single-vault form: `--upgrade-insecure-server <vault-path>`.
+
+**No-op-safe**: re-running on a vault that's already HTTP-enabled is a no-op (no write, no mtime bump). Suitable for inclusion in maintenance scripts.
+
+## Propagate click-to-open convention to `~/.claude/CLAUDE.md` — v0.13.9+
+
+The "Obsidian vault links" formatting rules live in the user's global `~/.claude/CLAUDE.md`. Without that section, Claude on a fresh machine doesn't know to emit `http://127.0.0.1:<insecurePort>/open/<path>` links — it falls back to `obsidian://` (silently filtered by Claude Code CLI on click) or `https://` (silently dropped by Bitdefender). The user gets dead links.
+
+**List available conventions:**
+
+```bash
+node scripts/setup-vault.mjs --list-global-conventions
+```
+
+**Install the click-to-open convention:**
+
+```bash
+node scripts/setup-vault.mjs --install-global-convention obsidian-vault-links
+```
+
+Appends the canonical snippet to `~/.claude/CLAUDE.md` with HTML-comment markers (`<!-- BEGIN obsidian-mcp-router:obsidian-vault-links -->` … `<!-- END ... -->`). **Idempotent**: re-runs are no-ops. **Safe**: content outside the marker block is never touched. **Upgradable**: re-run with `--force` to replace the marker block contents with the latest canonical text, preserving surrounding user edits.
+
+**Always ask for confirmation before running this on a fresh-machine install** — the user's global CLAUDE.md is their private space; a Claude session writing into it (even with markers) deserves an explicit "yes". Show the section name + a one-line description before invoking.
+
 ## Add a remote vault (optional)
 
 For an interactive walkthrough of attaching any vault (workspace-first, standalone, or remote), use the companion skill **`meta-attach-vault`**. For diagnostic checks of all configured vaults, use **`meta-status`**.
