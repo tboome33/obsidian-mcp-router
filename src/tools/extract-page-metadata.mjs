@@ -42,13 +42,14 @@
 
 import { extractMetadata } from '../helpers/meta-extractor.mjs';
 import { safeFetchHtml } from '../helpers/safe-fetch-html.mjs';
+import { detectLatexInHtml } from '../helpers/latex-preserver.mjs';
 
 export const TOOL_NAME = 'extract_page_metadata';
 
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Deterministically extract metadata from a web page (title, author, published date, cover image, site name, language, description, word count, reading time). Parses Schema.org JSON-LD, OpenGraph tags, and standard HTML meta tags in priority order. Use as a pre-flight before wiki-ingest, or for debugging which signals a page exposes.',
+    'Deterministically extract metadata from a web page (title, author, published date, cover image, site name, language, description, word count, reading time, hasLatex math detection). Parses Schema.org JSON-LD, OpenGraph tags, and standard HTML meta tags in priority order. Also detects LaTeX/math signals (MathML, KaTeX, MathJax, data-latex attrs, $...$ dollar delimiters) so callers like wiki-ingest can set `has_latex: true` frontmatter and preserve math verbatim. Use as a pre-flight before wiki-ingest, or for debugging which signals a page exposes.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -98,5 +99,16 @@ export async function handleExtractPageMetadata(args = {}) {
     }
   }
 
-  return extractMetadata(resolvedHtml, body);
+  const metadata = extractMetadata(resolvedHtml, body);
+
+  // Phase D (v0.13.10+) — augment with LaTeX detection so wiki-ingest can set
+  // `has_latex: true` in frontmatter and instruct Claude to preserve $...$
+  // verbatim in the body instead of reformatting it to Unicode.
+  const latex = detectLatexInHtml(resolvedHtml);
+
+  return {
+    ...metadata,
+    hasLatex: latex.hasLatex,
+    latexSignals: latex.signals,
+  };
 }

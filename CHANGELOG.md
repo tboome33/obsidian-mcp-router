@@ -8,6 +8,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.13.10] — 2026-05-25 — Phase D · LaTeX preservation MVP (obsidian-clipper port)
+
+Phase D of the [[obsidian-clipper]] borrowing roadmap. Adds **LaTeX/math detection** to the ingestion pipeline so `wiki-ingest` can set `has_latex: true` in source-page frontmatter and instruct Claude to preserve `$...$` / `$$...$$` blocks verbatim instead of reformatting them to Unicode or stripping them. Without this, Wikipedia pages with MathML, blogs using KaTeX, and arxiv abstracts all lose their math during ingestion.
+
+**MVP scope** — detection-only. This release flags pages that contain math; preservation in the body is enforced by the wiki-ingest skill telling Claude not to touch `$...$`. MathML→LaTeX conversion and equation-image substitution are deferred to Phase D.2 (would need the `mathml-to-latex` npm dep, opt-in based on user demand).
+
+### Added
+
+- **`src/helpers/latex-preserver.mjs`** (NEW) — pure helper module, no deps. Two complementary detectors:
+  - `detectLatexInHtml(html)` — runs on raw HTML. Returns `{hasLatex, signals: {mathml, katex, mathjax, dataLatex, dollarInline, dollarBlock}}`. Catches MathML `<math>` tags, KaTeX script/CSS/class hooks, MathJax script/config/class hooks, `data-latex`/`data-tex`/`data-math` attributes (Mathjax-3 SSR, Pandoc HTML), and `$...$` body text (with `<script>`/`<style>` stripping to avoid false positives in stylesheets).
+  - `detectLatexInMarkdown(md)` — runs on extracted markdown. Returns `{hasLatex, inlineCount, blockCount}`. Filters out currency (`$5.99`, `$JPY`) by requiring LaTeX-looking content (backslash command, `^`/`_`, Greek letter) inside `$...$`. Skips fenced code blocks (```` ``` ```` and `~~~`) entirely so shell prompts and regex don't pollute.
+  - `hasLatex` threshold: any of MathML / KaTeX / MathJax / data-latex signals, OR ≥1 `$$` block, OR ≥2 inline `$...$` pairs (1 isolated pair could be currency mention).
+- **`tests/latex-preserver.test.mjs`** (NEW, 29 tests). Covers: currency rejection ($5.99/$JPY), Greek letters / backslash commands / sub-superscripts inside `$...$`, fenced code block skipping (`` ``` `` + `~~~`), MathML tag counting, KaTeX/MathJax detection via script src + class hooks + config, data-latex/data-tex counting, `<script>`/`<style>` text isolation, combined-signals integration (Wikipedia-style MathML + KaTeX-rendered blog).
+
+### Changed
+
+- **`src/tools/extract-page-metadata.mjs`** — handler now calls `detectLatexInHtml` on the fetched HTML and augments the response with `hasLatex: bool` and `latexSignals: {mathml, katex, mathjax, dataLatex, dollarInline, dollarBlock}`. TOOL_DEFINITION description updated to mention math detection. **+2 regression tests** in `tests/extract-page-metadata.test.mjs` verifying the new fields (plain HTML → `false`, MathML → `true`, KaTeX-rendered → `true`).
+- **`skills/wiki-ingest/SKILL.md`** — Step 4 frontmatter template extended with `has_latex: <metadata.hasLatex>` (emit only when true to keep frontmatter tight). New section "LaTeX preservation (Phase D, v0.13.10+)" instructing Claude to:
+  1. Emit `has_latex: true` in frontmatter when metadata says so (Obsidian/KaTeX MathBlock will render).
+  2. Preserve `$...$` and `$$...$$` blocks **verbatim** in the body — never reformat `$x^2$` as `x²`, never strip `$$\sum_n a_n$$`, never paraphrase formulas.
+  3. If markitdown stripped MathML, mention in `## Summary` that "the original page contains rendered equations" — never fabricate replacement LaTeX from descriptions.
+  4. Use `latexSignals` to decide whether `has_latex: true` is well-founded or a false positive (currency-heavy page that tripped the heuristic).
+
+### Test count: **855/855 passing** (was 824 at v0.13.9; +29 latex-preserver + 2 extract-page-metadata Phase D regressions).
+
+### Backward compatibility
+
+- Detection is purely additive. `extract_page_metadata` continues to return the same payload shape with **two new fields appended** (`hasLatex`, `latexSignals`) — pre-existing callers ignore them.
+- `wiki-ingest` skill change is instructional only (markdown procedure). Existing source pages without `has_latex` continue to work; new ingestions augment frontmatter when math is detected.
+- No npm dependencies added. The `mathml-to-latex` package mentioned in the original Phase D plan is deferred to Phase D.2 (conversion-mode, opt-in).
+
+### Deferred to Phase D.2 (if user demand surfaces)
+
+- `mathml-to-latex` npm dep + `htmlMathmlToLatex(html)` helper to replace `<math>...</math>` blocks with `$$...LaTeX...$$` before markitdown converts.
+- `htmlImageEquationsToLatex(html)` to detect `<img alt="$..."` patterns (Wikipedia legacy renderer, Pandoc) and substitute with the source LaTeX.
+- Post-process markdown to re-inject dropped LaTeX from a pre-conversion HTML LaTeX-extraction pass.
+
 ## [0.13.9] — 2026-05-25 — Fresh-machine click-to-open: 3 setup gaps closed
 
 Closes the three structural gaps that made a fresh-machine install **fail to produce working click-to-open links out of the box**, even though the bridge plugin, Local REST API, and the convention all existed. Trigger: Roland asking *"pourquoi ce n'est pas configuré d'office sur une nouvelle machine quand j'installe le routeur ?!"* (2026-05-25).

@@ -75,6 +75,7 @@ site: <metadata.site>            # publisher / site name if available, else abse
 description: <metadata.description>  # 1-line summary from og:description / meta
 word_count: <metadata.wordCount>     # int
 reading_minutes: <metadata.readingMinutes>  # int (ceil(wordCount/220))
+has_latex: <metadata.hasLatex>       # bool, Phase D (v0.13.10+) — only emit when true; omit when false to keep frontmatter tight
 related_source: "[[<parent-slug>]]"  # ONLY if this ingestion is a child of a link-following parent (Phase C, v0.13.3+). Omit otherwise.
 tags: [<source-type>, <topic-tags>]
 source_type: extracted    # see "Source provenance" in vault CLAUDE.md
@@ -82,6 +83,12 @@ source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ```
 
 **Anti-pattern**: do NOT fabricate or re-infer `title` / `author` / `published` / `lang` / `image` / `site` / `description` when the metadata block returned a non-null value. The whole point of the v0.13.2 pipeline is to make these deterministic. Use `slug(title, {maxLen:80})` from `src/helpers/filters/slug.mjs` to generate the filename — never improvise.
+
+**LaTeX preservation (Phase D, v0.13.10+)**: when `metadata.hasLatex === true`:
+1. Emit `has_latex: true` in frontmatter (so Obsidian's LaTeX plugin / KaTeX MathBlock renders it).
+2. In the body, **preserve all `$...$` and `$$...$$` blocks verbatim** — never reformat `$x^2$` as `x²`, never strip `$$\sum_n a_n$$`, never paraphrase a formula into prose.
+3. If the source has MathML (`<math>...</math>`) that markitdown stripped, mention in `## Summary` that "the original page contains rendered equations" — do not fabricate replacement LaTeX from descriptions you can't verify.
+4. The `latexSignals` block from `extract_page_metadata` tells you WHICH kind of math is present (MathML count, KaTeX/MathJax flags, dollar-delimiter counts) so you can decide whether `has_latex: true` is well-founded or a false positive from a currency-heavy page that tripped the heuristic.
 
 **Fallback**: if the source is a local file or pasted text (no metadata block), infer title and structural fields from the content as before. The `published` / `lang` / `image` / `site` fields are omitted from the frontmatter when no signal exists (do NOT emit `null` or empty string — just leave the line out).
 

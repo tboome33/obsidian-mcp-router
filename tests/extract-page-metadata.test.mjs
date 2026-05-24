@@ -112,6 +112,27 @@ describe('extract-page-metadata — handler with html input (hermetic)', () => {
     assert.ok('title' in result);
     assert.ok('wordCount' in result);
   });
+
+  test('Phase D (v0.13.10): returns hasLatex + latexSignals from detectLatexInHtml', async () => {
+    const htmlPlain = '<title>x</title><p>Just plain prose.</p>';
+    const plain = await handleExtractPageMetadata({ html: htmlPlain });
+    assert.equal(plain.hasLatex, false);
+    assert.equal(plain.latexSignals.mathml, 0);
+    assert.equal(plain.latexSignals.katex, false);
+
+    const htmlMath = '<title>m</title><math><mi>x</mi></math>';
+    const math = await handleExtractPageMetadata({ html: htmlMath });
+    assert.equal(math.hasLatex, true);
+    assert.equal(math.latexSignals.mathml, 1);
+  });
+
+  test('Phase D (v0.13.10): hasLatex true on KaTeX-rendered page (no MathML)', async () => {
+    const html =
+      '<title>k</title><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.css"><span class="katex-mathml">x²</span>';
+    const r = await handleExtractPageMetadata({ html });
+    assert.equal(r.hasLatex, true);
+    assert.equal(r.latexSignals.katex, true);
+  });
 });
 
 describe('extract-page-metadata — handler with url input (validation only, no fetch)', () => {
