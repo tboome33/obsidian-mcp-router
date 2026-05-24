@@ -31,8 +31,11 @@ export function strip_md(str) {
   // pipes (math `P(A|B)`, regex `[a|b]`, CLI `cmd | grep`) doesn't
   // get its middle segment silently erased. Pre-v0.13.6 the unanchored
   // pattern was a port-of-Clipper-bug that we now diverge from.
-  // Reviewer A finding F3.
-  s = s.replace(/^\|.*\|\s*$/gm, '');                     // tables (full table lines only)
+  // Reviewer A finding F3. v0.13.7 hardening (codex finding H): allow
+  // 0-3 leading spaces (or a tab) per the markdown spec, which permits
+  // up to 3 spaces before block-level syntax — so `  | a | b |` IS a
+  // valid (indented) table row that should be stripped.
+  s = s.replace(/^[ \t]{0,3}\|.*\|\s*$/gm, '');           // tables (indented up to 3 spaces / 1 tab)
   s = s.replace(/([~^])(\w+)\1/g, '$2');                  // sub/superscript
   s = s.replace(/:[a-z_]+:/g, '');                        // emoji shortcodes
   s = s.replace(/<[^>]+>/g, '');                          // raw HTML

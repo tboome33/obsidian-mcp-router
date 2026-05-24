@@ -81,6 +81,18 @@ function formatDuration(totalSeconds, format) {
     ss: pad2(seconds),
     s: seconds.toString(),
   };
+
+  // Letter-whitelist precondition (v0.13.7 hardening, codex post-commit
+  // finding G): if the format contains ANY letter outside the canonical
+  // token set `H`/`m`/`s` (case-sensitive), bail out and return the
+  // format literal. This protects against partial replacement in formats
+  // like `'hh:mm'` (lowercase variant user probably meant as HH:mm) where
+  // the v0.13.6 lookbehind-only fix still matched the `mm` (preceded by
+  // `:` which is a non-letter). With the whitelist, `hh:mm` contains
+  // lowercase `h` not in `Hms` → bail out → returned literal.
+  const allLettersValid = (fmt.match(/[A-Za-z]/g) || []).every((c) => 'Hms'.includes(c));
+  if (!allLettersValid) return fmt;
+
   // Token boundary lookbehind+lookahead so a literal `Hours` in the
   // format doesn't get its `H` replaced (pre-v0.13.6 the unbounded
   // pattern produced `1our0` from `Hours`). Tokens must be surrounded

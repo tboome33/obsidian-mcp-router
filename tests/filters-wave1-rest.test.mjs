@@ -111,6 +111,16 @@ describe('strip_md', () => {
     assert.doesNotMatch(out, /\| col1/);
     assert.doesNotMatch(out, /\| a \| b/);
   });
+
+  test('REGRESSION (v0.13.7 / codex H): indented table rows (0-3 leading spaces or tab) are stripped', () => {
+    // Markdown spec allows up to 3 leading spaces before block syntax.
+    // Pre-v0.13.7 our `^\|...` strict anchor missed indented table rows.
+    assert.equal(strip_md('  | col1 | col2 |'), '');         // 2 spaces
+    assert.equal(strip_md('   | col1 | col2 |'), '');        // 3 spaces (max valid)
+    assert.equal(strip_md('\t| col1 | col2 |'), '');         // tab
+    // 4+ leading spaces = code block in markdown, not a table → preserved.
+    assert.equal(strip_md('    | col1 | col2 |'), '| col1 | col2 |');
+  });
 });
 
 describe('blockquote', () => {
@@ -257,17 +267,20 @@ describe('duration', () => {
     assert.equal(duration('not a duration'), 'not a duration');
   });
 
-  test('REGRESSION (v0.13.6 / F2): literal letters in format string are preserved (no mid-word token match)', () => {
-    // Pre-v0.13.6: `format='Hours'` had its `H` matched (preceded by
-    // start) and replaced → `1our0`. Token boundary now requires non-
-    // letter chars on both sides.
-    assert.equal(duration('3600', 'Hours'), 'Hours');
-    // `seconds` with `s` only matched at isolation — both `s`s are
-    // bordered by letters, so no replacement.
-    assert.equal(duration('90', 'seconds'), 'seconds');
-    // `H total` — `H` followed by space is OK on the right (non-letter),
-    // preceded by start (non-letter) — matches → "1 total" (1 hour).
-    assert.equal(duration('3600', 'H total'), '1 total');
+  test('REGRESSION (v0.13.6 / F2 + v0.13.7 / codex G): literal formats with non-token letters are preserved (whitelist-bail)', () => {
+    // v0.13.6 added the lookbehind/lookahead token boundary. v0.13.7
+    // tightened this further to a whitelist: if the format contains ANY
+    // letter outside `Hms`, bail out and return the format literal. This
+    // is more predictable than the v0.13.6 behavior which still did
+    // partial replacement when a single `H`/`m`/`s` was bordered by
+    // delimiters in an otherwise non-token format.
+    //
+    // Trade-off: a marginal case from v0.13.6 (`'H total'` → `'1 total'`)
+    // is now `'H total'` literal. The benefit: `'hh:mm'` is now `'hh:mm'`
+    // literal instead of `'hh:01'` (codex G).
+    assert.equal(duration('3600', 'Hours'), 'Hours');     // o,u,r non-token
+    assert.equal(duration('90', 'seconds'), 'seconds');   // e,c,o,n,d non-token
+    assert.equal(duration('3600', 'H total'), 'H total'); // t,o,a,l non-token → bail
   });
 
   test('REGRESSION (v0.13.6 / F2): canonical formats still work', () => {
@@ -275,6 +288,23 @@ describe('duration', () => {
     assert.equal(duration('3690', 'HH:mm:ss'), '01:01:30');
     assert.equal(duration('3690', 'H:mm:ss'), '1:01:30');
     assert.equal(duration('90', 'mm:ss'), '01:30');
+  });
+
+  test('REGRESSION (v0.13.7 / codex G): lowercase variant formats bail out (no partial replacement)', () => {
+    // Pre-v0.13.7: `hh:mm` had its `mm` matched (preceded by `:` non-
+    // letter, followed by end-of-string non-letter) and replaced → `hh:01`.
+    // The lookbehind fix from v0.13.6 was insufficient — the `mm` was
+    // still surrounded by non-letters because `:` separated it from `hh`.
+    // v0.13.7 adds a letter-whitelist precondition: if the format contains
+    // ANY letter outside `Hms` (case-sensitive), bail out and return the
+    // format literal. So `hh:mm` (contains lowercase `h` not in `Hms`)
+    // is now preserved verbatim.
+    assert.equal(duration('3690', 'hh:mm'), 'hh:mm');
+    // Same for uppercase variants that aren't in the canonical set.
+    assert.equal(duration('3690', 'MM:SS'), 'MM:SS');
+    // Mixed case where only some letters are valid: still bail because
+    // some are invalid.
+    assert.equal(duration('3690', 'H:mm sec'), 'H:mm sec'); // `s,e,c` invalid
   });
 });
 
