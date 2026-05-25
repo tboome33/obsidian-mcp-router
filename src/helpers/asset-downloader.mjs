@@ -101,10 +101,26 @@ export function extractImageUrls(content, baseUrl) {
   }
 
   // Pattern 3: Markdown ![alt](url) — drop optional "title".
-  // Allow nested square brackets in alt by using non-greedy [^\]] (basic case).
-  const mdRe = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  //
+  // v0.14.3 hardening (P2-2): the alt-text matcher must accept one level
+  // of nested square brackets, e.g. `![Photo of [Eiffel tower]](url)`.
+  // The pre-v0.14.3 `[^\]]*` regex bailed on the inner `[` and missed
+  // the whole reference, so the image was neither extracted (skipping
+  // download) nor rewritten (leaving a remote URL behind even when the
+  // download succeeded via another path). Real-world content with this
+  // pattern: Wikipedia citations, blogs with `[citation needed]` alt
+  // hooks, etc.
+  //
+  // Pattern explanation:
+  //   (?:\[[^\]]*\]|[^\]])*   — alternation:
+  //     \[[^\]]*\]            — one full balanced [inner] block
+  //     |                     — OR
+  //     [^\]]                 — any single non-`]` character
+  //   Repeated * times. Greedy is fine here — the closing `\]` is
+  //   forced by the parenthetical that follows.
+  const mdRe = /!\[((?:\[[^\]]*\]|[^\]])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   while ((m = mdRe.exec(safe)) !== null) {
-    if (m[1]) found.push(m[1]);
+    if (m[2]) found.push(m[2]);
   }
 
   // Resolve + filter.
@@ -183,7 +199,16 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
 
   // Sanitize: keep [A-Za-z0-9._-], replace others with `_`.
   // Refuse purely-dot names.
+  //
+  // v0.14.3 hardening (P3-1): also strip LEADING dots after sanitization.
+  // Without this, an URL ending in `/...png` or `/.png` produced names
+  // like `..png` or `.png` which (a) are hidden files on POSIX (Finder
+  // / `ls` hide them, surprising the user) and (b) look like
+  // path-traversal even though `path.join` is safe. Trim leading dots
+  // BEFORE the pure-dots check so `/...png` → `png` (still valid) and
+  // `/..` → `` → sha256 fallback.
   let base = lastSegment.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
+  base = base.replace(/^\.+/, '');
   if (/^\.+$/.test(base) || base === '') {
     base = '';
   }
@@ -302,12 +327,59 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
     _fetchFn,
     _writeFn,
     _mkdirFn = fs.mkdir,
+    _statFn = fs.stat,
   } = opts;
 
   if (!path.isAbsolute(outputDir)) {
     throw new Error(`downloadAssets: outputDir must be absolute, got ${outputDir}`);
   }
+
+  // v0.14.3 hardening (P2-1): when `MD_ALLOWED_PATHS` is unset, the
+  // upstream `assertPathAllowed` is a no-op — so a hostile caller can
+  // pass `/etc/cron.d` (existing system dir) and `fs.mkdir(...,
+  // {recursive: true})` silently succeeds, allowing image writes into
+  // arbitrary places on disk. We close this with two cheap checks:
+  //
+  //   1. After mkdir-recursive, stat the resulting path and assert
+  //      isDirectory(). If it's a file (mkdir on existing file path
+  //      throws EEXIST), or a symlink to a file (mkdir resolves the
+  //      link), the write would clobber unrelated data. Reject.
+  //
+  //   2. Require the PARENT to exist BEFORE the mkdir call. This
+  //      prevents an MCP caller from bootstrapping arbitrary system
+  //      directory trees (`/etc/cron.d/whatever-they-want/`) — a
+  //      legitimate ingest uses an existing vault dir as the parent.
+  //      `wiki-ingest` always calls with `<vault>/wiki/.assets/<slug>/`
+  //      where `<vault>/wiki/` already exists.
+  const parentDir = path.dirname(outputDir);
+  try {
+    const parentStat = await _statFn(parentDir);
+    if (!parentStat.isDirectory()) {
+      throw new Error(`downloadAssets: outputDir parent is not a directory: ${parentDir}`);
+    }
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      throw new Error(
+        `downloadAssets: outputDir parent must exist (got ${parentDir}). ` +
+        `For safety, this helper does not bootstrap arbitrary directory trees — ` +
+        `the caller should pre-create the vault root or pass an outputDir whose ` +
+        `parent already exists.`,
+      );
+    }
+    throw e;
+  }
+
   await _mkdirFn(outputDir, { recursive: true });
+
+  // Belt-and-suspenders: stat the resulting path. `mkdir -p` on an
+  // existing FILE throws EEXIST, but on an existing SYMLINK-to-file the
+  // behaviour is platform-dependent (some Node versions silently treat
+  // the symlink target as the "directory"). Explicit isDirectory()
+  // check catches both.
+  const outStat = await _statFn(outputDir);
+  if (!outStat.isDirectory()) {
+    throw new Error(`downloadAssets: outputDir exists but is not a directory: ${outputDir}`);
+  }
 
   const usedNames = new Set();
   const downloaded = [];
@@ -386,11 +458,19 @@ export function rewriteAssetUrls(content, urlMap, opts = {}) {
   let out = String(content || '');
 
   // Markdown `![alt](url)` — preserve alt text and optional title.
-  out = out.replace(/(!\[[^\]]*\]\()([^)\s]+)(\s+"[^"]*")?\)/g, (match, prefix, url, title) => {
-    const local = remap.get(url);
-    if (!local) return match;
-    return `${prefix}${local}${title || ''})`;
-  });
+  //
+  // v0.14.3 hardening (P2-2): accept one level of nested brackets in alt
+  // (`![Photo of [Eiffel tower]](url)`). Must stay in sync with the
+  // matching regex in `extractImageUrls` — otherwise we'd extract images
+  // we can't rewrite, leaving stale remote URLs in the markdown.
+  out = out.replace(
+    /(!\[(?:\[[^\]]*\]|[^\]])*\]\()([^)\s]+)(\s+"[^"]*")?\)/g,
+    (match, prefix, url, title) => {
+      const local = remap.get(url);
+      if (!local) return match;
+      return `${prefix}${local}${title || ''})`;
+    },
+  );
 
   // HTML `<img src="...">` — keep attribute style (quote-aware).
   out = out.replace(

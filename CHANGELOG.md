@@ -8,6 +8,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.3] — 2026-05-25 — `/review+` hardening on Phase E v0.14.2 (asset download)
+
+`mini-/review+` on commit ddc6ecc surfaced 2 P2 correctness/security findings and 3 P3 polish items. All fixed with 9 new regression tests pinning the behaviors.
+
+### Fixed
+
+- **P2-1 — `downloadAssets` could silently write into arbitrary system directories when `MD_ALLOWED_PATHS` is unset.** `src/helpers/asset-downloader.mjs::downloadAssets`. With the env-var sandbox off, `assertPathAllowed` is a no-op, so a hostile MCP caller could pass an `outputDir` like `/etc/cron.d` — `fs.mkdir(..., {recursive: true})` silently succeeded against the existing dir and image writes would clobber unrelated system files. **Fix:** two new guards.
+  - Pre-mkdir: stat the PARENT dir and refuse if it doesn't exist (ENOENT). Prevents bootstrapping arbitrary directory trees like `/etc/cron.d/whatever-attacker-wants/`.
+  - Post-mkdir: stat the resolved path and assert `isDirectory()`. Catches symlink-to-file races and the `mkdir -p` edge case where a pre-existing symlink resolves to a non-directory target.
+  - Both wired through a new `_statFn` injection seam so tests can drive ENOENT / file-not-dir / happy-path branches deterministically.
+
+- **P2-2 — `extractImageUrls` and `rewriteAssetUrls` silently dropped markdown images whose alt text contained nested brackets** (e.g. `![Photo of [Eiffel tower]](url)`). `src/helpers/asset-downloader.mjs:105` + `:405`. The pre-fix regex `\[[^\]]*\]` bailed on the inner `[`, so the whole image reference was invisible: extract didn't queue it for download, and rewrite didn't replace it. Real impact: Wikipedia-style alt with `[citation needed]` markers, blogs with bracketed-attribution patterns. **Fix:** swap to `(?:\[[^\]]*\]|[^\]])*` (one level of nested-bracket balanced matching) in BOTH regexes — extract + rewrite must stay in sync or we'd download images we can't rewrite, leaving stale remote URLs.
+
+### Changed
+
+- **P3-1 — `pickAssetFilename` now strips LEADING dots** from the sanitized URL segment. Pre-fix, `/...png` yielded the literal filename `...png` and `/.png` yielded `.png`, both of which are hidden files on POSIX (`ls` hides them by default — surprising the user). The strip happens BEFORE the pure-dots check, so `/..` → `` → sha256 fallback (which is correct for an unnamed asset). 3-line fix in `pickAssetFilename`.
+
+- **P3-2 — Skill `wiki-ingest` Phase E instructions now explain how to resolve the vault absolute path.** Pre-fix, the skill told Claude to call `download_page_assets({outputDir: "<vault-absolute-path>/.assets/..."})` without saying how to obtain `<vault-absolute-path>`. In workspace-bound mode (code repo associated with a separate vault), concatenating cwd with `wiki/...` produces a non-existent path — the well-known trap codified in the global CLAUDE.md. Added a 1-line resolution recipe at step 1: "Resolve via `list_vaults` and pick the entry's `path` field, then concatenate with `/wiki/.assets/<source-slug>/`."
+
+- **P3-3 — MCP tool `download_page_assets` now validates numeric arguments explicitly.** `src/tools/download-page-assets.mjs`. Pre-fix, passing `maxAssets: 0` silently produced an empty no-op (`extracted: 24, attempted: 0, downloaded: []`) — the caller couldn't tell whether the tool was broken or whether the cap was the cause. New explicit validators reject `maxAssets / concurrency` ≤ 0 or non-integer, and `minBytes / maxBytes` outside their valid ranges, with clear error messages including the offending value.
+
+### Added
+
+- **9 new regression tests** across `tests/asset-downloader.test.mjs` (5) and `tests/download-page-assets.test.mjs` (4):
+  - HARDENING P2-1 (file-as-dir guard): parent-missing rejection, file-not-dir rejection.
+  - HARDENING P2-2 (nested brackets): extractImageUrls + rewriteAssetUrls both accept `![alt with [nested]](url)`.
+  - HARDENING P3-1 (leading-dot trim): `...png`, `.png`, and `..` → safe filename / sha256 fallback.
+  - HARDENING P3-3 (numeric validation): `maxAssets: 0`, `maxAssets: -5`, `maxAssets: 1.5`, `concurrency: 0`.
+
+### Test count: **977/977 passing** (was 968 at v0.14.2; +9 hardening).
+
+### Backward compatibility
+
+- All fixes are additive guards on existing code paths. The only call-site change is the `_statFn` injection in `downloadAssets` — defaults to `fs.stat`, so existing callers keep working.
+- The numeric validators in the MCP tool are stricter than pre-fix — any client that was relying on `maxAssets: 0` to silently skip downloading will now see a clear error instead. This is a pinning-the-correct-behavior change, not a regression: nobody should be passing those values intentionally.
+- The nested-bracket regex fix is purely additive: pre-fix the affected images were INVISIBLE to the tool. Post-fix they're processed. No change for images that were already working.
+
 ## [0.14.2] — 2026-05-25 — Phase E · Asset download (obsidian-clipper port)
 
 Phase E of the [[obsidian-clipper]] borrowing roadmap. Adds **opt-in image asset preservation** to the ingestion pipeline so `wiki-ingest --save-assets` can mirror a page's images into the vault (typically `<vault>/wiki/.assets/<source-slug>/`) and rewrite the markdown body to reference local paths. Without this, ingested pages keep remote `![](url)` references that rot over time or become unreachable offline.

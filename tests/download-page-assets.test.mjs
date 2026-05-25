@@ -75,6 +75,37 @@ describe('download-page-assets — input validation', () => {
       /must be absolute/,
     );
   });
+
+  // v0.14.3 hardening (P3-3): explicit numeric validation. Pre-fix,
+  // maxAssets=0 silently produced an empty no-op the caller might
+  // think was broken behavior.
+  test('HARDENING P3-3: rejects maxAssets=0', async () => {
+    await assert.rejects(
+      () => handleDownloadPageAssets({ html: '<x>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, maxAssets: 0 }),
+      /maxAssets must be a positive integer/,
+    );
+  });
+
+  test('HARDENING P3-3: rejects negative maxAssets', async () => {
+    await assert.rejects(
+      () => handleDownloadPageAssets({ html: '<x>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, maxAssets: -5 }),
+      /maxAssets must be a positive integer/,
+    );
+  });
+
+  test('HARDENING P3-3: rejects non-integer maxAssets', async () => {
+    await assert.rejects(
+      () => handleDownloadPageAssets({ html: '<x>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, maxAssets: 1.5 }),
+      /maxAssets must be a positive integer/,
+    );
+  });
+
+  test('HARDENING P3-3: rejects concurrency=0 (same validator family)', async () => {
+    await assert.rejects(
+      () => handleDownloadPageAssets({ html: '<x>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, concurrency: 0 }),
+      /concurrency must be a positive integer/,
+    );
+  });
 });
 
 describe('download-page-assets — html branch end-to-end (no network, in-memory)', () => {

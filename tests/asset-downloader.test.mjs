@@ -158,6 +158,12 @@ function makeStubWrite() {
   return { writes, fn };
 }
 
+// v0.14.3 hardening: downloadAssets now stat-checks outputDir + parent.
+// Tests use fake paths, so we inject a stub that says "everything is a
+// directory and exists" so the guard doesn't reject them. Tests that
+// SPECIFICALLY exercise the guard pass their own _statFn.
+const stubStatAllDirs = async () => ({ isDirectory: () => true });
+
 test('downloadOne: happy path writes file and returns ok metadata', async () => {
   const stub = makeStubFetch({
     'https://x.io/a.png': { buffer: Buffer.alloc(2048, 0xff), contentType: 'image/png' },
@@ -229,7 +235,7 @@ test('downloadAssets: bulk + dedup filenames across batch', async () => {
   const r = await downloadAssets(
     ['https://x.io/a.png', 'https://y.io/a.png'],
     '/abs/out',
-    { _fetchFn: stub, _writeFn: writeFn, _mkdirFn: async () => undefined },
+    { _fetchFn: stub, _writeFn: writeFn, _mkdirFn: async () => undefined, _statFn: stubStatAllDirs },
   );
 
   assert.equal(r.downloaded.length, 2);
@@ -253,7 +259,7 @@ test('downloadAssets: mixed downloaded / skipped / errors', async () => {
   const r = await downloadAssets(
     ['https://x.io/ok.png', 'https://x.io/icon.svg', 'https://x.io/dead.png'],
     '/abs/out',
-    { _fetchFn: stub, _writeFn: writeFn, _mkdirFn: async () => undefined, concurrency: 2 },
+    { _fetchFn: stub, _writeFn: writeFn, _mkdirFn: async () => undefined, _statFn: stubStatAllDirs, concurrency: 2 },
   );
 
   assert.equal(r.downloaded.length, 1);
@@ -280,6 +286,7 @@ test('downloadAssets: concurrency cap is respected', async () => {
     _fetchFn: slowFetch,
     _writeFn: async () => undefined,
     _mkdirFn: async () => undefined,
+    _statFn: stubStatAllDirs,
     concurrency: 3,
   });
 
@@ -356,4 +363,85 @@ test('rewriteAssetUrls: trims trailing slash from localPathPrefix', () => {
     rewriteAssetUrls(md, urlMap, { localPathPrefix: '.assets/test///' }),
     '![a](.assets/test/a.png)',
   );
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.3 hardening — 4 negative regressions from /review+ on ddc6ecc
+// -----------------------------------------------------------------------------
+
+test('HARDENING P2-2: extractImageUrls handles nested brackets in markdown alt text', () => {
+  // Wikipedia-style alt `![Photo of [Eiffel tower]](url)` used to bail
+  // on the inner `[` because the pre-fix regex used a flat `[^\]]*` for
+  // the alt-text match. Now we accept one level of nesting.
+  const md = 'See ![Photo of [Eiffel tower] at dusk](https://x.io/eiffel.jpg) above.';
+  const urls = extractImageUrls(md, 'https://x.io/');
+  assert.deepEqual(urls, ['https://x.io/eiffel.jpg']);
+});
+
+test('HARDENING P2-2: rewriteAssetUrls also handles nested brackets', () => {
+  // The rewrite regex MUST be in sync with extractImageUrls — if extract
+  // accepts an image but rewrite doesn't, we'd leave a remote URL behind
+  // for an asset we already downloaded.
+  const md = 'See ![Photo of [Eiffel tower] at dusk](https://x.io/eiffel.jpg)';
+  const urlMap = new Map([['https://x.io/eiffel.jpg', 'eiffel.jpg']]);
+  const out = rewriteAssetUrls(md, urlMap, { localPathPrefix: '.assets/test' });
+  assert.equal(out, 'See ![Photo of [Eiffel tower] at dusk](.assets/test/eiffel.jpg)');
+});
+
+test('HARDENING P2-1: downloadAssets rejects when outputDir parent does not exist', async () => {
+  // Without the parent-exists guard, an MCP caller could pass
+  // `/etc/cron.d/whatever-they-want/` and mkdir-recursive would happily
+  // bootstrap arbitrary system directory trees. The guard ensures the
+  // parent is a real existing dir before any write happens.
+  const stubStatParentMissing = async (p) => {
+    if (p === '/abs/does-not-exist') throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    return { isDirectory: () => true };
+  };
+  await assert.rejects(
+    () =>
+      downloadAssets(['https://x.io/a.png'], '/abs/does-not-exist/sub', {
+        _fetchFn: makeStubFetch({}),
+        _writeFn: async () => undefined,
+        _mkdirFn: async () => undefined,
+        _statFn: stubStatParentMissing,
+      }),
+    /outputDir parent must exist/,
+  );
+});
+
+test('HARDENING P2-1: downloadAssets rejects when outputDir is a file (not a directory)', async () => {
+  // Belt-and-suspenders against the case where the mkdir-recursive
+  // succeeded because the path was a symlink, but the resulting target
+  // isn't actually a directory. The post-mkdir stat catches this.
+  const stubStatOutputIsFile = async (p) => {
+    if (p === '/abs/file-not-dir') return { isDirectory: () => false };
+    return { isDirectory: () => true };
+  };
+  await assert.rejects(
+    () =>
+      downloadAssets(['https://x.io/a.png'], '/abs/file-not-dir', {
+        _fetchFn: makeStubFetch({}),
+        _writeFn: async () => undefined,
+        _mkdirFn: async () => undefined,
+        _statFn: stubStatOutputIsFile,
+      }),
+    /outputDir exists but is not a directory/,
+  );
+});
+
+test('HARDENING P3-1: pickAssetFilename strips leading dots → no hidden files', () => {
+  // URL `/...png` used to yield filename `...png` (literal three dots),
+  // which is a hidden file on POSIX (`ls` hides it) and looks like
+  // path traversal. Same for `/.png` → `.png`. Both should now strip
+  // the leading dots; if nothing is left, fall back to sha256.
+  const r1 = pickAssetFilename('https://x.io/...png', Buffer.from('data'), 'image/png');
+  assert.equal(r1.startsWith('.'), false, `${r1} should not start with .`);
+  assert.match(r1, /\.png$/);
+
+  const r2 = pickAssetFilename('https://x.io/.png', Buffer.from('data'), 'image/png');
+  assert.equal(r2.startsWith('.'), false, `${r2} should not start with .`);
+
+  const r3 = pickAssetFilename('https://x.io/..', Buffer.from('data'), 'image/png');
+  // `..` after leading-dot strip → empty → sha256 fallback (16-char hex + ext)
+  assert.match(r3, /^[a-f0-9]{16}\.png$/);
 });

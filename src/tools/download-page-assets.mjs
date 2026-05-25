@@ -152,6 +152,27 @@ export async function handleDownloadPageAssets(args = {}) {
     throw new Error('download_page_assets: when passing `html`, you must also pass `baseUrl` for relative URL resolution');
   }
 
+  // v0.14.3 hardening (P3-3): explicit numeric validation. Pre-hardening,
+  // passing maxAssets=0 (or a negative number) silently produced an
+  // empty-list no-op — the caller saw `extracted: 24, attempted: 0,
+  // downloaded: []` and might think the tool was broken. Reject with a
+  // clear message instead. Same for non-numeric / NaN.
+  if (
+    args.maxAssets !== undefined &&
+    (!Number.isInteger(maxAssets) || maxAssets < 1)
+  ) {
+    throw new Error(`download_page_assets: maxAssets must be a positive integer, got: ${args.maxAssets}`);
+  }
+  if (args.concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
+    throw new Error(`download_page_assets: concurrency must be a positive integer, got: ${args.concurrency}`);
+  }
+  if (args.minBytes !== undefined && (!Number.isFinite(minBytes) || minBytes < 0)) {
+    throw new Error(`download_page_assets: minBytes must be a non-negative number, got: ${args.minBytes}`);
+  }
+  if (args.maxBytes !== undefined && (!Number.isFinite(maxBytes) || maxBytes < 1)) {
+    throw new Error(`download_page_assets: maxBytes must be a positive number, got: ${args.maxBytes}`);
+  }
+
   // Sandbox check — refuse writes outside MD_ALLOWED_PATHS when set.
   // assertPathAllowed throws with a clear message; we wrap it so the
   // tool prefix is in the error.
