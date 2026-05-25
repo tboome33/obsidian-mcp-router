@@ -8,6 +8,49 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.5] — 2026-05-25 — Phase F · Highlights persistence (obsidian-clipper port)
+
+Phase F of the [[obsidian-clipper]] borrowing roadmap. Adds **dual-format highlight serialization** so the `wiki-ingest` skill can preserve user-selected text spans as BOTH human-readable Obsidian `[!highlight]` callouts AND machine-readable frontmatter YAML array. The two views are kept in sync — frontmatter is the source of truth, callouts are presentation.
+
+This release is the **format layer only**. Manual input flow (the user pastes structured highlights into the ingest prompt) ships now. Automatic extraction (browser-extension overlay → bridge endpoint → re-hydration when opening a source page) stays deferred as Phase G — the format here is schema-compatible with obsidian-clipper so a future bridge round-trip is straightforward.
+
+### Added
+
+- **`src/helpers/highlights-format.mjs`** (NEW) — pure helper module, no deps. Five exported functions plus a frozen color list:
+  - `normalizeHighlight(raw)` — canonical-shape converter. Mandatory `text`, optional `color` (default `yellow`) / `note` / `xpath` / `offset_start` / `offset_end`. Stable id: prefers caller-supplied (must match `^[A-Za-z][A-Za-z0-9-]*$`, the Obsidian block-id shape), else generates `h-<sha256(text|xpath)[:8]>`. Same `(text, xpath)` → same id → idempotent re-ingestion.
+  - `renderCallout(highlight)` — emits an Obsidian `[!highlight] color=<X>` callout block. Multi-line text gets `> ` prefix per line, blank inner lines become bare `>` (Obsidian-paragraph-break-inside-callout). Trailing `> ^<id>` block anchor lets other notes link to the highlight via `[[<page>#^<id>]]`.
+  - `renderFrontmatterArray(highlights)` — emits the YAML `highlights:` array. Conservative YAML scalar quoting: bare unquoted only for the allowlist `[A-Za-z0-9_./- ]+` (no reserved indicators, no whitespace edges); everything else double-quoted with `\` `"` `\n` `\r` `\t` escapes. Round-trip safe.
+  - `serializeHighlights(rawArray)` — top-level wrapper. Returns `{normalized, calloutBlocks, frontmatterYaml}`. Empty/null/undefined input is safe (returns empty content + `highlights: []`).
+  - `parseHighlights(frontmatterValue)` — read-side. Coerces each entry through `normalizeHighlight` so partial hand-edits get the canonical shape back. Non-array input throws.
+  - `RECOGNIZED_COLORS` — frozen list of supported callout colors (`yellow`, `pink`, `blue`, `green`, `orange`, `purple`, `red`). Documentational only — we don't enforce.
+- **`tests/highlights-format.test.mjs`** (NEW, 33 tests). Covers: normalization defaults + edge cases (missing text throws, blank text throws, non-object input throws, trimmed text, stable id derivation, explicit id preservation, invalid id replacement, color lowercasing, integer offset coercion); callout rendering (single-line, multi-line with `> ` prefix per line, blank-line handling, note inclusion, color from highlight not hardcoded, id always at end); frontmatter array rendering (empty → `highlights: []`, full fields, multi-line text escape, double-quote + backslash escape, reserved-YAML-char quoting, multiple highlights); top-level serialize wrapper; round-trip parse; RECOGNIZED_COLORS frozenness.
+
+### Changed
+
+- **`skills/wiki-ingest/SKILL.md`** — new "Highlights persistence (Phase F, v0.14.4+)" section (6 instructions) explaining the dual-format flow:
+  1. Normalize input via `normalizeHighlight`.
+  2. Call `serializeHighlights(normalized)`.
+  3. Insert `## Highlights` H2 section before `## Sources` with the `calloutBlocks`.
+  4. Add `highlights:` to frontmatter with the YAML array.
+  5. Idempotence rule: existing frontmatter is source of truth — `parseHighlights → merge by id → re-serialize fully`. Don't append callouts manually.
+  6. Default is highlights-off — don't fabricate / auto-extract (browser-extension auto-extraction stays in [[obsidian-clipper]] section "Extension navigateur router-aware" as deferred Phase G/🔮).
+
+### Test count: **1011/1011 passing** (was 978 at v0.14.4; +33 from Phase F).
+
+### Backward compatibility
+
+- Phase F is opt-in via user-provided highlights. Existing ingestion flows without highlights are unchanged.
+- No new MCP tool — `wiki-ingest` consumes the helper directly. No public API surface added.
+- No npm dependencies. Pure Node + crypto for sha256.
+- Frontmatter schema (`highlights:` array shape) is compatible with obsidian-clipper's own format so a future round-trip (clipper export → router import OR vice-versa) preserves structure.
+
+### Deferred to Phase G (if bridge re-hydration demand surfaces)
+
+- **Bridge endpoint** `GET /highlights/render?vault=X&path=Y` that reads the frontmatter `highlights:` array and returns positioned HTML overlay using the stored `xpath` + `offset_start`/`offset_end`.
+- **Obsidian plugin layer** — inject the overlay when a source page opens so the highlights appear in-context, not just as callouts at the bottom.
+- **XPath compatibility tests** — validate the stored xpath round-trips across 5+ different source sites (browser DOM normalization varies).
+- **Browser-extension auto-extract** (🔮) — capture the user's selection in-browser and POST to the router, eliminating the manual paste flow.
+
 ## [0.14.4] — 2026-05-25 — `/review+` micro-hardening on v0.14.3 (P3-a + P3-b polish)
 
 Second-pass mini-/review+ on commit `dfb65be` found ZERO P1/P2 — fixes from v0.14.3 close the issues cleanly per direct execution probes (nested brackets work as documented, ReDoS-free, P2-1 stat guards correctly handle ENOENT/non-dir, etc.). Three P3 nits remained, two worth landing.

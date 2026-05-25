@@ -94,6 +94,15 @@ source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 5. If the manifest has non-empty `errors` (typically a few CDN images that 404'd or got blocked by a referrer check), mention this in the `## Summary` section as "N referenced images failed to mirror". Don't fail the ingestion — partial preservation is the point.
 6. **Default is `--save-assets=false`** — don't save assets when the user hasn't explicitly asked. The markdown will keep remote `![](url)` references, which Obsidian renders inline when the user has internet access (fine for most reading flows). Saving assets is for archival use cases (offline reading, source preservation, link-rot insurance).
 
+**Highlights persistence (Phase F, v0.14.4+)**: opt-in. When the user provides highlights — typically by pasting a structured list like `text="..." color=yellow note="..."` or supplying a JSON array — preserve them in dual format so they survive both as human-readable Obsidian callouts AND machine-readable frontmatter for future round-trip / re-hydration.
+
+1. **Normalize the input** via the helper `src/helpers/highlights-format.mjs::normalizeHighlight`. Each highlight needs `text` (mandatory); `color` defaults to `yellow`; `id` is generated from `sha256(text|xpath)` if missing (so re-ingesting the same page is idempotent — same content → same id). Other fields (`note`, `xpath`, `offset_start`, `offset_end`) are optional.
+2. **Call `serializeHighlights(normalized)`** — returns `{normalized, calloutBlocks, frontmatterYaml}`.
+3. **Insert a `## Highlights` H2 section** in the body, just before `## Sources`, with the `calloutBlocks` content. Each callout looks like `> [!highlight] color=<color>` followed by the quoted text and `> ^<id>` block anchor (so other notes can link to it via `[[<page>#^<id>]]`).
+4. **Add `highlights:` to the frontmatter** with the array `frontmatterYaml` produces — schema-compatible with obsidian-clipper for future ingestion round-trip.
+5. **Idempotence rule**: if the source page already has a `## Highlights` section AND a `highlights:` frontmatter array, treat the frontmatter as the source of truth. Use `parseHighlights(frontmatter.highlights)` to load existing entries, merge with new ones by `id` (dedupe via id), then re-serialize fully. Don't append callouts manually — re-render from the merged normalized array. This avoids divergence between the body and the frontmatter when users add highlights across multiple sessions.
+6. **Default is highlights-off** — don't fabricate or invent highlights when the user hasn't asked. This is an explicit-input feature, not an auto-extraction one (the browser-extension auto-extraction case is documented in [[obsidian-clipper]] section "Extension navigateur router-aware" as 🔮 deferred).
+
 **LaTeX preservation (Phase D, v0.13.10+)**: when `metadata.hasLatex === true`:
 1. Emit `has_latex: true` in frontmatter (so Obsidian's LaTeX plugin / KaTeX MathBlock renders it).
 2. In the body, **preserve all `$...$` and `$$...$$` blocks verbatim** — never reformat `$x^2$` as `x²`, never strip `$$\sum_n a_n$$`, never paraphrase a formula into prose.
