@@ -8,6 +8,37 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.0] — 2026-05-25 — Opt-in auto-update + version-sync script
+
+Closes the "skill updates never reach Nicolas's workspace until he runs `/plugin update`" gap. Two related changes:
+
+1. **`scripts/bump-version.mjs`** — new helper that bumps the version in all three files Claude Code's marketplace mechanism reads (`package.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` — both `metadata.version` and `plugins[0].version`) in one command, plus inserts a CHANGELOG stub. Idempotent (re-running on same version is a no-op), refuses to downgrade. Fixes the silent-drift bug where `package.json` was at v0.13.x for several releases but `plugin.json` + `marketplace.json` stayed at v0.12.7 — meaning `/plugin update` on downstream installs was a no-op even when a new version had shipped. Run as `npm run bump <new-version>` or `node scripts/bump-version.mjs <new-version>`.
+
+2. **`hooks/check-router-update.mjs` — opt-in auto-update mode** (env var `OBSIDIAN_ROUTER_AUTO_UPDATE=true`). When set + a newer version is detected on GitHub, the SessionStart hook replicates what `/plugin update` does internally: `git pull --ff-only` in the marketplace clone, copy the new version into `~/.claude/plugins/cache/.../<new-version>/`, `npm install --omit=dev`, update `installed_plugins.json` atomically, and rewrite pinned hook paths in `~/.claude/settings.json` (Claude Code does NOT do this rewrite on `/plugin update` — confirmed via docs: "When a plugin updates mid-session, hook commands keep using the previous version's path. Run `/reload-plugins` to switch."). After success, emits a "🆙 Auto-updated v… → v…, run `/reload-plugins` or restart" notice. Fails silently on any error (dev install, dirty marketplace, npm failure, missing `installed_plugins.json`, etc.) and falls back to the standard manual notice with the failure reason inline.
+
+### Added
+
+- **`scripts/bump-version.mjs`** (NEW, exported functions: `bumpAll`, `updateJsonVersion`, `insertChangelogStub`) — version-sync script with `--dry-run` and `--no-changelog` flags. CLI exits 0 on success / 1 on bad args or invalid semver / downgrade refusal.
+- **`src/helpers/plugin-auto-update.mjs`** (NEW, exported: `tryAutoUpdate`, `parseMarketplaceCachePath`, `rewriteSettingsHookPaths`) — pure-ish helpers (filesystem + subprocess) extracted from the hook so tests can drive them with fixtures + stubbed `gitRun` / `npmRun` runners.
+- **`tests/bump-version.test.mjs`** (NEW, 22 tests) — happy path, idempotency, downgrade refusal, invalid semver, desync handling (the actual production bug this script exists to fix), dry-run, CHANGELOG insertion + idempotency, fallback to `# Changelog` heading when `[Unreleased]` absent, malformed-file errors, CLI exit codes.
+- **`tests/plugin-auto-update.test.mjs`** (NEW, 21 tests) — `parseMarketplaceCachePath` matrix, full `tryAutoUpdate` happy path with fake `<HOME>/.claude/plugins/` tree + stubbed git/npm, each bail-out path (dev install, dirty marketplace, missing .git, version mismatch, npm failure, missing/malformed `installed_plugins.json`, nested `plugins:` schema, copy idempotency), `rewriteSettingsHookPaths` for both `/cache/.../<v>/` and `\cache\...\<v>\` variants, defensive array walking.
+- **`npm run bump <version>`** — convenience npm script alias for the bump-version CLI.
+- **`docs/how-to-update.md`** — new "Path C — Auto-update (opt-in)" section in both EN and FR sections, documenting the env var, the 5-step replication of `/plugin update`, the safety guards (skip on dev install / dirty / divergent / version mismatch / npm failure / missing `installed_plugins.json`), the one-session lag, and the `/reload-plugins` interaction.
+
+### Changed
+
+- **`.claude-plugin/plugin.json`** + **`.claude-plugin/marketplace.json`** — bumped from stale v0.12.7 (silently behind for 7 releases) to v0.14.0 via the new bump-version script. After this release, all 3 files stay in lock-step.
+- **`hooks/check-router-update.mjs`** — refactored to import `tryAutoUpdate` from `src/helpers/plugin-auto-update.mjs`. When `OBSIDIAN_ROUTER_AUTO_UPDATE` is set + an update is available, calls the helper before composing the notice; on success, emits the "auto-updated" notice instead of the manual one; on failure, falls back to the manual notice with the failure reason embedded.
+
+### Test count: **867/867 passing** (was 824 at v0.13.9 + ~21 from v0.13.10 LaTeX; +43 from the two new test files).
+
+### Backward compatibility
+
+- Auto-update is **opt-in via env var**. Users who don't set `OBSIDIAN_ROUTER_AUTO_UPDATE` see exactly the v0.13.x behavior (manual notice + `/plugin update`).
+- `bump-version.mjs` refuses to downgrade — accidentally typing a lower version errors out with a clear message instead of corrupting state.
+- The settings.json hook-path rewrite is best-effort: a failure (read error, parse error, write error) returns `changed: false` silently. The auto-update as a whole still reports success because the rest of `/plugin update`'s work has been done — the consequence of a missed rewrite is just that hooks keep firing from the old version dir until the user re-runs `setup-vault.mjs --install-hooks`.
+- Dev installs (npm link, repo checkouts outside `~/.claude/plugins/cache/`) detect themselves via `parseMarketplaceCachePath` and skip auto-update unconditionally. Roland's local dev workflow is unchanged.
+
 ## [0.13.10] — 2026-05-25 — Phase D · LaTeX preservation MVP (obsidian-clipper port)
 
 Phase D of the [[obsidian-clipper]] borrowing roadmap. Adds **LaTeX/math detection** to the ingestion pipeline so `wiki-ingest` can set `has_latex: true` in source-page frontmatter and instruct Claude to preserve `$...$` / `$$...$$` blocks verbatim instead of reformatting them to Unicode or stripping them. Without this, Wikipedia pages with MathML, blogs using KaTeX, and arxiv abstracts all lose their math during ingestion.

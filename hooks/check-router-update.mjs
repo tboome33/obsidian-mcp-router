@@ -28,6 +28,22 @@
  * wired in `~/.claude/settings.json`, it appends a 💡 tip listing the
  * new hook + the one-line command to activate it
  * (`setup-vault.mjs --install-hooks --select <name>`). Same opt-outs.
+ *
+ * ── v0.14.0: opt-in auto-update ────────────────────────────────────────
+ * Setting `OBSIDIAN_ROUTER_AUTO_UPDATE=true` (truthy) makes the hook
+ * apply the update automatically instead of just notifying. It mimics
+ * what `/plugin update` does: git-pull the marketplace clone, copy the
+ * new version into cache/, refresh installed_plugins.json, and rewrite
+ * any pinned hook paths in ~/.claude/settings.json. The user still has
+ * to run `/reload-plugins` (or restart) for the new code to take effect
+ * in the current session — that part Claude Code does not let us do
+ * from a hook. Fails silently and falls back to the manual notice on
+ * any error. Only runs against marketplace installs; dev installs
+ * (npm link or running from a checked-out repo outside the cache tree)
+ * are detected and skipped.
+ *
+ * Implementation lives in src/helpers/plugin-auto-update.mjs (pure
+ * helpers, testable without spawning this CLI).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -36,6 +52,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { compareSemver, parseSemver } from '../src/helpers/semver-compare.mjs';
+import { tryAutoUpdate } from '../src/helpers/plugin-auto-update.mjs';
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const PACKAGE_JSON_URL =
@@ -57,6 +74,8 @@ function isTruthy(value) {
 if (isTruthy(process.env.OBSIDIAN_ROUTER_NO_UPDATE_CHECK)) process.exit(0);
 if (process.env.OBSIDIAN_ROUTER_USER_ID) process.exit(0);
 
+const autoUpdateEnabled = isTruthy(process.env.OBSIDIAN_ROUTER_AUTO_UPDATE);
+
 // ─── Determine installed version ──────────────────────────────────────
 let installedVersion = null;
 try {
@@ -70,7 +89,8 @@ try {
 if (!installedVersion || !parseSemver(installedVersion)) process.exit(0);
 
 // ─── Cache file location ──────────────────────────────────────────────
-const cacheDir = path.join(os.homedir(), '.claude', 'obsidian-mcp-router');
+const homeDir = os.homedir();
+const cacheDir = path.join(homeDir, '.claude', 'obsidian-mcp-router');
 const cacheFile = path.join(cacheDir, '.last-version-check.json');
 
 let cached = null;
@@ -98,7 +118,7 @@ const currentHooks = listLocalHookBasenames();
 // is "wired" if any command contains its basename (case-sensitive —
 // settings.json paths are user-controlled and should be exact).
 function wiredHookBasenames() {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
+  const settingsPath = path.join(homeDir, '.claude', 'settings.json');
   let settings;
   try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
   catch { return new Set(); }
@@ -127,15 +147,6 @@ if (cached && typeof cached.checkedAt === 'number' && now - cached.checkedAt < C
 }
 
 // ─── Compute new-hooks tip (works offline; depends only on local state) ──
-//
-// `newHooks` = hooks present locally now but NOT in the cached snapshot
-// from the previous check (= hooks added by a router update since last
-// run). On first run (no snapshot), this is empty by design — we don't
-// tip about every hook on first activation.
-//
-// Then filter to NOT-YET-WIRED in ~/.claude/settings.json — if the user
-// already activated the hook (e.g. ran --install-hooks themselves), the
-// tip is noise.
 const cachedHooks = Array.isArray(cached?.snapshotHooks) ? cached.snapshotHooks : null;
 let tipNotice = null;
 if (cachedHooks !== null) {
@@ -173,7 +184,31 @@ const req = https.get(
         return;
       }
       const cmp = compareSemver(latestVersion, installedVersion);
-      const versionNotice = cmp > 0 ? composeNotice(installedVersion, latestVersion) : null;
+      const updateAvailable = cmp > 0;
+
+      let versionNotice = null;
+      if (updateAvailable) {
+        if (autoUpdateEnabled) {
+          // Try the full /plugin update sequence. On success we emit a
+          // different notice (no /plugin update instructions, just a
+          // /reload-plugins reminder). On failure we fall back to the
+          // standard manual notice with the failure reason inline.
+          const result = tryAutoUpdate({
+            installedVersion,
+            newVersion: latestVersion,
+            homeDir,
+            pluginRoot,
+          });
+          if (result.success) {
+            versionNotice = composeAutoUpdateSuccessNotice(installedVersion, latestVersion);
+          } else {
+            versionNotice = composeNotice(installedVersion, latestVersion, result.error || 'unknown');
+          }
+        } else {
+          versionNotice = composeNotice(installedVersion, latestVersion);
+        }
+      }
+
       const fullNotice = [versionNotice, tipNotice].filter(Boolean).join('') || null;
       persistCache({
         checkedAt: now,
@@ -208,12 +243,22 @@ function finishWithoutFetch() {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-function composeNotice(installed, latest) {
-  return [
+function composeNotice(installed, latest, autoUpdateFailureReason) {
+  const lines = [
     '',
     '<!-- obsidian-mcp-router update notice — please relay to the user on your first response -->',
     `📦 **obsidian-mcp-router v${latest} is available** (you have v${installed}).`,
     '',
+  ];
+  if (autoUpdateFailureReason) {
+    lines.push(
+      `⚠️  Auto-update was enabled (\`OBSIDIAN_ROUTER_AUTO_UPDATE=true\`) but bailed out:`,
+      `   ${autoUpdateFailureReason}`,
+      '   Falling back to manual update.',
+      '',
+    );
+  }
+  lines.push(
     'How to update:',
     `- Try: \`/plugin update obsidian-router@obsidian-mcp-router-marketplace\``,
     `- If \`/plugin\` is unavailable in your environment, see the manual update guide at`,
@@ -222,6 +267,29 @@ function composeNotice(installed, latest) {
     `Changelog: ${CHANGELOG_URL}`,
     '',
     'To disable this once-per-day update check: set env var `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true`.',
+    '',
+  );
+  return lines.join('\n');
+}
+
+function composeAutoUpdateSuccessNotice(installed, latest) {
+  return [
+    '',
+    '<!-- obsidian-mcp-router auto-update success — please relay to the user on your first response -->',
+    `🆙 **obsidian-mcp-router auto-updated v${installed} → v${latest}.**`,
+    '',
+    'New version is already installed (cache + installed_plugins.json + settings.json hook paths refreshed).',
+    'To activate it in this session, run:',
+    '',
+    '```',
+    '/reload-plugins',
+    '```',
+    '',
+    `New sessions will load v${latest} automatically — no action needed.`,
+    '',
+    `Changelog: ${CHANGELOG_URL}`,
+    '',
+    'To disable auto-update: unset `OBSIDIAN_ROUTER_AUTO_UPDATE` (or set it to false / 0 / no / off).',
     '',
   ].join('\n');
 }

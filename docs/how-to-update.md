@@ -6,13 +6,13 @@
 
 ## TL;DR
 
-Three ways to know about an update + two ways to apply it.
+Three ways to know about an update + three ways to apply it.
 
 | Discovery | Application |
 |---|---|
 | **Built-in update check** (since v0.10.3) — once per 24h on session start, a notice is surfaced if a newer version is available | **`/plugin update`** — Claude Code slash command, the one-liner path |
 | **Watch the GitHub repo** — `Watch → Custom → Releases` for email notifications | **Manual filesystem update** — for environments where `/plugin` is unavailable |
-| **Periodic blind check** — run `/plugin update obsidian-router@obsidian-mcp-router-marketplace` every now and then ||
+| **Periodic blind check** — run `/plugin update obsidian-router@obsidian-mcp-router-marketplace` every now and then | **Auto-update** (opt-in, since v0.14.0) — `OBSIDIAN_ROUTER_AUTO_UPDATE=true` and the next-session-start hook applies the update for you |
 
 ---
 
@@ -156,16 +156,56 @@ Pop-Location
 # (see fields listed in the bash recipe above)
 ```
 
+### Path C — Auto-update (opt-in, since v0.14.0)
+
+If you want updates applied automatically the next time you start a Claude Code session, set:
+
+```
+OBSIDIAN_ROUTER_AUTO_UPDATE=true
+```
+
+in your shell environment (or in the plugin env vars in `~/.claude/settings.json`). The next time the `check-router-update` SessionStart hook detects a newer version on GitHub, it does everything `/plugin update` does internally:
+
+1. `git pull --ff-only` in `~/.claude/plugins/marketplaces/obsidian-mcp-router-marketplace/`
+2. Copy the new version into `~/.claude/plugins/cache/obsidian-mcp-router-marketplace/obsidian-router/<new-version>/` (excluding `.git` and `node_modules`)
+3. `npm install --omit=dev` in the new cache dir
+4. Update `installed_plugins.json` (installPath, version, lastUpdated, gitCommitSha) atomically
+5. Rewrite any pinned hook paths in `~/.claude/settings.json` from `cache/.../<old-version>/` to `cache/.../<new-version>/`
+
+After it succeeds, the hook emits this notice instead of the manual one:
+
+```
+🆙 obsidian-mcp-router auto-updated v0.13.10 → v0.14.0.
+
+New version is already installed (cache + installed_plugins.json + settings.json hook paths refreshed).
+To activate it in this session, run:
+
+    /reload-plugins
+
+New sessions will load v0.14.0 automatically — no action needed.
+```
+
+`/reload-plugins` is documented Claude Code behavior: a plugin's hooks / MCP / LSP servers stay pinned to the previous version's path mid-session, so you need it once to pick up the new code without a full Claude Code restart.
+
+**Safety guards** — auto-update bails out (and falls back to the manual notice with the reason inline) if:
+- You're on a dev install (`npm link` or running from a checked-out repo) — the hook only touches marketplace caches
+- The marketplace clone is dirty (uncommitted edits) — we never obliterate local edits
+- `git pull --ff-only` would diverge — the marketplace was hand-mutated, refuse to clobber
+- The post-pull `package.json` version doesn't match what GitHub raw advertised (race condition / weird state)
+- `npm install` fails
+- `installed_plugins.json` is missing or doesn't have your plugin's entry
+
+**Opt-out** — unset `OBSIDIAN_ROUTER_AUTO_UPDATE` (or set it to `false` / `0` / `no` / `off`). You'll be back on the manual notice flow.
+
+**Limitation** — there's a one-session lag. The auto-update happens during session N's SessionStart hook, but Claude Code has already loaded the OLD plugin code into memory for that session. You either run `/reload-plugins` mid-session, or just wait until the next session start — the next session loads from the freshly-updated cache.
+
 ---
 
-## Why isn't this fully automatic?
+## Why was this previously not fully automatic?
 
-Honest answer: Claude Code's plugin system is young, and auto-apply was a design choice we (the plugin authors) don't control.
+Up to v0.13.x, application required user consent (the `/plugin update` invocation or the manual recipe). This is intentional in Claude Code: plugins can ship hooks, MCP servers, slash commands — auto-installing arbitrary code from a marketplace is a security footgun if it's the default. The notice told you it was there; you chose when to pull.
 
-- **Discovery** — v0.10.3+ ships the SessionStart hook to close the "I didn't know" gap.
-- **Application** — still requires user consent (the `/plugin update` invocation or the manual recipe). This is intentional in Claude Code: plugins can ship hooks, MCP servers, slash commands — auto-installing arbitrary code from a marketplace would be a security footgun. The notice tells you it's there; you choose when to pull.
-
-If/when Claude Code gains an opt-in "auto-update plugins" setting, the notice will be redundant and we'll deprecate it.
+v0.14.0 adds **opt-in** auto-update: you have to set the env var deliberately, which is your explicit consent to "yes, please run the same `/plugin update` steps for me, silently, every time there's a new version". If/when Claude Code adds a first-class "auto-update plugins" setting, the env var becomes redundant and we'll deprecate it.
 
 ---
 
@@ -201,13 +241,13 @@ It's not — the request times out after 3 seconds and the hook exits silently. 
 
 ## En bref
 
-Trois façons de savoir + deux façons d'appliquer.
+Trois façons de savoir + trois façons d'appliquer.
 
 | Découverte | Application |
 |---|---|
 | **Check d'update intégré** (depuis v0.10.3) — une fois par 24h au démarrage de session, une notice s'affiche si une nouvelle version est dispo | **`/plugin update`** — le slash command Claude Code, le path one-liner |
 | **Watch le repo GitHub** — `Watch → Custom → Releases` pour les notifs email | **Update manuel filesystem** — pour les environnements où `/plugin` n'est pas dispo |
-| **Check périodique à l'aveugle** — lance `/plugin update obsidian-router@obsidian-mcp-router-marketplace` de temps en temps ||
+| **Check périodique à l'aveugle** — lance `/plugin update obsidian-router@obsidian-mcp-router-marketplace` de temps en temps | **Auto-update** (opt-in, depuis v0.14.0) — `OBSIDIAN_ROUTER_AUTO_UPDATE=true` et le hook SessionStart applique l'update à ta place |
 
 ---
 
@@ -351,16 +391,56 @@ Pop-Location
 # (voir les champs listés dans la recette bash ci-dessus)
 ```
 
+### Path C — Auto-update (opt-in, depuis v0.14.0)
+
+Si tu veux que les updates soient appliquées automatiquement au prochain démarrage de session Claude Code, set :
+
+```
+OBSIDIAN_ROUTER_AUTO_UPDATE=true
+```
+
+dans ton env shell (ou dans les env vars du plugin dans `~/.claude/settings.json`). La prochaine fois que le hook SessionStart `check-router-update` détecte une nouvelle version sur GitHub, il fait exactement ce que fait `/plugin update` en interne :
+
+1. `git pull --ff-only` dans `~/.claude/plugins/marketplaces/obsidian-mcp-router-marketplace/`
+2. Copie la nouvelle version vers `~/.claude/plugins/cache/obsidian-mcp-router-marketplace/obsidian-router/<new-version>/` (en excluant `.git` et `node_modules`)
+3. `npm install --omit=dev` dans le nouveau dossier cache
+4. Update `installed_plugins.json` (installPath, version, lastUpdated, gitCommitSha) atomiquement
+5. Réécrit les paths de hooks pinned dans `~/.claude/settings.json` de `cache/.../<old-version>/` vers `cache/.../<new-version>/`
+
+Après succès, le hook émet cette notice à la place de la notice manuelle :
+
+```
+🆙 obsidian-mcp-router auto-updated v0.13.10 → v0.14.0.
+
+New version is already installed (cache + installed_plugins.json + settings.json hook paths refreshed).
+To activate it in this session, run:
+
+    /reload-plugins
+
+New sessions will load v0.14.0 automatically — no action needed.
+```
+
+`/reload-plugins` est un comportement documenté de Claude Code : les hooks / MCP / LSP servers d'un plugin restent pinned sur le path de la version précédente en mid-session, donc tu en as besoin une fois pour picker le nouveau code sans relancer entièrement Claude Code.
+
+**Garde-fous** — l'auto-update bail (et tombe sur la notice manuelle avec la raison inline) si :
+- Tu es sur un dev install (`npm link` ou repo checked-out) — le hook ne touche QUE les marketplace caches
+- Le clone marketplace est dirty (edits non-commitées) — on n'obliterate jamais des edits locaux
+- `git pull --ff-only` divergerait — le marketplace a été modifié à la main, refuse de clobber
+- Le `package.json` post-pull ne matche pas la version annoncée par GitHub raw (race condition / état bizarre)
+- `npm install` échoue
+- `installed_plugins.json` est missing ou n'a pas d'entry pour ton plugin
+
+**Opt-out** — unset `OBSIDIAN_ROUTER_AUTO_UPDATE` (ou set à `false` / `0` / `no` / `off`). Tu retombes sur le flow notice manuelle.
+
+**Limitation** — il y a un lag d'une session. L'auto-update se passe pendant le hook SessionStart de la session N, mais Claude Code a déjà chargé l'ANCIEN code du plugin en mémoire pour cette session-là. Soit tu lances `/reload-plugins` mid-session, soit tu attends juste le prochain démarrage — la session suivante charge depuis le cache fraîchement updaté.
+
 ---
 
-## Pourquoi pas full-auto ?
+## Pourquoi ce n'était pas full-auto avant ?
 
-Réponse honnête : le plugin system de Claude Code est jeune, et l'auto-apply est un choix de design que nous (les plugin authors) ne contrôlons pas.
+Jusqu'à v0.13.x, l'application requérait toujours le consentement user (l'invocation `/plugin update` ou la recette manuelle). C'était intentionnel côté Claude Code : les plugins peuvent ship des hooks, des serveurs MCP, des slash commands — auto-installer du code arbitraire depuis un marketplace serait un footgun sécurité si c'était le défaut. La notice te disait qu'elle était là ; tu choisissais quand pull.
 
-- **Découverte** — v0.10.3+ ship le hook SessionStart pour fermer le gap "je ne savais pas".
-- **Application** — requiert toujours le consentement user (l'invocation `/plugin update` ou la recette manuelle). C'est intentionnel côté Claude Code : les plugins peuvent ship des hooks, des serveurs MCP, des slash commands — auto-installer du code arbitraire depuis un marketplace serait un footgun sécurité. La notice te dit qu'elle est là ; tu choisis quand pull.
-
-Si/quand Claude Code gagne un setting opt-in "auto-update plugins", la notice deviendra redondante et on la déprécirera.
+v0.14.0 ajoute l'auto-update **opt-in** : tu dois set l'env var délibérément, ce qui est ton consentement explicite à "oui, lance les mêmes étapes `/plugin update` à ma place, silencieusement, à chaque nouvelle version". Si/quand Claude Code ajoute un setting first-class "auto-update plugins", l'env var devient redondante et on la déprécirera.
 
 ---
 
