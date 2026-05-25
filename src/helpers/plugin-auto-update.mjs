@@ -120,15 +120,31 @@ export function tryAutoUpdate({
 
   // 7. Create the new version cache dir and copy the marketplace
   //    content into it (excluding .git and node_modules).
+  //
+  //    Idempotence requires checking that an existing target actually
+  //    contains the new version — not just that the dir exists. A
+  //    previous run that crashed after mkdirSync but before cpSync
+  //    would leave an empty dir; the old "dir exists → skip copy"
+  //    branch would then run npm install against an empty dir and
+  //    fail opaquely. We re-copy unless package.json exists AND
+  //    already reports `newVersion`.
   const newCacheDir = path.join(
     homeDir, '.claude', 'plugins', 'cache', marketplace, plugin, newVersion,
   );
   try {
-    if (!fs.existsSync(newCacheDir)) {
+    const cachedPkgPath = path.join(newCacheDir, 'package.json');
+    let alreadyPopulated = false;
+    if (fs.existsSync(cachedPkgPath)) {
+      try {
+        const cachedPkg = JSON.parse(fs.readFileSync(cachedPkgPath, 'utf8'));
+        alreadyPopulated = cachedPkg.version === newVersion;
+      } catch { alreadyPopulated = false; }
+    }
+    if (!alreadyPopulated) {
       fs.mkdirSync(newCacheDir, { recursive: true });
       fs.cpSync(marketplaceDir, newCacheDir, {
         recursive: true,
-        force: false,
+        force: true,
         filter: (src) => {
           const base = path.basename(src);
           return base !== '.git' && base !== 'node_modules';
@@ -139,14 +155,39 @@ export function tryAutoUpdate({
     return { success: false, error: `copy to cache failed: ${err.message}` };
   }
 
-  // 8. npm install --omit=dev in the new cache dir
-  const npm = npmRun(['install', '--omit=dev', '--no-audit', '--no-fund'], {
+  // 8. npm install --omit=dev --ignore-scripts in the new cache dir.
+  //    --ignore-scripts is critical: without it, every auto-update would
+  //    run preinstall/install/postinstall lifecycle scripts from freshly
+  //    pulled upstream code (this repo declares `postinstall:
+  //    node scripts/install-markitdown.mjs`), in a silent SessionStart
+  //    hook, with full user privileges. That's a supply-chain footgun on
+  //    every release.
+  //
+  //    Trade-off: skipping postinstall means the new cache dir won't
+  //    have a `.venv/` provisioned for markitdown. resolveMarkitdownPath
+  //    (src/markdownify/utils.mjs) looks at `<projectRoot>/.venv` per
+  //    version, so users on the bundled venv (no MARKITDOWN_PATH set,
+  //    no global `markitdown` on PATH) will get ENOENT on
+  //    *_to_markdown tool calls after /reload-plugins. We detect that
+  //    case below and propagate `markitdownStatus` to the caller so
+  //    the success notice can include a one-liner fix. We do NOT
+  //    re-run install-markitdown.mjs inline — it takes 30-180s to
+  //    create the venv and pip-install ~100MB of wheels, which would
+  //    freeze the SessionStart hook.
+  const npm = npmRun(['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: newCacheDir,
     timeout: NPM_INSTALL_TIMEOUT_MS,
   });
   if (npm.status !== 0) {
     return { success: false, error: `npm install failed (exit ${npm.status})` };
   }
+
+  // Markitdown availability check (see comment above).
+  const markitdownStatus = detectMarkitdownStatus({
+    oldCacheDir: pluginRoot,
+    newCacheDir,
+    env: process.env,
+  });
 
   // 9. Update installed_plugins.json
   const installedPath = path.join(
@@ -162,14 +203,17 @@ export function tryAutoUpdate({
     return { success: false, error: 'installed_plugins.json malformed' };
   }
   const pluginKey = `${plugin}@${marketplace}`;
-  const entry = findInstalledEntry(installed, pluginKey);
-  if (!entry) {
+  const entries = findInstalledEntries(installed, pluginKey, pluginRoot);
+  if (entries.length === 0) {
     return { success: false, error: `no entry for ${pluginKey} in installed_plugins.json` };
   }
-  entry.installPath = newCacheDir;
-  entry.version = newVersion;
-  entry.lastUpdated = new Date().toISOString();
-  entry.gitCommitSha = newSha;
+  const nowIso = new Date().toISOString();
+  for (const entry of entries) {
+    entry.installPath = newCacheDir;
+    entry.version = newVersion;
+    entry.lastUpdated = nowIso;
+    entry.gitCommitSha = newSha;
+  }
   try {
     writeJsonAtomic(installedPath, installed);
   } catch (err) {
@@ -180,13 +224,50 @@ export function tryAutoUpdate({
   //     a failure here just means hooks keep firing from the old
   //     version dir until the user re-runs install-hooks.
   const settingsPath = path.join(homeDir, '.claude', 'settings.json');
-  rewriteSettingsHookPaths({
+  const settingsRewrite = rewriteSettingsHookPaths({
     settingsPath, marketplace, plugin,
     oldVersion: oldVersionFromPath,
     newVersion,
   });
 
-  return { success: true };
+  return { success: true, settingsRewrite, markitdownStatus };
+}
+
+/**
+ * Determine whether the user will lose access to markitdown after the
+ * auto-update activates (via /reload-plugins).
+ *
+ * Returns one of:
+ *   - 'ok'              — user has an override (MARKITDOWN_PATH set, or
+ *                         OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1 explicit opt-out),
+ *                         OR the new cache dir already has .venv (e.g. user
+ *                         pre-ran install-markitdown.mjs).
+ *   - 'will-break'      — old cache dir had a working .venv but new one
+ *                         doesn't, AND no override. The user's
+ *                         *_to_markdown tools will return ENOENT after
+ *                         /reload-plugins until they re-run
+ *                         install-markitdown.mjs.
+ *   - 'never-installed' — neither cache dir had a .venv and no override.
+ *                         The user wasn't using markitdown before; the
+ *                         update doesn't change anything.
+ *
+ * Pure: takes `env` as a parameter so tests can drive it without
+ * mutating process.env.
+ *
+ * Both override flags map to 'ok' so the auto-update success notice
+ * doesn't keep nagging users who have explicitly chosen not to use the
+ * bundled venv — matching what the notice itself promises.
+ */
+export function detectMarkitdownStatus({ oldCacheDir, newCacheDir, env }) {
+  const e = env || {};
+  if (e.MARKITDOWN_PATH && String(e.MARKITDOWN_PATH).trim() !== '') return 'ok';
+  if (String(e.OBSIDIAN_ROUTER_SKIP_MARKITDOWN || '') === '1') return 'ok';
+  const isWin = process.platform === 'win32';
+  const venvBinRel = path.join('.venv', isWin ? 'Scripts' : 'bin', `markitdown${isWin ? '.exe' : ''}`);
+  const newHasVenv = fs.existsSync(path.join(newCacheDir, venvBinRel));
+  if (newHasVenv) return 'ok';
+  const oldHasVenv = fs.existsSync(path.join(oldCacheDir, venvBinRel));
+  return oldHasVenv ? 'will-break' : 'never-installed';
 }
 
 /**
@@ -205,21 +286,70 @@ export function parseMarketplaceCachePath(pluginRoot, homeDir) {
 }
 
 /**
- * installed_plugins.json could be a flat map keyed by "<plugin>@<marketplace>"
- * OR nested under `plugins: { ... }`. We support both. Returns the
- * entry object (caller mutates in place) or null if not found.
+ * Locate every install entry to mutate for `pluginKey` in
+ * installed_plugins.json. Always returns an array (possibly empty) of
+ * objects that the caller mutates in place.
+ *
+ * Three schemas are supported:
+ *
+ *   v2 (current Claude Code): each `plugins[key]` value is an **array** of
+ *   scoped install entries — `[{ scope: "user", installPath, version, ... }, ...]`.
+ *   A single plugin can have multiple entries (e.g. a `scope: "project"`
+ *   install for one workspace plus a `scope: "user"` install). Claude
+ *   Code shares the on-disk cache by version, so two scopes can point at
+ *   the SAME `installPath` — both then need their version/installPath
+ *   refreshed when we move to the new cache dir. We return every entry
+ *   whose `installPath` resolves to `currentInstallPath`; if none match
+ *   but the array has exactly one entry we return that (legacy install
+ *   that has moved on disk).
+ *
+ *   v1 nested: `installed.plugins[key]` is a single object — returned as
+ *   a one-element array.
+ *
+ *   v1 flat: `installed[key]` is a single object — returned as a
+ *   one-element array.
+ *
+ * Why an array (even for v1): assigning properties onto an Array (the
+ * v2 raw value) is silently dropped by JSON.stringify. Returning the
+ * array elements explicitly is the safety mechanism.
  */
-function findInstalledEntry(installed, pluginKey) {
-  if (installed && typeof installed === 'object') {
-    if (installed[pluginKey] && typeof installed[pluginKey] === 'object') {
-      return installed[pluginKey];
+function findInstalledEntries(installed, pluginKey, currentInstallPath) {
+  if (!installed || typeof installed !== 'object') return [];
+
+  const candidates = [
+    installed.plugins && typeof installed.plugins === 'object' ? installed.plugins[pluginKey] : undefined,
+    installed[pluginKey],
+  ];
+
+  for (const value of candidates) {
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      const entries = pickScopedEntries(value, currentInstallPath);
+      if (entries.length > 0) return entries;
+      continue;
     }
-    if (installed.plugins && typeof installed.plugins === 'object'
-        && installed.plugins[pluginKey] && typeof installed.plugins[pluginKey] === 'object') {
-      return installed.plugins[pluginKey];
+    if (typeof value === 'object') {
+      return [value];
     }
   }
-  return null;
+  return [];
+}
+
+function pickScopedEntries(entries, currentInstallPath) {
+  if (entries.length === 0) return [];
+  if (currentInstallPath) {
+    const target = path.resolve(currentInstallPath);
+    const matches = entries.filter(
+      (e) => e && typeof e === 'object' && typeof e.installPath === 'string'
+        && path.resolve(e.installPath) === target,
+    );
+    if (matches.length > 0) return matches; // mutate ALL matches
+  }
+  // No path match — only safe to pick if the array has exactly one entry.
+  if (entries.length === 1 && entries[0] && typeof entries[0] === 'object') {
+    return [entries[0]];
+  }
+  return [];
 }
 
 /**
@@ -233,40 +363,44 @@ function writeJsonAtomic(filePath, data) {
 }
 
 /**
- * Walk `settings.json` and replace any string containing the old
- * cache-version segment with the new one. Handles both forward-slash
- * (POSIX + the convention setup-vault.mjs uses on Windows) and
- * backslash (manual Windows install).
+ * Walk `settings.json` and rewrite any string referencing the old
+ * cache-version segment to point at the new one. Separator-agnostic:
+ * matches forward-slash (POSIX, and the convention setup-vault.mjs
+ * uses on Windows), backslash (manual Windows install), and mixed
+ * (e.g. `C:\Users\u/.claude/plugins/cache/mp/pl/0.1.0/...`), in a
+ * single regex pass that preserves the surrounding separator style.
  *
- * Idempotent; silent on any error (caller doesn't need to know — a
- * failed rewrite just delays the hook switch by one update cycle).
+ * Returns `{ changed: boolean, settingsExists: boolean }`. Silent on
+ * write failure (returns `changed: false`), but callers can surface a
+ * warning to the user when `settingsExists: true` and `changed: false`
+ * despite an auto-update succeeding — that means hooks still point at
+ * the old version dir.
  */
 export function rewriteSettingsHookPaths({ settingsPath, marketplace, plugin, oldVersion, newVersion }) {
+  if (!fs.existsSync(settingsPath)) {
+    return { changed: false, settingsExists: false };
+  }
   let settings;
   try {
     settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   } catch {
-    return { changed: false };
+    return { changed: false, settingsExists: true };
   }
 
-  const variants = [
-    {
-      old: `/cache/${marketplace}/${plugin}/${oldVersion}/`,
-      neu: `/cache/${marketplace}/${plugin}/${newVersion}/`,
-    },
-    {
-      old: `\\cache\\${marketplace}\\${plugin}\\${oldVersion}\\`,
-      neu: `\\cache\\${marketplace}\\${plugin}\\${newVersion}\\`,
-    },
-  ];
-
-  function applyVariants(str) {
-    let out = str;
-    for (const { old, neu } of variants) {
-      if (out.includes(old)) out = out.split(old).join(neu);
-    }
-    return out;
-  }
+  // Match `[sep]+cache[sep]+marketplace[sep]+plugin[sep]+oldVersion`
+  // followed by a separator (so we don't accidentally rewrite a
+  // version that happens to be a prefix of another version directory).
+  // The `[sep]+` prefix accepts both `/` and `\` so mixed-separator
+  // paths are handled too. The captured `$1` keeps whatever separators
+  // were in the source, so we don't reformat the user's preferred style.
+  const sep = '[\\\\/]';
+  const versionRegex = new RegExp(
+    '(' + sep + '+cache' + sep + '+' + escapeRegexStrict(marketplace)
+    + sep + '+' + escapeRegexStrict(plugin) + sep + '+)'
+    + escapeRegexStrict(oldVersion)
+    + '(?=' + sep + ')',
+    'g',
+  );
 
   let changed = false;
   const visit = (obj) => {
@@ -274,7 +408,7 @@ export function rewriteSettingsHookPaths({ settingsPath, marketplace, plugin, ol
     if (Array.isArray(obj)) {
       for (let i = 0; i < obj.length; i++) {
         if (typeof obj[i] === 'string') {
-          const updated = applyVariants(obj[i]);
+          const updated = obj[i].replace(versionRegex, `$1${newVersion}`);
           if (updated !== obj[i]) { obj[i] = updated; changed = true; }
         } else {
           visit(obj[i]);
@@ -284,7 +418,7 @@ export function rewriteSettingsHookPaths({ settingsPath, marketplace, plugin, ol
     }
     for (const [k, v] of Object.entries(obj)) {
       if (typeof v === 'string') {
-        const updated = applyVariants(v);
+        const updated = v.replace(versionRegex, `$1${newVersion}`);
         if (updated !== v) { obj[k] = updated; changed = true; }
       } else {
         visit(v);
@@ -297,10 +431,14 @@ export function rewriteSettingsHookPaths({ settingsPath, marketplace, plugin, ol
     try {
       writeJsonAtomic(settingsPath, settings);
     } catch {
-      return { changed: false };
+      return { changed: false, settingsExists: true };
     }
   }
-  return { changed };
+  return { changed, settingsExists: true };
+}
+
+function escapeRegexStrict(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ─── Default subprocess runners (real git / npm) ──────────────────────

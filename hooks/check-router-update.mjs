@@ -200,7 +200,12 @@ const req = https.get(
             pluginRoot,
           });
           if (result.success) {
-            versionNotice = composeAutoUpdateSuccessNotice(installedVersion, latestVersion);
+            versionNotice = composeAutoUpdateSuccessNotice(
+              installedVersion,
+              latestVersion,
+              result.settingsRewrite,
+              result.markitdownStatus,
+            );
           } else {
             versionNotice = composeNotice(installedVersion, latestVersion, result.error || 'unknown');
           }
@@ -272,26 +277,83 @@ function composeNotice(installed, latest, autoUpdateFailureReason) {
   return lines.join('\n');
 }
 
-function composeAutoUpdateSuccessNotice(installed, latest) {
-  return [
+function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, markitdownStatus) {
+  // settingsRewrite: { changed: boolean, settingsExists: boolean } from
+  // rewriteSettingsHookPaths. When settings.json exists but nothing was
+  // rewritten, hooks may still be pinned to the old version dir — warn
+  // the user explicitly so they re-run install-hooks instead of silently
+  // running stale code.
+  //
+  // markitdownStatus: 'ok' | 'will-break' | 'never-installed' from
+  // detectMarkitdownStatus. Auto-update runs `npm install --ignore-scripts`
+  // for supply-chain safety, which means the new cache dir's .venv won't
+  // be created by `scripts/install-markitdown.mjs`. If the user was
+  // relying on the bundled venv (no MARKITDOWN_PATH override), their
+  // *_to_markdown tools will ENOENT after /reload-plugins. Warn + give
+  // them the one-liner to fix.
+  const rewriteSkipped =
+    settingsRewrite && settingsRewrite.settingsExists && !settingsRewrite.changed;
+  const lines = [
     '',
     '<!-- obsidian-mcp-router auto-update success — please relay to the user on your first response -->',
     `🆙 **obsidian-mcp-router auto-updated v${installed} → v${latest}.**`,
     '',
-    'New version is already installed (cache + installed_plugins.json + settings.json hook paths refreshed).',
-    'To activate it in this session, run:',
-    '',
+  ];
+  if (rewriteSkipped) {
+    // Important: setup-vault.mjs --install-hooks only ADDS missing hooks
+    // (matched by basename), it does NOT rewrite existing entries that
+    // still point at an old version dir. So the recovery flow is a 2-step
+    // manual one — remove the stale entries first, then re-run install.
+    lines.push(
+      'New version is installed (cache + installed_plugins.json refreshed).',
+      '⚠️  Hook paths in `~/.claude/settings.json` were **not** rewritten — they may still point at the old version.',
+      '   To fix: open `~/.claude/settings.json`, delete every entry whose `command` references',
+      `   \`/cache/obsidian-mcp-router-marketplace/obsidian-router/${installed}/hooks/...\`,`,
+      '   then re-add them via:',
+      '',
+      '```',
+      `node ~/.claude/plugins/cache/obsidian-mcp-router-marketplace/obsidian-router/${latest}/scripts/setup-vault.mjs --install-hooks`,
+      '```',
+      '',
+      '   Once done, activate the new version with:',
+      '',
+    );
+  } else {
+    lines.push(
+      'New version is already installed (cache + installed_plugins.json + settings.json hook paths refreshed).',
+      'To activate it in this session, run:',
+      '',
+    );
+  }
+  lines.push(
     '```',
     '/reload-plugins',
     '```',
     '',
+  );
+  if (markitdownStatus === 'will-break') {
+    lines.push(
+      '⚠️  **Markitdown needs to be re-installed for the new version.**',
+      '    Auto-update skips post-install scripts for safety, so the new cache directory has no Python venv.',
+      '    After `/reload-plugins`, any `*_to_markdown` tool will fail until you run:',
+      '',
+      '```',
+      `node ~/.claude/plugins/cache/obsidian-mcp-router-marketplace/obsidian-router/${latest}/scripts/install-markitdown.mjs`,
+      '```',
+      '',
+      '    Or set `MARKITDOWN_PATH` / `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` to silence this.',
+      '',
+    );
+  }
+  lines.push(
     `New sessions will load v${latest} automatically — no action needed.`,
     '',
     `Changelog: ${CHANGELOG_URL}`,
     '',
     'To disable auto-update: unset `OBSIDIAN_ROUTER_AUTO_UPDATE` (or set it to false / 0 / no / off).',
     '',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 /**

@@ -8,6 +8,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.1] — 2026-05-25 — `/review+` hardening pass on the v0.14.0 auto-update path
+
+Six review passes (Claude `Code Reviewer` agent + `codex review` CLI in parallel) on commit 5300e0d surfaced one silent BLOCKER, four IMPORTANT correctness/security findings, and one test-isolation gap. All fixed with regression tests pinning the behaviors.
+
+### Fixed
+
+- **BLOCKER — `installed_plugins.json` v2 array schema silently dropped mutations.** The current Claude Code schema is `plugins["<plugin>@<marketplace>"] = [{ scope, installPath, version, ... }, ...]` (array of scoped install entries, not a single object). The old `findInstalledEntry` returned the array; `entry.installPath = X` then attached non-index properties that `JSON.stringify` drops. Net effect: `tryAutoUpdate` reported success but `installed_plugins.json` stayed unchanged → Claude Code kept loading the old cache version after `/reload-plugins`. Renamed to `findInstalledEntries`, now matches every entry whose `installPath` resolves to the current cache dir (handles multi-scope user+project installs that share the same on-disk cache version) and refuses to guess when the array has multiple unrelated entries.
+- **BLOCKER — `npm install` ran `postinstall` from freshly-pulled upstream code.** This repo declares `postinstall: node scripts/install-markitdown.mjs`. Without `--ignore-scripts`, every auto-update silently executed arbitrary upstream lifecycle scripts from a SessionStart hook with the user's privileges — supply-chain footgun on every release. Now passes `--ignore-scripts`; the bundled Python venv that markitdown needs is detected separately (see next item) and surfaced to the user as a remediation tip.
+- **IMPORTANT — markitdown breakage detection after `--ignore-scripts`.** Skipping `postinstall` means the new cache dir gets no `.venv/`, and `resolveMarkitdownPath` (`src/markdownify/utils.mjs`) cascades from `<projectRoot>/.venv` to bare `markitdown` on PATH → ENOENT for users on the bundled venv. New helper `detectMarkitdownStatus` distinguishes `ok` / `will-break` / `never-installed` and honors both override flags (`MARKITDOWN_PATH` and `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`, matching what the notice promises). The success notice now includes a one-liner recovery command when `will-break`, instead of silently breaking the conversion tools after `/reload-plugins`.
+- **IMPORTANT — copy step skipped against an empty/corrupt cache dir.** Before: `if (!fs.existsSync(newCacheDir))` skipped the entire copy if a previous partial run had left an empty dir; `npm install` then ran against nothing and failed opaquely. Now: re-copies unless `package.json` exists AND already reports `newVersion`; uses `cpSync(..., { force: true })` so the repair actually overwrites stale leftovers.
+- **IMPORTANT — `rewriteSettingsHookPaths` ate its own result + missed mixed-separator paths.** Two issues: (a) caller discarded the `{changed}` return, so the user never knew when pinned hook paths weren't updated; (b) the two hardcoded separator variants (`/cache/...` and `\cache\...`) missed real-world mixed paths like `C:\Users\u/.claude/plugins/cache/mp/pl/0.1.0/...`. Now a single separator-agnostic regex (`[\\/]+`) handles all three styles, preserves the existing separator pattern via capture group, and uses a lookahead `(?=[\\/])` so versions that are prefixes of others (`0.1.0` vs `0.1.0-beta.1`) aren't accidentally rewritten. Result shape is now `{changed, settingsExists}`, propagated up to the success notice, which surfaces an honest 2-step remediation (delete stale entries → re-run `--install-hooks`) when the rewrite was skipped — because `--install-hooks` alone only appends missing hooks, it does NOT rewrite existing stale paths.
+- **NIT — test regex with no-op escape + unescaped dots.** `new RegExp(newCacheRel.replace(/\//g, '\\/'))` was a no-op (forward slashes don't need escaping in the RegExp constructor) and unescaped dots made the match looser than intended. Replaced with explicit `.includes()` assertions on both the new path AND the absence of the old path.
+- **NIT — markitdown integration tests leaked ambient env.** `tryAutoUpdate` hardcodes `process.env`, so a CI/dev machine with `MARKITDOWN_PATH` or `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` set would short-circuit those two tests to `ok`. Now isolated in a nested `describe` with `before`/`after` env save+restore.
+
+### Added (regression tests)
+
+18 new tests covering the fixes: v2-schema mutation persistence (3 cases including multi-scope-same-installPath), `--ignore-scripts` enforcement, partial-run cache-dir repair, mixed-separator paths + prefix-version isolation, `settingsExists` flag propagation, `detectMarkitdownStatus` for all 5 paths (override / new venv / will-break / never-installed / both override flags). Total test count: 904 → 922.
+
+### Deferred (filed for follow-up, not addressed in this pass)
+
+- Defense-in-depth path-traversal check on `parseMarketplaceCachePath` (unreachable in practice — `pluginRoot` always comes from `__dirname` of the hook).
+- `dryRun` write-then-restore in `bump-version.mjs` (sem-clean refactor: split helpers so disk writes only happen outside dry-run).
+- Synchronous auto-update inside the SessionStart hook can theoretically freeze for `NPM_INSTALL_TIMEOUT_MS` (180 s) on first-time installs of large dep trees — would need a "applying in background, pickup next session" architecture.
+
 ## [0.14.0] — 2026-05-25 — Opt-in auto-update + version-sync script
 
 Closes the "skill updates never reach Nicolas's workspace until he runs `/plugin update`" gap. Two related changes:
