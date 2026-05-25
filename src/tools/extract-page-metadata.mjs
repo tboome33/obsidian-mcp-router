@@ -42,7 +42,7 @@
 
 import { extractMetadata } from '../helpers/meta-extractor.mjs';
 import { safeFetchHtml } from '../helpers/safe-fetch-html.mjs';
-import { detectLatexInHtml } from '../helpers/latex-preserver.mjs';
+import { detectLatexInHtml, convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 
 export const TOOL_NAME = 'extract_page_metadata';
 
@@ -106,9 +106,25 @@ export async function handleExtractPageMetadata(args = {}) {
   // verbatim in the body instead of reformatting it to Unicode.
   const latex = detectLatexInHtml(resolvedHtml);
 
+  // Phase D.2 (v0.14.6+) — when MathML blocks are present, extract them as
+  // LaTeX source. The caller (wiki-ingest skill) can use the resulting
+  // `mathmlLatex` array to verify what equations the page contains, OR
+  // surface them in a `## Équations` section of the source page body. The
+  // actual in-place substitution happens earlier in the pipeline
+  // (webpageToMarkdown's pre-process transform), so the markdown body
+  // already has the equations inlined — this field is for audit + UI.
+  let mathmlLatex = [];
+  if (latex.signals.mathml > 0) {
+    const conv = convertMathmlBlocksInHtml(resolvedHtml);
+    mathmlLatex = conv.conversions
+      .filter((c) => c.converted)
+      .map((c) => ({ latex: c.latex, display: c.display }));
+  }
+
   return {
     ...metadata,
     hasLatex: latex.hasLatex,
     latexSignals: latex.signals,
+    mathmlLatex,
   };
 }

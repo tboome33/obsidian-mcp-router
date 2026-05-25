@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectLatexInHtml, detectLatexInMarkdown } from '../src/helpers/latex-preserver.mjs';
+import { detectLatexInHtml, detectLatexInMarkdown, convertMathmlBlocksInHtml } from '../src/helpers/latex-preserver.mjs';
 
 // -----------------------------------------------------------------------------
 // detectLatexInMarkdown
@@ -288,4 +288,106 @@ test('HARDENING P2-3: pathological input (50k unmatched <math> tokens) finishes 
   assert.ok(elapsed < 500, `pathological input should finish quickly; took ${elapsed}ms`);
   // Whatever the count, the function must return without hanging.
   assert.equal(typeof r.signals.mathml, 'number');
+});
+
+// -----------------------------------------------------------------------------
+// Phase D.2 (v0.14.6) — convertMathmlBlocksInHtml
+// -----------------------------------------------------------------------------
+
+test('convertMathmlBlocksInHtml: simple inline MathML → $latex$', () => {
+  const html = '<p>Soit <math><mrow><msup><mi>x</mi><mn>2</mn></msup><mo>+</mo><mi>y</mi></mrow></math> une fonction.</p>';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 1);
+  assert.equal(r.skipped, 0);
+  assert.match(r.html, /\$x\^\{2\} \+ y\$/);
+  assert.equal(r.conversions[0].display, 'inline');
+  assert.equal(r.conversions[0].converted, true);
+});
+
+test('convertMathmlBlocksInHtml: display="block" MathML → $$latex$$', () => {
+  const html = '<p>Formule centrée :</p><math display="block"><mfrac><mn>1</mn><mn>2</mn></mfrac></math><p>QED</p>';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 1);
+  assert.equal(r.conversions[0].display, 'block');
+  // $$ block math, content \frac{1}{2}
+  assert.match(r.html, /\$\$\\frac\{1\}\{2\}\$\$/);
+});
+
+test('convertMathmlBlocksInHtml: multiple <math> blocks all converted', () => {
+  const html =
+    '<p><math><mi>a</mi></math></p><p><math display="block"><mi>b</mi></math></p><p><math><mi>c</mi></math></p>';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 3);
+  assert.equal(r.conversions.length, 3);
+  assert.equal(r.conversions[1].display, 'block');
+});
+
+test('convertMathmlBlocksInHtml: empty conversion result → left in place', () => {
+  // Empty <math> (no real content) — the lib returns "" so we leave the
+  // original tags untouched rather than emit broken `$$$$`.
+  const html = '<p>Before <math></math> after</p>';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 0);
+  assert.equal(r.skipped, 1);
+  assert.match(r.html, /<math><\/math>/);
+});
+
+test('convertMathmlBlocksInHtml: no <math> in input → returns html unchanged', () => {
+  const html = '<p>Plain text, no math here at all.</p>';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 0);
+  assert.equal(r.skipped, 0);
+  assert.equal(r.html, html);
+  assert.equal(r.conversions.length, 0);
+});
+
+test('convertMathmlBlocksInHtml: empty/null input safe', () => {
+  assert.equal(convertMathmlBlocksInHtml('').count, 0);
+  assert.equal(convertMathmlBlocksInHtml(null).count, 0);
+  assert.equal(convertMathmlBlocksInHtml(undefined).count, 0);
+});
+
+test('convertMathmlBlocksInHtml: unclosed <math> tag → skipped silently', () => {
+  // No closing </math> in the bounded forward-scan range → block is
+  // skipped entirely. The unclosed tag remains in the output but doesn't
+  // raise an exception.
+  const html = '<p>Page truncated mid-equation: <math><mi>x</mi> and no close';
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 0);
+  assert.equal(r.skipped, 0); // not "skipped" in our accounting — never matched as a complete block
+  assert.equal(r.conversions.length, 0);
+});
+
+test('convertMathmlBlocksInHtml: HARDENING — 50k <math> open tokens without close finishes quickly', () => {
+  // Same pathological input as the detectLatexInHtml hardening test.
+  // The bounded forward-scan (100 KiB max per block) keeps this linear.
+  const adversarial = '<math '.repeat(50000) + '<p>plain</p>';
+  const start = Date.now();
+  const r = convertMathmlBlocksInHtml(adversarial);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 1000, `pathological input should finish quickly; took ${elapsed}ms`);
+  assert.equal(r.count, 0);
+});
+
+test('convertMathmlBlocksInHtml: Wikipedia-style integration — equation + surrounding text preserved', () => {
+  // Realistic-ish snippet from a Wikipedia article. The LaTeX equation
+  // should appear inline in the converted HTML, and the surrounding
+  // prose should be untouched.
+  const html = `
+    <p>The characteristic equation</p>
+    <dl><dd><math display="block" xmlns="http://www.w3.org/1998/Math/MathML">
+      <mrow><mo>det</mo><mo>(</mo><mi>A</mi><mo>-</mo><mi>λ</mi><mi>I</mi><mo>)</mo></mrow>
+    </math></dd></dl>
+    <p>is solved for λ.</p>
+  `;
+  const r = convertMathmlBlocksInHtml(html);
+  assert.equal(r.count, 1);
+  assert.equal(r.conversions[0].display, 'block');
+  // Outside text intact
+  assert.match(r.html, /The characteristic equation/);
+  assert.match(r.html, /is solved for λ\./);
+  // LaTeX form contains det( ... ) — exact LaTeX depends on the lib
+  // (some emit \det, some emit `\mathrm{det}`), so we just verify a $$
+  // block with some content arrived.
+  assert.match(r.html, /\$\$[^$]+\$\$/);
 });

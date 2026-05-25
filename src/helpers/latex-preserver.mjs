@@ -1,9 +1,11 @@
 /**
- * LaTeX detection helpers for the ingestion pipeline. Detects whether a page
- * contains math content the user will want to preserve verbatim (so Claude
- * doesn't reformat `$x^2$` as `x²` or strip `$$\sum$$` blocks).
+ * LaTeX detection + conversion helpers for the ingestion pipeline. Detects
+ * whether a page contains math content the user wants to preserve verbatim
+ * (so Claude doesn't reformat `$x^2$` as `x²` or strip `$$\sum$$` blocks)
+ * AND, for Wikipedia-style MathML blocks, converts them to LaTeX source so
+ * the equations survive markitdown's HTML→markdown conversion.
  *
- * Two complementary detectors:
+ * Three functions:
  *
  *   1. **`detectLatexInHtml(html)`** — runs on raw HTML BEFORE markdown
  *      conversion. Looks for MathML (`<math>` tags), KaTeX/MathJax script
@@ -16,25 +18,28 @@
  *      heuristics to filter out false positives (currency: `$5.99`, prose:
  *      "the cost is $5", code blocks).
  *
- * Both return a structured object with `hasLatex: bool` plus signal counts so
- * the caller can decide policy (e.g. wiki-ingest setting `has_latex: true`
- * frontmatter only when at least one strong signal is present).
+ *   3. **`convertMathmlBlocksInHtml(html)`** (v0.14.6, Phase D.2) — finds
+ *      every `<math>...</math>` block in the HTML, runs each through the
+ *      `mathml-to-latex` lib, and replaces them in-place with `$$LaTeX$$`
+ *      (when `display="block"` or implied block by Wikipedia conventions)
+ *      or `$LaTeX$` (inline). The returned HTML is safe to feed to
+ *      markitdown — the equations now survive the conversion as dollar-
+ *      delimited LaTeX strings instead of being stripped along with the
+ *      `<math>` tags.
  *
- * **What this MVP does NOT do** (deferred to Phase D.2 if user demand):
- *   - MathML → LaTeX conversion (would need `mathml-to-latex` npm dep)
- *   - Equation image substitution (need to walk `<img alt="$..."` patterns)
- *   - Markdown post-processing to re-inject dropped LaTeX
- *
- * The MVP is detection-only because the wiki-ingest skill is the consumer:
- * if `has_latex: true` is set in frontmatter, the skill instructs Claude to
- * preserve `$...$` / `$$...$$` verbatim in the body, which is the 80% case.
- * MathML/image equations are a 20% case (Wikipedia, arxiv) that needs more
- * infrastructure.
+ * Both detection functions return `{hasLatex: bool, ...}` so wiki-ingest can
+ * set `has_latex: true` frontmatter when at least one strong signal is
+ * present. The conversion function returns `{html, conversions, count}` so
+ * callers can both substitute (use the modified HTML) and audit (see what
+ * LaTeX was extracted).
  *
  * Inspired by obsidian-clipper's math handling (MIT). Our scope is narrower
  * because Claude does the body composition — we only need to flag the
- * presence so Claude knows not to reformat.
+ * presence + convert when applicable so Claude doesn't lose information
+ * during markdown conversion.
  */
+
+import { MathMLToLaTeX } from 'mathml-to-latex';
 
 // -----------------------------------------------------------------------------
 // HTML detection — runs before markdown conversion
@@ -279,4 +284,132 @@ function stripFencedCode(md) {
   // already-stripped region.
   out = out.replace(/^[ \t]{0,3}(?:`{3,}|~{3,})[\s\S]*$/m, '');
   return out;
+}
+
+// -----------------------------------------------------------------------------
+// MathML → LaTeX conversion (Phase D.2, v0.14.6)
+// -----------------------------------------------------------------------------
+
+/**
+ * Convert every `<math>...</math>` block in an HTML string to dollar-
+ * delimited LaTeX, replacing in-place. Intended to be called BEFORE feeding
+ * HTML to markitdown (or any other HTML→markdown converter), so the
+ * equations survive the conversion as text strings that LaTeX-Suite and
+ * KaTeX-style Obsidian renderers can pick up.
+ *
+ * Conversion strategy:
+ *   - **Display mode** detection: a `<math>` block becomes `$$...$$` (centered
+ *     block equation) if it carries `display="block"`, OR if it's the sole
+ *     non-whitespace content of its enclosing block element (heuristic for
+ *     Wikipedia's `<dl><dd><math>...</math></dd></dl>` pattern). Otherwise
+ *     it becomes `$...$` (inline).
+ *   - **Empty conversion**: if `mathml-to-latex` returns an empty string
+ *     (malformed MathML, unsupported elements), we skip the substitution
+ *     and leave the original `<math>` tags untouched. Better to surface
+ *     the conversion failure than emit empty `$$$$` blocks that look broken.
+ *   - **Bounded match**: we use the v0.13.11 hardening pattern — match
+ *     `<math>` open tags via a non-backtracking regex, then for each one
+ *     find the matching `</math>` close via a bounded forward scan. This
+ *     prevents the quadratic backtracking the lazy `[\s\S]*?` would suffer
+ *     on pathological input (50k unmatched `<math ` tokens went from
+ *     1900ms → 1.8ms after the v0.13.11 fix).
+ *
+ * What's NOT done (acknowledged limits):
+ *   - `<math/>` self-closing form is rare in practice and carries no inner
+ *     content to convert; we don't touch it (the detect function above
+ *     counts it for the `mathml` signal, which is enough).
+ *   - We don't try to be clever about positioning. The replacement happens
+ *     exactly where the `<math>` block lived in the HTML; markitdown then
+ *     places that dollar string wherever the surrounding text lands in
+ *     markdown. Good enough for Wikipedia's typical inline-math style;
+ *     can produce slightly awkward placement on heavily-nested HTML.
+ *
+ * @param {string} html — raw HTML containing zero or more `<math>` blocks
+ * @returns {{
+ *   html: string,           // HTML with <math> blocks replaced by $LaTeX$ / $$LaTeX$$
+ *   count: number,          // number of blocks successfully converted (non-empty result)
+ *   skipped: number,        // <math> blocks whose conversion produced an empty string
+ *   conversions: Array<{    // detail of each conversion (for audit / surface)
+ *     mathml: string,       // original <math>…</math> source
+ *     latex: string,        // converted LaTeX (may be empty string for skipped)
+ *     display: 'block'|'inline',
+ *     converted: boolean,   // false if the lib returned empty (left in-place)
+ *   }>,
+ * }}
+ */
+export function convertMathmlBlocksInHtml(html) {
+  const safe = String(html || '').slice(0, 5 * 1024 * 1024);
+  const conversions = [];
+  let count = 0;
+  let skipped = 0;
+
+  // Find every `<math>` block: open-tag regex first (non-backtracking),
+  // then for each open we forward-scan for the matching `</math>` close
+  // within a bounded distance (100 KiB — Wikipedia's largest equations
+  // are ~10 KiB so this is generous but safe).
+  //
+  // We collect (openIndex, closeIndex, displayAttr) tuples first, then
+  // do the replacement in REVERSE order so the indexes stay valid as the
+  // string mutates.
+  const blocks = [];
+  const openRe = /<math\b([^>]*)>/gi;
+  let openMatch;
+  while ((openMatch = openRe.exec(safe)) !== null) {
+    const openTagStart = openMatch.index;
+    const openTagEnd = openRe.lastIndex;
+    const openAttrs = openMatch[1] || '';
+
+    // Bounded forward scan for </math>. We index from openTagEnd, limit
+    // to MAX_MATH_SPAN, then look for the literal string. Cheap and safe.
+    const MAX_MATH_SPAN = 102400;
+    const searchSlice = safe.slice(openTagEnd, openTagEnd + MAX_MATH_SPAN);
+    const closeRel = searchSlice.search(/<\/math\s*>/i);
+    if (closeRel === -1) continue; // unclosed <math> — skip silently
+    const closeStart = openTagEnd + closeRel;
+    const closeEnd = closeStart + searchSlice.slice(closeRel).match(/<\/math\s*>/i)[0].length;
+
+    // Detect display mode. `display="block"` is the standard. Wikipedia
+    // also emits `display="inline"`. Anything else (unset, "true", etc.)
+    // we treat as inline by default.
+    const displayMatch = openAttrs.match(/\bdisplay\s*=\s*["']?(\w+)/i);
+    const display = displayMatch && displayMatch[1].toLowerCase() === 'block' ? 'block' : 'inline';
+
+    blocks.push({ openTagStart, closeEnd, display });
+  }
+
+  // No blocks → return early to keep the common case fast.
+  if (blocks.length === 0) {
+    return { html: safe, count: 0, skipped: 0, conversions: [] };
+  }
+
+  // Replace in REVERSE order so earlier indexes don't shift.
+  let out = safe;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const { openTagStart, closeEnd, display } = blocks[i];
+    const mathmlSrc = out.slice(openTagStart, closeEnd);
+
+    let latex;
+    try {
+      latex = MathMLToLaTeX.convert(mathmlSrc) || '';
+    } catch {
+      latex = ''; // defensive: the lib usually returns '' instead of throwing, but guard anyway
+    }
+
+    const converted = latex.trim().length > 0;
+    conversions.unshift({ mathml: mathmlSrc, latex, display, converted });
+
+    if (!converted) {
+      // Leave the original <math> in place — emitting empty `$$$$` would
+      // look broken in the markdown output. The `mathml` signal in
+      // detectLatexInHtml still flags the page as math-bearing.
+      skipped += 1;
+      continue;
+    }
+
+    const wrapper = display === 'block' ? `\n\n$$${latex}$$\n\n` : `$${latex}$`;
+    out = out.slice(0, openTagStart) + wrapper + out.slice(closeEnd);
+    count += 1;
+  }
+
+  return { html: out, count, skipped, conversions };
 }

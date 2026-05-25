@@ -63,7 +63,7 @@ const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
  * Returns `{ text }` on success. Throws a wrapped `Error` on failure — the
  * message is safe to forward as-is to the MCP client.
  */
-export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_ROOT } = {}) {
+export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_ROOT, transformContent } = {}) {
   let inputPath;
   let isTemporary = false;
 
@@ -74,7 +74,22 @@ export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_
       // Stream the body with a byte budget instead of `response.arrayBuffer()`,
       // which would buffer the entire response into memory before we get a
       // chance to look at its size. merged_bug_001 from /ultrareview.
-      const content = await readBodyWithCap(response, MAX_URL_BODY_BYTES, url);
+      let content = await readBodyWithCap(response, MAX_URL_BODY_BYTES, url);
+
+      // v0.14.6 (Phase D.2) — optional `transformContent(buffer, {url, extension}) →
+      // Promise<Buffer|string>` hook lets the caller mutate the fetched body
+      // before it lands in the temp file that markitdown converts. Use case:
+      // pre-process HTML to convert `<math>` MathML blocks to `$$LaTeX$$`
+      // dollar-delimited strings so equations survive the HTML→markdown step.
+      // The transform must return the same byte sequence (or a modified one);
+      // strings are coerced to UTF-8 Buffers. No-op if not provided.
+      if (typeof transformContent === 'function') {
+        const transformed = await transformContent(content, { url, extension });
+        if (transformed != null) {
+          content = Buffer.isBuffer(transformed) ? transformed : Buffer.from(String(transformed), 'utf-8');
+        }
+      }
+
       inputPath = await saveToTempFile(content, extension);
       isTemporary = true;
     } else if (filePath) {

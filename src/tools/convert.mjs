@@ -21,6 +21,7 @@
  *   stay useful for ingestion.
  */
 import { toMarkdown, fromRepo } from '../markdownify/markitdown.mjs';
+import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 
 function assertString(value, fieldName) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -40,10 +41,39 @@ async function convertFile(filepath) {
   return text;
 }
 
-async function convertUrl(url) {
+async function convertUrl(url, opts = {}) {
   assertString(url, 'url');
-  const { text } = await toMarkdown({ url });
+  const { text } = await toMarkdown({ url, ...opts });
   return text;
+}
+
+/**
+ * v0.14.6 (Phase D.2) — when a webpage contains `<math>` MathML blocks
+ * (typical of Wikipedia and a few math-heavy blogs), we pre-process the
+ * fetched HTML to convert each `<math>` block to `$LaTeX$` / `$$LaTeX$$`
+ * dollar-delimited strings BEFORE markitdown sees it. Without this
+ * pre-processing, markitdown strips `<math>` tags along with their
+ * content during HTML→markdown conversion, and the equations vanish from
+ * the output.
+ *
+ * The transform is a no-op on pages without `<math>` blocks (convertMathml
+ * returns the HTML unchanged when count === 0), so this is safe to apply
+ * unconditionally on every URL. Cost is one extra regex scan of the body.
+ *
+ * Buffer encoding: we decode the fetched bytes as UTF-8, run the transform,
+ * and return the modified string (which markitdown.mjs's `toMarkdown` will
+ * re-encode to UTF-8 for the temp file). Non-HTML responses (PDFs, images,
+ * etc. — markitdown also handles those via this same code path) decode to
+ * gibberish but the regex finds no `<math>` so they're returned unchanged.
+ */
+function mathPreservingTransform(buffer) {
+  const html = buffer.toString('utf-8');
+  const { html: transformed, count } = convertMathmlBlocksInHtml(html);
+  // count === 0 means no <math> blocks were found OR none could be
+  // converted; in either case the helper returns the input unchanged.
+  // We could return buffer directly here, but returning the string lets
+  // the markitdown.mjs hook handle the re-encoding uniformly.
+  return count > 0 ? transformed : null; // null = "don't replace, keep original buffer"
 }
 
 /* ---------- URL-input tools (YouTube, Bing, generic webpage) ---------- */
@@ -57,7 +87,7 @@ export async function bingSearchToMarkdown(_registry, { url } = {}) {
 }
 
 export async function webpageToMarkdown(_registry, { url } = {}) {
-  return convertUrl(url);
+  return convertUrl(url, { transformContent: mathPreservingTransform });
 }
 
 /* ---------- File-input tools (binary formats) ---------- */

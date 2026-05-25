@@ -8,6 +8,64 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.6] — 2026-05-25 — Phase D.2 · MathML → LaTeX conversion (Wikipedia equations now survive)
+
+Closes the deferred Phase D.2 from v0.13.10: MathML `<math>...</math>` blocks in fetched HTML are now **converted to dollar-delimited LaTeX BEFORE markitdown runs**, so Wikipedia equations, arxiv abstracts with rendered formulas, and any math-heavy page with native MathML now survive the HTML→markdown conversion as inline `$LaTeX$` or block `$$LaTeX$$` strings.
+
+Previous behavior (v0.13.10 detection-only): `has_latex: true` was set in frontmatter, but the actual equations were stripped by markitdown along with the `<math>` tags. The skill had to tell Claude "the original page contains rendered equations" without being able to surface them.
+
+New behavior: the equations are inlined in the markdown body as text. LaTeX-Suite, KaTeX, MathJax, and any standard Obsidian math renderer can pick them up natively. No more "equations vanished during ingestion" — Wikipedia is now first-class.
+
+### Added
+
+- **`npm install mathml-to-latex@^1.5.0`** — pure JavaScript MathML→LaTeX converter, MIT, ~635 KiB unpacked. One transitive dep (`@xmldom/xmldom`). Stable lib (10 releases since 2020), API is a single `MathMLToLaTeX.convert(mathmlString) → string`.
+- **`convertMathmlBlocksInHtml(html)` in `src/helpers/latex-preserver.mjs`** — pure helper:
+  - Finds every `<math>...</math>` block via non-backtracking open-tag scan + bounded forward search for `</math>` (max 100 KiB span per block — matches the v0.13.11 hardening pattern that took pathological input from 1900 ms → 1.8 ms).
+  - For each block, calls `MathMLToLaTeX.convert(mathmlSrc)` and replaces in-place:
+    - `display="block"` → `\n\n$$<latex>$$\n\n` (centered equation, blank lines around for markdown safety)
+    - default (inline / no display) → `$<latex>$` (inline math)
+  - Skips blocks where the lib returns an empty string (malformed MathML, unsupported elements) — leaves the original `<math>` tags untouched rather than emit broken `$$$$`.
+  - Returns `{html, count, skipped, conversions: [{mathml, latex, display, converted}]}` for both substitution (use the modified HTML) and audit (inspect what was extracted).
+  - Replacement runs in reverse-index order so earlier offsets stay valid during string mutation.
+- **`tests/latex-preserver.test.mjs`** — **+9 new tests** for the converter:
+  - Simple inline `<math>` → `$x^{2} + y$`
+  - `display="block"` `<math>` → `$$\frac{1}{2}$$`
+  - Multiple blocks all converted (3 blocks, mixed inline/block)
+  - Empty conversion result → original `<math>` left in place
+  - No `<math>` in input → HTML returned unchanged (fast path)
+  - Empty / null / undefined input safe (no throw)
+  - Unclosed `<math>` (page truncated mid-equation) → skipped silently
+  - **HARDENING perf test**: 50k unmatched `<math ` tokens finish in < 1000 ms (typically < 200 ms)
+  - Wikipedia-style integration test: surrounding prose preserved, equation inlined
+
+### Changed
+
+- **`src/markdownify/markitdown.mjs::toMarkdown`** — new optional `transformContent(buffer, {url, extension}) → Promise<Buffer|string|null>` parameter. When provided, the callback runs on the fetched response body before it lands in the temp file that markitdown converts. Returning `null` means "no change, use original buffer" (the no-op path stays cheap). String returns are coerced to UTF-8 Buffers. The hook is opt-in — existing callers see no behavior change.
+- **`src/tools/convert.mjs::webpageToMarkdown`** — now passes a `mathPreservingTransform` callback to `toMarkdown`. The transform decodes the fetched HTML as UTF-8, runs `convertMathmlBlocksInHtml`, and returns the modified HTML when at least one MathML block was successfully converted (else returns `null` for the no-op fast path). Pages without `<math>` blocks pay only a regex scan cost (no behavioral change).
+- **`src/tools/extract-page-metadata.mjs`** — handler now exposes `mathmlLatex: [{latex, display}]` in its response when MathML blocks are present. Lets the wiki-ingest skill spot-check the conversion OR surface the extracted equations as a `## Équations` section. When no MathML present, `mathmlLatex: []` (consistent shape, easy to test for).
+- **`skills/wiki-ingest/SKILL.md`** — Phase D section updated:
+  - Removed instruction "mention that the original page contains rendered equations" (no longer needed — equations are now in the markdown body).
+  - Added instruction explaining the new auto-conversion: preserve `$LaTeX$` / `$$LaTeX$$` strings in the body verbatim like any other math.
+  - Added pointer to the new `mathmlLatex` audit field for callers that want to verify the conversion.
+
+### Test count: **1020/1020 passing** (was 1011 at v0.14.5; +9 Phase D.2).
+
+### Backward compatibility
+
+- The new dep `mathml-to-latex` is purely additive. No existing API changes shape; `webpageToMarkdown` continues to return the same markdown string (just now with equations preserved).
+- The `transformContent` hook is opt-in; existing `toMarkdown` callers without the parameter behave identically to before.
+- `extract_page_metadata` adds a new field `mathmlLatex` (always present, defaults to `[]`). Pre-existing fields are unchanged.
+- Pages without `<math>` blocks: no behavior change. The transform is a no-op for them (single regex scan, returns null = "use original buffer").
+- The skill update is instructional — no fanout to existing source pages required.
+
+### Phase D status update
+
+Phase D is now **complete end-to-end**:
+- v0.13.10 — Detection (`has_latex` frontmatter flag) ✅
+- v0.14.6 — MathML conversion (equations in body) ✅
+
+Equation image substitution (`<img alt="$..."` patterns from legacy Wikipedia / Pandoc HTML) remains deferred — rare enough in modern content to wait for a concrete trigger.
+
 ## [0.14.5] — 2026-05-25 — Phase F · Highlights persistence (obsidian-clipper port)
 
 Phase F of the [[obsidian-clipper]] borrowing roadmap. Adds **dual-format highlight serialization** so the `wiki-ingest` skill can preserve user-selected text spans as BOTH human-readable Obsidian `[!highlight]` callouts AND machine-readable frontmatter YAML array. The two views are kept in sync — frontmatter is the source of truth, callouts are presentation.
