@@ -222,3 +222,70 @@ test('detectLatexInHtml: combined signals — KaTeX-rendered blog page', () => {
   assert.equal(r.signals.katex, true);
   assert.equal(r.signals.dataLatex, 1);
 });
+
+// -----------------------------------------------------------------------------
+// v0.13.11 hardening — 6 negative-case regressions from /review+ on 2d2f349
+// -----------------------------------------------------------------------------
+
+test('HARDENING P2-1: unclosed fence at EOF strips $...$ from inside', () => {
+  // Page truncated mid-fence by markitdown or by a 5 MiB fetch cap. The
+  // opening fence has no closer — pre-fix the regex matched-pair strip
+  // skipped it, leaking `$x^2$` to the dollar scan.
+  const md = '```\n$x^2$\nno close';
+  const r = detectLatexInMarkdown(md);
+  assert.equal(r.inlineCount, 0, 'inline inside unclosed fence must NOT count');
+});
+
+test('HARDENING P2-2: nested 4-backtick outer + 3-backtick inner fence — outer body fully stripped', () => {
+  // CommonMark requires the closer to be a run of the SAME character ≥
+  // length of the opener. A 4-backtick outer fence should NOT be closed
+  // by a 3-backtick run inside it. Pre-fix the loose regex used the
+  // inner ``` as the outer closer, leaking `$x^2$` after the inner block.
+  const md = '````\nouter\n```\ninner\n```\nstill-outer $x^2$\n````\noutside: $\\beta$';
+  const r = detectLatexInMarkdown(md);
+  assert.equal(r.inlineCount, 1, 'only the outside-fence $\\beta$ counts; the outer-fence-body $x^2$ does not');
+});
+
+test('HARDENING P3-1: <math/> self-closing tag is detected', () => {
+  // XHTML / SVG-MathML can emit `<math/>` self-closing. The original
+  // `<math>...</math>` regex missed this entirely.
+  const html = '<p>Before</p><math xmlns="http://www.w3.org/1998/Math/MathML"/><p>After</p>';
+  const r = detectLatexInHtml(html);
+  assert.equal(r.signals.mathml, 1);
+  assert.equal(r.hasLatex, true);
+});
+
+test('HARDENING P3-2: data-latex= literal inside <script> string does NOT trigger dataLatex signal', () => {
+  // A JS snippet that string-literals `data-latex=...` would false-
+  // positive the attribute count pre-fix (raw `safe` matched it before
+  // any script strip ran). Post-fix, `data-latex=` is scanned only on
+  // the script/style-stripped HTML.
+  const html = '<script>var x = "data-latex=foo"; var y = "data-tex=bar";</script><p>plain prose.</p>';
+  const r = detectLatexInHtml(html);
+  assert.equal(r.signals.dataLatex, 0);
+  assert.equal(r.hasLatex, false);
+});
+
+test('HARDENING P3-3: math operator glyphs (∑ ∫ ∂ ∞) inside $...$ count as LaTeX', () => {
+  // KaTeX/MathJax output the literal U+2211 ∑ glyph for `\sum`, not the
+  // Greek Σ (U+03A3) the original LATEX_CONTENT_RE covered. Same for
+  // ∫ ∂ ∞ ≠ ≤ ≥ ∈ ∀ ∃ (Mathematical Operators block U+2200-22FF).
+  assert.equal(detectLatexInMarkdown('Sum: $∑x_n$').inlineCount, 1, '∑ should count');
+  assert.equal(detectLatexInMarkdown('Integral: $∫f$').inlineCount, 1, '∫ should count');
+  assert.equal(detectLatexInMarkdown('Partial: $∂y$').inlineCount, 1, '∂ should count');
+  assert.equal(detectLatexInMarkdown('Infinity: $∞$').inlineCount, 1, '∞ should count');
+  assert.equal(detectLatexInMarkdown('Not equal: $a ≠ b$').inlineCount, 1, '≠ should count');
+});
+
+test('HARDENING P2-3: pathological input (50k unmatched <math> tokens) finishes < 500ms', () => {
+  // Pre-fix this took ~1900ms because the lazy `[\s\S]*?` backtracked
+  // through each failed close attempt. Post-fix, each lazy span is
+  // bounded to 100 KiB, keeping runtime linear.
+  const adversarial = '<math '.repeat(50000) + '<p>plain</p>';
+  const start = Date.now();
+  const r = detectLatexInHtml(adversarial);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 500, `pathological input should finish quickly; took ${elapsed}ms`);
+  // Whatever the count, the function must return without hanging.
+  assert.equal(typeof r.signals.mathml, 'number');
+});

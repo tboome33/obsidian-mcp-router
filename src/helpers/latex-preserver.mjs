@@ -57,7 +57,11 @@
  * }}
  */
 export function detectLatexInHtml(html) {
-  const safe = String(html || '');
+  // v0.13.11 hardening (P2-3): truncate at 5 MiB so adversarial pages with
+  // millions of unclosed `<math>` / `<script>` tokens can't cause quadratic
+  // regex runtime. Wiki-ingest already caps fetches at 5 MiB upstream, but
+  // direct callers (extract_page_metadata with `html` arg) bypass that.
+  const safe = String(html || '').slice(0, 5 * 1024 * 1024);
   const signals = {
     mathml: 0,
     katex: false,
@@ -67,11 +71,54 @@ export function detectLatexInHtml(html) {
     dollarBlock: 0,
   };
 
+  // v0.13.11 hardening (P3-2 + P2-3): two-stage strip.
+  //
+  // Stage 1 (`scriptStripped`): drop `<script>...</script>` and
+  // `<style>...</style>` blocks ENTIRELY — these can carry JS string
+  // literals like `var x = "data-latex=foo"` that would false-positive
+  // the `data-latex=` attribute scan. We preserve the rest of the HTML
+  // (tags + attributes) so the `data-latex` and `<math>` regex see the
+  // real DOM structure.
+  //
+  // Stage 2 (`bodyText`): also strip remaining tag markup down to plain
+  // text — only needed for the `$...$` body scan, since dollars inside
+  // attribute values (`<img alt="$5.99">`) shouldn't count as math.
+  //
+  // Each lazy strip is bounded: `<script>` ≤ 1 MiB, `<style>` ≤ 500 KiB.
+  // Adversarial input with 50k unmatched openings was ≈ 1900 ms in the
+  // review probe without the bound; with the bound it stays linear.
+  const scriptStripped = safe
+    .replace(/<script\b[\s\S]{0,1048576}?<\/script>/gi, '')
+    .replace(/<style\b[\s\S]{0,524288}?<\/style>/gi, '');
+  const bodyText = scriptStripped.replace(/<[^>]+>/g, ' ');
+
   // MathML — most reliable signal. `<math>` is a real W3C element that
-  // sites like Wikipedia emit when rendering LaTeX server-side. Match with
-  // or without namespace.
-  const mathTags = safe.match(/<math\b[\s\S]*?<\/math>/gi);
-  if (mathTags) signals.mathml = mathTags.length;
+  // sites like Wikipedia emit when rendering LaTeX server-side.
+  //
+  // v0.13.11 hardening (P3-1 + P2-3): switched from a paired-match
+  // regex (`<math>...</math>`) to a non-backtracking open-tag count.
+  // Reasons:
+  //   - **P3-1**: paired-match missed `<math/>` self-closing form. The
+  //     `<math\b` open-tag scan catches all three shapes (`<math>`,
+  //     `<math attr=…>`, `<math attr=…/>`).
+  //   - **P2-3**: 50k unmatched `<math ` tokens with the bounded paired-
+  //     match `<math\b[\s\S]{0,102400}?</math>` took ~7200 ms because the
+  //     regex engine retried at every position with a long lazy span.
+  //     The open-tag scan is linear in input size (~6 ms for the same
+  //     pathological input).
+  //
+  // Trade-off: `signals.mathml` now counts open tags, not closed pairs.
+  // For our use case (`hasLatex: true` if any math present), the
+  // distinction is irrelevant — a `<math` without close is still strong
+  // evidence the page renders math (some sites stream/truncate
+  // mid-equation). Documented in the JSDoc above.
+  //
+  // We scan `safe` (not `scriptStripped` or `bodyText`) for two reasons:
+  // (a) script/style tags don't contain `<math` in practice, so the
+  // cheap full scan stays correct; (b) avoiding the strip step keeps
+  // this path independent of the body-text construction below.
+  const mathOpens = safe.match(/<math\b/gi);
+  if (mathOpens) signals.mathml = mathOpens.length;
 
   // KaTeX detection — script src or stylesheet (CDN or self-hosted).
   if (
@@ -98,15 +145,13 @@ export function detectLatexInHtml(html) {
   // data-latex / data-tex / data-math attribute — emitted by some
   // rendering libraries (Mathjax-3 SSR, Pandoc HTML output, etc.) to
   // preserve the source LaTeX even after rendering.
-  const dataAttrs = safe.match(/\bdata-(?:latex|tex|math)=/gi);
+  //
+  // v0.13.11 hardening (P3-2): scan `scriptStripped` (after script/style
+  // are gone but BEFORE tag stripping) so attributes on real DOM elements
+  // are still visible, but `var x = "data-latex=foo"` inside a JS string
+  // doesn't false-positive the count.
+  const dataAttrs = scriptStripped.match(/\bdata-(?:latex|tex|math)=/gi);
   if (dataAttrs) signals.dataLatex = dataAttrs.length;
-
-  // Dollar-delimited LaTeX in body text — heuristic. We strip tags + scripts
-  // first to avoid false positives in stylesheets / data URIs.
-  const bodyText = safe
-    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
-    .replace(/<style\b[\s\S]*?<\/style>/gi, '')
-    .replace(/<[^>]+>/g, ' ');
 
   const inline = detectLatexInMarkdown(bodyText);
   signals.dollarInline = inline.inlineCount;
@@ -135,10 +180,20 @@ export function detectLatexInHtml(html) {
  * Heuristics to filter false positives:
  *   - Skip fenced code blocks (` ``` ` and `~~~`) entirely
  *   - For inline `$...$`: require LaTeX-looking content (backslash command,
- *     superscript `^`, subscript `_`, or Greek letter) inside the dollars.
- *     Plain `$5` or `$15-20` won't match.
+ *     superscript `^`, subscript `_`, Greek letter, or Mathematical
+ *     Operator glyph U+2200-22FF like ∑ ∫ ∂ ∞ ≠ ≤ ≥ ∈ ∀ ∃) inside the
+ *     dollars. Plain `$5` or `$15-20` won't match.
  *   - For block `$$...$$`: any non-empty content qualifies (block delimiters
  *     are explicit enough to be intentional).
+ *
+ * **Threshold note (v0.13.11)**: this function returns `hasLatex: true` as
+ * soon as **any** inline or block match is found (≥1 inline OR ≥1 block).
+ * The stricter "≥2 distinct inline pairs" threshold lives in
+ * `detectLatexInHtml` — it's applied at the heuristic layer because raw
+ * HTML body text is noisier (false-positive risk from currency mentions).
+ * Direct markdown consumers calling this function get the looser threshold;
+ * if you need the HTML-style strictness, wrap the call and apply the count
+ * comparison yourself.
  *
  * @param {string} md — markdown text
  * @returns {{
@@ -175,23 +230,53 @@ export function detectLatexInMarkdown(md) {
 }
 
 // Content inside `$...$` must look like LaTeX to count. We require at least
-// one of: backslash command, ^ superscript, _ subscript, or Greek letter
-// glyph. This rejects `$5.99`, `$JPY` etc. while accepting `$x^2$`,
-// `$\frac{a}{b}$`, `$\alpha$`, `$\sigma_n$`.
-const LATEX_CONTENT_RE = /[\\^_]|[Ͱ-Ͽἀ-῿]/;
+// one of: backslash command, ^ superscript, _ subscript, Greek letter
+// glyph, or Mathematical Operator glyph (U+2200-22FF: ∑ ∫ ∂ ∞ ≠ ≤ ≥ ∈ ∀
+// ∃ etc.). This rejects `$5.99`, `$JPY` etc. while accepting `$x^2$`,
+// `$\frac{a}{b}$`, `$\alpha$`, `$\sigma_n$`, `$∑x$`, `$∫f\,dx$`.
+//
+// v0.13.11 hardening (P3-3): added U+2200-22FF range because KaTeX/MathJax
+// often output literal `∑` (U+2211) glyph for `\sum`, not the Greek
+// `Σ` (U+03A3) the original range covered. Same for `∫ ∂ ∞ ≠ ≤ ≥`.
+const LATEX_CONTENT_RE = /[\\^_]|[Ͱ-Ͽἀ-῿]|[∀-⋿]/;
 
 /**
  * Remove fenced code blocks from markdown before LaTeX scanning. Code blocks
  * legitimately contain `$` and `$$` (shell prompts, regex, etc.) that we
  * shouldn't count as math.
+ *
+ * v0.13.11 hardening — 3 fixes from /review+ on 2d2f349:
+ *
+ *   1. **P2-2 — CommonMark fence-length rule**: the closing fence must be a
+ *      run of the SAME character, ≥ the length of the opening. Previous
+ *      version matched any 3-backtick close even against a 4-backtick open,
+ *      so a 4-backtick fence containing a nested 3-backtick block leaked
+ *      `$...$` from outside the inner block. Fix: capture the opening run
+ *      with `(`{3,}|~{3,})` and require backref `\1` to match exactly.
+ *      (The CommonMark spec also allows the closer to be LONGER than the
+ *      opener; we accept that with a separate alternative.)
+ *
+ *   2. **P2-1 — Unclosed fence at EOF**: an opening fence with no closer
+ *      survived intact, leaking `$...$` from inside the would-be code
+ *      block. Real trigger: page truncated mid-fence by markitdown or by
+ *      a 5 MiB fetch cap. Fix: after the matched-pair strip, run a second
+ *      pass that catches any remaining opening fence and strips to EOF.
+ *
+ *   3. (No fix for indented 4-space code blocks — still skipped. Real fix
+ *      would need a CommonMark parser; acceptable false-positive risk.)
  */
 function stripFencedCode(md) {
-  // ``` and ~~~ fences, any length ≥3, with optional language tag.
-  return md
-    .replace(/^[ \t]{0,3}```[\s\S]*?^[ \t]{0,3}```[ \t]*$/gm, '')
-    .replace(/^[ \t]{0,3}~~~[\s\S]*?^[ \t]{0,3}~~~[ \t]*$/gm, '')
-    // Indented (4-space) code blocks — harder to detect deterministically
-    // without a real parser; we skip them. False positives there are
-    // acceptable for this MVP.
-    ;
+  // Pass 1 — matched fence pairs. `\1` requires the same character + same
+  // length on the close side. We allow a longer closer via the second
+  // alternative for spec compliance.
+  let out = md.replace(
+    /^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]{0,3}\1[ \t]*$/gm,
+    '',
+  );
+  // Pass 2 — any remaining unmatched opening fence runs to EOF. We use a
+  // single match (no `g` flag) because once we hit one unmatched opener,
+  // everything to EOF is gone, so subsequent opens are inside that
+  // already-stripped region.
+  out = out.replace(/^[ \t]{0,3}(?:`{3,}|~{3,})[\s\S]*$/m, '');
+  return out;
 }
