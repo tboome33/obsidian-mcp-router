@@ -429,6 +429,46 @@ test('HARDENING P2-1: downloadAssets rejects when outputDir is a file (not a dir
   );
 });
 
+test('HARDENING P3-b (v0.14.4): extract and rewrite regexes stay in lock-step on shared fixtures', () => {
+  // The two regexes for `![alt](url)` matching MUST accept the same set
+  // of inputs. If a future hand-edit changes only one (extractImageUrls
+  // OR rewriteAssetUrls) the drift goes silently undetected: we'd
+  // either extract images we can't rewrite (leaving stale remote URLs
+  // for downloaded assets) or rewrite images we never extracted (a
+  // no-op since urlMap wouldn't contain the URL).
+  //
+  // This test pins the contract: every URL extractImageUrls returns
+  // for a fixture MUST also be reachable by rewriteAssetUrls when given
+  // a matching urlMap. Add new edge cases here as they come up.
+  const fixtures = [
+    '![simple](https://x.io/a.png)',
+    '![](https://x.io/empty-alt.png)',
+    '![multi word alt](https://x.io/b.png)',
+    '![alt with [nested] brackets](https://x.io/nested.png)',
+    '![Photo of [Eiffel tower] at dusk](https://x.io/eiffel.jpg)',
+    '![alt](https://x.io/with-title.png "Title")',
+    '![[wikilink-style alt]](https://x.io/wiki.png)',
+  ];
+
+  for (const md of fixtures) {
+    const extracted = extractImageUrls(md, 'https://x.io/');
+    if (extracted.length === 0) continue; // some fixtures might legitimately yield no URLs
+    const urlMap = new Map(extracted.map((u) => [u, 'LOCAL']));
+    const rewritten = rewriteAssetUrls(md, urlMap, { localPathPrefix: 'p' });
+
+    for (const url of extracted) {
+      assert.ok(
+        !rewritten.includes(url),
+        `extract returned ${url} for fixture "${md}" but rewrite left it unchanged — regexes drifted`,
+      );
+      assert.ok(
+        rewritten.includes('p/LOCAL'),
+        `rewrite produced ${rewritten} which doesn't contain the expected local path "p/LOCAL"`,
+      );
+    }
+  }
+});
+
 test('HARDENING P3-1: pickAssetFilename strips leading dots → no hidden files', () => {
   // URL `/...png` used to yield filename `...png` (literal three dots),
   // which is a hidden file on POSIX (`ls` hides it) and looks like

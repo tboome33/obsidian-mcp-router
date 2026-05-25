@@ -8,6 +8,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.4] — 2026-05-25 — `/review+` micro-hardening on v0.14.3 (P3-a + P3-b polish)
+
+Second-pass mini-/review+ on commit `dfb65be` found ZERO P1/P2 — fixes from v0.14.3 close the issues cleanly per direct execution probes (nested brackets work as documented, ReDoS-free, P2-1 stat guards correctly handle ENOENT/non-dir, etc.). Three P3 nits remained, two worth landing.
+
+### Changed
+
+- **P3-a — `downloadAssets` JSDoc now documents `_statFn`.** `src/helpers/asset-downloader.mjs`. The injection seam was added in v0.14.3 and used in tests, but the `@param` block didn't list it. Future contributors might miss the test-stub pattern. Added: `@param {Function} [opts._statFn]` with explanation of the parent-exists + isDirectory() guards it backs.
+
+### Added
+
+- **P3-b — Shared-fixture lock-step regression test pins extract / rewrite regex parity.** `tests/asset-downloader.test.mjs`. The two markdown `![alt](url)` matchers (one in `extractImageUrls`, one in `rewriteAssetUrls`) MUST accept the same set of inputs — otherwise a future edit to only one would leave stale remote URLs for downloaded assets, or rewrite URLs we never extracted. New test loops 7 fixtures (simple alt, empty alt, multi-word, nested brackets, double-nested alt, with-title, wikilink-style) through extract → build map → rewrite, asserts every extracted URL is gone from the rewritten output. Catches drift in either regex automatically.
+
+### Skipped (acknowledged NIT)
+
+- **P3-c — `Number.isFinite` accepts `Number.MAX_SAFE_INTEGER` for `maxBytes`.** Not exploitable (`safeFetchBinary` enforces its own per-buffer cap regardless), and a hard upper bound would be opinionated. Documented here so the question doesn't get re-asked. Defensible to leave.
+
+### Test count: **978/978 passing** (was 977 at v0.14.3; +1 lock-step regression).
+
+### Backward compatibility
+
+- Documentation-only change in `asset-downloader.mjs` JSDoc.
+- New test doesn't touch any code path — purely additive.
+
 ## [0.14.3] — 2026-05-25 — `/review+` hardening on Phase E v0.14.2 (asset download)
 
 `mini-/review+` on commit ddc6ecc surfaced 2 P2 correctness/security findings and 3 P3 polish items. All fixed with 9 new regression tests pinning the behaviors.

@@ -312,6 +312,7 @@ export async function downloadOne(url, outputDir, opts = {}) {
  * @param {Function} [opts._fetchFn]
  * @param {Function} [opts._writeFn]
  * @param {Function} [opts._mkdirFn]
+ * @param {Function} [opts._statFn]                   — v0.14.3 injection seam for the parent-exists + post-mkdir isDirectory() guards. Defaults to `fs.stat`. Tests use a stub that returns `{isDirectory: () => true}` to bypass the real-filesystem check.
  * @returns {Promise<{
  *   downloaded: Array<{sourceUrl, savedAs, bytes}>,
  *   skipped:    Array<{sourceUrl, reason, bytes?}>,
