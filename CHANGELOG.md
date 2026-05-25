@@ -8,6 +8,50 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.2] — 2026-05-25 — Phase E · Asset download (obsidian-clipper port)
+
+Phase E of the [[obsidian-clipper]] borrowing roadmap. Adds **opt-in image asset preservation** to the ingestion pipeline so `wiki-ingest --save-assets` can mirror a page's images into the vault (typically `<vault>/wiki/.assets/<source-slug>/`) and rewrite the markdown body to reference local paths. Without this, ingested pages keep remote `![](url)` references that rot over time or become unreachable offline.
+
+**Default-off** — saving assets costs bandwidth + disk + a write-tool exposure surface, so the opt-in flag stays opt-in. Reading flows stay unchanged.
+
+### Added
+
+- **`src/helpers/safe-fetch-binary.mjs`** (NEW) — SSRF-safe binary fetcher, sibling of `safe-fetch-html.mjs`. Same pinned-IP undici dispatcher + manual redirect re-SSRF per hop + body-size cap + timeout, but returns `{buffer, contentType, finalUrl}` instead of `{html, finalUrl}`. Default cap 10 MiB per asset (vs 5 MiB for HTML — images can be larger). Acknowledged duplication with `safe-fetch-html.mjs` documented; a future refactor could extract a private `_safe-fetch-core.mjs`.
+- **`src/helpers/asset-downloader.mjs`** (NEW) — pure helper module with 5 exports:
+  - `extractImageUrls(content, baseUrl)` — quote-aware HTML `<img src>` + `<source srcset>` (first URL only) + markdown `![alt](url)` extraction. Resolves relative URLs against `baseUrl`. Skips `data:` / `blob:` / `javascript:` URIs. Dedupes.
+  - `pickAssetFilename(url, buffer, contentType, usedNames)` — sanitizes URL path segment (`[A-Za-z0-9._-]` only, ≤80 chars), refuses `.`/`..`/`...`, forces extension from Content-Type (overrides `.html`/`.exe` sneaky URL extensions), falls back to `sha256(buffer).slice(0,16) + ext` on empty/collision.
+  - `downloadOne(url, outputDir, opts)` — single-asset wrapper with size filtering (`minBytes` default 1024 to skip icons, `maxBytes` default 10 MiB).
+  - `downloadAssets(urls, outputDir, opts)` — bulk wrapper with bounded parallelism (`concurrency` default 4). Creates `outputDir` recursively. Returns `{downloaded[], skipped[], errors[], urlMap}`.
+  - `rewriteAssetUrls(content, urlMap, opts)` — pure markdown/HTML rewriter. Quote-aware. Preserves markdown title text. Handles protocol-relative `//host/path` references. Leaves un-mapped URLs alone (failed downloads stay remote).
+- **`src/tools/download-page-assets.mjs`** (NEW) — MCP tool wrapper. Accepts `{url|html, baseUrl, outputDir, minBytes, maxBytes, concurrency, maxAssets}`. Validates absolute `outputDir`, refuses outside `MD_ALLOWED_PATHS` sandbox, caps URLs at `maxAssets` (default 200) to prevent attacker-page DoS. Returns serialized `urlMap` object (plain object, not Map — JSON transport).
+- **`tests/asset-downloader.test.mjs`** (NEW, 33 tests) — extraction (HTML quote variants, srcset, markdown, relative resolution, dedup, data-URI skip, baseUrl-required guard), filename picking (content-type ext override, sha256 fallback, collision avoidance, 80-char cap, double-ext prevention), download flow (happy path, too-small skip, fetch errors, abs-path guard), bulk (dedup across batch, mixed results, concurrency cap respected — verified via in-flight peak counter), rewrite (markdown title preservation, HTML quote-style preservation, un-mapped left alone, protocol-relative remap, trailing-slash trimming).
+- **`tests/download-page-assets.test.mjs`** (NEW, 13 tests) — TOOL_DEFINITION shape, input validation (XOR url/html, missing baseUrl, missing/relative outputDir), html-branch end-to-end without network (urlMap serialization to plain object, maxAssets cap respected, baseUrl passthrough), wiring into src/index.mjs (boot-time cross-check, WRITE_TOOL_NAMES inclusion).
+- **`src/index.mjs`** — registered `download_page_assets` in TOOLS + TOOL_HANDLERS + WRITE_TOOL_NAMES (8 → 9 write tools). `tests/readonly.test.mjs` bumped count assertion accordingly.
+
+### Changed
+
+- **`skills/wiki-ingest/SKILL.md`** — frontmatter template extended with `assets_count: <N>` (emit only when `--save-assets` was used AND ≥1 asset saved). New "Asset preservation (Phase E, v0.14.x+)" section with 5 instructions:
+  1. Call `mcp__obsidian-router__download_page_assets({url, outputDir: "<vault>/.assets/<source-slug>/"})` after metadata + LaTeX extraction.
+  2. Use the returned `urlMap` to rewrite `![alt](remoteUrl)` and `<img src="remoteUrl">` references in the body to local paths.
+  3. Set `assets_count` frontmatter (omit if zero, consistency with `has_latex`).
+  4. Mention non-empty `errors` in `## Summary` (don't fail the ingestion — partial preservation is the point).
+  5. Default is `--save-assets=false` — only run when user explicitly asks.
+
+### Test count: **968/968 passing** (was 922 at v0.14.1; +33 asset-downloader + 13 download-page-assets = +46 from Phase E).
+
+### Backward compatibility
+
+- Opt-in flag. `wiki-ingest` without `--save-assets` behaves exactly as v0.14.1 — markdown keeps remote `![](url)` references.
+- `download_page_assets` MCP tool is read-only-safe (excluded from listing under `OBSIDIAN_ROUTER_READONLY=true`) via WRITE_TOOL_NAMES.
+- No npm dependencies added. Pure Node + the existing `undici` dispatcher pattern from `safe-fetch-html.mjs`.
+
+### Deferred to Phase E.2 (if user demand)
+
+- Image dimension parsing to skip icons by width/height instead of size threshold. Needs format-specific decoders for PNG (bytes 16-24), JPEG (SOF markers), GIF (bytes 6-10), WebP (VP8/VP8L chunks), SVG (XML parse).
+- `<picture>` / `srcset` multi-resolution selection (we currently take the first `<source srcset>` entry; the caller can post-filter).
+- Non-image asset types (video, audio, animated GIF retained but only as image-type).
+- Image format conversion / re-encoding (e.g. WebP→PNG for older Obsidian themes that don't render WebP).
+
 ## [0.14.1] — 2026-05-25 — `/review+` hardening pass on the v0.14.0 auto-update path
 
 Six review passes (Claude `Code Reviewer` agent + `codex review` CLI in parallel) on commit 5300e0d surfaced one silent BLOCKER, four IMPORTANT correctness/security findings, and one test-isolation gap. All fixed with regression tests pinning the behaviors.

@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 8 documented write tools', () => {
+  test('contains the 9 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -93,6 +93,8 @@ describe('WRITE_TOOL_NAMES', () => {
       'move_file',
       'delete_file',
       'execute_template',
+      // v0.14.x Phase E — writes binary asset files to disk.
+      'download_page_assets',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {

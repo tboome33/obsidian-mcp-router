@@ -51,6 +51,10 @@ import {
   TOOL_DEFINITION as PROPOSE_LINKED_SOURCES_TOOL_DEFINITION,
   handleProposeLinkedSources,
 } from './tools/propose-linked-sources.mjs';
+import {
+  TOOL_DEFINITION as DOWNLOAD_PAGE_ASSETS_TOOL_DEFINITION,
+  handleDownloadPageAssets,
+} from './tools/download-page-assets.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -602,6 +606,11 @@ const TOOLS = [
   // Scans a webpage's body for hyperlinks worth proposing for recursive
   // ingestion. Read-only — excluded from WRITE_TOOL_NAMES.
   PROPOSE_LINKED_SOURCES_TOOL_DEFINITION,
+  // Asset downloader (Phase E of obsidian-clipper port, v0.14.x). Downloads
+  // image assets from a web page to a local directory, returns a manifest
+  // for markdown rewriting. WRITES to disk — included in WRITE_TOOL_NAMES
+  // so OBSIDIAN_ROUTER_READONLY hides it.
+  DOWNLOAD_PAGE_ASSETS_TOOL_DEFINITION,
 ];
 
 /**
@@ -652,6 +661,8 @@ const TOOL_HANDLERS = {
   extract_page_metadata: (_reg, args) => handleExtractPageMetadata(args),
   // v0.13.3 Phase C — linked-sources proposer for recursive ingestion.
   propose_linked_sources: (_reg, args) => handleProposeLinkedSources(args),
+  // v0.14.x Phase E — page asset downloader (image preservation in vault).
+  download_page_assets: (_reg, args) => handleDownloadPageAssets(args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
@@ -693,6 +704,9 @@ const WRITE_TOOL_NAMES = new Set([
   'move_file',
   'delete_file',
   'execute_template',
+  // v0.14.x Phase E — writes binary asset files to disk (in vault `.assets/`
+  // under MD_ALLOWED_PATHS sandbox). Read-only deployments must hide it.
+  'download_page_assets',
 ]);
 
 /**

@@ -76,6 +76,7 @@ description: <metadata.description>  # 1-line summary from og:description / meta
 word_count: <metadata.wordCount>     # int
 reading_minutes: <metadata.readingMinutes>  # int (ceil(wordCount/220))
 has_latex: <metadata.hasLatex>       # bool, Phase D (v0.13.10+) — only emit when true; omit when false to keep frontmatter tight
+assets_count: <N>                    # int, Phase E (v0.14.x+) — only emit when --save-assets was used AND at least 1 asset was saved; omit otherwise
 related_source: "[[<parent-slug>]]"  # ONLY if this ingestion is a child of a link-following parent (Phase C, v0.13.3+). Omit otherwise.
 tags: [<source-type>, <topic-tags>]
 source_type: extracted    # see "Source provenance" in vault CLAUDE.md
@@ -83,6 +84,14 @@ source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ```
 
 **Anti-pattern**: do NOT fabricate or re-infer `title` / `author` / `published` / `lang` / `image` / `site` / `description` when the metadata block returned a non-null value. The whole point of the v0.13.2 pipeline is to make these deterministic. Use `slug(title, {maxLen:80})` from `src/helpers/filters/slug.mjs` to generate the filename — never improvise.
+
+**Asset preservation (Phase E, v0.14.x+)**: opt-in via `--save-assets` flag (NOT default — costs bandwidth + disk). When the user passes the flag for a URL source:
+
+1. After the metadata + LaTeX extraction step, call `mcp__obsidian-router__download_page_assets({url, outputDir: "<vault-absolute-path>/.assets/<source-slug>/"})`. The tool downloads `<img>` / `<source srcset>` / `![](url)` references SSRF-safely, skips icons under 1 KB and oversized files over 10 MiB, and caps at 200 image URLs per page (configurable via `maxAssets`).
+2. The response is a manifest `{extracted, attempted, downloaded[], skipped[], errors[], urlMap}`. Use `urlMap` (an object `{ remoteUrl: savedFilename }`) to rewrite the markdown body — find each `![alt](remoteUrl)` and `<img src="remoteUrl">` reference and replace the URL with the local path `.assets/<source-slug>/<savedFilename>` (relative to vault root).
+3. Set `assets_count: <downloaded.length>` in the source-page frontmatter. Omit the field if zero assets were saved (consistency with the "emit only meaningful values" convention used for `has_latex`).
+4. If the manifest has non-empty `errors` (typically a few CDN images that 404'd or got blocked by a referrer check), mention this in the `## Summary` section as "N referenced images failed to mirror". Don't fail the ingestion — partial preservation is the point.
+5. **Default is `--save-assets=false`** — don't save assets when the user hasn't explicitly asked. The markdown will keep remote `![](url)` references, which Obsidian renders inline when the user has internet access (fine for most reading flows). Saving assets is for archival use cases (offline reading, source preservation, link-rot insurance).
 
 **LaTeX preservation (Phase D, v0.13.10+)**: when `metadata.hasLatex === true`:
 1. Emit `has_latex: true` in frontmatter (so Obsidian's LaTeX plugin / KaTeX MathBlock renders it).
