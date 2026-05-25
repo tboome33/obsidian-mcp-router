@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import {
   extractImageUrls,
+  extractImagesWithMeta,
   pickAssetFilename,
+  decodeImageDimensions,
   downloadOne,
   downloadAssets,
   rewriteAssetUrls,
@@ -484,4 +486,327 @@ test('HARDENING P3-1: pickAssetFilename strips leading dots → no hidden files'
   const r3 = pickAssetFilename('https://x.io/..', Buffer.from('data'), 'image/png');
   // `..` after leading-dot strip → empty → sha256 fallback (16-char hex + ext)
   assert.match(r3, /^[a-f0-9]{16}\.png$/);
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 — extractImagesWithMeta (alt-text + figure-wrapping signals)
+// -----------------------------------------------------------------------------
+
+test('extractImagesWithMeta: captures alt text from <img>', () => {
+  const html = '<img src="https://x.io/a.png" alt="A diagram">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.deepEqual(r, [{ url: 'https://x.io/a.png', alt: 'A diagram', isFigure: false }]);
+});
+
+test('extractImagesWithMeta: empty alt="" stays as empty string', () => {
+  const html = '<img src="https://x.io/a.png" alt="">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r[0].alt, '');
+});
+
+test('extractImagesWithMeta: missing alt attribute returns empty string', () => {
+  const html = '<img src="https://x.io/a.png">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r[0].alt, '');
+});
+
+test('extractImagesWithMeta: marks isFigure=true when wrapped in <figure>', () => {
+  const html = '<figure><img src="https://x.io/a.png"><figcaption>Fig.</figcaption></figure>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.length, 1);
+  assert.equal(r[0].isFigure, true);
+});
+
+test('extractImagesWithMeta: isFigure=false when outside <figure>', () => {
+  const html = '<figure><img src="https://x.io/in.png"></figure><img src="https://x.io/out.png">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  const inFig = r.find((e) => e.url === 'https://x.io/in.png');
+  const outFig = r.find((e) => e.url === 'https://x.io/out.png');
+  assert.equal(inFig.isFigure, true);
+  assert.equal(outFig.isFigure, false);
+});
+
+test('extractImagesWithMeta: nested figures decrement correctly', () => {
+  // Pathological but valid: figure-inside-figure. We don't need true tree
+  // tracking — just the boolean "currently inside any figure", which a
+  // depth counter handles.
+  const html = '<figure><img src="https://x.io/outer.png"><figure><img src="https://x.io/inner.png"></figure></figure><img src="https://x.io/after.png">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.find((e) => e.url === 'https://x.io/outer.png').isFigure, true);
+  assert.equal(r.find((e) => e.url === 'https://x.io/inner.png').isFigure, true);
+  assert.equal(r.find((e) => e.url === 'https://x.io/after.png').isFigure, false);
+});
+
+test('extractImagesWithMeta: markdown ![alt](url) extracts alt + isFigure=false', () => {
+  const md = '![A picture](https://x.io/a.png)';
+  const r = extractImagesWithMeta(md, 'https://x.io/');
+  assert.deepEqual(r, [{ url: 'https://x.io/a.png', alt: 'A picture', isFigure: false }]);
+});
+
+test('extractImagesWithMeta: markdown ![](url) has empty alt', () => {
+  const md = '![](https://x.io/a.png)';
+  const r = extractImagesWithMeta(md, 'https://x.io/');
+  assert.equal(r[0].alt, '');
+});
+
+test('extractImagesWithMeta: dedupe keeps first occurrence metadata', () => {
+  // Same URL appears twice — once with alt, once without. First wins.
+  const html = '<img src="https://x.io/a.png" alt="first wins"><img src="https://x.io/a.png" alt="">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.length, 1);
+  assert.equal(r[0].alt, 'first wins');
+});
+
+test('extractImagesWithMeta: single-quoted alt is supported', () => {
+  const html = "<img src='https://x.io/a.png' alt='single-quoted alt'>";
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r[0].alt, 'single-quoted alt');
+});
+
+// extractImageUrls back-compat — make sure the facade still returns []string
+// matching the new metadata-aware impl.
+test('extractImageUrls: still returns plain string array (back-compat facade)', () => {
+  const html = '<img src="https://x.io/a.png" alt="x"><img src="https://x.io/b.png">';
+  const urls = extractImageUrls(html, 'https://x.io/');
+  assert.deepEqual(urls, ['https://x.io/a.png', 'https://x.io/b.png']);
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 — decodeImageDimensions (Phase E.2)
+// -----------------------------------------------------------------------------
+
+// Build a minimal valid PNG header: magic + IHDR chunk. We don't care
+// about the IDAT/CRC since `decodeImageDimensions` only reads up to
+// offset 24.
+function buildPngHeader(width, height) {
+  const buf = Buffer.alloc(24);
+  // PNG magic.
+  buf.writeUInt8(0x89, 0); buf.writeUInt8(0x50, 1); buf.writeUInt8(0x4e, 2); buf.writeUInt8(0x47, 3);
+  buf.writeUInt8(0x0d, 4); buf.writeUInt8(0x0a, 5); buf.writeUInt8(0x1a, 6); buf.writeUInt8(0x0a, 7);
+  // IHDR length (13) + 'IHDR' + width/height as BE u32 at offsets 16, 20.
+  buf.writeUInt32BE(13, 8);
+  buf.write('IHDR', 12, 'ascii');
+  buf.writeUInt32BE(width, 16);
+  buf.writeUInt32BE(height, 20);
+  return buf;
+}
+
+function buildGifHeader(width, height, version = '89') {
+  const buf = Buffer.alloc(10);
+  buf.write('GIF' + version + 'a', 0, 'ascii'); // 'GIF89a' or 'GIF87a'
+  buf.writeUInt16LE(width, 6);
+  buf.writeUInt16LE(height, 8);
+  return buf;
+}
+
+function buildJpegHeader(width, height) {
+  // SOI (FF D8) + SOF0 (FF C0) marker with dimensions.
+  // SOF0 segment: length=17, precision=8, height(BE u16), width(BE u16), components(3),
+  //   each component=3 bytes — total 17 bytes after marker.
+  const buf = Buffer.alloc(2 + 2 + 2 + 1 + 2 + 2 + 1 + 9);
+  buf[0] = 0xff; buf[1] = 0xd8;        // SOI
+  buf[2] = 0xff; buf[3] = 0xc0;        // SOF0
+  buf.writeUInt16BE(17, 4);             // segment length
+  buf[6] = 8;                           // precision
+  buf.writeUInt16BE(height, 7);
+  buf.writeUInt16BE(width, 9);
+  buf[11] = 3;                          // components
+  // 3*3 = 9 component bytes (zeros — don't care)
+  return buf;
+}
+
+function buildWebpVp8xHeader(width, height) {
+  // RIFF<size>WEBP VP8X<chunk-size><flags 1byte><reserved 3bytes><w-1 24bit LE><h-1 24bit LE>
+  const buf = Buffer.alloc(30);
+  buf.write('RIFF', 0, 'ascii');
+  buf.writeUInt32LE(22, 4);                // file size (minimal, doesn't matter for parsing)
+  buf.write('WEBP', 8, 'ascii');
+  buf.write('VP8X', 12, 'ascii');
+  buf.writeUInt32LE(10, 16);                // chunk size
+  buf.writeUInt8(0, 20);                    // flags
+  // reserved 3 bytes at 21-23
+  const wMinus1 = width - 1;
+  const hMinus1 = height - 1;
+  buf.writeUInt8(wMinus1 & 0xff, 24);
+  buf.writeUInt8((wMinus1 >> 8) & 0xff, 25);
+  buf.writeUInt8((wMinus1 >> 16) & 0xff, 26);
+  buf.writeUInt8(hMinus1 & 0xff, 27);
+  buf.writeUInt8((hMinus1 >> 8) & 0xff, 28);
+  buf.writeUInt8((hMinus1 >> 16) & 0xff, 29);
+  return buf;
+}
+
+test('decodeImageDimensions: PNG 200x100 → {width:200, height:100}', () => {
+  const r = decodeImageDimensions(buildPngHeader(200, 100), 'image/png');
+  assert.deepEqual(r, { width: 200, height: 100 });
+});
+
+test('decodeImageDimensions: GIF87a + GIF89a both parse', () => {
+  assert.deepEqual(decodeImageDimensions(buildGifHeader(50, 30, '87'), 'image/gif'), { width: 50, height: 30 });
+  assert.deepEqual(decodeImageDimensions(buildGifHeader(200, 100), 'image/gif'), { width: 200, height: 100 });
+});
+
+test('decodeImageDimensions: JPEG SOF0 marker parsed correctly', () => {
+  const r = decodeImageDimensions(buildJpegHeader(640, 480), 'image/jpeg');
+  assert.deepEqual(r, { width: 640, height: 480 });
+});
+
+test('decodeImageDimensions: WebP VP8X parses 24-bit dimensions', () => {
+  const r = decodeImageDimensions(buildWebpVp8xHeader(1920, 1080), 'image/webp');
+  assert.deepEqual(r, { width: 1920, height: 1080 });
+});
+
+test('decodeImageDimensions: SVG with px width/height attrs', () => {
+  const svg = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="150" height="80"><rect/></svg>';
+  const r = decodeImageDimensions(Buffer.from(svg), 'image/svg+xml');
+  assert.deepEqual(r, { width: 150, height: 80 });
+});
+
+test('decodeImageDimensions: SVG falls back to viewBox when width/height missing', () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 200"><rect/></svg>';
+  const r = decodeImageDimensions(Buffer.from(svg), 'image/svg+xml');
+  assert.deepEqual(r, { width: 300, height: 200 });
+});
+
+test('decodeImageDimensions: unknown format returns null (cant-verify → keep)', () => {
+  // BMP magic 'BM' → unsupported.
+  const bmp = Buffer.concat([Buffer.from('BM'), Buffer.alloc(20)]);
+  assert.equal(decodeImageDimensions(bmp, 'image/bmp'), null);
+});
+
+test('decodeImageDimensions: too-short buffer returns null', () => {
+  assert.equal(decodeImageDimensions(Buffer.alloc(4), 'image/png'), null);
+  assert.equal(decodeImageDimensions(Buffer.from('hi'), 'image/png'), null);
+});
+
+test('decodeImageDimensions: non-buffer input returns null', () => {
+  assert.equal(decodeImageDimensions(null, 'image/png'), null);
+  assert.equal(decodeImageDimensions('not a buffer', 'image/png'), null);
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 — downloadOne dimension filter (Phase E.2)
+// -----------------------------------------------------------------------------
+
+test('downloadOne: skips when decoded dimensions are below minWidth', async () => {
+  const stub = makeStubFetch({
+    'https://x.io/icon.png': { buffer: Buffer.alloc(5000, 0xff), contentType: 'image/png' },
+  });
+  // Stub dim decoder so we don't have to feed a real PNG header.
+  const decodeDimsStub = () => ({ width: 50, height: 50 });
+  const { writes, fn: writeFn } = makeStubWrite();
+
+  const r = await downloadOne('https://x.io/icon.png', '/abs/out', {
+    _fetchFn: stub,
+    _writeFn: writeFn,
+    _decodeDimsFn: decodeDimsStub,
+    minWidth: 100,
+    minHeight: 100,
+  });
+
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'too-small-dimensions');
+  assert.deepEqual(r.dimensions, { width: 50, height: 50 });
+  assert.equal(writes.length, 0, 'must not write images below dimension threshold');
+});
+
+test('downloadOne: passes through when dimensions meet threshold', async () => {
+  const stub = makeStubFetch({
+    'https://x.io/big.png': { buffer: Buffer.alloc(5000, 0xff), contentType: 'image/png' },
+  });
+  const decodeDimsStub = () => ({ width: 800, height: 600 });
+  const { writes, fn: writeFn } = makeStubWrite();
+
+  const r = await downloadOne('https://x.io/big.png', '/abs/out', {
+    _fetchFn: stub,
+    _writeFn: writeFn,
+    _decodeDimsFn: decodeDimsStub,
+    minWidth: 100,
+    minHeight: 100,
+  });
+
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.dimensions, { width: 800, height: 600 });
+  assert.equal(writes.length, 1);
+});
+
+test('downloadOne: when minWidth=minHeight=0, dimension check is disabled (decoder not called)', async () => {
+  const stub = makeStubFetch({
+    'https://x.io/any.png': { buffer: Buffer.alloc(5000, 0xff), contentType: 'image/png' },
+  });
+  let decoderCalled = false;
+  const decodeDimsStub = () => {
+    decoderCalled = true;
+    return { width: 1, height: 1 }; // would skip if invoked
+  };
+  const { writes, fn: writeFn } = makeStubWrite();
+
+  const r = await downloadOne('https://x.io/any.png', '/abs/out', {
+    _fetchFn: stub,
+    _writeFn: writeFn,
+    _decodeDimsFn: decodeDimsStub,
+    minWidth: 0,
+    minHeight: 0,
+  });
+
+  assert.equal(r.ok, true);
+  assert.equal(decoderCalled, false, 'decoder should not be called when both mins are 0');
+  assert.equal(r.dimensions, undefined, 'no dimensions field when decoder did not run');
+  assert.equal(writes.length, 1);
+});
+
+test('downloadOne: unknown format (decoder returns null) is kept (cant-verify → keep)', async () => {
+  // BMP / TIFF / ICO / AVIF return null. We don't want to skip those —
+  // false positives are worse than the occasional decorative image
+  // sneaking through.
+  const stub = makeStubFetch({
+    'https://x.io/mystery.tif': { buffer: Buffer.alloc(5000), contentType: 'image/tiff' },
+  });
+  const decodeDimsStub = () => null;
+  const { writes, fn: writeFn } = makeStubWrite();
+
+  const r = await downloadOne('https://x.io/mystery.tif', '/abs/out', {
+    _fetchFn: stub,
+    _writeFn: writeFn,
+    _decodeDimsFn: decodeDimsStub,
+    minWidth: 100,
+    minHeight: 100,
+  });
+
+  assert.equal(r.ok, true, 'unknown format must not be skipped');
+  assert.equal(r.dimensions, undefined);
+  assert.equal(writes.length, 1);
+});
+
+test('downloadAssets: threads minWidth/minHeight through to per-asset downloadOne', async () => {
+  const stub = makeStubFetch({
+    'https://x.io/small.png': { buffer: Buffer.alloc(5000), contentType: 'image/png' },
+    'https://x.io/big.png': { buffer: Buffer.alloc(5000), contentType: 'image/png' },
+  });
+  let callIdx = 0;
+  const decodeDimsStub = () => {
+    callIdx += 1;
+    return callIdx === 1 ? { width: 50, height: 50 } : { width: 800, height: 800 };
+  };
+  const { writes, fn: writeFn } = makeStubWrite();
+
+  const r = await downloadAssets(
+    ['https://x.io/small.png', 'https://x.io/big.png'],
+    '/abs/out',
+    {
+      _fetchFn: stub,
+      _writeFn: writeFn,
+      _mkdirFn: async () => undefined,
+      _statFn: stubStatAllDirs,
+      _decodeDimsFn: decodeDimsStub,
+      minWidth: 100,
+      minHeight: 100,
+      concurrency: 1, // serial so the decoder-call-ordering above is deterministic
+    },
+  );
+
+  assert.equal(r.downloaded.length, 1);
+  assert.equal(r.skipped.length, 1);
+  assert.equal(r.skipped[0].reason, 'too-small-dimensions');
+  assert.deepEqual(r.skipped[0].dimensions, { width: 50, height: 50 });
 });

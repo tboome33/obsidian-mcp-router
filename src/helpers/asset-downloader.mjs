@@ -3,35 +3,43 @@
  * [[obsidian-clipper]] borrowing roadmap.
  *
  * Pipeline:
- *   1. **`extractImageUrls(content, baseUrl)`** — pure function. Scans
- *      HTML (`<img src>`, `<source srcset>`) AND markdown (`![alt](url)`)
- *      for image references, resolves relative URLs against `baseUrl`,
- *      dedupes, returns absolute URLs only (http/https — `data:` URIs
- *      are skipped because they're already inline).
- *   2. **`downloadOne(url, outputDir, opts)`** — fetches a single image
+ *   1. **`extractImagesWithMeta(content, baseUrl)`** — pure function.
+ *      Scans HTML (`<img>`, `<source>`) and markdown (`![alt](url)`),
+ *      returns `[{url, alt, isFigure}]` so callers can filter on
+ *      relevance signals (empty alt = likely decorative, figure-wrapped
+ *      = author-curated). Resolves relative URLs against `baseUrl`,
+ *      dedupes by URL.
+ *   2. **`extractImageUrls(content, baseUrl)`** — thin facade returning
+ *      just the URL strings (back-compat with pre-v0.14.7 callers).
+ *   3. **`decodeImageDimensions(buffer, contentType)`** — pure function.
+ *      Parses magic bytes for PNG / JPEG / GIF / WebP (VP8 / VP8L / VP8X)
+ *      and reads `width`/`height` attrs from SVG text. Returns
+ *      `{width, height}` or `null` (unknown format / malformed header).
+ *      Callers treat `null` as "can't verify → keep" rather than skip.
+ *   4. **`downloadOne(url, outputDir, opts)`** — fetches a single image
  *      via the SSRF-safe `safe-fetch-binary.mjs`. Picks a safe filename
  *      (last URL path segment if reasonable, sha256(buffer).slice(0,16)
  *      fallback for collisions or unprintable names). Picks an extension
  *      from Content-Type (or from the URL extension if Content-Type is
  *      bland `application/octet-stream`). Writes to `<outputDir>/<filename>`.
- *      Skips by size (default `minBytes: 1024` — most icons are <1 KB,
- *      most photos/equations are larger).
- *   3. **`downloadAssets(urls, outputDir, opts)`** — bulk wrapper with
+ *      Skips by size (default `minBytes: 1024`) AND by dimensions
+ *      (Phase E.2: default `minWidth: 0, minHeight: 0` at the helper
+ *      level — the MCP tool turns these on by default at 100×100).
+ *   5. **`downloadAssets(urls, outputDir, opts)`** — bulk wrapper with
  *      bounded parallelism. Returns `{downloaded, skipped, errors}` so
  *      the caller can render a manifest and decide whether to proceed.
- *   4. **`rewriteAssetUrls(markdown, urlMap)`** — pure function. Replaces
+ *   6. **`rewriteAssetUrls(markdown, urlMap)`** — pure function. Replaces
  *      `![alt](remoteUrl)` and `<img src="remoteUrl">` with the local
  *      relative path from `urlMap` (a `Map<sourceUrl, localPath>`).
  *      Leaves un-mapped URLs alone (failed downloads stay remote).
  *
- * What this MVP does NOT do (deferred Phase E.2 if user demand):
- *   - Image dimension parsing to skip icons by width/height instead of
- *     by size. Needs format-specific header decoders for PNG/JPEG/GIF/
- *     WebP/SVG. The roadmap originally specified "<100x100"; size-based
- *     filtering is the 80% approximation (icons are typically <1 KB).
+ * What this MVP does NOT do:
  *   - `<picture>` / `srcset` multi-resolution selection (we pick the
  *     first `src` we see in `<source>`; the caller can post-filter).
  *   - Animated GIF / video / audio asset types (image-only for MVP).
+ *   - BMP / TIFF / ICO / AVIF dimension parsing — these return `null`
+ *     from `decodeImageDimensions` and the caller's dim filter ignores
+ *     them ("can't verify → keep"). Rare on real-world articles.
  *
  * Threat model:
  *   - SSRF: handled by `safe-fetch-binary.mjs` (pinned-IP dispatcher).
@@ -52,99 +60,366 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 import { safeFetchBinary } from './safe-fetch-binary.mjs';
+// `decodeImageDimensions` is defined below (alongside the other pure
+// helpers); imported via re-reference rather than a circular import.
 
 // -----------------------------------------------------------------------------
-// Pure: URL extraction
+// Pure: URL + metadata extraction
 // -----------------------------------------------------------------------------
+
+// Extract one HTML attribute value from a `<tag ...>` attribute string.
+// Quote-aware: returns the value of the FIRST occurrence of `<name>`
+// (case-insensitive). Returns `''` if the attribute is present with an
+// empty value (e.g. `alt=""`), and `null` if absent.
+//
+// Why distinguish present-but-empty from absent: per ARIA, `alt=""` is
+// an explicit signal that the image is decorative — the author chose
+// to suppress it. We treat that the same as missing for the relevance
+// filter, but the distinction is preserved at this layer in case
+// future callers want to act on it differently.
+function getAttr(attrs, name) {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const m = re.exec(attrs);
+  if (!m) {
+    // Check for a presence-only attribute (no `=` form). Rare for src/alt
+    // but cheap to handle.
+    if (new RegExp(`\\b${name}\\b(?!\\s*=)`, 'i').test(attrs)) return '';
+    return null;
+  }
+  const v = m[1] ?? m[2] ?? m[3] ?? '';
+  return v;
+}
 
 /**
- * Extract image URLs from HTML or markdown content.
+ * Extract images from HTML or markdown content with per-image metadata.
  *
- * Scans for three patterns:
- *   1. HTML `<img src="..."/>` (also handles `<img src='...'/>` and bare `<img src=...>`)
- *   2. HTML `<source srcset="...">` (takes the FIRST entry, drops density descriptors)
- *   3. Markdown `![alt](url)` and `![alt](url "title")` (drops the title)
+ * Returns one entry per UNIQUE absolute URL with:
+ *   - `url`: absolute http(s) URL (relative URLs resolved against baseUrl)
+ *   - `alt`: alt text (empty string when present-but-empty `alt=""` or
+ *            absent; trimmed). For markdown `![alt](url)`, the bracket
+ *            content. Defaults to `''` for `<source>` (no alt attribute).
+ *   - `isFigure`: true when the source tag was lexically inside an
+ *                 unclosed `<figure>...</figure>` block at the moment
+ *                 of the match. Single-pass tokenizer — O(n).
  *
- * Resolves relative URLs against `baseUrl`. Skips `data:`, `blob:`, `javascript:`
- * URIs (no remote fetch needed/safe). Dedupes the final list.
+ * Patterns scanned:
+ *   1. HTML `<img src="..." alt="...">` (quote-aware)
+ *   2. HTML `<source srcset="...">` (takes the FIRST URL in srcset,
+ *      drops density descriptors; `alt` defaults to '')
+ *   3. Markdown `![alt](url)` and `![alt](url "title")` (drops the title;
+ *      isFigure always false — markdown has no figure equivalent)
+ *
+ * Dedup is on absolute URL: if the same URL appears twice with different
+ * alt text or once inside / once outside a figure, the FIRST occurrence's
+ * metadata wins (document order).
  *
  * @param {string} content — HTML or markdown
  * @param {string} baseUrl — page URL for relative resolution; required
- * @returns {string[]} — absolute http(s) URLs, deduped, in document order
+ * @returns {Array<{url: string, alt: string, isFigure: boolean}>}
  */
-export function extractImageUrls(content, baseUrl) {
+export function extractImagesWithMeta(content, baseUrl) {
   const safe = String(content || '');
   if (!baseUrl) {
-    throw new Error('extractImageUrls: baseUrl is required for relative URL resolution');
+    throw new Error('extractImagesWithMeta: baseUrl is required for relative URL resolution');
   }
 
+  // Single-pass tokenizer for HTML tags. We only care about three tag
+  // kinds — <img>, <source>, <figure>, </figure> — so the tokenizer
+  // is intentionally minimal: scan for `<`, peek next chars, advance.
+  // This is O(n) where n = HTML length, vs. the O(n²) we'd get from
+  // re-scanning for figure context per match.
   const found = [];
+  let figureDepth = 0;
+  let i = 0;
+  const n = safe.length;
 
-  // Pattern 1: <img src="..." | '...' | bare>
-  // Quote-aware: match double-quoted, single-quoted, or bare (no quote) values.
-  const imgRe = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
-  let m;
-  while ((m = imgRe.exec(safe)) !== null) {
-    const raw = m[1] || m[2] || m[3];
-    if (raw) found.push(raw);
+  while (i < n) {
+    const lt = safe.indexOf('<', i);
+    if (lt === -1) break;
+
+    // Peek the tag name (lowercased, up to 8 chars — enough for "/figure").
+    const tagSnippet = safe.slice(lt + 1, lt + 9).toLowerCase();
+
+    if (tagSnippet.startsWith('figure') && /^[\s>]/.test(safe[lt + 7] || '>')) {
+      // <figure ...> — open. Advance to the closing `>`.
+      const gt = safe.indexOf('>', lt + 7);
+      figureDepth += 1;
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
+    if (tagSnippet.startsWith('/figure')) {
+      // </figure> — close. Decrement (clamp at 0).
+      figureDepth = Math.max(0, figureDepth - 1);
+      const gt = safe.indexOf('>', lt + 8);
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
+    if (tagSnippet.startsWith('img') && /^[\s>/]/.test(safe[lt + 4] || '>')) {
+      // <img ...> — extract src + alt.
+      const gt = safe.indexOf('>', lt + 4);
+      const tag = safe.slice(lt, gt === -1 ? n : gt + 1);
+      const attrs = tag.slice(4, -1); // strip "<img" prefix and ">" suffix
+      const src = getAttr(attrs, 'src');
+      if (src) {
+        const altRaw = getAttr(attrs, 'alt');
+        const alt = (altRaw == null ? '' : altRaw).trim();
+        found.push({ raw: src, alt, isFigure: figureDepth > 0 });
+      }
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
+    if (tagSnippet.startsWith('source') && /^[\s>/]/.test(safe[lt + 7] || '>')) {
+      // <source srcset="..."> — first URL.
+      const gt = safe.indexOf('>', lt + 7);
+      const tag = safe.slice(lt, gt === -1 ? n : gt + 1);
+      const attrs = tag.slice(7, -1); // strip "<source" prefix and ">" suffix
+      const srcset = getAttr(attrs, 'srcset');
+      if (srcset) {
+        const firstUrl = srcset.split(/[,\s]+/)[0];
+        if (firstUrl) {
+          found.push({ raw: firstUrl, alt: '', isFigure: figureDepth > 0 });
+        }
+      }
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
+
+    // Some other tag — skip past its `>`.
+    const gt = safe.indexOf('>', lt + 1);
+    i = gt === -1 ? n : gt + 1;
   }
 
-  // Pattern 2: <source srcset="..."> — take the first URL before any
-  // size/density descriptor (`,` or whitespace separator).
-  const srcsetRe = /<source\b[^>]*?\bsrcset\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
-  while ((m = srcsetRe.exec(safe)) !== null) {
-    const raw = m[1] || m[2] || m[3];
-    if (raw) {
-      const firstUrl = raw.split(/[,\s]+/)[0];
-      if (firstUrl) found.push(firstUrl);
+  // Markdown `![alt](url)` — drop optional "title".
+  //
+  // Stays in lock-step with rewriteAssetUrls's matching regex
+  // (HARDENING P2-2 / P3-b — see tests). Accepts one level of nested
+  // brackets in alt: `![Photo of [Eiffel tower]](url)`.
+  const mdRe = /!\[((?:\[[^\]]*\]|[^\]])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  let m;
+  while ((m = mdRe.exec(safe)) !== null) {
+    if (m[2]) {
+      found.push({ raw: m[2], alt: (m[1] || '').trim(), isFigure: false });
     }
   }
 
-  // Pattern 3: Markdown ![alt](url) — drop optional "title".
-  //
-  // v0.14.3 hardening (P2-2): the alt-text matcher must accept one level
-  // of nested square brackets, e.g. `![Photo of [Eiffel tower]](url)`.
-  // The pre-v0.14.3 `[^\]]*` regex bailed on the inner `[` and missed
-  // the whole reference, so the image was neither extracted (skipping
-  // download) nor rewritten (leaving a remote URL behind even when the
-  // download succeeded via another path). Real-world content with this
-  // pattern: Wikipedia citations, blogs with `[citation needed]` alt
-  // hooks, etc.
-  //
-  // Pattern explanation:
-  //   (?:\[[^\]]*\]|[^\]])*   — alternation:
-  //     \[[^\]]*\]            — one full balanced [inner] block
-  //     |                     — OR
-  //     [^\]]                 — any single non-`]` character
-  //   Repeated * times. Greedy is fine here — the closing `\]` is
-  //   forced by the parenthetical that follows.
-  const mdRe = /!\[((?:\[[^\]]*\]|[^\]])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  while ((m = mdRe.exec(safe)) !== null) {
-    if (m[2]) found.push(m[2]);
-  }
-
-  // Resolve + filter.
+  // Resolve + dedupe by absolute URL. First occurrence wins.
   const seen = new Set();
   const result = [];
-  for (const raw of found) {
-    const trimmed = raw.trim();
-    // Skip non-fetchable schemes.
+  for (const { raw, alt, isFigure } of found) {
+    const trimmed = String(raw).trim();
     if (/^(?:data|blob|javascript|mailto|tel|about):/i.test(trimmed)) continue;
 
     let abs;
     try {
       abs = new URL(trimmed, baseUrl).href;
     } catch {
-      // Bad URL — skip silently rather than break the whole extraction.
       continue;
     }
     if (!/^https?:/i.test(abs)) continue;
     if (seen.has(abs)) continue;
     seen.add(abs);
-    result.push(abs);
+    result.push({ url: abs, alt, isFigure });
   }
 
   return result;
+}
+
+/**
+ * Back-compat facade returning only URL strings. Equivalent to the
+ * pre-v0.14.7 behavior. Callers that need alt-text / figure-wrapping
+ * signals should use `extractImagesWithMeta` directly.
+ *
+ * @param {string} content — HTML or markdown
+ * @param {string} baseUrl — page URL for relative resolution; required
+ * @returns {string[]} — absolute http(s) URLs, deduped, in document order
+ */
+export function extractImageUrls(content, baseUrl) {
+  if (!baseUrl) {
+    throw new Error('extractImageUrls: baseUrl is required for relative URL resolution');
+  }
+  return extractImagesWithMeta(content, baseUrl).map((e) => e.url);
+}
+
+// -----------------------------------------------------------------------------
+// Pure: dimension decoding (Phase E.2)
+// -----------------------------------------------------------------------------
+
+/**
+ * Decode `{width, height}` in pixels from raw image bytes by parsing
+ * the format's header. Supports PNG, JPEG, GIF, WebP (VP8 / VP8L / VP8X),
+ * and SVG (text-based width/height/viewBox).
+ *
+ * Returns `null` when:
+ *   - Buffer is too short to contain a valid header for any supported format
+ *   - Magic bytes don't match any supported format
+ *   - Format is supported but the header is malformed
+ *   - Format is unsupported (BMP, TIFF, ICO, AVIF, JPEG-2000 — return null,
+ *     callers treat null as "can't verify → keep")
+ *
+ * The `contentType` argument is advisory only: we always sniff magic
+ * bytes. This is defensive — servers misreport content-type all the
+ * time (.png served as application/octet-stream, .svg as text/xml,
+ * etc.), and we'd rather trust the bytes than the header.
+ *
+ * @param {Buffer} buffer
+ * @param {string} [contentType] — advisory; used as a hint for SVG fast-path
+ * @returns {{width: number, height: number} | null}
+ */
+export function decodeImageDimensions(buffer, contentType = '') {
+  if (!Buffer.isBuffer(buffer)) return null;
+  if (buffer.length < 8) return null;
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A + IHDR chunk (width/height as BE uint32 at offsets 16, 20).
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    const w = buffer.readUInt32BE(16);
+    const h = buffer.readUInt32BE(20);
+    if (w > 0 && h > 0) return { width: w, height: h };
+    return null;
+  }
+
+  // GIF: 47 49 46 38 [37|39] 61 + LE uint16 width@6, height@8.
+  if (
+    buffer.length >= 10 &&
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38 &&
+    (buffer[4] === 0x37 || buffer[4] === 0x39) &&
+    buffer[5] === 0x61
+  ) {
+    const w = buffer.readUInt16LE(6);
+    const h = buffer.readUInt16LE(8);
+    if (w > 0 && h > 0) return { width: w, height: h };
+    return null;
+  }
+
+  // WebP: 'RIFF' <size> 'WEBP' <chunk-fourcc>
+  if (
+    buffer.length >= 30 &&
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) {
+    const fourcc = buffer.slice(12, 16).toString('ascii');
+    if (fourcc === 'VP8 ') {
+      // VP8 (lossy): start code at 23-25 (0x9d 0x01 0x2a), then
+      // 2-byte LE width-with-scale at 26, height-with-scale at 28.
+      // Mask the top 2 bits which are scale.
+      if (buffer.length < 30) return null;
+      const wRaw = buffer.readUInt16LE(26) & 0x3fff;
+      const hRaw = buffer.readUInt16LE(28) & 0x3fff;
+      if (wRaw > 0 && hRaw > 0) return { width: wRaw, height: hRaw };
+      return null;
+    }
+    if (fourcc === 'VP8L') {
+      // VP8L (lossless): signature 0x2F at offset 20, then 28 bits
+      // packed at offsets 21-24 (LE). Width = bits 0-13 + 1, height = bits 14-27 + 1.
+      if (buffer.length < 25 || buffer[20] !== 0x2f) return null;
+      const b21 = buffer[21];
+      const b22 = buffer[22];
+      const b23 = buffer[23];
+      const b24 = buffer[24];
+      const w = (b21 | ((b22 & 0x3f) << 8)) + 1;
+      const h = ((b22 >> 6) | (b23 << 2) | ((b24 & 0x0f) << 10)) + 1;
+      if (w > 0 && h > 0) return { width: w, height: h };
+      return null;
+    }
+    if (fourcc === 'VP8X') {
+      // VP8X (extended): 24-bit LE width-1 at 24-26, 24-bit LE height-1 at 27-29.
+      const w = 1 + buffer[24] + (buffer[25] << 8) + (buffer[26] << 16);
+      const h = 1 + buffer[27] + (buffer[28] << 8) + (buffer[29] << 16);
+      if (w > 0 && h > 0) return { width: w, height: h };
+      return null;
+    }
+    return null;
+  }
+
+  // JPEG: FF D8 FF, walk markers to find SOF (FF C0/C1/C2/C3) which
+  // carries height (BE u16 at offset+5) and width (BE u16 at offset+7).
+  // Skip non-SOF markers via their 2-byte BE length.
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    let off = 2;
+    while (off + 8 < buffer.length) {
+      if (buffer[off] !== 0xff) return null; // misaligned
+      let marker = buffer[off + 1];
+      // 0xFF padding bytes — skip.
+      while (marker === 0xff && off + 2 < buffer.length) {
+        off += 1;
+        marker = buffer[off + 1];
+      }
+      if (marker === 0xd8 || marker === 0xd9) {
+        // SOI again or EOI — give up.
+        return null;
+      }
+      if (
+        (marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf)
+      ) {
+        // SOF marker — dimensions at offset+5 (height), +7 (width), BE u16.
+        if (off + 9 > buffer.length) return null;
+        const h = buffer.readUInt16BE(off + 5);
+        const w = buffer.readUInt16BE(off + 7);
+        if (w > 0 && h > 0) return { width: w, height: h };
+        return null;
+      }
+      // Non-SOF marker — skip via 2-byte BE length at offset+2.
+      if (off + 4 > buffer.length) return null;
+      const segLen = buffer.readUInt16BE(off + 2);
+      if (segLen < 2) return null; // malformed
+      off += 2 + segLen;
+    }
+    return null;
+  }
+
+  // SVG: text-based. Look for `<svg ... width="X" height="Y" ... viewBox="0 0 W H">`.
+  // Only try this when content-type smells like SVG/XML, OR the first
+  // non-whitespace bytes look like `<svg` or `<?xml`.
+  const ctLooksSvg = /svg|xml/i.test(String(contentType || ''));
+  const firstChars = buffer.slice(0, 64).toString('utf8').trim().toLowerCase();
+  const bytesLookSvg = firstChars.startsWith('<svg') || firstChars.startsWith('<?xml');
+  if (ctLooksSvg || bytesLookSvg) {
+    // Cap the slice we parse — SVG files can be megabytes of paths,
+    // but the <svg ...> open tag is in the first few KiB.
+    const text = buffer.slice(0, Math.min(buffer.length, 8192)).toString('utf8');
+    const tag = /<svg\b([^>]*)>/i.exec(text);
+    if (!tag) return null;
+    const attrs = tag[1] || '';
+    const parsePx = (raw) => {
+      if (raw == null) return null;
+      const m = /^\s*(-?\d+(?:\.\d+)?)\s*(?:px)?\s*$/i.exec(raw);
+      return m ? Math.round(parseFloat(m[1])) : null;
+    };
+    const w = parsePx(getAttr(attrs, 'width'));
+    const h = parsePx(getAttr(attrs, 'height'));
+    if (w != null && h != null && w > 0 && h > 0) return { width: w, height: h };
+    // Fall back to viewBox "minX minY width height".
+    const vb = getAttr(attrs, 'viewBox');
+    if (vb) {
+      const parts = vb.trim().split(/[\s,]+/);
+      if (parts.length === 4) {
+        const vbW = parseFloat(parts[2]);
+        const vbH = parseFloat(parts[3]);
+        if (Number.isFinite(vbW) && Number.isFinite(vbH) && vbW > 0 && vbH > 0) {
+          return { width: Math.round(vbW), height: Math.round(vbH) };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Unknown format — let the caller decide ("can't verify → keep").
+  return null;
 }
 
 // -----------------------------------------------------------------------------
@@ -250,9 +525,14 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
  * Download one asset to `outputDir`.
  *
  * Returns one of:
- *   - `{ ok: true, sourceUrl, savedAs, bytes }`        — saved to disk
- *   - `{ ok: false, sourceUrl, reason: 'too-small' }`  — under minBytes (icon)
- *   - `{ ok: false, sourceUrl, reason: 'too-large' }`  — over maxBytes
+ *   - `{ ok: true, sourceUrl, savedAs, bytes, dimensions? }` — saved to disk
+ *   - `{ ok: false, sourceUrl, reason: 'too-small' }`        — under minBytes (icon)
+ *   - `{ ok: false, sourceUrl, reason: 'too-large' }`        — over maxBytes
+ *   - `{ ok: false, sourceUrl, reason: 'too-small-dimensions', dimensions }`
+ *                                                            — Phase E.2 v0.14.7:
+ *     width or height below `minWidth`/`minHeight` after header parse.
+ *     Only triggers when dimensions could be decoded — unknown formats
+ *     (BMP, TIFF, ICO, AVIF) are kept ("can't verify → keep").
  *   - `{ ok: false, sourceUrl, reason: 'fetch-error', message }`
  *
  * @param {string} url
@@ -260,17 +540,23 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
  * @param {object} [opts]
  * @param {number} [opts.minBytes=1024]
  * @param {number} [opts.maxBytes=10*1024*1024]
+ * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. 0 = disabled.
+ * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. 0 = disabled.
  * @param {Set<string>} [opts.usedNames]               — collision-avoid across batch
  * @param {Function} [opts._fetchFn]                   — injection seam for tests
  * @param {Function} [opts._writeFn]                   — injection seam for tests
+ * @param {Function} [opts._decodeDimsFn]              — injection seam for tests
  */
 export async function downloadOne(url, outputDir, opts = {}) {
   const {
     minBytes = 1024,
     maxBytes = 10 * 1024 * 1024,
+    minWidth = 0,
+    minHeight = 0,
     usedNames = new Set(),
     _fetchFn = safeFetchBinary,
     _writeFn = fs.writeFile,
+    _decodeDimsFn = decodeImageDimensions,
   } = opts;
 
   if (!path.isAbsolute(outputDir)) {
@@ -292,12 +578,33 @@ export async function downloadOne(url, outputDir, opts = {}) {
     return { ok: false, sourceUrl: url, reason: 'too-large', bytes: buffer.length };
   }
 
+  // Phase E.2 v0.14.7: dimension filter (post-fetch). Only enforced
+  // when at least one of minWidth/minHeight is set (>0). Decoded
+  // dimensions stay null for unsupported formats (BMP/TIFF/ICO/AVIF) —
+  // we DON'T skip those (treat as "can't verify → keep"), only skip
+  // when dimensions parsed AND below threshold.
+  let dimensions = null;
+  if (minWidth > 0 || minHeight > 0) {
+    dimensions = _decodeDimsFn(buffer, contentType);
+    if (dimensions && (dimensions.width < minWidth || dimensions.height < minHeight)) {
+      return {
+        ok: false,
+        sourceUrl: url,
+        reason: 'too-small-dimensions',
+        bytes: buffer.length,
+        dimensions,
+      };
+    }
+  }
+
   const filename = pickAssetFilename(url, buffer, contentType, usedNames);
   usedNames.add(filename);
   const fullPath = path.join(outputDir, filename);
   await _writeFn(fullPath, buffer);
 
-  return { ok: true, sourceUrl: url, savedAs: filename, bytes: buffer.length };
+  const result = { ok: true, sourceUrl: url, savedAs: filename, bytes: buffer.length };
+  if (dimensions) result.dimensions = dimensions;
+  return result;
 }
 
 /**
@@ -309,13 +616,16 @@ export async function downloadOne(url, outputDir, opts = {}) {
  * @param {number} [opts.concurrency=4]
  * @param {number} [opts.minBytes]
  * @param {number} [opts.maxBytes]
+ * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. 0 = disabled.
+ * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. 0 = disabled.
  * @param {Function} [opts._fetchFn]
  * @param {Function} [opts._writeFn]
  * @param {Function} [opts._mkdirFn]
  * @param {Function} [opts._statFn]                   — v0.14.3 injection seam for the parent-exists + post-mkdir isDirectory() guards. Defaults to `fs.stat`. Tests use a stub that returns `{isDirectory: () => true}` to bypass the real-filesystem check.
+ * @param {Function} [opts._decodeDimsFn]             — injection seam for tests
  * @returns {Promise<{
- *   downloaded: Array<{sourceUrl, savedAs, bytes}>,
- *   skipped:    Array<{sourceUrl, reason, bytes?}>,
+ *   downloaded: Array<{sourceUrl, savedAs, bytes, dimensions?}>,
+ *   skipped:    Array<{sourceUrl, reason, bytes?, dimensions?}>,
  *   errors:     Array<{sourceUrl, message}>,
  *   urlMap:     Map<string, string>,                  — sourceUrl → savedAs
  * }>}
@@ -325,10 +635,13 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
     concurrency = 4,
     minBytes = 1024,
     maxBytes = 10 * 1024 * 1024,
+    minWidth = 0,
+    minHeight = 0,
     _fetchFn,
     _writeFn,
     _mkdirFn = fs.mkdir,
     _statFn = fs.stat,
+    _decodeDimsFn,
   } = opts;
 
   if (!path.isAbsolute(outputDir)) {
@@ -397,17 +710,24 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
       const r = await downloadOne(url, outputDir, {
         minBytes,
         maxBytes,
+        minWidth,
+        minHeight,
         usedNames,
         _fetchFn,
         _writeFn,
+        ...(_decodeDimsFn ? { _decodeDimsFn } : {}),
       });
       if (r.ok) {
-        downloaded.push({ sourceUrl: r.sourceUrl, savedAs: r.savedAs, bytes: r.bytes });
+        const entry = { sourceUrl: r.sourceUrl, savedAs: r.savedAs, bytes: r.bytes };
+        if (r.dimensions) entry.dimensions = r.dimensions;
+        downloaded.push(entry);
         urlMap.set(r.sourceUrl, r.savedAs);
       } else if (r.reason === 'fetch-error') {
         errors.push({ sourceUrl: r.sourceUrl, message: r.message });
       } else {
-        skipped.push({ sourceUrl: r.sourceUrl, reason: r.reason, bytes: r.bytes });
+        const skipEntry = { sourceUrl: r.sourceUrl, reason: r.reason, bytes: r.bytes };
+        if (r.dimensions) skipEntry.dimensions = r.dimensions;
+        skipped.push(skipEntry);
       }
     }
   });

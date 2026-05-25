@@ -6,9 +6,69 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-### Fixed (Phase D.2 hardening — pending version cut)
+Nothing pending right now.
+
+## [0.14.7] — 2026-05-25 — Phase E.2 · intelligent asset filter + Phase D.2 `/review+` hardening
+
+Two threads land together because Phase D.2's `/review+` hardening was already on the branch when Phase E.2 wrapped up. Both ship in v0.14.7.
+
+### Phase E.2 — intelligent asset filter (defuddle-first + alt/figure + dimensions)
+
+Closes the deferred Phase E.2 from v0.14.2: `download_page_assets` now filters relevant images from page noise **before** any byte hits the network. Three filters stack, all enabled by default and individually overridable:
+
+1. **`defuddleFirst: true`** — runs [kepano/defuddle](https://github.com/obsidianmd/obsidian-clipper)'s article-body extractor on the HTML *before* image scanning. Everything outside `<article>` / `<main>` (nav, header, sidebar, footer, ad rails, share-button bars, related-article widgets) is stripped at zero network cost.
+2. **`requireAltOrFigure: true`** — keeps only images with a non-empty `alt` attribute OR wrapped in `<figure>`. Filters decorative icons and social-share glyphs that defuddle let through.
+3. **`minWidth: 100, minHeight: 100`** — post-fetch dimension check. Parses PNG / JPEG / GIF / WebP (VP8 / VP8L / VP8X) magic bytes and SVG `width` / `height` / `viewBox` text. Unknown formats (BMP, TIFF, ICO, AVIF) get a free pass ("can't verify → keep") rather than false-positive skip.
+
+Result on a representative page (header logo + nav icon + 2 article images + 1 decorative + 1 ad banner + 1 share button): **7 sources → 2 download candidates**, zero wasted fetches.
+
+#### Added
+
+- **`npm install defuddle@^0.18.1`** — kepano's content extractor, MIT, the same library obsidian-clipper uses. Imported via `defuddle/node` entry which uses linkedom — works in pure Node, no jsdom required.
+- **`src/helpers/defuddle-extract.mjs`** (NEW) — thin async wrapper around `defuddle/node`. Single export `extractMainContent(html, opts)` returning `{content, title?, author?, image?, wordCount?, usedFallback}`. Defensive: pathological input, defuddle throws, or empty-content results → `usedFallback: true` and caller falls back to raw HTML.
+- **`extractImagesWithMeta(content, baseUrl)` in `src/helpers/asset-downloader.mjs`** (NEW) — single-pass HTML tokenizer that returns `[{url, alt, isFigure}]`. Tracks `<figure>` depth via a counter (O(n), no per-match lastIndexOf scans). Handles nested figures correctly. Markdown `![alt](url)` participates with `isFigure: false`.
+- **`extractImageUrls`** (existing) is now a back-compat facade over `extractImagesWithMeta` that maps to URL strings. All pre-v0.14.7 callers stay green.
+- **`decodeImageDimensions(buffer, contentType)` in `src/helpers/asset-downloader.mjs`** (NEW) — pure function. Parses magic bytes for PNG / JPEG (SOF0-SOF3, SOF5-SOF7, SOF9-SOF11, SOF13-SOF15) / GIF87a + GIF89a / WebP VP8/VP8L/VP8X. SVG parses `width="…px"` + `height="…px"` from the first 8 KiB, falls back to `viewBox` when the explicit attrs are missing or use em/% units. Returns `null` for unknown formats — callers treat this as "can't verify → keep".
+- **`downloadOne` new options `minWidth`, `minHeight`** (default 0 at the helper level — disabled). The dimension decoder runs only when at least one is set, so legacy callers pay zero CPU. New skip reason `'too-small-dimensions'` and skipped entries include `dimensions: {width, height}` for visibility.
+- **`download_page_assets` MCP tool new inputs**:
+  - `defuddleFirst: boolean` (default `true`)
+  - `requireAltOrFigure: boolean` (default `true`)
+  - `minWidth: number` (default `100`)
+  - `minHeight: number` (default `100`)
+
+  Plus two new fields in the response payload: `defuddled: boolean` (did defuddle run successfully?) and `afterRelevanceFilter: number` (count after the alt/figure filter, before maxAssets cap). The `attempted` field still exists with the same meaning.
+- **33 new tests** in `tests/asset-downloader.test.mjs` and `tests/download-page-assets.test.mjs`:
+  - 10 for `extractImagesWithMeta` (alt-text presence / absence / single-quoted, figure depth-counter including nested figures, markdown `![]()` integration, dedup-keeps-first-occurrence)
+  - 9 for `decodeImageDimensions` (PNG / GIF87a+89a / JPEG SOF0 / WebP VP8X / SVG with width-height / SVG viewBox fallback / unknown BMP / too-short buffer / non-buffer input)
+  - 5 for `downloadOne` + `downloadAssets` dimension filter (skip-below-threshold, pass-above-threshold, decoder-not-called-when-disabled, unknown-format-kept, downloadAssets-threads-through)
+  - 9 for the MCP tool wrapper (TOOL_DEFINITION schema, defuddleFirst=true default strips outside-article, defuddleFirst=false bypasses, fallback when defuddle empties content, requireAltOrFigure default skips empty alt, figure-wrapped kept, false disables, minWidth/minHeight validation, response shape always includes new fields)
+
+#### Changed
+
+- **`src/tools/download-page-assets.mjs`** — input pipeline restructured to: fetch HTML → (optionally) defuddle → `extractImagesWithMeta` → relevance filter → `maxAssets` cap → `downloadAssets`. The defuddle step is best-effort with raw-HTML fallback. All new behaviors are smart-by-default with individual override flags.
+- **`extractImageUrls` is now a 2-line facade** over `extractImagesWithMeta`. Behavior is unchanged from v0.14.2-v0.14.6 (verified by all pre-existing tests passing).
+- **TOOL_DEFINITION description** rewritten to lead with the relevance behavior so Claude picks the right defaults without reading the schema.
+
+#### Backward compatibility
+
+- Pre-v0.14.7 callers that set `defuddleFirst: false, requireAltOrFigure: false, minWidth: 0, minHeight: 0` get **identical** behavior to v0.14.2-v0.14.6. The new defaults change BEHAVIOR but not API shape — the response gains two extra fields (`defuddled`, `afterRelevanceFilter`) that pre-existing consumers can safely ignore.
+- `extractImageUrls` signature unchanged. Internal refactor is invisible.
+- `downloadOne` / `downloadAssets` new options default to 0 (disabled) at the helper level — only the MCP tool turns them on by default at 100×100. Direct helper callers are unaffected.
+
+#### Phase E status update
+
+Phase E is now **complete end-to-end**:
+- v0.14.2 — MVP byte-size filtering ✅
+- v0.14.3 — `/review+` hardening ✅
+- v0.14.7 — Intelligent relevance filters (defuddle + alt/figure + dimensions) ✅
+
+The Phase E.2 deferred work from v0.14.2 (dimension parsing) and the implicit Phase E.3 (defuddle-first relevance) are both shipped.
+
+### Phase D.2 `/review+` hardening (concurrent thread)
 
 `mini-/review+` on commit 74ff782 (Phase D.2 MathML→LaTeX) found ZERO P1, two P2, three P3. The two P2 + two of three P3 are addressed below; P3-2 (duplicated MathML conversion between `webpageToMarkdown` and `extract_page_metadata`) is acknowledged as acceptable double work (≈1 ms per Wikipedia page).
+
+#### Fixed
 
 - **P2-1 — JSDoc fantôme**: the `convertMathmlBlocksInHtml` doc claimed a `<dl><dd><math>` parent-block heuristic for display detection that was never implemented (real code checks only the `display=` attribute). Removed the false claim; clarified that Wikipedia emits `display="block"` explicitly so the attribute check alone is sufficient.
 - **P2-2 — UTF-8 round-trip non-idempotent on non-UTF-8 charsets**: `Buffer.from(buf.toString('utf-8'), 'utf-8')` inflates Windows-1252 / Latin-1 / ISO-8859-* bytes to U+FFFD when they're invalid UTF-8 sequences, corrupting accented characters in surrounding prose on a converted page. Mitigation: `markitdown.mjs::toMarkdown` now extracts `contentType` and `charset` from the response headers and passes both through to the `transformContent` hook's `ctx` argument. The `mathPreservingTransform` in `convert.mjs` adds two safety gates: (1) skip the transform unless `contentType` is `text/html` / `application/xhtml+xml` / `application/xml` / unset (PDFs, images, audio, video etc. now skip the UTF-8 round-trip entirely); (2) skip the transform if `charset` is set to anything other than UTF-8 / ASCII. Either gate failing → return `null` → markitdown uses the original buffer untouched. Math conversion is sacrificed in those edge cases in exchange for not corrupting surrounding content.
@@ -17,13 +77,11 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   - **PDF-like binary input** with accidental `<math` byte sequence (no matching `</math>` close in the bounded forward scan window) → `count=0`, html unchanged, conversions array empty. Locks in the no-corruption guarantee for non-HTML responses flowing through `webpage_to_markdown`.
   - **Display attribute variants**: `display="BLOCK"` (uppercase), `display = "block"` (whitespace around `=`), `display='block'` (single-quoted) — all three correctly detected as block math. Note: unquoted `display=block` (valid HTML5 but invalid XML) is NOT tested because `mathml-to-latex` uses xmldom which rejects unquoted attributes — real-world emitters (Wikipedia, MathJax, KaTeX) always quote.
 
-### Skipped (acknowledged NIT)
+#### Skipped (acknowledged NIT)
 
 - **P3-2 — Duplicated MathML conversion**: a single `wiki-ingest` pass calls both `webpageToMarkdown` (which converts) and `extract_page_metadata` (which converts AGAIN to populate `mathmlLatex`). Cost bounded to ~1 ms per Wikipedia page. Worth refactoring only if a hotspot emerges; until then, the cleaner data flow (each tool independently consumes raw HTML, no implicit shared state) wins over the small perf gain.
 
-### Test count progression
-
-- 1020 → 1030 passing (asset-downloader gained tests from concurrent Phase E.2 work + 2 latex-preserver hardening regressions here).
+### Test count: **1055/1055 passing** (was 1020 at v0.14.6; +33 Phase E.2 + 2 Phase D.2 hardening).
 
 ## [0.14.6] — 2026-05-25 — Phase D.2 · MathML → LaTeX conversion (Wikipedia equations now survive)
 

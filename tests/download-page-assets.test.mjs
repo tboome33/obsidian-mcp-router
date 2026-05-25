@@ -30,7 +30,12 @@ describe('download-page-assets — TOOL_DEFINITION shape', () => {
 
   test('declares all input parameters with descriptions', () => {
     const props = TOOL_DEFINITION.inputSchema.properties;
-    for (const k of ['url', 'html', 'baseUrl', 'outputDir', 'minBytes', 'maxBytes', 'concurrency', 'maxAssets']) {
+    for (const k of [
+      'url', 'html', 'baseUrl', 'outputDir',
+      'minBytes', 'maxBytes', 'concurrency', 'maxAssets',
+      // v0.14.7
+      'defuddleFirst', 'requireAltOrFigure', 'minWidth', 'minHeight',
+    ]) {
       assert.ok(props[k], `${k} must be in schema`);
       assert.ok(props[k].description, `${k} must have description`);
     }
@@ -142,12 +147,18 @@ describe('download-page-assets — html branch end-to-end (no network, in-memory
     // 5 image refs in HTML, maxAssets: 2 → only first 2 attempted.
     // We can verify by checking `attempted` even though all fetches will
     // fail (no network) — the failures go to `errors`, not `attempted`.
+    //
+    // v0.14.7: the new defaults are defuddleFirst=true + requireAltOrFigure=true.
+    // We disable both here to keep this test focused on maxAssets capping —
+    // the relevance-filter and defuddle behaviors get their own dedicated tests.
     const html = Array.from({ length: 5 }, (_, i) => `<img src="https://nope.invalid/img${i}.png">`).join('');
     const r = await handleDownloadPageAssets({
       html,
       baseUrl: 'https://nope.invalid/',
       outputDir: ABS_OUT,
       maxAssets: 2,
+      defuddleFirst: false,
+      requireAltOrFigure: false,
     });
     assert.equal(r.extracted, 5);
     assert.equal(r.attempted, 2);
@@ -177,5 +188,141 @@ describe('download-page-assets — wiring into src/index.mjs', () => {
   test('listed in WRITE_TOOL_NAMES (read-only deployments hide it)', async () => {
     const mod = await import('../src/index.mjs');
     assert.ok(mod._internals.WRITE_TOOL_NAMES.has('download_page_assets'));
+  });
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 — defuddle-first + alt/figure relevance filter (Phase E.2)
+// -----------------------------------------------------------------------------
+
+describe('download-page-assets — v0.14.7 defuddle-first + relevance filter', () => {
+  const ABS_OUT = process.platform === 'win32' ? 'C:\\tmp\\dl-test-v147' : '/tmp/dl-test-v147';
+
+  test('defuddleFirst=true (default) strips images outside <article>', async () => {
+    // Header logo, footer share icon, nav icon → outside article, defuddle drops them.
+    // Article body image WITH alt → kept.
+    const html = `<!DOCTYPE html><html><body>
+      <header><img src="https://nope.invalid/logo.png" alt="logo"></header>
+      <nav><img src="https://nope.invalid/twitter.svg" alt="twitter"></nav>
+      <article>
+        <h1>An article</h1>
+        <p>Body text.</p>
+        <img src="https://nope.invalid/diagram.png" alt="neural net diagram">
+      </article>
+      <footer><img src="https://nope.invalid/share-fb.png" alt="share"></footer>
+    </body></html>`;
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+    });
+    assert.equal(r.defuddled, true, 'defuddle should have run successfully');
+    // Defuddle keeps the article body image, strips the rest.
+    assert.equal(r.extracted, 1, 'only the article-body image survives defuddle');
+    assert.equal(r.afterRelevanceFilter, 1, 'it has alt, passes filter');
+  });
+
+  test('defuddleFirst=false bypasses defuddle (legacy behavior)', async () => {
+    const html = `<!DOCTYPE html><html><body>
+      <header><img src="https://nope.invalid/logo.png" alt="logo"></header>
+      <article><img src="https://nope.invalid/diagram.png" alt="diagram"></article>
+      <footer><img src="https://nope.invalid/share.png" alt="share"></footer>
+    </body></html>`;
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+      defuddleFirst: false,
+    });
+    assert.equal(r.defuddled, false);
+    assert.equal(r.extracted, 3, 'all 3 imgs found in raw HTML');
+  });
+
+  test('defuddleFirst falls back to raw HTML when defuddle returns empty content', async () => {
+    // Empty body with no article structure — defuddle returns "" so we
+    // fall back to raw scan. The `<img>` is found that way.
+    // Without alt and not in figure → afterRelevanceFilter drops it.
+    const html = '<img src="https://nope.invalid/orphan.png" alt="orphan">';
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+    });
+    // Defuddle returned `<body></body>` — no images. We've documented
+    // this as "if defuddle drops all content, the page isn't an article".
+    // For a TRUE no-article input the orphan img stays filtered.
+    assert.equal(r.extracted, 0, 'defuddle correctly identified this as not an article');
+  });
+
+  test('requireAltOrFigure=true (default) skips images with empty alt', async () => {
+    const html = `<!DOCTYPE html><html><body><article>
+      <p>Body</p>
+      <img src="https://nope.invalid/no-alt.png">
+      <img src="https://nope.invalid/empty-alt.png" alt="">
+      <img src="https://nope.invalid/with-alt.png" alt="kept">
+    </article></body></html>`;
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+    });
+    assert.equal(r.extracted, 3, 'all 3 survive defuddle');
+    assert.equal(r.afterRelevanceFilter, 1, 'only the alt-present one passes');
+  });
+
+  test('requireAltOrFigure=true keeps figure-wrapped images even with empty alt', async () => {
+    const html = `<!DOCTYPE html><html><body><article>
+      <p>Body</p>
+      <figure><img src="https://nope.invalid/in-figure.png"><figcaption>Fig.</figcaption></figure>
+      <img src="https://nope.invalid/no-alt.png">
+    </article></body></html>`;
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+    });
+    assert.equal(r.extracted, 2);
+    assert.equal(r.afterRelevanceFilter, 1, 'figure-wrapped kept, naked img dropped');
+  });
+
+  test('requireAltOrFigure=false disables the filter (legacy behavior)', async () => {
+    const html = `<!DOCTYPE html><html><body><article>
+      <p>Body</p>
+      <img src="https://nope.invalid/a.png">
+      <img src="https://nope.invalid/b.png">
+    </article></body></html>`;
+    const r = await handleDownloadPageAssets({
+      html,
+      baseUrl: 'https://nope.invalid/',
+      outputDir: ABS_OUT,
+      requireAltOrFigure: false,
+    });
+    assert.equal(r.afterRelevanceFilter, r.extracted);
+  });
+
+  test('minWidth / minHeight numeric validation rejects negatives', async () => {
+    await assert.rejects(
+      () => handleDownloadPageAssets({
+        html: '<p>x</p>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, minWidth: -1,
+      }),
+      /minWidth must be a non-negative/,
+    );
+    await assert.rejects(
+      () => handleDownloadPageAssets({
+        html: '<p>x</p>', baseUrl: 'https://x.io/', outputDir: ABS_OUT, minHeight: -1,
+      }),
+      /minHeight must be a non-negative/,
+    );
+  });
+
+  test('shape: response includes defuddled + afterRelevanceFilter fields', async () => {
+    const r = await handleDownloadPageAssets({
+      html: '<p>x</p>',
+      baseUrl: 'https://x.io/',
+      outputDir: ABS_OUT,
+    });
+    // Both fields must always be present (consistent JSON shape).
+    assert.equal(typeof r.defuddled, 'boolean');
+    assert.equal(typeof r.afterRelevanceFilter, 'number');
   });
 });
