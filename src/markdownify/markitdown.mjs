@@ -76,15 +76,30 @@ export async function toMarkdown({ filePath, url, projectRoot = DEFAULT_PROJECT_
       // chance to look at its size. merged_bug_001 from /ultrareview.
       let content = await readBodyWithCap(response, MAX_URL_BODY_BYTES, url);
 
-      // v0.14.6 (Phase D.2) — optional `transformContent(buffer, {url, extension}) →
-      // Promise<Buffer|string>` hook lets the caller mutate the fetched body
-      // before it lands in the temp file that markitdown converts. Use case:
-      // pre-process HTML to convert `<math>` MathML blocks to `$$LaTeX$$`
-      // dollar-delimited strings so equations survive the HTML→markdown step.
-      // The transform must return the same byte sequence (or a modified one);
-      // strings are coerced to UTF-8 Buffers. No-op if not provided.
+      // v0.14.6 (Phase D.2) — optional `transformContent(buffer, ctx) →
+      // Promise<Buffer|string|null>` hook lets the caller mutate the
+      // fetched body before it lands in the temp file that markitdown
+      // converts. Use case: pre-process HTML to convert `<math>` MathML
+      // blocks to `$$LaTeX$$` dollar-delimited strings so equations
+      // survive the HTML→markdown step. Returning `null` (or undefined)
+      // means "no change — use original buffer" (no-op fast path).
+      // Strings are coerced to UTF-8 Buffers.
+      //
+      // v0.14.7 (P2-2 hardening): ctx now includes parsed Content-Type
+      // info. The buffer→string→buffer round-trip via `toString('utf-8')`
+      // is only idempotent for UTF-8 input — Windows-1252 / Latin-1 /
+      // ISO-8859-* content gets accented chars mangled to U+FFFD (3
+      // bytes each, content size grows, surrounding prose corrupted).
+      // Real-world risk is low (Wikipedia + modern blogs are UTF-8) but
+      // the transform now sees `ctx.charset` and `ctx.contentType` so
+      // it can refuse to mutate non-UTF-8 bodies. The hook is policy-
+      // free — markitdown.mjs just surfaces the signals.
       if (typeof transformContent === 'function') {
-        const transformed = await transformContent(content, { url, extension });
+        const rawCt = response.headers?.get?.('content-type') || '';
+        const contentType = String(rawCt).toLowerCase().split(';')[0].trim();
+        const charsetMatch = /charset\s*=\s*["']?([^"';,\s]+)/i.exec(String(rawCt));
+        const charset = charsetMatch ? charsetMatch[1].toLowerCase() : null;
+        const transformed = await transformContent(content, { url, extension, contentType, charset });
         if (transformed != null) {
           content = Buffer.isBuffer(transformed) ? transformed : Buffer.from(String(transformed), 'utf-8');
         }

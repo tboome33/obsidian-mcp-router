@@ -6,7 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Fixed (Phase D.2 hardening — pending version cut)
+
+`mini-/review+` on commit 74ff782 (Phase D.2 MathML→LaTeX) found ZERO P1, two P2, three P3. The two P2 + two of three P3 are addressed below; P3-2 (duplicated MathML conversion between `webpageToMarkdown` and `extract_page_metadata`) is acknowledged as acceptable double work (≈1 ms per Wikipedia page).
+
+- **P2-1 — JSDoc fantôme**: the `convertMathmlBlocksInHtml` doc claimed a `<dl><dd><math>` parent-block heuristic for display detection that was never implemented (real code checks only the `display=` attribute). Removed the false claim; clarified that Wikipedia emits `display="block"` explicitly so the attribute check alone is sufficient.
+- **P2-2 — UTF-8 round-trip non-idempotent on non-UTF-8 charsets**: `Buffer.from(buf.toString('utf-8'), 'utf-8')` inflates Windows-1252 / Latin-1 / ISO-8859-* bytes to U+FFFD when they're invalid UTF-8 sequences, corrupting accented characters in surrounding prose on a converted page. Mitigation: `markitdown.mjs::toMarkdown` now extracts `contentType` and `charset` from the response headers and passes both through to the `transformContent` hook's `ctx` argument. The `mathPreservingTransform` in `convert.mjs` adds two safety gates: (1) skip the transform unless `contentType` is `text/html` / `application/xhtml+xml` / `application/xml` / unset (PDFs, images, audio, video etc. now skip the UTF-8 round-trip entirely); (2) skip the transform if `charset` is set to anything other than UTF-8 / ASCII. Either gate failing → return `null` → markitdown uses the original buffer untouched. Math conversion is sacrificed in those edge cases in exchange for not corrupting surrounding content.
+- **P3-1 — Double regex evaluation on close-tag scan**: `convertMathmlBlocksInHtml` was running `.search()` then `.slice().match()` against the same `/<\/math\s*>/i` regex to extract close-tag index AND length — two passes per block. Switched to a single `.exec()` call that returns `.index` + `[0].length` in one shot. No behavior change, one fewer regex per `<math>` block on math-heavy pages.
+- **P3-3 — Test gap**: +2 hardening regression tests in `tests/latex-preserver.test.mjs`:
+  - **PDF-like binary input** with accidental `<math` byte sequence (no matching `</math>` close in the bounded forward scan window) → `count=0`, html unchanged, conversions array empty. Locks in the no-corruption guarantee for non-HTML responses flowing through `webpage_to_markdown`.
+  - **Display attribute variants**: `display="BLOCK"` (uppercase), `display = "block"` (whitespace around `=`), `display='block'` (single-quoted) — all three correctly detected as block math. Note: unquoted `display=block` (valid HTML5 but invalid XML) is NOT tested because `mathml-to-latex` uses xmldom which rejects unquoted attributes — real-world emitters (Wikipedia, MathJax, KaTeX) always quote.
+
+### Skipped (acknowledged NIT)
+
+- **P3-2 — Duplicated MathML conversion**: a single `wiki-ingest` pass calls both `webpageToMarkdown` (which converts) and `extract_page_metadata` (which converts AGAIN to populate `mathmlLatex`). Cost bounded to ~1 ms per Wikipedia page. Worth refactoring only if a hotspot emerges; until then, the cleaner data flow (each tool independently consumes raw HTML, no implicit shared state) wins over the small perf gain.
+
+### Test count progression
+
+- 1020 → 1030 passing (asset-downloader gained tests from concurrent Phase E.2 work + 2 latex-preserver hardening regressions here).
 
 ## [0.14.6] — 2026-05-25 — Phase D.2 · MathML → LaTeX conversion (Wikipedia equations now survive)
 

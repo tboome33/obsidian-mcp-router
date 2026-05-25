@@ -369,6 +369,58 @@ test('convertMathmlBlocksInHtml: HARDENING — 50k <math> open tokens without cl
   assert.equal(r.count, 0);
 });
 
+test('HARDENING v0.14.7 (P3-3): PDF-like binary with accidental `<math` byte sequence → no false positive', () => {
+  // webpage_to_markdown is sometimes called with a PDF URL. The transform
+  // decodes the buffer as UTF-8 — for PDFs that's gibberish, but a stray
+  // byte sequence MIGHT contain `<math` accidentally. Verify that
+  // convertMathmlBlocksInHtml handles it safely:
+  // (1) doesn't throw
+  // (2) returns count=0 when no matching </math> close exists in the
+  //     bounded forward scan (which is the realistic case for binary)
+  // (3) leaves the input unchanged when count=0
+  //
+  // Construct a PDF-like binary blob: PDF magic bytes + random binary +
+  // an accidental `<math` sequence followed by binary noise (no </math>
+  // within reach).
+  const pdfLike = Buffer.concat([
+    Buffer.from('%PDF-1.4\n', 'utf-8'),
+    Buffer.from([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02]),
+    Buffer.from(' some <math random binary follows ', 'utf-8'),
+    Buffer.from([0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA]),
+    Buffer.from('%%EOF\n', 'utf-8'),
+  ]);
+  const asString = pdfLike.toString('utf-8');
+  const r = convertMathmlBlocksInHtml(asString);
+  // No `</math>` close present → no block matched → count=0, html unchanged.
+  assert.equal(r.count, 0);
+  assert.equal(r.html, asString, 'binary input must not be mutated when no math block can be closed');
+  // Conversions array empty.
+  assert.equal(r.conversions.length, 0);
+});
+
+test('HARDENING v0.14.7 (P3-3): display attribute parsing handles uppercase + whitespace + single-quotes', () => {
+  // Display detection must be case-insensitive and tolerate whitespace
+  // around the `=` and both quote styles. The downstream `mathml-to-latex`
+  // library uses an XML parser (xmldom) so it requires QUOTED attributes —
+  // we don't test unquoted (`display=block`) because that's invalid XML
+  // even though it's valid HTML5 (real-world emitters always quote).
+  const upper = '<math display="BLOCK"><mi>x</mi></math>';
+  const r1 = convertMathmlBlocksInHtml(upper);
+  assert.equal(r1.count, 1);
+  assert.equal(r1.conversions[0].display, 'block');
+  assert.match(r1.html, /\$\$/);
+
+  const ws = '<math display = "block"><mi>y</mi></math>';
+  const r2 = convertMathmlBlocksInHtml(ws);
+  assert.equal(r2.count, 1);
+  assert.equal(r2.conversions[0].display, 'block');
+
+  const sq = "<math display='block'><mi>z</mi></math>";
+  const r3 = convertMathmlBlocksInHtml(sq);
+  assert.equal(r3.count, 1);
+  assert.equal(r3.conversions[0].display, 'block');
+});
+
 test('convertMathmlBlocksInHtml: Wikipedia-style integration — equation + surrounding text preserved', () => {
   // Realistic-ish snippet from a Wikipedia article. The LaTeX equation
   // should appear inline in the converted HTML, and the surrounding

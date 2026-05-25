@@ -60,20 +60,61 @@ async function convertUrl(url, opts = {}) {
  * returns the HTML unchanged when count === 0), so this is safe to apply
  * unconditionally on every URL. Cost is one extra regex scan of the body.
  *
- * Buffer encoding: we decode the fetched bytes as UTF-8, run the transform,
- * and return the modified string (which markitdown.mjs's `toMarkdown` will
- * re-encode to UTF-8 for the temp file). Non-HTML responses (PDFs, images,
- * etc. — markitdown also handles those via this same code path) decode to
- * gibberish but the regex finds no `<math>` so they're returned unchanged.
+ * v0.14.7 (P2-2 hardening): two new safety gates.
+ *   - **Content-Type gate**: skip the transform unless the response is
+ *     advertised as HTML (`text/html`, `application/xhtml+xml`). PDFs,
+ *     images, audio, video, and other binary blobs that flow through
+ *     `webpage_to_markdown` are NOT decoded to UTF-8, never get matched
+ *     by the `<math>` regex, and never risk binary corruption from the
+ *     buffer→string→buffer round-trip.
+ *   - **Charset gate**: skip the transform if the response declares a
+ *     charset that isn't UTF-8 / unset / ascii. Windows-1252, Latin-1,
+ *     ISO-8859-*, Shift_JIS etc. would have their accented characters
+ *     mangled by the UTF-8 round-trip (each invalid byte → U+FFFD = 3
+ *     bytes, surrounding prose corrupted). Realistic blast radius is low
+ *     because Wikipedia + modern publishers are UTF-8, but the guard is
+ *     cheap to add and removes the failure mode entirely.
+ *
+ * Either gate failing → return `null` → markitdown uses the original
+ * buffer untouched. The math conversion is sacrificed in exchange for
+ * not corrupting the surrounding content. Trade-off explicit, not
+ * hidden.
  */
-function mathPreservingTransform(buffer) {
+const HTML_CONTENT_TYPES = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'application/xml',
+  '', // unset Content-Type — assume HTML, the regex will no-op if it's not
+]);
+
+function isUtf8Charset(charset) {
+  // null/undefined → assume UTF-8 (HTML default, modern publishers). Empty
+  // string treated the same. Otherwise compare against the small set of
+  // UTF-8 aliases. Reject everything else (errs on the side of safety).
+  if (!charset) return true;
+  const c = String(charset).toLowerCase().replace(/[\s_-]/g, '');
+  return c === 'utf8' || c === 'utf' || c === 'ascii' || c === 'usascii';
+}
+
+function mathPreservingTransform(buffer, ctx = {}) {
+  // Safety gate 1: non-HTML content-type → skip. Protects PDFs, images,
+  // audio, etc. against the UTF-8 round-trip.
+  if (ctx.contentType !== undefined && !HTML_CONTENT_TYPES.has(ctx.contentType || '')) {
+    return null;
+  }
+  // Safety gate 2: non-UTF-8 charset → skip. Protects Windows-1252 /
+  // Latin-1 / ISO-8859-* pages against accented-char mangling.
+  if (!isUtf8Charset(ctx.charset)) {
+    return null;
+  }
+
   const html = buffer.toString('utf-8');
   const { html: transformed, count } = convertMathmlBlocksInHtml(html);
   // count === 0 means no <math> blocks were found OR none could be
   // converted; in either case the helper returns the input unchanged.
-  // We could return buffer directly here, but returning the string lets
-  // the markitdown.mjs hook handle the re-encoding uniformly.
-  return count > 0 ? transformed : null; // null = "don't replace, keep original buffer"
+  // We return null in that case so markitdown keeps the original buffer
+  // (no round-trip cost).
+  return count > 0 ? transformed : null;
 }
 
 /* ---------- URL-input tools (YouTube, Bing, generic webpage) ---------- */

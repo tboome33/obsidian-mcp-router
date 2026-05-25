@@ -299,10 +299,13 @@ function stripFencedCode(md) {
  *
  * Conversion strategy:
  *   - **Display mode** detection: a `<math>` block becomes `$$...$$` (centered
- *     block equation) if it carries `display="block"`, OR if it's the sole
- *     non-whitespace content of its enclosing block element (heuristic for
- *     Wikipedia's `<dl><dd><math>...</math></dd></dl>` pattern). Otherwise
- *     it becomes `$...$` (inline).
+ *     block equation) if it carries `display="block"` (case-insensitive,
+ *     whitespace-tolerant). Anything else (`display="inline"`, unset, or
+ *     non-standard value) is rendered as `$...$` inline math. Wikipedia
+ *     emits `display="block"` explicitly on centered formulas, so the
+ *     attribute check is sufficient for real-world content — no DOM-context
+ *     heuristic needed. (v0.14.7 doc fix — earlier text mentioned a
+ *     `<dl><dd><math>` parent-block heuristic that was never implemented.)
  *   - **Empty conversion**: if `mathml-to-latex` returns an empty string
  *     (malformed MathML, unsupported elements), we skip the substitution
  *     and leave the original `<math>` tags untouched. Better to surface
@@ -360,13 +363,16 @@ export function convertMathmlBlocksInHtml(html) {
     const openAttrs = openMatch[1] || '';
 
     // Bounded forward scan for </math>. We index from openTagEnd, limit
-    // to MAX_MATH_SPAN, then look for the literal string. Cheap and safe.
+    // to MAX_MATH_SPAN, then look for the close tag with a single `.exec()`
+    // call that gives us both `.index` (start) and `[0].length` (length) —
+    // v0.14.7 dedup of the prior `.search()` + `.slice().match()` pair which
+    // ran the same regex twice per block.
     const MAX_MATH_SPAN = 102400;
     const searchSlice = safe.slice(openTagEnd, openTagEnd + MAX_MATH_SPAN);
-    const closeRel = searchSlice.search(/<\/math\s*>/i);
-    if (closeRel === -1) continue; // unclosed <math> — skip silently
-    const closeStart = openTagEnd + closeRel;
-    const closeEnd = closeStart + searchSlice.slice(closeRel).match(/<\/math\s*>/i)[0].length;
+    const closeMatch = /<\/math\s*>/i.exec(searchSlice);
+    if (!closeMatch) continue; // unclosed <math> — skip silently
+    const closeStart = openTagEnd + closeMatch.index;
+    const closeEnd = closeStart + closeMatch[0].length;
 
     // Detect display mode. `display="block"` is the standard. Wikipedia
     // also emits `display="inline"`. Anything else (unset, "true", etc.)
