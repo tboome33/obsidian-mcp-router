@@ -56,6 +56,10 @@ import {
   handleDownloadPageAssets,
 } from './tools/download-page-assets.mjs';
 import { buildOpenLinkTool } from './tools/build-open-link.mjs';
+import {
+  TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
+  getWikiContextPack,
+} from './tools/get-wiki-context-pack.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -650,6 +654,10 @@ const TOOLS = [
       ],
     },
   },
+  // Roadmap item #6 (llm-wiki-compiler) — structured JSON context pack for
+  // non-Claude agents. Read-only (queries the wiki via index.md + smart
+  // search + frontmatter), excluded from WRITE_TOOL_NAMES.
+  GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
 ];
 
 /**
@@ -705,6 +713,8 @@ const TOOL_HANDLERS = {
   // v0.14.8 — click-to-open URL builder (read-only, no vault I/O beyond
   // the per-vault data.json port lookup).
   build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
+  // Roadmap item #6 — structured JSON context pack (v1 envelope).
+  get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
