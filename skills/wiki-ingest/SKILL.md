@@ -188,6 +188,26 @@ For each entity/concept identified in step 2:
 
 - **New page**: `mcp__obsidian-router__write_file` with frontmatter `type: entity` (or `concept`), `tags`, **and `source_type`** (`extracted` if the page is a literal quote/citation, `inferred` if derived by reading the source, `claude_synthesized` if pure synthesis — see step 4 note and vault CLAUDE.md "Source provenance" section). For paragraphs of mixed provenance inside the body, use inline callouts `[!extracted]` / `[!inferred]` / `[!claude_synthesized]`. Body MUST follow the heading hierarchy: one `# <title>` H1, then for `concept` use `## Definition` / `## Why it matters` / `## Related` / `## Sources`; for `entity` use `## Context` / `## Notes` / `## Sources`. End the body with a `## Sources` H2 that wikilinks to the source page you just filed.
 
+- **Line-level citations** (v0.15.0+, roadmap item #1) : when a paragraph cites a *specific passage* of a long source (paper, transcript, doc >100 lines), append a line-range marker at the END of the paragraph using the canonical colon-style form:
+
+  ```markdown
+  PKCE replaces the client secret for public OAuth clients, preventing
+  interception attacks on the authorisation code. ^[oauth-howto.md:42-58]
+  ```
+
+  Format rules :
+  - **Canonical form** : `^[<filename>:<start>-<end>]` (colon-style). Use this everywhere in the router-managed wiki.
+  - **GitHub-style** : `^[<filename>#L<start>-L<end>]` is ALSO valid and semantically equivalent — emit it only when the source is itself a GitHub-hosted file and you want the marker to render as a GitHub deep link in some downstream tool. Default is colon-style.
+  - **Single line** : `^[<filename>:42]` (omit the range) for a one-line citation.
+  - **Paragraph-level fallback** : `^[<filename>]` (no range) when the citation is for the whole source and line precision adds no value — equivalent to the pre-v0.15.0 behaviour.
+
+  When to use line-range vs paragraph-level :
+  - **Use line-range** for : papers, transcripts, code files, long-form docs where the exact passage is verifiable by jumping to the lines.
+  - **Use paragraph-level** for : short articles, blog posts, summaries where line numbers are noise. Also when the source has no stable line numbering (rendered HTML, dynamic content).
+  - **Skip the marker** when `source_type: extracted` already says "this whole page is from one source" via the frontmatter — the marker is redundant there.
+
+  `wiki-lint` Check H (`claim-range-validity`) validates these markers — see `skills/wiki-lint/SKILL.md`. The `claim-citations` convention (`skills/conventions/snippets/claim-citations.md`) is the canonical reference; install it on a vault via `/obsidian-router:conventions install claim-citations` to materialise the rules locally.
+
 - **Existing page**: use `mcp__obsidian-router__patch_file` to:
   - Append a bullet under `## Sources` — fully-specified call:
     ```

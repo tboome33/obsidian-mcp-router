@@ -6,7 +6,9 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Added
+
+- **Line-level citations** — `^[file.md:42-58]` markers now supported in wiki pages to pinpoint which lines of a source justify a given paragraph. `wiki-ingest` SKILL.md instructs Claude to emit them when sources are long enough to warrant it (papers, transcripts, code, docs >100 lines); `wiki-lint` adds a new Check H (`claim-range-validity`) that validates the cited source exists, end ≥ start, lines > 0, range doesn't overflow the source. All findings are WARNING-level (sources legitimately shorten over time, no need to fail loudly). New convention snippet `skills/conventions/snippets/claim-citations.md` installable via `/obsidian-router:conventions install claim-citations`. Roadmap item #1 from llm-wiki-compiler-roadmap.
 
 ## [0.14.9] — 2026-05-26 — `/review+` hardening on v0.14.8 (4 passes, A+B converged)
 

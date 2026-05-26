@@ -48,12 +48,29 @@ Pages with section headings followed by no body until the next heading. Surface 
 #### Check G: hot.md staleness
 If `hot.md` `## Last Updated` is more than 7 days old, flag it. Real-world: hot caches go stale fast and become misleading.
 
+#### Check H: claim-range-validity (v0.15.0+, roadmap item #1)
+
+Scan every wiki page body for line-range citation markers of the form `^[<filename>:<start>-<end>]`, `^[<filename>#L<start>-L<end>]`, `^[<filename>:<line>]`, or the paragraph-level fallback `^[<filename>]`. For each marker with a range :
+
+1. **Resolve the cited file** — try `sources/<filename>` first (the convention), then `<filename>` at vault root if not found. If neither exists → WARNING `cited-source-not-found`.
+2. **Parse the range** — accept colon-style `:42-58` and GitHub-style `#L42-L58` (semantically equivalent). Reject malformed ranges (non-numeric, missing parts).
+3. **Validate the range** :
+   - `start > 0` and `end > 0` — both must be positive integers (line 0 doesn't exist) → WARNING `claim-range-zero-or-negative`
+   - `end >= start` — `8-3` is invalid → WARNING `claim-range-inverted`
+   - `end <= sourceLineCount` — range can't extend past the source's actual length → WARNING `claim-range-overflow` with detail "source has N lines"
+
+All Check H findings are **WARNING-level**, not ERROR. Source files can legitimately shorten over time (refactor, edit, summarisation), and we don't want lint to fail loudly on routine maintenance. The user reads the warnings and decides whether to refresh the citing page, refresh the source, or accept the drift.
+
+Single-line citations `^[file.md:42]` and paragraph-level fallbacks `^[file.md]` are also validated — single-line is just the special case where start == end; paragraph-level needs only the cited-source-not-found check (no range to validate).
+
+**Performance note** : Check H reads each cited source file once to get its line count. Cache the line counts per source within a single lint run to avoid re-reading the same source multiple times when several pages cite it.
+
 ### 3. Render the report
 
 Group findings by severity:
 
 - **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow)
 - **Info** (informational): log out-of-order entries, hot.md staleness
 
 For each finding:
