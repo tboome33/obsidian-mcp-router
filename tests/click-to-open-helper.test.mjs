@@ -226,20 +226,20 @@ describe('buildClickToOpenMarkdownLink', () => {
 });
 
 describe('cache behaviour', () => {
-  test('repeated calls don\'t reread data.json (cache hit)', () => {
+  test('repeated calls don\'t reread data.json on success (cache hit)', () => {
     writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
     const vault = { type: 'local', path: vaultPath, name: 't' };
     // First call seeds the cache
     const u1 = buildClickToOpenUrl(vault, 'a.md');
     assert.equal(u1, 'http://127.0.0.1:27142/open/a.md');
     // Mutate data.json — without cache reset, the next call MUST still
-    // return the old port (proves the cache is in effect).
+    // return the old port (proves the cache is in effect for successes).
     fs.writeFileSync(
       dataJsonPath,
       JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
     );
     const u2 = buildClickToOpenUrl(vault, 'b.md');
-    assert.equal(u2, 'http://127.0.0.1:27142/open/b.md', 'cache should pin the original port');
+    assert.equal(u2, 'http://127.0.0.1:27142/open/b.md', 'cache should pin the original port on success');
   });
 
   test('_resetCache forces a fresh read', () => {
@@ -253,5 +253,87 @@ describe('cache behaviour', () => {
     _resetCache();
     const u = buildClickToOpenUrl(vault, 'b.md');
     assert.equal(u, 'http://127.0.0.1:27999/open/b.md');
+  });
+
+  test('v0.14.9: failures (enabled:false) are NOT cached — retry on next call', () => {
+    // Reviewer A IMPORTANT-1: onboarding scenario. User starts router
+    // before enabling insecure server → first call sees enabled:false.
+    // After user flips data.json to enabled:true, subsequent calls MUST
+    // pick up the change without a session restart.
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: false });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const u1 = buildClickToOpenUrl(vault, 'a.md');
+    assert.equal(u1, null, 'first call sees enabled:false');
+    // User flips the setting WITHOUT bumping the cache.
+    fs.writeFileSync(
+      dataJsonPath,
+      JSON.stringify({ insecurePort: 27142, enableInsecureServer: true }),
+    );
+    const u2 = buildClickToOpenUrl(vault, 'b.md');
+    assert.equal(
+      u2,
+      'http://127.0.0.1:27142/open/b.md',
+      'subsequent call must re-read disk and produce a URL',
+    );
+  });
+
+  test('v0.14.9: missing data.json is NOT cached — retry on next call', () => {
+    fs.rmSync(dataJsonPath, { force: true });
+    _resetCache();
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const u1 = buildClickToOpenUrl(vault, 'a.md');
+    assert.equal(u1, null);
+    // Create the file later — next call must pick it up.
+    fs.writeFileSync(
+      dataJsonPath,
+      JSON.stringify({ insecurePort: 27142, enableInsecureServer: true }),
+    );
+    const u2 = buildClickToOpenUrl(vault, 'b.md');
+    assert.equal(u2, 'http://127.0.0.1:27142/open/b.md');
+  });
+});
+
+describe('v0.14.9: markdown label escaping', () => {
+  // Reviewer B P3: a file named `foo]bar.md` was producing `[foo]bar](...)`
+  // which the renderer interprets as `[foo]` + literal text `bar](...)`.
+  test('escapes ] in basename-derived label', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const link = buildClickToOpenMarkdownLink(vault, 'wiki/foo]bar.md');
+    assert.equal(
+      link,
+      '[foo\\]bar](http://127.0.0.1:27142/open/wiki%2Ffoo%5Dbar.md)',
+      'basename containing ] must be escaped in label',
+    );
+  });
+
+  test('escapes [ in explicit label', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const link = buildClickToOpenMarkdownLink(vault, 'wiki/foo.md', '[draft] note');
+    assert.equal(
+      link,
+      '[\\[draft\\] note](http://127.0.0.1:27142/open/wiki%2Ffoo.md)',
+    );
+  });
+
+  test('escapes backslash in label', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const link = buildClickToOpenMarkdownLink(vault, 'wiki/foo.md', 'a\\b');
+    assert.equal(
+      link,
+      '[a\\\\b](http://127.0.0.1:27142/open/wiki%2Ffoo.md)',
+    );
+  });
+
+  test('clean labels pass through unchanged', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    const link = buildClickToOpenMarkdownLink(vault, 'wiki/foo.md', 'Clean Label');
+    assert.equal(
+      link,
+      '[Clean Label](http://127.0.0.1:27142/open/wiki%2Ffoo.md)',
+    );
   });
 });

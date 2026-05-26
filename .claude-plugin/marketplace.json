@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 31 commands total: 14 router-tool wrappers, 3 router-state commands (lock / unlock for single-vault mode, auto-mode for wiki auto-enrichment mode toggle), 4 conversational helpers (meta-setup / meta-attach-vault / meta-status / meta-sync-template), and a complete Karpathy-style LLM-wiki workflow (wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold / save / autoresearch / canvas / defuddle / obsidian-bases / obsidian-markdown).",
-    "version": "0.14.8"
+    "version": "0.14.9"
   },
   "plugins": [
     {
@@ -17,7 +17,7 @@
         "ref": "main"
       },
       "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 31 /obsidian-router:* commands: (1) 14 wrappers for the router primitives (vault discovery, reads, writes, frontmatter, file management, Templater); (2) 3 router-state commands (lock / unlock for single-vault mode, auto-mode for wiki auto-enrichment mode toggle); (3) 4 conversational helpers (meta-setup, meta-attach-vault, meta-status, meta-sync-template); (4) a Karpathy-style LLM-wiki workflow stack (wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold); (5) high-level utilities (save, autoresearch, canvas, defuddle, obsidian-bases, obsidian-markdown).",
-      "version": "0.14.8",
+      "version": "0.14.9",
       "author": {
         "name": "tboome33",
         "url": "https://github.com/tboome33"

@@ -30,11 +30,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Module-level cache: vault.path → { port: number|null, enabled: boolean }.
-// Cleared by `_resetCache()` in tests. No TTL because the data.json port
-// is fixed per vault for the lifetime of the Obsidian session — invalidation
-// on user-driven plugin reconfig is acceptable to lose (next session picks
-// it up).
+// Module-level cache: vault.path → { port: number, enabled: true } (only
+// successful reads are cached). Cleared by `_resetCache()` in tests.
+//
+// Why only successful reads: a user who starts the router BEFORE enabling
+// `enableInsecureServer:true` (very plausible during onboarding) would
+// otherwise see `{ port: null, enabled: false }` cached for the lifetime
+// of the process — every tool call would then suppress the URL even after
+// the user fixed data.json + reloaded Obsidian. By only caching successes
+// we re-attempt the disk read on every miss, paying a cheap sync read when
+// the bridge is not yet configured but transitioning to cached fast-path
+// the moment it works. v0.14.9 hardening (Reviewer A IMPORTANT-1).
 const CACHE = new Map();
 
 /**
@@ -81,6 +87,9 @@ function readInsecurePortConfig(vaultPath) {
     return { port: null, enabled: false };
   }
   const cached = CACHE.get(vaultPath);
+  // Cache only holds successful reads (enabled:true with a valid port).
+  // On a `null` cache entry we deliberately re-read disk so a user who
+  // fixed their `data.json` mid-session starts producing URLs immediately.
   if (cached !== undefined) return cached;
 
   // Determine path separator: the registry stores Windows paths verbatim
@@ -117,7 +126,10 @@ function readInsecurePortConfig(vaultPath) {
     // null. Caller will treat as "no click-to-open available".
   }
 
-  CACHE.set(vaultPath, result);
+  // Only cache successful reads — see CACHE declaration comment for why.
+  if (result.enabled && result.port !== null) {
+    CACHE.set(vaultPath, result);
+  }
   return result;
 }
 
@@ -155,8 +167,26 @@ export function buildClickToOpenUrl(vault, filePath) {
 export function buildClickToOpenMarkdownLink(vault, filePath, label) {
   const url = buildClickToOpenUrl(vault, filePath);
   if (!url) return null;
-  const text = label || basenameNoExt(filePath);
+  const text = escapeMarkdownLabel(label || basenameNoExt(filePath));
   return `[${text}](${url})`;
+}
+
+/**
+ * Escape characters that would break the `[label](url)` markdown shape.
+ *
+ * Without this, a vault file legitimately named `foo]bar.md` would yield
+ * `[foo]bar](http://...)` — the renderer closes the label at the first `]`
+ * and the rest leaks into the surrounding text. Escape `[` / `]` to match
+ * CommonMark spec, and `\` to preserve any user-intended literal backslash
+ * in the label. URL side is already encoded by `encodeURIComponent`, so we
+ * don't need to touch the destination — but if a future caller passes a
+ * raw URL it would still be safe as long as it contains no unescaped `)`.
+ *
+ * v0.14.9 hardening (Reviewer B P3).
+ */
+function escapeMarkdownLabel(s) {
+  if (typeof s !== 'string') return '';
+  return s.replace(/[\\[\]]/g, (c) => '\\' + c);
 }
 
 function basenameNoExt(p) {

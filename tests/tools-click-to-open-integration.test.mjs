@@ -137,6 +137,46 @@ describe('build_open_link is wired into the MCP surface', () => {
       /import\s+\{\s*buildOpenLinkTool\s*\}\s*from\s+['"]\.\/tools\/build-open-link\.mjs['"]/,
     );
   });
+
+  // v0.14.9 (Reviewer B P2): mutual-exclusion contract is encoded in the
+  // schema, not just enforced at the handler level.
+  test('TOOLS schema has oneOf mutual-exclusion for path vs paths', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'index.mjs'),
+      'utf8',
+    );
+    // Find the build_open_link tool block and assert it contains a oneOf
+    // with `path` xor `paths`. Brittle but cheap — drift here is a real
+    // bug, the test SHOULD complain if someone removes the contract.
+    const m = src.match(/name:\s*['"]build_open_link['"][\s\S]*?\n\s\s\},\n/);
+    assert.ok(m, 'could not locate build_open_link tool block');
+    assert.match(m[0], /oneOf:\s*\[/, 'oneOf missing from build_open_link schema');
+    assert.match(m[0], /required:\s*\[\s*['"]path['"]\s*\]/);
+    assert.match(m[0], /required:\s*\[\s*['"]paths['"]\s*\]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.14.9 (Reviewer A IMPORTANT-4): move_file emits clickToOpenUrlSource
+// when the source-delete step failed. Static wiring check — runtime path
+// requires rest-client mocking which ESM frozen exports block.
+// ---------------------------------------------------------------------------
+describe('move_file dual-URL on partial failure (v0.14.9)', () => {
+  test('move-file.mjs emits clickToOpenUrlSource gated on moved:true && sourceDeleted:false', () => {
+    const src = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src', 'tools', 'move-file.mjs'),
+      'utf8',
+    );
+    // Both URLs must be wired
+    assert.match(src, /clickToOpenUrl/);
+    assert.match(src, /clickToOpenUrlSource/);
+    // The source URL must be conditional on the move RESULT — BOTH that
+    // the move actually happened (excludes same-path no-op) AND that the
+    // source was NOT deleted (the actual partial-failure signal). pass-3
+    // hardening (Reviewer B P3 on pass 3).
+    assert.match(src, /result\.moved\s*===\s*true/);
+    assert.match(src, /sourceDeleted\s*===\s*false/);
+  });
 });
 
 // ---------------------------------------------------------------------------

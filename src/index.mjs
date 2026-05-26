@@ -620,7 +620,12 @@ const TOOLS = [
   {
     name: 'build_open_link',
     description:
-      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Returns null URL when the vault is remote or the bridge\'s insecure HTTP server isn\'t enabled.',
+      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. Returns null URL when the vault is remote or the bridge\'s insecure HTTP server isn\'t enabled.',
+    // v0.14.9 (Reviewer B P2): `oneOf` makes the mutual exclusion contract
+    // discoverable in the schema. Clients that validate against it catch
+    // `{}` (neither) and `{ path, paths }` (both) before invoking the tool.
+    // The runtime handler still validates (defence-in-depth + clearer
+    // error messages including the offending value).
     inputSchema: {
       type: 'object',
       properties: {
@@ -639,6 +644,10 @@ const TOOLS = [
         },
       },
       additionalProperties: false,
+      oneOf: [
+        { required: ['path'], not: { required: ['paths'] } },
+        { required: ['paths'], not: { required: ['path'] } },
+      ],
     },
   },
 ];

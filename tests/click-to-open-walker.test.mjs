@@ -111,6 +111,64 @@ describe('collectClickToOpenLinks — rejected candidates', () => {
     assert.deepEqual(result, {});
   });
 
+  test('v0.14.9: rejects Windows UNC paths (\\\\server\\share\\...)', () => {
+    // Reviewer B P2: previously these were normalised to "server/share/..."
+    // and emitted a plausible-looking but wrong URL.
+    const payload = { path: '\\\\server\\share\\note.md' };
+    const result = collectClickToOpenLinks(VAULT(), payload);
+    assert.deepEqual(result, {});
+  });
+
+  test('v0.14.9: rejects extended-length Windows prefix (\\\\?\\C:\\path)', () => {
+    const payload = { filename: '\\\\?\\C:\\notes\\foo.md' };
+    const result = collectClickToOpenLinks(VAULT(), payload);
+    assert.deepEqual(result, {});
+  });
+
+  test('v0.14.9: rejects path-traversal attempts (..)', () => {
+    // Reviewer A IMPORTANT-3: defence-in-depth, even though the bridge
+    // would (usually) clamp at vault root.
+    const cases = [
+      '../sensitive.md',
+      'wiki/../../etc/passwd',
+      '../../secrets.md',
+      'wiki/../foo.md',          // trailing-segment traversal
+      '..',                       // pure traversal
+      '..\\sensitive.md',         // Windows-style
+    ];
+    for (const p of cases) {
+      const payload = { path: p };
+      const result = collectClickToOpenLinks(VAULT(), payload);
+      assert.deepEqual(result, {}, `should reject path-traversal: ${p}`);
+    }
+  });
+
+  test('v0.14.9 pass-2: ALLOWS legitimate dot-pairs in filename/folder', () => {
+    // Reviewer B P3 + Reviewer A NIT-1 convergent: substring match was
+    // over-rejecting valid Obsidian filenames. Switched to a segment-aware
+    // regex — these MUST now produce URLs.
+    const cases = [
+      'wiki/release..notes.md',           // dots in filename
+      'wiki/..hidden.md',                  // leading dots in filename (not a segment)
+      'wiki/notes..with..many..dots.md',  // multiple non-segment dot-pairs
+      'wiki/My..Project/foo.md',           // dots in folder name
+    ];
+    for (const p of cases) {
+      const payload = { path: p };
+      const result = collectClickToOpenLinks(VAULT(), payload);
+      assert.ok(
+        result.clickToOpenLinks && result.clickToOpenLinks[p],
+        `should produce URL for legitimate dot-pair filename: ${p}`,
+      );
+    }
+  });
+
+  test('v0.14.9: rejects NUL-byte injection', () => {
+    const payload = { path: 'wiki/foo.md\0../etc/passwd' };
+    const result = collectClickToOpenLinks(VAULT(), payload);
+    assert.deepEqual(result, {});
+  });
+
   test('rejects empty strings', () => {
     const payload = { filename: '' };
     const result = collectClickToOpenLinks(VAULT(), payload);
@@ -121,6 +179,38 @@ describe('collectClickToOpenLinks — rejected candidates', () => {
     const payload = { filename: 42, path: null, file: { nested: true } };
     const result = collectClickToOpenLinks(VAULT(), payload);
     assert.deepEqual(result, {});
+  });
+});
+
+describe('v0.14.9: deeper nesting (MAX_DEPTH bump 10→20)', () => {
+  // Reviewer A IMPORTANT-2: realistic fan-out shape from search_smart.
+  // Outer `perVault` wrapper + per-vault chunks + nested source object
+  // stacks ~8-10 levels, which the old MAX_DEPTH=10 was clipping.
+  test('finds paths in a realistic fan-out smart-search shape', () => {
+    const payload = {
+      query: 'hi',
+      perVault: [
+        {
+          vault: 'a',
+          chunks: [
+            { score: 0.9, excerpt: '...', source: { path: 'wiki/a1.md' } },
+            { score: 0.8, excerpt: '...', source: { path: 'wiki/a2.md' } },
+          ],
+        },
+        {
+          vault: 'b',
+          chunks: [
+            { score: 0.85, excerpt: '...', source: { path: 'wiki/b1.md' } },
+          ],
+        },
+      ],
+    };
+    const result = collectClickToOpenLinks(VAULT(), payload);
+    // All 3 source paths should be picked up despite the deeper nesting.
+    assert.equal(Object.keys(result.clickToOpenLinks).length, 3);
+    assert.ok(result.clickToOpenLinks['wiki/a1.md']);
+    assert.ok(result.clickToOpenLinks['wiki/a2.md']);
+    assert.ok(result.clickToOpenLinks['wiki/b1.md']);
   });
 });
 

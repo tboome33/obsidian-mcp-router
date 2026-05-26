@@ -516,3 +516,71 @@ describe('wiki-query-first-nudge — v0.14.8 CHAT RESPONSE LINK FORMAT', () => {
     assert.doesNotMatch(ctx, /cwd\+vault mix.*404/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v0.14.9 (Reviewer A NIT-5): the hook's inlined readInsecurePort and the
+// helper's buildClickToOpenUrl MUST agree on every reject condition. Drift
+// silently degrades the click-to-open guarantee — the helper would emit
+// URLs while the hook would say "DEGRADED, use obsidian://" (or vice
+// versa). This suite locks the two implementations against each other.
+// ---------------------------------------------------------------------------
+describe('hook readInsecurePort agrees with helper buildClickToOpenUrl', () => {
+  let crossImplVault;
+  let crossImplDataJson;
+
+  before(() => {
+    crossImplVault = fs.mkdtempSync(path.join(workDir, 'xi-'));
+    fs.mkdirSync(path.join(crossImplVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(crossImplVault, 'wiki-meta', 'index.md'), '# I\n');
+    const pluginDir = path.join(
+      crossImplVault, '.obsidian', 'plugins', 'obsidian-local-rest-api',
+    );
+    fs.mkdirSync(pluginDir, { recursive: true });
+    crossImplDataJson = path.join(pluginDir, 'data.json');
+  });
+
+  const cases = [
+    { name: 'happy path', data: { insecurePort: 27999, enableInsecureServer: true }, hookEmits: true },
+    { name: 'insecure server disabled', data: { insecurePort: 27999, enableInsecureServer: false }, hookEmits: false },
+    { name: 'port as string', data: { insecurePort: '27999', enableInsecureServer: true }, hookEmits: false },
+    { name: 'port out of range (>65535)', data: { insecurePort: 99999, enableInsecureServer: true }, hookEmits: false },
+    { name: 'port 0', data: { insecurePort: 0, enableInsecureServer: true }, hookEmits: false },
+    { name: 'enableInsecureServer missing', data: { insecurePort: 27999 }, hookEmits: false },
+    { name: 'port missing', data: { enableInsecureServer: true }, hookEmits: false },
+  ];
+
+  for (const c of cases) {
+    test(`hook and helper agree: ${c.name}`, async () => {
+      fs.writeFileSync(crossImplDataJson, JSON.stringify(c.data));
+      // Run hook
+      const r = runHook({
+        prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+        cwd: crossImplVault,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      const hookEmitsPrefix = ctx.includes('http://127.0.0.1:') && !ctx.includes('DEGRADED');
+
+      // Run helper. We import dynamically + reset cache so each case
+      // re-reads the same data.json the hook just saw.
+      const { buildClickToOpenUrl, _resetCache } = await import('../src/helpers/click-to-open.mjs');
+      _resetCache();
+      const helperUrl = buildClickToOpenUrl(
+        { type: 'local', path: crossImplVault, name: 'xi' },
+        'wiki/foo.md',
+      );
+      const helperEmits = helperUrl !== null;
+
+      assert.equal(
+        hookEmitsPrefix,
+        c.hookEmits,
+        `hook emits URL prefix mismatch for "${c.name}"`,
+      );
+      assert.equal(
+        helperEmits,
+        c.hookEmits,
+        `helper emits URL mismatch for "${c.name}" — drift with hook`,
+      );
+    });
+  }
+});

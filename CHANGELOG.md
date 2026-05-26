@@ -8,6 +8,38 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.9] — 2026-05-26 — `/review+` hardening on v0.14.8 (4 passes, A+B converged)
+
+Post-v0.14.8 `/review+` produced 5 IMPORTANT + 2 NIT in pass 1, then converged through 4 passes (Code Reviewer subagent + `codex review` CLI, both reviewers OK to merge by pass 4). All findings addressed in this release.
+
+### Adressed — IMPORTANT (5)
+
+- **Negative-cache invalidation** (Reviewer A IMP-1) — `src/helpers/click-to-open.mjs`. The per-vault cache used to store `{ port: null, enabled: false }` on misses, pinning the failure for the lifetime of the process. Onboarding scenario (user starts the router BEFORE flipping `enableInsecureServer: true`) would never produce a URL until session restart. Fix: only cache successful reads (`enabled && port !== null`). Cheap sync re-read on every miss until the bridge is configured, then fast-path cache for the lifetime of the success.
+- **Walker MAX_DEPTH 10 → 20** (Reviewer A IMP-2) — `src/helpers/click-to-open-walker.mjs`. Fan-out `search_smart` shape (`{ perVault: [{ vault, chunks: [{ source: { path } }] }] }`) stacks ~8-10 levels and the old budget was silently clipping deep hits. New budget stays stack-safe and zero-cost on small payloads.
+- **Path-traversal segment guard** (Reviewer A IMP-3 + Reviewer B P3 convergent, pass-2 + pass-3 refinement) — `src/helpers/click-to-open-walker.mjs`. Initial fix `v.includes('..')` over-rejected legitimate filenames like `wiki/release..notes.md`. Replaced in pass 3 with `/(?:^|[\\/])\.\.(?:[\\/]|$)/` — matches `..` only as a complete path segment (bordered by `/`, `\`, start, or end). Verified against 6 reject + 4 accept cases.
+- **UNC + extended-length path rejection** (Reviewer B P2) — `src/helpers/click-to-open-walker.mjs`. Without this, `\\server\share\note.md` was normalised by `encodeVaultPath` (slashes collapsed, leading slashes stripped) into a plausible-looking but wrong URL for `server/share/note.md`. Now rejected at `isLikelyVaultPath` alongside drive-letter and POSIX absolute paths.
+- **move_file dual URL on partial failure** (Reviewer A IMP-4 + Reviewer B P3 pass-3) — `src/tools/move-file.mjs`. When `moveFileFromTo` returns `{ moved: true, sourceDeleted: false }` (PUT OK, DELETE source KO), the source FILE is still on disk. New `clickToOpenUrlSource` field emits a SECOND URL pointing at the source so the LLM can surface both — "copied to [foo](dest), cleanup [foo](source)". Pass-3 refinement: gated on BOTH `result.moved === true` AND `sourceDeleted === false` to exclude the same-path no-op `moveFileFromTo(vault, foo, foo)` which returns `{ moved: false, sourceDeleted: false }` (harmless, no warning needed).
+- **Schema `oneOf` mutual exclusion for `build_open_link`** (Reviewer B P2) — `src/index.mjs`. The `build_open_link` tool schema now encodes the `path` xor `paths` contract via JSON Schema `oneOf`. MCP clients that validate inputs catch `{}` and `{ path, paths }` before invoking the tool; runtime handler still validates for defence-in-depth + clearer errors.
+
+### Adressed — NIT (2)
+
+- **Markdown label escape** (Reviewer B P3) — `src/helpers/click-to-open.mjs`. `buildClickToOpenMarkdownLink` was producing malformed `[foo]bar](url)` for vault filenames like `foo]bar.md`. New `escapeMarkdownLabel` helper escapes `\`, `[`, `]` per CommonMark spec.
+- **Cross-impl drift guard hook ↔ helper** (Reviewer A NIT-5) — `tests/wiki-query-first-nudge.test.mjs`. The hook inlines `readInsecurePort` (zero-deps on `src/`) and the helper has its own `readInsecurePortConfig`. New matrix test exercises 7 patho-cases (happy / disabled / port-string / out-of-range / port-0 / enableInsecureServer-missing / port-missing) and asserts hook and helper agree on every rejection condition. Locks the two implementations together against future drift.
+
+### Tests
+
+- **1165/1165 passing** (was 1144 at v0.14.8, +21 hardening tests).
+- New: cache miss-no-cache + missing-data.json-retry semantics (2), markdown escape (4 cases), UNC + extended-length rejection (2), `..` segment-aware accept-cases (1 with 4 sub-paths) + reject-cases (1 with 6 sub-paths), MAX_DEPTH realistic fan-out (1), `oneOf` schema presence (1), `move_file` dual-URL gate (1 covering both conditions), hook↔helper cross-impl matrix (7 cases).
+
+### `/review+` audit trail
+
+| Pass | A findings | B findings | Convergent | Action |
+|---|---|---|---|---|
+| 1 | 4 IMP + 1 NIT | 2 P2 + 1 P3 | Walker `..`/UNC (IMP-3 ≈ P2) | Fixed all 5 IMP + escape NIT in pass 2 |
+| 2 | NIT-1 (`..` over-rejects) + 2 cosmetic NITs | P3 (same as NIT-1) | `..` substring over-rejects | Refined to segment-aware regex in pass 3 |
+| 3 | OK to merge | P3 (`move_file` same-path no-op) | — | Gated on `moved:true && sourceDeleted:false` in pass 4 |
+| 4 | OK to merge | No regressions | Both converged | Ship |
+
 ## [0.14.8] — 2026-05-26 — click-to-open determinism: tool results + helper tool + hardened hook
 
 Closes a recurring bug where the LLM cited vault files as bare paths (`wiki/Divers/foo.md`) in chat replies. The Claude Code renderer auto-clickifies these by prepending the cwd path, producing either `<cwd>/wiki/...` (a non-existent path in workspace-bound mode) or a filesystem link that opens in the OS file viewer instead of Obsidian (in cwd-is-vault mode). Roland flagged this 10+ times — the previous "memory + CLAUDE.md rule + hook nudge" approach failed because the LLM still had to *compose* the URL by hand (port lookup, encoding) and *remember* the rule. This release removes both failure modes with a three-layer fix.
