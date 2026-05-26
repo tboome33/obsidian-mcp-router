@@ -1,4 +1,5 @@
 import { setFrontmatterTool } from './set-frontmatter.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 /**
  * Apply multiple frontmatter key/value updates in sequence.
@@ -35,6 +36,15 @@ export async function mergeFrontmatterTool(registry, args = {}) {
     }
   }
 
+  // Resolve the vault again to build the click-to-open URL — the
+  // sub-calls don't return the resolved vault object, only its name.
+  // Tolerate resolveVault throwing (e.g. unknown name): the URL is best-effort.
+  let clickToOpenUrl = null;
+  try {
+    const vault = registry.resolveVault(name);
+    clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
+  } catch { /* no URL — keep the rest of the result */ }
+
   return {
     vault: name || registry.defaultVault,
     path: filePath,
@@ -42,5 +52,6 @@ export async function mergeFrontmatterTool(registry, args = {}) {
     failed: results.filter((r) => r.status === 'failed').length,
     results,
     ...(firstError && { firstError: firstError.message }),
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

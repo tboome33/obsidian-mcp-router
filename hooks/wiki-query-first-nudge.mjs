@@ -44,6 +44,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 
 import {
   loadWorkspaceDotenv,
@@ -51,6 +52,35 @@ import {
   detectVaultContext,
   defaultNameFromPath,
 } from './_helpers/workspace-vault.mjs';
+
+/**
+ * Read the vault's `obsidian-local-rest-api/data.json` and return the
+ * insecure HTTP port (or null if the bridge isn't enabled / file is
+ * missing / port is invalid). Used to pre-compute the click-to-open URL
+ * prefix injected into the nudge — so the LLM never has to look it up.
+ *
+ * Same shape and safety guards as `src/helpers/click-to-open.mjs`, but
+ * inlined here so the hook keeps zero runtime deps on src/ (hooks must
+ * work pre-`npm install` in fresh checkouts — same convention as the
+ * other hook helpers).
+ */
+function readInsecurePort(vaultPath) {
+  if (!vaultPath || typeof vaultPath !== 'string') return null;
+  const isWindowsStyle = /^[A-Za-z]:[\\/]/.test(vaultPath) || /^\\\\/.test(vaultPath);
+  const lib = isWindowsStyle ? path.win32 : path.posix;
+  const dataPath = lib.join(
+    vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+  );
+  try {
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    if (data?.enableInsecureServer !== true) return null;
+    const port = Number.isInteger(data?.insecurePort) ? data.insecurePort : null;
+    if (port === null || port < 1 || port > 65535) return null;
+    return port;
+  } catch {
+    return null;
+  }
+}
 
 // ---- Opt-out ----------------------------------------------------------
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
@@ -166,6 +196,101 @@ const pathRulesBlock = isWorkspaceBound ? [
   '',
 ] : [];
 
+// v0.14.8: CHAT RESPONSE LINK FORMAT — applies in BOTH modes.
+//
+// Triggered by Roland 2026-05-26 after the 10th time the LLM cited a vault
+// file as a bare path (`wiki/Divers/LIGHTRAG/lightrag.md`) in chat. The
+// Claude Code renderer auto-clickifies these and prepends the cwd → produces
+// `<cwd>/wiki/...` which doesn't exist (in workspace-bound mode) or which
+// opens in the OS file viewer instead of Obsidian (in cwd-is-vault mode).
+// Either way, the link is broken from the user's perspective.
+//
+// The fix lives in three layers:
+//   1. write/get/patch/etc. tool results now carry a `clickToOpenUrl` field
+//      ready to paste verbatim. The LLM never composes the URL by hand.
+//   2. `mcp__obsidian-router__build_open_link({ vault, paths: [...] })` builds
+//      URLs for files the LLM didn't just touch (typically cross-references).
+//   3. THIS hook injects the rule + pre-computed URL prefix so the LLM has
+//      everything in attention when it composes the chat response.
+//
+// The pre-computed URL_PREFIX is injected ONLY when the bridge is actually
+// reachable (port read OK + enableInsecureServer:true). When unavailable,
+// emit a fallback paragraph telling the LLM to use `obsidian://` URIs
+// inline-code or to ask the user to enable the insecure server.
+const insecurePort = readInsecurePort(ctx.vaultPath);
+const urlPrefix = insecurePort
+  ? `http://127.0.0.1:${insecurePort}/open/`
+  : null;
+
+const chatLinkBlock = urlPrefix ? [
+  '',
+  'CHAT RESPONSE LINK FORMAT (applies to YOUR REPLIES, not to tool calls)',
+  '',
+  'When citing a vault file in your reply to the user, NEVER write the path',
+  'as bare text like `wiki/Divers/foo.md` or `wiki-meta/index.md`. The',
+  'Claude Code renderer turns those into clickable links by prepending the',
+  isWorkspaceBound
+    ? 'cwd path → produces `<cwd>/wiki/Divers/foo.md` which does NOT exist in this workspace (the vault is at a different absolute path). User clicks → broken link.'
+    : 'cwd path → produces a filesystem link that opens in the OS file viewer instead of in Obsidian, missing wikilink resolution, backlinks, plugins, etc. User clicks → wrong app.',
+  '',
+  'ALWAYS use one of these formats instead:',
+  '',
+  '  ✅ BEST when the file is in *this* vault and you have the URL handy:',
+  '     `[label](URL)` markdown link, where URL is the click-to-open URL.',
+  '     Three ways to get the URL without composing it by hand:',
+  '       (a) tool results from write_file / get_file / patch_file /',
+  '           append_to_file / move_file / set_frontmatter / merge_frontmatter /',
+  '           get_frontmatter / execute_template now carry a',
+  '           `clickToOpenUrl` field — copy that verbatim.',
+  '       (b) search / search_smart return a `clickToOpenLinks` map at the',
+  '           response top level: { "<path>": "<url>", ... }. Look up the',
+  '           path of any hit you want to cite.',
+  '       (c) for any other file (cross-references, wikilink targets you',
+  '           didn\'t fetch): call `mcp__obsidian-router__build_open_link`',
+  '           with `{ paths: [...] }` to batch-build URLs in ONE call.',
+  '',
+  '  ✅ BEST when writing INSIDE a vault note (markdown body): `[[basename]]`',
+  '     Obsidian wikilink. Resolves by basename, survives renames. Use ONLY',
+  '     inside note bodies you write to the vault, NOT in chat replies — chat',
+  '     wikilinks don\'t resolve to anything.',
+  '',
+  `  Pre-computed URL prefix for this vault: \`${urlPrefix}\``,
+  `  Encode the vault-relative path with encodeURIComponent (slashes → %2F,`,
+  `  spaces → %20). Then concatenate: \`${urlPrefix}<encoded-path>\`.`,
+  '',
+  'CONCRETE WRONG/RIGHT chat reply examples (using a real path from this vault):',
+  '',
+  '  ❌ WRONG: "Created the note at `wiki/Divers/foo.md`."',
+  '            (bare path → Claude Code clickifies → broken link)',
+  isWorkspaceBound
+    ? `  ❌ WRONG: "Created at \`${cwd}/wiki/Divers/foo.md\`."  (cwd+vault mix → 404)`
+    : `  ❌ WRONG: "Created at \`${cwd}\\\\wiki\\\\Divers\\\\foo.md\`."  (filesystem link, won't open in Obsidian)`,
+  `  ✅ RIGHT: "Created [foo](${urlPrefix}wiki%2FDivers%2Ffoo.md)."`,
+  '',
+  'Roland has flagged this exact bug 10+ times. Every bare-path citation in a',
+  'chat reply costs him friction. Use the URL — your tool results have it.',
+  '',
+] : [
+  '',
+  'CHAT RESPONSE LINK FORMAT — DEGRADED (insecure HTTP server not reachable)',
+  '',
+  `Could not read \`insecurePort\` from \`${ctx.vaultPath}/.obsidian/plugins/obsidian-local-rest-api/data.json\``,
+  `(file missing, JSON broken, or \`enableInsecureServer\` is not true).`,
+  '',
+  'Without the bridge\'s HTTP route, click-to-open links can\'t be built.',
+  'Fall back to one of these in your chat replies:',
+  '',
+  `  • \`obsidian://open?vault=<encoded-vault-name>&file=<encoded-path>\` URI`,
+  '    as INLINE CODE (NOT as a markdown link — those don\'t render in the',
+  '    terminal). The user copy-pastes into Win+R or equivalent.',
+  '  • Tell the user to enable the insecure HTTP server by editing',
+  `    \`${ctx.vaultPath}/.obsidian/plugins/obsidian-local-rest-api/data.json\``,
+  `    and setting \`"enableInsecureServer": true\` + \`"insecurePort": <port>\`,`,
+  '    then reloading Obsidian. The /open route only works through the HTTP',
+  '    server (HTTPS self-signed certs get killed by AV silently).',
+  '',
+];
+
 const nudge = [
   `INVESTIGATION_REFLEX (mode: ${ctx.mode}) — ${modeLine}`,
   '',
@@ -188,6 +313,7 @@ const nudge = [
   'User notes/pages themselves live under `wiki/...` (e.g. `wiki/people/`,',
   '`wiki/concepts/`, `wiki/projects/...`). Use the index to find them.',
   ...pathRulesBlock,
+  ...chatLinkBlock,
   'Recommended pre-answer flow:',
   '',
   `  1. ${indexReadHint}`,

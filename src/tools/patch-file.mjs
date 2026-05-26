@@ -1,4 +1,5 @@
 import { patchFile } from '../rest-client.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 export async function patchFileTool(registry, args = {}) {
   const { vault: name, path: filePath } = args;
@@ -19,6 +20,7 @@ export async function patchFileTool(registry, args = {}) {
     applyIfContentPreexists: args.applyIfContentPreexists,
     trimTargetWhitespace: args.trimTargetWhitespace,
   });
+  const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
   return {
     vault: vault.name,
     path: filePath,
@@ -26,5 +28,6 @@ export async function patchFileTool(registry, args = {}) {
     targetType: args.targetType,
     target: args.target,
     patched: true,
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

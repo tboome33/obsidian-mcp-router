@@ -412,3 +412,107 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
 // workspace-bound suite (Node test framework runs them in the same
 // process so this is safe).
 let workspaceTestState = null;
+
+// ---------------------------------------------------------------------------
+// v0.14.8 — CHAT RESPONSE LINK FORMAT block (applies in BOTH modes)
+// ---------------------------------------------------------------------------
+
+describe('wiki-query-first-nudge — v0.14.8 CHAT RESPONSE LINK FORMAT', () => {
+  let cwdIsVaultWithBridge;
+  let cwdIsVaultWithoutBridge;
+  let cwdIsVaultBridgeDisabled;
+
+  before(() => {
+    // (1) cwd-is-vault with a real bridge data.json (insecurePort + enabled)
+    cwdIsVaultWithBridge = fs.mkdtempSync(path.join(workDir, 'vault-bridge-'));
+    fs.mkdirSync(path.join(cwdIsVaultWithBridge, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(cwdIsVaultWithBridge, 'wiki-meta', 'index.md'), '# I\n');
+    const pluginDir = path.join(
+      cwdIsVaultWithBridge, '.obsidian', 'plugins', 'obsidian-local-rest-api',
+    );
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginDir, 'data.json'),
+      JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
+    );
+
+    // (2) cwd-is-vault without any plugin config → DEGRADED block
+    cwdIsVaultWithoutBridge = fs.mkdtempSync(path.join(workDir, 'vault-nobridge-'));
+    fs.mkdirSync(path.join(cwdIsVaultWithoutBridge, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(cwdIsVaultWithoutBridge, 'wiki-meta', 'index.md'), '# I\n');
+
+    // (3) cwd-is-vault with data.json but insecure server disabled → DEGRADED
+    cwdIsVaultBridgeDisabled = fs.mkdtempSync(path.join(workDir, 'vault-disabled-'));
+    fs.mkdirSync(path.join(cwdIsVaultBridgeDisabled, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(cwdIsVaultBridgeDisabled, 'wiki-meta', 'index.md'), '# I\n');
+    const dis = path.join(
+      cwdIsVaultBridgeDisabled, '.obsidian', 'plugins', 'obsidian-local-rest-api',
+    );
+    fs.mkdirSync(dis, { recursive: true });
+    fs.writeFileSync(
+      path.join(dis, 'data.json'),
+      JSON.stringify({ insecurePort: 27999, enableInsecureServer: false }),
+    );
+  });
+
+  test('emits CHAT RESPONSE LINK FORMAT block when bridge is reachable', () => {
+    const r = runHook({
+      prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+      cwd: cwdIsVaultWithBridge,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /CHAT RESPONSE LINK FORMAT/);
+    // Pre-computed URL prefix is injected literally
+    assert.ok(ctx.includes('http://127.0.0.1:27999/open/'),
+      `expected pre-computed URL prefix in nudge, got:\n${ctx}`);
+    // WRONG/RIGHT chat examples present (multiline body, the "bare path"
+    // explanation is on the line after the WRONG header)
+    assert.match(ctx, /❌ WRONG/);
+    assert.match(ctx, /bare path/);
+    assert.match(ctx, /✅ RIGHT/);
+    // Mentions the new build_open_link tool
+    assert.match(ctx, /build_open_link/);
+    // Mentions clickToOpenUrl field on tool results
+    assert.match(ctx, /clickToOpenUrl/);
+    // Mentions the user-frustration framing
+    assert.match(ctx, /Roland.*10\+ times/);
+  });
+
+  test('emits DEGRADED block when data.json is missing', () => {
+    const r = runHook({
+      prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+      cwd: cwdIsVaultWithoutBridge,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /DEGRADED.*insecure HTTP server not reachable/);
+    assert.match(ctx, /obsidian:\/\/open/);
+    // No URL prefix injected
+    assert.doesNotMatch(ctx, /http:\/\/127\.0\.0\.1:.*\/open\//);
+  });
+
+  test('emits DEGRADED block when enableInsecureServer is false', () => {
+    const r = runHook({
+      prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+      cwd: cwdIsVaultBridgeDisabled,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    assert.match(ctx, /DEGRADED/);
+    assert.match(ctx, /enableInsecureServer/);
+  });
+
+  test('cwd-is-vault uses the "filesystem link, won\'t open in Obsidian" WRONG example', () => {
+    const r = runHook({
+      prompt: 'Explique-moi comment cette architecture fonctionne dans ce projet',
+      cwd: cwdIsVaultWithBridge,
+    });
+    assert.equal(r.status, 0);
+    const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+    // cwd-is-vault: bare path renders as filesystem link → wrong app
+    assert.match(ctx, /filesystem link, won't open in Obsidian/);
+    // Should NOT use the workspace-bound "cwd+vault mix → 404" example
+    assert.doesNotMatch(ctx, /cwd\+vault mix.*404/);
+  });
+});

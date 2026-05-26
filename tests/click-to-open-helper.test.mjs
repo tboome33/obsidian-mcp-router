@@ -1,0 +1,257 @@
+/**
+ * Tests for src/helpers/click-to-open.mjs — encoding, port lookup, cache
+ * semantics, and the various null-return conditions (remote vault, missing
+ * data.json, insecure server disabled, invalid port).
+ */
+
+import { test, describe, before, after, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+import {
+  buildClickToOpenUrl,
+  buildClickToOpenMarkdownLink,
+  encodeVaultPath,
+  _resetCache,
+} from '../src/helpers/click-to-open.mjs';
+
+let workDir;
+let vaultPath;
+let dataJsonPath;
+
+before(() => {
+  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'click-to-open-'));
+  vaultPath = fs.mkdtempSync(path.join(workDir, 'vault-'));
+  const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api');
+  fs.mkdirSync(pluginDir, { recursive: true });
+  dataJsonPath = path.join(pluginDir, 'data.json');
+});
+
+after(() => {
+  fs.rmSync(workDir, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  _resetCache(); // ensure each test sees a fresh port lookup
+});
+
+function writeDataJson(obj) {
+  fs.writeFileSync(dataJsonPath, JSON.stringify(obj));
+  _resetCache(); // bust cache after rewrite
+}
+
+describe('encodeVaultPath', () => {
+  test('encodes slashes as %2F', () => {
+    assert.equal(encodeVaultPath('wiki/Divers/foo.md'), 'wiki%2FDivers%2Ffoo.md');
+  });
+
+  test('encodes spaces as %20', () => {
+    assert.equal(encodeVaultPath('wiki/My Notes/foo.md'), 'wiki%2FMy%20Notes%2Ffoo.md');
+  });
+
+  test('encodes accented characters', () => {
+    assert.equal(
+      encodeVaultPath('wiki/Décisions/é.md'),
+      'wiki%2FD%C3%A9cisions%2F%C3%A9.md',
+    );
+  });
+
+  test('normalises backslashes to forward slashes before encoding', () => {
+    assert.equal(
+      encodeVaultPath('wiki\\Divers\\foo.md'),
+      'wiki%2FDivers%2Ffoo.md',
+    );
+  });
+
+  test('strips leading slashes', () => {
+    assert.equal(encodeVaultPath('/wiki/foo.md'), 'wiki%2Ffoo.md');
+    assert.equal(encodeVaultPath('///wiki/foo.md'), 'wiki%2Ffoo.md');
+  });
+
+  test('preserves dots, dashes, underscores', () => {
+    assert.equal(
+      encodeVaultPath('wiki/_drafts/my-note-2026.md'),
+      'wiki%2F_drafts%2Fmy-note-2026.md',
+    );
+  });
+});
+
+describe('buildClickToOpenUrl — happy path', () => {
+  test('builds URL with the configured port', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'local', path: vaultPath, name: 'test' },
+      'wiki/Divers/foo.md',
+    );
+    assert.equal(url, 'http://127.0.0.1:27142/open/wiki%2FDivers%2Ffoo.md');
+  });
+
+  test('different port → different URL', () => {
+    writeDataJson({ insecurePort: 27999, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'local', path: vaultPath, name: 'test' },
+      'foo.md',
+    );
+    assert.equal(url, 'http://127.0.0.1:27999/open/foo.md');
+  });
+});
+
+describe('buildClickToOpenUrl — null-return conditions', () => {
+  test('remote vault returns null (no local data.json to read)', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'remote', baseUrl: 'https://example.com', name: 'r' },
+      'foo.md',
+    );
+    assert.equal(url, null);
+  });
+
+  test('null vault returns null', () => {
+    assert.equal(buildClickToOpenUrl(null, 'foo.md'), null);
+  });
+
+  test('vault without path returns null', () => {
+    assert.equal(buildClickToOpenUrl({ type: 'local' }, 'foo.md'), null);
+  });
+
+  test('missing filePath returns null', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 'test' }, ''),
+      null,
+    );
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 'test' }, null),
+      null,
+    );
+  });
+
+  test('enableInsecureServer:false returns null', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: false });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('enableInsecureServer absent returns null', () => {
+    writeDataJson({ insecurePort: 27142 });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('insecurePort missing returns null', () => {
+    writeDataJson({ enableInsecureServer: true });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('insecurePort out of range returns null', () => {
+    writeDataJson({ insecurePort: 99999, enableInsecureServer: true });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('insecurePort non-integer returns null', () => {
+    writeDataJson({ insecurePort: '27142', enableInsecureServer: true });
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('missing data.json file returns null', () => {
+    fs.rmSync(dataJsonPath, { force: true });
+    _resetCache();
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('corrupt data.json returns null', () => {
+    fs.writeFileSync(dataJsonPath, '{not valid json');
+    _resetCache();
+    assert.equal(
+      buildClickToOpenUrl({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+});
+
+describe('buildClickToOpenMarkdownLink', () => {
+  test('uses basename without extension as default label', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const link = buildClickToOpenMarkdownLink(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/Divers/foo.md',
+    );
+    assert.equal(link, '[foo](http://127.0.0.1:27142/open/wiki%2FDivers%2Ffoo.md)');
+  });
+
+  test('honours explicit label', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const link = buildClickToOpenMarkdownLink(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/foo.md',
+      'My Custom Label',
+    );
+    assert.equal(link, '[My Custom Label](http://127.0.0.1:27142/open/wiki%2Ffoo.md)');
+  });
+
+  test('returns null when URL is unavailable', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: false });
+    assert.equal(
+      buildClickToOpenMarkdownLink({ type: 'local', path: vaultPath, name: 't' }, 'foo.md'),
+      null,
+    );
+  });
+
+  test('handles backslash paths in basename extraction', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const link = buildClickToOpenMarkdownLink(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki\\Divers\\bar.md',
+    );
+    assert.equal(link, '[bar](http://127.0.0.1:27142/open/wiki%2FDivers%2Fbar.md)');
+  });
+});
+
+describe('cache behaviour', () => {
+  test('repeated calls don\'t reread data.json (cache hit)', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    // First call seeds the cache
+    const u1 = buildClickToOpenUrl(vault, 'a.md');
+    assert.equal(u1, 'http://127.0.0.1:27142/open/a.md');
+    // Mutate data.json — without cache reset, the next call MUST still
+    // return the old port (proves the cache is in effect).
+    fs.writeFileSync(
+      dataJsonPath,
+      JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
+    );
+    const u2 = buildClickToOpenUrl(vault, 'b.md');
+    assert.equal(u2, 'http://127.0.0.1:27142/open/b.md', 'cache should pin the original port');
+  });
+
+  test('_resetCache forces a fresh read', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    buildClickToOpenUrl(vault, 'a.md'); // seed
+    fs.writeFileSync(
+      dataJsonPath,
+      JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
+    );
+    _resetCache();
+    const u = buildClickToOpenUrl(vault, 'b.md');
+    assert.equal(u, 'http://127.0.0.1:27999/open/b.md');
+  });
+});

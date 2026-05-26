@@ -1,4 +1,5 @@
 import { patchFile } from '../rest-client.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 /**
  * Set a single frontmatter property. Convenience wrapper around patch_file
@@ -27,11 +28,13 @@ export async function setFrontmatterTool(registry, args = {}) {
     content: value,
     createTargetIfMissing: createIfMissing,
   });
+  const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
   return {
     vault: vault.name,
     path: filePath,
     key,
     value,
     set: true,
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

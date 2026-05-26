@@ -1,5 +1,6 @@
 import { getNote } from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 export async function getFrontmatterTool(registry, args = {}) {
   const { vault: name, path: filePath, key } = args;
@@ -8,6 +9,7 @@ export async function getFrontmatterTool(registry, args = {}) {
   const vault = registry.resolveVault(name);
   const note = await getNote(vault, filePath);
   const frontmatter = note.frontmatter ?? {};
+  const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
 
   // Sanitize: frontmatter values are vault-attacker-controlled like search
   // results. `sanitizeResponse` preserves non-string types (numbers, bools,
@@ -20,11 +22,13 @@ export async function getFrontmatterTool(registry, args = {}) {
       key,
       value: frontmatter[key] ?? null,
       exists: Object.prototype.hasOwnProperty.call(frontmatter, key),
+      ...(clickToOpenUrl && { clickToOpenUrl }),
     });
   }
   return sanitizeResponse({
     vault: vault.name,
     path: filePath,
     frontmatter,
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   });
 }

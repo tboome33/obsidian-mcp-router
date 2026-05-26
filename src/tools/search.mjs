@@ -1,5 +1,6 @@
 import { searchSimple } from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
+import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 
 export async function search(registry, { vault: name, query, contextLength = 100 } = {}) {
   if (!query) {
@@ -24,7 +25,11 @@ export async function search(registry, { vault: name, query, contextLength = 100
     const results = await Promise.allSettled(
       candidates.map(async (v) => {
         const matches = await searchSimple(v, query, contextLength);
-        return { vault: v.name, matches };
+        return {
+          vault: v.name,
+          matches,
+          ...collectClickToOpenLinks(v, matches),
+        };
       }),
     );
 
@@ -46,5 +51,6 @@ export async function search(registry, { vault: name, query, contextLength = 100
     query,
     contextLength,
     matches,
+    ...collectClickToOpenLinks(vault, matches),
   });
 }

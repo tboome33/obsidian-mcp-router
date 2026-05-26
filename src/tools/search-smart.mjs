@@ -18,6 +18,7 @@
  */
 import { searchSmart } from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
+import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 
 export async function searchSmartTool(registry, args = {}) {
   const {
@@ -53,7 +54,11 @@ export async function searchSmartTool(registry, args = {}) {
     const settled = await Promise.allSettled(
       candidates.map(async (v) => {
         const data = await searchSmart(v, query, filter);
-        return { vault: v.name, ...data };
+        return {
+          vault: v.name,
+          ...data,
+          ...collectClickToOpenLinks(v, data),
+        };
       }),
     );
 
@@ -75,5 +80,6 @@ export async function searchSmartTool(registry, args = {}) {
     query,
     filter,
     ...data,
+    ...collectClickToOpenLinks(vault, data),
   });
 }

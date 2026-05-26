@@ -1,4 +1,5 @@
 import { writeFile } from '../rest-client.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 export async function writeFileTool(registry, args = {}) {
   const { vault: name, path: filePath, content, ifNew = false } = args;
@@ -11,10 +12,12 @@ export async function writeFileTool(registry, args = {}) {
   await writeFile(vault, filePath, content, {
     applyIfContentPreexists: ifNew ? false : undefined,
   });
+  const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
   return {
     vault: vault.name,
     path: filePath,
     bytesWritten: Buffer.byteLength(content, 'utf8'),
     mode: ifNew ? 'create-only' : 'create-or-replace',
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

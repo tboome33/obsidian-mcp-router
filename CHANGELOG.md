@@ -8,6 +8,71 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.14.8] — 2026-05-26 — click-to-open determinism: tool results + helper tool + hardened hook
+
+Closes a recurring bug where the LLM cited vault files as bare paths (`wiki/Divers/foo.md`) in chat replies. The Claude Code renderer auto-clickifies these by prepending the cwd path, producing either `<cwd>/wiki/...` (a non-existent path in workspace-bound mode) or a filesystem link that opens in the OS file viewer instead of Obsidian (in cwd-is-vault mode). Roland flagged this 10+ times — the previous "memory + CLAUDE.md rule + hook nudge" approach failed because the LLM still had to *compose* the URL by hand (port lookup, encoding) and *remember* the rule. This release removes both failure modes with a three-layer fix.
+
+### Layer 1 — every vault-touching tool result carries `clickToOpenUrl`
+
+The LLM never composes a URL by hand. It copies the field verbatim from the tool result it just received.
+
+#### Added
+
+- **`src/helpers/click-to-open.mjs`** (NEW, ~150 LOC) — exports `buildClickToOpenUrl(vault, filePath)`, `buildClickToOpenMarkdownLink(vault, filePath, label?)`, `encodeVaultPath(p)`, and `_resetCache()` (test helper). Reads `<vault>/.obsidian/plugins/obsidian-local-rest-api/data.json`, extracts `insecurePort`, validates `enableInsecureServer: true`, returns `http://127.0.0.1:<port>/open/<url-encoded-path>` or `null`. Path encoding normalises `\\` to `/`, strips leading slashes, encodes via `encodeURIComponent` (slashes → `%2F`, spaces → `%20`, accents → percent-encoded UTF-8). Per-vault cache keyed by `vault.path` avoids re-reading data.json on every call (notable for `merge_frontmatter` which loops `set_frontmatter`). Returns `null` (never throws) when the bridge isn't ready — remote vault, missing/broken data.json, insecure server disabled, port out of range — so the caller spreads the field conditionally and the tool result still works without a URL.
+- **`src/helpers/click-to-open-walker.mjs`** (NEW, ~90 LOC) — exports `collectClickToOpenLinks(vault, payload)` for search-style responses. Recursively walks the payload (bounded depth 10 to handle cycles), collects every string at keys `filename` / `path` / `file`, rejects URLs and absolute filesystem paths, dedupes, and returns `{ clickToOpenLinks: { "<path>": "<url>", ... } }` or `{}` so spreading is a no-op. Sibling-map design (rather than mutating hit objects) preserves upstream shape contracts.
+
+#### Changed (9 tools now emit `clickToOpenUrl`, 2 emit `clickToOpenLinks`)
+
+- **`src/tools/write-file.mjs`**, **`get-file.mjs`**, **`append-to-file.mjs`**, **`patch-file.mjs`**, **`set-frontmatter.mjs`**, **`merge-frontmatter.mjs`**, **`get-frontmatter.mjs`** — append `clickToOpenUrl` to the result object via `...(url && { clickToOpenUrl })` so absent when the bridge is unavailable.
+- **`src/tools/move-file.mjs`** — URL targets the **destination** path, not the source (source no longer exists after the move).
+- **`src/tools/execute-template.mjs`** — URL emitted only when `createFile: true` AND `targetPath` is set (the render-only path has no file to open).
+- **`src/tools/search.mjs`**, **`search-smart.mjs`** — both per-vault and fan-out (`vault: "*"`) modes now include `clickToOpenLinks` at the response top level (or per-vault sub-object). The walker collects paths from both Local REST API's `[{filename, matches: [...]}]` shape and Smart Connections' `{chunks: [{path, score, excerpt}]}` shape uniformly.
+
+### Layer 2 — `build_open_link` MCP tool for files the LLM didn't just touch
+
+When the LLM cites a wikilink target without having fetched it (`[[graphify]]`, `[[project-router]]`), it calls `build_open_link` to get the URL — still no manual composition.
+
+#### Added
+
+- **`src/tools/build-open-link.mjs`** (NEW, ~60 LOC) — `buildOpenLinkTool(registry, { vault?, path? | paths? })`. Single mode returns `{ vault, path, clickToOpenUrl, markdownLink }`. Batch mode (`{ paths: [...] }`) returns `{ vault, links: [{ path, clickToOpenUrl, markdownLink }, ...] }` for citing N notes in one call. Rejects on both `path` and `paths` provided (ambiguous), or neither (no work). Per-slot non-empty-string validation in batch mode (a typo at `paths[3]` becomes a clear "paths[3] must be a non-empty string" error instead of a silent `null` URL).
+- **TOOLS schema + TOOL_HANDLERS entry** in `src/index.mjs` — read-only tool (no vault I/O beyond the per-vault data.json port lookup), so excluded from `WRITE_TOOL_NAMES`.
+
+### Layer 3 — hook injects the rule + pre-computed URL prefix
+
+The hook now reads data.json at fire time and embeds the literal URL prefix in the nudge — the LLM sees `http://127.0.0.1:27142/open/` ready to use, no port lookup ever.
+
+#### Changed
+
+- **`hooks/wiki-query-first-nudge.mjs`** — new `chatLinkBlock` injected in BOTH `cwd-is-vault` and `workspace-bound` modes (the bare-path bug exists in both). The block contains:
+  - The pre-computed URL prefix `http://127.0.0.1:<insecurePort>/open/` read live from `<vaultPath>/.obsidian/plugins/obsidian-local-rest-api/data.json` at fire time.
+  - An explicit `NEVER write the path as bare text like wiki/Divers/foo.md` rule, with mode-aware explanation of WHY (cwd+vault mix → 404 in workspace-bound, OS file viewer → wrong app in cwd-is-vault).
+  - Three numbered paths to get a URL without composing: (a) read `clickToOpenUrl` from a tool result you already have, (b) read `clickToOpenLinks` map from search/search_smart results, (c) call `build_open_link` for cross-references.
+  - Concrete WRONG/RIGHT chat-reply examples using a REAL path from the current vault.
+  - "Roland has flagged this exact bug 10+ times" framing to anchor the rule in user reality.
+- **DEGRADED variant** of the block when the bridge isn't reachable (missing data.json, JSON broken, `enableInsecureServer: false`, invalid port): falls back to `obsidian://open?vault=...&file=...` URI inline-code guidance and points at the data.json setup as the fix.
+
+### Tests
+
+- **`tests/click-to-open-helper.test.mjs`** (NEW, 24 tests) — encoding (slashes / spaces / accents / backslash-to-slash / leading-slash strip / preserved punctuation), happy path (URL with configured port), null-return conditions (remote vault, null vault, no path, no filePath, `enableInsecureServer:false`, port missing / out of range / non-integer, missing data.json, corrupt JSON), markdown-link helper (default label = basename without ext, explicit label, null when URL unavailable, backslash-path basename), cache behaviour (subsequent calls hit cache, `_resetCache` forces fresh read).
+- **`tests/click-to-open-walker.test.mjs`** (NEW, 15 tests) — Local REST API search shape, smart-connections chunks shape, mixed `filename`/`path` at any depth, dedupe, rejected candidates (URLs, absolute POSIX/Windows paths, empty strings, non-strings), edge cases (empty/null payloads, remote vault, depth-limited cycles).
+- **`tests/build-open-link.test.mjs`** (NEW, 8 tests) — single mode happy path, null URL when insecure server disabled (no `markdownLink` in result), batch mode happy path, empty paths array, per-slot validation errors, mutual-exclusion of `path` and `paths`, missing-args error.
+- **`tests/tools-click-to-open-integration.test.mjs`** (NEW, ~25 tests) — static wiring check (every vault-touching tool source imports the helper AND emits `clickToOpenUrl`), `build_open_link` registration in `TOOLS` / `TOOL_HANDLERS` / imports, end-to-end smoke (single + batch round-trip through a real tempdir vault with data.json). Static wiring chosen over ESM mocking because ESM exports are frozen — `mock.method` fails with "Cannot redefine property" on imported functions.
+- **`tests/wiki-query-first-nudge.test.mjs`** — added 4 tests for the new chat link block: bridge-reachable case (URL prefix injected literally + WRONG/RIGHT examples + `build_open_link` mention + Roland-10+ framing), missing data.json → DEGRADED variant, `enableInsecureServer:false` → DEGRADED, cwd-is-vault uses the "filesystem link → wrong app" WRONG example (different from workspace-bound's "cwd+vault mix → 404").
+
+**Total: 1144/1144 passing** (was 1055 at v0.14.7, +89 tests).
+
+### Why this fix is definitive
+
+| Pre-v0.14.8 failure mode | v0.14.8 mitigation |
+|---|---|
+| LLM composes URL by hand → encoding errors | Tool result carries `clickToOpenUrl` ready to copy |
+| LLM forgets the click-to-open format entirely | Hook injects rule + pre-computed URL prefix every prompt |
+| Cross-reference to a file LLM didn't fetch → no URL | `build_open_link` batch tool builds URLs for any path |
+| Bare `wiki/...` path in chat → auto-clickified by Claude Code | Hook explicitly forbids with WRONG/RIGHT examples |
+| Bridge not reachable → silent failure | DEGRADED hook variant + tool result simply omits the URL field |
+
+The residual gap: Claude Code has no pre-output validation hook that could block a chat message containing a bare path. The fix makes the "right path" (use the URL from the tool result) much easier than the "wrong path" (compose by hand). Combined with the deterministic prompt-submit injection, the bug should disappear in practice.
+
 ## [0.14.7] — 2026-05-25 — Phase E.2 · intelligent asset filter + Phase D.2 `/review+` hardening
 
 Two threads land together because Phase D.2's `/review+` hardening was already on the branch when Phase E.2 wrapped up. Both ship in v0.14.7.

@@ -1,4 +1,5 @@
 import { appendToFile } from '../rest-client.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 export async function appendToFileTool(registry, args = {}) {
   const { vault: name, path: filePath, content, requireExisting = false } = args;
@@ -11,9 +12,11 @@ export async function appendToFileTool(registry, args = {}) {
   await appendToFile(vault, filePath, content, {
     createTargetIfMissing: requireExisting ? false : undefined,
   });
+  const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
   return {
     vault: vault.name,
     path: filePath,
     bytesAppended: Buffer.byteLength(content, 'utf8'),
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

@@ -55,6 +55,7 @@ import {
   TOOL_DEFINITION as DOWNLOAD_PAGE_ASSETS_TOOL_DEFINITION,
   handleDownloadPageAssets,
 } from './tools/download-page-assets.mjs';
+import { buildOpenLinkTool } from './tools/build-open-link.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -611,6 +612,35 @@ const TOOLS = [
   // for markdown rewriting. WRITES to disk — included in WRITE_TOOL_NAMES
   // so OBSIDIAN_ROUTER_READONLY hides it.
   DOWNLOAD_PAGE_ASSETS_TOOL_DEFINITION,
+  // v0.14.8 — build click-to-open URLs without touching vault files.
+  // Companion to the `clickToOpenUrl` field that write/get/patch already
+  // emit. Use when you need a URL for a file you didn't just touch
+  // (typically a wikilink target to cite in a chat response). Read-only —
+  // excluded from WRITE_TOOL_NAMES.
+  {
+    name: 'build_open_link',
+    description:
+      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Returns null URL when the vault is remote or the bridge\'s insecure HTTP server isn\'t enabled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Vault name (see list_vaults). Omit for default vault.',
+        },
+        path: {
+          type: 'string',
+          description: 'Single vault-relative path (e.g. "wiki/Divers/foo.md"). Mutually exclusive with `paths`.',
+        },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Batch of vault-relative paths. Mutually exclusive with `path`. Use when citing multiple notes in one chat response.',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 /**
@@ -663,6 +693,9 @@ const TOOL_HANDLERS = {
   propose_linked_sources: (_reg, args) => handleProposeLinkedSources(args),
   // v0.14.x Phase E — page asset downloader (image preservation in vault).
   download_page_assets: (_reg, args) => handleDownloadPageAssets(args),
+  // v0.14.8 — click-to-open URL builder (read-only, no vault I/O beyond
+  // the per-vault data.json port lookup).
+  build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at

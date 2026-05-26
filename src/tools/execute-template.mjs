@@ -1,4 +1,5 @@
 import { executeTemplate } from '../rest-client.mjs';
+import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 
 export async function executeTemplateTool(registry, args = {}) {
   const {
@@ -22,10 +23,17 @@ export async function executeTemplateTool(registry, args = {}) {
     createFile,
     targetPath,
   });
+  // Only emit a click-to-open URL when the template actually wrote a file
+  // (createFile + targetPath both provided). The render-only path has no
+  // file to open.
+  const clickToOpenUrl = createFile && targetPath
+    ? buildClickToOpenUrl(vault, targetPath)
+    : null;
   return {
     vault: vault.name,
     template: templateName,
     targetPath: createFile ? targetPath : null,
     ...result,
+    ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }
