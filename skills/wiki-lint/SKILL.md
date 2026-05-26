@@ -7,10 +7,25 @@ description: Health-check a wiki vault. Finds orphan pages (no inbound links), d
 
 Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wiki without explicit confirmation.
 
+## Modes
+
+The skill has two modes :
+
+- **Default (structural)** — runs Checks A through H. Cheap, scans page metadata + wikilinks + citations only. The right mode for routine health checks.
+- **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L, which read the **digest sidecars** (`wiki-meta/digests/<page-slug>.md`) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted.
+
+Trigger phrases :
+- "lint the wiki" / "health check" / "audit my wiki" → default mode
+- "deep lint" / "find redundant concepts" / "detect contradictions" / "wiki-lint --deep" → deep mode
+- "lint the wiki and fix what you can" → default mode with auto-fix offered for ERRORs
+
+A related skill, `wiki-refresh-digests`, regenerates stale digests detected by Check I (see `skills/wiki-refresh-digests/SKILL.md`).
+
 ## Pre-conditions
 
 1. Target vault has `wiki/` scaffolding.
 2. Vault is online.
+3. **For `--deep` mode only** : `wiki-meta/digests/` directory exists with at least one digest. If empty / missing, gracefully report "no digests to deep-lint; run `wiki-ingest` to generate digests, or `/wiki-refresh-digests` to backfill existing pages".
 
 ## Steps
 
@@ -65,12 +80,55 @@ Single-line citations `^[file.md:42]` and paragraph-level fallbacks `^[file.md]`
 
 **Performance note** : Check H reads each cited source file once to get its line count. Cache the line counts per source within a single lint run to avoid re-reading the same source multiple times when several pages cite it.
 
+### 2b. Deep checks (v0.15.0+, `--deep` mode only)
+
+The following 4 checks are gated behind the `--deep` flag because they involve reading every digest in `wiki-meta/digests/` and doing pairwise comparisons. Cheap individually, but N² in page count — typical vault (100 pages) → 5000 comparisons, fine ; large vault (1000 pages) → 500k comparisons, may take a few seconds.
+
+#### Check I (deep): digest staleness
+
+For each digest file in `wiki-meta/digests/`, parse it with `parseDigest` from `src/helpers/digest-generator.mjs`. Compare the stored `page_hash` against a fresh `computePageHash(currentPageContent)` of the page the digest is for (`digest.for` field). On mismatch → WARNING `digest-stale` with detail "page edited since digest was generated ; run `/wiki-refresh-digests` to update".
+
+If the page referenced by `digest.for` no longer exists (page deleted), surface that as ERROR `orphaned-digest` and suggest removing the digest file too.
+
+#### Check J (deep): redundant concepts across pages
+
+Load all digests. For each pair of digests `(A, B)`, compute `conceptOverlap(A, B)` via `src/helpers/digest-generator.mjs` (Jaccard similarity over the concepts arrays). Thresholds :
+
+- **Overlap ≥ 0.7** → ERROR `concept-overlap-strong` : "pages X and Y share concepts [list] — likely candidates for merge"
+- **Overlap 0.4..0.7** → WARNING `concept-overlap-moderate` : "pages X and Y share concepts [list] — consider cross-linking or partial merge"
+
+Report only pairs where the OVERLAP is above the WARNING threshold, not all 5000+ pairs.
+
+#### Check K (deep): contradiction signals
+
+**Conservative heuristic only**. LLMs detect contradictions poorly when given prose ; the deterministic heuristic here flags only HIGH-confidence cases to avoid false positives that would erode trust in the linter.
+
+For each pair of digests with `conceptOverlap ≥ 0.5` (i.e. they're about overlapping topics), scan their `claims` arrays for direct negation patterns :
+
+- One page asserts `"X is Y"` and another asserts `"X is not Y"` (or `"X is never Y"` / `"X cannot be Y"`)
+- One asserts `"always do X"` and another asserts `"never do X"` / `"avoid X"`
+- One asserts `"X is the only way to Y"` and another asserts `"X is one of several ways to Y"`
+
+The heuristic is regex-based — match `(\\b\\w+\\b) is (\\w+)` in page A against `\\1 is (?:not|never)? \\2` in page B (and symmetric variants). Surface ONLY exact matches, never fuzzy paraphrases — false positives are worse than false negatives here.
+
+Severity : WARNING `contradiction-suspected`. Always document the limitation in the report : "naive heuristic, likely misses many contradictions ; treat as a starting point not a guarantee".
+
+#### Check L (deep): missing wikilinks
+
+For each pair of digests with `conceptOverlap ≥ 0.4` (i.e. they share at least some topics), check whether either page wikilinks to the other. Specifically :
+
+1. Read page A's content, parse `[[...]]` wikilinks. If page B's basename is in the wikilinks → OK.
+2. Same in reverse for page B → page A.
+3. If NEITHER page references the other → WARNING `missing-wikilink` : "pages X and Y share concepts [list] but don't reference each other ; consider adding `[[X]]` or `[[Y]]` to the other page".
+
+This check often surfaces genuine knowledge-graph gaps that humans miss when adding new pages incrementally.
+
 ### 3. Render the report
 
 Group findings by severity:
 
-- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow)
+- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep)
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep)
 - **Info** (informational): log out-of-order entries, hot.md staleness
 
 For each finding:

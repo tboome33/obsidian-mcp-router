@@ -268,6 +268,50 @@ For each entity/concept identified in step 2:
   - Append a new section `## From <source-title>` containing the new claims/insights — use `append_to_file` (creates or appends), not `patch_file` (which targets an EXISTING heading).
   - Don't rewrite existing content. The wiki is append-only at the section level.
 
+### 5.5 Generate digest sidecars (v0.15.0+, roadmap item #7')
+
+For each wiki page **created or updated** in step 5 (NOT the source page from step 4 — source pages don't need digests since the source-page frontmatter already serves as their summary), generate a compact digest sidecar at `wiki-meta/digests/<page-slug>.md`.
+
+**Purpose** : the digests are the substrate the future `wiki-lint --deep` mode (and the future agent-de-veille #3) read in bulk to detect cross-page redundancies, contradictions, and missing wikilinks — cheaper than re-scanning the full pages every time.
+
+**Procedure** :
+
+1. **Import the helper** : `src/helpers/digest-generator.mjs` exports `generateDigestSkeleton({pageContent, forPath})` (skeleton with computed hash + empty arrays for you to fill) and `serialiseDigest(digest)` (turn a populated digest object back into markdown).
+
+2. **For each new/updated page** :
+   - Read the just-written page content (so the hash and the summary reflect what landed, not a draft).
+   - Call `generateDigestSkeleton({pageContent, forPath})` to get the skeleton with the correct `page_hash`.
+   - Parse the skeleton with `parseDigest`, then populate the empty fields based on YOUR understanding of the page :
+     - **`concepts`** : 3-7 top-level concepts the page addresses (e.g. `["OAuth 2.0", "PKCE", "refresh tokens"]`). Match the casing the page itself uses.
+     - **`claims`** : 2-5 short, factual assertions the page makes (each ≤120 chars).
+     - **`keywords`** : 3-8 lowercase keywords for free-text matching (e.g. `[oauth, auth, security, browser]`).
+     - **`summary`** : 1-2 sentences distilling the page (under 300 chars).
+     - **`notable`** (optional) : a single point worth flagging at a glance (contradictions noted, gaps, controversies). Omit if nothing notable.
+   - Serialise with `serialiseDigest(populated)` and write to `wiki-meta/digests/<page-slug>.md` via `mcp__obsidian-router__write_file`.
+
+3. **Don't generate digests for** :
+   - Source pages (`wiki/sources/*.md`) — their frontmatter already serves as the digest.
+   - Wiki-meta scaffolds (`wiki-meta/hot.md`, `wiki-meta/log.md`, etc.) — those aren't content pages.
+   - Pages that you only ADDED a section to (existing page + new section) — the digest of the page already exists ; UPDATE it instead (re-read the now-modified page, regenerate the digest skeleton with the fresh hash, merge concepts/claims with the previous ones, re-write).
+
+4. **If digest generation fails** (network error, write error), **don't abort the ingest** — surface a warning to the user and continue. Digests are best-effort additive ; the wiki page is still valid without one. The next `/wiki-lint --refresh-digests` run will catch up.
+
+**File layout example** :
+
+```
+wiki-meta/
+├── digests/
+│   ├── oauth-howto.md              # digest for wiki/Refs/oauth-howto.md
+│   ├── pkce-explained.md           # digest for wiki/Refs/pkce-explained.md
+│   └── ...
+├── hot.md
+├── index.md
+├── log.md
+└── overview.md
+```
+
+**Reference** : helper `src/helpers/digest-generator.mjs`, tests `tests/digest-generator.test.mjs`, deep-lint mode `skills/wiki-lint/SKILL.md` --deep.
+
 ### 6. Update index.md
 
 Use `patch_file` with `operation: append`, `targetType: heading`, `target: "<section-name>"` (e.g., `target: "Sources"` for source pages, `target: "Concepts"` for concept pages) to add rows for any newly created pages. Keep the index alphabetized within each section.
