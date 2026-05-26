@@ -238,20 +238,30 @@ describe('download-page-assets — v0.14.7 defuddle-first + relevance filter', (
     assert.equal(r.extracted, 3, 'all 3 imgs found in raw HTML');
   });
 
-  test('defuddleFirst falls back to raw HTML when defuddle returns empty content', async () => {
-    // Empty body with no article structure — defuddle returns "" so we
-    // fall back to raw scan. The `<img>` is found that way.
-    // Without alt and not in figure → afterRelevanceFilter drops it.
+  test('defuddleFirst — non-article HTML: defuddle returns body without the img → filter drops it', async () => {
+    // What this test actually pins down (v0.14.7 R-A NIT #7 — the
+    // earlier comment was misleading):
+    //
+    // For a bare `<img>` with no article structure, defuddle does NOT
+    // throw and does NOT return empty content — it returns
+    // `<body></body>` (a non-empty string that nonetheless contains no
+    // image references). Our wrapper's `usedFallback` check fires only
+    // on EMPTY content, so `scannedHtml` is set to the defuddled
+    // `<body></body>` and no images survive the extract step. This is
+    // the INTENDED behavior — defuddle correctly identified the input
+    // as "not an article", and we trust that judgment for the asset
+    // downloader's relevance use case.
+    //
+    // To exercise the actual fallback-on-empty-content code path, see
+    // the separate `_defuddleFn injection` test below.
     const html = '<img src="https://nope.invalid/orphan.png" alt="orphan">';
     const r = await handleDownloadPageAssets({
       html,
       baseUrl: 'https://nope.invalid/',
       outputDir: ABS_OUT,
     });
-    // Defuddle returned `<body></body>` — no images. We've documented
-    // this as "if defuddle drops all content, the page isn't an article".
-    // For a TRUE no-article input the orphan img stays filtered.
-    assert.equal(r.extracted, 0, 'defuddle correctly identified this as not an article');
+    assert.equal(r.extracted, 0, 'no imgs survive defuddle on a non-article input');
+    assert.equal(r.defuddled, true, 'defuddle ran without error');
   });
 
   test('requireAltOrFigure=true (default) skips images with empty alt', async () => {

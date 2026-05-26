@@ -17,8 +17,17 @@ config.local.json
 # plaintext credentials (SSH passwords in -pw flags, etc.). `.claude/worktrees/`
 # are scratch git worktrees created by sub-agent isolation — they have their
 # own .git and would be picked up by git as embedded repositories.
+# `.claude/scheduled_tasks.lock` is a per-machine lock for the scheduled-tasks
+# MCP (PID + sessionId + acquired-at) — committing it would have other
+# checkouts inherit a stale lock; flagged by codex /review+ pass 2 on v0.14.7.
+# `.vault-meta/doc-drift-startup-fingerprint` is per-checkout dedup state
+# written by `hooks/vault-doc-startup-check.mjs`; if committed, other
+# checkouts inherit it and skip the startup doc-drift nudge for the same
+# unresolved drift state. Flagged by codex /review+ pass 5 on v0.14.7.
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+.vault-meta/doc-drift-startup-fingerprint
 
 # OS
 .DS_Store

@@ -77,13 +77,27 @@ import { safeFetchBinary } from './safe-fetch-binary.mjs';
 // to suppress it. We treat that the same as missing for the relevance
 // filter, but the distinction is preserved at this layer in case
 // future callers want to act on it differently.
+//
+// v0.14.7 P1 hardening — `\b` boundary is dangerous here:
+//   In JS regex, `\b` triggers between `[A-Za-z0-9_]` and any other char.
+//   `-` is "other", so `\bsrc` ALSO matches the `src` suffix of
+//   `data-src` (very common lazy-loading attribute on Wikipedia, Medium,
+//   any modern CMS). Pre-fix, `getAttr(attrs, 'src')` against
+//   `<img data-src="lazy.png" src="real.png">` returned `'lazy.png'`
+//   because that match comes first. Same trap for `srcset` matching
+//   `imagesrcset` / `data-srcset`.
+//
+//   Fix: require a tag-attr boundary — start-of-string OR whitespace OR
+//   the self-close slash — before the name. This is what HTML actually
+//   uses between attributes, so it matches HTML syntax instead of
+//   regex word-boundary semantics.
 function getAttr(attrs, name) {
-  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
+  const re = new RegExp(`(?:^|[\\s/])${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i');
   const m = re.exec(attrs);
   if (!m) {
     // Check for a presence-only attribute (no `=` form). Rare for src/alt
-    // but cheap to handle.
-    if (new RegExp(`\\b${name}\\b(?!\\s*=)`, 'i').test(attrs)) return '';
+    // but cheap to handle. Same boundary discipline as above.
+    if (new RegExp(`(?:^|[\\s/])${name}(?=[\\s>/]|$)(?!\\s*=)`, 'i').test(attrs)) return '';
     return null;
   }
   const v = m[1] ?? m[2] ?? m[3] ?? '';
@@ -123,13 +137,30 @@ export function extractImagesWithMeta(content, baseUrl) {
     throw new Error('extractImagesWithMeta: baseUrl is required for relative URL resolution');
   }
 
-  // Single-pass tokenizer for HTML tags. We only care about three tag
-  // kinds — <img>, <source>, <figure>, </figure> — so the tokenizer
-  // is intentionally minimal: scan for `<`, peek next chars, advance.
-  // This is O(n) where n = HTML length, vs. the O(n²) we'd get from
-  // re-scanning for figure context per match.
+  // Single-pass tokenizer for HTML tags. We care about five tag kinds:
+  //   <img>, <source>, <figure>, </figure>, <picture>, </picture>
+  // The tokenizer is intentionally minimal: scan for `<`, peek next
+  // chars, advance. O(n) where n = HTML length, vs. the O(n²) we'd
+  // get from re-scanning context per match.
+  //
+  // v0.14.7 P2 hardening — picture/source alt propagation:
+  //   A `<picture>` block typically wraps several `<source srcset>`
+  //   responsive variants and ends with `<img src alt>` as fallback.
+  //   Pre-fix, each `<source>` was extracted with `alt: ''` because
+  //   sources have no alt attribute, then the relevance filter
+  //   (requireAltOrFigure) dropped them — regressing the pre-v0.14.7
+  //   responsive-image path that callers relied on. Fix: when an
+  //   `<img>` with non-empty alt is seen inside `<picture>`, retroactively
+  //   assign its alt to all preceding sibling sources still in the
+  //   pending buffer. This makes the filter "the picture is relevant
+  //   iff its img has alt", which matches HTML5 spec intent (the img
+  //   is the canonical reference; sources are alternates).
   const found = [];
   let figureDepth = 0;
+  let pictureDepth = 0;
+  // Indexes into `found` for sources awaiting an <img> sibling alt
+  // within the CURRENT <picture> block.
+  let pendingPictureSources = [];
   let i = 0;
   const n = safe.length;
 
@@ -137,8 +168,8 @@ export function extractImagesWithMeta(content, baseUrl) {
     const lt = safe.indexOf('<', i);
     if (lt === -1) break;
 
-    // Peek the tag name (lowercased, up to 8 chars — enough for "/figure").
-    const tagSnippet = safe.slice(lt + 1, lt + 9).toLowerCase();
+    // Peek the tag name (lowercased, up to 9 chars — enough for "/picture").
+    const tagSnippet = safe.slice(lt + 1, lt + 10).toLowerCase();
 
     if (tagSnippet.startsWith('figure') && /^[\s>]/.test(safe[lt + 7] || '>')) {
       // <figure ...> — open. Advance to the closing `>`.
@@ -147,23 +178,63 @@ export function extractImagesWithMeta(content, baseUrl) {
       i = gt === -1 ? n : gt + 1;
       continue;
     }
-    if (tagSnippet.startsWith('/figure')) {
+    if (tagSnippet.startsWith('/figure') && /^[\s>]/.test(safe[lt + 8] || '>')) {
       // </figure> — close. Decrement (clamp at 0).
+      // Symmetric boundary check with the open tag (v0.14.7 NIT fix).
       figureDepth = Math.max(0, figureDepth - 1);
       const gt = safe.indexOf('>', lt + 8);
       i = gt === -1 ? n : gt + 1;
       continue;
     }
+    if (tagSnippet.startsWith('picture') && /^[\s>]/.test(safe[lt + 8] || '>')) {
+      // <picture ...> — open. Reset pending-sources buffer (we only
+      // propagate alt within a single picture block).
+      const gt = safe.indexOf('>', lt + 8);
+      pictureDepth += 1;
+      pendingPictureSources = [];
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
+    if (tagSnippet.startsWith('/picture') && /^[\s>]/.test(safe[lt + 9] || '>')) {
+      // </picture> — close. Pending sources keep their `alt: ''`
+      // (their <img> sibling had no alt either, so the relevance
+      // filter will drop them consistently).
+      pictureDepth = Math.max(0, pictureDepth - 1);
+      pendingPictureSources = [];
+      const gt = safe.indexOf('>', lt + 9);
+      i = gt === -1 ? n : gt + 1;
+      continue;
+    }
     if (tagSnippet.startsWith('img') && /^[\s>/]/.test(safe[lt + 4] || '>')) {
       // <img ...> — extract src + alt.
+      //
+      // v0.14.7 P2 codex pass 2 — read `alt` BEFORE the `if (src)` gate.
+      // Reason: a lazy-loaded picture often has `<img data-src="..."
+      // alt="Hero">` as fallback. We intentionally ignore `data-src`
+      // (the BLOCKER pass-1 fix), so `src` is empty and we'd skip the
+      // alt-propagation step — leaving the `<picture>`'s sources with
+      // `alt: ''` and dropped by the relevance filter. The alt itself
+      // is the relevance signal for the WHOLE picture; we must
+      // propagate it regardless of whether THIS specific img has a
+      // usable `src` to push.
       const gt = safe.indexOf('>', lt + 4);
       const tag = safe.slice(lt, gt === -1 ? n : gt + 1);
       const attrs = tag.slice(4, -1); // strip "<img" prefix and ">" suffix
       const src = getAttr(attrs, 'src');
+      const altRaw = getAttr(attrs, 'alt');
+      const alt = (altRaw == null ? '' : altRaw).trim();
       if (src) {
-        const altRaw = getAttr(attrs, 'alt');
-        const alt = (altRaw == null ? '' : altRaw).trim();
         found.push({ raw: src, alt, isFigure: figureDepth > 0 });
+      }
+      // Propagate alt to preceding `<source>` siblings in the current
+      // `<picture>` regardless of whether the img had a usable `src`.
+      // Only when alt is non-empty — empty alt would be a no-op
+      // (sources stay `alt: ''`).
+      if (pictureDepth > 0 && alt !== '' && pendingPictureSources.length > 0) {
+        for (const idx of pendingPictureSources) {
+          if (!found[idx].alt) found[idx].alt = alt;
+        }
+        pendingPictureSources = [];
       }
       i = gt === -1 ? n : gt + 1;
       continue;
@@ -177,7 +248,9 @@ export function extractImagesWithMeta(content, baseUrl) {
       if (srcset) {
         const firstUrl = srcset.split(/[,\s]+/)[0];
         if (firstUrl) {
+          const idx = found.length;
           found.push({ raw: firstUrl, alt: '', isFigure: figureDepth > 0 });
+          if (pictureDepth > 0) pendingPictureSources.push(idx);
         }
       }
       i = gt === -1 ? n : gt + 1;
@@ -390,8 +463,11 @@ export function decodeImageDimensions(buffer, contentType = '') {
   const bytesLookSvg = firstChars.startsWith('<svg') || firstChars.startsWith('<?xml');
   if (ctLooksSvg || bytesLookSvg) {
     // Cap the slice we parse — SVG files can be megabytes of paths,
-    // but the <svg ...> open tag is in the first few KiB.
-    const text = buffer.slice(0, Math.min(buffer.length, 8192)).toString('utf8');
+    // but the <svg ...> open tag is in the first few KiB. Cap at
+    // 32 KiB to accommodate Inkscape-emitted SVGs that have long XML
+    // preambles + `<defs>` + inline `<style>` before the `<svg>` tag
+    // (v0.14.7 NIT — pre-fix 8 KiB caused false-negatives on those).
+    const text = buffer.slice(0, Math.min(buffer.length, 32 * 1024)).toString('utf8');
     const tag = /<svg\b([^>]*)>/i.exec(text);
     if (!tag) return null;
     const attrs = tag[1] || '';
@@ -540,8 +616,8 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
  * @param {object} [opts]
  * @param {number} [opts.minBytes=1024]
  * @param {number} [opts.maxBytes=10*1024*1024]
- * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. 0 = disabled.
- * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. 0 = disabled.
+ * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. **Disabled by default at this helper layer**. `download_page_assets` (MCP tool wrapper) sets the smart default of `100` at its layer; direct helper callers stay opt-in.
+ * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. Same caveat as `minWidth`.
  * @param {Set<string>} [opts.usedNames]               — collision-avoid across batch
  * @param {Function} [opts._fetchFn]                   — injection seam for tests
  * @param {Function} [opts._writeFn]                   — injection seam for tests
@@ -616,8 +692,8 @@ export async function downloadOne(url, outputDir, opts = {}) {
  * @param {number} [opts.concurrency=4]
  * @param {number} [opts.minBytes]
  * @param {number} [opts.maxBytes]
- * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. 0 = disabled.
- * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. 0 = disabled.
+ * @param {number} [opts.minWidth=0]                    — Phase E.2 v0.14.7. **Disabled by default at this helper layer**. `download_page_assets` (MCP tool wrapper) sets the smart default of `100` at its layer; direct helper callers stay opt-in.
+ * @param {number} [opts.minHeight=0]                   — Phase E.2 v0.14.7. Same caveat as `minWidth`.
  * @param {Function} [opts._fetchFn]
  * @param {Function} [opts._writeFn]
  * @param {Function} [opts._mkdirFn]
@@ -793,9 +869,64 @@ export function rewriteAssetUrls(content, urlMap, opts = {}) {
     },
   );
 
-  // HTML `<img src="...">` — keep attribute style (quote-aware).
+  // HTML `<source srcset="...">` — rewrite the FIRST URL in srcset,
+  // matching what `extractImagesWithMeta` extracted.
+  //
+  // v0.14.7 P2 codex pass 4 — close the picture-source lock-step gap:
+  //   Pre-fix, the P2 picture-source alt propagation (codex pass 1)
+  //   made `<source>` URLs pass the relevance filter and get downloaded
+  //   — but there was no `rewriteAssetUrls` path for `<source srcset>`.
+  //   Result: HTML callers that round-trip through rewriteAssetUrls saw
+  //   `<source srcset="https://remote/...">` in the output even though
+  //   the asset was downloaded. (Markdown callers via markitdown didn't
+  //   see this because markitdown strips `<source>` during HTML→md
+  //   conversion. But the lock-step contract should hold for any caller.)
+  //
+  //   The rewrite preserves the rest of the srcset (descriptors + other
+  //   URLs) untouched — only the first URL is replaced because that's
+  //   what we extracted. Subsequent variants stay remote, consistent
+  //   with the "we picked one URL per source" extract policy.
   out = out.replace(
-    /(<img\b[^>]*?\bsrc\s*=\s*)("([^"]+)"|'([^']+)'|([^\s>]+))/gi,
+    /(<source\b[^>]*?(?:^|[\s/])srcset\s*=\s*)("([^"]+)"|'([^']+)'|([^\s>]+))/gi,
+    (match, lead, _all, dq, sq, bare) => {
+      const fullSrcset = dq || sq || bare;
+      // Use the SAME split as `extractImagesWithMeta` so we replace the
+      // same URL the extractor picked. Any divergence here would break
+      // the lock-step contract again (HARDENING P3-b would catch it).
+      const firstUrl = fullSrcset.split(/[,\s]+/)[0];
+      const local = firstUrl && remap.get(firstUrl);
+      if (!local) return match;
+      // `String.replace(string, string)` replaces only the FIRST
+      // occurrence — perfect for our "first URL only" semantics.
+      const newSrcset = fullSrcset.replace(firstUrl, local);
+      if (dq !== undefined) return `${lead}"${newSrcset}"`;
+      if (sq !== undefined) return `${lead}'${newSrcset}'`;
+      return `${lead}${newSrcset}`;
+    },
+  );
+
+  // HTML `<img src="...">` — keep attribute style (quote-aware).
+  //
+  // v0.14.7 P2 codex pass 3 — attribute boundary discipline:
+  //   Pre-fix, the regex used `\bsrc\s*=` which ALSO matched `data-src=`
+  //   (the `-` is a regex word-boundary). This was in lock-step with
+  //   the buggy pre-v0.14.7 `getAttr` regex by accident — they were
+  //   both wrong the same way. Now `getAttr` correctly ignores
+  //   `data-src`, so `extractImagesWithMeta` returns the real `src`
+  //   URL. But this rewrite regex still consumed `data-src` first,
+  //   tried to look it up in urlMap (miss), and bailed out — leaving
+  //   the WHOLE `<img>` tag with its remote `src` URL intact even
+  //   though we downloaded the asset. Result: stale remote refs in
+  //   the markdown after a `--save-assets` ingest of a lazy-loaded
+  //   article (Wikipedia, Medium, etc.).
+  //
+  //   Fix: same boundary as `getAttr` — `(?:^|[\s/])src\s*=` requires
+  //   the previous char to be whitespace or self-close slash, so
+  //   `data-src` is skipped. The HARDENING P3-b lock-step test was
+  //   the canary that SHOULD have caught this — extended below with
+  //   `data-src` fixtures to plug the regression-test gap.
+  out = out.replace(
+    /(<img\b[^>]*?(?:^|[\s/])src\s*=\s*)("([^"]+)"|'([^']+)'|([^\s>]+))/gi,
     (match, lead, _all, dq, sq, bare) => {
       const url = dq || sq || bare;
       const local = remap.get(url);

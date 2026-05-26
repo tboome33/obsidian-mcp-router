@@ -450,6 +450,22 @@ test('HARDENING P3-b (v0.14.4): extract and rewrite regexes stay in lock-step on
     '![Photo of [Eiffel tower] at dusk](https://x.io/eiffel.jpg)',
     '![alt](https://x.io/with-title.png "Title")',
     '![[wikilink-style alt]](https://x.io/wiki.png)',
+    // v0.14.7 P2 codex pass 3 regression: HTML `<img>` with `data-src`
+    // sibling. Pre-fix, extract ignored `data-src` (correct) but the
+    // rewrite regex matched `data-src` first and bailed — leaving the
+    // real `src` URL remote in the output. Both regexes must skip
+    // `data-src` and reach the real `src`.
+    '<img src="https://x.io/plain-html.png" alt="x">',
+    '<img data-src="https://x.io/lazy.png" src="https://x.io/real.png" alt="x">',
+    '<img src="https://x.io/real-first.png" data-src="https://x.io/lazy-after.png" alt="x">',
+    // v0.14.7 P2 codex pass 4 regression: <source srcset> must be rewritten
+    // to match the alt-propagated promotion from the extract step. The
+    // first URL of a multi-URL srcset is what's extracted, so the
+    // rewrite must replace just that one and leave the rest alone.
+    '<source srcset="https://x.io/single-src.png">',
+    '<source srcset="https://x.io/first.png 300w, https://x.io/second.png 600w">',
+    '<source data-srcset="https://x.io/lazy-set.png" srcset="https://x.io/real-set.png">',
+    '<picture><source srcset="https://x.io/pic-src.png"><img src="https://x.io/pic-img.jpg" alt="picture"></picture>',
   ];
 
   for (const md of fixtures) {
@@ -776,6 +792,181 @@ test('downloadOne: unknown format (decoder returns null) is kept (cant-verify �
   assert.equal(r.ok, true, 'unknown format must not be skipped');
   assert.equal(r.dimensions, undefined);
   assert.equal(writes.length, 1);
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 P1 hardening — `\b` regex boundary was matching `data-src` as `src`
+// -----------------------------------------------------------------------------
+
+test('HARDENING v0.14.7 P1: data-src on <img> must NOT be matched as src', () => {
+  // Pre-fix, `\bsrc` matched the `src` suffix of `data-src` because `-`
+  // is a regex word-boundary. Real-world impact: lazy-loaded `data-src`
+  // URLs were extracted as if they were the canonical `src`.
+  // Wikipedia, Medium, Substack, most modern CMS use this lazy-loading
+  // attribute, so the regression silently polluted manifests on
+  // ingestion of those pages.
+  const onlyDataSrc = '<img data-src="https://x.io/lazy.png">';
+  const both = '<img data-src="https://x.io/lazy.png" src="https://x.io/real.png">';
+  const reversed = '<img src="https://x.io/real.png" data-src="https://x.io/lazy.png">';
+  assert.deepEqual(extractImagesWithMeta(onlyDataSrc, 'https://x.io/'), [], 'data-src alone must not be extracted');
+  assert.deepEqual(
+    extractImagesWithMeta(both, 'https://x.io/').map((e) => e.url),
+    ['https://x.io/real.png'],
+    'real src must win when both present (regardless of order)',
+  );
+  assert.deepEqual(
+    extractImagesWithMeta(reversed, 'https://x.io/').map((e) => e.url),
+    ['https://x.io/real.png'],
+    'order independent — src wins',
+  );
+});
+
+test('HARDENING v0.14.7 P1: data-srcset / imagesrcset must NOT be matched as srcset', () => {
+  // Same trap on `<source srcset>`. `imagesrcset` is the spec name for
+  // the preload `<link rel="preload" imagesrcset="...">` attribute, but
+  // we'd see it on `<source>` too if a malformed page emits it.
+  assert.deepEqual(
+    extractImagesWithMeta('<source data-srcset="https://x.io/lazy.png">', 'https://x.io/'),
+    [],
+    'data-srcset alone must not be extracted',
+  );
+  assert.deepEqual(
+    extractImagesWithMeta(
+      '<source data-srcset="https://x.io/lazy.png" srcset="https://x.io/real.png 1x">',
+      'https://x.io/',
+    ).map((e) => e.url),
+    ['https://x.io/real.png'],
+    'real srcset wins when both present',
+  );
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 P2 hardening — picture/source alt propagation
+// -----------------------------------------------------------------------------
+
+test('HARDENING v0.14.7 P2: <picture> propagates <img> alt to preceding <source> siblings', () => {
+  // Pre-fix, `<picture><source srcset><img alt="Hero"></picture>` produced
+  // 2 entries: source with `alt: ''` + img with `alt: 'Hero'`. The
+  // default requireAltOrFigure filter then dropped the source, regressing
+  // the existing responsive-image extraction. Fix: propagate the img's
+  // alt to all preceding sources in the same picture.
+  const html =
+    '<picture>' +
+    '<source srcset="https://x.io/hero.webp 1x">' +
+    '<img src="https://x.io/fallback.jpg" alt="Hero">' +
+    '</picture>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.length, 2);
+  assert.equal(r[0].alt, 'Hero', 'source receives propagated alt from img sibling');
+  assert.equal(r[1].alt, 'Hero', 'img keeps its own alt');
+});
+
+test('HARDENING v0.14.7 P2: empty <img> alt inside <picture> does NOT propagate (stays empty)', () => {
+  // Empty alt is an explicit "decorative" signal — propagating it
+  // would be a no-op anyway, but we make the code explicit.
+  const html =
+    '<picture><source srcset="https://x.io/a.png"><img src="https://x.io/b.png" alt=""></picture>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r[0].alt, '');
+  assert.equal(r[1].alt, '');
+});
+
+test('HARDENING v0.14.7 P2: <picture> without <img> leaves sources at alt: empty', () => {
+  // Edge case — some pages use <picture> without the <img> fallback
+  // (invalid HTML5 but seen in the wild). No alt to propagate.
+  const html = '<picture><source srcset="https://x.io/only.png"></picture>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.length, 1);
+  assert.equal(r[0].alt, '', 'no img → no propagation');
+});
+
+test('HARDENING v0.14.7 P2: two sequential <picture>s do not cross-leak alt', () => {
+  // Buffer reset on each `<picture>` open AND each `</picture>` close
+  // — verify both with two pictures in a row.
+  const html =
+    '<picture><source srcset="https://x.io/p1s.png"><img src="https://x.io/p1i.jpg" alt="P1"></picture>' +
+    '<picture><source srcset="https://x.io/p2s.png"></picture>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  const p1s = r.find((e) => e.url === 'https://x.io/p1s.png');
+  const p2s = r.find((e) => e.url === 'https://x.io/p2s.png');
+  assert.equal(p1s.alt, 'P1', 'P1 source gets P1 img alt');
+  assert.equal(p2s.alt, '', 'P2 source does not leak P1 alt');
+});
+
+test('HARDENING v0.14.7 P2 (codex pass 2): lazy-loaded <img data-src + alt> still propagates to <source>', () => {
+  // Codex pass 2 finding: pre-fix, the alt propagation was nested
+  // under `if (src)` — so an `<img data-src="..." alt="Hero">` (no
+  // usable src, the BLOCKER pass-1 fix intentionally ignores data-src)
+  // never triggered propagation, leaving sources with `alt: ''` and
+  // getting dropped by the default relevance filter.
+  //
+  // Fix: read alt BEFORE the src gate and propagate regardless. The
+  // `<img>` itself is still not pushed (no src), but the sources keep
+  // the picture's alt and survive the filter.
+  const html =
+    '<picture>' +
+    '<source srcset="https://x.io/hero.webp 1x">' +
+    '<img data-src="https://x.io/fallback.jpg" alt="Hero">' +
+    '</picture>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r.length, 1, 'img without src is not pushed (data-src is ignored)');
+  assert.equal(r[0].url, 'https://x.io/hero.webp');
+  assert.equal(r[0].alt, 'Hero', 'source receives the picture-level alt');
+});
+
+test('HARDENING v0.14.7 P2: <source> OUTSIDE <picture> still gets no alt (pre-v0.14.7 behavior)', () => {
+  // Sanity — the propagation only happens INSIDE <picture>. An orphan
+  // <source> (rare but valid in some auto-generated HTML) stays unchanged.
+  const html =
+    '<source srcset="https://x.io/orphan.png">' +
+    '<img src="https://x.io/standalone.jpg" alt="Standalone">';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  const orphan = r.find((e) => e.url === 'https://x.io/orphan.png');
+  assert.equal(orphan.alt, '', 'orphan source unchanged — propagation is picture-scoped');
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 P2 codex — defuddle lazy-import + module-load resilience
+// -----------------------------------------------------------------------------
+
+test('HARDENING v0.14.7 P2 codex: defuddle-extract uses lazy-import (no top-level require)', async () => {
+  // Read the source file and assert there's NO top-level
+  // `import ... from 'defuddle/node'` — only the lazy-load function.
+  // Regression guard: if a future refactor accidentally puts the import
+  // back at the top, this test fails AT TEST TIME (not at server boot
+  // on an --omit=optional install, which is much harder to debug).
+  const fs = await import('node:fs/promises');
+  const src = await fs.readFile(new URL('../src/helpers/defuddle-extract.mjs', import.meta.url), 'utf8');
+  // The dynamic-import call must exist…
+  assert.ok(
+    /await\s+import\s*\(\s*['"]defuddle\/node['"]\s*\)/.test(src),
+    'must use dynamic `await import("defuddle/node")` for lazy loading',
+  );
+  // …and there must be NO top-level static import.
+  assert.ok(
+    !/^\s*import\s+[^;]*from\s+['"]defuddle\/node['"]/m.test(src),
+    'must NOT use top-level static `import ... from "defuddle/node"` (breaks --omit=optional)',
+  );
+});
+
+// -----------------------------------------------------------------------------
+// v0.14.7 NIT hardening
+// -----------------------------------------------------------------------------
+
+test('HARDENING v0.14.7 NIT: </figure> boundary check rejects </figurex>', () => {
+  // Pre-fix, the close-tag check was asymmetric with the open-tag
+  // check: `</figurex>` was treated as a `</figure>` close and
+  // decremented the figure counter (which was harmless thanks to
+  // Math.max(0, ...) but pure dead code). Now both open and close
+  // require a real boundary (space or `>`).
+  //
+  // We can't easily observe figureDepth from outside — but we can
+  // observe that an <img> inside a <figure><figurex> sequence is
+  // still marked isFigure: true (the bogus </figurex> would have
+  // incorrectly decremented depth pre-fix).
+  const html = '<figure><figurex></figurex><img src="https://x.io/a.png" alt="x"></figure>';
+  const r = extractImagesWithMeta(html, 'https://x.io/');
+  assert.equal(r[0].isFigure, true, 'phantom </figurex> must not decrement figure depth');
 });
 
 test('downloadAssets: threads minWidth/minHeight through to per-asset downloadOne', async () => {
