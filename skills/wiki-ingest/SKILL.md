@@ -35,6 +35,51 @@ Take a source (URL, local file path, or pasted text) and do the structured work 
 
 If acquisition fails, surface the error and stop. Don't ingest a partial source.
 
+### 1.5 Hash-based freshness check (v0.15.0+, roadmap item #4)
+
+Before processing the acquired content further, check whether this source has been ingested before with the **exact same content**. This is a fast no-op detector that saves a fetch+parse+LLM round-trip when the user re-runs `wiki-ingest <url>` on a source that hasn't evolved.
+
+**Procedure**:
+
+1. **Compute a stable `sourceId`** :
+   - **URL** → `normaliseUrl(url)` from `src/helpers/ingest-state.mjs` (strips `utm_*` / `fbclid` / `gclid` tracking params, sorts query keys, lowercases host, strips fragment, normalises trailing slash).
+   - **Local file** → absolute filesystem path (you can use it as-is).
+   - **Pasted text** → SKIP this step. Pasted text has no stable ID; the freshness check is meaningless.
+
+2. **Compute content hash** with `computeSourceHash(content)`. **For URLs, hash the post-defuddle markdown**, NOT the raw HTML — otherwise transient ads, JS-injected timestamps, or rendering quirks produce false-positive "changed" detections. For local files, hash the raw bytes read.
+
+3. **Load the per-vault state** via `loadIngestState(vaultAbsolutePath)`. The function returns `{}` when the file doesn't exist yet (first ingest into the vault).
+
+4. **Call `checkSourceFreshness({state, sourceId, hash})`** — returns one of three sentinels :
+   - **`'new'`** → source never ingested; proceed normally (and `recordIngest({...})` at the end of step 7 so the next call sees it).
+   - **`'unchanged'`** → hash matches stored value. **STOP HERE.** Report to the user :
+     > Source already ingested with identical content (hash match against `wiki-meta/ingest-state.json`). Skipping. Run `/wiki-refresh <source>` if you want to re-extract regardless.
+     Do NOT proceed to step 2+. This is the cheap path.
+   - **`'changed'`** → source ID known but hash differs (source evolved upstream). **Continue with the ingest**, but flag the user :
+     > Source has evolved since last ingest (`<date>` → now). Re-ingesting. Old wiki page at `wiki/<old-path>` will be updated; consider running `/wiki-refresh --diff` afterward to see what changed.
+
+5. **At the END of step 7 (after the log entry)**, persist the new hash:
+   ```javascript
+   const state = loadIngestState(vaultPath);
+   recordIngest({
+     state,
+     sourceId,
+     hash,
+     page: `wiki/sources/${slug}.md`,  // or whatever the source page path is
+   });
+   saveIngestState(vaultPath, state);
+   ```
+   `saveIngestState` writes atomically (tmp + rename) so a crash mid-write can't corrupt the JSON.
+
+**Skip conditions** (do NOT run step 1.5) :
+- Pasted text (no stable source ID — explained above).
+- The user explicitly requested re-ingest via `/wiki-refresh` (whole point is to bypass the freshness gate).
+- The vault doesn't have a stable filesystem path (e.g. a remote vault accessed only via the REST API — `wiki-meta/ingest-state.json` would still work but you need the vault's absolute path; resolve via `list_vaults` and check `path` is non-null).
+
+**Synergy with future agent-de-veille (#3)** — the `wiki-meta/ingest-state.json` file is the substrate the future veille agent will scan to detect "this source ingested >6 months ago, has the upstream hash changed?". Maintaining clean hashes now pays off later.
+
+**Reference**: convention documented in `src/helpers/ingest-state.mjs`. Tests in `tests/ingest-state.test.mjs`.
+
 ### 2. Extract structure (do this before writing anything)
 
 Identify:
