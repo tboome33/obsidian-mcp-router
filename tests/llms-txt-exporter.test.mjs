@@ -1,0 +1,408 @@
+/**
+ * Tests for src/helpers/llms-txt-exporter.mjs — llms.txt aggregated export.
+ * Run with `npm test`.
+ */
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  parseFrontmatter,
+  normaliseWikilinks,
+  parseIndex,
+  buildLlmsTxt,
+} from '../src/helpers/llms-txt-exporter.mjs';
+
+// ---------------------------------------------------------------------------
+// parseFrontmatter
+// ---------------------------------------------------------------------------
+
+describe('parseFrontmatter', () => {
+  test('returns empty frontmatter when no --- block', () => {
+    const result = parseFrontmatter('# Hello\n\nBody.');
+    assert.deepEqual(result.frontmatter, {});
+    assert.equal(result.body, '# Hello\n\nBody.');
+  });
+
+  test('extracts scalar fields', () => {
+    const result = parseFrontmatter('---\ntitle: Foo\ntype: concept\n---\nBody');
+    assert.equal(result.frontmatter.title, 'Foo');
+    assert.equal(result.frontmatter.type, 'concept');
+    assert.equal(result.body, 'Body');
+  });
+
+  test('strips quotes from quoted values', () => {
+    const result = parseFrontmatter('---\ntitle: "Hello: World"\n---\n');
+    assert.equal(result.frontmatter.title, 'Hello: World');
+  });
+
+  test('parses inline array form', () => {
+    const result = parseFrontmatter('---\ntags: [a, b, "c d"]\n---\n');
+    assert.deepEqual(result.frontmatter.tags, ['a', 'b', 'c d']);
+  });
+
+  test('handles empty inline array', () => {
+    const result = parseFrontmatter('---\ntags: []\n---\n');
+    assert.deepEqual(result.frontmatter.tags, []);
+  });
+
+  test('handles CRLF line endings', () => {
+    const result = parseFrontmatter('---\r\ntitle: Foo\r\n---\r\nBody');
+    assert.equal(result.frontmatter.title, 'Foo');
+    assert.equal(result.body, 'Body');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normaliseWikilinks
+// ---------------------------------------------------------------------------
+
+describe('normaliseWikilinks', () => {
+  test('simple wikilink to markdown link', () => {
+    assert.equal(normaliseWikilinks('See [[Foo]]'), 'See [Foo](Foo.md)');
+  });
+
+  test('wikilink with alias', () => {
+    assert.equal(normaliseWikilinks('See [[Foo|Bar]]'), 'See [Bar](Foo.md)');
+  });
+
+  test('wikilink with folder path keeps path, label = basename', () => {
+    assert.equal(normaliseWikilinks('See [[concepts/Foo]]'), 'See [Foo](concepts/Foo.md)');
+  });
+
+  test('wikilink that already ends in .md', () => {
+    assert.equal(normaliseWikilinks('[[Foo.md]]'), '[Foo.md](Foo.md)');
+  });
+
+  test('multiple wikilinks in one string', () => {
+    assert.equal(
+      normaliseWikilinks('[[A]] and [[B|C]]'),
+      '[A](A.md) and [C](B.md)',
+    );
+  });
+
+  test('leaves text without wikilinks alone', () => {
+    assert.equal(normaliseWikilinks('Just text.'), 'Just text.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseIndex
+// ---------------------------------------------------------------------------
+
+describe('parseIndex', () => {
+  test('returns [] for empty input', () => {
+    assert.deepEqual(parseIndex(''), []);
+  });
+
+  test('skips H1, picks up H2 sections + bullets', () => {
+    const md = `# Index
+
+## Wiki Core
+
+- [[overview]] — vault overview
+- [[hot]] — recent context
+
+## Refs
+
+- [[foo]] — description here
+`;
+    const result = parseIndex(md);
+    assert.equal(result.length, 2);
+    assert.equal(result[0].title, 'Wiki Core');
+    assert.deepEqual(result[0].bullets, [
+      { pageSlug: 'overview', description: 'vault overview' },
+      { pageSlug: 'hot', description: 'recent context' },
+    ]);
+    assert.equal(result[1].title, 'Refs');
+    assert.deepEqual(result[1].bullets, [
+      { pageSlug: 'foo', description: 'description here' },
+    ]);
+  });
+
+  test('handles dash separator as well as em-dash', () => {
+    const md = `## Section
+
+- [[a]] - dash sep
+- [[b]] — em-dash sep
+- [[c]]: colon sep
+`;
+    const result = parseIndex(md);
+    assert.deepEqual(result[0].bullets, [
+      { pageSlug: 'a', description: 'dash sep' },
+      { pageSlug: 'b', description: 'em-dash sep' },
+      { pageSlug: 'c', description: 'colon sep' },
+    ]);
+  });
+
+  test('skips bullets without wikilinks', () => {
+    const md = `## Section
+
+- [[valid]] — description
+- not a wikilink
+- [[also valid]]
+`;
+    const result = parseIndex(md);
+    assert.equal(result[0].bullets.length, 2);
+  });
+
+  test('strips frontmatter before parsing', () => {
+    const md = `---
+type: wiki-index
+---
+
+## Section
+
+- [[foo]] — bar
+`;
+    const result = parseIndex(md);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].bullets[0].pageSlug, 'foo');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildLlmsTxt
+// ---------------------------------------------------------------------------
+
+describe('buildLlmsTxt', () => {
+  const SAMPLE_INDEX = `---
+type: wiki-index
+---
+
+# Index
+
+## Wiki Core
+
+- [[overview]] — vault overview
+- [[hot]] — recent context
+
+## Refs
+
+- [[oauth-howto]] — how OAuth works
+- [[pkce-explained]] — PKCE deep dive
+`;
+
+  const SAMPLE_PAGES = [
+    {
+      path: 'wiki-meta/overview.md',
+      content: `---
+type: overview
+---
+
+# Overview
+
+This vault documents the OAuth ecosystem.
+
+It has reference pages and how-to guides.
+`,
+    },
+    {
+      path: 'wiki/Refs/oauth-howto.md',
+      content: `---
+type: reference
+source_type: extracted
+---
+
+# OAuth HowTo
+
+OAuth 2.0 is an authorisation framework.
+
+See [[pkce-explained]] for PKCE details.
+`,
+    },
+    {
+      path: 'wiki/Refs/pkce-explained.md',
+      content: `---
+type: reference
+---
+
+# PKCE Explained
+
+PKCE prevents code interception attacks.
+`,
+    },
+    {
+      path: 'wiki/Misc/unindexed-page.md',
+      content: `---
+type: reference
+---
+
+# Unindexed
+
+This page is not in the index.
+`,
+    },
+  ];
+
+  test('throws on missing vaultName', () => {
+    assert.throws(
+      () => buildLlmsTxt({ indexMd: '', pages: [] }),
+      /vaultName is required/,
+    );
+  });
+
+  test('throws on invalid mode', () => {
+    assert.throws(
+      () => buildLlmsTxt({ vaultName: 'V', indexMd: '', pages: [], mode: 'bogus' }),
+      /mode must be/,
+    );
+  });
+
+  test('throws on missing indexMd', () => {
+    assert.throws(
+      () => buildLlmsTxt({ vaultName: 'V', pages: [] }),
+      /indexMd is required/,
+    );
+  });
+
+  test('throws on missing pages', () => {
+    assert.throws(
+      () => buildLlmsTxt({ vaultName: 'V', indexMd: '' }),
+      /pages is required/,
+    );
+  });
+
+  test('empty vault produces minimal output with generic summary', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Empty Vault',
+      indexMd: '# Index\n',
+      pages: [],
+    });
+    assert.match(output, /^# Empty Vault/);
+    assert.match(output, /> Knowledge base for Empty Vault\./);
+    assert.doesNotMatch(output, /## /); // no sections
+  });
+
+  test('index mode produces compact output', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+      mode: 'index',
+    });
+    assert.match(output, /^# Test/);
+    assert.match(output, /## Wiki Core/);
+    assert.match(output, /## Refs/);
+    assert.match(output, /\[oauth-howto\]\(wiki\/Refs\/oauth-howto\.md\): how OAuth works/);
+    // Body should NOT appear in index mode
+    assert.doesNotMatch(output, /OAuth 2\.0 is an authorisation framework/);
+  });
+
+  test('full mode inlines page bodies', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+      mode: 'full',
+    });
+    // Body present
+    assert.match(output, /OAuth 2\.0 is an authorisation framework/);
+    // Wikilink in body should be normalised
+    assert.match(output, /\[pkce-explained\]\(pkce-explained\.md\) for PKCE details/);
+    // H1 of source page should be stripped (already in the link)
+    assert.doesNotMatch(output, /# OAuth HowTo/);
+  });
+
+  test('summary explicit override wins over overview lookup', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+      summary: 'Custom one-liner.',
+    });
+    assert.match(output, /> Custom one-liner\./);
+    assert.doesNotMatch(output, /> This vault documents the OAuth ecosystem/);
+  });
+
+  test('summary derived from overview page when not explicit', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    assert.match(output, /> This vault documents the OAuth ecosystem\./);
+  });
+
+  test('unindexed pages collected in Unindexed section', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    assert.match(output, /## Unindexed/);
+    assert.match(output, /\[unindexed-page\]\(wiki\/Misc\/unindexed-page\.md\)/);
+  });
+
+  test('skips wiki-meta files from Unindexed (hot, log, index, overview)', () => {
+    // Use a minimal index that does NOT reference hot/log/overview/index in
+    // its sections — that way any appearance of those page slugs in the
+    // output must come from the Unindexed bucket, which is what we want to
+    // assert against.
+    const minimalIndex = `## Refs\n\n- [[real-page]] — a real page\n`;
+    const pagesWithMeta = [
+      { path: 'wiki-meta/hot.md', content: '# Hot\n\nRecent.' },
+      { path: 'wiki-meta/log.md', content: '# Log\n\nHistory.' },
+      { path: 'wiki-meta/index.md', content: '# Index\n\nCatalog.' },
+      { path: 'wiki-meta/overview.md', content: '# Overview\n\nExec.' },
+      { path: 'wiki/Refs/real-page.md', content: '# Real Page\n\nContent.' },
+    ];
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: minimalIndex,
+      pages: pagesWithMeta,
+    });
+    // The Unindexed section, if present, must not list any wiki-meta page.
+    const unindexedMatch = output.match(/## Unindexed[\s\S]*$/);
+    if (unindexedMatch) {
+      assert.doesNotMatch(unindexedMatch[0], /\[hot\]/);
+      assert.doesNotMatch(unindexedMatch[0], /\[log\]/);
+      assert.doesNotMatch(unindexedMatch[0], /\[index\]/);
+      assert.doesNotMatch(unindexedMatch[0], /\[overview\]/);
+    }
+  });
+
+  test('output is deterministic — same input → same bytes', () => {
+    const a = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    const b = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    assert.equal(a, b);
+  });
+
+  test('output ends with single trailing newline', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    assert.match(output, /\n$/);
+    assert.doesNotMatch(output, /\n\n$/);
+  });
+
+  test('collapses runs of empty lines to max 2 newlines', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+    });
+    assert.doesNotMatch(output, /\n{3,}/);
+  });
+
+  test('full mode strips frontmatter from inlined bodies', () => {
+    const output = buildLlmsTxt({
+      vaultName: 'Test',
+      indexMd: SAMPLE_INDEX,
+      pages: SAMPLE_PAGES,
+      mode: 'full',
+    });
+    assert.doesNotMatch(output, /source_type: extracted/);
+    assert.doesNotMatch(output, /^---$/m);
+  });
+});
