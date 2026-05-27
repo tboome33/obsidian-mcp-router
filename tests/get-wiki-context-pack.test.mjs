@@ -728,6 +728,18 @@ describe('drill loop refuses unsafe index targets (integration)', () => {
 // Internal helpers — pure unit tests
 // ---------------------------------------------------------------------------
 
+describe('parseIndexEntries — sibling-parser alignment (review+ pass 3)', () => {
+  test('rejects bare anchor [[#Section]] (no page slug)', () => {
+    // Reviewer A Pass 2 IMPORTANT — was producing empty-label
+    // candidate that polluted IDF + triggered 2 wasted REST probes.
+    // Should align with llms-txt-exporter.parseIndex which skips.
+    const md = `## Refs\n\n- [[#OnlyAnchor]] - bare anchor\n- [[real-page]] - ok\n`;
+    const entries = parseIndexEntries(md);
+    assert.equal(entries.length, 1, 'bare anchor must be skipped');
+    assert.equal(entries[0].label, 'real-page');
+  });
+});
+
 describe('parseIndexEntries', () => {
   test('extracts entries from sample index', () => {
     const entries = parseIndexEntries(SAMPLE_INDEX);

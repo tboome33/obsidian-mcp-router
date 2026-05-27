@@ -121,6 +121,12 @@ export function parseIndexEntries(indexMarkdown) {
     const rawTarget = m[1].trim();
     if (!rawTarget) continue;
     const target = rawTarget.split(/[|#^]/)[0].trim();
+    // review+ pass 2 Reviewer A IMPORTANT — sibling-parser drift fix.
+    // Previously `[[#Anchor]]` (bare anchor, no page slug) produced
+    // an empty-target candidate that polluted IDF scoring + triggered
+    // wasted REST probes. Align with `llms-txt-exporter.parseIndex`
+    // which skips empty slugs.
+    if (!target) continue;
     const aliasPart = rawTarget.includes('|')
       ? rawTarget.split('|')[1].split(/[#^]/)[0].trim()
       : null;
