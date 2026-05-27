@@ -561,10 +561,10 @@ describe('sharedConcepts', () => {
 // ---------------------------------------------------------------------------
 
 describe('digestPathForPage', () => {
-  test('flattens vault path with dashes', () => {
+  test('nests source path under wiki-meta/digests/ (review+ pass 3)', () => {
     assert.equal(
       digestPathForPage('wiki/Refs/oauth-howto.md'),
-      'wiki-meta/digests/wiki-Refs-oauth-howto.md',
+      'wiki-meta/digests/wiki/Refs/oauth-howto.md',
     );
   });
 
@@ -582,7 +582,7 @@ describe('digestPathForPage', () => {
   test('normalises backslashes to forward slashes', () => {
     assert.equal(
       digestPathForPage('wiki\\Refs\\foo.md'),
-      'wiki-meta/digests/wiki-Refs-foo.md',
+      'wiki-meta/digests/wiki/Refs/foo.md',
     );
   });
 
@@ -617,13 +617,29 @@ describe('digestPathForPage', () => {
   });
 
   test('two different pages → two different digest paths (collision-free)', () => {
-    // Critical invariant — without this, the read side (refresh) reads
-    // the wrong digest for a page.
     const a = digestPathForPage('wiki/Refs/foo.md');
     const b = digestPathForPage('wiki/Refs/bar.md');
     const c = digestPathForPage('wiki/Misc/foo.md');
     assert.notEqual(a, b);
     assert.notEqual(a, c);
     assert.notEqual(b, c);
+  });
+
+  test('REGRESSION: dash-vs-slash collision (review+ pass 3)', () => {
+    // Reviewer B Pass 2 IMPORTANT finding : the previous flatten-with-
+    // dashes mapping mapped both `wiki/A-B.md` and `wiki/A/B.md` to
+    // `wiki-meta/digests/wiki-A-B.md` — silent collision. Nested
+    // mapping eliminates the collision by construction.
+    const a = digestPathForPage('wiki/A-B.md');
+    const b = digestPathForPage('wiki/A/B.md');
+    assert.notEqual(
+      a,
+      b,
+      `dash-vs-slash collision regression — both inputs produce ${a}`,
+    );
+    // Second pair from the codex report.
+    const c = digestPathForPage('wiki/Refs-oauth/howto.md');
+    const d = digestPathForPage('wiki/Refs/oauth-howto.md');
+    assert.notEqual(c, d);
   });
 });

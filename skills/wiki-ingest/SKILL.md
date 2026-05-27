@@ -272,7 +272,7 @@ For each entity/concept identified in step 2:
 
 For each wiki page **created or updated** in step 5 (NOT the source page from step 4 — source pages don't need digests since the source-page frontmatter already serves as their summary), generate a compact digest sidecar.
 
-**Canonical digest path** : ALWAYS call `digestPathForPage(pageRelPath)` from `src/helpers/digest-generator.mjs` — this is the SINGLE source of truth (hardened in v0.15.1 review+ pass 2). The mapping flattens the vault path with dashes : `wiki/Refs/oauth-howto.md` → `wiki-meta/digests/wiki-Refs-oauth-howto.md`. DO NOT improvise a path here. Both `wiki-ingest` AND `wiki-refresh-digests` MUST use the helper, otherwise the two skills write to and read from different filenames for the same page (sidecar effectively unfindable).
+**Canonical digest path** : ALWAYS call `digestPathForPage(pageRelPath)` from `src/helpers/digest-generator.mjs` — this is the SINGLE source of truth (hardened in v0.15.1 review+ pass 3). The mapping NESTS the vault path under `wiki-meta/digests/` : `wiki/Refs/oauth-howto.md` → `wiki-meta/digests/wiki/Refs/oauth-howto.md`. NESTED (review+ pass 3) eliminates the dash-vs-slash collision that the previous flatten mapping had (e.g. `wiki/A/B.md` and `wiki/A-B.md` would have produced the same filename). DO NOT improvise a path here. Both `wiki-ingest` AND `wiki-refresh-digests` MUST use the helper, otherwise the two skills write to and read from different filenames for the same page (sidecar effectively unfindable).
 
 **Purpose** : the digests are the substrate the future `wiki-lint --deep` mode (and the future agent-de-veille #3) read in bulk to detect cross-page redundancies, contradictions, and missing wikilinks — cheaper than re-scanning the full pages every time.
 
@@ -298,19 +298,22 @@ For each wiki page **created or updated** in step 5 (NOT the source page from st
 
 4. **If digest generation fails** (network error, write error), **don't abort the ingest** — surface a warning to the user and continue. Digests are best-effort additive ; the wiki page is still valid without one. The next `/wiki-lint --refresh-digests` run will catch up.
 
-**File layout example** :
+**File layout example** (review+ pass 3 — nested mapping, NOT flattened) :
 
 ```
 wiki-meta/
 ├── digests/
-│   ├── oauth-howto.md              # digest for wiki/Refs/oauth-howto.md
-│   ├── pkce-explained.md           # digest for wiki/Refs/pkce-explained.md
-│   └── ...
+│   └── wiki/
+│       └── Refs/
+│           ├── oauth-howto.md      # digest for wiki/Refs/oauth-howto.md
+│           └── pkce-explained.md   # digest for wiki/Refs/pkce-explained.md
 ├── hot.md
 ├── index.md
 ├── log.md
 └── overview.md
 ```
+
+To glob all digests across nested folders, use a recursive pattern (e.g. `wiki-meta/digests/**/*.md`) — `wiki-meta/digests/*.md` would only catch root-level digests (the rare page directly under `wiki/`).
 
 **Reference** : helper `src/helpers/digest-generator.mjs`, tests `tests/digest-generator.test.mjs`, deep-lint mode `skills/wiki-lint/SKILL.md` --deep.
 

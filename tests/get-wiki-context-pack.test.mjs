@@ -607,6 +607,71 @@ describe('isSafeVaultRelativePath (path traversal guard)', () => {
   });
 });
 
+describe('drill loop surfaces real fetch errors as page-read-failed', () => {
+  test('non-404 error surfaces page-read-failed warning (review+ pass 3)', async () => {
+    // Reviewer B Pass 2 PARTIAL : the previous review pass added the
+    // non-404 error classification but no executable test asserted the
+    // warning emission. Lock it in now.
+    const indexMd = `## Refs\n\n- [[unstable-page]] - real failure case\n`;
+    const deps = {
+      getFileContent: async (_vault, path) => {
+        if (path === 'wiki-meta/index.md') return indexMd;
+        return null;
+      },
+      getNote: async (_vault, _path) => {
+        // Simulate a 503 — service unavailable, neither path attempt
+        // will resolve, but it's NOT a legitimate 404.
+        const err = new Error('Service Unavailable');
+        err.status = 503;
+        throw err;
+      },
+      searchSmart: async () => null,
+    };
+    const result = await getWikiContextPack(
+      makeRegistry(),
+      { query: 'unstable page' },
+      deps,
+    );
+    assert.ok(
+      result.warnings.includes('page-read-failed'),
+      `expected page-read-failed warning, got ${JSON.stringify(result.warnings)}`,
+    );
+    // The page should still appear in primaryPages with empty content
+    // (consumer sees the gap).
+    const entry = result.primaryPages.find((p) => p.title === 'unstable-page');
+    assert.ok(entry, 'page should still be in primaryPages');
+    assert.equal(entry.summary, '');
+  });
+
+  test('legitimate 404 does NOT emit page-read-failed (just dead wikilink)', async () => {
+    const indexMd = `## Refs\n\n- [[deleted-page]] - was deleted\n`;
+    const deps = {
+      getFileContent: async (_vault, path) => {
+        if (path === 'wiki-meta/index.md') return indexMd;
+        return null;
+      },
+      getNote: async (_vault, _path) => {
+        const err = new Error('Not Found');
+        err.status = 404;
+        throw err;
+      },
+      searchSmart: async () => null,
+    };
+    const result = await getWikiContextPack(
+      makeRegistry(),
+      { query: 'deleted page' },
+      deps,
+    );
+    // 404 is normal (page legitimately doesn't exist) — must NOT spam
+    // page-read-failed warnings. Only unsafe-index-target /
+    // primary-page-drill-failed would be unexpected here.
+    assert.ok(
+      !result.warnings.includes('page-read-failed'),
+      `404 should NOT emit page-read-failed warning, got ${JSON.stringify(result.warnings)}`,
+    );
+  });
+});
+
 describe('drill loop refuses unsafe index targets (integration)', () => {
   test('emits unsafe-index-target warning for poisoned wikilinks', async () => {
     // Index containing a path-traversal poisoning attempt next to a

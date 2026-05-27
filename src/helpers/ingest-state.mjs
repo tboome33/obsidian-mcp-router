@@ -147,6 +147,25 @@ export function normaliseUrl(url) {
   try {
     parsed = new URL(url);
   } catch {
+    // URL parse failed — but we still must NOT leak credentials.
+    // (review+ pass 3 fix for Reviewer B Pass 2 finding : protocol-
+    // relative URLs like `//user:pass@example.com/x?token=...` aren't
+    // parseable but contain creds that would otherwise persist to
+    // ingest-state.json.) Strip basic-auth userinfo via a conservative
+    // regex AND strip secret query params on the raw string. If we
+    // can't be sure the input is safe, refuse — return null sentinel
+    // forces the caller to surface an error rather than silently
+    // persisting the leaky form.
+    const looksLikeUrlWithSecrets =
+      /\/\/[^/]*@/.test(url) || // userinfo present (basic auth)
+      /[?&](?:token|access_token|api_key|apikey|secret|password|signature|sig|auth|code|state|nonce|sessionid|jsessionid)=/i.test(url);
+    if (looksLikeUrlWithSecrets) {
+      // Best-effort scrub : drop everything from `//` (userinfo onward
+      // is unreliable to surgically edit on a non-parseable input).
+      // Return null so the caller knows to surface an error rather
+      // than treat the leaky string as a stable source ID.
+      return null;
+    }
     return url;
   }
   // Lowercase host

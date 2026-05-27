@@ -106,8 +106,17 @@ function needsYamlQuoting(s) {
 
 /**
  * Escape a string for safe inclusion inside a YAML double-quoted scalar.
- * Handles backslash, double quote, and the common control characters per
- * the YAML 1.2 double-quoted form.
+ * Handles backslash, double quote, and the THREE most common whitespace
+ * controls (`\n` `\r` `\t`). Other control characters (NUL through US,
+ * DEL, and the C1 set) are still detected by `needsYamlQuoting` (so the
+ * scalar gets quoted) but emitted verbatim inside the quotes — they
+ * survive a YAML 1.2 double-quoted parse but are NOT pretty-displayed.
+ * Acceptable for our digest payload (concepts/claims/keywords + ISO
+ * timestamps + paths) which should NEVER contain raw control bytes in
+ * practice ; if one slips through it's preserved as-is for debugging.
+ *
+ * Review+ pass 3 NIT (Reviewer B) : previous comment claimed "all
+ * control chars escaped" — corrected to reflect actual behaviour.
  *
  * @param {string} s
  * @returns {string} Escape-only payload (no surrounding quotes)
@@ -525,18 +534,25 @@ export function sharedConcepts(digestA, digestB) {
  * meant the same page would end up writing to and reading from
  * different digest files — sidecars effectively unfindable.
  *
- * Mapping :
- *   wiki/Refs/oauth-howto.md      → wiki-meta/digests/wiki-Refs-oauth-howto.md
- *   wiki/Misc/foo.md              → wiki-meta/digests/wiki-Misc-foo.md
- *   wiki/page-with-dashes.md      → wiki-meta/digests/wiki-page-with-dashes.md
+ * Mapping (NESTED — mirrors the source path under `wiki-meta/digests/`) :
+ *   wiki/Refs/oauth-howto.md  → wiki-meta/digests/wiki/Refs/oauth-howto.md
+ *   wiki/Misc/foo.md          → wiki-meta/digests/wiki/Misc/foo.md
+ *   wiki/A/B.md               → wiki-meta/digests/wiki/A/B.md
+ *   wiki/A-B.md               → wiki-meta/digests/wiki/A-B.md
  *
- * The flattening replaces `/` with `-` (deterministic, idempotent, no
- * nested directories under `digests/`). Preserves the `.md` extension
- * so a glob `wiki-meta/digests/*.md` picks them up naturally.
+ * IMPORTANT — review+ pass 3 fix : the previous flatten-with-dashes
+ * mapping (slash → dash) collided when two real paths produced the
+ * same flattened form, e.g. `wiki/A/B.md` and `wiki/A-B.md` both →
+ * `wiki-A-B.md`. NESTED preserves the original path structure
+ * verbatim, eliminating collisions by construction. Trade-off : nested
+ * directories under `wiki-meta/digests/`, so callers must glob with a
+ * recursive pattern (e.g. double-star slash dot-md) instead of a flat
+ * `*.md`. Acceptable — correctness wins over glob brevity.
+ *
+ * Backslashes are normalised to forward slashes so the result uses
+ * the vault's canonical path separator regardless of input OS.
  *
  * Refuses unsafe inputs : absolute paths, `..` segments, drive letters.
- * (review+ pass 2 — defence in depth against accidental abs-path
- * smuggling.)
  *
  * @param {string} pageRelPath Path relative to vault root (e.g. "wiki/Refs/foo.md")
  * @returns {string} Vault-relative path for the digest sidecar
@@ -560,8 +576,7 @@ export function digestPathForPage(pageRelPath) {
       `digestPathForPage: pageRelPath must be vault-relative without ".." : ${pageRelPath}`,
     );
   }
-  // Normalise backslashes to forward slashes, then flatten with dashes.
+  // Normalise backslashes to forward slashes (canonical vault separator).
   const normalised = pageRelPath.replace(/\\/g, '/');
-  const flattened = normalised.replace(/\//g, '-');
-  return `wiki-meta/digests/${flattened}`;
+  return `wiki-meta/digests/${normalised}`;
 }

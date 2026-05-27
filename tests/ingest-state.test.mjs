@@ -218,6 +218,40 @@ describe('normaliseUrl', () => {
       'https://example.com/search?lang=fr&page=2&q=oauth',
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Parse-failure credential safety (review+ pass 3 fix)
+  // -------------------------------------------------------------------------
+
+  test('returns null on protocol-relative URL with basic auth (no leak)', () => {
+    // Reviewer B Pass 2 finding : `//user:pass@example.com/x?token=...`
+    // doesn't parse as URL → old code returned raw → leak. New code
+    // returns null so the caller MUST handle it (no silent persistence).
+    assert.equal(
+      normaliseUrl('//user:pass@example.com/x'),
+      null,
+    );
+  });
+
+  test('returns null on parse-fail string containing access_token', () => {
+    assert.equal(
+      normaliseUrl('garbled?access_token=secret'),
+      null,
+    );
+  });
+
+  test('returns null on parse-fail string with signature param', () => {
+    assert.equal(
+      normaliseUrl('bad_url?signature=abc&keep=ok'),
+      null,
+    );
+  });
+
+  test('benign non-URL string still returned unchanged', () => {
+    // No secrets, no userinfo — caller can use as opaque ID.
+    assert.equal(normaliseUrl('not a url'), 'not a url');
+    assert.equal(normaliseUrl('plain-text-id'), 'plain-text-id');
+  });
 });
 
 // ---------------------------------------------------------------------------
