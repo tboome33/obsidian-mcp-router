@@ -546,6 +546,120 @@ describe('graceful degradation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Security — path traversal regression (review+ pass 2)
+// ---------------------------------------------------------------------------
+
+describe('isSafeVaultRelativePath (path traversal guard)', () => {
+  const { isSafeVaultRelativePath } = _internals;
+
+  test('accepts ordinary vault-relative paths', () => {
+    assert.equal(isSafeVaultRelativePath('foo.md'), true);
+    assert.equal(isSafeVaultRelativePath('wiki/Refs/oauth.md'), true);
+    assert.equal(isSafeVaultRelativePath('A B/file with spaces.md'), true);
+    assert.equal(isSafeVaultRelativePath('utf-8 café/naïve.md'), true);
+  });
+
+  test('rejects POSIX absolute paths', () => {
+    assert.equal(isSafeVaultRelativePath('/etc/passwd'), false);
+    assert.equal(isSafeVaultRelativePath('/foo.md'), false);
+  });
+
+  test('rejects Windows drive-letter absolute paths', () => {
+    assert.equal(isSafeVaultRelativePath('C:\\Windows\\system32'), false);
+    assert.equal(isSafeVaultRelativePath('c:/foo'), false);
+    assert.equal(isSafeVaultRelativePath('Z:\\notes\\x.md'), false);
+  });
+
+  test('rejects UNC and backslash-rooted paths', () => {
+    assert.equal(isSafeVaultRelativePath('\\\\server\\share\\x.md'), false);
+    assert.equal(isSafeVaultRelativePath('\\foo'), false);
+  });
+
+  test('rejects .. as a complete path segment', () => {
+    assert.equal(isSafeVaultRelativePath('../etc/passwd'), false);
+    assert.equal(isSafeVaultRelativePath('foo/../bar'), false);
+    assert.equal(isSafeVaultRelativePath('foo/..'), false);
+    assert.equal(isSafeVaultRelativePath('..\\etc'), false);
+  });
+
+  test('accepts .. inside a filename component (not a segment)', () => {
+    assert.equal(isSafeVaultRelativePath('release..notes.md'), true);
+    assert.equal(isSafeVaultRelativePath('foo..bar.md'), true);
+  });
+
+  test('rejects URL-like paths', () => {
+    assert.equal(isSafeVaultRelativePath('file:///etc/passwd'), false);
+    assert.equal(isSafeVaultRelativePath('http://example.com/x'), false);
+    assert.equal(isSafeVaultRelativePath('javascript:alert(1)'), false);
+  });
+
+  test('rejects paths containing control characters', () => {
+    assert.equal(isSafeVaultRelativePath('foo\x00bar.md'), false);
+    assert.equal(isSafeVaultRelativePath('foo\nbar.md'), false);
+    assert.equal(isSafeVaultRelativePath('foo\rbar.md'), false);
+  });
+
+  test('rejects empty / non-string input', () => {
+    assert.equal(isSafeVaultRelativePath(''), false);
+    assert.equal(isSafeVaultRelativePath(null), false);
+    assert.equal(isSafeVaultRelativePath(undefined), false);
+    assert.equal(isSafeVaultRelativePath(42), false);
+  });
+});
+
+describe('drill loop refuses unsafe index targets (integration)', () => {
+  test('emits unsafe-index-target warning for poisoned wikilinks', async () => {
+    // Index containing a path-traversal poisoning attempt next to a
+    // normal page. Tokens from the unsafe wikilink: etc, passwd.
+    // Tokens from normal: normal-page. Query targets passwd so the
+    // unsafe candidate ranks at the top and reaches the drill loop.
+    const poisonedIndex = `## Refs\n\n- [[../../etc/passwd]] - bad\n- [[normal-page]] - ok\n`;
+    let getNoteCalls = [];
+    const deps = {
+      getFileContent: async (_vault, path) => {
+        if (path === 'wiki-meta/index.md') return poisonedIndex;
+        return null;
+      },
+      getNote: async (_vault, path) => {
+        getNoteCalls.push(path);
+        if (path === 'wiki/normal-page.md') {
+          return {
+            frontmatter: { title: 'Normal' },
+            content: '# Normal\n\nBody.',
+          };
+        }
+        const err = new Error('Not found');
+        err.status = 404;
+        throw err;
+      },
+      searchSmart: async () => null, // smart connections missing
+    };
+    const result = await getWikiContextPack(
+      makeRegistry(),
+      { query: 'passwd etc' },
+      deps,
+    );
+    assert.ok(
+      result.warnings.includes('unsafe-index-target'),
+      `expected unsafe-index-target warning, got ${JSON.stringify(result.warnings)}`,
+    );
+    // The unsafe candidate should still appear in primaryPages with
+    // empty content (so consumers see the gap).
+    const unsafeEntry = result.primaryPages.find(
+      (p) => p.title === '../../etc/passwd',
+    );
+    assert.ok(unsafeEntry, 'unsafe candidate should still be in primaryPages');
+    assert.equal(unsafeEntry.summary, '');
+    // CRITICAL: getNote was NEVER called on the unsafe path — the guard
+    // bails BEFORE the REST call.
+    assert.ok(
+      !getNoteCalls.some((p) => p.includes('..')),
+      `getNote should not be called with '..' paths, got: ${JSON.stringify(getNoteCalls)}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Internal helpers — pure unit tests
 // ---------------------------------------------------------------------------
 

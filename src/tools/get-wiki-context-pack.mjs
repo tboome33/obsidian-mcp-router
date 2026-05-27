@@ -217,6 +217,44 @@ function candidateToVaultPath(label) {
   return `${label}.md`;
 }
 
+/**
+ * Defence against a poisoned `wiki-meta/index.md` containing wikilinks
+ * like `[[../../etc/passwd]]`, `[[/etc/passwd]]`, `[[C:\\Windows\\...]]`,
+ * `[[\\\\server\\share]]`, or URL-like `[[file://etc/passwd]]`.
+ * `getNote(vault, path)` ships the path verbatim to the Obsidian REST
+ * API, which may resolve relative paths outside the vault. Refuse paths
+ * that look unsafe BEFORE handing them to the REST layer.
+ *
+ * Conditions for rejection :
+ *   - POSIX absolute (`/etc/...`)
+ *   - Windows drive letter (`C:\Foo`, `C:/Foo`)
+ *   - UNC / backslash-rooted (`\\server\share`)
+ *   - `..` as a complete path segment (`../foo`, `foo/../bar`, `foo/..`)
+ *   - Any control character (NUL, NL, etc.)
+ *   - URL-like (`file://`, `http://`, etc.)
+ *
+ * @param {string} p Vault-relative path candidate
+ * @returns {boolean} true when safe to pass to getNote
+ */
+export function isSafeVaultRelativePath(p) {
+  if (typeof p !== 'string' || !p) return false;
+  // POSIX absolute, Windows drive letter, UNC / backslash root
+  if (p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\')) {
+    return false;
+  }
+  // Control chars (including NUL, CR, LF) — must be rejected outright
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(p)) return false;
+  // `..` as a complete path segment (bordered by /, \, start, or end)
+  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p)) return false;
+  // URL-like (someone trying to smuggle an external fetch / file://).
+  // Catches both `scheme://host/...` (file, http, ftp, etc.) AND opaque
+  // schemes that don't use `//` (javascript:, data:, mailto:, ...).
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) return false;
+  if (/^(?:javascript|data|vbscript|mailto|file):/i.test(p)) return false;
+  return true;
+}
+
 // Pull the `summary:` frontmatter or fall back to the first paragraph of
 // the body. Returns a trimmed, length-capped string.
 function pickSummary(frontmatter, body) {
@@ -339,6 +377,21 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   const drillResults = await Promise.allSettled(
     ranked.map(async ({ candidate, score }) => {
       const basePath = candidateToVaultPath(candidate.label);
+      // Path-traversal defence (review+ pass 2 hardening) : refuse to
+      // pass anything that looks unsafe to `getNote`. A poisoned
+      // wiki-meta/index.md with `[[../../etc/passwd]]` or `[[/etc/x]]`
+      // would otherwise be forwarded verbatim to the REST API.
+      if (!isSafeVaultRelativePath(basePath)) {
+        return {
+          path: basePath,
+          title: candidate.label,
+          summary: '',
+          source_type: null,
+          snippet: '',
+          score,
+          unsafePath: true,
+        };
+      }
       // Two heuristic attempts: `wiki/<base>.md` first (most pages live
       // under wiki/), then bare `<base>.md` as a fallback for root-level
       // pages. The first success wins.
@@ -346,6 +399,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
       let note = null;
       let body = '';
       let resolvedPath = null;
+      let nonNotFoundError = null;
       for (const tryPath of candidatePaths) {
         try {
           // Note: getNote returns parsed frontmatter — much cheaper to
@@ -354,14 +408,27 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
           body = typeof note?.content === 'string' ? note.content : '';
           resolvedPath = tryPath;
           break;
-        } catch (_err) {
-          // try next path
+        } catch (err) {
+          // Distinguish "not found" (legitimate fallthrough to next
+          // path) from real errors (timeout, auth, 5xx). Real errors
+          // surface as a warning so the consumer knows the missing-page
+          // status is provisional, not a confirmed dead link.
+          // (review+ pass 1 finding A IMP-5 + B IMPORTANT #6 convergent)
+          const status = err?.status ?? err?.statusCode;
+          const msg = String(err?.message ?? err ?? '');
+          const isNotFound =
+            status === 404 ||
+            err?.kind === 'not_found' ||
+            /not.?found|no such file|404|enoent/i.test(msg);
+          if (!isNotFound && !nonNotFoundError) {
+            nonNotFoundError = { status, message: msg };
+          }
         }
       }
       if (!resolvedPath) {
-        // Page referenced by the index doesn't exist (dead wikilink). Emit
-        // a placeholder so the consumer can see the gap rather than silently
-        // dropping the candidate.
+        // Page referenced by the index doesn't exist (dead wikilink) OR
+        // a real error blocked us. Emit a placeholder so the consumer
+        // sees the gap; the `fetchError` field tells them which case.
         return {
           path: basePath,
           title: candidate.label,
@@ -370,6 +437,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
           snippet: '',
           score,
           missing: true,
+          fetchError: nonNotFoundError, // null when truly not-found
         };
       }
       const frontmatter = (note && note.frontmatter) || {};
@@ -392,10 +460,34 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   );
 
   for (const r of drillResults) {
-    if (r.status !== 'fulfilled' || !r.value) continue;
+    if (r.status === 'rejected') {
+      // Unexpected exception in the inner async (post-getNote helpers
+      // like pickSummary / bestSnippet shouldn't throw but defence in
+      // depth — surface as warning rather than silently drop).
+      warnings.push('primary-page-drill-failed');
+      continue;
+    }
+    if (!r.value) continue;
     const page = r.value;
-    // Body + frontmatter are internal-only — strip before envelope emission.
-    const { _body: body, _frontmatter: fm, missing, ...publicFields } = page;
+    // Surface specific warnings for the two refusal categories BEFORE
+    // stripping the internal flags from the envelope.
+    if (page.unsafePath) {
+      warnings.push('unsafe-index-target');
+    } else if (page.missing && page.fetchError) {
+      // Real fetch failure (not 404) — surface so the consumer knows
+      // the missing-page status is provisional, not a confirmed dead
+      // link. (review+ pass 1 A IMP-5 + B #6 convergent.)
+      warnings.push('page-read-failed');
+    }
+    // Body + frontmatter + internal flags — strip before envelope emit.
+    const {
+      _body: body,
+      _frontmatter: fm,
+      missing,
+      unsafePath: _u, // eslint-disable-line no-unused-vars
+      fetchError: _f, // eslint-disable-line no-unused-vars
+      ...publicFields
+    } = page;
     primaryPages.push(publicFields);
 
     if (missing) continue;
@@ -527,6 +619,7 @@ export const _internals = {
   snippetTokens,
   coerceSources,
   candidateToVaultPath,
+  isSafeVaultRelativePath,
   SUMMARY_MAX_CHARS,
   SNIPPET_MAX_CHARS,
 };
