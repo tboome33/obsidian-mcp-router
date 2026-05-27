@@ -135,11 +135,17 @@ function isSecretParam(name) {
  *   - protocol-relative or schemeless URLs are returned as-is (caller's
  *     responsibility to pass a fully-formed URL)
  *
- * Returns the original input if URL parsing fails (so we don't lose data
- * on weird inputs — the caller can still use the unparsed form as an ID).
+ * Returns the original input if URL parsing fails AND it contains no
+ * credentials (the caller can still use the unparsed form as an opaque
+ * ID). Returns `null` if parse-failed input contains credentials or
+ * secret query params — caller MUST surface an error rather than
+ * silently persist a leaky form. (review+ pass 3+ hardening for the
+ * `//user:pass@host?token=...` protocol-relative leak vector.)
  *
  * @param {string} url
- * @returns {string} normalised URL or original input on parse failure
+ * @returns {string|null} normalised URL ; original input on benign
+ *   parse failure ; null when the parse-failed input looks credential-
+ *   bearing (caller must handle).
  */
 export function normaliseUrl(url) {
   if (typeof url !== 'string' || !url) return url;

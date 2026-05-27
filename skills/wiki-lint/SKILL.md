@@ -12,7 +12,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 The skill has two modes :
 
 - **Default (structural)** — runs Checks A through H. Cheap, scans page metadata + wikilinks + citations only. The right mode for routine health checks.
-- **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L, which read the **digest sidecars** (`wiki-meta/digests/<page-slug>.md`) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted.
+- **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L, which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
 
 Trigger phrases :
 - "lint the wiki" / "health check" / "audit my wiki" → default mode
@@ -86,7 +86,7 @@ The following 4 checks are gated behind the `--deep` flag because they involve r
 
 #### Check I (deep): digest staleness
 
-For each digest file in `wiki-meta/digests/`, parse it with `parseDigest` from `src/helpers/digest-generator.mjs`. Compare the stored `page_hash` against a fresh `computePageHash(currentPageContent)` of the page the digest is for (`digest.for` field). On mismatch → WARNING `digest-stale` with detail "page edited since digest was generated ; run `/wiki-refresh-digests` to update".
+For each digest file (enumerate `wiki-meta/digests/` **recursively** — see Modes section), parse it with `parseDigest` from `src/helpers/digest-generator.mjs`. Compare the stored `page_hash` against a fresh `computePageHash(currentPageContent)` of the page the digest is for (`digest.for` field). On mismatch → WARNING `digest-stale` with detail "page edited since digest was generated ; run `/wiki-refresh-digests` to update".
 
 If the page referenced by `digest.for` no longer exists (page deleted), surface that as ERROR `orphaned-digest` and suggest removing the digest file too.
 

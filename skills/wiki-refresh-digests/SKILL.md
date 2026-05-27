@@ -27,11 +27,13 @@ This is the **complementary writer** to `wiki-lint --deep`'s **read-only detecto
 ```javascript
 import { computePageHash, parseDigest } from 'src/helpers/digest-generator.mjs';
 
-// List wiki pages
-const pages = mcp__obsidian-router__list_files({ vault, directory: 'wiki' });
-// List existing digests
-const digestsDir = 'wiki-meta/digests';
-const existingDigests = mcp__obsidian-router__list_files({ vault, directory: digestsDir });
+// List wiki pages — recurse since wiki has nested folders.
+// (The same recursive helper described in step 2 also works here ;
+// inline `listAllMd('wiki')` if not factored out.)
+const pages = await listAllMd(vault, 'wiki');
+// List existing digests — MUST be recursive enumeration since
+// digestPathForPage uses NESTED mapping (review+ pass 4).
+const existingDigests = await listDigestsRecursive(vault);
 ```
 
 Filter pages to skip the same exclusions as the `wiki-ingest` digest-generation step (sources, wiki-meta scaffolds).
@@ -54,6 +56,28 @@ const pageHash = computePageHash(pageContent);
 // and write sides diverge and digests are effectively unfindable.
 const digestPath = digestPathForPage(pageRelPath);
 const digestExists = existingDigests.includes(digestPath);
+```
+
+**IMPORTANT — enumerate digests recursively** (review+ pass 4 fix). The NESTED `digestPathForPage` mapping (v0.15.0+) writes digests into a folder tree mirroring `wiki/` under `wiki-meta/digests/`. The Local REST API's `list_files` returns immediate children only — a single flat call returns `["wiki/"]` instead of the digest files themselves. To get all digest paths, recurse :
+
+```javascript
+async function listDigestsRecursive(vault) {
+  const out = [];
+  async function walk(dir) {
+    const files = await list_files({ vault, directory: dir });
+    for (const entry of files) {
+      const full = `${dir}/${entry}`;
+      if (entry.endsWith('/')) {
+        await walk(full.slice(0, -1)); // strip trailing slash for next call
+      } else if (entry.endsWith('.md')) {
+        out.push(full);
+      }
+    }
+  }
+  await walk('wiki-meta/digests');
+  return out;
+}
+const existingDigests = await listDigestsRecursive(vault);
 
 let status;
 if (!digestExists) {
