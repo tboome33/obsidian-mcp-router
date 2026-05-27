@@ -8,6 +8,68 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.15.1] — 2026-05-27 — `/review+` hardening on v0.15.0 (4 review passes + 9 fix commits)
+
+Post-v0.15.0 `/review+` produced **9 IMPORTANT findings** in pass 1 (3 SECURITY + 5 logical correctness + 1 perf), then converged through 4 review passes with 9 hardening commits. Both reviewers (Claude `Code Reviewer` subagent + `codex review` CLI) concluded **OK to merge** at pass 5 — codex empirically verified all 25 secret-param patterns are caught (0 missed, 0 false-positives).
+
+### Security fixes (3)
+
+- **YAML injection in `digest-generator.serialiseDigest`** (convergent Reviewer A + B) — `digest.for` was written raw allowing `digest.for = "foo.md\nclaims: [INJECTED]"` to smuggle YAML lines into frontmatter. The `needsQuoting` regex also missed backslashes, control chars, YAML-reserved scalars (`yes`/`no`/`true`/`false`/`null`/`~`), alias/anchor/tag leading chars (`*foo`/`&foo`/`!foo`), and numeric-looking strings. Fix : new `needsYamlQuoting()` policy with 7 explicit rejection categories + `quoteYamlScalar()` + `escapeYamlDoubleQuoted()`. `digest.for` and `generated_at` now quoted ; `pageHash` hex-validated. Care taken to AVOID the `[ -\\]` regex range pitfall — structural chars listed EXPLICITLY. **+8 regression tests** including "ordinary paths stay UNQUOTED" guard.
+
+- **Path traversal in `get_wiki_context_pack`** (Reviewer B) — a poisoned `wiki-meta/index.md` containing `[[../../etc/passwd]]`, `[[/etc/x]]`, `[[C:\Windows\...]]`, or URL-like `[[file://...]]` would have its target shipped verbatim to `getNote()` and on to the Obsidian REST API. Fix : new exported helper `isSafeVaultRelativePath(p)` rejects POSIX absolute / Windows drive-letter / UNC / `..`-as-segment / control chars / URL-like (both `scheme://` and opaque `javascript:`/`data:`/`mailto:` forms). The drill loop calls it BEFORE `getNote()`. **+10 regression tests** including an integration test that proves `getNote` is NEVER called on a `..` path.
+
+- **URL credentials + tokens leak in `normaliseUrl`** (Reviewer B, hardened across passes 1 → 4 → 5) — `normaliseUrl()` was persisting `https://user:pass@host/?token=...&access_token=...` to `wiki-meta/ingest-state.json`. The state file became a credential leak vector. Fix : `parsed.username = '' ; parsed.password = ''` (drops basic auth in userinfo) + new `SECRET_PARAMS` blocklist (25 names : token/access_token/refresh_token/id_token/api_key/apikey/apptoken/key/secret/client_secret/signature/sig/auth/authorization/password/passwd/pwd/code/state/nonce/session/sessionid/sid/jsessionid/phpsessid) + new `TRACKING_PARAM_PREFIXES` for prefix-matched families (`utm_`, `x-amz-`, `x-goog-`, `oly_`, `vero_`). **Pass 4 + 5 hardening** : on parse failure, the previously-raw return now detects basic-auth userinfo OR secret query params via `SECRET_PARAMS_RE` generated dynamically from `SECRET_PARAMS` (single source of truth — Pass 4 caught that a hand-curated regex was missing `refresh_token`/`client_secret`/`authorization`/etc.). Returns `null` sentinel forcing callers to surface the error. **+14 regression tests** (9 in Pass 2 + 5 in Pass 4) covering each previously-leaking param family.
+
+### Logical correctness fixes (6)
+
+- **Check H source resolver** — `wiki-lint` Check H tried `sources/<filename>` but `wiki-ingest` writes to `wiki/sources/<slug>.md`. Check H would never resolve. Fix : `wiki/sources/<filename>` first (canonical), then page-relative, then bare `<filename>` as legacy fallback. Also rejects `..` / absolute paths in cited targets (new `cited-source-unsafe-path` WARNING).
+
+- **Digest path naming consistency** (B IMPORTANT + Pass 3 collision fix) — `wiki-ingest` and `wiki-refresh-digests` derived the digest path differently, producing different filenames for the same page. **Pass 3** : new `digestPathForPage(pageRelPath)` canonical helper used by both skills. **Pass 4** : initial flatten-with-dashes mapping (`/` → `-`) was collision-prone (`wiki/A/B.md` and `wiki/A-B.md` both → `wiki-A-B.md`) — switched to NESTED mapping mirroring the source path. Collision-free by construction. Skills updated for recursive enumeration. **+10 regression tests** including the dash-vs-slash collision lock-in.
+
+- **Silent error swallowing in `get_wiki_context_pack`** (convergent Reviewer A + B) — all `getNote()` errors collapsed to "missing page" placeholder, conflating real failures (timeout/auth/5xx) with legitimate 404s. Fix : capture first non-not-found error per candidate, emit `page-read-failed` warning when non-404 blocks resolution. `Promise.allSettled` rejections get `primary-page-drill-failed` warning. **+2 integration tests** locking in : 503 emits warning, 404 does NOT (preserves dead-wikilink as routine).
+
+- **Sibling-parser drift on bare-anchor wikilinks** (Reviewer A IMPORTANT, Pass 3) — `parseIndexEntries` in `get_wiki_context_pack` accepted `[[#OnlyAnchor]]` and emitted entries with empty label, polluting IDF scoring + triggering wasted REST probes. The sibling `llms-txt-exporter.parseIndex` already skipped this. Fix : aligned both parsers with same early-skip on empty page slug. **+1 regression test**.
+
+- **Wikilink alias drop in `llms-txt-exporter.parseIndex`** (Reviewer B) — regex `[^\]|]+?` silently dropped `[[foo|Alias]]`. `[[Foo#Bar|Section]]` became `Foo#Bar.md`. Fix : accept full `[[target]]` then strip `|alias` / `#section` / `^block-ref` decorations after. **+5 regression tests** for the 4 accepted forms + bare-anchor rejection.
+
+- **Multiple H2 silent overwrite + corrupted-state silent recovery** (Reviewer A) — `parseDigest` silently kept only the last `## Summary` when duplicates appeared (data loss). `loadIngestState` returned `{}` on corruption (would overwrite the broken file with fresh empty state on next save — erasing history invisibly). Fix : `parseDigest` throws on duplicate H2 ; `loadIngestState` backs up corrupted file as `<path>.corrupted-<timestamp>` + writes stderr warning before returning `{}`. **+4 regression tests** (2 duplicate-H2 + 2 backup-on-corruption).
+
+### Performance / consistency (1)
+
+- **`wiki-lint --deep` N² perf documentation** (convergent Reviewer A + B) — the new Checks I/J/K/L do pairwise digest comparison, N² in page count. Documented prominently in skill prose ("typical 100 pages → 5000 comparisons fine ; 1000 pages → 500k may take a few seconds"). No code change ; user expectation calibration.
+
+### NITs addressed inline
+
+- `escapeYamlDoubleQuoted` JSDoc no longer overclaims control-char coverage.
+- `normaliseUrl` JSDoc `@returns` synced to `{string|null}` with explanation of the three return modes.
+- `skills/wiki-ingest/SKILL.md` file-layout example updated to NESTED structure + recursive-glob note.
+- `skills/wiki-refresh-digests/SKILL.md` + `skills/wiki-lint/SKILL.md` `--deep` mode updated to instruct recursive enumeration (NESTED mapping consequence).
+
+### Doc propagation
+
+- `package-lock.json` synced from 0.14.7 → 0.15.0 → 0.15.1 (was lagging).
+- `ROADMAP.md` gained a v0.15.0 + v0.15.1 section (was last at v0.12.2).
+
+### `/review+` audit trail
+
+| Pass | Reviewer A | Reviewer B | Convergent | Action |
+|---|---|---|---|---|
+| 1 | 6 IMP + 9 NIT | 9 IMP + 1 NIT | YAML + error swallowing + N² guard + parser drift | 7 fix commits (`f8cf898`..`9f0ddf4`) |
+| 2 | OK to merge + 1 IMP + 3 NIT carry-over | À corriger : 1 IMP collision + 2 PARTIAL + 2 NIT | digest path collision + URL parse-fail leak | 2 fix commits (`60ee772` + `997fb7b`) |
+| 3 | — (informal verification) | — | — | (inferred — convergence point) |
+| 4 | OK to merge + 1 IMP (skill drift on NESTED) + 1 NIT | À corriger : 1 IMP parse-fail regex too narrow | parse-fail leak alignment | 2 fix commits (`3bad5bd` + `9aa3a77`) |
+| 5 | (deemed converged at pass 4) | **OK to merge** (empirical : 25/25 SECRET_PARAMS catch) | — | bump v0.15.1 |
+
+### Tests
+
+- **1387/1387 passing** (was 1331 at v0.15.0, +56 hardening regressions across 4 files).
+- New: 8 YAML safety + 10 path traversal + 14 URL credential strip + 10 digest-path/parsers + 2 page-read-failed + 12 misc parser robustness.
+
+### Pages liées
+
+- [[llm-wiki-compiler-roadmap]] — source roadmap of the v0.15.0 features being hardened here
+- [[router-changelog#v0.15.0 — 2026-05-27]] — feature catalog of the underlying release
+
 ## [0.15.0] — 2026-05-27 — llm-wiki-compiler emprunts (6 features parallèles)
 
 Six features décidées un par un avec Roland après ingestion de la fiche [llm-wiki-compiler](https://github.com/atomicstrata/llm-wiki-compiler) (un autre CLI implémentant le pattern Karpathy LLM Wiki en standalone). Roadmap source : `wiki/Divers/LLM-WIKI-COMPILER/llm-wiki-compiler-roadmap.md` (vault `opsidian-mcp-router et bridge`). Total : **+166 tests** (1165 → 1331), 6 commits parallélisés (1 agent Backend Architect en background + 4 features foreground), aucun refactor structurel.
