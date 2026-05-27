@@ -270,7 +270,9 @@ For each entity/concept identified in step 2:
 
 ### 5.5 Generate digest sidecars (v0.15.0+, roadmap item #7')
 
-For each wiki page **created or updated** in step 5 (NOT the source page from step 4 — source pages don't need digests since the source-page frontmatter already serves as their summary), generate a compact digest sidecar at `wiki-meta/digests/<page-slug>.md`.
+For each wiki page **created or updated** in step 5 (NOT the source page from step 4 — source pages don't need digests since the source-page frontmatter already serves as their summary), generate a compact digest sidecar.
+
+**Canonical digest path** : ALWAYS call `digestPathForPage(pageRelPath)` from `src/helpers/digest-generator.mjs` — this is the SINGLE source of truth (hardened in v0.15.1 review+ pass 2). The mapping flattens the vault path with dashes : `wiki/Refs/oauth-howto.md` → `wiki-meta/digests/wiki-Refs-oauth-howto.md`. DO NOT improvise a path here. Both `wiki-ingest` AND `wiki-refresh-digests` MUST use the helper, otherwise the two skills write to and read from different filenames for the same page (sidecar effectively unfindable).
 
 **Purpose** : the digests are the substrate the future `wiki-lint --deep` mode (and the future agent-de-veille #3) read in bulk to detect cross-page redundancies, contradictions, and missing wikilinks — cheaper than re-scanning the full pages every time.
 
@@ -287,7 +289,7 @@ For each wiki page **created or updated** in step 5 (NOT the source page from st
      - **`keywords`** : 3-8 lowercase keywords for free-text matching (e.g. `[oauth, auth, security, browser]`).
      - **`summary`** : 1-2 sentences distilling the page (under 300 chars).
      - **`notable`** (optional) : a single point worth flagging at a glance (contradictions noted, gaps, controversies). Omit if nothing notable.
-   - Serialise with `serialiseDigest(populated)` and write to `wiki-meta/digests/<page-slug>.md` via `mcp__obsidian-router__write_file`.
+   - Serialise with `serialiseDigest(populated)` and write to `digestPathForPage(pageRelPath)` (canonical helper — DO NOT improvise) via `mcp__obsidian-router__write_file`.
 
 3. **Don't generate digests for** :
    - Source pages (`wiki/sources/*.md`) — their frontmatter already serves as the digest.

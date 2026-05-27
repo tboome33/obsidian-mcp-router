@@ -15,6 +15,7 @@ import {
   isDigestStale,
   conceptOverlap,
   sharedConcepts,
+  digestPathForPage,
 } from '../src/helpers/digest-generator.mjs';
 
 // ---------------------------------------------------------------------------
@@ -513,5 +514,77 @@ describe('sharedConcepts', () => {
   test('handles missing concepts arrays', () => {
     assert.deepEqual(sharedConcepts({}, { concepts: ['x'] }), []);
     assert.deepEqual(sharedConcepts({ concepts: ['x'] }, {}), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// digestPathForPage — canonical naming (review+ pass 2)
+// ---------------------------------------------------------------------------
+
+describe('digestPathForPage', () => {
+  test('flattens vault path with dashes', () => {
+    assert.equal(
+      digestPathForPage('wiki/Refs/oauth-howto.md'),
+      'wiki-meta/digests/wiki-Refs-oauth-howto.md',
+    );
+  });
+
+  test('preserves .md extension', () => {
+    assert.match(digestPathForPage('wiki/x.md'), /\.md$/);
+  });
+
+  test('idempotent — same input always produces same output', () => {
+    assert.equal(
+      digestPathForPage('wiki/Refs/foo.md'),
+      digestPathForPage('wiki/Refs/foo.md'),
+    );
+  });
+
+  test('normalises backslashes to forward slashes', () => {
+    assert.equal(
+      digestPathForPage('wiki\\Refs\\foo.md'),
+      'wiki-meta/digests/wiki-Refs-foo.md',
+    );
+  });
+
+  test('rejects POSIX absolute paths', () => {
+    assert.throws(
+      () => digestPathForPage('/etc/passwd'),
+      /vault-relative without ".."/,
+    );
+  });
+
+  test('rejects Windows drive letters', () => {
+    assert.throws(
+      () => digestPathForPage('C:\\Windows\\x'),
+      /vault-relative without ".."/,
+    );
+  });
+
+  test('rejects .. segments', () => {
+    assert.throws(
+      () => digestPathForPage('../etc/x'),
+      /vault-relative without ".."/,
+    );
+    assert.throws(
+      () => digestPathForPage('foo/../bar'),
+      /vault-relative without ".."/,
+    );
+  });
+
+  test('rejects empty / non-string input', () => {
+    assert.throws(() => digestPathForPage(''), /non-empty string/);
+    assert.throws(() => digestPathForPage(null), /non-empty string/);
+  });
+
+  test('two different pages → two different digest paths (collision-free)', () => {
+    // Critical invariant — without this, the read side (refresh) reads
+    // the wrong digest for a page.
+    const a = digestPathForPage('wiki/Refs/foo.md');
+    const b = digestPathForPage('wiki/Refs/bar.md');
+    const c = digestPathForPage('wiki/Misc/foo.md');
+    assert.notEqual(a, b);
+    assert.notEqual(a, c);
+    assert.notEqual(b, c);
   });
 });

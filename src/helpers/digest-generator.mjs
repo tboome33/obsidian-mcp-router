@@ -494,3 +494,59 @@ export function sharedConcepts(digestA, digestB) {
   const bLower = new Set((digestB.concepts ?? []).map((c) => c.toLowerCase()));
   return (digestA.concepts ?? []).filter((c) => bLower.has(c.toLowerCase()));
 }
+
+// ---------------------------------------------------------------------------
+// Digest path naming — SINGLE source of truth (review+ pass 2 fix)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the canonical digest sidecar path for a wiki page.
+ *
+ * This is the SINGLE source of truth for the naming convention — both
+ * the `wiki-ingest` skill (write side, step 5.5) and the
+ * `wiki-refresh-digests` skill (read + write) MUST call this function
+ * rather than improvising a path. Pre-review+ pass 2 the two skills
+ * used different filename derivations (slug() vs <page-slug>) which
+ * meant the same page would end up writing to and reading from
+ * different digest files — sidecars effectively unfindable.
+ *
+ * Mapping :
+ *   wiki/Refs/oauth-howto.md      → wiki-meta/digests/wiki-Refs-oauth-howto.md
+ *   wiki/Misc/foo.md              → wiki-meta/digests/wiki-Misc-foo.md
+ *   wiki/page-with-dashes.md      → wiki-meta/digests/wiki-page-with-dashes.md
+ *
+ * The flattening replaces `/` with `-` (deterministic, idempotent, no
+ * nested directories under `digests/`). Preserves the `.md` extension
+ * so a glob `wiki-meta/digests/*.md` picks them up naturally.
+ *
+ * Refuses unsafe inputs : absolute paths, `..` segments, drive letters.
+ * (review+ pass 2 — defence in depth against accidental abs-path
+ * smuggling.)
+ *
+ * @param {string} pageRelPath Path relative to vault root (e.g. "wiki/Refs/foo.md")
+ * @returns {string} Vault-relative path for the digest sidecar
+ */
+export function digestPathForPage(pageRelPath) {
+  if (typeof pageRelPath !== 'string' || !pageRelPath) {
+    throw new TypeError(
+      'digestPathForPage: pageRelPath must be a non-empty string',
+    );
+  }
+  // Reject paths that clearly aren't vault-relative — defence against
+  // accidental absolute paths or path-traversal attempts being turned
+  // into digest filenames.
+  if (
+    /^[a-zA-Z]:[\\/]/.test(pageRelPath) || // Windows drive letter
+    pageRelPath.startsWith('/') ||           // POSIX absolute
+    pageRelPath.startsWith('\\') ||          // UNC-ish
+    /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(pageRelPath)  // .. segment
+  ) {
+    throw new TypeError(
+      `digestPathForPage: pageRelPath must be vault-relative without ".." : ${pageRelPath}`,
+    );
+  }
+  // Normalise backslashes to forward slashes, then flatten with dashes.
+  const normalised = pageRelPath.replace(/\\/g, '/');
+  const flattened = normalised.replace(/\//g, '-');
+  return `wiki-meta/digests/${flattened}`;
+}

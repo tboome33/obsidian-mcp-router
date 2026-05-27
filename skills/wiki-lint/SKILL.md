@@ -67,7 +67,7 @@ If `hot.md` `## Last Updated` is more than 7 days old, flag it. Real-world: hot 
 
 Scan every wiki page body for line-range citation markers of the form `^[<filename>:<start>-<end>]`, `^[<filename>#L<start>-L<end>]`, `^[<filename>:<line>]`, or the paragraph-level fallback `^[<filename>]`. For each marker with a range :
 
-1. **Resolve the cited file** — try `sources/<filename>` first (the convention), then `<filename>` at vault root if not found. If neither exists → WARNING `cited-source-not-found`.
+1. **Resolve the cited file** — the canonical location is `wiki/sources/<slug>.md` (see `wiki-ingest` step 4). Try in order : (a) `wiki/sources/<filename>`, (b) path relative to the citing page's folder (for sibling-references), (c) `<filename>` at vault root (legacy fallback). If none resolves → WARNING `cited-source-not-found`. **Reject** any cited path containing `..` segments or absolute roots (`/`, `C:\`, `\\server\`) — emit `cited-source-unsafe-path` WARNING instead and do NOT attempt the fetch (review+ pass 2 hardening : a malicious source citation must not become a vault-escape vector).
 2. **Parse the range** — accept colon-style `:42-58` and GitHub-style `#L42-L58` (semantically equivalent). Reject malformed ranges (non-numeric, missing parts).
 3. **Validate the range** :
    - `start > 0` and `end > 0` — both must be positive integers (line 0 doesn't exist) → WARNING `claim-range-zero-or-negative`

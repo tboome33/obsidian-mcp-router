@@ -41,9 +41,18 @@ Filter pages to skip the same exclusions as the `wiki-ingest` digest-generation 
 For each wiki page (not excluded) :
 
 ```javascript
+import {
+  computePageHash,
+  parseDigest,
+  digestPathForPage,
+} from 'src/helpers/digest-generator.mjs';
+
 const pageContent = await get_file({ vault, path: pageRelPath });
 const pageHash = computePageHash(pageContent);
-const digestPath = `wiki-meta/digests/${slug(pageRelPath)}.md`;
+// CANONICAL helper — DO NOT improvise a path here. Must match what
+// wiki-ingest step 5.5 used to write the digest, otherwise the read
+// and write sides diverge and digests are effectively unfindable.
+const digestPath = digestPathForPage(pageRelPath);
 const digestExists = existingDigests.includes(digestPath);
 
 let status;
@@ -81,7 +90,7 @@ For each page in the to-regenerate set, do the SAME work as `wiki-ingest` step 5
 1. Read the current page content.
 2. Call `generateDigestSkeleton({pageContent, forPath})`.
 3. Parse the skeleton, populate concepts/claims/keywords/summary/notable from the page's content.
-4. Serialise with `serialiseDigest(populated)` and write to `wiki-meta/digests/<slug>.md` (overwrites the stale one if present).
+4. Serialise with `serialiseDigest(populated)` and write to `digestPathForPage(pageRelPath)` (canonical helper — overwrites the stale digest at that location if present).
 
 **Parallelisation** : use `Promise.allSettled` style or the `wiki-ingest` sub-agent pattern to batch the LLM calls if the to-regenerate set is large (>10 pages). Each digest generation is independent.
 
