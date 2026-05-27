@@ -70,12 +70,15 @@ describe('serialiseDigest', () => {
       summary: 'A summary.',
     });
     assert.match(md, /type: digest/);
-    assert.match(md, /for: wiki\/foo\.md/);
+    // `for:` and `generated_at:` are YAML-quoted post-review+ pass 2
+    // hardening because both contain `:` (path separators or ISO
+    // timestamp). Accept either form for forward-compat.
+    assert.match(md, /for:\s*"?wiki\/foo\.md"?/);
     assert.match(md, /page_hash: a{64}/);
     assert.match(md, /concepts: \[Foo, Bar\]/);
     assert.match(md, /claims: \[First, Second\]/);
     assert.match(md, /keywords: \[k1, k2\]/);
-    assert.match(md, /generated_at: 2026-05-27T00:00:00Z/);
+    assert.match(md, /generated_at:\s*"?2026-05-27T00:00:00Z"?/);
     assert.match(md, /## Summary\n\nA summary\./);
   });
 
@@ -132,7 +135,9 @@ describe('serialiseDigest', () => {
     const before = new Date().toISOString();
     const md = serialiseDigest({ for: 'wiki/x.md', pageHash: 'a'.repeat(64) });
     const after = new Date().toISOString();
-    const matched = /generated_at: ([0-9T:.\-Z]+)/.exec(md);
+    // ISO timestamps contain `:` so they get YAML-quoted by serialiseDigest
+    // post-review+ pass 2 hardening. Accept both quoted and unquoted forms.
+    const matched = /generated_at:\s*"?([0-9T:.\-Z]+)"?/.exec(md);
     assert.ok(matched, 'frontmatter should have generated_at');
     assert.ok(matched[1] >= before && matched[1] <= after);
   });
@@ -140,6 +145,105 @@ describe('serialiseDigest', () => {
   test('placeholder summary when none provided', () => {
     const md = serialiseDigest({ for: 'wiki/x.md', pageHash: 'a'.repeat(64) });
     assert.match(md, /\(pending/);
+  });
+
+  // -------------------------------------------------------------------------
+  // YAML injection safety — review+ pass 2 regression tests
+  // -------------------------------------------------------------------------
+
+  test('YAML injection: digest.for with embedded newline is quoted', () => {
+    const md = serialiseDigest({
+      for: 'foo.md\nclaims: [INJECTED]',
+      pageHash: 'a'.repeat(64),
+    });
+    // The injected line MUST NOT appear at the YAML top level — it must
+    // be inside the quoted `for:` value (escaped as \n).
+    // Specifically: there's no bare `claims: [INJECTED]` line at root.
+    assert.doesNotMatch(md, /^claims: \[INJECTED\]/m);
+    // The for: value contains the escaped newline literal.
+    assert.match(md, /for:\s*"foo\.md\\nclaims: \[INJECTED\]"/);
+  });
+
+  test('YAML injection: array item with embedded newline is escaped', () => {
+    const md = serialiseDigest({
+      for: 'x',
+      pageHash: 'b'.repeat(64),
+      claims: ['normal', 'evil\nkeywords: [INJECTED]'],
+    });
+    assert.doesNotMatch(md, /^keywords: \[INJECTED\]/m);
+    assert.match(md, /"evil\\nkeywords: \[INJECTED\]"/);
+  });
+
+  test('YAML injection: pageHash is hex-validated (rejects newline)', () => {
+    assert.throws(
+      () =>
+        serialiseDigest({
+          for: 'x',
+          pageHash: 'a'.repeat(64) + '\nfor: pwned',
+        }),
+      /pageHash must be a 64-char hex string/,
+    );
+  });
+
+  test('YAML reserved scalars (yes/no/true/false/null) are quoted', () => {
+    const md = serialiseDigest({
+      for: 'x',
+      pageHash: 'c'.repeat(64),
+      keywords: ['yes', 'NO', 'True', 'null', 'normal'],
+    });
+    // All reserved scalars get quoted, normal stays bare.
+    assert.match(md, /"yes"/);
+    assert.match(md, /"NO"/);
+    assert.match(md, /"True"/);
+    assert.match(md, /"null"/);
+    assert.match(md, /, normal\]/);
+  });
+
+  test('YAML alias/anchor leading chars are quoted', () => {
+    const md = serialiseDigest({
+      for: 'x',
+      pageHash: 'd'.repeat(64),
+      concepts: ['*alias', '&anchor', '!tag', 'normal'],
+    });
+    assert.match(md, /"\*alias"/);
+    assert.match(md, /"&anchor"/);
+    assert.match(md, /"!tag"/);
+  });
+
+  test('numeric-looking strings get quoted (preserve string form)', () => {
+    const md = serialiseDigest({
+      for: 'x',
+      pageHash: 'e'.repeat(64),
+      keywords: ['42', '3.14', '-1', 'oauth2'],
+    });
+    assert.match(md, /"42"/);
+    assert.match(md, /"3\.14"/);
+    assert.match(md, /"-1"/);
+    // oauth2 has letters so doesn't match the numeric pattern — stays bare.
+    assert.match(md, /oauth2/);
+  });
+
+  test('ordinary paths (no special chars) stay UNQUOTED', () => {
+    // Regression guard against the `[ -\\]` regex range bug that would
+    // over-quote any string containing `/`, `.`, digits, or letters.
+    const md = serialiseDigest({
+      for: 'wiki/Refs/oauth-howto.md',
+      pageHash: 'f'.repeat(64),
+      concepts: ['OAuth', 'PKCE', 'simple-tag'],
+    });
+    // `for:` value should be the bare path, no quotes around it.
+    assert.match(md, /for: wiki\/Refs\/oauth-howto\.md\n/);
+    // Concepts items should be bare (no quoting noise).
+    assert.match(md, /concepts: \[OAuth, PKCE, simple-tag\]/);
+  });
+
+  test('control characters in scalars are escaped', () => {
+    const md = serialiseDigest({
+      for: 'x\ttab',
+      pageHash: 'a'.repeat(64),
+    });
+    // \t in for: gets escaped to literal \t in the quoted form.
+    assert.match(md, /for:\s*"x\\ttab"/);
   });
 });
 

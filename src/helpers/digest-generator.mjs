@@ -56,17 +56,94 @@ export function computePageHash(pageContent) {
 }
 
 // ---------------------------------------------------------------------------
-// YAML inline-array serialisation
+// YAML scalar/array serialisation — hardened in review+ pass 2
 // ---------------------------------------------------------------------------
+
+// YAML 1.1/1.2 reserved bare scalars that change meaning when unquoted.
+// Lowercase comparison against the trimmed string.
+const YAML_RESERVED_SCALARS = new Set([
+  'true', 'false', 'yes', 'no', 'on', 'off',
+  'null', '~',
+]);
+
+// YAML structural characters that change parse meaning inside a flow
+// scalar. Listed EXPLICITLY (no ranges) to avoid the regex range pitfall
+// `[ -\\]` (space-to-backslash) which would over-quote ordinary paths
+// like `wiki/foo.md`. Includes the backslash (escape char).
+const YAML_STRUCTURAL_CHARS = /[,:[\]{}"'\\]/;
+
+// Control characters (NUL through US, plus DEL) — must always be escaped
+// inside a YAML scalar. Single explicit range, no risk of confusion.
+const YAML_CONTROL_CHARS = /[\x00-\x1f\x7f]/; // eslint-disable-line no-control-regex
+
+// Leading character that triggers a YAML directive / anchor / alias / tag /
+// indicator. Per YAML 1.2 spec § 5.5.
+const YAML_SPECIAL_LEADING_CHAR = /^[!&*?|>%@`,'"\-[\]{}#:]/;
+
+// Anything that looks like an int/float — would be re-parsed as number.
+const YAML_NUMERIC_LIKE =
+  /^[-+]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][-+]?\d+)?$/;
+
+/**
+ * Return true when a string must be YAML-quoted to round-trip safely as a
+ * scalar (frontmatter value OR inline-array item). See the regex constants
+ * above for the full quoting policy.
+ *
+ * @param {string} s
+ * @returns {boolean}
+ */
+function needsYamlQuoting(s) {
+  if (typeof s !== 'string') return true;
+  if (s === '') return true;
+  if (s !== s.trim()) return true;
+  if (YAML_RESERVED_SCALARS.has(s.toLowerCase())) return true;
+  if (YAML_STRUCTURAL_CHARS.test(s)) return true;
+  if (YAML_CONTROL_CHARS.test(s)) return true;
+  if (YAML_SPECIAL_LEADING_CHAR.test(s)) return true;
+  if (YAML_NUMERIC_LIKE.test(s)) return true;
+  return false;
+}
+
+/**
+ * Escape a string for safe inclusion inside a YAML double-quoted scalar.
+ * Handles backslash, double quote, and the common control characters per
+ * the YAML 1.2 double-quoted form.
+ *
+ * @param {string} s
+ * @returns {string} Escape-only payload (no surrounding quotes)
+ */
+function escapeYamlDoubleQuoted(s) {
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
+ * Quote a string for YAML using the double-quoted form. Returns the input
+ * unchanged when no quoting is needed.
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function quoteYamlScalar(s) {
+  const str = String(s);
+  if (!needsYamlQuoting(str)) return str;
+  return `"${escapeYamlDoubleQuoted(str)}"`;
+}
 
 /**
  * Serialise a list of strings as a YAML inline array, with proper quoting
- * for items that contain special characters (commas, colons, brackets,
- * quotes, leading/trailing whitespace).
+ * for items that need it.
  *
  * Examples:
  *   ['oauth', 'auth']         → '[oauth, auth]'
  *   ['First, second', 'Bare'] → '["First, second", Bare]'
+ *   ['yes', 'no']             → '["yes", "no"]'   (YAML booleans)
+ *   ['*alias']                → '["*alias"]'      (YAML alias trigger)
+ *   ['42']                    → '["42"]'          (would parse as int)
  *   []                        → '[]'
  *
  * @param {string[]} items
@@ -77,16 +154,7 @@ function serialiseInlineArray(items) {
     throw new TypeError('serialiseInlineArray: items must be an array');
   }
   if (items.length === 0) return '[]';
-  const needsQuoting = (s) => /[,:\[\]"'\n]/.test(s) || s !== s.trim();
-  const parts = items.map((item) => {
-    const str = String(item);
-    if (needsQuoting(str)) {
-      // Escape backslashes and double quotes for YAML double-quoted form
-      const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `"${escaped}"`;
-    }
-    return str;
-  });
+  const parts = items.map((item) => quoteYamlScalar(item));
   return `[${parts.join(', ')}]`;
 }
 
@@ -287,6 +355,14 @@ export function serialiseDigest(digest) {
   if (!digest.pageHash || typeof digest.pageHash !== 'string') {
     throw new TypeError('serialiseDigest: digest.pageHash is required (string)');
   }
+  // Defence in depth against YAML injection: the canonical pageHash is
+  // 64-char hex from computePageHash(). Reject anything else — a caller
+  // passing `aaa\nclaims: [injected]` would otherwise smuggle YAML lines.
+  if (!/^[0-9a-f]{64}$/i.test(digest.pageHash)) {
+    throw new TypeError(
+      'serialiseDigest: digest.pageHash must be a 64-char hex string (SHA-256)',
+    );
+  }
   const generatedAt = digest.generatedAt ?? new Date().toISOString();
   const concepts = digest.concepts ?? [];
   const claims = digest.claims ?? [];
@@ -297,12 +373,16 @@ export function serialiseDigest(digest) {
   const lines = [];
   lines.push('---');
   lines.push('type: digest');
-  lines.push(`for: ${digest.for}`);
+  // `for` is an arbitrary caller-controlled path — MUST be YAML-quoted
+  // to prevent injection via `digest.for = "foo.md\nclaims: [malicious]"`.
+  lines.push(`for: ${quoteYamlScalar(digest.for)}`);
+  // page_hash is hex-validated above; no quoting needed but harmless.
   lines.push(`page_hash: ${digest.pageHash}`);
   lines.push(`concepts: ${serialiseInlineArray(concepts)}`);
   lines.push(`claims: ${serialiseInlineArray(claims)}`);
   lines.push(`keywords: ${serialiseInlineArray(keywords)}`);
-  lines.push(`generated_at: ${generatedAt}`);
+  // generatedAt contains `:` (ISO timestamp colons) → must be quoted.
+  lines.push(`generated_at: ${quoteYamlScalar(generatedAt)}`);
   lines.push('---');
   lines.push('');
   lines.push('## Summary');
