@@ -57,38 +57,71 @@ export function computeSourceHash(content) {
 
 // Query parameters that are tracking / analytics noise — strip them so
 // `?utm_source=newsletter` doesn't produce a different hash than the bare
-// canonical URL.
+// canonical URL. Lowercase comparison.
+//
+// PRs welcome to extend; useful references for new entries :
+//   - ClearURLs rules: https://github.com/ClearURLs/Rules
+//   - common platform docs (Marketo, Klaviyo, Adobe, etc.)
 const TRACKING_PARAMS = new Set([
-  'utm_source',
-  'utm_medium',
-  'utm_campaign',
-  'utm_term',
-  'utm_content',
-  'utm_id',
-  'utm_brand',
-  'utm_referrer',
-  'fbclid',
-  'gclid',
-  'msclkid',
-  'mc_cid',
-  'mc_eid',
-  'oly_anon_id',
-  'oly_enc_id',
-  'ref',
-  'ref_src',
-  'referrer',
-  'src',
-  '_hsenc',
-  '_hsmi',
-  'hsCtaTracking',
-  'igshid',
-  'twclid',
-  'vero_conv',
-  'vero_id',
-  'wbraid',
-  'gbraid',
-  'yclid',
+  'fbclid', 'gclid', 'msclkid', 'mc_cid', 'mc_eid',
+  'oly_anon_id', 'oly_enc_id',
+  'ref', 'ref_src', 'referrer', 'src',
+  '_hsenc', '_hsmi', 'hsctatracking',
+  'igshid', 'twclid', 'vero_conv', 'vero_id',
+  'wbraid', 'gbraid', 'yclid',
+  'mkt_tok',     // Marketo
+  '_kx',         // Klaviyo
+  'oref', 'spm', // Alibaba
+  's_cid',       // Adobe Analytics
 ]);
+
+// Query parameter prefixes whose entire family should be stripped. Used
+// when the platform emits `utm_*`, `X-Amz-*`, etc. with many variants —
+// listing them all individually lets new ones slip through silently.
+// Lowercase comparison.
+const TRACKING_PARAM_PREFIXES = [
+  'utm_',        // Google + many platforms (utm_source/medium/campaign/...)
+  'x-amz-',      // AWS S3 signed-URL parameters
+  'x-goog-',     // GCS signed-URL parameters
+  'oly_',        // Omeda Olytics
+  'vero_',       // Vero
+];
+
+// Query parameters that carry credentials / secrets / signatures. MUST be
+// stripped before persisting to `wiki-meta/ingest-state.json`, otherwise
+// the state file becomes a credential leak vector. (review+ pass 2 fix
+// for Reviewer B IMPORTANT #2.) Lowercase comparison.
+const SECRET_PARAMS = new Set([
+  'token', 'access_token', 'refresh_token', 'id_token',
+  'api_key', 'apikey', 'apptoken',
+  'key',                  // generic — overzealous but acceptable for ID
+  'secret', 'client_secret',
+  'signature', 'sig',
+  'auth', 'authorization',
+  'password', 'passwd', 'pwd',
+  'code',                 // OAuth authorisation code (single-use but sensitive)
+  'state',                // OAuth state param (CSRF token)
+  'nonce',
+  'session', 'sessionid', 'sid', 'jsessionid', 'phpsessid',
+]);
+
+/**
+ * Return true when the query parameter name matches any tracking pattern
+ * (exact name OR prefix match). Case-insensitive.
+ */
+function isTrackingParam(name) {
+  const lower = name.toLowerCase();
+  if (TRACKING_PARAMS.has(lower)) return true;
+  for (const prefix of TRACKING_PARAM_PREFIXES) {
+    if (lower.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/** Return true when the query parameter carries a credential / secret. */
+function isSecretParam(name) {
+  return SECRET_PARAMS.has(name.toLowerCase());
+}
 
 /**
  * Normalise a URL to a stable identifier:
@@ -125,12 +158,20 @@ export function normaliseUrl(url) {
   ) {
     parsed.port = '';
   }
+  // CRITICAL : strip URL credentials (basic auth in userinfo).
+  // `https://user:pass@host/path?...` → `https://host/path?...`
+  // The state file MUST NOT persist creds. (review+ pass 2 fix for
+  // Reviewer B IMPORTANT #2.)
+  parsed.username = '';
+  parsed.password = '';
   // Strip fragment
   parsed.hash = '';
-  // Filter + sort query params
+  // Filter + sort query params. Two filter categories :
+  //   - tracking : noise that shouldn't influence hash equality
+  //   - secrets  : credentials that MUST NOT persist to the state file
   const params = new URLSearchParams();
   const sortedKeys = [...parsed.searchParams.keys()]
-    .filter((k) => !TRACKING_PARAMS.has(k.toLowerCase()))
+    .filter((k) => !isTrackingParam(k) && !isSecretParam(k))
     .sort();
   for (const key of sortedKeys) {
     for (const value of parsed.searchParams.getAll(key)) {

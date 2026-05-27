@@ -146,6 +146,78 @@ describe('normaliseUrl', () => {
       'https://example.com/x',
     );
   });
+
+  // -------------------------------------------------------------------------
+  // Security : URL credentials and secret params MUST NOT persist
+  // (review+ pass 2 regressions for Reviewer B IMPORTANT #2)
+  // -------------------------------------------------------------------------
+
+  test('strips basic-auth username/password from userinfo', () => {
+    assert.equal(
+      normaliseUrl('https://alice:hunter2@example.com/x'),
+      'https://example.com/x',
+    );
+    assert.equal(
+      normaliseUrl('https://token123@api.example.com/v1/data'),
+      'https://api.example.com/v1/data',
+    );
+  });
+
+  test('strips access_token / api_key / signature / secret', () => {
+    const url = 'https://example.com/x?access_token=abc&api_key=def&signature=ghi&secret=jkl&keep=ok';
+    assert.equal(normaliseUrl(url), 'https://example.com/x?keep=ok');
+  });
+
+  test('strips OAuth params (code / state / nonce)', () => {
+    const url = 'https://example.com/cb?code=auth_code&state=csrf&nonce=xyz&q=keep';
+    assert.equal(normaliseUrl(url), 'https://example.com/cb?q=keep');
+  });
+
+  test('strips session cookies in query (sessionid, jsessionid, phpsessid)', () => {
+    assert.equal(
+      normaliseUrl('https://example.com/x?sessionid=abc'),
+      'https://example.com/x',
+    );
+    assert.equal(
+      normaliseUrl('https://example.com/x?JSESSIONID=xyz'),
+      'https://example.com/x',
+    );
+  });
+
+  test('strips X-Amz-* signed-URL params (prefix match)', () => {
+    const url = 'https://bucket.s3.amazonaws.com/file?X-Amz-Algorithm=AWS4&X-Amz-Signature=abc&X-Amz-Credential=def&X-Amz-Date=20260527';
+    // All X-Amz-* should be stripped; nothing else is in the URL.
+    assert.equal(normaliseUrl(url), 'https://bucket.s3.amazonaws.com/file');
+  });
+
+  test('strips utm_* family via prefix (not just hard-coded names)', () => {
+    // utm_brand_unknown_variant is a hypothetical future utm_ param.
+    const url = 'https://example.com/x?utm_source=a&utm_brand_unknown_variant=b&keep=ok';
+    assert.equal(normaliseUrl(url), 'https://example.com/x?keep=ok');
+  });
+
+  test('strips Marketo, Klaviyo, Adobe analytics params', () => {
+    const url = 'https://example.com/x?mkt_tok=marketo&_kx=klaviyo&s_cid=adobe&keep=ok';
+    assert.equal(normaliseUrl(url), 'https://example.com/x?keep=ok');
+  });
+
+  test('case-insensitive secret strip', () => {
+    assert.equal(
+      normaliseUrl('https://example.com/x?ACCESS_TOKEN=abc'),
+      'https://example.com/x',
+    );
+    assert.equal(
+      normaliseUrl('https://example.com/x?API_KEY=abc'),
+      'https://example.com/x',
+    );
+  });
+
+  test('keeps unrelated legitimate params', () => {
+    assert.equal(
+      normaliseUrl('https://example.com/search?q=oauth&page=2&lang=fr'),
+      'https://example.com/search?lang=fr&page=2&q=oauth',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
