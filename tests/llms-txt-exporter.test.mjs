@@ -159,6 +159,44 @@ type: wiki-index
     assert.equal(result.length, 1);
     assert.equal(result[0].bullets[0].pageSlug, 'foo');
   });
+
+  // -------------------------------------------------------------------------
+  // Wikilink alias / section parsing (review+ pass 2 fix)
+  // -------------------------------------------------------------------------
+
+  test('handles wikilink with display alias [[page|Alias]]', () => {
+    const md = `## Refs\n\n- [[oauth-howto|OAuth HowTo]] — guide\n`;
+    const result = parseIndex(md);
+    assert.equal(result[0].bullets[0].pageSlug, 'oauth-howto');
+    assert.equal(result[0].bullets[0].description, 'guide');
+  });
+
+  test('handles wikilink with section anchor [[page#Section]]', () => {
+    const md = `## Refs\n\n- [[oauth-howto#PKCE]] — pkce sub-section\n`;
+    const result = parseIndex(md);
+    assert.equal(result[0].bullets[0].pageSlug, 'oauth-howto');
+  });
+
+  test('handles wikilink with section + alias [[page#Section|Display]]', () => {
+    const md = `## Refs\n\n- [[oauth-howto#PKCE|PKCE Section]] — pkce\n`;
+    const result = parseIndex(md);
+    assert.equal(result[0].bullets[0].pageSlug, 'oauth-howto');
+    assert.equal(result[0].bullets[0].description, 'pkce');
+  });
+
+  test('handles wikilink with block-ref [[page^block-id]]', () => {
+    const md = `## Refs\n\n- [[oauth-howto^block-42]] — block ref\n`;
+    const result = parseIndex(md);
+    assert.equal(result[0].bullets[0].pageSlug, 'oauth-howto');
+  });
+
+  test('rejects empty page slug from bare anchor [[#Section]]', () => {
+    const md = `## Refs\n\n- [[#Section]] — should be skipped\n- [[real]] — ok\n`;
+    const result = parseIndex(md);
+    // Only the real bullet should survive.
+    assert.equal(result[0].bullets.length, 1);
+    assert.equal(result[0].bullets[0].pageSlug, 'real');
+  });
 });
 
 // ---------------------------------------------------------------------------

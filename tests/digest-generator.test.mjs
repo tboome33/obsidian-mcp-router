@@ -355,6 +355,45 @@ page_hash: ${'a'.repeat(64)}
     const d = parseDigest(md);
     assert.equal(d.for, 'wiki/foo: bar.md');
   });
+
+  test('throws on duplicate H2 section (no silent overwrite)', () => {
+    // review+ pass 2 fix for Reviewer A IMP-3 — previously the parser
+    // silently kept only the LAST `## Summary` block, losing data.
+    const md = `---
+for: x
+page_hash: ${'a'.repeat(64)}
+---
+
+## Summary
+
+First summary.
+
+## Summary
+
+Second summary that would have silently won pre-fix.
+`;
+    assert.throws(
+      () => parseDigest(md),
+      /duplicate H2 section "Summary"/,
+    );
+  });
+
+  test('throws on duplicate non-Summary H2 too', () => {
+    const md = `---
+for: x
+page_hash: ${'a'.repeat(64)}
+---
+
+## Notable
+
+First.
+
+## Notable
+
+Second.
+`;
+    assert.throws(() => parseDigest(md), /duplicate H2 section "Notable"/);
+  });
 });
 
 // ---------------------------------------------------------------------------

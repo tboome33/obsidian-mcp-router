@@ -308,6 +308,16 @@ function parseBodySections(body) {
     const h2Match = /^##\s+(.+?)\s*$/.exec(line);
     if (h2Match) {
       if (currentName !== null) {
+        // Detect duplicate H2 (review+ pass 2 fix for Reviewer A IMP-3).
+        // Previously the parser silently overwrote — a re-generated
+        // digest that accidentally produced two `## Summary` blocks
+        // would lose the first one without warning. Throw instead so
+        // the user notices and can fix the digest source.
+        if (Object.prototype.hasOwnProperty.call(sections, currentName)) {
+          throw new Error(
+            `parseDigest: duplicate H2 section "${currentName}" — refuse to silently overwrite`,
+          );
+        }
         sections[currentName] = currentLines.join('\n').trim();
       }
       currentName = h2Match[1].trim();
@@ -319,6 +329,11 @@ function parseBodySections(body) {
     }
   }
   if (currentName !== null) {
+    if (Object.prototype.hasOwnProperty.call(sections, currentName)) {
+      throw new Error(
+        `parseDigest: duplicate H2 section "${currentName}" — refuse to silently overwrite`,
+      );
+    }
     sections[currentName] = currentLines.join('\n').trim();
   }
   return sections;

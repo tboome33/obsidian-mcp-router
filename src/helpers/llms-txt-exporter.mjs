@@ -137,12 +137,27 @@ export function parseIndex(indexMd) {
       sections.push(currentSection);
       continue;
     }
-    // Bullet under current section
+    // Bullet under current section. Accept these wikilink forms :
+    //   - [[page-slug]] description-separator description-text
+    //   - [[page-slug|Display Alias]] — description
+    //   - [[page-slug#Heading]] — description
+    //   - [[page-slug#Heading|Display]] — description
+    //   - [[page-slug^block-ref|Display]] — description
+    //   - [[page-slug]] (no description)
+    // Description separator is one of `—` (em-dash), `-` (hyphen),
+    // `:` (colon). The raw target may carry `|alias` / `#section` /
+    // `^block-ref` decorations — split them off, keep only the page
+    // slug as the structural identifier. (review+ pass 2 fix for
+    // Reviewer B IMPORTANT #7 — previously `[[foo|Alias]]` was
+    // silently dropped because the regex used `[^\]|]+?`.)
     if (currentSection && line.startsWith('- ')) {
       const bulletContent = line.slice(2).trim();
-      const match = /^\[\[([^\]|]+?)\]\](?:\s*[—\-:]\s*(.*))?$/.exec(bulletContent);
+      const match = /^\[\[([^\]]+?)\]\](?:\s*[—\-:]\s*(.*))?$/.exec(bulletContent);
       if (!match) continue;
-      const pageSlug = match[1].trim();
+      const rawTarget = match[1].trim();
+      // Strip `|alias` / `#section` / `^block-ref` decorations.
+      const pageSlug = rawTarget.split(/[|#^]/)[0].trim();
+      if (!pageSlug) continue;
       const description = (match[2] ?? '').trim();
       currentSection.bullets.push({ pageSlug, description });
     }

@@ -208,7 +208,20 @@ export function getStatePath(vaultPath) {
 
 /**
  * Load the ingest state for a vault. Returns an empty object if the file
- * doesn't exist yet (first ingest into this vault) or fails to parse.
+ * doesn't exist yet (first ingest into this vault) OR if it's corrupt.
+ *
+ * Corruption handling (review+ pass 2 fix for Reviewer A IMP-6) — silent
+ * recovery would mean the next `saveIngestState` overwrites the broken
+ * file with a fresh empty state, erasing the entire ingestion history
+ * invisibly. To prevent that, on corruption we :
+ *   1. Log a clear warning to stderr (user sees it).
+ *   2. Backup the corrupted file as `<path>.corrupted-<timestamp>` so
+ *      the data isn't lost — user can inspect and recover.
+ *   3. Then return `{}` so processing continues.
+ *
+ * If the rename fails (permissions, etc.), the warning still fires but
+ * the corrupted file is left in place — the caller will see the next
+ * load attempt also fail in the same way until they intervene.
  *
  * @param {string} vaultPath Absolute filesystem path to the vault root
  * @returns {Record<string, { hash: string, ingestedAt: string, page: string }>}
@@ -216,16 +229,51 @@ export function getStatePath(vaultPath) {
 export function loadIngestState(vaultPath) {
   const statePath = getStatePath(vaultPath);
   if (!fs.existsSync(statePath)) return {};
+  let raw;
   try {
-    const raw = fs.readFileSync(statePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-    return {};
-  } catch {
+    raw = fs.readFileSync(statePath, 'utf8');
+  } catch (err) {
+    process.stderr.write(
+      `[ingest-state] WARN: failed to read ${statePath}: ${err.message} — treating as empty.\n`,
+    );
     return {};
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    // Corrupted JSON — back up the file before we overwrite it.
+    const backupPath = `${statePath}.corrupted-${Date.now()}`;
+    try {
+      fs.renameSync(statePath, backupPath);
+      process.stderr.write(
+        `[ingest-state] WARN: corrupted JSON at ${statePath} (${err.message}). ` +
+          `Backed up to ${backupPath} and treating as empty.\n`,
+      );
+    } catch (renameErr) {
+      process.stderr.write(
+        `[ingest-state] WARN: corrupted JSON at ${statePath} (${err.message}). ` +
+          `Backup failed (${renameErr.message}); leaving file in place. Manual cleanup may be required.\n`,
+      );
+    }
+    return {};
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed;
+  }
+  // Valid JSON but wrong shape (array, scalar, null). Treat as empty
+  // but warn — same recovery path as full corruption.
+  const backupPath = `${statePath}.corrupted-${Date.now()}`;
+  try {
+    fs.renameSync(statePath, backupPath);
+    process.stderr.write(
+      `[ingest-state] WARN: wrong shape at ${statePath} (expected object, got ${typeof parsed}). ` +
+        `Backed up to ${backupPath} and treating as empty.\n`,
+    );
+  } catch {
+    // Best-effort backup.
+  }
+  return {};
 }
 
 /**

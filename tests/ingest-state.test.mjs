@@ -283,16 +283,49 @@ describe('state file I/O', () => {
     assert.match(raw, /^\{\n/);
   });
 
-  test('loadIngestState returns {} on corrupted JSON', () => {
-    fs.writeFileSync(getStatePath(tmpVault), 'not valid json{{{', 'utf8');
-    const state = loadIngestState(tmpVault);
-    assert.deepEqual(state, {});
+  test('loadIngestState returns {} on corrupted JSON + backs up file', () => {
+    // Suppress stderr noise during the assertion run.
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = () => true;
+    try {
+      fs.writeFileSync(getStatePath(tmpVault), 'not valid json{{{', 'utf8');
+      const state = loadIngestState(tmpVault);
+      assert.deepEqual(state, {});
+      // review+ pass 2 fix for Reviewer A IMP-6 — the corrupted file
+      // MUST be backed up to .corrupted-<ts>, not silently overwritten.
+      const files = fs.readdirSync(path.join(tmpVault, 'wiki-meta'));
+      const backups = files.filter((f) => f.includes('.corrupted-'));
+      assert.ok(
+        backups.length >= 1,
+        `expected at least one .corrupted-* backup file, got ${JSON.stringify(files)}`,
+      );
+      // The original state file should be gone (renamed).
+      assert.equal(fs.existsSync(getStatePath(tmpVault)), false);
+      // Cleanup the backup so subsequent tests don't accumulate.
+      for (const b of backups) {
+        fs.rmSync(path.join(tmpVault, 'wiki-meta', b));
+      }
+    } finally {
+      process.stderr.write = origStderr;
+    }
   });
 
-  test('loadIngestState returns {} when file content is an array', () => {
-    fs.writeFileSync(getStatePath(tmpVault), '[]', 'utf8');
-    const state = loadIngestState(tmpVault);
-    assert.deepEqual(state, {});
+  test('loadIngestState returns {} + backs up when file content is an array', () => {
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = () => true;
+    try {
+      fs.writeFileSync(getStatePath(tmpVault), '[]', 'utf8');
+      const state = loadIngestState(tmpVault);
+      assert.deepEqual(state, {});
+      const files = fs.readdirSync(path.join(tmpVault, 'wiki-meta'));
+      const backups = files.filter((f) => f.includes('.corrupted-'));
+      assert.ok(backups.length >= 1, `expected backup, got ${JSON.stringify(files)}`);
+      for (const b of backups) {
+        fs.rmSync(path.join(tmpVault, 'wiki-meta', b));
+      }
+    } finally {
+      process.stderr.write = origStderr;
+    }
   });
 
   test('saveIngestState throws on non-object state', () => {
