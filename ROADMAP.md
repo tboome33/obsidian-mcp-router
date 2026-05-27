@@ -2,6 +2,34 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.15.0 — llm-wiki-compiler emprunts (6 features, shipped 2026-05-27)
+
+Six features inspired by [`atomicstrata/llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) (another standalone Karpathy LLM Wiki implementation, MIT, 1.3k ⭐). Decided one by one with the user after an interactive review of the 7 candidate patterns. **6 accepted + 1 rejected.** See the source roadmap in the linked vault `opsidian-mcp-router et bridge` at `wiki/Divers/LLM-WIKI-COMPILER/llm-wiki-compiler-roadmap.md`.
+
+Shipped this release :
+
+1. **Line-level citations** `^[file.md:42-58]` — markers at paragraph end pointing to exact source lines. New `wiki-lint` Check H (`claim-range-validity`) + new installable convention snippet `claim-citations`. (commit `34c7cbb`)
+2. **`wiki-export` skill + `/wiki-export` slash command** — aggregates a vault to `llms.txt` (compact, [llmstxt.org](https://llmstxt.org) standard) or `llms-full.txt` (with page bodies inlined). Helper `src/helpers/llms-txt-exporter.mjs` (pure, no I/O) + 32 tests. JSON/JSON-LD/GraphML/Marp targets deferred. (commit `d883a3b`)
+3. **`get_wiki_context_pack` MCP tool with v1 JSON envelope** — structured JSON context for a query, instead of the prose returned by `wiki-query`. Enables non-Claude agents (Cursor, MCPHub multi-agent, scripts) to consume the router programmatically. Versioned v1, additive-only. Dependency-injection pattern for tests. 55 tests. (commit `b84f7bc`, shipped by background Backend Architect agent)
+4. **Hash-based incremental ingest** — SHA-256 of source content (post-defuddle for URLs) stored in `wiki-meta/ingest-state.json`. Re-ingesting unchanged source is a no-op (no fetch, no LLM call). URL normalisation strips utm_*/fbclid/gclid/etc. Atomic state file writes. 40 tests. (commit `efd7aac`)
+5. **Digest sidecars + `wiki-lint --deep` mode + `/wiki-refresh-digests` skill** — every wiki page gets a compact digest at `wiki-meta/digests/<slug>.md` (concepts/claims/keywords/summary/page-hash). New deep-lint Checks I/J/K/L detect digest staleness, redundant concepts, contradictions, missing wikilinks. Reformulation (user proposal) of llmwiki's two-phase compile pattern as additive sidecars instead of structural refactor. 39 tests. (commit `6106665`)
+6. **Consolidation** — version bump 0.14.9 → 0.15.0. (commit `bc07a6b`)
+
+**Tests** : 1165 → **1331 passing** (+166, zero regression).
+
+**Post-ship review+ pass 1 + pass 2 hardening** : multi-agent review (Claude `Code Reviewer` + `codex review` CLI) surfaced 9 IMPORTANT findings (3 SECURITY + 5 logical bugs + 1 perf) + several NITs. All addressed across 5 dedicated fix commits with regression tests :
+- `f8cf898` YAML injection safety in `digest-generator` (8 new regressions)
+- `c86df4b` Path traversal guard + error handling in `get_wiki_context_pack` (10 new regressions)
+- `a4c7558` URL credentials + tokens strip in `ingest-state.normaliseUrl` (9 new regressions)
+- `e1f14e7` `digestPathForPage` canonical helper + Check H resolver (9 new regressions)
+- `508c135` Wikilink alias + duplicate H2 + corruption recovery (12 new regressions)
+
+Post-hardening test count : **1374 passing** (+43 from pure regressions). Decisions deliberately deferred to a later release : #3 agent-de-veille proactif (depends on #4 + #7' being stable in production first).
+
+Decisions rejected (with reason captured in source roadmap) :
+- #2 frontmatter épistémique (`confidence` numeric + `contradictedBy`) — already 80% covered by the existing `source-type` convention with 3 qualitative buckets + native Obsidian callouts.
+- #7 two-phase compile structural refactor — replaced by #7' (digest sidecars additive layer, lower cost + risk).
+
 ## ✅ v0.12.2 — Verification + multi-location CLAUDE.md rewrite (Session 3, shipped 2026-05-23)
 
 Session 3 ferme l'arc v0.12.0 (3 sessions). Audit complet des 9 vaults migrés, conclusion : aucune dérive textuelle dans les CLAUDE.mds, le path swap de v0.12.1 + l'install précédente de v0.11.6 ont déjà tout aligné. Refresh des conventions = no-op. Verification end-to-end OK (le hook `wiki-query-first-nudge` a fired correctement en mode workspace-bound dans la session de verification).
