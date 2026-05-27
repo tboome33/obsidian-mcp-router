@@ -247,6 +247,49 @@ describe('normaliseUrl', () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // Pass 4 regressions — parse-fail leak detector must align with
+  // SECRET_PARAMS (Pass 3 used a narrower hand-curated regex that let
+  // refresh_token / client_secret / authorization / etc. through).
+  // -------------------------------------------------------------------------
+
+  test('parse-fail: refresh_token detected (was leaking pre-pass 4)', () => {
+    assert.equal(
+      normaliseUrl('//example.com/x?refresh_token=rt'),
+      null,
+    );
+  });
+
+  test('parse-fail: client_secret detected', () => {
+    assert.equal(
+      normaliseUrl('//example.com/x?client_secret=cs'),
+      null,
+    );
+  });
+
+  test('parse-fail: authorization detected', () => {
+    assert.equal(
+      normaliseUrl('//example.com/x?authorization=bearer-xyz'),
+      null,
+    );
+  });
+
+  test('parse-fail: id_token / apptoken / passwd / pwd / sid / phpsessid', () => {
+    // All keys in SECRET_PARAMS that were NOT in the Pass 3 hand-curated regex.
+    for (const key of ['id_token', 'apptoken', 'passwd', 'pwd', 'sid', 'phpsessid']) {
+      assert.equal(
+        normaliseUrl(`//example.com/x?${key}=value`),
+        null,
+        `parse-fail leak detector should catch ${key}=`,
+      );
+    }
+  });
+
+  test('parse-fail: case-insensitive secret detection', () => {
+    assert.equal(normaliseUrl('//x?REFRESH_TOKEN=abc'), null);
+    assert.equal(normaliseUrl('//x?Client_Secret=abc'), null);
+  });
+
   test('benign non-URL string still returned unchanged', () => {
     // No secrets, no userinfo — caller can use as opaque ID.
     assert.equal(normaliseUrl('not a url'), 'not a url');

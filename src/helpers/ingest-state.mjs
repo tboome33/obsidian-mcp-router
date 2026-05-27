@@ -123,6 +123,31 @@ function isSecretParam(name) {
   return SECRET_PARAMS.has(name.toLowerCase());
 }
 
+// Single regex generated from SECRET_PARAMS, used by the parse-failure
+// branch of normaliseUrl to detect "this raw string contains creds even
+// though we couldn't parse it as a URL". Built once at module load so
+// the set + regex never drift (Pass 4 fix : the parse-fail branch
+// originally used a hand-curated regex narrower than SECRET_PARAMS,
+// letting `refresh_token` / `client_secret` / `authorization` leak).
+const SECRET_PARAMS_RE = new RegExp(
+  `[?&](?:${[...SECRET_PARAMS]
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})=`,
+  'i',
+);
+
+/**
+ * Return true when the raw string (no URL parse) contains a query
+ * parameter that matches any name in SECRET_PARAMS. Used by the
+ * parse-failure fallback in normaliseUrl as a defensive leak detector.
+ *
+ * @param {string} raw
+ * @returns {boolean}
+ */
+function rawHasSecretQueryParam(raw) {
+  return SECRET_PARAMS_RE.test(raw);
+}
+
 /**
  * Normalise a URL to a stable identifier:
  *   - lowercase the host (DNS is case-insensitive)
@@ -157,19 +182,17 @@ export function normaliseUrl(url) {
     // (review+ pass 3 fix for Reviewer B Pass 2 finding : protocol-
     // relative URLs like `//user:pass@example.com/x?token=...` aren't
     // parseable but contain creds that would otherwise persist to
-    // ingest-state.json.) Strip basic-auth userinfo via a conservative
-    // regex AND strip secret query params on the raw string. If we
-    // can't be sure the input is safe, refuse — return null sentinel
-    // forces the caller to surface an error rather than silently
-    // persisting the leaky form.
-    const looksLikeUrlWithSecrets =
-      /\/\/[^/]*@/.test(url) || // userinfo present (basic auth)
-      /[?&](?:token|access_token|api_key|apikey|secret|password|signature|sig|auth|code|state|nonce|sessionid|jsessionid)=/i.test(url);
-    if (looksLikeUrlWithSecrets) {
-      // Best-effort scrub : drop everything from `//` (userinfo onward
-      // is unreliable to surgically edit on a non-parseable input).
-      // Return null so the caller knows to surface an error rather
-      // than treat the leaky string as a stable source ID.
+    // ingest-state.json.)
+    //
+    // Detect basic-auth userinfo OR any secret query param. Source of
+    // truth for the secret-param list is SECRET_PARAMS (single
+    // canonical set used by both the parsed path AND this fallback) —
+    // do NOT maintain a parallel hand-curated regex here. The Pass 3
+    // fix originally did, and Pass 4 caught that `refresh_token`,
+    // `client_secret`, `authorization`, etc. were leaking through.
+    if (/\/\/[^/]*@/.test(url) || rawHasSecretQueryParam(url)) {
+      // Return null so the caller surfaces an error rather than
+      // silently persisting the leaky form.
       return null;
     }
     return url;
