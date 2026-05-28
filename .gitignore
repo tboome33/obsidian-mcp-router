@@ -8,6 +8,12 @@ node_modules/
 # Created by scripts/install-markitdown.mjs at npm postinstall.
 .venv/
 
+# MCPHub bundle build artifacts (scripts/build-mcpb.ps1). The staging dir holds
+# a full copy of source + node_modules; the .mcpb is the zipped output. Both are
+# regenerable and large (~36 MB) — never committed.
+mcpb-staging/
+*.mcpb
+
 # Personal config — must never be committed (contains API keys)
 config.json
 config.local.json

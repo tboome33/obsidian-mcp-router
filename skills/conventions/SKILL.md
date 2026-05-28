@@ -42,6 +42,8 @@ Mapping (initial library shipped with this skill):
 | `default-vault-health-check.md` | `default-vault-health-check` | `## Default vault health check at session start` |
 | `wiki-query-first.md` | `wiki-query-first` | `## Wiki-query-first reflex — check the vault BEFORE answering` |
 | `path-disambiguation.md` | `path-disambiguation` | `## Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath` |
+| `claim-citations.md` | `claim-citations` | `## Claim-level citations — line-range markers (v0.15.0+, complements \`source-type\`)` |
+| `tribu-routing.md` | `tribu-routing` | `## Family-member auto-routing — identify the speaker, route saves to wiki/People/<member>/` |
 
 (Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
 

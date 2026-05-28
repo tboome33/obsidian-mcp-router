@@ -2,6 +2,20 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.16.0 — MCPHub deployment support + family-vault member routing (shipped 2026-05-27)
+
+Tooling + conventions to deploy the router on **MCPHub** in multi-tenant "hybrid bypass" mode (router server-side on a NAS, vault data client-side reached over WireGuard) and to run a **shared family vault** with per-member auto-routing. Validated end-to-end against a live MCPHub on a QNAP: a `write_file` from Claude Code travelled Claude Code → MCPHub → spawned router container → WireGuard tunnel (~137 ms) → Obsidian REST API on the originating PC → file persisted + audit log written. Offline resilience also validated (MCPHub server disabled → graceful `Server not found` while the local router + Obsidian stay fully usable at 56 ms, single-source-of-truth so zero divergence).
+
+- **`scripts/build-mcpb.ps1`** — bundles the router into a `.mcpb` for MCPHub. Robocopy staging (excludes `.git`/`node_modules`/`tests`/`.venv`/`.claude`/`worktrees`/`.env*`/`*.mcpb`), `npm ci --omit=dev` with `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`, `manifest.json` with `server-`-prefixed container path + templated env placeholders, `Compress-Archive`. `-Clean` flag for fresh rebuild.
+- **`who-is-speaking` skill + slash command** — identifies the family member speaking (matches name/aliases from the vault `CLAUDE.md` table), then `lock_vault` + `set_auto_enrich_mode(Hybrid)` so saves route to `wiki/People/<member>/`. Bilingual triggers, refuses to guess, supports mid-session re-identification.
+- **`tribu-routing` installable convention** — codifies the family-member routing pattern (private `wiki/People/<member>/` vs collective `wiki/Family/`, sensitivity guard against auto-saving medical data). Generic + reusable; member list lives per-vault in `CLAUDE.md`.
+- **Conventions mapping table** refreshed 8 → 10 (added `claim-citations` + `tribu-routing`).
+- **`.gitignore`** excludes `mcpb-staging/` + `*.mcpb`.
+
+Deployment gotchas captured (see CHANGELOG for detail): `MD_ALLOWED_PATHS` is mandatory in multi-tenant mode; the config env var is `OBSIDIAN_ROUTER_CONFIG` (not `_PATH`); remote vault over WG needs `bindingHost: 0.0.0.0` on the originating PC's Local REST API.
+
+Full session record: `mcphub-hybrid-bypass-roadmap` in the companion vault `opsidian-mcp-router et bridge`.
+
 ## ✅ v0.15.0 — llm-wiki-compiler emprunts (6 features, shipped 2026-05-27)
 
 Six features inspired by [`atomicstrata/llm-wiki-compiler`](https://github.com/atomicstrata/llm-wiki-compiler) (another standalone Karpathy LLM Wiki implementation, MIT, 1.3k ⭐). Decided one by one with the user after an interactive review of the 7 candidate patterns. **6 accepted + 1 rejected.** See the source roadmap in the linked vault `opsidian-mcp-router et bridge` at `wiki/Divers/LLM-WIKI-COMPILER/llm-wiki-compiler-roadmap.md`.

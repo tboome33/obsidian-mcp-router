@@ -8,6 +8,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.16.0] — 2026-05-27 — MCPHub deployment support + family-vault member routing
+
+Ships the tooling and conventions to deploy the router on **MCPHub** in multi-tenant "hybrid bypass" mode (router server-side, vault data client-side reached over WireGuard) and to run a **shared family vault** with per-member auto-routing. Validated end-to-end against a live MCPHub instance on a QNAP NAS: a `write_file` call from Claude Code travelled Claude Code → MCPHub → spawned router container → WireGuard tunnel (~137 ms) → Obsidian REST API on the originating PC → file persisted on disk + audit log written. See `mcphub-hybrid-bypass-roadmap` in the companion vault for the full session record.
+
+### Added
+
+- **`scripts/build-mcpb.ps1`** — PowerShell script that bundles the router into a `.mcpb` archive for MCPHub upload. Cleans a staging dir, robocopies source (excluding `.git`, `node_modules`, `tests`, `.venv`, `.claude`, `worktrees`, `.env*`, `*.mcpb`, `*.log`), runs `npm ci --omit=dev` with `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` (skips the Python venv postinstall so the bundle starts cleanly on a Python-less Linux container), writes `manifest.json` with the `server-`-prefixed container path + templated env-var placeholders, and `Compress-Archive`s the result. Re-runnable with `-Clean`.
+- **`who-is-speaking` skill + `/obsidian-router:who-is-speaking` slash command** — identifies the family member speaking in a shared vault by matching their name/aliases against the vault's `CLAUDE.md` member table, then locks the router to that vault (`lock_vault`) and sets `Hybrid` auto-enrich mode (`set_auto_enrich_mode`) so subsequent auto-saves route to `wiki/People/<member>/`. Bilingual FR+EN triggers. Refuses to guess on no-match; supports mid-session re-identification without unlocking.
+- **`tribu-routing` installable convention** (`skills/conventions/snippets/tribu-routing.md`) — codifies the family-member auto-routing pattern: identify the speaker at session start, route private saves to `wiki/People/<member>/` and collective saves to `wiki/Family/`, with an explicit sensitivity guard against auto-saving medical data. Generic + reusable across any shared/multi-user vault (not hardcoded to a specific family — the member list lives in the consuming vault's `CLAUDE.md`).
+
+### Changed
+
+- **`skills/conventions/SKILL.md`** mapping table refreshed from 8 → 10 documented conventions (added the previously-undocumented `claim-citations` from v0.15.0 + the new `tribu-routing`).
+- **`.gitignore`** now excludes `mcpb-staging/` and `*.mcpb` (regenerable build artifacts, ~36 MB).
+
+### Deployment notes (discovered during the live MCPHub validation)
+
+- **`MD_ALLOWED_PATHS` is mandatory in multi-tenant mode.** When any of `OBSIDIAN_ROUTER_READONLY` / `OBSIDIAN_ROUTER_ALLOWED_VAULTS` / `OBSIDIAN_ROUTER_USER_ID` is set, the v0.11.1 `assertSandboxConsistent()` boot guard refuses to start without `MD_ALLOWED_PATHS` (or its legacy alias). Point it at an empty sandbox dir even when the conversion tools are unused.
+- **The config env var is `OBSIDIAN_ROUTER_CONFIG`, not `OBSIDIAN_ROUTER_CONFIG_PATH`.** (A doc in the companion vault had the wrong name; the build script now emits the correct placeholder.)
+- **Remote vault over WireGuard** is configured via the standard `remoteVaults[]` config entry (`baseUrl: http://<wg-ip>:<insecurePort>`, the vault's `apiKey`). The originating PC must set `bindingHost: 0.0.0.0` in its Local REST API `data.json` so the API listens on the WG interface, not just loopback.
+
+Backward compatible: no runtime behavior change for existing local-only setups. The new skill + convention are opt-in; the build script is a dev tool.
 ## [0.15.1] — 2026-05-27 — `/review+` hardening on v0.15.0 (4 review passes + 9 fix commits)
 
 Post-v0.15.0 `/review+` produced **9 IMPORTANT findings** in pass 1 (3 SECURITY + 5 logical correctness + 1 perf), then converged through 4 review passes with 9 hardening commits. Both reviewers (Claude `Code Reviewer` subagent + `codex review` CLI) concluded **OK to merge** at pass 5 — codex empirically verified all 25 secret-param patterns are caught (0 missed, 0 false-positives).
