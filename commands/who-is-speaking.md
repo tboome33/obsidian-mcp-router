@@ -4,7 +4,9 @@ description: Identify the family member speaking in a shared family vault (e.g. 
 
 Invoke the `who-is-speaking` skill.
 
-Required: the family member's name or one of their accepted aliases (e.g., "Roland", "roro", "papa", "Karine", "max", "nico", …). If omitted, the skill will ASK the user explicitly before guessing.
+ARGUMENTS: $ARGUMENTS
+
+Required: the family member's name or one of their accepted aliases (e.g., "Roland", "roro", "papa", "Karine", "max", "nico", …) — passed via `$ARGUMENTS` above. If omitted, the skill will ASK the user explicitly before guessing.
 
 The skill handles:
 - Reading the vault's `CLAUDE.md` for the canonical members + aliases table (per-vault — never hardcoded)

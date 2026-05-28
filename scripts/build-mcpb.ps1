@@ -2,16 +2,19 @@
 #
 # Build obsidian-mcp-router.mcpb bundle for MCPHub deployment.
 #
-# - Pure JS deps (@modelcontextprotocol/sdk + undici) → npm ci directly on Windows works
-# - Excludes tests/, .git/, .venv/, mcpb-staging/, *.mcpb from staging
-# - OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1 during npm ci → skips the 10 conversion tools'
-#   Python venv postinstall (would fail in Alpine container anyway; revisit later)
+# - Pure JS deps (sdk, undici, defuddle, mathml-to-latex, repomix — no native build
+#   step) → npm ci directly on Windows produces a Linux-compatible node_modules
+# - Excludes tests/, .git/, .venv/, mcpb-staging/, *.mcpb AND local secret config
+#   (config.json / config.local.json / .env*) from staging — never ship credentials
+# - npm ci --ignore-scripts → no lifecycle scripts run, so the markitdown Python venv
+#   postinstall (would fail in a Python-less Alpine container anyway) is skipped
+#   hermetically, independent of any OBSIDIAN_ROUTER_SKIP_MARKITDOWN env var
 # - Output: <repo>/obsidian-mcp-router-v<version>.mcpb
 #
 # Usage:
-#   pwsh scripts/build-mcpb.ps1                # build with current version
+#   pwsh scripts/build-mcpb.ps1                 # build with current version
 #   pwsh scripts/build-mcpb.ps1 -Clean         # remove staging before build
-#   pwsh scripts/build-mcpb.ps1 -Verbose       # show robocopy + npm output
+#   pwsh scripts/build-mcpb.ps1 -VerboseOutput # show robocopy + npm output
 
 param(
     [switch]$Clean,
@@ -52,9 +55,12 @@ if (Test-Path $staging) {
 }
 
 # --- 2. Robocopy source ---
-Write-Host "[2/5] Copying source to staging (excluding .git, node_modules, tests, .venv, mcpb-staging)..."
-$excludeDirs  = @('.git', 'node_modules', 'tests', '.github', 'docs', '.vscode', 'mcpb-staging', '.venv', '.claude', 'worktrees')
-$excludeFiles = @('*.mcpb', '*.log', '.env', '.env.*')
+Write-Host "[2/5] Copying source to staging (excluding .git, node_modules, tests, .venv, secrets...)..."
+$excludeDirs  = @('.git', 'node_modules', 'tests', '.github', 'docs', '.vscode', 'mcpb-staging', '.venv', '.claude', 'worktrees', '.vault-meta')
+# SECURITY: config.json / config.local.json are gitignored because they hold API keys.
+# A normal user of this tool HAS a local config.json — without these exclusions, /MIR
+# would copy it into the bundle and ship credentials to MCPHub. Keep aligned with .gitignore.
+$excludeFiles = @('*.mcpb', '*.log', '.env', '.env.*', 'config.json', 'config.local.json')
 
 $rcArgs = @(
     $repoRoot,
@@ -76,21 +82,47 @@ if ($rcExitCode -ge 8) {
 }
 Write-Host "  Source copied (robocopy exit $rcExitCode = success bitmask)" -ForegroundColor DarkGray
 
-# --- 3. npm ci --omit=dev (with markitdown opt-out) ---
-Write-Host "[3/5] Installing prod deps via npm ci --omit=dev (markitdown skipped)..."
+# --- 2b. SECURITY: purge stale secrets from a REUSED staging dir ---
+# robocopy /XF and /XD exclude files/dirs from BOTH the copy AND the /MIR delete pass.
+# So a config.json (or .claude/, .vault-meta/) left over in $serverDir from a build that
+# ran BEFORE these exclusions existed would survive a no-`-Clean` rerun and get zipped
+# into the bundle. Explicitly delete the sensitive items from staging to plug that hole.
+# (This runs BEFORE `npm ci`, which then regenerates node_modules from scratch — so the
+#  purge only meaningfully targets the copied source tree, not installed packages.)
+# Secret files match by exact name and are purged RECURSIVELY — config.json / .env are
+# secrets wherever they sit. `*.log` is a wildcard, so scope it to the staging root only
+# (where a credential-bearing log would sit) to avoid nuking a legit *.log a dep ships.
+$secretFilesRecursive = @('config.json', 'config.local.json', '.env', '.env.*')
+$secretDirNames       = @('.claude', '.vault-meta', '.venv', '.git')
+foreach ($pat in $secretFilesRecursive) {
+    Get-ChildItem -Path $serverDir -Recurse -File -Filter $pat -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+Get-ChildItem -Path $serverDir -File -Filter '*.log' -Force -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+foreach ($dir in $secretDirNames) {
+    Get-ChildItem -Path $serverDir -Recurse -Directory -Filter $dir -Force -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Host "  Purged any stale secret files/dirs from staging" -ForegroundColor DarkGray
+
+# --- 3. npm ci --omit=dev --ignore-scripts (hermetic: no postinstall venv) ---
+# --ignore-scripts skips ALL lifecycle scripts. The only one is `postinstall` →
+# install-markitdown.mjs (builds a Python venv that's useless in a Linux container).
+# The runtime deps (@modelcontextprotocol/sdk + undici) are pure JS with no build step,
+# so skipping scripts is safe and makes the bundle hermetic regardless of env vars.
+Write-Host "[3/5] Installing prod deps via npm ci --omit=dev --ignore-scripts..."
 Push-Location $serverDir
 try {
-    $env:OBSIDIAN_ROUTER_SKIP_MARKITDOWN = '1'
     if ($VerboseOutput) {
-        & npm ci --omit=dev
+        & npm ci --omit=dev --ignore-scripts
     } else {
-        & npm ci --omit=dev 2>&1 | Out-Null
+        & npm ci --omit=dev --ignore-scripts 2>&1 | Out-Null
     }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  npm ci failed with exit $LASTEXITCODE" -ForegroundColor Red
         exit 1
     }
-    Remove-Item Env:OBSIDIAN_ROUTER_SKIP_MARKITDOWN -ErrorAction SilentlyContinue
     Write-Host "  Prod deps installed" -ForegroundColor DarkGray
 } finally {
     Pop-Location
@@ -102,15 +134,19 @@ Write-Host "[4/5] Writing manifest.json..."
 # Note: MCPHub prefixes 'server-' to the extraction directory (confirmed in
 # mcphub-deployment-roadmap §5.1 / 2026-05-20-mcphub-reconnaissance). So the
 # absolute path inside the container is /app/data/uploads/mcpb/server-<name>/...
+# Derive the entrypoint path from $bundleBaseName (single source of truth) so it
+# stays in sync if the manifest name ever changes.
+$bundleBaseName = 'obsidian-mcp-router'
+$entryPath = "/app/data/uploads/mcpb/server-$bundleBaseName/server/bin/obsidian-mcp-router.mjs"
 $manifest = @{
     manifest_version = '1.0'
-    name = 'obsidian-mcp-router'
+    name = $bundleBaseName
     version = $version
     description = 'Multi-vault MCP router for Obsidian Local REST API. Bundle for MCPHub deployment.'
     server = @{
         mcp_config = @{
             command = 'node'
-            args = @('/app/data/uploads/mcpb/server-obsidian-mcp-router/server/bin/obsidian-mcp-router.mjs')
+            args = @($entryPath)
             env = @{
                 OBSIDIAN_ROUTER_ALLOWED_VAULTS = '${OBSIDIAN_ROUTER_ALLOWED_VAULTS}'
                 OBSIDIAN_ROUTER_READONLY = '${OBSIDIAN_ROUTER_READONLY}'
@@ -125,7 +161,7 @@ $manifest = @{
 # UTF-8 without BOM
 $manifestPath = Join-Path $staging 'manifest.json'
 [System.IO.File]::WriteAllText($manifestPath, $manifest, (New-Object System.Text.UTF8Encoding($false)))
-Write-Host "  manifest.json written ($($manifest.Length) bytes)" -ForegroundColor DarkGray
+Write-Host "  manifest.json written ($((Get-Item $manifestPath).Length) bytes)" -ForegroundColor DarkGray
 
 # --- 5. Compress to .mcpb ---
 Write-Host "[5/5] Compressing to .mcpb archive..."

@@ -42,6 +42,7 @@ If neither, this skill doesn't apply — push back with: *"This skill is for sha
    - Call `mcp__obsidian-router__set_auto_enrich_mode({ mode: 'Hybrid' })`
    - Confirm to the user: *"Identifié comme **<Canonical Name>**. Vault verrouillé sur `<vault-slug>`, mode auto-enrich Hybrid. Les saves auto routent vers `wiki/People/<Canonical Name>/`."* (or EN equivalent if user is speaking EN)
 5. **For the rest of the session**, treat the identified member as the active speaker. When auto-enrichment proposes saves (triggers 1/2/3 of the auto-enrichment consigne), prefix paths with `wiki/People/<member>/`. Items that are explicitly collective → `wiki/Family/`.
+6. **Medical sensitivity guard stays in force even in `Hybrid` mode.** This skill switches the vault to `Hybrid`, which auto-saves type-safe items without asking. But per the `tribu-routing` convention, health/medical data (sleep, medications, diagnoses, symptoms) must NEVER be auto-saved without explicit user confirmation — the sensitivity filter overrides Hybrid's auto-save. When in doubt about whether an item is medical, ask before saving.
 
 ## Re-identification mid-session
 
