@@ -13,7 +13,12 @@
  * Dispatches on `hook_event_name` from the stdin JSON payload:
  *
  *   - SessionStart:      create `<date>-<HHMM>-<workspace-slug>.md` with
- *                        an open frontmatter; record state.
+ *                        an open frontmatter; record state. THEN self-heal:
+ *                        reconcile stale-open journals left by prior crashed
+ *                        sessions (a SessionEnd that never fired) — close them
+ *                        + backfill their log.md line. The per-session closure
+ *                        + log entry therefore no longer depend SOLELY on
+ *                        SessionEnd. See `_helpers/session-reconcile.mjs`.
  *   - UserPromptSubmit:  append `## HH:MM — User prompt` + verbatim prompt.
  *                        Captures `firstUserPrompt` (used as "objectif"
  *                        in the log.md entry).
@@ -40,6 +45,11 @@
  *   - v0.12.6: /review+ hardening (8 fixes including filename collision)
  *   - v0.12.8: relocated wiki/Sessions/ → wiki-meta/Sessions/,
  *              + auto-append of 2-line summary to wiki-meta/log.md on SessionEnd
+ *   - v0.19.0: SessionStart self-healing reconciliation — orphaned open
+ *              journals (SessionEnd never fired) are closed + their log.md
+ *              line backfilled on the next session start, via the shared
+ *              `_helpers/session-reconcile.mjs` module (also powers
+ *              `backfill-log-from-sessions --include-open`).
  *
  * State management: one JSON file per active session at
  * `~/.claude/obsidian-mcp-router/session-journals/<session-id>.json`.
@@ -80,6 +90,7 @@ import {
   readRouterConfig,
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
+import { reconcileVaultSessions } from './_helpers/session-reconcile.mjs';
 
 // ---------------------------------------------------------------------------
 // State directory
@@ -330,9 +341,37 @@ function appendToJournal(state, content) {
 }
 
 function handleSessionStart(payload) {
-  // Just ensures the journal exists. The ensureJournalForSession call is
-  // itself the work — no extra append needed.
-  ensureJournalForSession(payload);
+  // 1. Ensure THIS session's journal exists.
+  const state = ensureJournalForSession(payload);
+  // 2. Self-heal: reconcile any STALE, non-live open session journals left
+  //    behind by prior crashed sessions (a SessionEnd that never fired). This
+  //    is the robustness fix for the log.md ↔ Sessions/ desync: per-session
+  //    closure + the log.md line no longer depend SOLELY on SessionEnd firing.
+  //    Skipped when journaling is opted out or there's no associated vault
+  //    (ensureJournalForSession returned null). Best-effort, never blocks.
+  if (state) reconcileOrphanSessions(state);
+}
+
+// Liveness window (minutes) for reconciliation. An open session whose state
+// JSON was touched within this window is treated as possibly concurrent/live
+// and left alone (don't clobber a session running in another terminal).
+// Override with OBSIDIAN_ROUTER_SESSION_LIVE_WINDOW_MIN.
+function resolveLiveWindowMs() {
+  const raw = Number(process.env.OBSIDIAN_ROUTER_SESSION_LIVE_WINDOW_MIN);
+  const mins = Number.isFinite(raw) && raw > 0 ? raw : 120;
+  return mins * 60 * 1000;
+}
+
+function reconcileOrphanSessions(state) {
+  try {
+    reconcileVaultSessions({
+      vaultPath: state.vaultPath,
+      stateDir: STATE_DIR,
+      currentJournalPath: state.journalPath,
+      liveWindowMs: resolveLiveWindowMs(),
+      marker: `<!-- reconciled ${isoDate()} (no SessionEnd) -->`,
+    });
+  } catch { /* never block Claude Code */ }
 }
 
 // Cap on user-prompt bytes written verbatim to the journal. A user

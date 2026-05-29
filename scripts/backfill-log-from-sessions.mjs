@@ -15,8 +15,9 @@
  * Usage:
  *   node scripts/backfill-log-from-sessions.mjs --vault <slug-or-path> [--dry-run]
  *   node scripts/backfill-log-from-sessions.mjs --all                 [--dry-run]
+ *   node scripts/backfill-log-from-sessions.mjs --all --include-open  [--dry-run]
  *
- * Behavior:
+ * Behavior (default — closed sessions only):
  *   - Skips sessions whose `## H2` heading basename already appears in log.md
  *     as `[[<basename>]]` — idempotent
  *   - Reads the session file's frontmatter (`firstUserPrompt:` if present,
@@ -27,13 +28,31 @@
  *     for audit trail
  *   - Appends in chronological order based on the session's `started-at`
  *
- * No writes outside log.md. Silent skip on missing log.md (the wiki skill
- * is responsible for scaffolding it).
+ * --include-open (v0.19.0): ALSO reconcile orphaned OPEN sessions — journals
+ * left `status: open` because their `SessionEnd` hook never fired (terminal
+ * closed, crash, kill). For each stale, non-live open session it closes the
+ * file in place (status → closed + reconcile recap + ended-at + closed-by) AND
+ * backfills its log.md line. Delegates to the shared
+ * `hooks/_helpers/session-reconcile.mjs` module — the SAME routine the
+ * `session-auto-journal` hook now runs automatically on every SessionStart.
+ * A session whose state JSON was touched within the live window (default 120
+ * min; override `--live-window-minutes N`) is treated as possibly running and
+ * left alone. NOTE: unlike the default mode, --include-open DOES modify
+ * session files (to close them).
+ *
+ * Default mode writes only to log.md. Silent skip on missing log.md (the wiki
+ * skill is responsible for scaffolding it).
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs';
+
+// State dir where session-auto-journal.mjs persists per-session JSON (used by
+// --include-open for recap enrichment + liveness). Mirrors the hook's path.
+const STATE_DIR = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'session-journals');
 
 // v0.12.10 (review+ pass 1 — codex P2-3): honor OBSIDIAN_ROUTER_CONFIG
 // like setup-vault.mjs and the hooks do, so users with a custom router
@@ -244,14 +263,61 @@ function backfillVault(vaultPath, { dryRun }) {
   return result;
 }
 
+// --include-open path: delegate to the shared reconcile routine. Closes stale
+// OPEN orphans (status → closed + recap) AND backfills log lines for both the
+// just-closed sessions and any closed-but-unlogged ones. Returns a result
+// shape compatible with the summary loop.
+function reconcileVaultIncludingOpen(vaultPath, { dryRun, liveWindowMs }) {
+  const sessionsDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
+  const logPath = path.join(vaultPath, 'wiki-meta', 'log.md');
+  const result = { vaultPath, considered: 0, backfilled: 0, skipped: 0, openSkipped: 0, reconciledOpen: 0, missingLog: false, missingSessions: false };
+
+  if (!fs.existsSync(sessionsDir)) { result.missingSessions = true; return result; }
+  if (!fs.existsSync(logPath)) { result.missingLog = true; return result; }
+
+  const backfillDate = new Date().toISOString().slice(0, 10);
+  const r = reconcileVaultSessions({
+    vaultPath,
+    stateDir: STATE_DIR,
+    ...(liveWindowMs != null ? { liveWindowMs } : {}),
+    marker: `<!-- backfilled ${backfillDate} -->`,
+    dryRun,
+  });
+
+  result.reconciledOpen = r.reconciledOpen.length;
+  result.backfilled = r.reconciledOpen.length + r.closedLogged.length;
+  result.skipped = r.alreadyLogged;
+  result.openSkipped = r.skippedLive;
+  result.considered = r.scanned + r.alreadyLogged;
+
+  if (dryRun && result.backfilled > 0) {
+    info(`[DRY-RUN] ${vaultPath} — would reconcile ${r.reconciledOpen.length} open + backfill ${r.closedLogged.length} closed session(s):`);
+    for (const b of r.reconciledOpen) info(`  ~ ${b} (open→closed + log)`);
+    for (const b of r.closedLogged) info(`  + ${b} (log only)`);
+  }
+
+  return result;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
+  const includeOpen = args.includes('--include-open');
   const vaultIdx = args.indexOf('--vault');
   const isAll = args.includes('--all');
 
+  // --live-window-minutes N : open sessions whose state JSON is fresher than
+  // this are treated as possibly-live and left alone (default 120 in the
+  // shared module). Only meaningful with --include-open.
+  let liveWindowMs = null;
+  const lwIdx = args.indexOf('--live-window-minutes');
+  if (lwIdx >= 0) {
+    const n = Number(args[lwIdx + 1]);
+    if (Number.isFinite(n) && n >= 0) liveWindowMs = n * 60 * 1000;
+  }
+
   if (!isAll && vaultIdx < 0) {
-    fail('Usage:\n  backfill-log-from-sessions.mjs --vault <slug-or-path> [--dry-run]\n  backfill-log-from-sessions.mjs --all [--dry-run]');
+    fail('Usage:\n  backfill-log-from-sessions.mjs --vault <slug-or-path> [--include-open] [--dry-run]\n  backfill-log-from-sessions.mjs --all [--include-open] [--dry-run]');
   }
 
   const cfg = loadConfig();
@@ -268,15 +334,19 @@ function main() {
     vaults = [vp];
   }
 
+  const mode = includeOpen ? 'Reconciling (open + closed)' : 'Backfilling';
   console.log(c('bold',
-    `\n${dryRun ? '[DRY-RUN] ' : ''}Backfilling log.md from Sessions/ for ${vaults.length} vault(s)...\n`));
+    `\n${dryRun ? '[DRY-RUN] ' : ''}${mode} log.md from Sessions/ for ${vaults.length} vault(s)...\n`));
 
-  const totals = { backfilled: 0, skipped: 0, openSkipped: 0, missingLog: 0, missingSessions: 0 };
+  const totals = { backfilled: 0, skipped: 0, openSkipped: 0, reconciledOpen: 0, missingLog: 0, missingSessions: 0 };
   for (const vp of vaults) {
-    const r = backfillVault(vp, { dryRun });
+    const r = includeOpen
+      ? reconcileVaultIncludingOpen(vp, { dryRun, liveWindowMs })
+      : backfillVault(vp, { dryRun });
     totals.backfilled += r.backfilled;
     totals.skipped += r.skipped;
     totals.openSkipped += r.openSkipped;
+    totals.reconciledOpen += (r.reconciledOpen || 0);
     if (r.missingLog) totals.missingLog += 1;
     if (r.missingSessions) totals.missingSessions += 1;
     if (r.missingSessions) {
@@ -284,17 +354,20 @@ function main() {
     } else if (r.missingLog) {
       info(`${vp} — no wiki-meta/log.md (run the wiki scaffold first)`);
     } else if (!dryRun && r.backfilled > 0) {
-      ok(`${vp} — backfilled ${r.backfilled} entries (${r.skipped} already present, ${r.openSkipped} open sessions skipped)`);
+      const openNote = includeOpen ? `, ${r.reconciledOpen} open→closed` : '';
+      const skipLabel = includeOpen ? 'live skipped' : 'open skipped';
+      ok(`${vp} — backfilled ${r.backfilled} entries${openNote} (${r.skipped} already present, ${r.openSkipped} ${skipLabel})`);
     } else if (r.backfilled === 0 && r.considered > 0) {
-      info(`${vp} — all ${r.considered} sessions already logged or open (nothing to backfill)`);
+      info(`${vp} — all ${r.considered} sessions already logged${includeOpen ? ' or live' : ' or open'} (nothing to ${includeOpen ? 'reconcile' : 'backfill'})`);
     }
   }
 
   console.log('');
   console.log(c('bold', 'Summary:'));
   console.log(`  ${c('green',  'backfilled:        ' + totals.backfilled)}`);
+  if (includeOpen) console.log(`  ${c('green', 'open→closed:       ' + totals.reconciledOpen)}`);
   console.log(`  ${c('gray',   'already-logged:    ' + totals.skipped)}`);
-  console.log(`  ${c('gray',   'open (skipped):    ' + totals.openSkipped)}`);
+  console.log(`  ${c('gray',   (includeOpen ? 'live (skipped):    ' : 'open (skipped):    ') + totals.openSkipped)}`);
   if (totals.missingSessions > 0) console.log(`  ${c('yellow', 'no Sessions/:      ' + totals.missingSessions)}`);
   if (totals.missingLog > 0)      console.log(`  ${c('yellow', 'no log.md:         ' + totals.missingLog)}`);
 

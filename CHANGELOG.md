@@ -6,12 +6,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+Nothing pending right now.
+
+## [0.19.0] — 2026-05-29 — self-healing session reconciliation (log.md ↔ Sessions/ no longer depends on SessionEnd)
+
+Fixes a structural desync between the per-session journal (`wiki-meta/Sessions/*.md`) and the chronological `wiki-meta/log.md`: sessions whose **`SessionEnd` hook never fired** (terminal closed abruptly, process killed, crash, OS shutdown — Claude Code does not guarantee `SessionEnd`) were left `status: open` forever with **no log.md line**, while every cleanly-closed session had one. Reported on a real vault with 27 session files: all 16 `closed` had a log entry, all 11 `open` did not. The old `backfill-log-from-sessions` script couldn't repair them either — it skipped any non-`closed` session.
+
+Root cause: the per-session closure (status flip, recap, **log.md append**) lived **only** in the `SessionEnd` handler. The fix stops depending on a single fragile event.
+
+### Added
+
+- **`hooks/_helpers/session-reconcile.mjs`** — shared, self-healing reconciliation routine (`reconcileVaultSessions`), the single source of truth used by both the hook and the backfill script. For each stale, non-live **open** orphan it closes the journal in place (`status: closed` + a `## Recap (reconciled — no SessionEnd)` block + `ended-at` + `closed-by: reconciliation`, best-effort counts from the lingering state JSON, else reconstructed from the file body) **and** backfills its `log.md` line. It also backfills **closed-but-unlogged** sessions (the pre-v0.12.8 case). Idempotent (dedup by `[[basename]]`); already-logged files are fast-skipped without even being read, so a healthy vault adds ~zero startup cost.
+- **`session-auto-journal` now self-heals on every `SessionStart`.** After ensuring the current session's journal it reconciles prior orphans for the associated vault. The per-session closure + log line therefore no longer require `SessionEnd` to fire — the *next* session start cleans up whatever the last crash left behind. Applies to all existing and future vaults (they share the one global hook).
+- **`backfill-log-from-sessions.mjs --include-open`** — explicit one-shot repair for existing vaults: reconciles orphaned open sessions in addition to the default closed-only log backfill. `--all --include-open` sweeps every configured vault. New `--live-window-minutes N` tunes the liveness guard.
+- **`OBSIDIAN_ROUTER_SESSION_LIVE_WINDOW_MIN`** (default `120`) — env override for the liveness window in the hook.
+
 ### Fixed
 
-- **CI green again on Linux + the GitHub Windows runners.** The test suite carried three platform-portability bugs that passed on a typical Windows dev box but reddened CI (run [#26660425820](https://github.com/tboome33/obsidian-mcp-router/actions/runs/26660425820): 11 failures on `windows-latest`, 1 on `ubuntu-latest`). The dev box masked them — `core.autocrlf=input` gives an LF checkout and a pre-existing `C:\tmp` directory — while the third only manifests on POSIX. **No product code changed — `tests/` only**, so no version bump.
-  - `tests/download-page-assets.test.mjs` — the `html branch end-to-end` and `v0.14.7 defuddle-first` blocks hardcoded `C:\tmp\…` as the download `outputDir`. `downloadAssets` requires the outputDir's *parent* to already exist (it refuses to bootstrap arbitrary trees), and `C:\tmp` is absent on the GitHub Windows runner. Switched both to `path.join(os.tmpdir(), …)`, whose parent is guaranteed to exist on every runner.
-  - `tests/tools-click-to-open-integration.test.mjs` — the `build_open_link` schema test's block-boundary regex ended in a bare `\n`, which cannot match `},\r\n` on a CRLF (`autocrlf=true`) Windows checkout, so the tool block was "not found". Normalize CRLF→LF before matching.
-  - `tests/vault-link-linter.test.mjs` — the "exact Roland 2026-05-29 path shape" regression hardcoded a `\`-separated path that is only meaningful on Windows; on POSIX a literal `\` is a filename char, so the linter (correctly) didn't flag it and the test wrongly expected exit 2. Build the incident path with the platform's own separators — the real mixed-separator repro on Windows (where the incident happened), the POSIX-native equivalent on Linux.
+- **Orphaned `open` sessions are now closed + logged** instead of accumulating silently. A **liveness guard** (the session's state-JSON mtime) prevents clobbering a session still running in another terminal: an open session whose state JSON was touched within the live window (default 120 min) is left alone, and the *current* session is additionally protected by path. Truly-dead orphans (stale or no state JSON) are reconciled.
+
+### Notes
+
+- Reconciliation operates only on `type: session` files (the auto-journal output); manual `/save` documents under `Sessions/` carrying other types are never touched. Backfilled log lines are tagged `<!-- backfilled YYYY-MM-DD -->`; auto-reconciled ones via the hook are tagged `<!-- reconciled YYYY-MM-DD (no SessionEnd) -->`.
 
 ## [0.18.2] — 2026-05-29 — bootstrap auto-wires hooks (no more dormant guards)
 
@@ -24,6 +40,13 @@ Follow-up to 0.18.1 that removes the *deeper* root cause behind the recurring ph
 ### Added
 
 - **`--no-hooks` flag** (and `OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS=1` env) to opt out of the auto-wiring.
+
+### Fixed
+
+- **CI green again on Linux + the GitHub Windows runners.** Three test-only portability bugs reddened CI (run [#26660425820](https://github.com/tboome33/obsidian-mcp-router/actions/runs/26660425820): 11 failures on `windows-latest`, 1 on `ubuntu-latest`) while passing on the dev box — `core.autocrlf=input` gives an LF checkout, plus a pre-existing `C:\tmp` directory; the third only manifests on POSIX. `tests/` only — no product behavior change. (Commit `ba1941a`, shipped ahead of the feature above in this same release.)
+  - `tests/download-page-assets.test.mjs` — the `html branch end-to-end` and `v0.14.7 defuddle-first` blocks hardcoded `C:\tmp\…` as the download `outputDir`. `downloadAssets` requires the outputDir's *parent* to already exist (it refuses to bootstrap arbitrary trees), and `C:\tmp` is absent on the GitHub Windows runner. Switched both to `path.join(os.tmpdir(), …)`, whose parent is guaranteed to exist on every runner.
+  - `tests/tools-click-to-open-integration.test.mjs` — the `build_open_link` schema test's block-boundary regex ended in a bare `\n`, which cannot match `},\r\n` on a CRLF (`autocrlf=true`) Windows checkout, so the tool block was "not found". Normalize CRLF→LF before matching.
+  - `tests/vault-link-linter.test.mjs` — the "exact Roland 2026-05-29 path shape" regression hardcoded a `\`-separated path that is only meaningful on Windows; on POSIX a literal `\` is a filename char, so the linter (correctly) didn't flag it and the test wrongly expected exit 2. Build the incident path with the platform's own separators — the real mixed-separator repro on Windows (where the incident happened), the POSIX-native equivalent on Linux.
 
 ### Docs
 

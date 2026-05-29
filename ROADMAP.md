@@ -2,6 +2,17 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.19.0 — self-healing session reconciliation (shipped 2026-05-29)
+
+Closes the `wiki-meta/log.md` ↔ `wiki-meta/Sessions/` desync. `session-auto-journal` wrote the journal incrementally but *finished* a session (status flip → `closed`, recap, **log.md line**) only in its `SessionEnd` handler. Claude Code does not guarantee `SessionEnd` (abrupt terminal close, kill, crash, OS shutdown), so crashed sessions stayed `status: open` forever with no log line — a Sessions/ file with no chronological summary. Observed on a live vault: 16/16 `closed` sessions logged, 0/11 `open` ones.
+
+- **`hooks/_helpers/session-reconcile.mjs`** — `reconcileVaultSessions()`, the shared routine that both the hook and the backfill script call (single source of truth). Closes stale open orphans in place + backfills their log line; also handles closed-but-unlogged (pre-v0.12.8). Idempotent (dedup by `[[basename]]`), already-logged files fast-skipped (no read).
+- **Reconcile on `SessionStart`, not a daemon.** The hook self-heals at the next session start — the cheapest reliable trigger we already own. Alternatives rejected: a background watcher (adds a long-lived process + cross-platform service plumbing for a rare event); reconciling on `Stop`/`PostToolUse` (too frequent, adds per-turn latency).
+- **Liveness via the state-JSON mtime, not file mtime.** The per-session state JSON is rewritten on every prompt/tool, so its mtime is a precise "last alive" signal; an open session fresher than the live window (default 120 min, `OBSIDIAN_ROUTER_SESSION_LIVE_WINDOW_MIN`) is left alone so a concurrent terminal isn't clobbered. File mtime was rejected — legit recent writes (sync, edits) would read as "live" and block repair. The current session is additionally protected by path.
+- **`backfill-log-from-sessions.mjs --include-open`** (+ `--live-window-minutes`, `--all`) — explicit one-shot repair for existing vaults. Existing closed-only default unchanged.
+- **Tests**: `tests/session-reconcile.test.mjs` (19 cases — orphan close+log, liveness skip, current-session skip, closed-unlogged, dedup/idempotence, dry-run, missing scaffolds, hook + backfill integration). Full suite 1518 green.
+- **Docs**: CHANGELOG [0.19.0]; hook + script + module headers.
+
 ## ✅ v0.16.0 — MCPHub deployment support + family-vault member routing (shipped 2026-05-27)
 
 Tooling + conventions to deploy the router on **MCPHub** in multi-tenant "hybrid bypass" mode (router server-side on a NAS, vault data client-side reached over WireGuard) and to run a **shared family vault** with per-member auto-routing. Validated end-to-end against a live MCPHub on a QNAP: a `write_file` from Claude Code travelled Claude Code → MCPHub → spawned router container → WireGuard tunnel (~137 ms) → Obsidian REST API on the originating PC → file persisted + audit log written. Offline resilience also validated (MCPHub server disabled → graceful `Server not found` while the local router + Obsidian stay fully usable at 56 ms, single-source-of-truth so zero divergence).
