@@ -8,6 +8,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.17.0] — 2026-05-29 — knowledge-graph builder (`build_wiki_graph` + `/wiki-graph`) + `.wikiignore`
+
+First slice of the **Understand-Anything** borrowings (Phase 1 #1 deterministic core + #5) — see `understand-anything-roadmap` in the companion vault. Assembles a vault's wiki into a typed **knowledge-graph JSON using the Understand-Anything schema verbatim** (`Lum1104/Understand-Anything`), so it can be visualised directly in that plugin's dashboard. Deterministic — no LLM in this slice (the LLM enrich + Louvain layers are deferred follow-ons). Backward compatible: purely additive (one new read/write tool + one new skill + one new helper trio); no behavior change for existing setups.
+
+### Added
+
+- **`build_wiki_graph` MCP tool** (`src/tools/build-wiki-graph.mjs`) — enumerates `wiki/**` content pages + `wiki-meta/digests/**`, reads an optional `.wikiignore` + `wiki-meta/index.md`, assembles a typed graph, **validates it against the schema** (refuses to write an invalid graph), and writes it to **two** locations: the canonical `wiki-meta/graph/knowledge-graph.json` (source of truth) + a derived `.understand-anything/knowledge-graph.json` (read directly by Understand-Anything's `/understand-dashboard` — zero extra step). `dryRun` previews counts without writing. In `WRITE_TOOL_NAMES` (hidden under `OBSIDIAN_ROUTER_READONLY`).
+- **`/wiki-graph` skill + slash command** — natural-language wrapper (FR/EN triggers) around the tool, with the interop instructions for viewing the graph in Understand-Anything's dashboard.
+- **`src/helpers/wiki-graph-schema.mjs`** — the UA-compatible vocabulary (21 node types / 35 edge types), canonical ID builders (`article:`/`entity:`/`topic:`/`claim:`/`source:`), `emptyGraph`, and a thorough `validateGraph` (dup-id, dangling-edge, self-edge, weight-bounds, complexity, layer membership).
+- **`src/helpers/wiki-graph-builder.mjs`** — the pure, deterministic assembler: pages → `article` nodes; digest concepts/claims → `entity`/`claim` nodes; `[[wikilinks]]` → `related` edges; **referenced sources** (frontmatter `sources:`, `^[file:42-58]` citations, `![[x.pdf]]` binary embeds) → lightweight `source` nodes + `cites` edges; `index.md` sections → `topic` nodes + `categorized_under` edges + `layers[]`. Byte-stable for fixed input (timestamps injected).
+- **`.wikiignore` support** (`src/helpers/wiki-ignore.mjs`) — gitignore-syntax exclusion (documented subset, no new dep) of noise (config, trash, derived sidecars, binary attachments) from the graph/lint/export tooling, with built-in defaults + `!`-negation + a commented starter generator.
+- **The "source référencée" invariant** — a file a page *references* becomes a `source` node **even if it matches `.wikiignore`**. `.wikiignore` governs *content enumeration* (what becomes an `article` node), NOT *reference resolution* — so you can always trace a page to its PDF/image and click through to it.
+- **+118 tests** (4 new suites: schema, ignore, builder, tool) covering determinism, the invariant, schema validity, topics/layers, and the review regressions below.
+
+### Security / hardening (from the pre-ship adversarial review)
+
+- **ReDoS guard in the `.wikiignore` matcher** — a `.wikiignore` is attacker-influenced vault content; a crafted pattern (`a` + 40×`*` + `b`) compiled to N adjacent `.*` groups → ~80s event-loop freeze. Fixed by collapsing consecutive-star runs to a single quantifier + caps (pattern length, `**`-run count, total wildcard count) with fail-safe drop + warnings.
+- **Path-traversal guard** — the tool's `pagesDir` argument now reuses the canonical `isSafeVaultRelativePath` (rejects leading `/`, drive letters, UNC, `..`, control chars) instead of a weaker bespoke check.
+- **Output sanitisation** — the written graph JSON is run through `sanitizeResponse` (vault content is attacker-influenced and the JSON is consumed by external dashboards/agents); **prototype-pollution keys** (`__proto__`/`constructor`/`prototype`) are stripped from embedded frontmatter.
+- **Bounded read concurrency** — page/digest reads are batched (no unbounded `Promise.allSettled` connection storm on large vaults); enumeration bounded by depth/file caps with truncation warnings.
+
+### Fixed (review regressions, now test-guarded)
+
+- `project.analyzedAt` was silently always `""` (the injected timestamp was dropped by a param-name mismatch) — now populated.
+- Two claims sharing their first 8 words collapsed to one node — claim IDs now carry a content hash.
+- Graph was input-order-dependent on basename collisions — inputs are now sorted by path (order-independent, deterministic).
+- Block-list `sources:`/`tags:` YAML (the form Obsidian's Properties UI writes) parsed as empty → no source nodes; `parseFrontmatter` now collects block sequences.
+- A citation to an existing content page minted a duplicate `source:` node — now resolves to a `related` article edge.
+
+- TODO
 ## [0.16.0] — 2026-05-27 — MCPHub deployment support + family-vault member routing
 
 Ships the tooling and conventions to deploy the router on **MCPHub** in multi-tenant "hybrid bypass" mode (router server-side, vault data client-side reached over WireGuard) and to run a **shared family vault** with per-member auto-routing. Validated end-to-end against a live MCPHub instance on a QNAP NAS: a `write_file` call from Claude Code travelled Claude Code → MCPHub → spawned router container → WireGuard tunnel (~137 ms) → Obsidian REST API on the originating PC → file persisted on disk + audit log written. See `mcphub-hybrid-bypass-roadmap` in the companion vault for the full session record.

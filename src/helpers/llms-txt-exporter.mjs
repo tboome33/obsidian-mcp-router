@@ -40,12 +40,43 @@ export function parseFrontmatter(content) {
   const yaml = match[1];
   const body = content.slice(match[0].length);
   const frontmatter = {};
-  for (const line of yaml.split(/\r?\n/)) {
+  const lines = yaml.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    // Block-sequence items (`  - item`) are consumed by their parent key's
+    // look-ahead below — skip any stray ones reached directly.
+    if (/^\s*-\s+/.test(line)) continue;
     const colonIdx = line.indexOf(':');
     if (colonIdx <= 0) continue;
     const key = line.slice(0, colonIdx).trim();
     let value = line.slice(colonIdx + 1).trim();
     if (!key) continue;
+
+    // Block-sequence form (what Obsidian's Properties UI writes):
+    //   key:
+    //     - a
+    //     - b
+    // The value on the key line is empty; items follow on `- x` lines.
+    // Collect them into an array. (Without this, `sources:`/`tags:` authored
+    // via the Obsidian UI parsed as an empty string — defeating source-node
+    // extraction. Review IMPORTANT.)
+    if (value === '') {
+      const items = [];
+      let j = i + 1;
+      while (j < lines.length && /^\s*-\s+/.test(lines[j])) {
+        items.push(
+          lines[j].replace(/^\s*-\s+/, '').trim().replace(/^["']|["']$/g, ''),
+        );
+        j += 1;
+      }
+      if (items.length > 0) {
+        frontmatter[key] = items;
+        i = j - 1; // skip the consumed item lines
+        continue;
+      }
+      // else fall through — genuine empty scalar
+    }
+
     // Strip surrounding quotes
     if (
       (value.startsWith('"') && value.endsWith('"')) ||

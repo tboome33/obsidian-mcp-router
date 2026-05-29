@@ -60,6 +60,10 @@ import {
   TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
   getWikiContextPack,
 } from './tools/get-wiki-context-pack.mjs';
+import {
+  TOOL_DEFINITION as BUILD_WIKI_GRAPH_TOOL_DEFINITION,
+  buildWikiGraphTool,
+} from './tools/build-wiki-graph.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -658,6 +662,10 @@ const TOOLS = [
   // non-Claude agents. Read-only (queries the wiki via index.md + smart
   // search + frontmatter), excluded from WRITE_TOOL_NAMES.
   GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
+  // Roadmap item #1 (understand-anything) — typed knowledge-graph artifact
+  // (UA-compatible schema). WRITES the graph JSON (canonical wiki-meta/graph/
+  // + derived .understand-anything/ copy) → included in WRITE_TOOL_NAMES.
+  BUILD_WIKI_GRAPH_TOOL_DEFINITION,
 ];
 
 /**
@@ -715,6 +723,8 @@ const TOOL_HANDLERS = {
   build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
   // Roadmap item #6 — structured JSON context pack (v1 envelope).
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
+  // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.
+  build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
@@ -759,6 +769,9 @@ const WRITE_TOOL_NAMES = new Set([
   // v0.14.x Phase E — writes binary asset files to disk (in vault `.assets/`
   // under MD_ALLOWED_PATHS sandbox). Read-only deployments must hide it.
   'download_page_assets',
+  // Roadmap item #1 (understand-anything) — writes the knowledge-graph JSON
+  // to wiki-meta/graph/ + .understand-anything/. Read-only must hide it.
+  'build_wiki_graph',
 ]);
 
 /**

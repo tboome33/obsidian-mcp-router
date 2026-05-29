@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 9 documented write tools', () => {
+  test('contains the 10 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -95,6 +95,9 @@ describe('WRITE_TOOL_NAMES', () => {
       'execute_template',
       // v0.14.x Phase E — writes binary asset files to disk.
       'download_page_assets',
+      // understand-anything #1 — writes the knowledge-graph JSON (canonical
+      // wiki-meta/graph/ + derived .understand-anything/ copy).
+      'build_wiki_graph',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {
