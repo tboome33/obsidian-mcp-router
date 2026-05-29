@@ -709,6 +709,103 @@ describe('vault-link-linter — wrong-port detection (v0.12.8)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v0.18.1 — cwd + vault-subpath "phantom path" trap.
+// Roland incident 2026-05-29: Claude emitted
+// `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\...\graph-viewer-survey.md` — the
+// workspace cwd concatenated with a vault-internal subpath. The cwd (code
+// repo) and the vault (Obsidian notes) live at DIFFERENT absolute roots, so
+// the path is a phantom that doesn't exist on disk. Pre-v0.18.1 the linter
+// skipped it (the drive-letter "scheme" guard + no bare-prose scan).
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — cwd+vault-subpath trap (v0.18.1)', () => {
+  // A synthetic, space-free, non-existent workspace root. Pass 3 only does
+  // string ops + a phantom existsSync on it, so it need not exist on disk.
+  // Space-free so the bare-prose scan (which stops at whitespace) works
+  // regardless of the CI tmp path having spaces.
+  const FAKE_WS = process.platform === 'win32' ? 'C:\\fake-code-ws' : '/fake-code-ws';
+  const phantom = (rel) => path.join(FAKE_WS, rel);
+
+  test('blocks a markdown-link href mixing cwd + vault subpath (phantom)', () => {
+    const bad = phantom('wiki/log.md'); // <FAKE_WS>/wiki/log.md — does not exist
+    const r = runLinter(`See [log](${bad}) for details.`, {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /cwd\+vault|phantom/i);
+    // Correct click-to-open URL for the fixture vault (insecurePort 27142).
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md/);
+  });
+
+  test('blocks a BARE-PROSE phantom path (no markdown-link wrapper)', () => {
+    const bad = phantom('wiki/sub/page.md');
+    const r = runLinter(`I created the note at ${bad} just now.`, {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Fsub%2Fpage\.md/);
+  });
+
+  test('dedupes: a markdown link counts once, not twice (link + inner bare token)', () => {
+    const bad = phantom('wiki/log.md');
+    const r = runLinter(`See [log](${bad}).`, { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /1 violation\(s\)/);
+  });
+
+  test('exits 0 when the phantom tail does NOT resolve to any vault file', () => {
+    // Under cwd + wiki segment, but the tail is not a real vault file →
+    // hallucinated path, not this hook's concern (matches bare-path behavior).
+    const bad = phantom('wiki/does-not-exist-xyz.md');
+    const r = runLinter(`See [missing](${bad}).`, { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 when the absolute path is under cwd but NOT a wiki/wiki-meta segment', () => {
+    const bad = phantom('src/index.md'); // first segment 'src' → skip
+    const r = runLinter(`See [src](${bad}).`, { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 on an absolute link straight to the real vault file (not under cwd)', () => {
+    // An absolute path under a DIFFERENT root than the cwd is not the trap.
+    const r = runLinter(`See [log](${path.join(vaultPath, 'wiki', 'log.md')}).`, {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 when a REAL local file under cwd/wiki exists (existsSync guard)', () => {
+    // A real file under <cwd>/wiki with the SAME tail as a vault file must
+    // be left alone — it's a genuine local file, not a phantom, even if a
+    // same-named note also exists in the vault.
+    const realWs = path.join(workDir, 'real-ws');
+    fs.mkdirSync(path.join(realWs, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(realWs, 'wiki', 'log.md'), '# local log');
+    try {
+      const r = runLinter(`See [log](${path.join(realWs, 'wiki', 'log.md')}).`, {
+        env: { CLAUDE_PROJECT_DIR: realWs },
+      });
+      assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+    } finally {
+      fs.rmSync(realWs, { recursive: true, force: true });
+    }
+  });
+
+  test('REGRESSION: the exact Roland 2026-05-29 path shape is caught', () => {
+    // Mixed separators (backslash cwd + forward-slash subpath) exactly as
+    // emitted in the incident. path.resolve normalizes; the tail must still
+    // resolve to the fixture vault file.
+    const r = runLinter(
+      `Voir [page](${FAKE_WS}\\wiki/sub/page.md) pour le détail.`,
+      { env: { CLAUDE_PROJECT_DIR: FAKE_WS } },
+    );
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Fsub%2Fpage\.md/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Robustness — malformed inputs should never crash the hook
 // ---------------------------------------------------------------------------
 

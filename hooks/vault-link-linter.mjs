@@ -17,7 +17,7 @@
  * attention loop, in the same spirit as `wiki-autocommit` and
  * `check-router-update`.
  *
- * Two violation kinds are detected (avoiding false positives by stripping
+ * Three violation kinds are detected (avoiding false positives by stripping
  * fenced code blocks, indented code, and inline code spans first):
  *
  *   1. **`bare-path`** (v0.11.3 — original) — markdown links `[label](href)`
@@ -40,6 +40,27 @@
  *      "already in the correct format". The v0.12.8 extension verifies
  *      the port instead of assuming it.
  *
+ *   3. **`cwd-vault-mix`** (v0.18.1 — added after Roland incident
+ *      2026-05-29 where Claude emitted
+ *      `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\...\graph-viewer-survey.md`
+ *      — the workspace cwd path concatenated with a vault-internal
+ *      subpath) — an ABSOLUTE path (markdown-link href OR bare prose
+ *      token) that starts with the workspace cwd, continues into a
+ *      `wiki/` or `wiki-meta/` segment, does NOT exist on disk, yet whose
+ *      vault-relative tail DOES resolve to a real file in the bound
+ *      vault. In workspace-bound mode the cwd and the vault live at
+ *      different absolute roots (often with near-identical basenames —
+ *      `obsidian-mcp-router` vs `opsidian-mcp-router et bridge`), so this
+ *      concatenation produces a phantom path the user cannot open. Pre-
+ *      v0.18.1 these slipped through TWICE over: the bare-path pass skips
+ *      any href with a drive-letter "scheme" (`I:` matches the scheme
+ *      regex) or a leading `/`, and prose tokens outside markdown links
+ *      were never scanned at all. The four-condition gate (cwd-prefixed +
+ *      wiki/wiki-meta segment + phantom-on-disk + tail-resolves-in-vault)
+ *      makes the detection zero-false-positive without needing a
+ *      scheme/relative guard — a real local file under the cwd, or an
+ *      absolute path to some other vault, never matches all four.
+ *
  * Exit codes:
  *   0  — no violations (or env var opt-out, or recursion guard)
  *   2  — violations found, stderr lists them; Claude Code re-runs the
@@ -55,14 +76,17 @@
  * this turn), exit 0 silently — never block the same turn twice.
  *
  * Known gaps (intentional tradeoffs):
- *   - **Markdown links only**. Bare path tokens in prose, tables, or
- *     lists (e.g. a row like `| wiki-meta/log.md | log file |`) are NOT
- *     flagged. Detecting those would generate too many false positives
- *     on legitimate path mentions inside conversational text. The
- *     screenshot motivating this hook actually showed table-cell bare
- *     paths — Claude is expected to use markdown links in tables too,
- *     and this hook only catches the markdown-link case. The user is
- *     the second line of defense for prose mentions.
+ *   - **Markdown links only — EXCEPT the `cwd-vault-mix` kind**. For the
+ *     `bare-path` and `wrong-port` kinds, bare path tokens in prose,
+ *     tables, or lists (e.g. a row like `| wiki-meta/log.md | log file |`)
+ *     are NOT flagged — detecting those would generate too many false
+ *     positives on legitimate relative-path mentions inside
+ *     conversational text. The `cwd-vault-mix` kind (v0.18.1) DOES scan
+ *     bare prose, because its four-condition gate (absolute + cwd-prefixed
+ *     + wiki segment + phantom-on-disk + tail-resolves-in-vault) is
+ *     specific enough that a bare-prose match is never a false positive.
+ *     For the other two kinds the user remains the second line of defense
+ *     for prose mentions.
  *   - **Path traversal** (`../`) is refused at the filesystem-check
  *     step (any href that resolves outside its candidate vault root is
  *     skipped — see `findOwningVault`). Otherwise a hallucinated link
@@ -257,7 +281,38 @@ for (const m of stripped.matchAll(CLICK_TO_OPEN_PATTERN)) {
   });
 }
 
-if (bareCandidates.length === 0 && clickToOpenCandidates.length === 0) process.exit(0);
+// Pass 3 candidate collection (v0.18.1) — the cwd+vault-subpath "phantom
+// path" trap. MUST run before the early-exit guard below: these candidates
+// produce ZERO Pass-1/Pass-2 hits because an absolute Windows path's drive
+// letter (`I:`) trips Pass 1's scheme guard and a POSIX `/...` path trips
+// its leading-slash guard — so without counting them here, the guard would
+// `exit(0)` before the trap is ever evaluated. The vault-membership CHECK
+// (needs the resolved config) runs later, in Pass 3 proper. Scans BOTH
+// markdown-link hrefs AND bare prose tokens (the incident showed a bare
+// path). See the header doc for the four-condition gate.
+const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+const cwdResolved = path.resolve(cwd);
+const cwdPrefix = cwdResolved.endsWith(path.sep) ? cwdResolved : cwdResolved + path.sep;
+
+const trapCandidates = [];
+// 3a — markdown-link form `[label](ABS.md)`. `[^)\n]+?` allows spaces so a
+// cwd containing spaces still matches inside the parens.
+const TRAP_LINK_PATTERN = /\[([^\]\n]+)\]\(((?:[A-Za-z]:[\\/]|\/)[^)\n]+?\.md)\)/g;
+for (const m of stripped.matchAll(TRAP_LINK_PATTERN)) {
+  trapCandidates.push({ label: m[1], raw: m[2].trim() });
+}
+// 3b — bare-prose form `ABS.md` (no spaces, to avoid swallowing prose).
+// Deduped against 3a hits by resolved path in the check loop below.
+const TRAP_BARE_PATTERN = /(?:[A-Za-z]:[\\/]|\/)[^\s)<>"'\n]+?\.md/g;
+for (const m of stripped.matchAll(TRAP_BARE_PATTERN)) {
+  trapCandidates.push({ label: null, raw: m[0].trim() });
+}
+
+if (
+  bareCandidates.length === 0 &&
+  clickToOpenCandidates.length === 0 &&
+  trapCandidates.length === 0
+) process.exit(0);
 
 // ---- Resolve which vault each candidate belongs to --------------------
 // Read the router config (same lookup order as the router binary and
@@ -584,11 +639,52 @@ for (const c of clickToOpenCandidates) {
   });
 }
 
+// Pass 3 — cwd + vault-subpath "phantom path" trap (v0.18.1). The
+// CANDIDATES (cwd vars + trapCandidates) were collected earlier, above the
+// "no candidates → exit" guard, because phantom paths produce zero
+// Pass-1/Pass-2 hits (the drive-letter `I:` reads as a URL scheme, so Pass 1
+// skips them). Here we run the vault-membership CHECK — it needs the
+// resolved vault config (findOwningVault / vaultPortInfo) that only exists
+// below. See the header doc for the four-condition gate and why this is a
+// dedicated pass rather than a relaxation of the Pass-1 guards.
+const trapSeen = new Set();
+for (const cand of trapCandidates) {
+  let resolved;
+  try { resolved = path.resolve(cand.raw); } catch { continue; }
+  if (trapSeen.has(resolved)) continue;
+  // (1) must resolve under the cwd root.
+  if (!resolved.startsWith(cwdPrefix)) continue;
+  // (2) first segment below the cwd must be a vault-internal dir.
+  const tail = resolved.slice(cwdPrefix.length);
+  const firstSeg = tail.split(/[\\/]/)[0].toLowerCase();
+  if (firstSeg !== 'wiki' && firstSeg !== 'wiki-meta') continue;
+  // (3) a real local file under the cwd is NOT a phantom — leave it alone.
+  if (fs.existsSync(resolved)) continue;
+  // (4) the vault-relative tail must resolve to a real vault file.
+  const owner = findOwningVault(tail);
+  if (!owner) continue;
+  const info = vaultPortInfo(owner.vault);
+  if (!info) continue;
+
+  trapSeen.add(resolved);
+  const label = cand.label || path.basename(tail, '.md');
+  violations.push({
+    kind: 'cwd-vault-mix',
+    label,
+    bareHref: cand.raw,
+    suggested: composeSuggestion(label, owner.decodedHref, info),
+    vault: owner.vault,
+    cwd: cwdResolved,
+    firstSeg,
+  });
+}
+
 if (violations.length === 0) process.exit(0);
 
 // ---- Compose bilingual stderr feedback --------------------------------
 const barePathCount = violations.filter((v) => v.kind === 'bare-path').length;
 const wrongPortCount = violations.filter((v) => v.kind === 'wrong-port').length;
+const trapCount = violations.filter((v) => v.kind === 'cwd-vault-mix').length;
 
 const lines = [];
 lines.push('[obsidian-mcp-router/vault-link-linter] Convention violation');
@@ -596,17 +692,24 @@ lines.push('');
 lines.push(`FR — ${violations.length} violation(s) du format click-to-open dans ta dernière réponse :`);
 if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/open/...`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} URL(s) click-to-open avec un mauvais port`);
+if (trapCount) lines.push(`  • ${trapCount} chemin(s) absolu(s) mêlant le cwd et un sous-chemin vault (fichier fantôme, n'existe pas sur le disque)`);
 lines.push('');
 lines.push(`EN — ${violations.length} click-to-open convention violation(s) in your last response:`);
 if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/open/... format`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} click-to-open URL(s) with the wrong port`);
+if (trapCount) lines.push(`  • ${trapCount} absolute path(s) mixing the cwd with a vault subpath (phantom file, does not exist on disk)`);
 lines.push('');
 lines.push('Violations + corrections :');
 for (const v of violations) {
-  const tag = v.kind === 'wrong-port' ? '[wrong-port] ' : '[bare-path]  ';
+  const tag = v.kind === 'wrong-port' ? '[wrong-port] '
+    : v.kind === 'cwd-vault-mix' ? '[cwd+vault]  '
+    : '[bare-path]  ';
   lines.push(`  ${tag}• [${v.label}](${v.bareHref})`);
   if (v.kind === 'wrong-port') {
     lines.push(`                used port ${v.actualPort}, expected ${v.expectedPort ?? '?'} for ${v.scheme} (vault ${path.basename(v.vault)})`);
+  }
+  if (v.kind === 'cwd-vault-mix') {
+    lines.push(`                phantom path — the cwd (${v.cwd}) has no \`${v.firstSeg}/\` subdir; this file lives in vault ${path.basename(v.vault)}, NOT under the cwd`);
   }
   if (v.suggested) {
     lines.push(`               → ${v.suggested}`);
@@ -617,7 +720,10 @@ for (const v of violations) {
 lines.push('');
 lines.push('Why : a bare relative path is not clickable in Claude Code, and');
 lines.push('a click-to-open URL with the wrong port silently fails (browser');
-lines.push('hits nothing on 127.0.0.1:<wrong-port>). The correct format is');
+lines.push('hits nothing on 127.0.0.1:<wrong-port>); and an absolute path');
+lines.push('mixing the cwd with a vault subpath (e.g. `<cwd>/wiki/x.md`)');
+lines.push('points at a phantom file — the vault lives at a DIFFERENT');
+lines.push('absolute root. The correct format is');
 lines.push('http://127.0.0.1:<insecurePort>/open/<URL-encoded-path> where');
 lines.push('<insecurePort> is read from the TARGET vault\'s data.json');
 lines.push('(.obsidian/plugins/obsidian-local-rest-api/data.json). The port');

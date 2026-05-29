@@ -8,6 +8,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.18.1] — 2026-05-29 — fix: `vault-link-linter` catches cwd+vault "phantom" paths
+
+Patch. The `vault-link-linter` Stop hook gains a **third violation kind**, `cwd-vault-mix`, closing the blind spot behind a recurring broken-link bug. In workspace-bound sessions, Claude would emit an absolute path that concatenates the workspace cwd with a vault-internal subpath — e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\…\graph-viewer-survey.md` — a phantom that does not exist, because the vault lives at a *different* absolute root (`C:\VAULTS\opsidian-mcp-router et bridge`). The two share near-identical basenames (`obsidian-mcp-router` vs `opsidian-mcp-router et bridge`), which is what made the confusion sticky. (Reminder: the hooks only fire once wired into `~/.claude/settings.json` via `node scripts/setup-vault.mjs --install-hooks` — a dormant linter catches nothing.)
+
+### Fixed
+
+- **`hooks/vault-link-linter.mjs` — new `cwd-vault-mix` detection.** Pre-0.18.1 these paths slipped through twice over: an absolute Windows path's drive letter (`I:`) reads as a URL scheme so the bare-path pass skipped it, and prose tokens outside markdown links were never scanned at all. The new pass re-scans BOTH markdown-link hrefs AND bare prose for absolute paths, gated by four zero-false-positive conditions — (1) resolves under the workspace cwd, (2) first segment below the cwd is `wiki`/`wiki-meta`, (3) does NOT exist on disk, (4) the vault-relative tail DOES resolve to a real file in an active vault — and emits the correct click-to-open URL. Absolute links to genuine non-vault files (`C:\Users\me\notes.md`) and real local files under the cwd are left untouched. The candidate scan runs *before* the "no candidates → exit" guard so it isn't short-circuited by Pass 1/2 finding nothing.
+- **+8 tests** — markdown-link + bare-prose phantom blocking, link/bare dedup, the exact incident path shape (mixed separators), and the four negative gates (tail unresolved, non-wiki segment, different root, real local file).
+
 ## [0.18.0] — 2026-05-29 — guided tours (`build_wiki_tour` + `/wiki-tour`)
 
 Understand-Anything borrowings, roadmap item #3. Generates a **guided, pedagogical reading tour** through a vault from the knowledge graph's link topology — an ordered walkthrough that takes a newcomer from "what is this?" to "I get how it fits". Same deterministic-core / LLM-narrate split as #1: the step ordering is deterministic; Claude writes the per-step narrative. Backward compatible (purely additive: one new read-only tool + one new skill + one new helper).
