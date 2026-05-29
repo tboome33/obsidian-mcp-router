@@ -243,3 +243,70 @@ describe('buildWikiGraphTool — degradation + guards', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// review+ codex regressions (2026-05-29)
+// ---------------------------------------------------------------------------
+
+describe('buildWikiGraphTool — codex review regressions', () => {
+  test('ignored files/dirs are skipped DURING enumeration (never read — codex P2)', async () => {
+    const files = {
+      'wiki/a.md': 'A',
+      'wiki/Archive/old1.md': 'old',
+      'wiki/Archive/old2.md': 'old',
+      '.wikiignore': 'wiki/Archive/\n',
+    };
+    const reads = [];
+    const { deps, writes } = makeVaultFs(files);
+    const getFileContent = (vault, path) => {
+      reads.push(String(path));
+      return deps.getFileContent(vault, path);
+    };
+    await buildWikiGraphTool(makeRegistry(), {}, { ...deps, getFileContent });
+    // Ignored Archive pages must NEVER be read — proves enumeration-time skip,
+    // not just a post-filter (so they can't consume the MAX_FILES budget).
+    assert.ok(
+      !reads.some((p) => p.includes('Archive')),
+      `Archive was read: ${reads.filter((p) => p.includes('Archive')).join(', ')}`,
+    );
+    const graph = JSON.parse(writes[CANONICAL_GRAPH_PATH]);
+    assert.ok(graph.nodes.some((n) => n.id === 'article:wiki/a'));
+    assert.ok(!graph.nodes.some((n) => n.id.startsWith('article:wiki/Archive')));
+  });
+
+  test('digests are still read even though wiki-meta/digests/ is ignored-as-content (invariant)', async () => {
+    const aContent = 'A body';
+    const files = {
+      'wiki/a.md': aContent,
+      'wiki-meta/digests/wiki/a.md': digest('wiki/a.md', aContent, { concepts: ['RAG'] }),
+    };
+    const { deps, writes } = makeVaultFs(files);
+    await buildWikiGraphTool(makeRegistry(), {}, deps);
+    const graph = JSON.parse(writes[CANONICAL_GRAPH_PATH]);
+    // The digest walk is NOT ignore-filtered → entity still produced.
+    assert.ok(graph.nodes.some((n) => n.id === 'entity:rag'));
+  });
+
+  test('.wikiignore negation re-includes a file inside an ignored dir (codex pass-2 P2)', async () => {
+    const files = {
+      'wiki/a.md': 'A',
+      'wiki/Archive/old.md': 'old',
+      'wiki/Archive/keep.md': 'keep',
+      '.wikiignore': 'wiki/Archive/\n!wiki/Archive/keep.md\n',
+    };
+    const { deps, writes } = makeVaultFs(files);
+    await buildWikiGraphTool(makeRegistry(), {}, deps);
+    const ids = JSON.parse(writes[CANONICAL_GRAPH_PATH]).nodes.map((n) => n.id);
+    // Always-descend + file-level skip → the negated file survives, its
+    // ignored sibling does not.
+    assert.ok(ids.includes('article:wiki/Archive/keep'), 'negated file re-included');
+    assert.ok(!ids.includes('article:wiki/Archive/old'), 'ignored sibling excluded');
+  });
+});
+
+describe('pickAuditPath — build_wiki_graph (codex P2)', () => {
+  test('records the canonical graph path (no `path` arg → not "(unknown)")', async () => {
+    const { pickAuditPath } = await import('../src/index.mjs');
+    assert.equal(pickAuditPath('build_wiki_graph', {}), CANONICAL_GRAPH_PATH);
+  });
+});

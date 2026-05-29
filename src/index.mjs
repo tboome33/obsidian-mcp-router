@@ -63,6 +63,7 @@ import {
 import {
   TOOL_DEFINITION as BUILD_WIKI_GRAPH_TOOL_DEFINITION,
   buildWikiGraphTool,
+  CANONICAL_GRAPH_PATH as BUILD_WIKI_GRAPH_CANONICAL_PATH,
 } from './tools/build-wiki-graph.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
@@ -799,6 +800,9 @@ export function isReadonlyMode(rawEnvValue) {
 export function pickAuditPath(toolName, args = {}) {
   if (toolName === 'move_file') return args.to || args.from || '(unknown)';
   if (toolName === 'execute_template') return args.targetPath || args.name || '(unknown)';
+  // build_wiki_graph has no `path` arg — it writes the canonical graph JSON
+  // (+ a derived UA copy). Record the canonical path (codex review+ P2).
+  if (toolName === 'build_wiki_graph') return BUILD_WIKI_GRAPH_CANONICAL_PATH;
   return args.path || '(unknown)';
 }
 

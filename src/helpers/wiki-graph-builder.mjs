@@ -284,8 +284,51 @@ export function buildWikiGraph({
     edges.push({ source, target, type, direction: 'forward', weight, ...extra });
   }
 
-  // basename(lowercase) → articleId, for resolving wikilinks + index bullets.
+  // basename(lowercase) → articleId, for resolving BARE wikilinks/bullets.
   const articleByBasename = new Map();
+  // All article node ids, for resolving PATH-QUALIFIED links exactly.
+  const articleIds = new Set();
+
+  // Resolve a wikilink / embed / citation / index-bullet target to an article
+  // id. A PATH-QUALIFIED target (`wiki/y/dup`) resolves to its EXACT article
+  // first; only a BARE target (`dup`) falls back to basename (first-wins),
+  // mirroring Obsidian's "shortest unique path, else full path" semantics.
+  // Without this, `[[wiki/y/dup]]` wrongly resolves to `wiki/x/dup` on a
+  // basename collision (codex review+ P2).
+  function resolveArticle(target) {
+    if (typeof target !== 'string' || !target) return null;
+    // `articleId` is the canonical normaliser (forward slashes, strip `.md`),
+    // so the id minted here matches the ids stored in `articleIds` exactly.
+    const exactId = articleId(target);
+    const tnorm = exactId.slice('article:'.length);
+    if (!tnorm) return null;
+    // 1. Exact vault-root path — `[[wiki/sub/page]]` (absolute-link format).
+    if (articleIds.has(exactId)) return exactId;
+    // 2. BARE target (no slash) — basename map, first-wins by path sort
+    //    (Obsidian's "shortest path when possible" default).
+    if (!/[\\/]/.test(target)) {
+      return articleByBasename.get(basenameNoMd(target).toLowerCase()) || null;
+    }
+    // 3. PATH-QUALIFIED but not an exact vault-root path → segment-aligned
+    //    SUFFIX match (Obsidian resolves a relative link `[[sub/page]]` to the
+    //    article whose vault path ends with `sub/page`). Resolve ONLY when that
+    //    suffix is UNIQUE: a stale `[[wiki/GONE/dup]]` matches nothing (→ null,
+    //    no wrong edge), and an ambiguous suffix refuses rather than guess
+    //    (reconciles codex review+ pass 3 "no wrong fallback" with pass 4
+    //    "resolve relative links"). `..`-relative links aren't path-resolved
+    //    against the source dir (rare) — they only match via this suffix rule.
+    const suffix = `/${tnorm}`;
+    let match = null;
+    let count = 0;
+    for (const aid of articleIds) {
+      const p = aid.slice('article:'.length);
+      if (p === tnorm || p.endsWith(suffix)) {
+        match = aid;
+        if (++count > 1) break;
+      }
+    }
+    return count === 1 ? match : null;
+  }
 
   // ---- Pass 1: article nodes -------------------------------------------------
   const pageMeta = []; // [{ path, body, frontmatter, id }] in input order
@@ -324,6 +367,7 @@ export function buildWikiGraph({
       },
     };
     addNode(node);
+    articleIds.add(id);
     const baseKey = basenameNoMd(path).toLowerCase();
     if (!articleByBasename.has(baseKey)) articleByBasename.set(baseKey, id);
     pageMeta.push({ path, body, frontmatter, id });
@@ -364,9 +408,9 @@ export function buildWikiGraph({
       }
     }
 
-    // Wikilinks → related edges between articles (resolve by basename).
+    // Wikilinks → related edges between articles (path-qualified or basename).
     for (const target of extractWikilinks(body)) {
-      const targetId = articleByBasename.get(basenameNoMd(target).toLowerCase());
+      const targetId = resolveArticle(target);
       if (targetId) addEdge(id, targetId, 'related', 0.6);
     }
 
@@ -376,7 +420,7 @@ export function buildWikiGraph({
       if (looksLikeBinaryRef(target)) {
         sourceRefs.add(target);
       } else {
-        const targetId = articleByBasename.get(basenameNoMd(target).toLowerCase());
+        const targetId = resolveArticle(target);
         if (targetId) addEdge(id, targetId, 'related', 0.6);
       }
     }
@@ -391,7 +435,7 @@ export function buildWikiGraph({
       // cross-reference, not an external source — emit `related` to that
       // article instead of minting a duplicate `source:` node for the file.
       if (!isUrl) {
-        const refArticle = articleByBasename.get(basenameNoMd(ref).toLowerCase());
+        const refArticle = resolveArticle(ref);
         if (refArticle && refArticle !== id) {
           addEdge(id, refArticle, 'related', 0.6);
           continue;
@@ -427,9 +471,7 @@ export function buildWikiGraph({
       // aren't content pages, e.g. [[overview]]/[[log]] under wiki-meta/).
       const memberIds = [];
       for (const bullet of section.bullets || []) {
-        const aid = articleByBasename.get(
-          basenameNoMd(bullet.pageSlug).toLowerCase(),
-        );
+        const aid = resolveArticle(bullet.pageSlug);
         if (aid && !memberIds.includes(aid)) memberIds.push(aid);
       }
       // Skip taxonomy entries that don't categorise any actual content page —

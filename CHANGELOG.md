@@ -37,7 +37,6 @@ First slice of the **Understand-Anything** borrowings (Phase 1 #1 deterministic 
 - Block-list `sources:`/`tags:` YAML (the form Obsidian's Properties UI writes) parsed as empty → no source nodes; `parseFrontmatter` now collects block sequences.
 - A citation to an existing content page minted a duplicate `source:` node — now resolves to a `related` article edge.
 
-- TODO
 ## [0.16.0] — 2026-05-27 — MCPHub deployment support + family-vault member routing
 
 Ships the tooling and conventions to deploy the router on **MCPHub** in multi-tenant "hybrid bypass" mode (router server-side, vault data client-side reached over WireGuard) and to run a **shared family vault** with per-member auto-routing. Validated end-to-end against a live MCPHub instance on a QNAP NAS: a `write_file` call from Claude Code travelled Claude Code → MCPHub → spawned router container → WireGuard tunnel (~137 ms) → Obsidian REST API on the originating PC → file persisted on disk + audit log written. See `mcphub-hybrid-bypass-roadmap` in the companion vault for the full session record.

@@ -45,6 +45,12 @@ export const UNDERSTAND_ANYTHING_GRAPH_PATH = '.understand-anything/knowledge-gr
 // should not hang the tool. Truncation is surfaced as a warning.
 const MAX_FILES = 5000;
 const MAX_DEPTH = 12;
+// Cap on total entries EXAMINED (dirs + files, incl. ignored ones). MAX_FILES
+// bounds the OUTPUT (added pages); but since ignored files are skipped BEFORE
+// incrementing `paths`, a huge ignored set (e.g. thousands of `*.draft.md`)
+// would otherwise be iterated unbounded. This separate work-bound trips
+// truncation regardless of ignore (codex review+ pass 5). Generous (4×).
+const MAX_VISITS = 20000;
 // Cap read fan-out so a large vault doesn't fire thousands of concurrent
 // getFileContent requests at the single REST endpoint (socket exhaustion).
 const READ_CONCURRENCY = 12;
@@ -102,16 +108,26 @@ function joinPath(dir, name) {
 
 /**
  * Recursively enumerate `*.md` files under `rootDir` via listFilesIn.
- * Bounded by MAX_FILES / MAX_DEPTH. A directory that fails to list is
- * skipped (not fatal). Returns `{ paths, truncated }`.
+ * Bounded by MAX_FILES / MAX_DEPTH. A directory that fails to list is skipped
+ * (not fatal). When an `ignore` matcher is passed, ignored *files* are skipped
+ * during enumeration — so an ignored subtree (e.g. a huge `.wikiignore`'d
+ * `Archive/`) never consumes the MAX_FILES budget (its files are never added to
+ * `paths`). An ignored directory is PRUNED (not descended) UNLESS the
+ * `.wikiignore` has a negation pattern — then we descend so a re-include inside
+ * an ignored dir (`Archive/` + `!Archive/keep.md`) stays reachable (codex
+ * review+ passes 2-3). NOTE: pass `ignore`
+ * ONLY for the pages walk — the digest walk must still read `wiki-meta/digests/`
+ * even though it's ignored-as-content (the source-référencée invariant).
+ * Returns `{ paths, truncated }`.
  */
-async function collectMarkdown(listFilesIn, vault, rootDir) {
+async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null) {
   const paths = [];
   let truncated = false;
+  let visited = 0; // total entries examined (dirs + files), bounded by MAX_VISITS
   // Iterative DFS to avoid deep recursion; stack of {dir, depth}.
   const stack = [{ dir: rootDir, depth: 0 }];
   while (stack.length > 0) {
-    if (paths.length >= MAX_FILES) {
+    if (paths.length >= MAX_FILES || visited >= MAX_VISITS) {
       truncated = true;
       break;
     }
@@ -129,14 +145,23 @@ async function collectMarkdown(listFilesIn, vault, rootDir) {
     const files = Array.isArray(listing?.files) ? listing.files : [];
     for (const entry of files) {
       if (typeof entry !== 'string' || !entry) continue;
-      if (paths.length >= MAX_FILES) {
+      if (paths.length >= MAX_FILES || visited >= MAX_VISITS) {
         truncated = true;
         break;
       }
+      visited += 1; // count every examined entry, ignored or not (work-bound)
+      const full = joinPath(dir, entry);
       if (entry.endsWith('/')) {
-        stack.push({ dir: joinPath(dir, entry), depth: depth + 1 });
+        // Prune an ignored dir UNLESS a `.wikiignore` negation exists that could
+        // re-include a file inside it. No negations → descending an ignored
+        // subtree is pure wasted traversal (codex P2 perf); negations present →
+        // descend so `Archive/` + `!Archive/keep.md` stays reachable. Either
+        // way, ignored *files* are skipped below (budget-safe).
+        if (ignore && ignore.hasNegation === false && ignore.isIgnored(full)) continue;
+        stack.push({ dir: full, depth: depth + 1 });
       } else if (/\.md$/i.test(entry)) {
-        paths.push(joinPath(dir, entry));
+        if (ignore && ignore.isIgnored(full)) continue;
+        paths.push(full);
       }
     }
   }
@@ -213,14 +238,16 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   const ignore = createWikiIgnore(userIgnore);
   for (const w of ignore.warnings || []) warnings.push(`wikiignore:${w}`);
 
-  // 2. enumerate + read content pages (ignore-filtered)
-  const { paths: allPagePaths, truncated: pagesTruncated } = await collectMarkdown(
+  // 2. enumerate + read content pages. Pass `ignore` so ignored files/dirs are
+  // skipped DURING enumeration — an ignored subtree must not consume the
+  // MAX_FILES budget before real pages are reached (codex review+ P2).
+  const { paths: pagePaths, truncated: pagesTruncated } = await collectMarkdown(
     deps.listFilesIn,
     vault,
     safePagesDir,
+    ignore,
   );
   if (pagesTruncated) warnings.push('page-enumeration-truncated');
-  const pagePaths = allPagePaths.filter((p) => !ignore.isIgnored(p));
   const { items: pages, failures: pageFailures } = await readAll(
     deps.getFileContent,
     vault,
@@ -257,8 +284,15 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
     generatedAt: new Date().toISOString(),
   });
 
-  // 6. validate — refuse to write an invalid graph (signals a builder bug)
-  const report = validateGraph(graph);
+  // 6. Sanitize FIRST, then validate the SANITIZED graph. Vault content
+  // (names/summaries/frontmatter) is attacker-influenced and the written JSON
+  // is consumed by external dashboards/agents (same hygiene get_wiki_context_pack
+  // applies to its envelope; scalars like weights pass through). Validating the
+  // post-sanitize object means referential integrity is checked on the EXACT
+  // bytes we persist — not a pre-sanitize copy (review+ IMPORTANT: closes a
+  // latent bug class should a future sanitiser transform ever be non-idempotent).
+  const safeGraph = sanitizeResponse(graph);
+  const report = validateGraph(safeGraph);
   for (const w of report.warnings) warnings.push(`schema:${w}`);
   if (!report.valid) {
     throw new Error(
@@ -266,12 +300,8 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
     );
   }
 
-  // 7. write ×2 (unless dryRun). Sanitize the graph's string fields first —
-  // vault content (names/summaries/frontmatter) is attacker-influenced and the
-  // written JSON is consumed by external dashboards/agents (same hygiene
-  // get_wiki_context_pack applies to its envelope). Scalars (weights) pass
-  // through untouched; JSON validity is preserved.
-  const json = `${JSON.stringify(sanitizeResponse(graph), null, 2)}\n`;
+  // 7. write ×2 (unless dryRun) — the validated, sanitized graph.
+  const json = `${JSON.stringify(safeGraph, null, 2)}\n`;
   const written = [];
   if (!dryRun) {
     await deps.writeFile(vault, CANONICAL_GRAPH_PATH, json);
@@ -289,17 +319,17 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
 
   return sanitizeResponse({
     vault: vault.name,
-    kind: graph.kind,
+    kind: safeGraph.kind,
     dryRun: Boolean(dryRun),
     written,
     counts: {
       pages: pages.length,
       digests: digests.length,
-      nodes: graph.nodes.length,
-      edges: graph.edges.length,
-      layers: graph.layers.length,
-      nodesByType: tallyByType(graph.nodes),
-      edgesByType: tallyByType(graph.edges),
+      nodes: safeGraph.nodes.length,
+      edges: safeGraph.edges.length,
+      layers: safeGraph.layers.length,
+      nodesByType: tallyByType(safeGraph.nodes),
+      edgesByType: tallyByType(safeGraph.edges),
     },
     warnings: [...new Set(warnings)],
   });

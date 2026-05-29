@@ -228,9 +228,11 @@ function normalisePath(p) {
  *   blank lines are tolerated.
  * @param {object} [opts]
  * @param {boolean} [opts.useDefaults=true] Prepend DEFAULT_WIKIIGNORE_PATTERNS.
- * @returns {{ isIgnored: (relPath: string) => boolean, patterns: string[], warnings: string[] }}
+ * @returns {{ isIgnored: (relPath: string) => boolean, patterns: string[], warnings: string[], hasNegation: boolean }}
  *   `warnings` lists patterns dropped by a ReDoS guard (too long / too many
- *   wildcards / uncompilable), so the caller can surface them.
+ *   wildcards / uncompilable), so the caller can surface them. `hasNegation`
+ *   is true when any kept pattern is a `!`-negation (lets callers prune ignored
+ *   subtrees safely when there are none).
  */
 export function createWikiIgnore(userPatterns = [], opts = {}) {
   const { useDefaults = true } = opts;
@@ -247,6 +249,7 @@ export function createWikiIgnore(userPatterns = [], opts = {}) {
   const compiled = [];
   const kept = [];
   const warnings = [];
+  let hasNegation = false;
   for (const raw of allLines) {
     const line = String(raw ?? '');
     const trimmed = line.trim();
@@ -257,6 +260,7 @@ export function createWikiIgnore(userPatterns = [], opts = {}) {
       warnings.push(`dropped pattern "${trimmed}": ${c.dropped}`);
       continue;
     }
+    if (c.negated) hasNegation = true;
     compiled.push(c);
     kept.push(trimmed);
   }
@@ -273,7 +277,10 @@ export function createWikiIgnore(userPatterns = [], opts = {}) {
     return ignored;
   }
 
-  return { isIgnored, patterns: kept, warnings };
+  // `hasNegation` lets callers (e.g. the graph builder's enumeration) safely
+  // PRUNE ignored directories when no `!`-pattern could re-include anything
+  // inside them — a conservative "no descendant negation can match" proxy.
+  return { isIgnored, patterns: kept, warnings, hasNegation };
 }
 
 /**

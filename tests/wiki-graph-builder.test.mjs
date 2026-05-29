@@ -341,4 +341,61 @@ describe('buildWikiGraph — review regressions', () => {
     );
     assert.ok(validateGraph(g).valid);
   });
+
+  test('path-qualified link resolves to the EXACT article on basename collision (codex P2)', () => {
+    const pages = [
+      { path: 'wiki/x/dup.md', content: 'X dup' },
+      { path: 'wiki/y/dup.md', content: 'Y dup' },
+      { path: 'wiki/linker.md', content: 'A [[wiki/y/dup]] and a bare [[dup]].' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    // Path-qualified [[wiki/y/dup]] → the EXACT article (not the first-inserted x).
+    assert.ok(hasEdge(g, 'article:wiki/linker', 'article:wiki/y/dup', 'related'));
+    // Bare [[dup]] → basename fallback (first by path-sort = x).
+    assert.ok(hasEdge(g, 'article:wiki/linker', 'article:wiki/x/dup', 'related'));
+    assert.ok(validateGraph(g).valid);
+  });
+
+  test('^[url:range] citation strips the trailing range (documented edge case, NIT)', () => {
+    const pages = [{ path: 'wiki/a.md', content: 'Body. ^[https://example.com/p:1-5]' }];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    // The line-range strip turns the URL into source:https://example.com/p — an
+    // accepted edge case (URLs belong in frontmatter sources:, not ^[...]).
+    assert.ok(nodeById(g, 'source:https://example.com/p'));
+  });
+
+  test('path-qualified link with NO exact match does NOT fall back to a same-basename page (codex pass-3 P2)', () => {
+    const pages = [
+      { path: 'wiki/x/dup.md', content: 'X' },
+      { path: 'wiki/linker.md', content: 'Stale link to [[wiki/GONE/dup]].' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    // The stale path-qualified target doesn't resolve exactly → NO edge (must
+    // NOT silently link to the unrelated wiki/x/dup with the same basename).
+    assert.ok(!hasEdge(g, 'article:wiki/linker', 'article:wiki/x/dup'));
+    assert.ok(validateGraph(g).valid);
+  });
+
+  test('relative path-qualified link resolves by UNIQUE path-suffix (Obsidian relative format — codex pass-4 P2)', () => {
+    const pages = [
+      { path: 'wiki/sub/page.md', content: 'P' },
+      { path: 'wiki/linker.md', content: 'Relative [[sub/page]].' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    // [[sub/page]] → wiki/sub/page via segment-aligned suffix match.
+    assert.ok(hasEdge(g, 'article:wiki/linker', 'article:wiki/sub/page', 'related'));
+  });
+
+  test('ambiguous path-suffix refuses rather than guess', () => {
+    const pages = [
+      { path: 'wiki/a/sub/page.md', content: 'A' },
+      { path: 'wiki/b/sub/page.md', content: 'B' },
+      { path: 'wiki/linker.md', content: 'Ambiguous [[sub/page]].' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    // Two articles end with sub/page → ambiguous → no edge (no wrong guess).
+    assert.ok(!hasEdge(g, 'article:wiki/linker', 'article:wiki/a/sub/page'));
+    assert.ok(!hasEdge(g, 'article:wiki/linker', 'article:wiki/b/sub/page'));
+    assert.ok(validateGraph(g).valid);
+  });
 });
