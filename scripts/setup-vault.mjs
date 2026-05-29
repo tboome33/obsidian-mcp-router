@@ -2429,6 +2429,69 @@ export {
 };
 
 // ---------- CLI ----------
+/**
+ * Auto-wire ALL router hooks into ~/.claude/settings.json at the END of a
+ * successful main bootstrap (v0.18.2). Closes the failure mode behind the
+ * recurring cwd+vault phantom-link bug: the deterministic guards
+ * (wiki-query-first-nudge, vault-link-linter, …) ship on disk but catch
+ * NOTHING until wired — and on a fresh machine / new setup they were left
+ * dormant because wiring was a manual, skippable step.
+ *
+ * Default-on. Opt out with the `--no-hooks` flag or the
+ * `OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS` env var (truthy). Idempotent
+ * (installHooksInto skips already-present hooks → no write, no churn on
+ * re-bootstrap). Best-effort: a missing hooks.example.json or an unwritable
+ * settings.json WARNS but never aborts the bootstrap it tails — the vault is
+ * already provisioned by the time we get here.
+ *
+ * Distinct from the standalone `--install-hooks` subcommand, which stays the
+ * explicit path (with `--select` + the "nothing to do" report). A standalone
+ * `--link-workspace` re-link is NOT covered here: it requires the vault to
+ * already be in portRegistry (i.e. bootstrapped — and thus already wired by
+ * this function on a post-v0.18.2 setup).
+ */
+function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
+  const TRUTHY = new Set(['true', '1', 'yes', 'on']);
+  const envOptOut = TRUTHY.has(
+    String(process.env.OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS || '').toLowerCase(),
+  );
+  if (noHooks || envOptOut) {
+    if (!quiet) {
+      info('Skipped hook wiring (--no-hooks / OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS).');
+      console.log(c('gray', '   Run `node scripts/setup-vault.mjs --install-hooks` when ready.'));
+    }
+    return;
+  }
+
+  let example;
+  try { example = loadHooksExample(); }
+  catch (err) {
+    warn(`Hooks not auto-wired: could not load hooks/hooks.example.json (${err.message}).\n   Run \`node scripts/setup-vault.mjs --install-hooks\` later.`);
+    return;
+  }
+
+  const settings = loadUserSettings();
+  const result = installHooksInto(settings, example, {});
+
+  if (result.added.length === 0) {
+    if (!quiet) info('Router hooks already wired into settings.json — nothing to add.');
+    return;
+  }
+
+  try { saveUserSettings(settings); }
+  catch (err) {
+    warn(`Hooks not auto-wired: could not write ${userSettingsPath()} (${err.message}).\n   Run \`node scripts/setup-vault.mjs --install-hooks\` later.`);
+    return;
+  }
+
+  ok(`Auto-wired ${result.added.length} router hook(s) into ${userSettingsPath()}.`);
+  if (!quiet) {
+    console.log(c('gray', '   Deterministic guards now active next session (wiki-query-first-nudge, vault-link-linter, …).'));
+    console.log(c('gray', '   Opt out next time with --no-hooks; manage with --hooks-status / --uninstall-hooks.'));
+    info('Restart Claude Code to activate them.');
+  }
+}
+
 const args = process.argv.slice(2);
 if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   console.log(`Usage:
@@ -2439,6 +2502,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               in one shot (writes OBSIDIAN_ROUTER_DEFAULT_VAULT
                                                               in <ws>/.env). Single permission prompt vs. two
                                                               separate invocations. (v0.12.7+)
+  node setup-vault.mjs <vault-path> --no-hooks               Bootstrap WITHOUT auto-wiring the router hooks
+                                                              into ~/.claude/settings.json. Hooks are wired by
+                                                              default since v0.18.2 (idempotent); use this, or
+                                                              OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS=1, to skip.
   node setup-vault.mjs <vault-path> --regenerate             Force fresh port + apiKey even if existing
   node setup-vault.mjs <vault-path> --force                  Overwrite existing files (.env, .mcp.json, README, etc.)
   node setup-vault.mjs <vault-path> --sync-plugins           Sync new plugins from reference vault
@@ -3182,3 +3249,9 @@ if (args.includes('--sync-plugins')) {
 }
 
 setupVault(vaultArg, { force, regenerate, linkWorkspace: linkWorkspaceFlag });
+
+// v0.18.2 — wire the router hooks now, so a freshly-bootstrapped vault is
+// never left with dormant guards. setupVault() returns (does not exit) on
+// success; on an unsafe-target refusal it exits earlier and we never reach
+// here. Default-on; --no-hooks / OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS skip.
+maybeAutoInstallHooks({ quiet, noHooks: args.includes('--no-hooks') });

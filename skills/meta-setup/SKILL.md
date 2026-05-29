@@ -98,24 +98,29 @@ If the user has a tight context budget for other reasons (e.g., they run a lot o
 
 ## Install router hooks (recommended)
 
-The router ships **6 hooks** that automate vault maintenance — but they're **opt-in** and stay dormant until wired into `~/.claude/settings.json`. Historically users had to edit settings.json by hand (a UX cliff). Since v0.11.4, `setup-vault.mjs --install-hooks` does the wiring automatically.
+The router ships **9 hooks** that automate vault maintenance. **Since v0.18.2 they are auto-wired into `~/.claude/settings.json` at the end of a `setup-vault.mjs <vault>` bootstrap** (pass `--no-hooks`, or set `OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS=1`, to skip). Before that, wiring was a manual, skippable step — and skipping it was the failure mode behind the recurring cwd+vault phantom-link bug: a dormant `vault-link-linter` / `wiki-query-first-nudge` catches and prevents nothing. For an already-bootstrapped vault, or to (re)wire by hand, `setup-vault.mjs --install-hooks` does it idempotently.
 
-### What the 6 hooks do
+### What the 9 hooks do
 
 | Hook | Event | Purpose |
 |---|---|---|
 | `hot-cache-load` | SessionStart + PostCompact | Loads `wiki-meta/hot.md` into Claude's context at session start |
 | `check-router-update` | SessionStart | Once-per-day GitHub check for new router versions |
-| `wiki-autocommit` | PostToolUse (7 mutating MCP tools) | Auto-commits wiki changes via git |
-| `vault-link-linter` | Stop | Blocks responses with bare-path vault links, forces click-to-open format |
-| `hot-cache-update-prompt` | Stop | Nudges Claude to refresh `hot.md` when wiki changed |
+| `vault-doc-startup-check` | SessionStart | Warns at startup if the vault's CLAUDE.md / scaffolds have drifted |
+| `wiki-query-first-nudge` | UserPromptSubmit | Injects a pre-answer reminder to check the vault first + the PATH RESOLUTION RULES (the two real roots) that prevent cwd+vault path mixups |
+| `session-auto-journal` | SessionStart / UserPromptSubmit / PostToolUse / SessionEnd | Captures a per-session log into `wiki-meta/Sessions/` |
+| `wiki-autocommit` | PostToolUse (8 mutating MCP tools) | Auto-commits wiki changes via git |
 | `doc-propagation-checker` | PostToolUse (Bash) | Post-`git commit` check that CHANGELOG/ROADMAP/wiki mention the current version |
+| `vault-link-linter` | Stop | Blocks responses with bare-path / wrong-port / cwd+vault-mix vault links, forces click-to-open format |
+| `hot-cache-update-prompt` | Stop | Nudges Claude to refresh `hot.md` when wiki changed |
 
 ### Interactive install
 
-Ask the user which scope they want, then run the appropriate command from the cloned router repo. Recommended phrasing:
+**If the vault was just bootstrapped with `setup-vault.mjs <vault>` (v0.18.2+), all hooks are ALREADY wired** — this step is only for the cases where bootstrap was run with `--no-hooks`, where you want a custom subset, or where you're wiring an older/already-bootstrapped vault. Otherwise, skip to "Verify after install".
 
-> The router ships 6 hooks that turn your vault into an actively-maintained assistant (auto-commit, link linting, version-drift detection, etc.). Install which?
+When you do need to wire manually, ask the user which scope they want, then run the appropriate command from the cloned router repo. Recommended phrasing:
+
+> The router ships 9 hooks that turn your vault into an actively-maintained assistant (auto-commit, link linting incl. cwd+vault phantom-path detection, version-drift detection, etc.). Install which?
 >
 > **All (recommended)** — full kit, opt-in by env var per hook later if any becomes noisy.
 > **Pick** — choose specific hooks.

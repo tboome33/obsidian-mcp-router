@@ -13,6 +13,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   - `tests/tools-click-to-open-integration.test.mjs` — the `build_open_link` schema test's block-boundary regex ended in a bare `\n`, which cannot match `},\r\n` on a CRLF (`autocrlf=true`) Windows checkout, so the tool block was "not found". Normalize CRLF→LF before matching.
   - `tests/vault-link-linter.test.mjs` — the "exact Roland 2026-05-29 path shape" regression hardcoded a `\`-separated path that is only meaningful on Windows; on POSIX a literal `\` is a filename char, so the linter (correctly) didn't flag it and the test wrongly expected exit 2. Build the incident path with the platform's own separators — the real mixed-separator repro on Windows (where the incident happened), the POSIX-native equivalent on Linux.
 
+## [0.18.2] — 2026-05-29 — bootstrap auto-wires hooks (no more dormant guards)
+
+Follow-up to 0.18.1 that removes the *deeper* root cause behind the recurring phantom-link bug: the deterministic guards shipped on disk but stayed **dormant** until someone ran `--install-hooks` by hand — an opt-in, skippable step. A `vault-link-linter` / `wiki-query-first-nudge` that isn't wired catches and prevents nothing.
+
+### Changed
+
+- **`setup-vault.mjs <vault>` now auto-wires all router hooks** into `~/.claude/settings.json` at the end of a *successful* bootstrap (covers the one-shot `<vault> --link-workspace <ws>` attach too). Idempotent (skips already-present hooks → no churn on re-bootstrap), best-effort (a missing `hooks.example.json` or unwritable `settings.json` **warns** but never aborts the completed bootstrap), and only runs on success (an unsafe-target refusal exits earlier, so nothing is wired for a failed run). The standalone `--install-hooks` subcommand stays the explicit path for re-wiring / `--select` subsets; a standalone `--link-workspace` re-link is intentionally NOT covered (its vault was already wired at its own bootstrap).
+
+### Added
+
+- **`--no-hooks` flag** (and `OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS=1` env) to opt out of the auto-wiring.
+
+### Docs
+
+- **meta-setup skill**: corrected the stale "**6 hooks**" → **9 hooks** (added the missing `session-auto-journal`, `vault-doc-startup-check`, `wiki-query-first-nudge` rows + fixed `wiki-autocommit`'s matcher count to 8), and documented the new auto-wire-at-bootstrap default.
+
 ## [0.18.1] — 2026-05-29 — fix: `vault-link-linter` catches cwd+vault "phantom" paths
 
 Patch. The `vault-link-linter` Stop hook gains a **third violation kind**, `cwd-vault-mix`, closing the blind spot behind a recurring broken-link bug. In workspace-bound sessions, Claude would emit an absolute path that concatenates the workspace cwd with a vault-internal subpath — e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\…\graph-viewer-survey.md` — a phantom that does not exist, because the vault lives at a *different* absolute root (`C:\VAULTS\opsidian-mcp-router et bridge`). The two share near-identical basenames (`obsidian-mcp-router` vs `opsidian-mcp-router et bridge`), which is what made the confusion sticky. (Reminder: the hooks only fire once wired into `~/.claude/settings.json` via `node scripts/setup-vault.mjs --install-hooks` — a dormant linter catches nothing.)
