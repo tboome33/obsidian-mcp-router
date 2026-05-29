@@ -81,6 +81,18 @@ describe('buildWikiTourTool', () => {
     await assert.rejects(() => buildWikiTourTool(makeRegistry(), {}, deps), /build_wiki_graph/);
   });
 
+  test('non-not-found read failure is rethrown (not masked as missing graph — codex review)', async () => {
+    const deps = {
+      getFileContent: () => {
+        const e = new Error('ECONNREFUSED 127.0.0.1');
+        e.kind = 'unreachable';
+        return Promise.reject(e);
+      },
+    };
+    // The real operational error surfaces; NOT the "run build_wiki_graph" message.
+    await assert.rejects(() => buildWikiTourTool(makeRegistry(), {}, deps), /ECONNREFUSED/);
+  });
+
   test('invalid JSON → actionable error', async () => {
     await assert.rejects(
       () => buildWikiTourTool(makeRegistry(), {}, depsReturning('not json {')),

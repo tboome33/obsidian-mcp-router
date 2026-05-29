@@ -144,10 +144,25 @@ export function computeTourTopology(graph, opts = {}) {
     });
   }
 
-  // One step per scoped layer — its top members by fan-in.
-  for (const lyr of scopedLayers) {
+  // Rank scoped layers by importance (sum of member fan-in) BEFORE the maxSteps
+  // cap, so the cap keeps the most-linked topics rather than the alphabetically
+  // first ones (build_wiki_graph stores layers sorted by id) — codex review.
+  // Deterministic tie-break by name/id.
+  const layerScore = (lyr) =>
+    (lyr.nodeIds || [])
+      .filter((id) => scopedIds.has(id))
+      .reduce((acc, id) => acc + (fanIn.get(id) || 0), 0);
+  const rankedLayers = [...scopedLayers].sort(
+    (a, b) => layerScore(b) - layerScore(a) || (a.name || a.id).localeCompare(b.name || b.id),
+  );
+
+  // One step per layer — its top members by fan-in, EXCLUDING nodes already
+  // surfaced (the overview, or an earlier layer step) so no node is repeated
+  // across steps. Without this, a scoped single-layer tour returned an
+  // "<X> — overview" step and an "<X>" step with identical nodes (codex review).
+  for (const lyr of rankedLayers) {
     if (steps.length >= maxSteps) break;
-    const members = (lyr.nodeIds || []).filter((id) => scopedIds.has(id));
+    const members = (lyr.nodeIds || []).filter((id) => scopedIds.has(id) && !seenInSteps.has(id));
     if (members.length === 0) continue;
     const top = members
       .map((id) => ({ id, fi: fanIn.get(id) || 0 }))

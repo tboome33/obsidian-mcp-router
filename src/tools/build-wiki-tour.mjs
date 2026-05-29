@@ -63,10 +63,21 @@ export async function buildWikiTourTool(registry, args = {}, _deps = {}) {
   let raw;
   try {
     raw = await deps.getFileContent(vault, CANONICAL_GRAPH_PATH);
-  } catch {
-    throw new Error(
-      `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,
-    );
+  } catch (err) {
+    // Only a genuine "not found" means the graph hasn't been built. Preserve
+    // real operational failures (vault offline, bad API key, timeout) instead
+    // of misleadingly telling the user to run /wiki-graph (codex review).
+    const status = err && (err.status ?? err.statusCode);
+    const isNotFound =
+      (err && err.kind === 'not_found') ||
+      status === 404 ||
+      /not.?found|enoent|no such file/i.test(String((err && err.message) || ''));
+    if (isNotFound) {
+      throw new Error(
+        `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,
+      );
+    }
+    throw err;
   }
   let graph;
   try {
