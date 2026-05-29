@@ -793,11 +793,21 @@ describe('vault-link-linter — cwd+vault-subpath trap (v0.18.1)', () => {
   });
 
   test('REGRESSION: the exact Roland 2026-05-29 path shape is caught', () => {
-    // Mixed separators (backslash cwd + forward-slash subpath) exactly as
-    // emitted in the incident. path.resolve normalizes; the tail must still
-    // resolve to the fixture vault file.
+    // The incident path was a Windows path with mixed separators: backslash
+    // cwd separators + a forward-slash vault subpath
+    // (`I:\DEVELOPPEMENT\obsidian-mcp-router/wiki/...`). That exact shape is
+    // a Windows-only phenomenon — on POSIX a literal `\` is a valid filename
+    // char (NOT a separator), so `path.resolve('/fake-code-ws\\wiki/...')`
+    // yields a path that never starts with `<cwd>/`, the linter's Pass-3
+    // gate skips it, and the test wrongly expected exit 2 (this reddened CI
+    // on the Linux runners). Build the incident path with the platform's own
+    // separators so the regression is a faithful repro on each OS:
+    // mixed-separator on Windows (where it happened), POSIX-native on Linux.
+    const incidentPath = process.platform === 'win32'
+      ? `${FAKE_WS}\\wiki/sub/page.md`
+      : path.join(FAKE_WS, 'wiki', 'sub', 'page.md');
     const r = runLinter(
-      `Voir [page](${FAKE_WS}\\wiki/sub/page.md) pour le détail.`,
+      `Voir [page](${incidentPath}) pour le détail.`,
       { env: { CLAUDE_PROJECT_DIR: FAKE_WS } },
     );
     assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);

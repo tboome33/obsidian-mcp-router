@@ -141,10 +141,14 @@ describe('build_open_link is wired into the MCP surface', () => {
   // v0.14.9 (Reviewer B P2): mutual-exclusion contract is encoded in the
   // schema, not just enforced at the handler level.
   test('TOOLS schema has oneOf mutual-exclusion for path vs paths', () => {
+    // Normalize CRLF → LF: on a Windows checkout with git autocrlf=true
+    // the file has `\r\n`, and the block-boundary regex below ends in a
+    // bare `\n` that can't match `},\r\n` — which reddened CI on the
+    // Windows runners while passing locally (autocrlf=input → LF).
     const src = fs.readFileSync(
       path.resolve(__dirname, '..', 'src', 'index.mjs'),
       'utf8',
-    );
+    ).replace(/\r\n/g, '\n');
     // Find the build_open_link tool block and assert it contains a oneOf
     // with `path` xor `paths`. Brittle but cheap — drift here is a real
     // bug, the test SHOULD complain if someone removes the contract.

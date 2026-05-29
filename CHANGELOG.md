@@ -6,7 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Fixed
+
+- **CI green again on Linux + the GitHub Windows runners.** The test suite carried three platform-portability bugs that passed on a typical Windows dev box but reddened CI (run [#26660425820](https://github.com/tboome33/obsidian-mcp-router/actions/runs/26660425820): 11 failures on `windows-latest`, 1 on `ubuntu-latest`). The dev box masked them — `core.autocrlf=input` gives an LF checkout and a pre-existing `C:\tmp` directory — while the third only manifests on POSIX. **No product code changed — `tests/` only**, so no version bump.
+  - `tests/download-page-assets.test.mjs` — the `html branch end-to-end` and `v0.14.7 defuddle-first` blocks hardcoded `C:\tmp\…` as the download `outputDir`. `downloadAssets` requires the outputDir's *parent* to already exist (it refuses to bootstrap arbitrary trees), and `C:\tmp` is absent on the GitHub Windows runner. Switched both to `path.join(os.tmpdir(), …)`, whose parent is guaranteed to exist on every runner.
+  - `tests/tools-click-to-open-integration.test.mjs` — the `build_open_link` schema test's block-boundary regex ended in a bare `\n`, which cannot match `},\r\n` on a CRLF (`autocrlf=true`) Windows checkout, so the tool block was "not found". Normalize CRLF→LF before matching.
+  - `tests/vault-link-linter.test.mjs` — the "exact Roland 2026-05-29 path shape" regression hardcoded a `\`-separated path that is only meaningful on Windows; on POSIX a literal `\` is a filename char, so the linter (correctly) didn't flag it and the test wrongly expected exit 2. Build the incident path with the platform's own separators — the real mixed-separator repro on Windows (where the incident happened), the POSIX-native equivalent on Linux.
 
 ## [0.18.1] — 2026-05-29 — fix: `vault-link-linter` catches cwd+vault "phantom" paths
 

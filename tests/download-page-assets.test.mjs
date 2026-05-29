@@ -8,6 +8,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import os from 'node:os';
 
 import {
   TOOL_NAME,
@@ -114,10 +115,14 @@ describe('download-page-assets — input validation', () => {
 });
 
 describe('download-page-assets — html branch end-to-end (no network, in-memory)', () => {
-  // Use OS-aware absolute path with realistic temp dir prefix so the
-  // assertPathAllowed call passes when MD_ALLOWED_PATHS is unset (no
-  // sandbox → allows anything).
-  const ABS_OUT = process.platform === 'win32' ? 'C:\\tmp\\dl-test' : '/tmp/dl-test';
+  // Use the OS temp dir as the outputDir's parent. `downloadAssets`
+  // requires `path.dirname(outputDir)` to already exist (it refuses to
+  // bootstrap arbitrary directory trees), and `os.tmpdir()` is the one
+  // absolute dir guaranteed to exist on every runner — unlike `C:\tmp`,
+  // which exists on a typical dev box but NOT on the GitHub Windows
+  // runner (that's what reddened CI). It's also absolute, so the
+  // assertPathAllowed check passes when MD_ALLOWED_PATHS is unset.
+  const ABS_OUT = path.join(os.tmpdir(), 'dl-test');
 
   test('returns serializable urlMap object (not a Map instance)', async () => {
     // Stub fetch + write via the helper's injection seams by importing
@@ -196,7 +201,7 @@ describe('download-page-assets — wiring into src/index.mjs', () => {
 // -----------------------------------------------------------------------------
 
 describe('download-page-assets — v0.14.7 defuddle-first + relevance filter', () => {
-  const ABS_OUT = process.platform === 'win32' ? 'C:\\tmp\\dl-test-v147' : '/tmp/dl-test-v147';
+  const ABS_OUT = path.join(os.tmpdir(), 'dl-test-v147'); // parent (os.tmpdir) always exists; see note above
 
   test('defuddleFirst=true (default) strips images outside <article>', async () => {
     // Header logo, footer share icon, nav icon → outside article, defuddle drops them.
