@@ -65,6 +65,10 @@ import {
   buildWikiGraphTool,
   CANONICAL_GRAPH_PATH as BUILD_WIKI_GRAPH_CANONICAL_PATH,
 } from './tools/build-wiki-graph.mjs';
+import {
+  TOOL_DEFINITION as BUILD_WIKI_TOUR_TOOL_DEFINITION,
+  buildWikiTourTool,
+} from './tools/build-wiki-tour.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -667,6 +671,10 @@ const TOOLS = [
   // (UA-compatible schema). WRITES the graph JSON (canonical wiki-meta/graph/
   // + derived .understand-anything/ copy) → included in WRITE_TOOL_NAMES.
   BUILD_WIKI_GRAPH_TOOL_DEFINITION,
+  // Roadmap item #3 (understand-anything) — deterministic guided-tour skeleton
+  // from the knowledge graph. Read-only (reads the graph JSON) — excluded from
+  // WRITE_TOOL_NAMES.
+  BUILD_WIKI_TOUR_TOOL_DEFINITION,
 ];
 
 /**
@@ -726,6 +734,8 @@ const TOOL_HANDLERS = {
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
   // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
+  // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
+  build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
 };
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at

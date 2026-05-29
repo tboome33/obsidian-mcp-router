@@ -8,6 +8,17 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.18.0] — 2026-05-29 — guided tours (`build_wiki_tour` + `/wiki-tour`)
+
+Understand-Anything borrowings, roadmap item #3. Generates a **guided, pedagogical reading tour** through a vault from the knowledge graph's link topology — an ordered walkthrough that takes a newcomer from "what is this?" to "I get how it fits". Same deterministic-core / LLM-narrate split as #1: the step ordering is deterministic; Claude writes the per-step narrative. Backward compatible (purely additive: one new read-only tool + one new skill + one new helper).
+
+### Added
+
+- **`build_wiki_tour` MCP tool** (`src/tools/build-wiki-tour.mjs`) — **read-only** (NOT in `WRITE_TOOL_NAMES`). Reads `wiki-meta/graph/knowledge-graph.json` (from `build_wiki_graph`) and returns a deterministic ordered **tour skeleton**: an overview step (entry points) + one step per `index.md` section (top articles by backlink count) + a trailing step for unindexed hubs. Each step carries node `name` + `summary` so the caller can narrate. `scope` restricts to one section/topic/path; actionable errors when the graph is missing/malformed (point at `/wiki-graph`).
+- **`/wiki-tour` skill + slash command** — orchestrates: ensure graph → `build_wiki_tour` skeleton → Claude writes the pedagogical narrative → writes a standalone markdown tour in `wiki-meta/tours/` (nodes linked as `[[wikilinks]]`, readable in Obsidian today) **and** the graph's `tour[]` field (for the future dashboard / native viewer #2b). Whole-vault or scoped (`/wiki-tour Dedibox`). Bilingual FR/EN triggers.
+- **`src/helpers/wiki-tour-topology.mjs`** — pure, deterministic topology analyser: fan-in (backlinks) / fan-out over the `related` wikilink web, entry-point scoring (boosted for `index`/`overview`/`MOC`/`sommaire` names), `scope` resolution (layer id/name or path substring), and the ordered step skeleton. Byte-stable for a fixed graph.
+- **+17 tests** (topology determinism / fan-in / entry-points / scope / edge-cases + the tool's DI-mocked read/parse/error paths).
+
 ## [0.17.0] — 2026-05-29 — knowledge-graph builder (`build_wiki_graph` + `/wiki-graph`) + `.wikiignore`
 
 First slice of the **Understand-Anything** borrowings (Phase 1 #1 deterministic core + #5) — see `understand-anything-roadmap` in the companion vault. Assembles a vault's wiki into a typed **knowledge-graph JSON using the Understand-Anything schema verbatim** (`Lum1104/Understand-Anything`), so it can be visualised directly in that plugin's dashboard. Deterministic — no LLM in this slice (the LLM enrich + Louvain layers are deferred follow-ons). Backward compatible: purely additive (one new read/write tool + one new skill + one new helper trio); no behavior change for existing setups.
