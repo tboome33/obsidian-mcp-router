@@ -435,6 +435,28 @@ describe('parse/serialise roundtrip', () => {
     const reparsed = parseDigest(serialiseDigest(original));
     assert.deepEqual(reparsed.claims, original.claims);
   });
+
+  test('REGRESSION: Windows-backslash for: round-trips (canonicalised to /)', () => {
+    // review+ Code Reviewer NIT (wiki-graph pass, 2026-05-29): a
+    // Windows-style `for:` path was YAML-escaped to "wiki\\sub\\a.md" on
+    // serialise, and parseDigest — which strips the surrounding quotes
+    // but does NOT un-escape YAML escapes — reparsed it as the doubled
+    // `wiki\\sub\\a.md`. The digest therefore never matched its
+    // forward-slash source page and its concepts/claims were silently
+    // lost from the graph. serialiseDigest now canonicalises `\` → `/`
+    // so the stored path uses the same separator the router writes
+    // everywhere (collectMarkdown / digestPathForPage).
+    const winPath = 'wiki\\sub\\a.md'; // real single backslashes
+    const md = serialiseDigest({ for: winPath, pageHash: 'a'.repeat(64) });
+    // Stored canonically: forward slashes, bare (no quoting needed,
+    // no surviving backslash to double).
+    assert.match(md, /^for: wiki\/sub\/a\.md$/m);
+    const reparsed = parseDigest(md);
+    // The reparsed `for` resolves back to the same page in forward-slash
+    // canonical form — which is what every other writer/reader uses.
+    assert.equal(reparsed.for, 'wiki/sub/a.md');
+    assert.equal(reparsed.for, winPath.replace(/\\/g, '/'));
+  });
 });
 
 // ---------------------------------------------------------------------------

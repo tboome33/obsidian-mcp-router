@@ -397,9 +397,23 @@ export function serialiseDigest(digest) {
   const lines = [];
   lines.push('---');
   lines.push('type: digest');
-  // `for` is an arbitrary caller-controlled path — MUST be YAML-quoted
-  // to prevent injection via `digest.for = "foo.md\nclaims: [malicious]"`.
-  lines.push(`for: ${quoteYamlScalar(digest.for)}`);
+  // `for` is a vault-relative page path. Canonicalise backslashes to
+  // forward slashes BEFORE quoting so the stored path uses the same
+  // separator the router writes everywhere else (collectMarkdown and
+  // digestPathForPage both emit `/`). Without this, a Windows-style
+  // `wiki\sub\a.md` would YAML-escape to `"wiki\\sub\\a.md"`, and
+  // parseDigest — which strips the surrounding quotes but does NOT
+  // un-escape YAML backslash escapes — would reparse it as the doubled
+  // `wiki\\sub\\a.md`. The digest would then never match its source
+  // page and its concepts/claims would be silently dropped from the
+  // wiki graph. Forward-slash form also needs no quoting for ordinary
+  // paths, so the common case stays bare.
+  //
+  // Quoting still applies when the (now forward-slash) path contains a
+  // YAML-significant char (e.g. a `:`), and the quoting guards against
+  // injection via `digest.for = "foo.md\nclaims: [malicious]"`.
+  const forPath = digest.for.replace(/\\/g, '/');
+  lines.push(`for: ${quoteYamlScalar(forPath)}`);
   // page_hash is hex-validated above; no quoting needed but harmless.
   lines.push(`page_hash: ${digest.pageHash}`);
   lines.push(`concepts: ${serialiseInlineArray(concepts)}`);
