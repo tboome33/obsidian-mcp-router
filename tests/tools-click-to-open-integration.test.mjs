@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { _internals } from '../src/index.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -138,25 +139,37 @@ describe('build_open_link is wired into the MCP surface', () => {
     );
   });
 
-  // v0.14.9 (Reviewer B P2): mutual-exclusion contract is encoded in the
-  // schema, not just enforced at the handler level.
-  test('TOOLS schema has oneOf mutual-exclusion for path vs paths', () => {
-    // Normalize CRLF → LF: on a Windows checkout with git autocrlf=true
-    // the file has `\r\n`, and the block-boundary regex below ends in a
-    // bare `\n` that can't match `},\r\n` — which reddened CI on the
-    // Windows runners while passing locally (autocrlf=input → LF).
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '..', 'src', 'index.mjs'),
-      'utf8',
-    ).replace(/\r\n/g, '\n');
-    // Find the build_open_link tool block and assert it contains a oneOf
-    // with `path` xor `paths`. Brittle but cheap — drift here is a real
-    // bug, the test SHOULD complain if someone removes the contract.
-    const m = src.match(/name:\s*['"]build_open_link['"][\s\S]*?\n\s\s\},\n/);
-    assert.ok(m, 'could not locate build_open_link tool block');
-    assert.match(m[0], /oneOf:\s*\[/, 'oneOf missing from build_open_link schema');
-    assert.match(m[0], /required:\s*\[\s*['"]path['"]\s*\]/);
-    assert.match(m[0], /required:\s*\[\s*['"]paths['"]\s*\]/);
+  // v0.19.1: the `path` xor `paths` contract is enforced at RUNTIME
+  // (build-open-link.mjs rejects both/neither) and documented in the tool
+  // description — NOT in the schema. The Anthropic Messages API rejects a
+  // top-level `oneOf`/`allOf`/`anyOf` in ANY tool's input_schema, even
+  // alongside `type: object` ("input_schema does not support oneOf, allOf,
+  // or anyOf at the top level"), which 400s clients that inline the whole
+  // catalogue (e.g. MCPHub). This guard asserts no tool re-introduces one.
+  // (Composition keywords nested INSIDE a property — e.g. patch_file's
+  // `content.oneOf` — are LEGITIMATE: the API forbids them only at the
+  // schema ROOT. This guard is therefore intentionally NON-RECURSIVE and
+  // checks only each inputSchema's top-level keys. Do NOT "harden" it by
+  // walking sub-schemas ($defs / items / nested properties) — that would
+  // false-positive on patch_file and any future tool with a legitimate
+  // nested union, which is exactly what this guard must NOT flag.)
+  test('no tool input_schema uses top-level oneOf/allOf/anyOf (Anthropic API constraint)', () => {
+    const FORBIDDEN = ['oneOf', 'allOf', 'anyOf'];
+    const offenders = _internals.TOOLS.filter((tool) => {
+      const schema = tool.inputSchema || {};
+      // Root-only by design (see the non-recursive note above): hasOwnProperty
+      // on the schema object itself — never a deep walk into sub-schemas.
+      return FORBIDDEN.some((kw) =>
+        Object.prototype.hasOwnProperty.call(schema, kw),
+      );
+    }).map((tool) => tool.name);
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `tools with a forbidden top-level schema composition keyword: ${
+        offenders.join(', ') || '(none)'
+      }`,
+    );
   });
 });
 

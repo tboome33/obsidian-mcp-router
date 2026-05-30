@@ -634,11 +634,16 @@ const TOOLS = [
     name: 'build_open_link',
     description:
       'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. Returns null URL when the vault is remote or the bridge\'s insecure HTTP server isn\'t enabled.',
-    // v0.14.9 (Reviewer B P2): `oneOf` makes the mutual exclusion contract
-    // discoverable in the schema. Clients that validate against it catch
-    // `{}` (neither) and `{ path, paths }` (both) before invoking the tool.
-    // The runtime handler still validates (defence-in-depth + clearer
-    // error messages including the offending value).
+    // v0.19.1: the `path` xor `paths` mutual exclusion is enforced at
+    // RUNTIME (src/tools/build-open-link.mjs rejects both/neither with a
+    // clear message) and documented in the description above — NOT in the
+    // schema. A top-level `oneOf`/`allOf`/`anyOf` here, even alongside
+    // `type: object`, is rejected by the Anthropic Messages API
+    // ("input_schema does not support oneOf, allOf, or anyOf at the top
+    // level"), which 400s any client that inlines the whole catalogue into
+    // a `tools` request (e.g. MCPHub). Do NOT re-introduce a top-level
+    // composition keyword — the tools-click-to-open-integration test guards
+    // the entire catalogue against this regression.
     inputSchema: {
       type: 'object',
       properties: {
@@ -657,10 +662,6 @@ const TOOLS = [
         },
       },
       additionalProperties: false,
-      oneOf: [
-        { required: ['path'], not: { required: ['paths'] } },
-        { required: ['paths'], not: { required: ['path'] } },
-      ],
     },
   },
   // Roadmap item #6 (llm-wiki-compiler) — structured JSON context pack for

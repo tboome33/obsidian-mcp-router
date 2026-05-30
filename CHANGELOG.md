@@ -8,6 +8,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.19.1] — 2026-05-30 — fix: `build_open_link` schema 400'd the Anthropic API (top-level `oneOf`)
+
+`build_open_link` shipped (v0.14.9) a top-level `oneOf` in its `input_schema` to encode the `path` xor `paths` contract. It's valid JSON Schema, but the **Anthropic Messages API rejects `oneOf` / `allOf` / `anyOf` at the top level of any tool's `input_schema`** — even alongside `type: object`. Any client that inlines the full router catalogue into a `tools` request (e.g. **MCPHub**) therefore got a hard `400 tools.<N>.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level`, failing the whole request. Direct Claude Code sessions were unaffected — MCP tools are loaded on demand there, so the schema is never inlined.
+
+### Fixed
+
+- **Removed the top-level `oneOf` from `build_open_link`'s `input_schema`** (`src/index.mjs`). The `path` xor `paths` mutual exclusion is unchanged — it was already enforced at runtime (`src/tools/build-open-link.mjs` rejects both/neither with a clear error) and documented in the tool description. Only the redundant, API-incompatible schema-level encoding is gone.
+
+### Added
+
+- **Catalogue-wide regression guard** (`tests/tools-click-to-open-integration.test.mjs`) — replaces the old `build_open_link`-specific `oneOf`-presence assertion with a programmatic check over `_internals.TOOLS` asserting that **no** tool's `input_schema` carries a top-level `oneOf` / `allOf` / `anyOf`. Composition keywords nested inside a property (e.g. `patch_file`'s `content.oneOf`) remain allowed — only the schema root is checked.
+
 ## [0.19.0] — 2026-05-29 — self-healing session reconciliation (log.md ↔ Sessions/ no longer depends on SessionEnd)
 
 Fixes a structural desync between the per-session journal (`wiki-meta/Sessions/*.md`) and the chronological `wiki-meta/log.md`: sessions whose **`SessionEnd` hook never fired** (terminal closed abruptly, process killed, crash, OS shutdown — Claude Code does not guarantee `SessionEnd`) were left `status: open` forever with **no log.md line**, while every cleanly-closed session had one. Reported on a real vault with 27 session files: all 16 `closed` had a log entry, all 11 `open` did not. The old `backfill-log-from-sessions` script couldn't repair them either — it skipped any non-`closed` session.
