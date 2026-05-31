@@ -1257,6 +1257,18 @@ La réponse contient maintenant `lockedTo` :
 
 Quand `lockedTo` est `null`, le router est en mode multi-vault normal.
 
+### Config `VAULT_*` en variable d'environnement (éditable depuis le dashboard)
+
+En plus du fichier `config.json` ci-dessous, un vault peut être défini entièrement dans une **variable d'environnement** — une par vault — donc éditable directement depuis l'UI *Environment Variables* du serveur MCPHub (sans SSH ni édition de fichier). C'est une **3ᵉ source de config**, mergée après `portRegistry` + `remoteVaults` ; une entrée `VAULT_*` **écrase** tout vault de même nom. C'est **opt-in** : sans aucune `VAULT_*`, le router se comporte exactement comme avant.
+
+```
+VAULT_<NOM> = <config du vault en JSON>
+```
+
+Requis : `name`, `baseUrl`, `apiKey` (le **token seul** — le router ajoute `Authorization: Bearer ` lui-même). Optionnel : `description`, `wireguard` (métadonnée de politique de sécurité), `tlsInsecure`, `timeoutMs` (défaut `10000`). Les trois modes de connexion sont choisis uniquement par `baseUrl` (tunnel WireGuard `10.8.0.x` / LAN / distant TLS — cf. exemples de la section EN « `VAULT_*` env-var config »).
+
+Parsing défensif : une entrée malformée est **ignorée** avec un warning stderr clair nommant la clé fautive (une mauvaise var ne fait jamais planter les autres). Sur un échec de parse JSON, ni la valeur brute ni le message du parser ne sont loggés (les deux peuvent contenir l'`apiKey`) ; un vault `wireguard:true` dont l'hôte est hors `10.8.0.x` lève un warning. La variable réservée `VAULT_PATH` est ignorée par le scan.
+
 ### Config
 
 Le router lit la config existante maintenue par [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), et ajoute trois champs optionnels par-dessus :
