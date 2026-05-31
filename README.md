@@ -59,6 +59,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 | Env var | What it does | Default when unset |
 |---|---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
+| `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `wireguard`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
 | `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 8 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
 | `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
 
@@ -518,6 +519,32 @@ The response now contains `lockedTo`:
 ```
 
 When `lockedTo` is `null`, the router is in normal multi-vault mode.
+
+## `VAULT_*` env-var config (dashboard-editable)
+
+Besides the `config.json` file below, a vault can be defined entirely in an **environment variable** — one per vault — so it's editable straight from the MCPHub server's *Environment Variables* UI (no SSH + file edit). This is a **3rd config source**, merged after `portRegistry` + `remoteVaults`; a `VAULT_*` entry **overrides** any same-name vault. It's **opt-in**: with no `VAULT_*` set, the router behaves exactly as before.
+
+```
+VAULT_<NAME> = <vault config as JSON>
+```
+
+Required: `name`, `baseUrl`, `apiKey` (the **bare token** — the router adds `Authorization: Bearer ` itself). Optional: `description`, `wireguard` (security-policy metadata), `tlsInsecure`, `timeoutMs` (default `10000`).
+
+The three connection modes (all selected purely by `baseUrl`):
+
+```bash
+# 1. WireGuard tunnel (sensitive/medical — encrypted). wireguard:true asks the
+#    SaaS firewall generator for a WG-only rule; the router still connects via baseUrl.
+VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161","apiKey":"<token>","wireguard":true,"timeoutMs":15000}
+
+# 2. LAN / co-located (non-sensitive) — plain HTTP on the local network.
+VAULT_NOTES={"name":"notes","baseUrl":"http://192.168.0.10:27124","apiKey":"<token>"}
+
+# 3. Remote behind TLS (e.g. nginx + Let's Encrypt).
+VAULT_REMOTE={"name":"remote","baseUrl":"https://vault.example.com","apiKey":"<token>","tlsInsecure":false}
+```
+
+Defensive parsing: a malformed entry is **skipped** with a clear stderr warning naming the faulty key (one bad var never crashes the others). On a JSON-parse failure neither the raw value nor the parser message is logged (both can echo the `apiKey`); a `wireguard:true` vault whose host is outside `10.8.0.x` raises a warning. The reserved `VAULT_PATH` env var is ignored by the scan.
 
 ## Config
 
