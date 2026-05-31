@@ -24,6 +24,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getFileContent } from './rest-client.mjs';
+import { sanitizeContent } from './helpers/sanitize.mjs';
 
 export const RESOURCE_SCHEME = 'obsidian-router';
 export const CATALOG_URI = `${RESOURCE_SCHEME}://_catalog`;
@@ -154,7 +155,11 @@ export async function readResource(uri, registry, readFile) {
   // resolveVault throws a clear error for unknown / missing-key vaults — let it
   // propagate so the SDK surfaces it to the client.
   const vault = registry.resolveVault(parsed.vault);
-  const text = await readFile(vault, def.path);
+  // Sanitize vault-sourced markdown exactly like get_file does — strip control
+  // chars / ANSI escapes that would corrupt the MCP stdio JSON stream or smuggle
+  // escapes into the agent context. (The catalogue branch above is router-built
+  // JSON, so it needs no sanitizing.)
+  const text = sanitizeContent(await readFile(vault, def.path));
   return {
     contents: [
       {

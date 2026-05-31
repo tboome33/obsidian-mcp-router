@@ -477,9 +477,13 @@ function parseEnvVaults(env = {}) {
       (f) => typeof parsed[f] !== 'string' || parsed[f].trim().length === 0,
     );
     if (missing.length > 0) {
+      // SECURITY: log only the KEY NAMES present, never the values — a malformed
+      // entry can carry secrets under non-standard keys (e.g. `token`,
+      // `password`) that redactSecrets() (apiKey + extraHeaders only) would NOT
+      // catch. Key names are enough to spot a typo (`baseURL` vs `baseUrl`).
       warn(
-        `${key}: missing/invalid required field(s) [${missing.join(', ')}] in ` +
-          `${JSON.stringify(redactSecrets(parsed))} — skipped. ` +
+        `${key}: missing/invalid required field(s) [${missing.join(', ')}]; ` +
+          `keys present: [${Object.keys(parsed).join(', ')}] — skipped. ` +
           `Required: name, baseUrl, apiKey (apiKey = bare token, no "Bearer ").`,
       );
       continue;
@@ -494,7 +498,18 @@ function parseEnvVaults(env = {}) {
         typeof parsed.description === 'string' ? parsed.description : undefined,
       wireguard: parsed.wireguard === true,
       tlsInsecure: parsed.tlsInsecure === true,
-      timeoutMs: Number.isFinite(parsed.timeoutMs) ? parsed.timeoutMs : 10000,
+      // Clamp to a positive timeout — a 0/negative value makes every request
+      // abort immediately (the AbortController fires ~now).
+      timeoutMs:
+        Number.isFinite(parsed.timeoutMs) && parsed.timeoutMs > 0
+          ? parsed.timeoutMs
+          : 10000,
+      // Parity with remoteVaults: pass extraHeaders through so a VAULT_* vault
+      // behind Cloudflare Access (CF-Access-Client-Id/Secret) still works.
+      extraHeaders:
+        parsed.extraHeaders && typeof parsed.extraHeaders === 'object'
+          ? { ...parsed.extraHeaders }
+          : undefined,
     };
 
     // Defensive: a wireguard:true vault whose baseUrl host is NOT in the

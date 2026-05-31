@@ -121,19 +121,72 @@ describe('parseEnvVaults — parsing + validation', () => {
     assert.equal(result.warnings.length, 2);
   });
 
-  test('missing required field is skipped and the apiKey is redacted in the log', () => {
-    const SECRET = 'TOKEN_should_be_redacted';
+  test('missing required field is skipped and the apiKey value never reaches the log', () => {
+    const SECRET = 'TOKEN_should_never_be_logged';
     const env = {
-      // baseUrl missing, apiKey present → must be redacted before logging
+      // baseUrl missing, apiKey present → the apiKey VALUE must not be logged
       VAULT_Y: JSON.stringify({ name: 'y', apiKey: SECRET }),
     };
     const { result, stderr } = captureStderr(() => parseEnvVaults(env));
     assert.equal(result.envVaults.length, 0);
     assert.match(result.warnings[0], /VAULT_Y/);
     assert.match(result.warnings[0], /baseUrl/); // names the missing field
-    assert.match(result.warnings[0], /apiKey/); // mentions requirement
-    assert.match(result.warnings[0], /<redacted>/);
-    assert.doesNotMatch(stderr, /TOKEN_should_be_redacted/);
+    assert.match(result.warnings[0], /apiKey/); // key NAME is fine to surface
+    // The VALUE must never appear — we log key names only, not values.
+    assert.doesNotMatch(stderr, /TOKEN_should_never_be_logged/);
+  });
+
+  test('missing-field log never leaks values under non-standard secret keys', () => {
+    // codex P2: redactSecrets only covers apiKey/extraHeaders; a user typo like
+    // `{ "token": "..." }` would slip a secret into the log if we dumped the
+    // object. Key-name-only logging closes the whole class.
+    const env = {
+      VAULT_Q: JSON.stringify({ name: 'q', token: 'NONSTD_SECRET_123', password: 'PW_456' }),
+    };
+    const { result, stderr } = captureStderr(() => parseEnvVaults(env));
+    assert.equal(result.envVaults.length, 0);
+    assert.doesNotMatch(stderr, /NONSTD_SECRET_123/);
+    assert.doesNotMatch(stderr, /PW_456/);
+    assert.match(result.warnings[0], /token/); // key NAMES are fine
+    assert.match(result.warnings[0], /password/);
+  });
+
+  test('extraHeaders pass through (Cloudflare Access parity with remoteVaults)', () => {
+    const env = {
+      VAULT_CF: JSON.stringify({
+        name: 'cf',
+        baseUrl: 'https://vault.example.com',
+        apiKey: 'k',
+        extraHeaders: {
+          'CF-Access-Client-Id': 'abc.access',
+          'CF-Access-Client-Secret': 'xyz',
+        },
+      }),
+    };
+    const { result } = captureStderr(() => parseEnvVaults(env));
+    assert.equal(result.envVaults.length, 1);
+    assert.deepEqual(result.envVaults[0].extraHeaders, {
+      'CF-Access-Client-Id': 'abc.access',
+      'CF-Access-Client-Secret': 'xyz',
+    });
+  });
+
+  test('absent extraHeaders → undefined (matches remoteVaults shape)', () => {
+    const env = {
+      VAULT_X: JSON.stringify({ name: 'x', baseUrl: 'https://x/', apiKey: 'k' }),
+    };
+    const { result } = captureStderr(() => parseEnvVaults(env));
+    assert.equal(result.envVaults[0].extraHeaders, undefined);
+  });
+
+  test('non-positive timeoutMs (0 / negative) falls back to the 10000 default', () => {
+    for (const bad of [0, -5]) {
+      const env = {
+        VAULT_T: JSON.stringify({ name: 't', baseUrl: 'https://t/', apiKey: 'k', timeoutMs: bad }),
+      };
+      const { result } = captureStderr(() => parseEnvVaults(env));
+      assert.equal(result.envVaults[0].timeoutMs, 10000, `timeoutMs ${bad} must clamp`);
+    }
   });
 
   test('empty-string required fields count as missing', () => {

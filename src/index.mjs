@@ -1221,9 +1221,12 @@ export async function startServer({ configPath, watch = true } = {}) {
       const lines = [`Error: ${err.message}`];
       if (err.kind) lines.push(`Kind: ${err.kind}`);
       if (err.hint) lines.push(`Hint: ${err.hint}`);
-      // Machine-readable classification (v0.20.0, MCP standard #4): surfaced in
-      // the readable text (agent-visible) AND in `_meta` (programmatic clients)
-      // so a transient WireGuard drop can be retried automatically.
+      // Machine-readable classification (v0.20.0, MCP standard #4). The readable
+      // text lines (Category:/Retryable:) are the AUTHORITATIVE channel — every
+      // MCP client sees them. `_meta` below is a best-effort programmatic mirror
+      // (the MCP spec treats result `_meta` as passthrough; some clients may
+      // drop it), so we never rely on it alone. Lets an agent auto-retry a
+      // transient WireGuard drop.
       lines.push(`Category: ${errorCategory}`);
       lines.push(`Retryable: ${isRetryable}`);
       return {
