@@ -546,6 +546,16 @@ VAULT_REMOTE={"name":"remote","baseUrl":"https://vault.example.com","apiKey":"<t
 
 Defensive parsing: a malformed entry is **skipped** with a clear stderr warning naming the faulty key (one bad var never crashes the others). On a JSON-parse failure neither the raw value nor the parser message is logged (both can echo the `apiKey`); a `wireguard:true` vault whose host is outside `10.8.0.x` raises a warning. The reserved `VAULT_PATH` env var is ignored by the scan.
 
+### Generating a host deployment (`gen-obsidian-deploy`)
+
+To run a vault as a `linuxserver/obsidian` (Selkies) container on a host (e.g. a server) — serving LiveSync, the Local REST API, and a browser-tab GUI from one plain-markdown `/config` — use the generator instead of hand-writing the JSON above:
+
+```bash
+node scripts/gen-obsidian-deploy.mjs --name tribu --rest-port 27145 --mode wg --wg-host 10.8.0.1
+```
+
+It prints a docker-compose service, an nginx reverse-proxy block (with a self-healing resolver-variable `proxy_pass`), and the `VAULT_*` line — the latter is **round-trip-tested** against this router's `parseEnvVaults`, so it can't drift. Modes: `wg` (WireGuard-only, for sensitive/medical), `lan`, `public` (HTTPS+bearer; refused for `--sensitive` vaults). Secrets default to placeholders — never invented. See [`deploy/dedibox-obsidian/`](./deploy/dedibox-obsidian/) for the full runbook (incl. LiveSync Setup-URI onboarding).
+
 ## Config
 
 The router reads the existing config maintained by [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs), and adds three optional fields on top:

@@ -8,6 +8,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.21.0] — 2026-06-01 — deploy generator for Obsidian-on-host containers (vault-hosting Phase 1)
+
+A tooling-only release: a generator that turns one vault descriptor into the artifacts needed to run that vault as a `linuxserver/obsidian` (Selkies) container on a host (e.g. the Dedibox) and wire it back to the router via a `VAULT_*` env line. Pure functions, fully tested, **secret-safe**. No runtime/router behavior changes — `src/` is untouched, so this is additive and risk-free for existing deployments. Groundwork for the vault-hosting roadmap (Obsidian-in-browser via Selkies + Sealskin, replacing the old xrdp/Guacamole plan).
+
+### Added
+
+- **`scripts/gen-obsidian-deploy.mjs`** — generates, from one vault descriptor: (1) a docker-compose **service** (`linuxserver/obsidian`, `/config` = plain-markdown vault, ports bound to `127.0.0.1` so only a same-host nginx reaches them, `shm_size: 1gb`, optional hardening that disables the in-GUI terminal/sudo); (2) an **nginx REST-API reverse-proxy** block with a **resolver-variable `proxy_pass`** (self-heals on container IP-shuffle — the 502 class from the 2026-05-29 incident) and mode-based access control; (3) an optional **nginx GUI** block (WebSocket upgrade) for the Selkies web viewer; (4) the **`VAULT_<NAME>=<JSON>`** env line for the router. Three modes — `wg` (WireGuard-only, sensitive/medical), `lan`, `public` (HTTPS+bearer, non-medical). **Security guard:** refuses `--mode public` for a `--sensitive` vault. **Secret-safe:** `apiKey`/`password` default to `<token>`/`<password>` placeholders — never invented, never logged into the notes. Pure functions + a CLI.
+- **`deploy/dedibox-obsidian/`** — deploy scaffold: a README runbook (steps, modes, LiveSync **Setup URI** onboarding for pushing a local vault → CouchDB, the E2EE↔viewer tradeoff, acceptance test, rollback), `.env.example`, and committed example outputs (`tribu` wg, `coursera` public).
+
+### Tests
+
+- **`tests/gen-obsidian-deploy.test.mjs`** (31 tests) — validation (incl. the sensitive+public refusal), per-mode baseUrl/nginx/compose, secret-safety, and the headline guarantee: **the generated `VAULT_*` line round-trips through the router's real `parseEnvVaults`** (registry.mjs), so the generator can't drift from what the router accepts.
+
 ## [0.20.0] — 2026-05-31 — `VAULT_*` dashboard config, structured errors, MCP Resources
 
 Three additive, opt-in steps toward an MCPHub-editable, more MCP-mature router (Phases 1-3 of the `router-saas` roadmap). All backward-compatible: with no `VAULT_*` env var set, the registry behaves byte-identically to 0.19.x — local mode is untouched.

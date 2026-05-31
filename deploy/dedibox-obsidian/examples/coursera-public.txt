@@ -1,0 +1,58 @@
+# === Deployment plan: vault "coursera" (mode: public) ===
+
+## docker-compose service
+
+services:
+  obsidian-coursera:
+    image: lscr.io/linuxserver/obsidian:latest
+    container_name: obsidian-coursera
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - "TITLE=Obsidian — coursera"
+      - CUSTOM_USER=obsidian
+      - "PASSWORD=<password>"
+      - DISABLE_TERMINAL=true
+      - DISABLE_ROOT=true
+    volumes:
+      - /srv/vaults/coursera:/config
+    ports:
+      - 127.0.0.1:3001:3001
+      - 127.0.0.1:27161:27161
+    shm_size: 1gb
+    restart: unless-stopped
+
+## nginx — REST API reverse proxy
+
+server {
+    listen 443 ssl http2;
+    ssl_certificate     /etc/letsencrypt/live/coursera.kiviri.fr/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/coursera.kiviri.fr/privkey.pem;
+    server_name coursera.kiviri.fr;
+
+    # Self-heal on container IP-shuffle: re-resolve via Docker DNS every 10s
+    resolver 127.0.0.11 valid=10s;
+    set $upstream_coursera_api obsidian-coursera;
+
+    location / {
+        # public: no IP restriction — the Local REST API bearer apiKey is the gate
+        proxy_pass http://$upstream_coursera_api:27161;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+## router VAULT_* env line (add to the MCPHub instance env)
+
+VAULT_COURSERA={"name":"coursera","baseUrl":"https://coursera.kiviri.fr","apiKey":"<token>","wireguard":false,"tlsInsecure":false,"timeoutMs":15000}
+
+## notes
+
+  - Vault "coursera" → mode public; router reaches it at https://coursera.kiviri.fr.
+  - apiKey is a PLACEHOLDER — replace <token> with the vault's real Local REST API key before use.
+  - GUI PASSWORD is a PLACEHOLDER — set a real one before exposing the GUI.
+  - PUBLIC mode: HTTPS + bearer apiKey only — never use for sensitive/medical vaults.
+  - Ports are bound to 127.0.0.1 on the host → only nginx (same host) reaches the container.
