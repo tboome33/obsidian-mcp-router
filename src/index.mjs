@@ -14,6 +14,8 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
+import { classifyError } from './error-classify.mjs';
+import { registerResourceHandlers } from './resources.mjs';
 import { appendToFile as restAppendToFile } from './rest-client.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
@@ -1108,6 +1110,7 @@ export async function startServer({ configPath, watch = true } = {}) {
     {
       capabilities: {
         tools: {},
+        resources: {},
       },
     },
   );
@@ -1214,9 +1217,15 @@ export async function startServer({ configPath, watch = true } = {}) {
       return await wrapResult(Promise.resolve(result));
     } catch (err) {
       // Friendly errors when the underlying RestApiError carries a `hint`.
+      const { errorCategory, isRetryable } = classifyError(err);
       const lines = [`Error: ${err.message}`];
       if (err.kind) lines.push(`Kind: ${err.kind}`);
       if (err.hint) lines.push(`Hint: ${err.hint}`);
+      // Machine-readable classification (v0.20.0, MCP standard #4): surfaced in
+      // the readable text (agent-visible) AND in `_meta` (programmatic clients)
+      // so a transient WireGuard drop can be retried automatically.
+      lines.push(`Category: ${errorCategory}`);
+      lines.push(`Retryable: ${isRetryable}`);
       return {
         content: [
           {
@@ -1225,11 +1234,21 @@ export async function startServer({ configPath, watch = true } = {}) {
           },
         ],
         isError: true,
+        _meta: {
+          errorCategory,
+          isRetryable,
+          kind: err.kind || 'unknown',
+        },
       };
     }
   });
 
   const transport = new StdioServerTransport();
+  // v0.20.0 — MCP Resources (#6): expose the wiki catalogue read-only. Safe on
+  // READONLY instances (resources never mutate). registryRef.current is the
+  // live, hot-reload-aware registry.
+  registerResourceHandlers(server, () => registryRef.current);
+
   await server.connect(transport);
 
   // Log to stderr so it doesn't pollute the stdio MCP channel

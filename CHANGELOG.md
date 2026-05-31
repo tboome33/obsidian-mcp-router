@@ -8,6 +8,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 Nothing pending right now.
 
+## [0.20.0] — 2026-05-31 — `VAULT_*` dashboard config, structured errors, MCP Resources
+
+Three additive, opt-in steps toward an MCPHub-editable, more MCP-mature router (Phases 1-3 of the `router-saas` roadmap). All backward-compatible: with no `VAULT_*` env var set, the registry behaves byte-identically to 0.19.x — local mode is untouched.
+
+### Added
+
+- **`VAULT_*` env-var vault config — a 3rd config source** (`src/registry.mjs`). One env var per vault, `VAULT_<NAME>=<JSON>`, editable directly from the MCPHub server's Environment Variables UI — no more SSH + `config.json` edit. Required: `name`, `baseUrl`, `apiKey` (the **bare token**; the router adds `Authorization: Bearer ` itself). Optional: `description`, `wireguard`, `tlsInsecure`, `timeoutMs`. Merged after `portRegistry` + `remoteVaults`; a `VAULT_*` entry **overrides** any same-name vault from those sources (the existing portRegistry-vs-remoteVaults order is untouched). Defensive + non-fatal: a malformed entry is skipped with a clear stderr warning naming the faulty key — one bad var can't take down the other vaults. **Security:** on a JSON-parse failure neither the raw value nor the parser's error message is logged (both can echo the `apiKey`); on a missing-field failure the parsed object is redacted via `redactSecrets()`. A `wireguard:true` vault whose `baseUrl` host is outside the `10.8.0.x` WireGuard range raises a warning. `VAULT_PATH` is excluded from the scan (it's the tier-2 default-vault hint, not a vault config).
+- **Structured tool errors — `errorCategory` + `isRetryable`** (`src/error-classify.mjs`, wired into `src/index.mjs`; MCP standard #4). Every tool error result now carries a machine-readable classification in `_meta` (and `Category:` / `Retryable:` lines in the readable text): `transient` (unreachable / timeout / 5xx → retryable), `permission` (401 / 403 / Cloudflare Access / read-only / vault lock), `validation` (404 / 409 / unknown vault), or `unknown`. Lets an agent auto-retry a transient WireGuard drop instead of failing the whole call.
+- **MCP Resources** (`src/resources.mjs`; MCP standard #6). Declares `capabilities.resources` and adds `ListResources` / `ReadResource` handlers exposing the wiki catalogue **read-only**: per active vault, `wiki-meta/index.md` + `wiki-meta/overview.md`, plus a synthetic router-wide `obsidian-router://_catalog` (vault names + type + baseUrl — **never** apiKeys). URI scheme `obsidian-router://<vault>/<id>`. Read-only by nature → safe on `OBSIDIAN_ROUTER_READONLY=true` instances. Cuts agent discovery cost versus looping `list_files` / `list_vaults`.
+
+### Tests
+
+- `tests/vault-env-config.test.mjs`, `tests/structured-errors.test.mjs`, `tests/mcp-resources.test.mjs` — parse / merge / override / retro-compat, the full `kind` → category taxonomy, and resource URI / list / read logic.
+
 ## [0.19.1] — 2026-05-30 — fix: `build_open_link` schema 400'd the Anthropic API (top-level `oneOf`)
 
 `build_open_link` shipped (v0.14.9) a top-level `oneOf` in its `input_schema` to encode the `path` xor `paths` contract. It's valid JSON Schema, but the **Anthropic Messages API rejects `oneOf` / `allOf` / `anyOf` at the top level of any tool's `input_schema`** — even alongside `type: object`. Any client that inlines the full router catalogue into a `tools` request (e.g. **MCPHub**) therefore got a hard `400 tools.<N>.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level`, failing the whole request. Direct Claude Code sessions were unaffected — MCP tools are loaded on demand there, so the schema is never inlined.

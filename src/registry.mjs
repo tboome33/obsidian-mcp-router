@@ -9,6 +9,11 @@
  * 1. portRegistry  → local vaults (legacy + current). Resolves API key by reading
  *                    each vault's .obsidian/plugins/obsidian-local-rest-api/data.json.
  * 2. remoteVaults  → explicit { name, baseUrl, apiKey, tlsInsecure?, timeoutMs? } entries.
+ * 3. VAULT_* env   → one env var per vault (VAULT_<NAME>=<JSON>), editable straight
+ *                    from the MCPHub dashboard. Same descriptor shape as a
+ *                    remoteVaults entry; merged as a 3rd source that OVERRIDES any
+ *                    same-name vault from sources 1-2. Opt-in: with no VAULT_* set,
+ *                    behavior is byte-identical to v0.19.x. (v0.20.0)
  *
  * Vault names default to the lowercased basename of the local vault path,
  * unless overridden in `vaultNames` ({ "<path>": "<name>" }).
@@ -110,7 +115,43 @@ export async function loadRegistry({ configPath } = {}) {
     });
   }
 
-  // --- 2.5. Whitelist filtering via OBSIDIAN_ROUTER_ALLOWED_VAULTS (v0.9.0, opt-in) ---
+  // --- 2.5. VAULT_* env-var vaults (v0.20.0, 3rd config source, opt-in) ---
+  //
+  // One env var per vault (`VAULT_<NAME>=<JSON>`), editable directly from the
+  // MCPHub server's Environment Variables UI — no SSH + config.json edit. See
+  // parseEnvVaults() for the schema + defensive parsing.
+  //
+  // ADDITIVE and OPT-IN: with no VAULT_* var set, parseEnvVaults returns [] and
+  // this block is a no-op → behavior is byte-identical to v0.19.x (the
+  // non-negotiable "local mode stays unchanged" constraint).
+  //
+  // Precedence (decided 2026-05-31): a VAULT_* entry OVERRIDES any same-name
+  // vault already added from portRegistry or remoteVaults; the existing
+  // portRegistry-vs-remoteVaults ordering is left untouched. Among VAULT_* keys
+  // themselves, the last in sorted-key order wins (parseEnvVaults sorts).
+  //
+  // CRITICAL ordering: this MUST run BEFORE the ALLOWED_VAULTS whitelist (2.6)
+  // and resolveDefaultVault() (3) — a VAULT_* vault must be filterable by the
+  // whitelist and selectable as the default (same rationale as the R3 note).
+  const { envVaults } = parseEnvVaults(process.env);
+  for (const ev of envVaults) {
+    const clashIdx = vaults.findIndex((v) => v.name === ev.name);
+    if (clashIdx !== -1) {
+      console.error(
+        `[registry] VAULT_* env var "${ev.name}" overrides a same-name vault ` +
+          `already in the registry.`,
+      );
+      vaults.splice(clashIdx, 1);
+    }
+    // disabledVaults (config.json) can disable an env vault by name too.
+    if (disabled.has(ev.name)) {
+      skipped.push({ name: ev.name, type: 'remote', reason: 'disabled' });
+      continue;
+    }
+    vaults.push(ev);
+  }
+
+  // --- 2.6. Whitelist filtering via OBSIDIAN_ROUTER_ALLOWED_VAULTS (v0.9.0, opt-in) ---
   //
   // When the env var is set (CSV list of vault names), the registry only
   // exposes those vaults — everything else is moved to `skipped[]` with
@@ -346,6 +387,141 @@ function redactSecrets(entry) {
   return out;
 }
 
+/**
+ * Reserved `VAULT_`-prefixed env var names that are NOT vault configs and must
+ * be excluded from the VAULT_* scan. `VAULT_PATH` is the tier-2 default-vault
+ * auto-detection hint (a filesystem path, not JSON) that setup-vault.mjs writes
+ * into every bootstrapped vault's .env — without this exclusion, every
+ * vault-bound session would emit a spurious "not valid JSON" warning.
+ */
+const RESERVED_VAULT_ENV_KEYS = new Set(['VAULT_PATH']);
+
+/**
+ * Parse `VAULT_*` environment variables into vault descriptors — the 3rd config
+ * source (after portRegistry + remoteVaults). v0.20.0.
+ *
+ * Each matching env var holds a JSON object describing one vault, editable
+ * directly from the MCPHub server's Environment Variables UI:
+ *
+ *   VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161",
+ *                  "apiKey":"<token>","wireguard":true,"tlsInsecure":false,
+ *                  "timeoutMs":15000}
+ *
+ * Required: name, baseUrl, apiKey (apiKey = the BARE token; the router adds
+ * `Authorization: Bearer ` itself). Optional: description, wireguard,
+ * tlsInsecure, timeoutMs. `wireguard` is security-policy METADATA — the router
+ * does not use it to connect (the baseUrl decides that); it drives the
+ * defensive check below + the future per-vault firewall.
+ *
+ * Defensive + non-fatal (mirrors remoteVaults handling): a malformed entry is
+ * SKIPPED with a clear stderr warning naming the faulty key — never throws, so
+ * one bad env var can't take down the other vaults.
+ *
+ * SECURITY: on a JSON.parse failure NEITHER the raw value NOR the parser's
+ * error message is logged — V8's SyntaxError echoes a snippet of the input
+ * (Node ≥19) that can contain the apiKey if the JSON breaks near the token. On
+ * a validation failure (parsed but missing a field) the parsed object is
+ * redacted via redactSecrets() before logging.
+ *
+ * Dedup/merge against the other two sources is the caller's job (loadRegistry);
+ * this returns descriptors as-is (possibly with duplicate names). `type:
+ * 'remote'` because the shape + behavior match a remoteVaults entry.
+ *
+ * @param {Record<string,string>} [env] - usually process.env.
+ * @returns {{ envVaults: object[], warnings: string[] }}
+ */
+function parseEnvVaults(env = {}) {
+  const envVaults = [];
+  const warnings = [];
+  const warn = (msg) => {
+    warnings.push(msg);
+    console.error(`[registry] ${msg}`);
+  };
+
+  // Sort keys for deterministic processing — env iteration order is not
+  // guaranteed, and determinism matters for the "last-wins on duplicate name"
+  // tie-break during the merge.
+  const keys = Object.keys(env)
+    .filter((k) => /^VAULT_.+/.test(k) && !RESERVED_VAULT_ENV_KEYS.has(k))
+    .sort();
+
+  for (const key of keys) {
+    const raw = env[key];
+    if (typeof raw !== 'string' || raw.trim().length === 0) {
+      warn(`${key}: empty value — skipped.`);
+      continue;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // SECURITY: never log `raw` OR the parser error — both can echo the
+      // apiKey (see the SECURITY note in the docblock).
+      warn(
+        `${key}: value is not valid JSON (${raw.length} chars) — skipped. ` +
+          `It must be a single JSON object; check quoting/commas.`,
+      );
+      continue;
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      warn(
+        `${key}: JSON must be an object (got ` +
+          `${Array.isArray(parsed) ? 'array' : typeof parsed}) — skipped.`,
+      );
+      continue;
+    }
+
+    const missing = ['name', 'baseUrl', 'apiKey'].filter(
+      (f) => typeof parsed[f] !== 'string' || parsed[f].trim().length === 0,
+    );
+    if (missing.length > 0) {
+      warn(
+        `${key}: missing/invalid required field(s) [${missing.join(', ')}] in ` +
+          `${JSON.stringify(redactSecrets(parsed))} — skipped. ` +
+          `Required: name, baseUrl, apiKey (apiKey = bare token, no "Bearer ").`,
+      );
+      continue;
+    }
+
+    const descriptor = {
+      name: parsed.name.trim(),
+      type: 'remote',
+      baseUrl: parsed.baseUrl.trim().replace(/\/$/, ''),
+      apiKey: parsed.apiKey,
+      description:
+        typeof parsed.description === 'string' ? parsed.description : undefined,
+      wireguard: parsed.wireguard === true,
+      tlsInsecure: parsed.tlsInsecure === true,
+      timeoutMs: Number.isFinite(parsed.timeoutMs) ? parsed.timeoutMs : 10000,
+    };
+
+    // Defensive: a wireguard:true vault whose baseUrl host is NOT in the
+    // 10.8.0.x WG range is suspicious — sensitive (often medical) data could
+    // transit unencrypted on the LAN due to a typo. Warn, but still load it.
+    if (descriptor.wireguard) {
+      let host = null;
+      try {
+        host = new URL(descriptor.baseUrl).hostname;
+      } catch {
+        /* malformed baseUrl — host stays null → treated as out-of-range */
+      }
+      if (!host || !host.startsWith('10.8.0.')) {
+        warn(
+          `${key}: wireguard:true but baseUrl host "${host ?? '?'}" is not in ` +
+            `the 10.8.0.x WireGuard range — sensitive data may transit ` +
+            `unencrypted. Double-check the baseUrl.`,
+        );
+      }
+    }
+
+    envVaults.push(descriptor);
+  }
+
+  return { envVaults, warnings };
+}
+
 async function readLocalApiKey(vaultPath) {
   // Same cross-platform consideration as defaultNameFromPath: vaultPath
   // may be a Windows-style string from config even when runtime is POSIX
@@ -375,6 +551,7 @@ export const _internals = {
   defaultNameFromPath,
   pathBasename,
   redactSecrets,
+  parseEnvVaults,
 };
 
 // Exposed for the list_vaults tool which needs the on-disk casing for the
