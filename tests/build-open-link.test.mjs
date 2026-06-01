@@ -141,6 +141,19 @@ describe('buildOpenLinkTool — anchor (v0.22.0)', () => {
       /anchor.*must be a string/i,
     );
   });
+
+  test('markdownLink stays valid when the heading contains ) (codex P2)', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/foo.md',
+      anchor: 'Step 1) Setup',
+    });
+    // The ) is %29-encoded so the [..](..) destination doesn't terminate early.
+    assert.equal(
+      result.markdownLink,
+      '[foo](http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Step%201%29%20Setup)',
+    );
+    assert.ok(!result.markdownLink.includes(') Setup'), 'an unescaped ) would break the markdown link');
+  });
 });
 
 describe('buildOpenLinkTool — batch mode', () => {

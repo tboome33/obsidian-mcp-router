@@ -77,6 +77,12 @@ describe('encodeVaultPath', () => {
       'wiki%2F_drafts%2Fmy-note-2026.md',
     );
   });
+
+  test('escapes ( and ) for markdown-link safety (codex 2026-06-02)', () => {
+    // encodeURIComponent leaves parens literal → a file like `foo (draft).md`
+    // would break the [label](url) destination at the `)`. Must be %28/%29.
+    assert.equal(encodeVaultPath('wiki/foo (draft).md'), 'wiki%2Ffoo%20%28draft%29.md');
+  });
 });
 
 describe('buildClickToOpenUrl — happy path', () => {
@@ -140,6 +146,16 @@ describe('buildClickToOpenUrl — anchor (v0.22.0)', () => {
       { anchor: '#Section 2' },
     );
     assert.equal(url, 'http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Section%202');
+  });
+
+  test('escapes ) in the heading so the markdown link does not break (codex P2)', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/foo.md',
+      { anchor: 'Step 1) Setup' },
+    );
+    assert.equal(url, 'http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Step%201%29%20Setup');
   });
 
   test('no anchor / empty anchor → no query (backward compatible)', () => {

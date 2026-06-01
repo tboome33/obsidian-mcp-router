@@ -625,7 +625,14 @@ function composeSuggestion(label, decodedHref, info, querySuffix = '') {
   // `querySuffix` (v0.22.0) preserves a trailing query string like
   // `?h=<heading>` (a heading anchor) so a wrong-port fix doesn't strip the
   // user's deep-link. Empty for the bare-path / cwd-mix / bare-vault kinds.
-  const encodedPath = decodedHref.split(/[\\/]/).map(encodeURIComponent).join('%2F');
+  // encodeURIComponent leaves `(` / `)` unescaped, which would terminate the
+  // `[label](url)` destination early for a file/heading containing a paren
+  // (e.g. `foo (draft).md`). Escape both so the suggested fix is valid
+  // markdown — and so the CLICK_TO_OPEN_PATTERN above (which stops at `)`)
+  // can re-capture the whole URL on a subsequent pass. Mirrors
+  // encodeUriMarkdownSafe() in src/helpers/click-to-open.mjs.
+  const mdSafe = (s) => encodeURIComponent(s).replace(/\(/g, '%28').replace(/\)/g, '%29');
+  const encodedPath = decodedHref.split(/[\\/]/).map(mdSafe).join('%2F');
   const suffix = querySuffix || '';
 
   if (info.enableInsecureServer && info.insecurePort) {
@@ -710,6 +717,10 @@ for (const c of clickToOpenCandidates) {
 
   violations.push({
     kind: 'wrong-port',
+    // bareHref intentionally uses the FULL c.encodedPath (query included) —
+    // it's the "before" shown to the user, so it must echo their original
+    // line verbatim. The query-stripped encodedPathOnly is only for the
+    // filesystem resolution above.
     label: c.label,
     bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}/open/${c.encodedPath}`,
     suggested: composeSuggestion(c.label, decodedHref, info, queryStr),

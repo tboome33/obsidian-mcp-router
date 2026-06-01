@@ -70,7 +70,27 @@ export function encodeVaultPath(vaultRelPath) {
   // Strip any leading slash so the result is always relative under the
   // `/open/` prefix.
   const trimmed = normalised.replace(/^\/+/, '');
-  return encodeURIComponent(trimmed);
+  return encodeUriMarkdownSafe(trimmed);
+}
+
+/**
+ * Like `encodeURIComponent`, but also percent-encodes `(` and `)`.
+ *
+ * `encodeURIComponent` leaves `( ) ! ' * ~` unescaped. Inside a markdown
+ * link `[label](url)` a literal `)` (or an unbalanced `(`) terminates the
+ * link destination early — so a vault file named `foo (draft).md` or a
+ * heading like `Step 1) Setup` would produce a broken `markdownLink`
+ * (codex review finding, 2026-06-02). We escape both parens so every URL we
+ * emit is safe to paste into `[..](..)`. The bridge `/open` handler decodes
+ * `%28`/`%29` via `decodeURIComponent` like any other escape, so this is
+ * transparent server-side and backward compatible (old links without parens
+ * are byte-identical).
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function encodeUriMarkdownSafe(s) {
+  return encodeURIComponent(s).replace(/\(/g, '%28').replace(/\)/g, '%29');
 }
 
 /**
@@ -178,7 +198,7 @@ export function buildClickToOpenUrl(vault, filePath, opts = {}) {
 
   const base = `http://127.0.0.1:${port}/open/${encodeVaultPath(filePath)}`;
   const anchor = normalizeAnchor(opts && opts.anchor);
-  return anchor ? `${base}?h=${encodeURIComponent(anchor)}` : base;
+  return anchor ? `${base}?h=${encodeUriMarkdownSafe(anchor)}` : base;
 }
 
 /**

@@ -18,6 +18,7 @@ Deep-linking for click-to-open: a generated link can now land on a specific head
 ### Fixed
 
 - **`vault-link-linter` tolerates anchored URLs.** The wrong-port pass now splits the `?h=` query before resolving the file — otherwise an anchored URL never resolved to a real file and its port was silently left unchecked — and PRESERVES the anchor in the suggested correction.
+- **Markdown-safe URL encoding (`encodeUriMarkdownSafe`).** `encodeURIComponent` leaves `(` / `)` literal, so a heading like `Step 1) Setup` — or a pre-existing file named `foo (draft).md` — produced a `markdownLink` whose `[..](..)` destination terminated early at the `)`. Both parens are now percent-encoded (`%28`/`%29`) in `encodeVaultPath` (fixes the pre-existing path case too) and in the anchor; the linter's `composeSuggestion` mirrors it. Transparent server-side (`decodeURIComponent`), byte-identical for paren-free paths (codex review finding).
 
 ### Tests
 
