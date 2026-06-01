@@ -93,7 +93,18 @@ export function normalizeDeployOpts(raw = {}) {
   // to restPort+1000 (a disjoint band from the 27124-27199 REST block →
   // 28124-28199), overridable. Mirror restPort's fail-fast strictness (N1).
   if (o.guiPort === undefined || o.guiPort === null || o.guiPort === '') {
-    o.guiPort = Number.isInteger(o.restPort) ? o.restPort + 1000 : DEFAULT_GUI_PORT;
+    // Derived default = restPort+1000. Range-check it too (review+ P3): a valid
+    // high restPort like 65000 would derive 66000 (>65535) → require an explicit
+    // --gui-port instead of silently returning an out-of-range value.
+    const derived = Number.isInteger(o.restPort) ? o.restPort + 1000 : DEFAULT_GUI_PORT;
+    if (derived > 65535) {
+      errors.push(
+        `derived guiPort ${derived} (restPort+1000) is out of range — restPort ` +
+          `${o.restPort} is too high for the default. Pass an explicit --gui-port 1-65535.`,
+      );
+    } else {
+      o.guiPort = derived;
+    }
   } else if (!Number.isInteger(Number(o.guiPort)) || Number(o.guiPort) < 1 || Number(o.guiPort) > 65535) {
     errors.push(`guiPort "${raw.guiPort}" invalid — integer 1-65535 required (omit for default restPort+1000).`);
   } else {
@@ -443,6 +454,40 @@ export function buildDeploymentPlan(opts) {
   };
 }
 
+/**
+ * Render a deployment plan to the human-facing text the CLI prints. Pure +
+ * exported so the rendering (esp. the "no REST block in wg/lan" handling — a
+ * literal `null` here would be pasteable garbage, review+ P2) is unit-testable.
+ *
+ * @param {object} plan - from buildDeploymentPlan
+ * @returns {string}
+ */
+export function renderPlanText(plan) {
+  const out = [];
+  out.push(`# === Deployment plan: vault "${plan.name}" (mode: ${plan.mode}) ===\n`);
+  out.push('## docker-compose service\n');
+  out.push(plan.composeYaml);
+  if (plan.nginxApi) {
+    out.push('## nginx — REST API reverse proxy\n');
+    out.push(plan.nginxApi);
+  } else {
+    const iface = plan.mode === 'wg' ? 'WireGuard' : 'LAN';
+    out.push(
+      `## nginx — REST API reverse proxy\n\n(none for ${plan.mode} mode — the REST ` +
+        `port is reached directly on the ${iface} interface; no nginx block needed.)\n`,
+    );
+  }
+  if (plan.nginxGui) {
+    out.push('## nginx — Selkies GUI (web viewer) reverse proxy\n');
+    out.push(plan.nginxGui);
+  }
+  out.push('## router VAULT_* env line (add to the MCPHub instance env)\n');
+  out.push(plan.vaultEnv.line + '\n');
+  out.push('## notes\n');
+  out.push(plan.notes.map((n) => '  - ' + n).join('\n'));
+  return out.join('\n');
+}
+
 // Exposed for tests. (parseArgv is a hoisted function declaration below.)
 export const _internals = { yamlScalar, parseArgv, PLACEHOLDER_TOKEN, PLACEHOLDER_PASSWORD };
 
@@ -501,19 +546,7 @@ if (isMain()) {
     if (args.json) {
       console.log(JSON.stringify(plan, null, 2));
     } else {
-      console.log(`# === Deployment plan: vault "${plan.name}" (mode: ${plan.mode}) ===\n`);
-      console.log('## docker-compose service\n');
-      console.log(plan.composeYaml);
-      console.log('## nginx — REST API reverse proxy\n');
-      console.log(plan.nginxApi);
-      if (plan.nginxGui) {
-        console.log('## nginx — Selkies GUI (web viewer) reverse proxy\n');
-        console.log(plan.nginxGui);
-      }
-      console.log('## router VAULT_* env line (add to the MCPHub instance env)\n');
-      console.log(plan.vaultEnv.line + '\n');
-      console.log('## notes\n');
-      for (const n of plan.notes) console.log('  - ' + n);
+      console.log(renderPlanText(plan));
     }
   } catch (err) {
     console.error('[gen-obsidian-deploy] ' + err.message);

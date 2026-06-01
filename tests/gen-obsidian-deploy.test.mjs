@@ -26,6 +26,7 @@ import {
   buildNginxApiServer,
   buildNginxGuiServer,
   buildDeploymentPlan,
+  renderPlanText,
   envKeyForName,
   WG_RANGE,
   LAN_RANGE,
@@ -127,6 +128,15 @@ describe('normalizeDeployOpts — validation', () => {
 
   test('explicit guiPort is honored', () => {
     assert.equal(normalizeDeployOpts({ ...base, guiPort: 30000 }).guiPort, 30000);
+  });
+
+  test('derived guiPort out of range (restPort+1000 > 65535) is rejected (review+ P3)', () => {
+    assert.throws(
+      () => normalizeDeployOpts({ ...base, restPort: 65000 }),
+      /derived guiPort 66000 .* out of range/,
+    );
+    // …but an explicit in-range gui-port rescues a high restPort
+    assert.equal(normalizeDeployOpts({ ...base, restPort: 65000, guiPort: 65001 }).guiPort, 65001);
   });
 
   test('dotted name error includes the FQDN → --name/--api-domain hint', () => {
@@ -377,6 +387,37 @@ describe('buildDeploymentPlan', () => {
     assert.ok(!plan.nginxApi.includes('SUPERSECRET'), 'apiKey must not appear in nginx api');
     assert.ok(!plan.nginxGui.includes('SUPERSECRET'), 'apiKey must not appear in nginx gui');
     assert.ok(plan.vaultEnv.line.includes('SUPERSECRET'), 'apiKey belongs in the VAULT_* line');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderPlanText — CLI text rendering (review+ P2: no literal `null` block)
+// ---------------------------------------------------------------------------
+describe('renderPlanText', () => {
+  test('wg (no REST block) → NEVER prints a literal "null" under the REST heading', () => {
+    const plan = buildDeploymentPlan({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10' });
+    const text = renderPlanText(plan);
+    assert.doesNotMatch(text, /reverse proxy\s*\n+null/, 'must not emit a bare null block');
+    assert.match(text, /none for wg mode/, 'must explain why there is no REST block');
+    assert.match(text, /## docker-compose service/);
+    assert.match(text, /VAULT_TRIBU=/);
+  });
+
+  test('lan (no REST block) → explanatory note, no null', () => {
+    const text = renderPlanText(buildDeploymentPlan({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10' }));
+    assert.doesNotMatch(text, /\bnull\b/);
+    assert.match(text, /none for lan mode/);
+  });
+
+  test('public → real REST block is rendered (not the "none" note)', () => {
+    const text = renderPlanText(buildDeploymentPlan({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr' }));
+    assert.match(text, /## nginx — REST API reverse proxy\n\nserver \{/);
+    assert.doesNotMatch(text, /none for public mode/);
+  });
+
+  test('GUI block omitted cleanly when no guiDomain', () => {
+    const text = renderPlanText(buildDeploymentPlan({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10' }));
+    assert.doesNotMatch(text, /Selkies GUI/);
   });
 });
 
