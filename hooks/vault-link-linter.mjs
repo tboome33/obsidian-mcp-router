@@ -61,6 +61,31 @@
  *      scheme/relative guard — a real local file under the cwd, or an
  *      absolute path to some other vault, never matches all four.
  *
+ *   4. **`bare-vault-path`** (v0.21.1 — added after Roland incident
+ *      2026-06-01 where Claude wrote `` `wiki-meta/index.md` `` and
+ *      `` `wiki-meta/log.md` `` as backtick-wrapped relative paths in a
+ *      chat recap) — a BARE RELATIVE path token (no scheme, not absolute)
+ *      whose first segment is `wiki/` or `wiki-meta/` and which resolves
+ *      to a real file in a vault OTHER than the cwd. The Claude Code
+ *      renderer clickifies any file-like token — including text inside
+ *      inline-code backticks — by rooting it at the workspace cwd, so in
+ *      workspace-bound mode (cwd ≠ vault) a bare `wiki-meta/index.md`
+ *      becomes a clickable `<cwd>/wiki-meta/index.md` that is a phantom
+ *      (the code repo has no `wiki-meta/` dir). This slipped past every
+ *      earlier pass TWICE over: (a) `stripCode()` deletes inline-code
+ *      spans BEFORE detection, so the most common form (backtick-wrapped)
+ *      was invisible; (b) the `bare-path` pass only scans markdown links
+ *      `[label](href)` and the `cwd-vault-mix` pass only scans ABSOLUTE
+ *      paths — a bare relative token matched neither. This pass scans a
+ *      variant of the text with fenced/indented code stripped but
+ *      INLINE-CODE PRESERVED (4a), plus the inline-stripped prose (4b),
+ *      and is made zero-false-positive by three gates: the token resolves
+ *      to a real vault file, that vault is NOT the cwd (so the renderer's
+ *      cwd-rooted link is genuinely a phantom — in cwd-is-vault mode the
+ *      link works and is left alone), and the token is not also a real
+ *      local file under the cwd. Repo files like `README.md` or
+ *      `src/registry.mjs` never match (wrong prefix / resolve under cwd).
+ *
  * Exit codes:
  *   0  — no violations (or env var opt-out, or recursion guard)
  *   2  — violations found, stderr lists them; Claude Code re-runs the
@@ -76,17 +101,21 @@
  * this turn), exit 0 silently — never block the same turn twice.
  *
  * Known gaps (intentional tradeoffs):
- *   - **Markdown links only — EXCEPT the `cwd-vault-mix` kind**. For the
- *     `bare-path` and `wrong-port` kinds, bare path tokens in prose,
- *     tables, or lists (e.g. a row like `| wiki-meta/log.md | log file |`)
- *     are NOT flagged — detecting those would generate too many false
- *     positives on legitimate relative-path mentions inside
- *     conversational text. The `cwd-vault-mix` kind (v0.18.1) DOES scan
- *     bare prose, because its four-condition gate (absolute + cwd-prefixed
- *     + wiki segment + phantom-on-disk + tail-resolves-in-vault) is
- *     specific enough that a bare-prose match is never a false positive.
- *     For the other two kinds the user remains the second line of defense
- *     for prose mentions.
+ *   - **`bare-path` / `wrong-port` are markdown-links-only.** Bare path
+ *     tokens with an arbitrary (non-`wiki`) prefix or extension in prose
+ *     are not flagged by those two kinds — too many false positives on
+ *     legitimate relative-path mentions. BUT as of v0.21.1 the
+ *     `bare-vault-path` kind DOES scan bare prose AND inline-code spans
+ *     for relative paths whose first segment is `wiki/` or `wiki-meta/`
+ *     and that resolve to a real file in a non-cwd vault (e.g. a token
+ *     like `wiki-meta/log.md`, backtick-wrapped or not — the old example
+ *     here, a `| wiki-meta/log.md |` table cell, is now correctly caught).
+ *     Three gates keep it zero-false-positive: resolves-to-real-vault-file
+ *     + vault-is-not-cwd + not-a-real-local-file. The `cwd-vault-mix` kind
+ *     (v0.18.1) similarly scans bare prose for ABSOLUTE phantom paths. So
+ *     the only prose mentions still unflagged are NON-vault relative paths
+ *     (repo files, arbitrary `.md` names) — which the renderer links to
+ *     the cwd correctly, so there is nothing to fix.
  *   - **Path traversal** (`../`) is refused at the filesystem-check
  *     step (any href that resolves outside its candidate vault root is
  *     skipped — see `findOwningVault`). Otherwise a hallucinated link
@@ -308,10 +337,48 @@ for (const m of stripped.matchAll(TRAP_BARE_PATTERN)) {
   trapCandidates.push({ label: null, raw: m[0].trim() });
 }
 
+// Pass 4 candidate collection (v0.21.1) — bare RELATIVE vault paths
+// (`wiki/...` or `wiki-meta/...`) that the Claude Code renderer clickifies
+// against the cwd, producing a broken link in workspace-bound mode (cwd ≠
+// vault). MUST run before the early-exit guard below (like Pass 3): these
+// produce zero Pass-1/2/3 hits — a bare relative token is neither a
+// markdown link (Pass 1) nor an absolute path (Pass 3), and the most
+// common form lives inside inline-code backticks that `stripCode()`
+// already deleted from `stripped`. The vault-membership CHECK runs later
+// in Pass 4 proper (needs the resolved config). Two forms collected:
+//   4a — backtick-delimited inline code: `wiki-meta/index.md` (spaces OK,
+//        the backticks delimit the token). The dominant real-world form.
+//   4b — un-backticked bare prose token: wiki-meta/index.md (no spaces).
+const VAULT_REL_PATH_RE = /^(?:wiki-meta|wiki)[\\/].+\.md$/;
+const barePassCandidates = [];
+// 4a — scan a variant with fenced/indented code stripped but INLINE CODE
+// PRESERVED (the opposite of `stripped`), so backtick-wrapped paths are
+// visible. Fenced/indented blocks stay stripped so genuine code examples
+// remain exempt (consistent with Passes 1-3).
+let blocksStripped = text;
+blocksStripped = blocksStripped.replace(/^(?: {4}|\t).*$/gm, '');
+blocksStripped = blocksStripped.replace(/```[\s\S]*?```/g, '');
+blocksStripped = blocksStripped.replace(/~~~[\s\S]*?~~~/g, '');
+for (const m of blocksStripped.matchAll(/`([^`\n]+)`/g)) {
+  const inner = m[1].trim();
+  if (VAULT_REL_PATH_RE.test(inner)) barePassCandidates.push({ raw: inner, form: 'inline-code' });
+}
+// 4b — un-backticked prose tokens (no spaces). Scan `stripped` (inline code
+// already removed) with markdown links ALSO removed, so a `[label](wiki/x.md)`
+// link already handled by Pass 1 isn't double-flagged. The negative
+// lookbehind rejects a `wiki`/`wiki-meta` segment sitting INSIDE a longer
+// path (preceded by a separator/word char) — that's an absolute path
+// (Pass 3) or a URL component, not a relative-path start.
+const proseNoLinks = stripped.replace(/\[[^\]\n]+\]\([^)\n]+\)/g, '');
+for (const m of proseNoLinks.matchAll(/(?<![\w%/\\.-])(?:wiki-meta|wiki)[\\/][^\s)\]>"'`]+?\.md/g)) {
+  barePassCandidates.push({ raw: m[0].trim(), form: 'prose' });
+}
+
 if (
   bareCandidates.length === 0 &&
   clickToOpenCandidates.length === 0 &&
-  trapCandidates.length === 0
+  trapCandidates.length === 0 &&
+  barePassCandidates.length === 0
 ) process.exit(0);
 
 // ---- Resolve which vault each candidate belongs to --------------------
@@ -679,12 +746,50 @@ for (const cand of trapCandidates) {
   });
 }
 
+// Pass 4 — bare relative vault-path violations (v0.21.1). Candidates
+// (barePassCandidates) were collected earlier, above the no-candidates
+// guard, because they produce zero Pass-1/2/3 hits. Three gates make this
+// zero-false-positive (see header doc):
+//   (a) NOT a real local file under the cwd — a genuine repo file, or the
+//       cwd-is-vault case where the renderer's cwd-rooted link works.
+//   (b) resolves to a real file in some active vault.
+//   (c) that vault is NOT the cwd — the exact condition where the
+//       renderer's cwd-rooted link is a phantom (workspace-bound mode).
+const barePassSeen = new Set();
+for (const cand of barePassCandidates) {
+  const token = cand.raw;
+  if (barePassSeen.has(token)) continue;
+  // (a) skip a real local file under the cwd (repo file or cwd-is-vault).
+  let localResolved;
+  try { localResolved = path.resolve(cwd, safeDecodeURI(token)); } catch { continue; }
+  if (fs.existsSync(localResolved)) continue;
+  // (b) must resolve to a real file in an active vault.
+  const owner = findOwningVault(token);
+  if (!owner) continue;
+  // (c) only flag when the owning vault is NOT the cwd.
+  if (path.resolve(owner.vault) === cwdResolved) continue;
+  const info = vaultPortInfo(owner.vault);
+  if (!info) continue;
+
+  barePassSeen.add(token);
+  const label = path.basename(owner.decodedHref, '.md');
+  violations.push({
+    kind: 'bare-vault-path',
+    label,
+    bareHref: token,
+    suggested: composeSuggestion(label, owner.decodedHref, info),
+    vault: owner.vault,
+    form: cand.form,
+  });
+}
+
 if (violations.length === 0) process.exit(0);
 
 // ---- Compose bilingual stderr feedback --------------------------------
 const barePathCount = violations.filter((v) => v.kind === 'bare-path').length;
 const wrongPortCount = violations.filter((v) => v.kind === 'wrong-port').length;
 const trapCount = violations.filter((v) => v.kind === 'cwd-vault-mix').length;
+const bareVaultCount = violations.filter((v) => v.kind === 'bare-vault-path').length;
 
 const lines = [];
 lines.push('[obsidian-mcp-router/vault-link-linter] Convention violation');
@@ -693,16 +798,19 @@ lines.push(`FR — ${violations.length} violation(s) du format click-to-open dan
 if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/open/...`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} URL(s) click-to-open avec un mauvais port`);
 if (trapCount) lines.push(`  • ${trapCount} chemin(s) absolu(s) mêlant le cwd et un sous-chemin vault (fichier fantôme, n'existe pas sur le disque)`);
+if (bareVaultCount) lines.push(`  • ${bareVaultCount} chemin(s) vault relatif(s) nu(s) (ex. \`wiki-meta/index.md\`) — le renderer les rattache au cwd, pas au vault, donc le lien est cassé`);
 lines.push('');
 lines.push(`EN — ${violations.length} click-to-open convention violation(s) in your last response:`);
 if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/open/... format`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} click-to-open URL(s) with the wrong port`);
 if (trapCount) lines.push(`  • ${trapCount} absolute path(s) mixing the cwd with a vault subpath (phantom file, does not exist on disk)`);
+if (bareVaultCount) lines.push(`  • ${bareVaultCount} bare relative vault path(s) (e.g. \`wiki-meta/index.md\`) — the renderer roots them at the cwd, not the vault, so the link breaks`);
 lines.push('');
 lines.push('Violations + corrections :');
 for (const v of violations) {
   const tag = v.kind === 'wrong-port' ? '[wrong-port] '
     : v.kind === 'cwd-vault-mix' ? '[cwd+vault]  '
+    : v.kind === 'bare-vault-path' ? '[bare-vault] '
     : '[bare-path]  ';
   lines.push(`  ${tag}• [${v.label}](${v.bareHref})`);
   if (v.kind === 'wrong-port') {
@@ -710,6 +818,9 @@ for (const v of violations) {
   }
   if (v.kind === 'cwd-vault-mix') {
     lines.push(`                phantom path — the cwd (${v.cwd}) has no \`${v.firstSeg}/\` subdir; this file lives in vault ${path.basename(v.vault)}, NOT under the cwd`);
+  }
+  if (v.kind === 'bare-vault-path') {
+    lines.push(`                bare relative path${v.form === 'inline-code' ? ' (inside backticks)' : ''} — the renderer clickifies it to <cwd>/${v.bareHref} (phantom); the file lives in vault ${path.basename(v.vault)}`);
   }
   if (v.suggested) {
     lines.push(`               → ${v.suggested}`);

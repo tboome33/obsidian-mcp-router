@@ -6,9 +6,21 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-06-02 — linter catches bare relative vault paths; `--tls-insecure` generator flag
+
+A hooks + tooling release. Headline: a **fix to the `vault-link-linter` Stop hook** so it finally catches the bare-relative-path class of broken vault link — the recurring "you wrote `` `wiki-meta/index.md` `` and it renders as a dead `<cwd>/wiki-meta/index.md` link" bug. Plus the previously-unreleased `--tls-insecure` generator flag. `src/` runtime is untouched.
+
+### Fixed
+
+- **`vault-link-linter` (Stop hook) now catches BARE RELATIVE vault paths** — the exact class of broken link reported repeatedly. The linter previously flagged only markdown-link hrefs (`[x](wiki/y.md)`, the `bare-path` kind) and absolute cwd+vault phantom paths (`cwd-vault-mix`); a **bare relative token** like `wiki-meta/index.md` slipped through twice over: (a) `stripCode()` deleted inline-code spans *before* any detection ran, so the dominant backtick-wrapped form was invisible, and (b) no pass scanned bare relative tokens. Yet the Claude Code renderer clickifies such tokens against the workspace **cwd**, so in workspace-bound mode (cwd ≠ vault) they render as a dead `<cwd>/wiki-meta/index.md` link. New **Pass 4 (`bare-vault-path`)** scans both inline-code spans and bare prose for `wiki/`- and `wiki-meta/`-prefixed relative `.md` paths and blocks (exit 2) when the path resolves to a real file in a vault **other than the cwd**. Three gates keep it zero-false-positive: *resolves-to-a-real-vault-file* + *vault-is-not-the-cwd* + *not-a-real-local-file* — so repo files (`README.md`, `src/x.mjs`), fenced code examples, and cwd-is-vault mode are all left alone. The hook's `build_open_link` companion (and the MCP write/get/patch tools' `clickToOpenUrl` field) give the correct URL to emit.
+
 ### Added
 
 - **`gen-obsidian-deploy` — `--tls-insecure` flag.** The generator now emits `tlsInsecure: true` into the `VAULT_*` line on request (default stays `false` = verify). For an `https` baseUrl served behind a self-signed / internal-CA cert the router can't validate — e.g. a self-signed nginx placed in front of the REST API. The router already honored `tlsInsecure` on `VAULT_*` entries (v0.20.0); previously the generator hard-coded `false`, so this exposes the existing capability. Round-trips through `parseEnvVaults` (asserted in tests).
+
+### Tests
+
+- **`tests/vault-link-linter.test.mjs`** — +11 cases for the new `bare-vault-path` pass: backtick-wrapped + bare-prose detection, the wrong-prefix / fenced-code / cwd-is-vault / non-resolving exemptions, no-double-flag-with-Pass-1, dedupe, and the exact 2026-06-01 backtick-wrapped `wiki-meta/` regression. Full suite: **1644 green**.
 
 ## [0.21.0] — 2026-06-01 — deploy generator for Obsidian-on-host containers (vault-hosting Phase 1)
 

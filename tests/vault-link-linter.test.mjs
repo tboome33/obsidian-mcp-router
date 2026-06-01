@@ -816,6 +816,118 @@ describe('vault-link-linter — cwd+vault-subpath trap (v0.18.1)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v0.21.1 — bare RELATIVE vault-path detection.
+// Roland incident 2026-06-01: Claude wrote `wiki-meta/index.md` and
+// `wiki-meta/log.md` as backtick-wrapped relative paths in a chat recap.
+// The Claude Code renderer clickified them against the cwd
+// (I:\DEVELOPPEMENT\obsidian-mcp-router\wiki-meta\index.md → phantom).
+// Two prior blind spots let them through: (a) stripCode() deletes inline-
+// code spans BEFORE detection, so backtick-wrapped paths were invisible;
+// (b) the bare-path pass only scans markdown links and the cwd-vault-mix
+// pass only scans absolute paths — a bare relative token matched neither.
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — bare relative vault-path (v0.21.1)', () => {
+  // A controlled fake workspace that does NOT contain the vault files, so
+  // the cwd≠vault (workspace-bound) condition is deterministic regardless
+  // of where the test runs.
+  const FAKE_WS = process.platform === 'win32' ? 'C:\\fake-code-ws' : '/fake-code-ws';
+
+  test('blocks a BACKTICK-WRAPPED bare relative vault path (the core 2026-06-01 bug)', () => {
+    // `wiki/log.md` inside inline-code backticks — historically invisible
+    // because stripCode() removed inline spans before any pass ran.
+    const r = runLinter('Mis à jour `wiki/log.md` maintenant.', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /bare-vault|bare relative/i);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md/);
+  });
+
+  test('blocks an UN-backticked bare relative vault path in prose', () => {
+    const r = runLinter('Voir wiki/sub/page.md pour le détail.', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Fsub%2Fpage\.md/);
+  });
+
+  test('stderr carries the [bare-vault] tag + "inside backticks" explainer', () => {
+    const r = runLinter('`wiki/log.md`', { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /\[bare-vault\]/);
+    assert.match(r.stderr, /inside backticks/);
+  });
+
+  test('exits 0 on a bare relative path that does NOT resolve to any vault file', () => {
+    const r = runLinter('See `wiki/does-not-exist-xyz.md` somewhere.', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 on non-vault relative paths (wrong prefix — repo files clickify to cwd correctly)', () => {
+    const r = runLinter('Edit `src/registry.mjs` and README.md and `docs/guide.md`.', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 when a bare vault path is inside a fenced code block (genuine example)', () => {
+    const r = runLinter('```\nwiki/log.md\n```', { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('exits 0 when a backticked vault path is inside a fenced code block', () => {
+    const r = runLinter('```\nsee `wiki/log.md` here\n```', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('does NOT double-flag a markdown link (Pass 1 owns those — count stays 1)', () => {
+    const r = runLinter('See [log](wiki/log.md).', { env: { CLAUDE_PROJECT_DIR: FAKE_WS } });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /1 violation\(s\)/);
+  });
+
+  test('exits 0 in cwd-is-vault mode (renderer roots the link at the vault, link works)', () => {
+    // When the cwd IS the vault, a bare `wiki/log.md` clickifies to
+    // <cwd>/wiki/log.md = the real file → no breakage → no violation.
+    const r = runLinter('See `wiki/log.md`.', { env: { CLAUDE_PROJECT_DIR: vaultPath } });
+    assert.equal(r.status, 0, `expected exit 0 (cwd-is-vault), got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('REGRESSION: the exact backtick-wrapped wiki-meta/ paths from 2026-06-01', () => {
+    // Roland's report: `wiki-meta/index.md` and `wiki-meta/log.md` rendered
+    // as broken I:\...\wiki-meta\index.md links. Add the scaffold fixtures.
+    fs.mkdirSync(path.join(vaultPath, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(vaultPath, 'wiki-meta', 'index.md'), '# index');
+    fs.writeFileSync(path.join(vaultPath, 'wiki-meta', 'log.md'), '# log');
+    try {
+      const r = runLinter(
+        'Relié depuis `wiki-meta/index.md` et `wiki-meta/log.md`.',
+        { env: { CLAUDE_PROJECT_DIR: FAKE_WS } },
+      );
+      assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+      assert.match(r.stderr, /2 violation\(s\)/);
+      assert.match(r.stderr, /open\/wiki-meta%2Findex\.md/);
+      assert.match(r.stderr, /open\/wiki-meta%2Flog\.md/);
+    } finally {
+      fs.rmSync(path.join(vaultPath, 'wiki-meta'), { recursive: true, force: true });
+    }
+  });
+
+  test('dedupes repeated mentions of the same bare path (count 1)', () => {
+    const r = runLinter('`wiki/log.md` then again `wiki/log.md`.', {
+      env: { CLAUDE_PROJECT_DIR: FAKE_WS },
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /1 violation\(s\)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Robustness — malformed inputs should never crash the hook
 // ---------------------------------------------------------------------------
 
