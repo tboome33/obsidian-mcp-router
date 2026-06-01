@@ -2,8 +2,8 @@
 /**
  * bump-version.mjs
  *
- * Synchronizes the plugin version across the THREE files Claude Code and
- * its marketplace look at:
+ * Synchronizes the plugin version across the FOUR places Claude Code,
+ * its marketplace, and humans look at:
  *
  *   - `package.json`                          (npm package version + what
  *                                              hooks/check-router-update.mjs
@@ -11,6 +11,9 @@
  *   - `.claude-plugin/plugin.json`            (plugin manifest version)
  *   - `.claude-plugin/marketplace.json`       (top-level `metadata.version`
  *                                              AND `plugins[0].version`)
+ *   - `README.md`                             (the shields.io version badge,
+ *                                              EN + FR — drifted repeatedly
+ *                                              because earlier bumps ignored it)
  *
  * Historically these drifted (e.g. v0.13.x in `package.json` but still
  * v0.12.7 in plugin.json + marketplace.json), which silently breaks
@@ -189,6 +192,39 @@ function escapeRegex(s) {
 }
 
 /**
+ * Rewrite the shields.io version badge in README.md to `newVersion`.
+ *
+ * The badge looks like `…/badge/version-0.19.1-blueviolet.svg` and appears
+ * once per language section (EN + FR), so we replace EVERY occurrence. This
+ * file isn't JSON, so it can't go through `updateJsonVersion` — hence a
+ * dedicated regex rewrite.
+ *
+ * Idempotent: returns `{ changed: false }` if every badge already shows
+ * `newVersion`. Throws if the file has no recognizable version badge, so a
+ * renamed/removed badge surfaces loudly instead of silently no-op'ing (the
+ * whole reason the badge drifted to v0.10.3 / v0.19.1 in the first place).
+ */
+export function updateReadmeBadge(filePath, newVersion) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const BADGE_RE = /(badge\/version-)\d+\.\d+\.\d+(-blueviolet)/g;
+  const matches = raw.match(BADGE_RE);
+  if (!matches || matches.length === 0) {
+    throw new Error(
+      `No version badge (badge/version-X.Y.Z-blueviolet) found in ${filePath}.`,
+    );
+  }
+  const target = `badge/version-${newVersion}-blueviolet`;
+  if (matches.every((m) => m === target)) {
+    return { changed: false };
+  }
+  // Function replacement avoids `$1`/`$2` backreference parsing footguns
+  // when `newVersion` contains characters special to String.replace.
+  const updated = raw.replace(BADGE_RE, (_m, p1, p2) => `${p1}${newVersion}${p2}`);
+  fs.writeFileSync(filePath, updated);
+  return { changed: true };
+}
+
+/**
  * Bump every plugin/marketplace/package file to `newVersion`. Returns
  * a report `{ files: { [path]: { changed, before } }, changelog: { changed } }`.
  *
@@ -221,7 +257,7 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
     throw new Error(`Invalid semver: ${newVersion}`);
   }
 
-  const report = { files: {}, changelog: { changed: false } };
+  const report = { files: {}, changelog: { changed: false }, readme: { changed: false } };
 
   for (const { relPath, keyPaths } of targets) {
     const fullPath = path.join(root, relPath);
@@ -260,6 +296,18 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
     }
   }
 
+  // README.md shields.io version badge (EN + FR). Not JSON, so it needs a
+  // dedicated regex rewrite. Optional: skipped if the repo has no README
+  // (e.g. minimal test fixtures) — never throws for a missing file here.
+  const readmePath = path.join(root, 'README.md');
+  if (fs.existsSync(readmePath)) {
+    const beforeReadme = fs.readFileSync(readmePath, 'utf8');
+    report.readme = updateReadmeBadge(readmePath, newVersion);
+    if (dryRun) {
+      fs.writeFileSync(readmePath, beforeReadme);
+    }
+  }
+
   if (withChangelog) {
     const changelogPath = path.join(root, 'CHANGELOG.md');
     if (fs.existsSync(changelogPath)) {
@@ -287,7 +335,8 @@ if (isMain) {
       'Usage: node scripts/bump-version.mjs <new-version> [--dry-run] [--no-changelog]\n' +
       '\n' +
       'Bumps the version in package.json, .claude-plugin/plugin.json,\n' +
-      'and .claude-plugin/marketplace.json (both metadata.version and plugins[0].version),\n' +
+      '.claude-plugin/marketplace.json (both metadata.version and plugins[0].version),\n' +
+      'and the shields.io version badge in README.md (EN + FR),\n' +
       'and inserts a stub entry at the top of CHANGELOG.md.\n',
     );
     process.exit(args.length === 0 ? 1 : 0);
@@ -314,6 +363,9 @@ if (isMain) {
         `${prefix}CHANGELOG.md: ${report.changelog.changed ? 'stub inserted' : 'unchanged (already has entry for this version)'}\n`,
       );
     }
+    process.stdout.write(
+      `${prefix}README.md badge: ${report.readme.changed ? `synced → v${newVersion}` : 'unchanged (already at this version, or no README)'}\n`,
+    );
     if (dryRun) {
       process.stdout.write('\n(Dry-run — no files were written.)\n');
     }

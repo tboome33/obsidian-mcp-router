@@ -19,6 +19,7 @@ import {
   bumpAll,
   updateJsonVersion,
   insertChangelogStub,
+  updateReadmeBadge,
 } from '../scripts/bump-version.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -51,6 +52,7 @@ function makeFakeRepo({
   marketplaceMetaVersion = '0.13.0',
   marketplacePluginVersion = '0.13.0',
   changelog = `# Changelog\n\n## [Unreleased]\n\nNothing pending right now.\n\n## [0.13.0] — 2026-01-01 — initial\n\nInitial release.\n`,
+  readmeVersion = null,
 } = {}) {
   const root = fs.mkdtempSync(path.join(workDir, 'repo-'));
   scratchRoots.push(root);
@@ -75,6 +77,23 @@ function makeFakeRepo({
   );
 
   fs.writeFileSync(path.join(root, 'CHANGELOG.md'), changelog);
+
+  // Optional README with two shields.io version badges (mimics EN + FR).
+  if (readmeVersion !== null) {
+    fs.writeFileSync(
+      path.join(root, 'README.md'),
+      [
+        '# obsidian-mcp-router',
+        '',
+        `<a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-${readmeVersion}-blueviolet.svg" alt="version"></a>`,
+        '',
+        '## Version française',
+        '',
+        `<a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-${readmeVersion}-blueviolet.svg" alt="version"></a>`,
+        '',
+      ].join('\n'),
+    );
+  }
 
   return root;
 }
@@ -218,6 +237,38 @@ describe('bumpAll', () => {
       /Missing file/,
     );
   });
+
+  test('updates the README badge (all occurrences) when a README is present', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.21.0', pluginVersion: '0.21.0', marketplaceMetaVersion: '0.21.0', marketplacePluginVersion: '0.21.0', readmeVersion: '0.21.0' });
+    const report = bumpAll(root, '0.22.0', { withChangelog: false });
+
+    assert.equal(report.readme.changed, true);
+    const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    assert.match(readme, /badge\/version-0\.22\.0-blueviolet/);
+    assert.doesNotMatch(readme, /badge\/version-0\.21\.0-blueviolet/);
+    // Both EN + FR badges updated.
+    assert.equal((readme.match(/badge\/version-0\.22\.0-blueviolet/g) || []).length, 2);
+  });
+
+  test('README badge is idempotent when already at target', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.22.0', pluginVersion: '0.22.0', marketplaceMetaVersion: '0.22.0', marketplacePluginVersion: '0.22.0', readmeVersion: '0.22.0' });
+    const report = bumpAll(root, '0.22.0', { withChangelog: false });
+    assert.equal(report.readme.changed, false);
+  });
+
+  test('skips the README badge gracefully when no README is present', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.21.0' }); // no readmeVersion → no README.md
+    const report = bumpAll(root, '0.22.0', { withChangelog: false });
+    assert.equal(report.readme.changed, false);
+  });
+
+  test('dry-run does not write the README badge', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.21.0', readmeVersion: '0.21.0' });
+    const before = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    bumpAll(root, '0.22.0', { dryRun: true, withChangelog: false });
+    const after = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    assert.equal(after, before, 'README unchanged in dry-run');
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────
@@ -330,6 +381,36 @@ describe('insertChangelogStub', () => {
     assert.throws(
       () => insertChangelogStub(changelogPath, '0.14.0'),
       /malformed/,
+    );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// updateReadmeBadge — pure helper
+// ───────────────────────────────────────────────────────────────────
+
+describe('updateReadmeBadge', () => {
+  test('replaces all badge occurrences (EN + FR)', () => {
+    const root = makeFakeRepo({ readmeVersion: '0.21.0' });
+    const result = updateReadmeBadge(path.join(root, 'README.md'), '0.22.0');
+    assert.equal(result.changed, true);
+    const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+    assert.equal((readme.match(/badge\/version-0\.22\.0-blueviolet/g) || []).length, 2);
+  });
+
+  test('returns changed=false when every badge already at target', () => {
+    const root = makeFakeRepo({ readmeVersion: '0.22.0' });
+    const result = updateReadmeBadge(path.join(root, 'README.md'), '0.22.0');
+    assert.equal(result.changed, false);
+  });
+
+  test('throws if no version badge is present', () => {
+    const root = fs.mkdtempSync(path.join(workDir, 'no-badge-'));
+    scratchRoots.push(root);
+    fs.writeFileSync(path.join(root, 'README.md'), '# obsidian-mcp-router\n\nNo badge here.\n');
+    assert.throws(
+      () => updateReadmeBadge(path.join(root, 'README.md'), '0.22.0'),
+      /No version badge/,
     );
   });
 });

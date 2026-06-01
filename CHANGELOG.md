@@ -6,6 +6,10 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### Fixed
+
+- **`bump-version.mjs` now syncs the README version badge too.** The shields.io badge in `README.md` (EN + FR) drifted repeatedly — stuck at v0.10.3, then v0.19.1, while `package.json` moved on — because `npm run bump` only rewrote the three JSON version files and the badge had to be hand-edited (and was forgotten). The bump script now treats the README badge as a fourth target via a dedicated, idempotent `updateReadmeBadge()` that **throws if the badge is missing** (so a rename surfaces loudly instead of silently no-op'ing). Re-synced the badge to the current 0.22.0. +7 tests in `tests/bump-version.test.mjs`.
+
 ## [0.22.0] — 2026-06-02 — click-to-open heading anchors (`build_open_link` `anchor`)
 
 Deep-linking for click-to-open: a generated link can now land on a specific heading inside a note and surface it in the file tree. Pairs with **bridge plugin v0.3.0** (which reads `?h=` and runs the treeview reveal). Router-side this is purely additive — links without an anchor are byte-identical to before.
