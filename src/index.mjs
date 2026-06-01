@@ -662,6 +662,10 @@ const TOOLS = [
           items: { type: 'string' },
           description: 'Batch of vault-relative paths. Mutually exclusive with `path`. Use when citing multiple notes in one chat response.',
         },
+        anchor: {
+          type: 'string',
+          description: 'Optional heading TEXT to deep-link to (e.g. "Installation"). Emitted as a `?h=` query param so the bridge scrolls to that heading on open (read-only — Obsidian headings are their own anchor, nothing is inserted into the note). Single mode only (`path`), not valid with `paths`. Leading `#` optional.',
+        },
       },
       additionalProperties: false,
     },

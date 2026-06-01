@@ -22,20 +22,31 @@
  * `obsidian-local-rest-api/data.json` to look up the insecure port.
  */
 
-import { buildClickToOpenUrl, buildClickToOpenMarkdownLink } from '../helpers/click-to-open.mjs';
+import {
+  buildClickToOpenUrl,
+  buildClickToOpenMarkdownLink,
+  normalizeAnchor,
+} from '../helpers/click-to-open.mjs';
 
-function singleResult(vault, p) {
-  const clickToOpenUrl = buildClickToOpenUrl(vault, p);
-  const markdownLink = clickToOpenUrl ? buildClickToOpenMarkdownLink(vault, p) : null;
+function singleResult(vault, p, anchor) {
+  // Normalise once so the echoed `anchor` field and the emitted `?h=` query
+  // stay consistent — a whitespace-only or `#`-only anchor yields neither.
+  const clean = normalizeAnchor(anchor);
+  const opts = clean ? { anchor: clean } : {};
+  const clickToOpenUrl = buildClickToOpenUrl(vault, p, opts);
+  const markdownLink = clickToOpenUrl
+    ? buildClickToOpenMarkdownLink(vault, p, undefined, opts)
+    : null;
   return {
     path: p,
+    ...(clean ? { anchor: clean } : {}),
     clickToOpenUrl,
     ...(markdownLink && { markdownLink }),
   };
 }
 
 export async function buildOpenLinkTool(registry, args = {}) {
-  const { vault: name, path: filePath, paths } = args;
+  const { vault: name, path: filePath, paths, anchor } = args;
 
   // Either `path` (single) or `paths` (batch) must be provided. Reject
   // both/neither rather than silently picking one — clearer errors at
@@ -47,6 +58,16 @@ export async function buildOpenLinkTool(registry, args = {}) {
   }
   if (!isBatch && !isSingle) {
     throw new Error('Missing required argument: provide `path` (string) or `paths` (array).');
+  }
+
+  // `anchor` (a heading to deep-link to) is inherently per-target, so it's
+  // only meaningful in single mode. Reject it with `paths` rather than
+  // silently applying one heading to every file in the batch.
+  if (anchor != null && isBatch) {
+    throw new Error('`anchor` is only supported with `path` (single mode), not `paths` (batch).');
+  }
+  if (anchor != null && typeof anchor !== 'string') {
+    throw new Error(`\`anchor\` must be a string, got ${typeof anchor}.`);
   }
 
   const vault = registry.resolveVault(name);
@@ -68,6 +89,6 @@ export async function buildOpenLinkTool(registry, args = {}) {
 
   return {
     vault: vault.name,
-    ...singleResult(vault, filePath),
+    ...singleResult(vault, filePath, anchor),
   };
 }

@@ -134,6 +134,25 @@ function readInsecurePortConfig(vaultPath) {
 }
 
 /**
+ * Normalise an optional heading anchor. Returns the cleaned heading TEXT
+ * (no leading `#`, trimmed) or null when there's no usable anchor.
+ *
+ * Obsidian heading links target the heading's TEXT — the heading is its own
+ * anchor, nothing is inserted into the note. We accept the value with or
+ * without a leading `#` (so callers can pass either `Installation` or
+ * `#Installation`). The value is later `encodeURIComponent`-d into the
+ * `?h=` query param read by the bridge's /open handler (v0.3.0+).
+ *
+ * @param {*} anchor
+ * @returns {string|null}
+ */
+export function normalizeAnchor(anchor) {
+  if (typeof anchor !== 'string') return null;
+  const cleaned = anchor.trim().replace(/^#+/, '').trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
  * Build the click-to-open URL for a vault file. Returns `null` if the URL
  * can't be produced (remote vault, no local data.json, insecure server
  * disabled, etc.).
@@ -142,9 +161,14 @@ function readInsecurePortConfig(vaultPath) {
  *   local vaults; remote vaults always return null).
  * @param {string} filePath - The vault-relative path of the file (e.g.
  *   `wiki/Divers/LIGHTRAG/lightrag.md`). Slashes can be `/` or `\`.
+ * @param {object} [opts]
+ * @param {string} [opts.anchor] - Optional heading to deep-link to. Emitted
+ *   as a `?h=<encoded-heading>` query param (NOT a `#fragment` — browsers
+ *   never send the fragment to the server, so the bridge couldn't see it).
+ *   The bridge scrolls to that heading on open. Empty/non-string → ignored.
  * @returns {string|null}
  */
-export function buildClickToOpenUrl(vault, filePath) {
+export function buildClickToOpenUrl(vault, filePath, opts = {}) {
   if (!vault || typeof vault !== 'object') return null;
   if (vault.type !== 'local') return null; // remote vaults have no local data.json
   if (!vault.path || !filePath) return null;
@@ -152,7 +176,9 @@ export function buildClickToOpenUrl(vault, filePath) {
   const { port, enabled } = readInsecurePortConfig(vault.path);
   if (!enabled || port === null) return null;
 
-  return `http://127.0.0.1:${port}/open/${encodeVaultPath(filePath)}`;
+  const base = `http://127.0.0.1:${port}/open/${encodeVaultPath(filePath)}`;
+  const anchor = normalizeAnchor(opts && opts.anchor);
+  return anchor ? `${base}?h=${encodeURIComponent(anchor)}` : base;
 }
 
 /**
@@ -163,9 +189,10 @@ export function buildClickToOpenUrl(vault, filePath) {
  * @param {string} filePath - Same as buildClickToOpenUrl.
  * @param {string} [label] - Optional label override. Default = basename
  *   without the file extension.
+ * @param {object} [opts] - Forwarded to buildClickToOpenUrl (e.g. `anchor`).
  */
-export function buildClickToOpenMarkdownLink(vault, filePath, label) {
-  const url = buildClickToOpenUrl(vault, filePath);
+export function buildClickToOpenMarkdownLink(vault, filePath, label, opts = {}) {
+  const url = buildClickToOpenUrl(vault, filePath, opts);
   if (!url) return null;
   const text = escapeMarkdownLabel(label || basenameNoExt(filePath));
   return `[${text}](${url})`;

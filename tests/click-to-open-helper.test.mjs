@@ -14,6 +14,7 @@ import {
   buildClickToOpenUrl,
   buildClickToOpenMarkdownLink,
   encodeVaultPath,
+  normalizeAnchor,
   _resetCache,
 } from '../src/helpers/click-to-open.mjs';
 
@@ -95,6 +96,69 @@ describe('buildClickToOpenUrl — happy path', () => {
       'foo.md',
     );
     assert.equal(url, 'http://127.0.0.1:27999/open/foo.md');
+  });
+});
+
+describe('normalizeAnchor', () => {
+  test('strips a single leading #', () => {
+    assert.equal(normalizeAnchor('#Installation'), 'Installation');
+  });
+  test('strips multiple leading #', () => {
+    assert.equal(normalizeAnchor('###Foo'), 'Foo');
+  });
+  test('trims surrounding whitespace', () => {
+    assert.equal(normalizeAnchor('  Mon Titre  '), 'Mon Titre');
+  });
+  test('empty / whitespace / #-only → null', () => {
+    assert.equal(normalizeAnchor(''), null);
+    assert.equal(normalizeAnchor('   '), null);
+    assert.equal(normalizeAnchor('#'), null);
+  });
+  test('non-string → null', () => {
+    assert.equal(normalizeAnchor(42), null);
+    assert.equal(normalizeAnchor(null), null);
+    assert.equal(normalizeAnchor(undefined), null);
+  });
+});
+
+describe('buildClickToOpenUrl — anchor (v0.22.0)', () => {
+  test('appends ?h=<heading> when anchor provided', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/foo.md',
+      { anchor: 'Installation' },
+    );
+    assert.equal(url, 'http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Installation');
+  });
+
+  test('strips leading # and encodes spaces in the heading', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const url = buildClickToOpenUrl(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/foo.md',
+      { anchor: '#Section 2' },
+    );
+    assert.equal(url, 'http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Section%202');
+  });
+
+  test('no anchor / empty anchor → no query (backward compatible)', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const vault = { type: 'local', path: vaultPath, name: 't' };
+    assert.equal(buildClickToOpenUrl(vault, 'wiki/foo.md'), 'http://127.0.0.1:27142/open/wiki%2Ffoo.md');
+    assert.equal(buildClickToOpenUrl(vault, 'wiki/foo.md', {}), 'http://127.0.0.1:27142/open/wiki%2Ffoo.md');
+    assert.equal(buildClickToOpenUrl(vault, 'wiki/foo.md', { anchor: '   ' }), 'http://127.0.0.1:27142/open/wiki%2Ffoo.md');
+  });
+
+  test('markdown link forwards the anchor', () => {
+    writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
+    const link = buildClickToOpenMarkdownLink(
+      { type: 'local', path: vaultPath, name: 't' },
+      'wiki/foo.md',
+      undefined,
+      { anchor: 'Usage' },
+    );
+    assert.equal(link, '[foo](http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Usage)');
   });
 });
 

@@ -928,6 +928,32 @@ describe('vault-link-linter — bare relative vault-path (v0.21.1)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v0.22.0 — anchored click-to-open URLs (?h=<heading>). The linter must
+// resolve the file by the path part (ignoring the query) so anchored URLs
+// still get port-validated, and must PRESERVE the anchor in any fix.
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — anchored URLs (v0.22.0)', () => {
+  test('passes a CORRECT-port anchored URL', () => {
+    const r = runLinter('See [log](http://127.0.0.1:27142/open/wiki%2Flog.md?h=Section%201).');
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('blocks a WRONG-port anchored URL and PRESERVES the anchor in the fix', () => {
+    const r = runLinter('See [log](http://127.0.0.1:27143/open/wiki%2Flog.md?h=Section%201).');
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /wrong-port/);
+    // The corrected URL keeps the ?h= anchor intact (was silently dropped pre-v0.22.0).
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27142\/open\/wiki%2Flog\.md\?h=Section%201/);
+  });
+
+  test('anchored URL whose path does not resolve is skipped (silent)', () => {
+    const r = runLinter('See [x](http://127.0.0.1:27143/open/wiki%2Fnope.md?h=Foo).');
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Robustness — malformed inputs should never crash the hook
 // ---------------------------------------------------------------------------
 

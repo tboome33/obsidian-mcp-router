@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-06-02 — click-to-open heading anchors (`build_open_link` `anchor`)
+
+Deep-linking for click-to-open: a generated link can now land on a specific heading inside a note and surface it in the file tree. Pairs with **bridge plugin v0.3.0** (which reads `?h=` and runs the treeview reveal). Router-side this is purely additive — links without an anchor are byte-identical to before.
+
+### Added
+
+- **`build_open_link` — optional `anchor` (single mode).** Pass `anchor: "Installation"` → the tool emits `…/open/<path>?h=Installation`; the bridge (≥ 0.3.0) scrolls to that heading on open and reveals + selects the note in the file-explorer tree. **Read-only** — Obsidian headings are their own anchor, nothing is written into the note. Leading `#` optional; spaces/accents URL-encoded; the anchor travels as a **query param** (a `#fragment` is never sent to the server). Rejected with `paths` (an anchor is per-target). Result echoes the normalized `anchor` and the `clickToOpenUrl`/`markdownLink` carry the `?h=`.
+- **`buildClickToOpenUrl(vault, path, { anchor })` + exported `normalizeAnchor()`** (`src/helpers/click-to-open.mjs`). The shared helper (used by every write/get/patch tool's `clickToOpenUrl` field) gained `opts.anchor`; fully backward compatible — no opts → identical URL.
+
+### Fixed
+
+- **`vault-link-linter` tolerates anchored URLs.** The wrong-port pass now splits the `?h=` query before resolving the file — otherwise an anchored URL never resolved to a real file and its port was silently left unchecked — and PRESERVES the anchor in the suggested correction.
+
+### Tests
+
+- +18 across `tests/click-to-open-helper.test.mjs`, `tests/build-open-link.test.mjs`, `tests/vault-link-linter.test.mjs` (anchor encoding, `#`-strip, whitespace→no-query, batch rejection, backward-compat, and wrong-port-with-anchor preservation). Full suite: **1662 green**. The companion bridge v0.3.0 adds its first 13 tests (`parseOpenParams`).
+
 ## [0.21.1] — 2026-06-02 — linter catches bare relative vault paths; `--tls-insecure` generator flag
 
 A hooks + tooling release. Headline: a **fix to the `vault-link-linter` Stop hook** so it finally catches the bare-relative-path class of broken vault link — the recurring "you wrote `` `wiki-meta/index.md` `` and it renders as a dead `<cwd>/wiki-meta/index.md` link" bug. Plus the previously-unreleased `--tls-insecure` generator flag. `src/` runtime is untouched.

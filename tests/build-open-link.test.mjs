@@ -80,6 +80,69 @@ describe('buildOpenLinkTool — single mode', () => {
   });
 });
 
+describe('buildOpenLinkTool — anchor (v0.22.0)', () => {
+  test('emits ?h=<heading> and echoes the anchor', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/Divers/foo.md',
+      anchor: 'Installation',
+    });
+    assert.equal(
+      result.clickToOpenUrl,
+      'http://127.0.0.1:27142/open/wiki%2FDivers%2Ffoo.md?h=Installation',
+    );
+    assert.equal(result.anchor, 'Installation');
+    assert.equal(
+      result.markdownLink,
+      '[foo](http://127.0.0.1:27142/open/wiki%2FDivers%2Ffoo.md?h=Installation)',
+    );
+  });
+
+  test('strips a leading # from the anchor', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/foo.md',
+      anchor: '#Section 2',
+    });
+    assert.equal(
+      result.clickToOpenUrl,
+      'http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=Section%202',
+    );
+  });
+
+  test('URL-encodes spaces and accents in the heading', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/foo.md',
+      anchor: 'Été & coûts',
+    });
+    assert.equal(
+      result.clickToOpenUrl,
+      `http://127.0.0.1:27142/open/wiki%2Ffoo.md?h=${encodeURIComponent('Été & coûts')}`,
+    );
+  });
+
+  test('empty / whitespace anchor → no query param, no anchor field', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/foo.md',
+      anchor: '   ',
+    });
+    assert.equal(result.clickToOpenUrl, 'http://127.0.0.1:27142/open/wiki%2Ffoo.md');
+    assert.ok(!('anchor' in result) || result.anchor === undefined);
+  });
+
+  test('rejects anchor in batch mode', async () => {
+    await assert.rejects(
+      () => buildOpenLinkTool(makeRegistry(), { paths: ['a.md', 'b.md'], anchor: 'X' }),
+      /anchor.*only supported.*single/i,
+    );
+  });
+
+  test('rejects non-string anchor', async () => {
+    await assert.rejects(
+      () => buildOpenLinkTool(makeRegistry(), { path: 'a.md', anchor: 42 }),
+      /anchor.*must be a string/i,
+    );
+  });
+});
+
 describe('buildOpenLinkTool — batch mode', () => {
   test('returns one entry per path', async () => {
     const result = await buildOpenLinkTool(makeRegistry(), {

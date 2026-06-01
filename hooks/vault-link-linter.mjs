@@ -614,22 +614,27 @@ function vaultPortInfo(vaultPath) {
  * null if the vault's REST API plugin doesn't expose enough info to build
  * one. Centralized here so both violation kinds emit consistent fixes.
  */
-function composeSuggestion(label, decodedHref, info) {
+function composeSuggestion(label, decodedHref, info, querySuffix = '') {
   // Encode for the URL: percent-encode segment by segment to preserve `/`
   // as `%2F` (the bridge plugin expects the path in URL-encoded form).
   // We use the already-decoded href from `findOwningVault` (which used
   // safeDecodeURI). A fresh decodeURIComponent here would throw URIError
   // on filenames containing literal `%` (e.g. `wiki/100% done.md` —
   // codex P2 review finding).
+  //
+  // `querySuffix` (v0.22.0) preserves a trailing query string like
+  // `?h=<heading>` (a heading anchor) so a wrong-port fix doesn't strip the
+  // user's deep-link. Empty for the bare-path / cwd-mix / bare-vault kinds.
   const encodedPath = decodedHref.split(/[\\/]/).map(encodeURIComponent).join('%2F');
+  const suffix = querySuffix || '';
 
   if (info.enableInsecureServer && info.insecurePort) {
-    return `[${label}](http://127.0.0.1:${info.insecurePort}/open/${encodedPath})`;
+    return `[${label}](http://127.0.0.1:${info.insecurePort}/open/${encodedPath}${suffix})`;
   }
   if (info.port) {
     // HTTPS fallback — Bitdefender/Kaspersky/ESET may silently drop
     // self-signed HTTPS loopback (see CLAUDE.md global). Flag the caveat.
-    return `[${label}](https://127.0.0.1:${info.port}/open/${encodedPath})  ` +
+    return `[${label}](https://127.0.0.1:${info.port}/open/${encodedPath}${suffix})  ` +
       `# ⚠️ HTTPS fallback — enable insecureServer in this vault's data.json for reliable click-to-open`;
   }
   // Plugin data.json missing port info; can't build a suggestion.
@@ -675,7 +680,16 @@ for (const c of bareCandidates) {
 //   - https:// with a port that matches `insecurePort` but not `port`
 //     → flag (user clearly intended HTTPS, port is wrong for HTTPS).
 for (const c of clickToOpenCandidates) {
-  const owner = findOwningVault(c.encodedPath);
+  // The encoded path may carry a query string (e.g. `?h=<heading>` for a
+  // heading anchor, v0.22.0). Resolve the file by the PATH part only, but
+  // keep the query so the suggested fix preserves the anchor. Without this
+  // split, an anchored URL would never resolve (`wiki%2Ffoo.md?h=X` is not
+  // a real file) and the wrong-port check would be silently skipped.
+  const qIdx = c.encodedPath.indexOf('?');
+  const encodedPathOnly = qIdx === -1 ? c.encodedPath : c.encodedPath.slice(0, qIdx);
+  const queryStr = qIdx === -1 ? '' : c.encodedPath.slice(qIdx); // includes leading '?'
+
+  const owner = findOwningVault(encodedPathOnly);
   if (!owner) continue;
   const { vault, decodedHref } = owner;
   const info = vaultPortInfo(vault);
@@ -698,7 +712,7 @@ for (const c of clickToOpenCandidates) {
     kind: 'wrong-port',
     label: c.label,
     bareHref: `${c.scheme}://127.0.0.1:${c.actualPort}/open/${c.encodedPath}`,
-    suggested: composeSuggestion(c.label, decodedHref, info),
+    suggested: composeSuggestion(c.label, decodedHref, info, queryStr),
     vault,
     scheme: c.scheme,
     actualPort: c.actualPort,
