@@ -68,3 +68,4 @@ VAULT_TRIBU={"name":"tribu","baseUrl":"http://10.8.0.1:27145","apiKey":"<token>"
   - WG mode: REST port published on 10.8.0.1 (WG interface) — reachable only over the encrypted tunnel; ensure WireGuard is up on the host. No nginx needed for REST.
   - GUI port published on 127.0.0.1:28145 (unique per vault → no collision); nginx terminates TLS for the browser.
   - GUI viewer at https://tribu.kiviri.fr (nginx → container :3001).
+  - tlsInsecure:false (verify TLS). Irrelevant here — REST is plain HTTP; pass --tls-insecure only if you later front the REST with a self-signed https endpoint.

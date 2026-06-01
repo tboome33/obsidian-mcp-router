@@ -198,6 +198,20 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
     assert.equal(envVaults[0].wireguard, false);
   });
 
+  test('tlsInsecure defaults to false; --tls-insecure flips it, and the router parses it back', () => {
+    // default
+    const def = buildVaultEnvLine({ name: 'x', restPort: 27161, mode: 'public', apiDomain: 'x.kiviri.fr', apiKey: 'K' });
+    assert.equal(def.descriptor.tlsInsecure, false);
+    assert.equal(parseEnvVaults({ [def.key]: def.value }).envVaults[0].tlsInsecure, false);
+    // explicit true → round-trips through the router as true
+    const ins = buildVaultEnvLine({ name: 'x', restPort: 27161, mode: 'public', apiDomain: 'x.kiviri.fr', apiKey: 'K', tlsInsecure: true });
+    assert.equal(ins.descriptor.tlsInsecure, true);
+    assert.equal(parseEnvVaults({ [ins.key]: ins.value }).envVaults[0].tlsInsecure, true);
+    // string "true" (as the CLI would pass it) is also honored
+    const str = buildVaultEnvLine({ name: 'x', restPort: 27161, mode: 'public', apiDomain: 'x.kiviri.fr', apiKey: 'K', tlsInsecure: 'true' });
+    assert.equal(str.descriptor.tlsInsecure, true);
+  });
+
   test('lan vault round-trips and triggers NO wg warning', () => {
     const { key, value } = buildVaultEnvLine({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10', apiKey: 'K' });
     const { envVaults, warnings } = parseEnvVaults({ [key]: value });
@@ -449,5 +463,17 @@ describe('parseArgv (CLI) — review+ B1: --no-harden', () => {
     assert.equal(args.restPort, '27145');
     assert.equal(args.sensitive, true);
     assert.equal(args.mode, 'wg');
+  });
+
+  test('--tls-insecure flows CLI → VAULT_* line tlsInsecure:true', () => {
+    const args = parseArgv(['--name', 'x', '--rest-port', '27161', '--mode', 'public', '--api-domain', 'x.kiviri.fr', '--tls-insecure']);
+    assert.equal(args.tlsInsecure, true);
+    const { descriptor } = buildVaultEnvLine(args);
+    assert.equal(descriptor.tlsInsecure, true);
+  });
+
+  test('without --tls-insecure, the CLI yields tlsInsecure:false', () => {
+    const args = parseArgv(['--name', 'x', '--rest-port', '27161', '--mode', 'public', '--api-domain', 'x.kiviri.fr']);
+    assert.equal(buildVaultEnvLine(args).descriptor.tlsInsecure, false);
   });
 });

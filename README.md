@@ -554,7 +554,7 @@ To run a vault as a `linuxserver/obsidian` (Selkies) container on a host (e.g. a
 node scripts/gen-obsidian-deploy.mjs --name tribu --rest-port 27145 --mode wg --wg-host 10.8.0.1
 ```
 
-It prints a docker-compose service, an nginx reverse-proxy block (with a self-healing resolver-variable `proxy_pass`), and the `VAULT_*` line — the latter is **round-trip-tested** against this router's `parseEnvVaults`, so it can't drift. Modes: `wg` (WireGuard-only, for sensitive/medical), `lan`, `public` (HTTPS+bearer; refused for `--sensitive` vaults). Secrets default to placeholders — never invented. See [`deploy/dedibox-obsidian/`](./deploy/dedibox-obsidian/) for the full runbook (incl. LiveSync Setup-URI onboarding).
+It prints a docker-compose service, an nginx reverse-proxy block (with a self-healing resolver-variable `proxy_pass`), and the `VAULT_*` line — the latter is **round-trip-tested** against this router's `parseEnvVaults`, so it can't drift. Modes: `wg` (WireGuard-only, for sensitive/medical), `lan`, `public` (HTTPS+bearer; refused for `--sensitive` vaults). Pass `--tls-insecure` to emit `tlsInsecure: true` (an `https` baseUrl behind a self-signed / internal-CA cert). Secrets default to placeholders — never invented. See [`deploy/dedibox-obsidian/`](./deploy/dedibox-obsidian/) for the full runbook (incl. LiveSync Setup-URI onboarding).
 
 ## Config
 

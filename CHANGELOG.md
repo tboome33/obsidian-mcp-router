@@ -6,7 +6,9 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-Nothing pending right now.
+### Added
+
+- **`gen-obsidian-deploy` — `--tls-insecure` flag.** The generator now emits `tlsInsecure: true` into the `VAULT_*` line on request (default stays `false` = verify). For an `https` baseUrl served behind a self-signed / internal-CA cert the router can't validate — e.g. a self-signed nginx placed in front of the REST API. The router already honored `tlsInsecure` on `VAULT_*` entries (v0.20.0); previously the generator hard-coded `false`, so this exposes the existing capability. Round-trips through `parseEnvVaults` (asserted in tests).
 
 ## [0.21.0] — 2026-06-01 — deploy generator for Obsidian-on-host containers (vault-hosting Phase 1)
 

@@ -163,6 +163,13 @@ export function normalizeDeployOpts(raw = {}) {
   o.timeoutMs = Number.isInteger(Number(o.timeoutMs)) && Number(o.timeoutMs) > 0 ? Number(o.timeoutMs) : 15000;
   o.description = typeof o.description === 'string' ? o.description : '';
   o.harden = o.harden !== false && o.harden !== 'false'; // default ON (disable terminal/sudo)
+  // tlsInsecure → emitted into the VAULT_* line; tells the router to skip TLS
+  // chain verification for this vault. Default false (verify). Set true when the
+  // baseUrl is https but served by a self-signed / internal-CA cert the router
+  // can't validate — e.g. a self-signed nginx placed in front of the REST API,
+  // or a future `public`-with-internal-CA setup. Irrelevant for plain-HTTP wg/lan
+  // REST (no TLS to verify), but the router accepts it either way.
+  o.tlsInsecure = o.tlsInsecure === true || o.tlsInsecure === 'true';
 
   // --- secrets: PLACEHOLDERS by default; never invented ---
   o.apiKey = typeof o.apiKey === 'string' && o.apiKey.length > 0 ? o.apiKey : PLACEHOLDER_TOKEN;
@@ -223,8 +230,10 @@ export function buildVaultEnvLine(opts) {
   };
   if (o.description) descriptor.description = o.description;
   descriptor.wireguard = o.mode === 'wg';
-  // public = real Let's Encrypt cert → verify TLS; wg/lan = plain HTTP → flag irrelevant but explicit
-  descriptor.tlsInsecure = false;
+  // Default false: public = real Let's Encrypt cert (verify); wg/lan = plain HTTP
+  // (no TLS). Settable to true via --tls-insecure for an https baseUrl behind a
+  // self-signed / internal-CA cert the router can't validate.
+  descriptor.tlsInsecure = o.tlsInsecure;
   descriptor.timeoutMs = o.timeoutMs;
 
   const key = envKeyForName(o.name);
@@ -441,6 +450,9 @@ export function buildDeploymentPlan(opts) {
     o.guiDomain
       ? `GUI viewer at https://${o.guiDomain} (nginx → container :3001).`
       : 'No --gui-domain given → no web-viewer nginx block generated (REST-only deployment).',
+    o.tlsInsecure
+      ? 'tlsInsecure:true — the router will NOT verify the REST baseUrl\'s TLS cert (self-signed / internal CA). Only use when you control the endpoint.'
+      : `tlsInsecure:false (verify TLS).${o.mode === 'wg' || o.mode === 'lan' ? ' Irrelevant here — REST is plain HTTP; pass --tls-insecure only if you later front the REST with a self-signed https endpoint.' : ''}`,
   ];
   return {
     name: o.name,
@@ -534,7 +546,7 @@ if (isMain()) {
         'Required: --name, --rest-port, --mode',
         'Mode-specific: --wg-host 10.8.0.x | --lan-host 192.168.x | --api-domain host.tld',
         'Optional: --gui-domain, --config-path, --description, --sensitive, --timeout-ms,',
-        '          --puid, --pgid, --tz, --no-harden, --json',
+        '          --tls-insecure, --gui-port, --puid, --pgid, --tz, --no-harden, --json',
         '',
         'Secrets are NEVER required or invented — apiKey/password default to placeholders.',
       ].join('\n'),

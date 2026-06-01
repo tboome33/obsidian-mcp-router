@@ -82,3 +82,4 @@ VAULT_COURSERA={"name":"coursera","baseUrl":"https://coursera.kiviri.fr","apiKey
   - PUBLIC mode: REST bound to 127.0.0.1; nginx (Let's Encrypt) terminates TLS + bearer apiKey is the gate — never use for sensitive/medical vaults.
   - GUI port published on 127.0.0.1:28161 (unique per vault → no collision); nginx terminates TLS for the browser.
   - GUI viewer at https://coursera-gui.kiviri.fr (nginx → container :3001).
+  - tlsInsecure:false (verify TLS).
