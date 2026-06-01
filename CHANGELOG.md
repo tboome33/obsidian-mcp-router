@@ -19,7 +19,7 @@ A tooling-only release: a generator that turns one vault descriptor into the art
 
 ### Tests
 
-- **`tests/gen-obsidian-deploy.test.mjs`** (37 tests) — validation (incl. the sensitive+public AND sensitive+lan refusals), per-mode baseUrl/bind/nginx/compose coherence, GUI-port uniqueness, YAML magic-scalar quoting, CLI `--no-harden`, secret-safety across compose+nginx, and the headline guarantee: **the generated `VAULT_*` line round-trips through the router's real `parseEnvVaults`** (registry.mjs), so the generator can't drift from what the router accepts.
+- **`tests/gen-obsidian-deploy.test.mjs`** (51 tests) — validation (incl. the sensitive+public AND sensitive+lan refusals), per-mode baseUrl/bind/nginx/compose coherence, GUI-port uniqueness, YAML magic-scalar quoting, CLI `--no-harden`, secret-safety across compose+nginx, and the headline guarantee: **the generated `VAULT_*` line round-trips through the router's real `parseEnvVaults`** (registry.mjs), so the generator can't drift from what the router accepts. Full suite: **1625 green**.
 
 ### Notes
 
