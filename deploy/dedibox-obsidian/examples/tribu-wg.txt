@@ -18,45 +18,30 @@ services:
     volumes:
       - /srv/vaults/tribu:/config
     ports:
-      - 127.0.0.1:3001:3001
-      - 127.0.0.1:27145:27145
+      - 127.0.0.1:28145:3001
+      - 10.8.0.1:27145:27145
     shm_size: 1gb
     restart: unless-stopped
 
 ## nginx — REST API reverse proxy
 
-server {
-    listen 443 ssl http2;
-    # self-signed or internal CA cert for non-public modes
-    server_name tribu-api.local;
-
-    # Self-heal on container IP-shuffle: re-resolve via Docker DNS every 10s
-    resolver 127.0.0.11 valid=10s;
-    set $upstream_tribu_api obsidian-tribu;
-
-    location / {
-        # WireGuard-only — sensitive/medical vault
-        allow 10.8.0.0/24;
-        deny all;
-        proxy_pass http://$upstream_tribu_api:27145;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-
+null
 ## nginx — Selkies GUI (web viewer) reverse proxy
 
 server {
     listen 443 ssl http2;
+    # self-signed cert — generate once: openssl req -x509 -newkey rsa:2048 -nodes \
+    #   -keyout /etc/nginx/ssl/tribu.key -out /etc/nginx/ssl/tribu.crt -days 825 -subj "/CN=tribu"
+    ssl_certificate     /etc/nginx/ssl/tribu.crt;
+    ssl_certificate_key /etc/nginx/ssl/tribu.key;
     server_name tribu.kiviri.fr;
-    # self-signed or internal CA cert
 
+    # Self-heal on container IP-shuffle: re-resolve via Docker DNS every 10s
     resolver 127.0.0.11 valid=10s;
     set $upstream_tribu_gui obsidian-tribu;
 
     location / {
+        # WireGuard-only — sensitive/medical GUI
         allow 10.8.0.0/24;
         deny all;
         # the container serves the GUI over HTTPS on 3001 (self-signed)
@@ -79,5 +64,6 @@ VAULT_TRIBU={"name":"tribu","baseUrl":"http://10.8.0.1:27145","apiKey":"<token>"
   - Vault "tribu" → mode wg; router reaches it at http://10.8.0.1:27145.
   - apiKey is a PLACEHOLDER — replace <token> with the vault's real Local REST API key before use.
   - GUI PASSWORD is a PLACEHOLDER — set a real one before exposing the GUI.
-  - WG mode: nginx Access List restricts to 10.8.0.0/24. Ensure WireGuard is up on the host.
-  - Ports are bound to 127.0.0.1 on the host → only nginx (same host) reaches the container.
+  - WG mode: REST port published on 10.8.0.1 (WG interface) — reachable only over the encrypted tunnel; ensure WireGuard is up on the host. No nginx needed for REST.
+  - GUI port published on 127.0.0.1:28145 (unique per vault → no collision); nginx terminates TLS for the browser.
+  - GUI viewer at https://tribu.kiviri.fr (nginx → container :3001).

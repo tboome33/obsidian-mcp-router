@@ -65,9 +65,13 @@ export function normalizeDeployOpts(raw = {}) {
   // --- name: docker-service- + slug-safe ---
   o.name = typeof o.name === 'string' ? o.name.trim() : '';
   if (!/^[a-z0-9][a-z0-9-]*$/.test(o.name)) {
+    const dotHint = o.name.includes('.')
+      ? ` If your vault has a FQDN (e.g. "portfolio.nicolasgalzy.fr"), pass the ` +
+        `subdomain as --name (e.g. "portfolio") and the FQDN as --api-domain/--gui-domain.`
+      : '';
     errors.push(
       `name "${o.name}" is invalid — must be a lowercase slug [a-z0-9-], ` +
-        `starting alphanumeric (e.g. "tribu", "smile-cabinet").`,
+        `starting alphanumeric (e.g. "tribu", "smile-cabinet").` + dotHint,
     );
   }
 
@@ -83,19 +87,32 @@ export function normalizeDeployOpts(raw = {}) {
     errors.push(`restPort "${raw.restPort}" invalid — integer 1-65535 required.`);
   }
 
-  // --- guiPort (Selkies HTTPS) ---
-  o.guiPort = Number.isInteger(Number(o.guiPort)) ? Number(o.guiPort) : DEFAULT_GUI_PORT;
+  // --- guiPort (Selkies GUI host-published port) ---
+  // Must be UNIQUE per vault: every container's GUI is :3001 internally, so
+  // publishing all of them on the same host port collides (review+ P2). Default
+  // to restPort+1000 (a disjoint band from the 27124-27199 REST block →
+  // 28124-28199), overridable. Mirror restPort's fail-fast strictness (N1).
+  if (o.guiPort === undefined || o.guiPort === null || o.guiPort === '') {
+    o.guiPort = Number.isInteger(o.restPort) ? o.restPort + 1000 : DEFAULT_GUI_PORT;
+  } else if (!Number.isInteger(Number(o.guiPort)) || Number(o.guiPort) < 1 || Number(o.guiPort) > 65535) {
+    errors.push(`guiPort "${raw.guiPort}" invalid — integer 1-65535 required (omit for default restPort+1000).`);
+  } else {
+    o.guiPort = Number(o.guiPort);
+  }
 
-  // --- sensitivity (medical/sensitive flag drives the public-mode guard) ---
+  // --- sensitivity (medical/sensitive flag drives the security guard) ---
   o.sensitive = o.sensitive === true || o.sensitive === 'true';
 
-  // --- SECURITY GUARD: a sensitive vault may NEVER be exposed in public mode ---
-  if (o.mode === 'public' && o.sensitive) {
+  // --- SECURITY GUARD: a sensitive vault may ONLY be exposed in wg mode ---
+  // (review+ P2: previously only `public` was refused, so `--sensitive --mode lan`
+  // slipped through and would expose medical data on the LAN.)
+  if (o.sensitive && o.mode !== 'wg') {
     errors.push(
       `refusing to generate: vault "${o.name}" is marked sensitive but mode is ` +
-        `"public" (bearer-only HTTPS, no network restriction). Sensitive/medical ` +
-        `vaults must use mode "wg" (WireGuard-only). Override the sensitivity ` +
-        `only if this vault truly holds no protected data.`,
+        `"${o.mode}". Sensitive/medical vaults must use mode "wg" (WireGuard-only — ` +
+        `the REST port binds to the WG interface and nginx/ACL restrict to ` +
+        `10.8.0.0/24). Use --mode wg, or drop --sensitive only if this vault truly ` +
+        `holds no protected data.`,
     );
   }
 
@@ -151,14 +168,32 @@ export function normalizeDeployOpts(raw = {}) {
 }
 
 /**
- * Compute the baseUrl the ROUTER uses to reach this vault, per mode.
- * (wg → http://10.8.0.x:port · public → https://domain · lan → http://192.168.x:port)
+ * Compute the baseUrl the ROUTER uses to reach this vault, per mode. This MUST
+ * match how the REST port is published (see buildComposeService):
+ *   - wg   → http://<wgHost>:<restPort>   (port bound to the WG interface; the
+ *            router reaches it directly over the encrypted tunnel — Roland's
+ *            proven model. No nginx in front of REST.)
+ *   - lan  → http://<lanHost>:<restPort>  (port bound to the LAN interface)
+ *   - public → https://<apiDomain>        (port bound to loopback; nginx
+ *            terminates TLS on 443 and proxies to it)
  */
 export function computeBaseUrl(opts) {
   const o = normalizeDeployOpts(opts);
   if (o.mode === 'wg') return `http://${o.wgHost}:${o.restPort}`;
   if (o.mode === 'lan') return `http://${o.lanHost}:${o.restPort}`;
   return `https://${o.apiDomain}`; // public — nginx terminates TLS on 443
+}
+
+/**
+ * The host interface the REST port is published on, per mode. The advertised
+ * baseUrl (above) and this bind MUST agree, or the router can't reach the vault
+ * (review+ P1): wg/lan bind to the reachable interface; public binds loopback so
+ * only the same-host nginx reaches it.
+ */
+export function restBindHost(o) {
+  if (o.mode === 'wg') return o.wgHost;
+  if (o.mode === 'lan') return o.lanHost;
+  return '127.0.0.1'; // public
 }
 
 /**
@@ -207,14 +242,17 @@ export function buildComposeService(opts) {
     // Hardening: disable in-GUI terminal / sudo / file-transfer (medical safety).
     env.push('DISABLE_TERMINAL=true', 'DISABLE_ROOT=true');
   }
+  const restHost = restBindHost(o);
   const service = {
     image: OBSIDIAN_IMAGE,
     container_name: o.upstreamHost,
     environment: env,
     volumes: [`${o.configPath}:/config`],
-    // Expose the GUI (3001) and the Local REST API port. Bind to loopback on the
-    // host so ONLY nginx (same host) can reach them — never the raw internet.
-    ports: [`127.0.0.1:${o.guiPort}:3001`, `127.0.0.1:${o.restPort}:${o.restPort}`],
+    // REST port: published on the interface the router actually uses (wg/lan) so
+    // baseUrl is reachable; loopback for public (nginx proxies it). GUI port:
+    // always loopback (nginx terminates TLS for the browser) + UNIQUE per vault
+    // host port (guiPort, default restPort+1000) so multiple vaults don't collide.
+    ports: [`127.0.0.1:${o.guiPort}:3001`, `${restHost}:${o.restPort}:${o.restPort}`],
     shm_size: '1gb', // required for the Electron app
     restart: 'unless-stopped',
   };
@@ -237,10 +275,17 @@ export function renderComposeYaml(opts) {
   return lines.join('\n') + '\n';
 }
 
+// YAML 1.1 "magic" scalars that a parser would reinterpret as non-string
+// (null/bool) if left bare. A user-supplied PASSWORD=null / CUSTOM_USER=off must
+// stay a string → force-quote these. (review+ I1)
+const YAML_RESERVED = /^(null|~|true|false|yes|no|on|off|nan|\.inf|-\.inf)$/i;
+
 /** Quote a YAML scalar only when needed (keeps output clean + valid). */
 function yamlScalar(v) {
   if (typeof v === 'number') return String(v);
   const s = String(v);
+  // Force-quote YAML 1.1 reserved words even though they're "clean" char-wise.
+  if (YAML_RESERVED.test(s) || s === '') return `"${s.replace(/"/g, '\\"')}"`;
   // Quote if it contains YAML-significant chars or could be misparsed.
   if (/^[\w./@=:-]+$/.test(s) && !/^\d+$/.test(s)) return s;
   if (/^\d/.test(s) || /[:#{}\[\],&*?|<>=!%@`"']/.test(s) || s.includes(' ')) {
@@ -249,51 +294,68 @@ function yamlScalar(v) {
   return s;
 }
 
+/** TLS directive lines for an nginx server block, per mode (always real paths). */
+function nginxTlsLines(o, domain) {
+  // review+ P1: ALWAYS emit ssl_certificate / ssl_certificate_key so the block
+  // is `nginx -t`-loadable as-is. public → Let's Encrypt; wg/lan → a self-signed
+  // path the runbook tells you to generate (openssl), never just a comment.
+  if (o.mode === 'public') {
+    return [
+      `    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;`,
+      `    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;`,
+    ];
+  }
+  return [
+    `    # self-signed cert — generate once: openssl req -x509 -newkey rsa:2048 -nodes \\`,
+    `    #   -keyout /etc/nginx/ssl/${o.name}.key -out /etc/nginx/ssl/${o.name}.crt -days 825 -subj "/CN=${o.name}"`,
+    `    ssl_certificate     /etc/nginx/ssl/${o.name}.crt;`,
+    `    ssl_certificate_key /etc/nginx/ssl/${o.name}.key;`,
+  ];
+}
+
+/** Per-mode access-control lines, indented for INSIDE `location { }` (8 spaces). */
+function nginxAccessLines(o, label) {
+  if (o.mode === 'wg') {
+    return [`        # WireGuard-only — sensitive/medical ${label}`, `        allow ${WG_RANGE};`, '        deny all;'];
+  }
+  if (o.mode === 'lan') {
+    return [`        # LAN-only ${label}`, `        allow ${LAN_RANGE};`, '        deny all;'];
+  }
+  return [`        # public ${label}: no IP restriction — auth is the gate (bearer apiKey / basic auth)`];
+}
+
 /**
  * Build the nginx REVERSE-PROXY block for the vault's REST API.
- * Critical features:
- *   - resolver-variable `proxy_pass` (self-heals on container IP-shuffle — the
- *     exact 502 bug from 2026-05-29-mcphub-502-ip-shuffle-fix).
- *   - mode-based access control: wg → WG-only Access List; lan → LAN allow;
- *     public → no IP restriction (the Local REST API bearer is the gate).
  *
- * @returns {string} nginx server { } block
+ * IMPORTANT (review+ P1): only **public** mode needs an nginx REST proxy. In
+ * `wg`/`lan` the REST port is published directly on the WG/LAN interface and the
+ * router reaches it without nginx (see buildComposeService / computeBaseUrl), so
+ * this returns **null** for those modes — emitting a bogus cert-less block would
+ * be misleading and fail `nginx -t`.
+ *
+ * For public: resolver-variable `proxy_pass` to the container over the Docker
+ * network (self-heals on container IP-shuffle — the 2026-05-29 502 class), real
+ * Let's Encrypt cert, no IP ACL (the Local REST API bearer apiKey is the gate).
+ *
+ * @returns {string|null} nginx server { } block, or null for wg/lan
  */
 export function buildNginxApiServer(opts) {
   const o = normalizeDeployOpts(opts);
-  const serverName = o.mode === 'public' ? o.apiDomain : `${o.name}-api.local`;
+  if (o.mode !== 'public') return null;
   const upstreamVar = `$upstream_${o.name.replace(/-/g, '_')}_api`;
-
-  // Access-control lines, already indented for INSIDE `location { }` (8 spaces).
-  const access = [];
-  if (o.mode === 'wg') {
-    access.push('        # WireGuard-only — sensitive/medical vault', `        allow ${WG_RANGE};`, '        deny all;');
-  } else if (o.mode === 'lan') {
-    access.push('        # LAN-only', `        allow ${LAN_RANGE};`, '        allow 127.0.0.1;', '        deny all;');
-  } else {
-    access.push('        # public: no IP restriction — the Local REST API bearer apiKey is the gate');
-  }
-
-  const tls =
-    o.mode === 'public'
-      ? [
-          '    listen 443 ssl http2;',
-          `    ssl_certificate     /etc/letsencrypt/live/${o.apiDomain}/fullchain.pem;`,
-          `    ssl_certificate_key /etc/letsencrypt/live/${o.apiDomain}/privkey.pem;`,
-        ]
-      : ['    listen 443 ssl http2;', '    # self-signed or internal CA cert for non-public modes'];
 
   return [
     'server {',
-    ...tls,
-    `    server_name ${serverName};`,
+    '    listen 443 ssl http2;',
+    ...nginxTlsLines(o, o.apiDomain),
+    `    server_name ${o.apiDomain};`,
     '',
     '    # Self-heal on container IP-shuffle: re-resolve via Docker DNS every 10s',
     '    resolver 127.0.0.11 valid=10s;',
     `    set ${upstreamVar} ${o.upstreamHost};`,
     '',
     '    location / {',
-    ...access,
+    ...nginxAccessLines(o, 'REST API'),
     `        proxy_pass http://${upstreamVar}:${o.restPort};`,
     '        proxy_set_header Host $host;',
     '        proxy_set_header X-Real-IP $remote_addr;',
@@ -305,8 +367,11 @@ export function buildNginxApiServer(opts) {
 }
 
 /**
- * Build the nginx block for the Selkies GUI (the web viewer). Needs WebSocket
- * upgrade headers. Only emitted when a guiDomain is given.
+ * Build the nginx block for the Selkies GUI (the web viewer). Emitted for ALL
+ * modes when a guiDomain is given (the browser always needs TLS termination).
+ * WebSocket upgrade headers; resolver-variable proxy to the container over the
+ * Docker network; real cert directives in every mode (review+ P1); per-mode ACL
+ * so a wg/lan GUI isn't accidentally public (review+ P2).
  *
  * @returns {string|null}
  */
@@ -314,31 +379,19 @@ export function buildNginxGuiServer(opts) {
   const o = normalizeDeployOpts(opts);
   if (!o.guiDomain) return null;
   const upstreamVar = `$upstream_${o.name.replace(/-/g, '_')}_gui`;
-  // Access-control lines, indented for INSIDE `location { }` (8 spaces).
-  const access =
-    o.mode === 'wg'
-      ? [`        allow ${WG_RANGE};`, '        deny all;']
-      : ['        # public GUI: rely on container basic auth + (recommended) an extra auth layer'];
-
-  const tls =
-    o.mode === 'public'
-      ? [
-          `    ssl_certificate     /etc/letsencrypt/live/${o.guiDomain}/fullchain.pem;`,
-          `    ssl_certificate_key /etc/letsencrypt/live/${o.guiDomain}/privkey.pem;`,
-        ]
-      : ['    # self-signed or internal CA cert'];
 
   return [
     'server {',
     '    listen 443 ssl http2;',
+    ...nginxTlsLines(o, o.guiDomain),
     `    server_name ${o.guiDomain};`,
-    ...tls,
     '',
+    '    # Self-heal on container IP-shuffle: re-resolve via Docker DNS every 10s',
     '    resolver 127.0.0.11 valid=10s;',
     `    set ${upstreamVar} ${o.upstreamHost};`,
     '',
     '    location / {',
-    ...access,
+    ...nginxAccessLines(o, 'GUI'),
     '        # the container serves the GUI over HTTPS on 3001 (self-signed)',
     `        proxy_pass https://${upstreamVar}:3001;`,
     '        proxy_ssl_verify off;',
@@ -359,6 +412,7 @@ export function buildNginxGuiServer(opts) {
 export function buildDeploymentPlan(opts) {
   const o = normalizeDeployOpts(opts);
   const vaultEnv = buildVaultEnvLine(o);
+  const restHost = restBindHost(o);
   const notes = [
     `Vault "${o.name}" → mode ${o.mode}; router reaches it at ${vaultEnv.descriptor.baseUrl}.`,
     o.apiKey === PLACEHOLDER_TOKEN
@@ -368,11 +422,14 @@ export function buildDeploymentPlan(opts) {
       ? 'GUI PASSWORD is a PLACEHOLDER — set a real one before exposing the GUI.'
       : 'GUI password provided.',
     o.mode === 'wg'
-      ? 'WG mode: nginx Access List restricts to 10.8.0.0/24. Ensure WireGuard is up on the host.'
+      ? `WG mode: REST port published on ${restHost} (WG interface) — reachable only over the encrypted tunnel; ensure WireGuard is up on the host. No nginx needed for REST.`
       : o.mode === 'public'
-        ? 'PUBLIC mode: HTTPS + bearer apiKey only — never use for sensitive/medical vaults.'
-        : 'LAN mode: reachable on the local network; not for sensitive vaults.',
-    'Ports are bound to 127.0.0.1 on the host → only nginx (same host) reaches the container.',
+        ? 'PUBLIC mode: REST bound to 127.0.0.1; nginx (Let\'s Encrypt) terminates TLS + bearer apiKey is the gate — never use for sensitive/medical vaults.'
+        : `LAN mode: REST port published on ${restHost} (LAN interface); not for sensitive vaults.`,
+    `GUI port published on 127.0.0.1:${o.guiPort} (unique per vault → no collision); nginx terminates TLS for the browser.`,
+    o.guiDomain
+      ? `GUI viewer at https://${o.guiDomain} (nginx → container :3001).`
+      : 'No --gui-domain given → no web-viewer nginx block generated (REST-only deployment).',
   ];
   return {
     name: o.name,
@@ -386,8 +443,8 @@ export function buildDeploymentPlan(opts) {
   };
 }
 
-// Exposed for tests.
-export const _internals = { yamlScalar, PLACEHOLDER_TOKEN, PLACEHOLDER_PASSWORD };
+// Exposed for tests. (parseArgv is a hoisted function declaration below.)
+export const _internals = { yamlScalar, parseArgv, PLACEHOLDER_TOKEN, PLACEHOLDER_PASSWORD };
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -397,7 +454,15 @@ function parseArgv(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (!a.startsWith('--')) continue;
-    const key = a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const rawKey = a.slice(2);
+    // `--no-xxx` is a boolean negation → set xxx=false (review+ B1: --no-harden
+    // was silently dropped because the generic camelCase made it `noHarden`).
+    if (rawKey.startsWith('no-')) {
+      const k = rawKey.slice(3).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      out[k] = false;
+      continue;
+    }
+    const key = rawKey.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
     const next = argv[i + 1];
     if (next === undefined || next.startsWith('--')) {
       out[key] = true;

@@ -4,6 +4,13 @@
  * The headline guarantee: the `VAULT_*` line the generator emits ROUND-TRIPS
  * through the router's real `parseEnvVaults` (registry.mjs) — so the deploy
  * generator can never drift from what the router actually accepts.
+ *
+ * Network model (review+ corrected):
+ *   - wg/lan: REST port is published on the WG/LAN interface; the router reaches
+ *     it directly (no nginx for REST → buildNginxApiServer returns null).
+ *   - public: REST bound to loopback; nginx (Let's Encrypt) proxies it.
+ *   - GUI: always reached via nginx (TLS for the browser), host port unique per
+ *     vault (guiPort default restPort+1000) to avoid collisions.
  */
 
 import { test, describe } from 'node:test';
@@ -12,6 +19,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeDeployOpts,
   computeBaseUrl,
+  restBindHost,
   buildVaultEnvLine,
   buildComposeService,
   renderComposeYaml,
@@ -20,11 +28,13 @@ import {
   buildDeploymentPlan,
   envKeyForName,
   WG_RANGE,
-  _internals,
+  LAN_RANGE,
+  _internals as genInternals,
 } from '../scripts/gen-obsidian-deploy.mjs';
 import { _internals as registryInternals } from '../src/registry.mjs';
 
 const { parseEnvVaults } = registryInternals;
+const { yamlScalar, parseArgv } = genInternals;
 
 // ---------------------------------------------------------------------------
 // envKeyForName
@@ -49,7 +59,7 @@ describe('normalizeDeployOpts — validation', () => {
     const o = normalizeDeployOpts(base);
     assert.equal(o.name, 'tribu');
     assert.equal(o.restPort, 27145);
-    assert.equal(o.guiPort, 3001);
+    assert.equal(o.guiPort, 28145); // default = restPort + 1000 (unique per vault)
     assert.equal(o.timeoutMs, 15000);
     assert.equal(o.harden, true);
     assert.equal(o.apiKey, '<token>'); // placeholder, never invented
@@ -82,15 +92,15 @@ describe('normalizeDeployOpts — validation', () => {
 
   test('SECURITY GUARD: sensitive + public mode is REFUSED', () => {
     assert.throws(
-      () =>
-        normalizeDeployOpts({
-          name: 'smile',
-          restPort: 27129,
-          mode: 'public',
-          apiDomain: 'smile.kiviri.fr',
-          sensitive: true,
-        }),
+      () => normalizeDeployOpts({ name: 'smile', restPort: 27129, mode: 'public', apiDomain: 'smile.kiviri.fr', sensitive: true }),
       /refusing to generate.*sensitive/s,
+    );
+  });
+
+  test('SECURITY GUARD: sensitive + LAN mode is ALSO refused (review+ P2)', () => {
+    assert.throws(
+      () => normalizeDeployOpts({ name: 'smile', restPort: 27129, mode: 'lan', lanHost: '192.168.0.10', sensitive: true }),
+      /refusing to generate.*must use mode "wg"/s,
     );
   });
 
@@ -104,20 +114,47 @@ describe('normalizeDeployOpts — validation', () => {
     const o = normalizeDeployOpts({ ...base, harden: false });
     assert.equal(o.harden, false);
   });
+
+  test('explicitly-set invalid guiPort is rejected (not a silent fallback)', () => {
+    assert.throws(() => normalizeDeployOpts({ ...base, guiPort: 'abc' }), /guiPort .* invalid/);
+    assert.throws(() => normalizeDeployOpts({ ...base, guiPort: 99999 }), /guiPort .* invalid/);
+  });
+
+  test('unset guiPort defaults to restPort+1000', () => {
+    assert.equal(normalizeDeployOpts(base).guiPort, 28145);
+    assert.equal(normalizeDeployOpts({ ...base, restPort: 27161 }).guiPort, 28161);
+  });
+
+  test('explicit guiPort is honored', () => {
+    assert.equal(normalizeDeployOpts({ ...base, guiPort: 30000 }).guiPort, 30000);
+  });
+
+  test('dotted name error includes the FQDN → --name/--api-domain hint', () => {
+    assert.throws(
+      () => normalizeDeployOpts({ ...base, name: 'portfolio.nicolasgalzy.fr' }),
+      /pass the subdomain as --name/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
-// computeBaseUrl — per mode
+// computeBaseUrl + restBindHost — the bind MUST match the advertised baseUrl
 // ---------------------------------------------------------------------------
-describe('computeBaseUrl', () => {
-  test('wg → http://10.8.0.x:port', () => {
-    assert.equal(computeBaseUrl({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10' }), 'http://10.8.0.10:27145');
+describe('computeBaseUrl + restBindHost (review+ P1 coherence)', () => {
+  test('wg → baseUrl host == restBindHost == wgHost', () => {
+    const o = normalizeDeployOpts({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10' });
+    assert.equal(computeBaseUrl(o), 'http://10.8.0.10:27145');
+    assert.equal(restBindHost(o), '10.8.0.10'); // published on the same interface → reachable
   });
-  test('lan → http://192.168.x:port', () => {
-    assert.equal(computeBaseUrl({ name: 'x', restPort: 27145, mode: 'lan', lanHost: '192.168.0.10' }), 'http://192.168.0.10:27145');
+  test('lan → baseUrl host == restBindHost == lanHost', () => {
+    const o = normalizeDeployOpts({ name: 'x', restPort: 27145, mode: 'lan', lanHost: '192.168.0.10' });
+    assert.equal(computeBaseUrl(o), 'http://192.168.0.10:27145');
+    assert.equal(restBindHost(o), '192.168.0.10');
   });
-  test('public → https://domain (no port)', () => {
-    assert.equal(computeBaseUrl({ name: 'x', restPort: 27145, mode: 'public', apiDomain: 'x.kiviri.fr' }), 'https://x.kiviri.fr');
+  test('public → https domain, REST bound loopback (nginx proxies)', () => {
+    const o = normalizeDeployOpts({ name: 'x', restPort: 27145, mode: 'public', apiDomain: 'x.kiviri.fr' });
+    assert.equal(computeBaseUrl(o), 'https://x.kiviri.fr');
+    assert.equal(restBindHost(o), '127.0.0.1');
   });
 });
 
@@ -127,16 +164,10 @@ describe('computeBaseUrl', () => {
 describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', () => {
   test('wg vault: descriptor parsed back identically by the router', () => {
     const { key, value, descriptor } = buildVaultEnvLine({
-      name: 'tribu',
-      restPort: 27145,
-      mode: 'wg',
-      wgHost: '10.8.0.10',
-      apiKey: 'REALTOKEN123',
-      description: 'famille',
-      timeoutMs: 15000,
+      name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10',
+      apiKey: 'REALTOKEN123', description: 'famille', timeoutMs: 15000,
     });
     assert.equal(key, 'VAULT_TRIBU');
-    // Feed EXACTLY the emitted env into the router's parser.
     const { envVaults, warnings } = parseEnvVaults({ [key]: value });
     assert.equal(envVaults.length, 1, 'router must accept the generated line');
     const v = envVaults[0];
@@ -146,19 +177,12 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
     assert.equal(v.wireguard, true);
     assert.equal(v.timeoutMs, 15000);
     assert.equal(v.type, 'remote');
-    // No WG sanity warning: host IS in 10.8.0.x
     assert.equal(warnings.length, 0, 'wg host in range → no warning');
     assert.equal(descriptor.name, 'tribu');
   });
 
   test('public vault: parsed back, wireguard:false, https baseUrl', () => {
-    const { key, value } = buildVaultEnvLine({
-      name: 'coursera',
-      restPort: 27161,
-      mode: 'public',
-      apiDomain: 'coursera.kiviri.fr',
-      apiKey: 'K',
-    });
+    const { key, value } = buildVaultEnvLine({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr', apiKey: 'K' });
     const { envVaults } = parseEnvVaults({ [key]: value });
     assert.equal(envVaults[0].baseUrl, 'https://coursera.kiviri.fr');
     assert.equal(envVaults[0].wireguard, false);
@@ -172,11 +196,32 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
     assert.equal(warnings.length, 0);
   });
 
-  test('the placeholder token still round-trips (structure valid even before secret is filled)', () => {
+  test('placeholder token still round-trips (structure valid before secret is filled)', () => {
     const { key, value } = buildVaultEnvLine({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' });
     const { envVaults } = parseEnvVaults({ [key]: value });
     assert.equal(envVaults.length, 1);
     assert.equal(envVaults[0].apiKey, '<token>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// yamlScalar (review+ I1) — magic scalars quoted; tested directly
+// ---------------------------------------------------------------------------
+describe('yamlScalar', () => {
+  test('YAML 1.1 reserved words are force-quoted', () => {
+    for (const s of ['null', 'NULL', '~', 'true', 'false', 'yes', 'no', 'on', 'off']) {
+      assert.equal(yamlScalar(s), `"${s}"`, `${s} must be quoted`);
+    }
+  });
+  test('plain slug values stay bare', () => {
+    assert.equal(yamlScalar('obsidian-tribu'), 'obsidian-tribu');
+    assert.equal(yamlScalar('1gb'), '1gb');
+  });
+  test('values with spaces / em-dash / colon are quoted', () => {
+    assert.match(yamlScalar('TITLE=Obsidian — tribu'), /^".*"$/);
+  });
+  test('numbers pass through unquoted', () => {
+    assert.equal(yamlScalar(1000), '1000');
   });
 });
 
@@ -186,15 +231,33 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
 describe('buildComposeService', () => {
   const base = { name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' };
 
-  test('service shape: image, shm, loopback-bound ports, /config volume', () => {
+  test('wg: REST published on the WG interface; GUI on a unique loopback port', () => {
     const { serviceName, service } = buildComposeService(base);
     assert.equal(serviceName, 'obsidian-tribu');
     assert.equal(service.image, 'lscr.io/linuxserver/obsidian:latest');
     assert.equal(service.shm_size, '1gb');
     assert.deepEqual(service.volumes, ['/srv/vaults/tribu:/config']);
-    // Ports MUST bind to 127.0.0.1 (only nginx on the same host reaches them).
-    assert.ok(service.ports.every((p) => p.startsWith('127.0.0.1:')), 'ports must be loopback-bound');
-    assert.ok(service.ports.includes('127.0.0.1:27145:27145'));
+    // REST on the WG host (reachable by the router over the tunnel) — review+ P1
+    assert.ok(service.ports.includes('10.8.0.1:27145:27145'), 'REST must bind the WG interface, not loopback');
+    // GUI on a unique loopback port (restPort+1000) — review+ P2 collision fix
+    assert.ok(service.ports.includes('127.0.0.1:28145:3001'), 'GUI must bind a unique loopback host port');
+  });
+
+  test('lan: REST published on the LAN interface', () => {
+    const { service } = buildComposeService({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10' });
+    assert.ok(service.ports.includes('192.168.0.10:27150:27150'));
+  });
+
+  test('public: REST bound to loopback (nginx proxies)', () => {
+    const { service } = buildComposeService({ name: 'x', restPort: 27161, mode: 'public', apiDomain: 'x.kiviri.fr' });
+    assert.ok(service.ports.includes('127.0.0.1:27161:27161'));
+  });
+
+  test('two vaults get distinct GUI host ports (no collision)', () => {
+    const a = buildComposeService({ name: 'a', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' });
+    const b = buildComposeService({ name: 'b', restPort: 27161, mode: 'wg', wgHost: '10.8.0.1' });
+    const guiOf = (s) => s.service.ports.find((p) => p.endsWith(':3001'));
+    assert.notEqual(guiOf(a), guiOf(b), 'distinct vaults must not share a GUI host port');
   });
 
   test('harden ON adds DISABLE_TERMINAL/DISABLE_ROOT', () => {
@@ -212,67 +275,71 @@ describe('buildComposeService', () => {
     const yaml = renderComposeYaml(base);
     assert.match(yaml, /^services:\n {2}obsidian-tribu:\n/);
     assert.match(yaml, /shm_size: 1gb/);
-    // The TITLE has a space + em dash → must be quoted
     assert.match(yaml, /"TITLE=Obsidian — tribu"/);
-    // Loopback port mapping present
-    assert.match(yaml, /127\.0\.0\.1:27145:27145/);
+    assert.match(yaml, /10\.8\.0\.1:27145:27145/);
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildNginxApiServer — per mode
+// buildNginxApiServer — ONLY public mode (wg/lan REST is direct → null)
 // ---------------------------------------------------------------------------
 describe('buildNginxApiServer', () => {
-  test('wg mode → WG Access List + resolver-variable proxy_pass', () => {
-    const conf = buildNginxApiServer({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' });
-    assert.match(conf, new RegExp(`allow ${WG_RANGE.replace(/[.\/]/g, '\\$&')};`));
-    assert.match(conf, /deny all;/);
-    // self-heal pattern: a variable upstream + resolver
-    assert.match(conf, /resolver 127\.0\.0\.11 valid=10s;/);
-    assert.match(conf, /set \$upstream_tribu_api obsidian-tribu;/);
-    assert.match(conf, /proxy_pass http:\/\/\$upstream_tribu_api:27145;/);
-    // exactly one X-Forwarded-For
-    assert.equal((conf.match(/X-Forwarded-For/g) || []).length, 1);
+  test('wg mode → null (REST is direct over WG, no nginx)', () => {
+    assert.equal(buildNginxApiServer({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' }), null);
   });
 
-  test('public mode → no IP restriction, Let\'s Encrypt cert paths', () => {
+  test('lan mode → null (REST is direct on the LAN, no nginx)', () => {
+    assert.equal(buildNginxApiServer({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10' }), null);
+  });
+
+  test('public mode → Let\'s Encrypt cert + resolver-variable proxy + no IP ACL', () => {
     const conf = buildNginxApiServer({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr' });
+    assert.ok(conf, 'public must emit a block');
     assert.doesNotMatch(conf, /deny all;/);
-    assert.match(conf, /letsencrypt\/live\/coursera\.kiviri\.fr\/fullchain\.pem/);
+    assert.match(conf, /ssl_certificate\s+\/etc\/letsencrypt\/live\/coursera\.kiviri\.fr\/fullchain\.pem;/);
+    assert.match(conf, /ssl_certificate_key\s+\/etc\/letsencrypt\/live\/coursera\.kiviri\.fr\/privkey\.pem;/);
     assert.match(conf, /server_name coursera\.kiviri\.fr;/);
-  });
-
-  test('lan mode → LAN allow + loopback', () => {
-    const conf = buildNginxApiServer({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10' });
-    assert.match(conf, /allow 192\.168\.0\.0\/16;/);
-    assert.match(conf, /allow 127\.0\.0\.1;/);
-    assert.match(conf, /deny all;/);
+    // self-heal: variable upstream + resolver
+    assert.match(conf, /resolver 127\.0\.0\.11 valid=10s;/);
+    assert.match(conf, /set \$upstream_coursera_api obsidian-coursera;/);
+    assert.match(conf, /proxy_pass http:\/\/\$upstream_coursera_api:27161;/);
+    assert.equal((conf.match(/X-Forwarded-For/g) || []).length, 1);
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildNginxGuiServer
+// buildNginxGuiServer — all modes, always cert directives, per-mode ACL
 // ---------------------------------------------------------------------------
 describe('buildNginxGuiServer', () => {
   test('null when no guiDomain', () => {
     assert.equal(buildNginxGuiServer({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1' }), null);
   });
 
-  test('with guiDomain → WebSocket upgrade headers + https upstream', () => {
-    const conf = buildNginxGuiServer({
-      name: 'tribu',
-      restPort: 27145,
-      mode: 'wg',
-      wgHost: '10.8.0.1',
-      guiDomain: 'tribu.kiviri.fr',
-    });
+  test('wg GUI: WG ACL + self-signed cert directives + WebSocket upgrade', () => {
+    const conf = buildNginxGuiServer({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.1', guiDomain: 'tribu.kiviri.fr' });
     assert.match(conf, /server_name tribu\.kiviri\.fr;/);
     assert.match(conf, /proxy_set_header Upgrade \$http_upgrade;/);
     assert.match(conf, /proxy_set_header Connection "upgrade";/);
     assert.match(conf, /proxy_pass https:\/\/\$upstream_tribu_gui:3001;/);
     assert.match(conf, /proxy_ssl_verify off;/);
-    // wg gui still WG-restricted
-    assert.match(conf, /allow 10\.8\.0\.0\/24;/);
+    assert.match(conf, new RegExp(`allow ${WG_RANGE.replace(/[.\/]/g, '\\$&')};`));
+    assert.match(conf, /deny all;/);
+    // review+ P1: real cert directives even for non-public (so nginx -t passes)
+    assert.match(conf, /ssl_certificate\s+\/etc\/nginx\/ssl\/tribu\.crt;/);
+    assert.match(conf, /ssl_certificate_key\s+\/etc\/nginx\/ssl\/tribu\.key;/);
+  });
+
+  test('lan GUI: LAN ACL present (review+ P2 — not accidentally public)', () => {
+    const conf = buildNginxGuiServer({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10', guiDomain: 'notes.kiviri.fr' });
+    assert.match(conf, new RegExp(`allow ${LAN_RANGE.replace(/[.\/]/g, '\\$&')};`));
+    assert.match(conf, /deny all;/);
+    assert.match(conf, /ssl_certificate\s+\/etc\/nginx\/ssl\/notes\.crt;/);
+  });
+
+  test('public GUI: Let\'s Encrypt cert, no IP ACL', () => {
+    const conf = buildNginxGuiServer({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr', guiDomain: 'coursera-gui.kiviri.fr' });
+    assert.match(conf, /letsencrypt\/live\/coursera-gui\.kiviri\.fr\/fullchain\.pem/);
+    assert.doesNotMatch(conf, /deny all;/);
   });
 });
 
@@ -280,23 +347,66 @@ describe('buildNginxGuiServer', () => {
 // buildDeploymentPlan — one-shot, notes, secret-safety
 // ---------------------------------------------------------------------------
 describe('buildDeploymentPlan', () => {
-  test('assembles all artifacts + placeholder warnings in notes', () => {
+  test('wg with no guiDomain: nginxApi AND nginxGui both null (REST-only direct)', () => {
     const plan = buildDeploymentPlan({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10' });
     assert.equal(plan.name, 'tribu');
     assert.equal(plan.mode, 'wg');
     assert.equal(plan.baseUrl, 'http://10.8.0.10:27145');
     assert.ok(plan.composeYaml.includes('obsidian-tribu'));
-    assert.ok(plan.nginxApi.includes('proxy_pass'));
-    assert.equal(plan.nginxGui, null); // no guiDomain
+    assert.equal(plan.nginxApi, null, 'wg REST is direct → no nginx API block');
+    assert.equal(plan.nginxGui, null, 'no guiDomain → no GUI block');
     assert.ok(plan.vaultEnv.line.startsWith('VAULT_TRIBU='));
-    // notes must warn that the apiKey + password are placeholders
     assert.ok(plan.notes.some((n) => /PLACEHOLDER/.test(n)));
   });
 
-  test('SECRET-SAFETY: a real apiKey is never duplicated into notes/compose plaintext logs', () => {
-    const plan = buildDeploymentPlan({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10', apiKey: 'SUPERSECRET' });
-    // The token legitimately appears ONCE in the vaultEnv line (that's its purpose),
-    // but must NOT leak into the notes array.
+  test('public: nginxApi present (REST proxied)', () => {
+    const plan = buildDeploymentPlan({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr' });
+    assert.ok(plan.nginxApi && plan.nginxApi.includes('proxy_pass'));
+  });
+
+  test('wg with guiDomain: nginxGui present, nginxApi still null', () => {
+    const plan = buildDeploymentPlan({ name: 'tribu', restPort: 27145, mode: 'wg', wgHost: '10.8.0.10', guiDomain: 'tribu.kiviri.fr' });
+    assert.equal(plan.nginxApi, null);
+    assert.ok(plan.nginxGui && plan.nginxGui.includes('server_name tribu.kiviri.fr'));
+  });
+
+  test('SECRET-SAFETY: a real apiKey never leaks into notes/compose/nginx', () => {
+    const plan = buildDeploymentPlan({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr', apiKey: 'SUPERSECRET', guiDomain: 'g.kiviri.fr' });
     assert.ok(!plan.notes.join('\n').includes('SUPERSECRET'), 'apiKey must not appear in notes');
+    assert.ok(!plan.composeYaml.includes('SUPERSECRET'), 'apiKey must not appear in compose');
+    assert.ok(!plan.nginxApi.includes('SUPERSECRET'), 'apiKey must not appear in nginx api');
+    assert.ok(!plan.nginxGui.includes('SUPERSECRET'), 'apiKey must not appear in nginx gui');
+    assert.ok(plan.vaultEnv.line.includes('SUPERSECRET'), 'apiKey belongs in the VAULT_* line');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseArgv (CLI) — review+ B1: --no-harden
+// ---------------------------------------------------------------------------
+describe('parseArgv (CLI) — review+ B1: --no-harden', () => {
+  test('--no-harden yields harden:false (was silently dropped as noHarden)', () => {
+    const args = parseArgv(['--name', 'tribu', '--rest-port', '27145', '--mode', 'wg', '--no-harden']);
+    assert.equal(args.harden, false);
+    assert.equal(args.noHarden, undefined, 'must NOT leak a stray noHarden key');
+  });
+
+  test('--no-harden end-to-end: the compose has no DISABLE_TERMINAL', () => {
+    const args = parseArgv(['--name', 'tribu', '--rest-port', '27145', '--mode', 'wg', '--wg-host', '10.8.0.1', '--no-harden']);
+    const { service } = buildComposeService(args);
+    assert.ok(!service.environment.some((e) => e.startsWith('DISABLE_TERMINAL')), 'CLI --no-harden must omit DISABLE_TERMINAL end-to-end');
+  });
+
+  test('without --no-harden, hardening is ON by default', () => {
+    const args = parseArgv(['--name', 'tribu', '--rest-port', '27145', '--mode', 'wg', '--wg-host', '10.8.0.1']);
+    const { service } = buildComposeService(args);
+    assert.ok(service.environment.includes('DISABLE_TERMINAL=true'));
+  });
+
+  test('value flags + bare boolean flags parse correctly', () => {
+    const args = parseArgv(['--name', 'x', '--rest-port', '27145', '--sensitive', '--mode', 'wg']);
+    assert.equal(args.name, 'x');
+    assert.equal(args.restPort, '27145');
+    assert.equal(args.sensitive, true);
+    assert.equal(args.mode, 'wg');
   });
 });
