@@ -6,6 +6,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-06-02 — `log-discipline` convention (thin log index + `Sessions/` detail)
+
+A convention/docs release. Adds an installable convention that codifies the **thin-index** model for `wiki-meta/log.md`: every entry is a short bilingual summary linking to a detailed journal in `wiki-meta/Sessions/`, instead of multi-paragraph detail pasted under a log `## H2`. No `src/` runtime change.
+
+### Added
+
+- **`log-discipline` installable convention** (`skills/conventions/snippets/log-discipline.md`, id `log-discipline`; install per-vault via `/obsidian-router:conventions install log-discipline`). Codifies: a log entry is `## YYYY-MM-DD — <topic> · [[YYYY-MM-DD-<slug>]]` + a one-sentence FR/EN lead; the full detail lives in `wiki-meta/Sessions/<date>-<slug>.md` (frontmatter `type: session-log`, ending in `## Voir aussi / See also`); append-only, **newest at the bottom**. It documents that the `session-auto-journal` hook and `/save` already emit thin entries — the only behaviour it corrects is Claude pasting fat multi-paragraph detail under a log `## H2`. The `skills/conventions/SKILL.md` mapping table grows 10 → 11.
+- **Wiki scaffold `templates/wiki-meta/log.md` now documents the curated `## H2` milestone format.** New vaults bootstrap with a note describing the thin-`## H2` + `Sessions/`-link model alongside the one-line operation log, and point at the `log-discipline` convention.
+
 ### Fixed
 
 - **`bump-version.mjs` now syncs the README version badge too.** The shields.io badge in `README.md` (EN + FR) drifted repeatedly — stuck at v0.10.3, then v0.19.1, while `package.json` moved on — because `npm run bump` only rewrote the three JSON version files and the badge had to be hand-edited (and was forgotten). The bump script now treats the README badge as a fourth target via a dedicated, idempotent `updateReadmeBadge()` that **throws if the badge is missing** (so a rename surfaces loudly instead of silently no-op'ing). Re-synced the badge to the current 0.22.0. +7 tests in `tests/bump-version.test.mjs`.
