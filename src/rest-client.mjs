@@ -148,14 +148,23 @@ function categorizeHttpStatus(status, statusText, body, vault, urlPath) {
     const isBridgeRoute = bridgeRoutes.some(
       (r) => urlPath === r || urlPath.startsWith(`${r}?`),
     );
+    // `/open/<path>` (used by open_in_obsidian) is ALSO a bridge route, but a
+    // 404 there is AMBIGUOUS: the file may simply not exist in the vault, OR
+    // the bridge plugin may not be installed/enabled (so the route is absent).
+    // The hint names both causes so the caller can disambiguate.
+    const isOpenRoute = urlPath.startsWith('/open/');
+    let hint;
+    if (isOpenRoute) {
+      hint = `Route ${urlPath} returned 404 — AMBIGUOUS: either the file doesn't exist in this vault, OR the "obsidian-mcp-router-bridge" plugin (>= 0.2.0, which registers /open) isn't installed/enabled. Check the path first, then the plugin (https://github.com/tboome33/obsidian-mcp-router-bridge).`;
+    } else if (isBridgeRoute) {
+      hint = `Route ${urlPath} not found. The "obsidian-mcp-router-bridge" plugin is probably not installed or not enabled in this vault. Install it from https://github.com/tboome33/obsidian-mcp-router-bridge and toggle it on in Community plugins.`;
+    }
     return new RestApiError(base, {
       kind: 'not_found',
       vaultName: vault.name,
       status,
       urlPath,
-      hint: isBridgeRoute
-        ? `Route ${urlPath} not found. The "obsidian-mcp-router-bridge" plugin is probably not installed or not enabled in this vault. Install it from https://github.com/tboome33/obsidian-mcp-router-bridge and toggle it on in Community plugins.`
-        : undefined,
+      hint,
     });
   }
   if (status === 409) {

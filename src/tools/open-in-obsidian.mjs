@@ -31,6 +31,16 @@ export async function openInObsidianTool(registry, args = {}) {
   }
 
   const vault = registry.resolveVault(name);
+
+  // NOTE: deliberately NOT restricted to `vault.type === 'local'`. A review
+  // flagged parity with `buildClickToOpenUrl` (which IS local-only) — but that
+  // helper is local-only only because it must read the LOCAL data.json to find
+  // the insecure port; a different reason. `open_in_obsidian` targets
+  // `vault.baseUrl` directly, and the PRIMARY deployment is MCPHub, where the
+  // user's own vaults are configured as `remote` with a WireGuard baseUrl
+  // (e.g. http://10.8.0.10:<port>). Restricting to local would break exactly
+  // that case. The bridge /open navigates whichever Obsidian serves baseUrl —
+  // by config, the user's own.
   const result = await openInObsidian(vault, filePath, { anchor });
 
   return {

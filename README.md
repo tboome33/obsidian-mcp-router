@@ -224,7 +224,7 @@ You also need:
 
 > 📘 **Reference vault required for `setup-vault.mjs`** — to bootstrap new vaults via the script (which most users will want), you first need a one-time-configured reference vault holding the canonical plugin set. Easiest path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolds the skeleton + downloads bridge plugin in one command, then guides you through installing the marketplace plugins via Obsidian). Full doc with troubleshooting: [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
-Two pieces to install: the **MCP server** (the router itself, exposes the 34 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
+Two pieces to install: the **MCP server** (the router itself, exposes the 35 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
 
 ### Step 1 — Install the MCP server
 
@@ -616,6 +616,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `propose_linked_sources` | Heuristic-scored `<a href>` follower that proposes recursive-ingestion candidates (top-N, same-domain / related-section boosts). |
 | `download_page_assets` | Download a page's images into the vault (image preservation during web ingestion). |
 | `build_open_link` | Build a ready-to-paste click-to-open markdown link (`http://127.0.0.1:<insecurePort>/open/<path>`) for one or many vault files. Read-only. |
+| `open_in_obsidian` | Open a note in the running Obsidian (and raise its window) by calling the bridge `/open` route **server-side** — no browser. The browser-free counterpart to a click-to-open link, for clients (e.g. Claude Desktop) that otherwise proxy clicked links through a browser. Optional `anchor` scrolls to a heading. Navigation-only. |
 | `get_wiki_context_pack` | Return a structured JSON context envelope for a query (primaryPages / semanticChunks / graphNeighbors / citations) so non-Claude agents can consume the vault programmatically. |
 | `build_wiki_graph` | Assemble the vault into a typed knowledge-graph JSON (Understand-Anything schema: 21 node / 35 edge types). Writes `wiki-meta/graph/knowledge-graph.json` + a derived `.understand-anything/` copy. |
 | `build_wiki_tour` | Generate a deterministic, ordered pedagogical reading tour from the knowledge-graph link topology. Read-only. |
@@ -971,7 +972,7 @@ Il te faut aussi :
 
 > 📘 **Vault de référence requis pour `setup-vault.mjs`** — pour bootstrapper de nouveaux vaults via le script (ce que la plupart des utilisateurs voudront), il faut d'abord un vault de référence configuré une seule fois qui contient le set canonique de plugins. Voie la plus rapide : `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolde le skeleton + télécharge le bridge plugin en une commande, puis te guide pour installer les plugins marketplace via Obsidian). Doc complète avec troubleshooting : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
 
-Deux composants à installer : le **MCP server** (le router lui-même, expose les 34 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
+Deux composants à installer : le **MCP server** (le router lui-même, expose les 35 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
 
 #### Étape 1 — Installer le MCP server
 
@@ -1339,6 +1340,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `propose_linked_sources` | Suit les `<a href>` avec scoring heuristique pour proposer des candidats d'ingestion récursive (top-N, boosts même-domaine / section Related). |
 | `download_page_assets` | Télécharge les images d'une page dans le vault (préservation des images lors de l'ingestion web). |
 | `build_open_link` | Construit un lien markdown click-to-open prêt à coller (`http://127.0.0.1:<insecurePort>/open/<path>`) pour un ou plusieurs fichiers du vault. Read-only. |
+| `open_in_obsidian` | Ouvre une note dans l'Obsidian en cours (et ramène sa fenêtre au premier plan) en appelant la route `/open` du bridge **côté serveur** — sans navigateur. Le pendant sans-navigateur d'un lien click-to-open, pour les clients (ex. Claude Desktop) qui sinon proxifient les clics de liens via un navigateur. `anchor` optionnel pour scroller à un titre. Navigation seule. |
 | `get_wiki_context_pack` | Retourne une enveloppe de contexte JSON structurée pour une requête (primaryPages / semanticChunks / graphNeighbors / citations) afin que des agents non-Claude consomment le vault programmatiquement. |
 | `build_wiki_graph` | Assemble le vault en un knowledge-graph JSON typé (schéma Understand-Anything : 21 types de nœuds / 35 d'arêtes). Écrit `wiki-meta/graph/knowledge-graph.json` + une copie dérivée `.understand-anything/`. |
 | `build_wiki_tour` | Génère un parcours de lecture pédagogique déterministe et ordonné depuis la topologie de liens du knowledge-graph. Read-only. |

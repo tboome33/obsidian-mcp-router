@@ -89,6 +89,18 @@ describe('open_in_obsidian — fires /open server-side', () => {
     const hit = received.find((x) => x.url.startsWith('/open/'));
     assert.equal(hit.url, '/open/wiki%2Ffoo.md');
   });
+
+  test('adversarial path: ?/#/& are encoded into the segment (no query/fragment injection)', async () => {
+    // A path containing URL-control chars must NOT be able to spawn a real
+    // query/fragment on the /open URL — it stays one encoded path segment.
+    await openInObsidianTool(makeRegistry(localVault()), {
+      path: 'wiki/foo.md?h=evil&x=1#frag',
+    });
+    const hit = received.find((x) => x.url.startsWith('/open/'));
+    assert.equal(hit.url, '/open/wiki%2Ffoo.md%3Fh%3Devil%26x%3D1%23frag');
+    assert.ok(!hit.url.includes('?h=evil'), 'must not produce a parasitic ?h= query');
+    assert.ok(!hit.url.includes('#frag'), 'must not produce a parasitic fragment');
+  });
 });
 
 describe('open_in_obsidian — validation + errors', () => {
