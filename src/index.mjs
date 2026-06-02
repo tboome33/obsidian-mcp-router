@@ -58,6 +58,7 @@ import {
   handleDownloadPageAssets,
 } from './tools/download-page-assets.mjs';
 import { buildOpenLinkTool } from './tools/build-open-link.mjs';
+import { openInObsidianTool } from './tools/open-in-obsidian.mjs';
 import {
   TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
   getWikiContextPack,
@@ -670,6 +671,35 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  // Navigation-only: opens a note in the running Obsidian (and raises its
+  // window) by calling the bridge /open route SERVER-SIDE — no browser. The
+  // browser-free counterpart to a click-to-open link, for clients (Claude
+  // Desktop) that otherwise proxy clicked links through a browser. Read-only
+  // wrt content → excluded from WRITE_TOOL_NAMES.
+  {
+    name: 'open_in_obsidian',
+    description:
+      'Navigate the running Obsidian for a vault to a file — and bring its window to the front — WITHOUT opening a browser. Use this when the user asks to "open" / "show" / "go to" a note: the router calls the bridge\'s /open route server-side, so (unlike a click-to-open LINK, which a browser-proxying client such as Claude Desktop always opens in a browser tab) no browser is involved. Optional `anchor` scrolls to a heading. Requires the mcp-router-bridge plugin (>= 0.2.0) + Obsidian running for that vault. Navigation-only — never changes content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Vault name (see list_vaults). Omit for the default vault.',
+        },
+        path: {
+          type: 'string',
+          description: 'Vault-relative path of the file to open (e.g. "wiki/Divers/foo.md").',
+        },
+        anchor: {
+          type: 'string',
+          description: 'Optional heading TEXT to scroll to (e.g. "Installation"). Leading `#` optional.',
+        },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
   // Roadmap item #6 (llm-wiki-compiler) — structured JSON context pack for
   // non-Claude agents. Read-only (queries the wiki via index.md + smart
   // search + frontmatter), excluded from WRITE_TOOL_NAMES.
@@ -737,6 +767,8 @@ const TOOL_HANDLERS = {
   // v0.14.8 — click-to-open URL builder (read-only, no vault I/O beyond
   // the per-vault data.json port lookup).
   build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
+  // v0.24.0 — browser-free "open this note in Obsidian" (server-side /open call).
+  open_in_obsidian: (reg, args) => openInObsidianTool(reg, args),
   // Roadmap item #6 — structured JSON context pack (v1 envelope).
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
   // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.

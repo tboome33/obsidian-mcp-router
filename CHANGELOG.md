@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-06-02 — `open_in_obsidian` tool (browser-free "open this note")
+
+A new MCP tool that opens a note in the running Obsidian — and raises its window — **without a browser**. Born from a long click-to-open debugging session: in **Claude Desktop**, every clicked link is routed through a `claude.ai` proxy that opens it in a browser tab, so a click-to-open *link* can never be browser-free there. Calling the bridge server-side sidesteps that entirely.
+
+### Added
+
+- **`open_in_obsidian(vault?, path, anchor?)`** (`src/tools/open-in-obsidian.mjs` + `openInObsidian` in `src/rest-client.mjs`). Calls the bridge plugin's public `/open` route **server-side** (router process → loopback HTTP → bridge), so Obsidian navigates to the file and the bridge raises its window with **zero browser involved**. The browser-free counterpart to a click-to-open *link*: clients that proxy clicked links through a browser (notably Claude Desktop) can't avoid a browser tab on an http link, but this tool never touches it. Works the same in Claude Code CLI and Claude Desktop (both speak MCP). Optional `anchor` scrolls to a heading (same `?h=` mechanism as click-to-open, reusing `encodeVaultPath` + `normalizeAnchor`). **Navigation-only** (no content write) → allowed under `OBSIDIAN_ROUTER_READONLY`. Requires `mcp-router-bridge` ≥ 0.2.0 + Obsidian running for the vault; a missing file / down Obsidian surfaces a categorized tool error. MCP tool count 34 → 35.
+
+### Tests
+
+- **`tests/open-in-obsidian.test.mjs`** (7 tests) — a local HTTP server records the request target; asserts the tool fires `GET /open/<encoded-path>` (+ `?h=<heading>` when an anchor is given, leading `#` stripped, whitespace→none), validates `path` / `anchor`, and propagates an unreachable-Obsidian error.
+
 ## [0.23.0] — 2026-06-02 — `log-discipline` convention (thin log index + `Sessions/` detail)
 
 A convention/docs release. Adds an installable convention that codifies the **thin-index** model for `wiki-meta/log.md`: every entry is a short bilingual summary linking to a detailed journal in `wiki-meta/Sessions/`, instead of multi-paragraph detail pasted under a log `## H2`. No `src/` runtime change.

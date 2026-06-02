@@ -8,6 +8,7 @@
  *  - Path encoding
  */
 import { fetch, Agent } from 'undici';
+import { encodeVaultPath, normalizeAnchor } from './helpers/click-to-open.mjs';
 
 const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
 const secureAgent = new Agent();
@@ -578,4 +579,32 @@ export function executeTemplate(vault, { name, args = {}, createFile, targetPath
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
+}
+
+/**
+ * Navigate the Obsidian instance serving this vault to a file — and bring its
+ * window to the front — by calling the bridge plugin's public `/open` route
+ * SERVER-SIDE. No browser is involved: this is the browser-free counterpart to
+ * a click-to-open *link*. In clients that proxy link clicks through a browser
+ * (notably Claude Desktop's web link handling), a clicked http link always pops
+ * a browser tab; calling /open from here (the router process) never does — the
+ * bridge does the workspace navigation + focus dance directly.
+ *
+ * We discard the tiny HTML page /open returns (`json: false` → text, ignored).
+ * request() throws a categorized RestApiError on 404 (file not in the vault),
+ * connection refused (Obsidian / Local REST API not running), etc.
+ *
+ * @param {object} vault - registry vault descriptor (uses baseUrl/timeoutMs).
+ * @param {string} filePath - vault-relative path of the file to open.
+ * @param {object} [opts]
+ * @param {string} [opts.anchor] - optional heading to scroll to (emitted as
+ *   `?h=`, exactly like click-to-open). Leading `#` optional; empty → ignored.
+ * @returns {Promise<{ ok: true, anchor: string|null }>}
+ */
+export async function openInObsidian(vault, filePath, { anchor } = {}) {
+  const cleanAnchor = normalizeAnchor(anchor);
+  const encodedPath = encodeVaultPath(filePath);
+  const query = cleanAnchor ? `?h=${encodeURIComponent(cleanAnchor)}` : '';
+  await request(vault, 'GET', `/open/${encodedPath}${query}`, { json: false });
+  return { ok: true, anchor: cleanAnchor || null };
 }
