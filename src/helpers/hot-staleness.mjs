@@ -18,9 +18,14 @@
  *     never git — so a concurrent session's uncommitted changes or a manual
  *     Obsidian edit can never cause a false block (Claude can only fix what
  *     it itself wrote).
- *   - TRIGGER = a write to `wiki/<...>` (a note). Pure scaffold writes
- *     (`wiki-meta/index.md`, `log.md`, `overview.md`) do NOT trigger — they
- *     are bookkeeping. A write to `wiki-meta/hot.md` is the satisfying
+ *   - TRIGGER = a NOTE-BODY write under `wiki/<...>`. The tracked tools are
+ *     `write_file`/`patch_file`/`append_to_file`, the built-in
+ *     `Write`/`Edit`/`MultiEdit`, and `execute_template` (only when
+ *     `createFile:true`, via its `targetPath`). `move_file`, `delete_file`,
+ *     `set_frontmatter`, `merge_frontmatter` are deliberately NOT tracked (a
+ *     rename/delete/metadata toggle adds no recent fact worth a hot entry).
+ *     Pure scaffold writes (`wiki-meta/index.md`, `log.md`, `overview.md`) do
+ *     NOT trigger either. A write to `wiki-meta/hot.md` is the satisfying
  *     action.
  *   - PER-VAULT: each vault judged independently (a session can touch
  *     several). A vault whose root can't be resolved is SKIPPED (fail-open),
@@ -32,21 +37,36 @@
 
 const BUILTIN_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 
-// MCP write-flavored tool verbs (the tail of `mcp__<server>__<verb>` or the
-// MCPHub form `mcp__<id>__<server>-<verb>`). Matched against the full tool
-// name by suffix so both local and hub namespacings work.
-const MCP_WRITE_RE =
-  /(?:^|[_-])(write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|move_file|delete_file|execute_template)$/;
+// MCP tools whose output can be a NOTE under `wiki/` (or a `wiki-meta/hot.md`
+// refresh): the note-body writers, plus `execute_template` (counted only when
+// it actually writes — see targetsFromToolUse). Matched by SUFFIX so both the
+// local `mcp__obsidian-router__write_file` form and the MCPHub-namespaced
+// `mcp__<id>__obsidian-router-<X>-write_file` form work.
+//
+// DELIBERATELY EXCLUDED: `move_file` / `delete_file` / `set_frontmatter` /
+// `merge_frontmatter`. A rename, a delete, or a metadata toggle IS a write but
+// not "new note content worth a hot entry" — tracking them would force a
+// hot.md refresh (and emit a "you wrote notes" message) for operations that
+// add no recent fact. Widen the set here if that scope ever needs to change.
+const MCP_TRACKED_RE = /(?:^|[_-])(write_file|patch_file|append_to_file|execute_template)$/;
+const EXECUTE_TEMPLATE_RE = /(?:^|[_-])execute_template$/;
+const PATCH_FILE_RE = /(?:^|[_-])patch_file$/;
 
 export function isBuiltinWriteTool(name) {
   return typeof name === 'string' && BUILTIN_WRITE_TOOLS.has(name);
 }
 
-/** True if a tool name is a write-flavored MCP or built-in tool. */
-export function isWriteToolName(name) {
+/**
+ * True if a tool name is one the guard TRACKS: a note-body writer (built-in
+ * Write/Edit/MultiEdit, or MCP write_file/patch_file/append_to_file) or
+ * execute_template. Non-tracked writes (move_file/delete_file/
+ * set_frontmatter/merge_frontmatter) return false by design — see the
+ * MCP_TRACKED_RE comment.
+ */
+export function isTrackedWriteTool(name) {
   if (!name || typeof name !== 'string') return false;
   if (BUILTIN_WRITE_TOOLS.has(name)) return true;
-  return MCP_WRITE_RE.test(name);
+  return MCP_TRACKED_RE.test(name);
 }
 
 /**
@@ -71,7 +91,7 @@ export function extractWriteToolUses(jsonlText) {
     const chunks = Array.isArray(msg.content) ? msg.content : [];
     for (const c of chunks) {
       if (!c || c.type !== 'tool_use') continue;
-      if (!isWriteToolName(c.name)) continue;
+      if (!isTrackedWriteTool(c.name)) continue;
       out.push({
         toolName: c.name,
         input: c.input && typeof c.input === 'object' ? c.input : {},
@@ -101,23 +121,43 @@ function normAbs(p, isWin) {
 }
 
 /**
- * Pull the candidate written path(s) + optional vault slug out of one write
+ * Pull the candidate written path(s) + optional vault slug out of one tracked
  * tool call. Built-in Write/Edit/MultiEdit carry an ABSOLUTE `file_path`;
- * MCP tools carry vault-RELATIVE `path` (+ `destination`/`toPath` for moves)
- * and an optional `vault` slug.
+ * write_file/patch_file/append_to_file carry a vault-RELATIVE `path`;
+ * execute_template carries `targetPath` (only when `createFile === true`).
+ * All MCP tools may carry an optional `vault` slug.
  */
 export function targetsFromToolUse({ toolName, input } = {}) {
   const inp = input && typeof input === 'object' ? input : {};
+
+  // Built-in Write/Edit/MultiEdit carry an ABSOLUTE `file_path`.
   if (isBuiltinWriteTool(toolName)) {
     const fp = inp.file_path || inp.filePath;
     return { absolutePaths: typeof fp === 'string' && fp ? [fp] : [], relPaths: [], vaultSlug: undefined };
   }
-  const relPaths = [];
-  for (const key of ['path', 'destination', 'toPath', 'dest', 'target', 'outputPath']) {
-    const v = inp[key];
-    if (typeof v === 'string' && v) relPaths.push(v);
-  }
+
   const vaultSlug = typeof inp.vault === 'string' && inp.vault.trim() ? inp.vault.trim() : undefined;
+
+  // execute_template: the only WRITTEN path is `targetPath`, and only when
+  // `createFile === true`. `name` is the TEMPLATE's path (an input, not an
+  // output) → never counted; a render with `createFile:false` writes nothing.
+  if (EXECUTE_TEMPLATE_RE.test(String(toolName))) {
+    if (inp.createFile === true && typeof inp.targetPath === 'string' && inp.targetPath) {
+      return { absolutePaths: [], relPaths: [inp.targetPath], vaultSlug };
+    }
+    return { absolutePaths: [], relPaths: [], vaultSlug };
+  }
+
+  // A `patch_file` with `targetType: 'frontmatter'` is a metadata-only edit —
+  // the low-level equivalent of `set_frontmatter`, which we deliberately
+  // exclude. Treat it the same (not note content) so the primitive and the
+  // wrapper agree; a heading/block patch IS content. (codex review+ P2, pass 2.)
+  if (PATCH_FILE_RE.test(String(toolName)) && inp.targetType === 'frontmatter') {
+    return { absolutePaths: [], relPaths: [], vaultSlug };
+  }
+
+  // write_file / patch_file (heading|block) / append_to_file: vault-relative `path`.
+  const relPaths = typeof inp.path === 'string' && inp.path ? [inp.path] : [];
   return { absolutePaths: [], relPaths, vaultSlug };
 }
 
@@ -180,30 +220,49 @@ export function classifyToolUse(toolUse, ctx = {}) {
 
 /**
  * Main entry point. Given a transcript (JSONL string) + ctx, return:
- *   { stale: [{ vaultKey, vaultRoot }], byVault: Map<vaultKey,{content,hot}> }
- * `stale` lists vaults with ≥1 `wiki/` content write and NO hot.md refresh.
+ *   { stale: [{ vaultKey, vaultRoot }], byVault: Map<vaultKey,{lastContent,lastHot}> }
+ *
+ * A vault is STALE when its most recent `wiki/` content write comes AFTER its
+ * most recent `wiki-meta/hot.md` refresh (or there was no hot refresh at all).
+ *
+ * Tracking ORDER — not just two booleans — is essential: in a multi-turn
+ * session, ONE early hot refresh must NOT excuse a note written later. The
+ * hot refresh has to FOLLOW the latest content write to clear the vault,
+ * otherwise the cache no longer reflects the latest touched pages. (Without
+ * ordering, `content:true, hot:true` would pass forever after the first
+ * refresh — codex review+ P1.)
+ *
+ * Indices are per-`tool_use` (monotonic). A vault is stale iff
+ * `lastContent >= 0 && lastContent > lastHot` (a hot write at the same index
+ * as a content write is impossible for our tracked tools).
  */
 export function findStaleVaults(jsonlText, ctx = {}) {
   const toolUses = extractWriteToolUses(jsonlText);
-  const byVault = new Map(); // vaultKey -> { content, hot }
+  const byVault = new Map(); // vaultKey -> { lastContent, lastHot } (tool-use indices, -1 = none)
   const rawByKey = new Map(); // vaultKey -> raw root (for messaging)
 
   for (const r of ctx.vaultRoots || []) rawByKey.set(normAbs(r, !!ctx.isWin), r);
 
+  let idx = 0;
   for (const tu of toolUses) {
     for (const { vaultKey, vaultRootRaw, kind } of classifyToolUse(tu, ctx)) {
       if (!vaultKey || kind === 'other') continue; // unresolvable or irrelevant → skip
       if (vaultRootRaw && !rawByKey.has(vaultKey)) rawByKey.set(vaultKey, vaultRootRaw);
-      const cur = byVault.get(vaultKey) || { content: false, hot: false };
-      if (kind === 'content') cur.content = true;
-      if (kind === 'hot') cur.hot = true;
+      const cur = byVault.get(vaultKey) || { lastContent: -1, lastHot: -1 };
+      if (kind === 'content') cur.lastContent = idx;
+      else if (kind === 'hot') cur.lastHot = idx;
       byVault.set(vaultKey, cur);
     }
+    idx += 1;
   }
 
   const stale = [];
   for (const [key, v] of byVault) {
-    if (v.content && !v.hot) stale.push({ vaultKey: key, vaultRoot: rawByKey.get(key) || key });
+    // Stale when content was written AND the latest content write is more
+    // recent than the latest hot refresh (or there was none).
+    if (v.lastContent >= 0 && v.lastContent > v.lastHot) {
+      stale.push({ vaultKey: key, vaultRoot: rawByKey.get(key) || key });
+    }
   }
   return { stale, byVault };
 }

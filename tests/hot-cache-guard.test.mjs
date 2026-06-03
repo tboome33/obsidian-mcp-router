@@ -6,6 +6,12 @@
  * The pure layer is tested directly (fast, no fs). The hook is smoke-tested
  * as a subprocess feeding a synthetic transcript JSONL + a temp router
  * config via OBSIDIAN_ROUTER_CONFIG, mirroring tests/vault-link-linter.test.mjs.
+ *
+ * Tool-input schemas used below match the REAL MCP inputSchemas in
+ * src/index.mjs (verified): move_file `{from,to}`, execute_template
+ * `{name,createFile,targetPath}`, delete_file `{path,confirm}`,
+ * set_frontmatter `{path,key,value}`, merge_frontmatter `{path,values}`,
+ * write_file/patch_file/append_to_file `{path,vault}`.
  */
 
 import { test, describe, before, after } from 'node:test';
@@ -17,12 +23,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
-  isWriteToolName,
+  isTrackedWriteTool,
   isBuiltinWriteTool,
   extractWriteToolUses,
   targetsFromToolUse,
   pathKind,
-  classifyToolUse,
   findStaleVaults,
 } from '../src/helpers/hot-staleness.mjs';
 
@@ -34,7 +39,6 @@ const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'hot-cache-update-promp
 // Helpers for building synthetic transcripts
 // ---------------------------------------------------------------------------
 
-/** One assistant message line carrying a single tool_use block. */
 function toolUseLine(name, input) {
   return JSON.stringify({
     type: 'assistant',
@@ -56,31 +60,36 @@ const CTX = {
 };
 
 // ---------------------------------------------------------------------------
-// isWriteToolName / isBuiltinWriteTool
+// isTrackedWriteTool / isBuiltinWriteTool
 // ---------------------------------------------------------------------------
 
-describe('isWriteToolName', () => {
+describe('isTrackedWriteTool', () => {
   test('built-in write tools', () => {
-    for (const n of ['Write', 'Edit', 'MultiEdit']) assert.equal(isWriteToolName(n), true, n);
+    for (const n of ['Write', 'Edit', 'MultiEdit']) assert.equal(isTrackedWriteTool(n), true, n);
     assert.equal(isBuiltinWriteTool('Edit'), true);
   });
-  test('local MCP write tools', () => {
-    for (const v of ['write_file', 'patch_file', 'append_to_file', 'set_frontmatter', 'merge_frontmatter', 'move_file', 'delete_file', 'execute_template']) {
-      assert.equal(isWriteToolName('mcp__obsidian-router__' + v), true, v);
+  test('tracked local MCP tools (note-body writers + execute_template)', () => {
+    for (const v of ['write_file', 'patch_file', 'append_to_file', 'execute_template']) {
+      assert.equal(isTrackedWriteTool('mcp__obsidian-router__' + v), true, v);
     }
   });
-  test('MCPHub-namespaced write tools (hyphen before verb)', () => {
-    assert.equal(isWriteToolName('mcp__5f30__obsidian-router-Tribu-write_file'), true);
+  test('MCPHub-namespaced tracked tools (hyphen before verb)', () => {
+    assert.equal(isTrackedWriteTool('mcp__5f30__obsidian-router-Tribu-write_file'), true);
   });
-  test('non-write tools are rejected', () => {
-    for (const n of ['Read', 'Bash', 'Grep', 'mcp__obsidian-router__search', 'mcp__obsidian-router__get_file', 'mcp__obsidian-router__list_vaults']) {
-      assert.equal(isWriteToolName(n), false, n);
+  test('NON-tracked writes (move/delete/frontmatter) are excluded by design', () => {
+    for (const v of ['move_file', 'delete_file', 'set_frontmatter', 'merge_frontmatter']) {
+      assert.equal(isTrackedWriteTool('mcp__obsidian-router__' + v), false, v);
+    }
+  });
+  test('read/search tools are rejected', () => {
+    for (const n of ['Read', 'Bash', 'Grep', 'mcp__obsidian-router__search', 'mcp__obsidian-router__get_file']) {
+      assert.equal(isTrackedWriteTool(n), false, n);
     }
   });
   test('garbage input', () => {
-    assert.equal(isWriteToolName(null), false);
-    assert.equal(isWriteToolName(''), false);
-    assert.equal(isWriteToolName(42), false);
+    assert.equal(isTrackedWriteTool(null), false);
+    assert.equal(isTrackedWriteTool(''), false);
+    assert.equal(isTrackedWriteTool(42), false);
   });
 });
 
@@ -114,14 +123,25 @@ describe('targetsFromToolUse', () => {
     assert.deepEqual(t.absolutePaths, ['C:/x/y.md']);
     assert.deepEqual(t.relPaths, []);
   });
-  test('MCP carries relative path + vault slug', () => {
+  test('write_file carries relative path + vault slug', () => {
     const t = targetsFromToolUse({ toolName: 'mcp__obsidian-router__write_file', input: { path: 'wiki/a.md', vault: 'smile' } });
     assert.deepEqual(t.relPaths, ['wiki/a.md']);
     assert.equal(t.vaultSlug, 'smile');
   });
-  test('move_file contributes destination too', () => {
-    const t = targetsFromToolUse({ toolName: 'mcp__obsidian-router__move_file', input: { path: 'wiki/a.md', destination: 'wiki/b.md' } });
-    assert.deepEqual(t.relPaths.sort(), ['wiki/a.md', 'wiki/b.md']);
+  test('execute_template with createFile:true counts targetPath (not name)', () => {
+    const t = targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__execute_template',
+      input: { name: 'Templates/Daily.md', createFile: true, targetPath: 'wiki/journal/2026.md', vault: 'a' },
+    });
+    assert.deepEqual(t.relPaths, ['wiki/journal/2026.md']);
+    assert.equal(t.vaultSlug, 'a');
+  });
+  test('execute_template with createFile:false writes nothing → no paths', () => {
+    const t = targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__execute_template',
+      input: { name: 'wiki/Templates/T.md', createFile: false },
+    });
+    assert.deepEqual(t.relPaths, []);
   });
 });
 
@@ -130,16 +150,18 @@ describe('targetsFromToolUse', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractWriteToolUses', () => {
-  test('returns only write-flavored tool_use blocks', () => {
+  test('returns only tracked tool_use blocks', () => {
     const t = jsonl(
       textLine('some prose'),
       toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
       toolUseLine('mcp__obsidian-router__search', { query: 'x' }),
+      toolUseLine('mcp__obsidian-router__move_file', { from: 'wiki/a.md', to: 'wiki/b.md', vault: 'a' }),
       toolUseLine('Read', { file_path: '/x' }),
       toolUseLine('Edit', { file_path: '/vaults/A/wiki/b.md' }),
       JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x' }] } }),
     );
     const got = extractWriteToolUses(t);
+    // write_file + Edit are tracked; search/move_file/Read are not.
     assert.equal(got.length, 2);
     assert.equal(got[0].toolName, 'mcp__obsidian-router__write_file');
     assert.equal(got[1].toolName, 'Edit');
@@ -171,6 +193,28 @@ describe('findStaleVaults', () => {
     assert.equal(findStaleVaults(t, CTX).stale.length, 0);
   });
 
+  test('ordering: a content write AFTER the latest hot refresh → stale (codex P1)', () => {
+    // content(0) → hot(1) → content(2): an early refresh must NOT excuse the
+    // later note. The most recent content write is more recent than the hot.
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/b.md', vault: 'a' }),
+    );
+    const { stale } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1);
+    assert.equal(stale[0].vaultRoot, '/vaults/A');
+  });
+
+  test('ordering: hot refresh AFTER the latest content write clears the vault', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/b.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
   test('only scaffold writes (index/log) → not stale', () => {
     const t = jsonl(
       toolUseLine('mcp__obsidian-router__patch_file', { path: 'wiki-meta/index.md', vault: 'a' }),
@@ -193,6 +237,14 @@ describe('findStaleVaults', () => {
   test('unresolvable vault (unknown slug) → skipped, never stale', () => {
     const t = jsonl(toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'zzz-unknown' }));
     assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('slug given but unresolved does NOT fall back to defaultRoot', () => {
+    // Regression: a write with an explicit-but-unknown vault must be skipped,
+    // not silently attributed to the default vault.
+    const t = jsonl(toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'ghost' }));
+    const { byVault } = findStaleVaults(t, CTX);
+    assert.equal(byVault.size, 0);
   });
 
   test('MCP write with NO vault uses defaultRoot', () => {
@@ -222,11 +274,56 @@ describe('findStaleVaults', () => {
     assert.equal(findStaleVaults(t, CTX).stale.length, 0);
   });
 
+  test('execute_template (createFile:true) writing a wiki/ note → stale', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__execute_template', {
+      name: 'Templates/Daily.md', createFile: true, targetPath: 'wiki/journal/x.md', vault: 'a',
+    }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 1);
+  });
+
+  test('execute_template (createFile:false) → no write → not stale', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__execute_template', {
+      name: 'wiki/Templates/T.md', createFile: false, vault: 'a',
+    }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('move_file is NOT tracked → never stale (rename adds no recent fact)', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__move_file', { from: 'wiki/a.md', to: 'wiki/b.md', vault: 'a' }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('delete_file is NOT tracked → never stale (and avoids a misleading "you wrote" message)', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__delete_file', { path: 'wiki/a.md', confirm: true, vault: 'a' }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('set_frontmatter / merge_frontmatter on a wiki/ note are NOT tracked → not stale', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__set_frontmatter', { path: 'wiki/a.md', key: 'status', value: 'done', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__merge_frontmatter', { path: 'wiki/b.md', values: { tags: ['x'] }, vault: 'a' }),
+    );
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('patch_file targetType:frontmatter on a wiki/ note → NOT content (consistent with set_frontmatter)', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__patch_file', {
+      path: 'wiki/a.md', targetType: 'frontmatter', operation: 'replace', target: 'status', content: 'done', vault: 'a',
+    }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('patch_file targetType:heading on a wiki/ note IS content → stale', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__patch_file', {
+      path: 'wiki/a.md', targetType: 'heading', operation: 'append', target: 'Section', content: 'x', vault: 'a',
+    }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 1);
+  });
+
   test('Windows case-insensitive root matching', () => {
     const winCtx = { vaultRoots: ['C:\\VAULTS\\X'], slugToRoot: () => null, defaultRoot: null, isWin: true };
     const t = jsonl(toolUseLine('Edit', { file_path: 'C:/VAULTS/X/wiki/a.md' }));
-    const { stale } = findStaleVaults(t, winCtx);
-    assert.equal(stale.length, 1);
+    assert.equal(findStaleVaults(t, winCtx).stale.length, 1);
   });
 
   test('empty transcript → not stale', () => {
@@ -288,6 +385,11 @@ describe('hot-cache-update-prompt hook (subprocess)', () => {
 
   test('passes (exit 0) when only scaffolds touched', () => {
     const r = run([toolUseLine('mcp__obsidian-router__patch_file', { path: 'wiki-meta/index.md', vault: 'fake-vault' })]);
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('passes (exit 0) on a delete_file of a wiki/ note (not tracked)', () => {
+    const r = run([toolUseLine('mcp__obsidian-router__delete_file', { path: 'wiki/note.md', confirm: true, vault: 'fake-vault' })]);
     assert.equal(r.status, 0, r.stderr);
   });
 
