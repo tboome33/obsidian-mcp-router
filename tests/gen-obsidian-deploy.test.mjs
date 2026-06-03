@@ -184,18 +184,18 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
     assert.equal(v.name, 'tribu');
     assert.equal(v.baseUrl, 'http://10.8.0.10:27145');
     assert.equal(v.apiKey, 'REALTOKEN123');
-    assert.equal(v.wireguard, true);
+    assert.equal(v.wireguard, undefined); // per-vault flag removed — not emitted, not parsed
     assert.equal(v.timeoutMs, 15000);
     assert.equal(v.type, 'remote');
     assert.equal(warnings.length, 0, 'wg host in range → no warning');
     assert.equal(descriptor.name, 'tribu');
   });
 
-  test('public vault: parsed back, wireguard:false, https baseUrl', () => {
+  test('public vault: parsed back with https baseUrl (no wireguard field)', () => {
     const { key, value } = buildVaultEnvLine({ name: 'coursera', restPort: 27161, mode: 'public', apiDomain: 'coursera.kiviri.fr', apiKey: 'K' });
     const { envVaults } = parseEnvVaults({ [key]: value });
     assert.equal(envVaults[0].baseUrl, 'https://coursera.kiviri.fr');
-    assert.equal(envVaults[0].wireguard, false);
+    assert.equal(envVaults[0].wireguard, undefined);
   });
 
   test('tlsInsecure defaults to false; --tls-insecure flips it, and the router parses it back', () => {
@@ -212,11 +212,11 @@ describe('buildVaultEnvLine — round-trips through registry.parseEnvVaults', ()
     assert.equal(str.descriptor.tlsInsecure, true);
   });
 
-  test('lan vault round-trips and triggers NO wg warning', () => {
+  test('lan vault round-trips and triggers NO parse warning', () => {
     const { key, value } = buildVaultEnvLine({ name: 'notes', restPort: 27150, mode: 'lan', lanHost: '192.168.0.10', apiKey: 'K' });
     const { envVaults, warnings } = parseEnvVaults({ [key]: value });
     assert.equal(envVaults[0].baseUrl, 'http://192.168.0.10:27150');
-    assert.equal(envVaults[0].wireguard, false);
+    assert.equal(envVaults[0].wireguard, undefined);
     assert.equal(warnings.length, 0);
   });
 

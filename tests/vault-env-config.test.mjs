@@ -4,8 +4,11 @@
  * Strategy (mirrors tests/registry.test.mjs):
  * - parseEnvVaults: pure function via _internals. Covers parse OK + defaults,
  *   explicit optionals, invalid JSON (skip + NO secret leak), missing required
- *   field (skip + apiKey redacted), the WireGuard defensive warning, the
- *   VAULT_PATH exclusion, and the retro-compat no-VAULT_* → [] case.
+ *   field (skip + apiKey redacted), the now-ignored leftover `wireguard` key,
+ *   the VAULT_PATH exclusion, and the retro-compat no-VAULT_* → [] case.
+ * - Global WireGuard enforcement (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD): refuses to
+ *   start when a served vault's baseUrl is not loopback/WG; loopback + 10.8.0.x
+ *   pass; offenders filtered out by ALLOWED_VAULTS don't trip it; unset = no-op.
  * - loadRegistry: integration tests with a temp config file proving the merge
  *   (VAULT_* overrides same-name from both prior sources), interaction with the
  *   ALLOWED_VAULTS whitelist + default resolution + disabledVaults, and strict
@@ -57,10 +60,10 @@ describe('parseEnvVaults — parsing + validation', () => {
     assert.equal(v.type, 'remote');
     assert.equal(v.baseUrl, 'http://10.8.0.10:27161'); // trailing slash stripped
     assert.equal(v.apiKey, 'tok');
-    assert.equal(v.wireguard, true);
+    assert.equal(v.wireguard, undefined); // per-vault flag removed → not on the descriptor
     assert.equal(v.tlsInsecure, false); // default
     assert.equal(v.timeoutMs, 10000); // default (mirrors remoteVaults)
-    // wireguard:true + host in 10.8.0.x → no warning
+    // a leftover wireguard key is silently ignored → no warning
     assert.equal(result.warnings.length, 0);
     assert.equal(stderr, '');
   });
@@ -81,7 +84,7 @@ describe('parseEnvVaults — parsing + validation', () => {
     assert.equal(v.description, 'hello');
     assert.equal(v.tlsInsecure, true);
     assert.equal(v.timeoutMs, 15000);
-    assert.equal(v.wireguard, false); // absent → default false
+    assert.equal(v.wireguard, undefined); // field removed entirely
   });
 
   test('non-finite timeoutMs falls back to the 10000 default', () => {
@@ -198,7 +201,11 @@ describe('parseEnvVaults — parsing + validation', () => {
     assert.match(result.warnings[0], /name/);
   });
 
-  test('wireguard:true with a non-10.8.0.x host warns but still loads', () => {
+  test('a leftover `wireguard` key is ignored (no per-vault warning, no field)', () => {
+    // The per-vault wireguard flag was removed — WireGuard is now enforced
+    // globally (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD). A stray `wireguard:true`
+    // in a non-10.8.0.x entry must NOT warn at parse time and must NOT appear
+    // on the descriptor; enforcement (if any) happens later in loadRegistry.
     const env = {
       VAULT_W: JSON.stringify({
         name: 'w',
@@ -207,25 +214,11 @@ describe('parseEnvVaults — parsing + validation', () => {
         wireguard: true,
       }),
     };
-    const { result } = captureStderr(() => parseEnvVaults(env));
+    const { result, stderr } = captureStderr(() => parseEnvVaults(env));
     assert.equal(result.envVaults.length, 1); // still loaded
-    assert.equal(result.warnings.length, 1);
-    assert.match(result.warnings[0], /wireguard/);
-    assert.match(result.warnings[0], /192\.168\.0\.10/);
-    assert.match(result.warnings[0], /10\.8\.0/);
-  });
-
-  test('wireguard:false with any host does not warn', () => {
-    const env = {
-      VAULT_W: JSON.stringify({
-        name: 'w',
-        baseUrl: 'http://192.168.0.10:27161',
-        apiKey: 'k',
-      }),
-    };
-    const { result } = captureStderr(() => parseEnvVaults(env));
-    assert.equal(result.envVaults.length, 1);
-    assert.equal(result.warnings.length, 0);
+    assert.equal(result.envVaults[0].wireguard, undefined); // field dropped
+    assert.equal(result.warnings.length, 0); // no per-vault wireguard warning
+    assert.equal(stderr, '');
   });
 
   test('VAULT_PATH is excluded from the scan (no spurious warning)', () => {
@@ -283,6 +276,7 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     'OBSIDIAN_ROUTER_DEFAULT_VAULT',
     'VAULT_PATH',
     'OBSIDIAN_ROUTER_ALLOWED_VAULTS',
+    'OBSIDIAN_ROUTER_REQUIRE_WIREGUARD',
   ];
   const saved = {};
 
@@ -413,5 +407,135 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['alpha']);
     assert.ok(r.skipped.some((s) => s.name === 'beta' && s.reason === 'disabled'));
+  });
+
+  test('REQUIRE_WIREGUARD: refuses to start when a served vault is not loopback/WG', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    await assert.rejects(
+      () => loadRegistry({ configPath: cfgPath }),
+      (err) => {
+        assert.match(err.message, /REQUIRE_WIREGUARD/);
+        assert.match(err.message, /lan/); // names the offender
+        assert.match(err.message, /192\.168\.0\.10/); // surfaces baseUrl (not a secret)
+        return true;
+      },
+    );
+  });
+
+  test('REQUIRE_WIREGUARD: loads fine when every served vault is WG or loopback', async () => {
+    await writeConfig({
+      portRegistry: { 'C:\\VAULTS\\Local': 27124 }, // https://127.0.0.1 → loopback, exempt
+      remoteVaults: [{ name: 'wg', baseUrl: 'http://10.8.0.10:27161', apiKey: 'k' }],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = '1';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name).sort(), ['local', 'wg']);
+  });
+
+  test('REQUIRE_WIREGUARD: an offender filtered out by ALLOWED_VAULTS does not trip the guard', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'wg', baseUrl: 'http://10.8.0.10:27161', apiKey: 'k' },
+        { name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' },
+      ],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'yes';
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'wg'; // 'lan' filtered out before the check
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name), ['wg']);
+    assert.ok(r.skipped.some((s) => s.name === 'lan'));
+  });
+
+  test('REQUIRE_WIREGUARD unset: a non-WG vault loads without enforcement', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
+    });
+    // env wiped by beforeEach → REQUIRE_WIREGUARD unset
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name), ['lan']);
+  });
+
+  test('REQUIRE_WIREGUARD: fail-closed end-to-end on a malformed baseUrl', async () => {
+    // remoteVaults only requires a truthy baseUrl → 'not a url' passes the parse
+    // and reaches the enforce, where new URL() throws → treated as an offender.
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'bad', baseUrl: 'not a url', apiKey: 'k' }],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    await assert.rejects(
+      () => loadRegistry({ configPath: cfgPath }),
+      (err) => {
+        assert.match(err.message, /REQUIRE_WIREGUARD/);
+        assert.match(err.message, /bad/);
+        return true;
+      },
+    );
+  });
+
+  test('REQUIRE_WIREGUARD: a localhost-host vault is exempt (loads)', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'lh', baseUrl: 'http://localhost:27161', apiKey: 'k' }],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'on';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name), ['lh']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hostIsWireguardOrLoopback + isTruthyEnv — pure unit tests
+// ---------------------------------------------------------------------------
+
+describe('hostIsWireguardOrLoopback', () => {
+  const { hostIsWireguardOrLoopback } = _internals;
+  test('allows loopback (v4/v6/localhost) and the 10.8.0.0/24 WG mesh', () => {
+    for (const u of [
+      'http://127.0.0.1:27163',
+      'https://127.0.0.1:27124',
+      'http://[::1]:1',
+      'http://localhost:1',
+      'http://10.8.0.10:27161',
+      'http://10.8.0.1:9',
+    ]) {
+      assert.equal(hostIsWireguardOrLoopback(u), true, u);
+    }
+  });
+  test('rejects LAN, public, other private ranges, and malformed URLs', () => {
+    for (const u of [
+      'http://192.168.0.10:27161',
+      'https://vault.example.com',
+      'http://10.9.0.10:1', // different subnet
+      'http://172.16.0.1:1',
+      'not-a-url',
+      // SECURITY: a DNS host that merely STARTS WITH the WG prefix must be
+      // rejected — a textual startsWith('10.8.0.') would let these bypass the
+      // fail-closed guard (review+ convergent BLOCKER, 2026-06-03).
+      'http://10.8.0.5.evil.com:27161',
+      'http://10.8.0.10abc:1',
+      'http://10.8.0.999:1', // 4th octet out of range
+      // hex form of an OUT-of-mesh IP: new URL() normalizes 0xc0a8000a →
+      // 192.168.0.10, which the anchored regex rejects (fail-closed preserved).
+      'http://0xc0a8000a:1',
+    ]) {
+      assert.equal(hostIsWireguardOrLoopback(u), false, u);
+    }
+  });
+});
+
+describe('isTruthyEnv', () => {
+  const { isTruthyEnv } = _internals;
+  test('true for true/1/yes/on (case-insensitive), false otherwise', () => {
+    for (const v of ['true', 'TRUE', '1', 'yes', 'on', ' On ']) assert.equal(isTruthyEnv(v), true, v);
+    for (const v of ['false', '0', 'no', '', undefined, null, 'maybe']) {
+      assert.equal(isTruthyEnv(v), false, String(v));
+    }
   });
 });

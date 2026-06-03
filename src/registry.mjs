@@ -15,6 +15,14 @@
  *                    same-name vault from sources 1-2. Opt-in: with no VAULT_* set,
  *                    behavior is byte-identical to v0.19.x. (v0.20.0)
  *
+ * Deployment-wide WireGuard enforcement: OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true
+ * makes the router REFUSE TO START if any served vault's baseUrl host is neither
+ * loopback nor in the 10.8.0.0/24 WG mesh. This is a GLOBAL invariant — it
+ * replaces the former per-vault `wireguard` boolean flag (removed; that field is
+ * now ignored if still present in a VAULT_* / remoteVaults entry). Rationale:
+ * "MCPHub → vault is WG, full stop" is a deployment policy, not a per-vault
+ * attribute (see the vault's wg-mandatory decision note).
+ *
  * Vault names default to the lowercased basename of the local vault path,
  * unless overridden in `vaultNames` ({ "<path>": "<name>" }).
  */
@@ -186,6 +194,35 @@ export async function loadRegistry({ configPath } = {}) {
         });
         vaults.splice(i, 1);
       }
+    }
+  }
+
+  // --- 2.7. Global WireGuard enforcement (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD) ---
+  //
+  // Opt-in, deployment-wide invariant. Replaces the former per-vault `wireguard`
+  // boolean flag (removed). When set truthy — typically on a multi-tenant MCPHub
+  // instance whose policy is "every served vault MUST be reached over the
+  // WireGuard tunnel, full stop" — the router REFUSES TO START if any served
+  // vault's baseUrl host is neither loopback (same-machine, no network exposure,
+  // strictly safer than WG) nor inside the 10.8.0.0/24 WireGuard mesh.
+  //
+  // Fail-closed: a misconfigured vault (public IP, plain LAN like 192.168.x, a
+  // typo) can never be SILENTLY served over a non-WireGuard link — the operator
+  // is forced to fix it. Runs AFTER the ALLOWED_VAULTS filter so only vaults this
+  // instance actually serves are validated (a non-WG vault filtered out by the
+  // whitelist is not a violation). baseUrl is safe to surface in the error;
+  // apiKey is never logged.
+  if (isTruthyEnv(process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD)) {
+    const offenders = vaults.filter((v) => !hostIsWireguardOrLoopback(v.baseUrl));
+    if (offenders.length > 0) {
+      const list = offenders.map((v) => `${v.name} (${v.baseUrl})`).join(', ');
+      throw new Error(
+        `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD is set, but ${offenders.length} served ` +
+          `vault(s) have a baseUrl host outside the WireGuard mesh (10.8.0.0/24) ` +
+          `and not loopback: ${list}. Fix each baseUrl to http://10.8.0.x:<port> ` +
+          `(WG tunnel) or remove the vault. Refusing to start to avoid serving a ` +
+          `vault over a non-WireGuard link.`,
+      );
     }
   }
 
@@ -370,6 +407,52 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
 }
 
 /**
+ * Loose truthy parse for string env vars ("true"/"1"/"yes"/"on", case-insensitive).
+ * Anything else (including undefined) is false. Used by the global WireGuard
+ * enforcement switch (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD).
+ */
+function isTruthyEnv(val) {
+  if (typeof val !== 'string') return false;
+  const v = val.trim().toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+/**
+ * True when a baseUrl's host is allowed under the WireGuard-only policy:
+ * either loopback (same-machine, no network exposure — strictly safer than WG)
+ * or inside the 10.8.0.0/24 WireGuard mesh. A malformed baseUrl (unparseable)
+ * is treated as NOT allowed → fail-closed under enforcement.
+ *
+ * The 10.8.0.0/24 subnet is the project's WG mesh (the whole mesh, including
+ * the Dedibox peer, lives in this /24 — see wg-firewall-preflight).
+ *
+ * SECURITY: the subnet test must be an ANCHORED IPv4 match, NOT a textual
+ * `startsWith('10.8.0.')`. A prefix check would accept a DNS hostname that
+ * merely begins with the prefix (e.g. `10.8.0.evil.com`) and let it pass the
+ * fail-closed guard over a non-WireGuard link. The regex requires a literal
+ * 4th octet (0-255) and end-of-string, so only real 10.8.0.0/24 IPv4 addresses
+ * match. (review+ convergent BLOCKER, 2026-06-03.)
+ *
+ * Note: `new URL()` first NORMALIZES IPv4 hex/octal/32-bit forms to canonical
+ * dotted-decimal (`0xc0a8000a` → `192.168.0.10`, `012.8.0.5` → `10.8.0.5`)
+ * before the regex runs. So an in-mesh address written in hex still matches
+ * (safe — it really routes into the /24), and an out-of-mesh address in hex
+ * normalizes out of `10.8.0.x` and is rejected (fail-closed preserved).
+ */
+function hostIsWireguardOrLoopback(baseUrl) {
+  let host;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    return false;
+  }
+  // URL() may bracket IPv6 hosts ([::1]) — strip for comparison.
+  const h = host.replace(/^\[|\]$/g, '');
+  if (h === '127.0.0.1' || h === '::1' || h === 'localhost') return true;
+  return /^10\.8\.0\.(25[0-5]|2[0-4]\d|1?\d?\d)$/.test(h);
+}
+
+/**
  * Returns a shallow copy of a remoteVault entry with sensitive fields
  * (apiKey, extraHeaders.*) replaced by "<redacted>". Used before logging
  * malformed entries — never write a user's API key or Cloudflare Access
@@ -404,14 +487,16 @@ const RESERVED_VAULT_ENV_KEYS = new Set(['VAULT_PATH']);
  * directly from the MCPHub server's Environment Variables UI:
  *
  *   VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161",
- *                  "apiKey":"<token>","wireguard":true,"tlsInsecure":false,
- *                  "timeoutMs":15000}
+ *                  "apiKey":"<token>"}
  *
  * Required: name, baseUrl, apiKey (apiKey = the BARE token; the router adds
- * `Authorization: Bearer ` itself). Optional: description, wireguard,
- * tlsInsecure, timeoutMs. `wireguard` is security-policy METADATA — the router
- * does not use it to connect (the baseUrl decides that); it drives the
- * defensive check below + the future per-vault firewall.
+ * `Authorization: Bearer ` itself). Optional: description, tlsInsecure,
+ * timeoutMs, extraHeaders. (The former per-vault `wireguard` boolean is GONE —
+ * WireGuard is now a deployment-wide invariant enforced globally via
+ * OBSIDIAN_ROUTER_REQUIRE_WIREGUARD in loadRegistry; a leftover `wireguard` key
+ * in the JSON is simply ignored.) On MCPHub the descriptor reduces to the 3
+ * required fields: tlsInsecure/https only apply to the local-HTTPS-loopback case,
+ * not to the http-over-WG hop.
  *
  * Defensive + non-fatal (mirrors remoteVaults handling): a malformed entry is
  * SKIPPED with a clear stderr warning naming the faulty key — never throws, so
@@ -496,7 +581,6 @@ function parseEnvVaults(env = {}) {
       apiKey: parsed.apiKey,
       description:
         typeof parsed.description === 'string' ? parsed.description : undefined,
-      wireguard: parsed.wireguard === true,
       tlsInsecure: parsed.tlsInsecure === true,
       // Clamp to a positive timeout — a 0/negative value makes every request
       // abort immediately (the AbortController fires ~now).
@@ -511,25 +595,6 @@ function parseEnvVaults(env = {}) {
           ? { ...parsed.extraHeaders }
           : undefined,
     };
-
-    // Defensive: a wireguard:true vault whose baseUrl host is NOT in the
-    // 10.8.0.x WG range is suspicious — sensitive (often medical) data could
-    // transit unencrypted on the LAN due to a typo. Warn, but still load it.
-    if (descriptor.wireguard) {
-      let host = null;
-      try {
-        host = new URL(descriptor.baseUrl).hostname;
-      } catch {
-        /* malformed baseUrl — host stays null → treated as out-of-range */
-      }
-      if (!host || !host.startsWith('10.8.0.')) {
-        warn(
-          `${key}: wireguard:true but baseUrl host "${host ?? '?'}" is not in ` +
-            `the 10.8.0.x WireGuard range — sensitive data may transit ` +
-            `unencrypted. Double-check the baseUrl.`,
-        );
-      }
-    }
 
     envVaults.push(descriptor);
   }
@@ -567,6 +632,8 @@ export const _internals = {
   pathBasename,
   redactSecrets,
   parseEnvVaults,
+  isTruthyEnv,
+  hostIsWireguardOrLoopback,
 };
 
 // Exposed for the list_vaults tool which needs the on-disk casing for the

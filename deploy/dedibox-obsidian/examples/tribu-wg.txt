@@ -58,7 +58,7 @@ server {
 
 ## router VAULT_* env line (add to the MCPHub instance env)
 
-VAULT_TRIBU={"name":"tribu","baseUrl":"http://10.8.0.1:27145","apiKey":"<token>","description":"Mémoire IA famille","wireguard":true,"tlsInsecure":false,"timeoutMs":15000}
+VAULT_TRIBU={"name":"tribu","baseUrl":"http://10.8.0.1:27145","apiKey":"<token>","description":"Mémoire IA famille","tlsInsecure":false,"timeoutMs":15000}
 
 ## notes
 
