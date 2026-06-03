@@ -1,0 +1,26 @@
+#!/bin/sh
+# pre-commit — block commits that contain secrets (gitleaks).
+#
+# VERSIONED hook (lives in .githooks/, travels with the repo). Enable once per
+# clone:   git config core.hooksPath .githooks
+#
+# Scans the STAGED changes only (fast; gitignored dirs like .venv/ are never
+# staged, so no false positives from them). Fail-OPEN if gitleaks is absent
+# (loud warning) so it never wedges a machine without the tool.
+#   install: scoop install gitleaks | brew install gitleaks
+#   docs:    https://github.com/gitleaks/gitleaks
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  printf '\033[33m[pre-commit] WARNING: gitleaks not installed - secret scan SKIPPED.\033[0m\n' >&2
+  printf '  Install it to re-enable the guard (scoop install gitleaks / brew install gitleaks).\n' >&2
+  exit 0
+fi
+
+if gitleaks git --staged --no-banner --redact; then
+  exit 0
+fi
+
+printf '\033[31m[pre-commit] BLOCKED: gitleaks detected a secret in the staged changes.\033[0m\n' >&2
+printf '  Move it out of git (.env / a secrets manager) - never commit a real secret, even to a private repo.\n' >&2
+printf '  False positive? add an allowlist rule in .gitleaks.toml, or bypass once: git commit --no-verify\n' >&2
+exit 1
