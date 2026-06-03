@@ -112,7 +112,7 @@ The router ships **9 hooks** that automate vault maintenance. **Since v0.18.2 th
 | `wiki-autocommit` | PostToolUse (8 mutating MCP tools) | Auto-commits wiki changes via git |
 | `doc-propagation-checker` | PostToolUse (Bash) | Post-`git commit` check that CHANGELOG/ROADMAP/wiki mention the current version |
 | `vault-link-linter` | Stop | Blocks responses with bare-path / wrong-port / cwd+vault-mix vault links, forces click-to-open format |
-| `hot-cache-update-prompt` | Stop | Nudges Claude to refresh `hot.md` when wiki changed |
+| `hot-cache-update-prompt` | Stop | **Blocks the turn** (exit 2) until `wiki-meta/hot.md` is refreshed when this session wrote a `wiki/` note — deterministic, per-vault, transcript-scoped |
 
 ### Interactive install
 
@@ -141,7 +141,8 @@ If any hook becomes noisy or unwanted after install, the user can disable it WIT
 - `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true` — disables `check-router-update`
 - `OBSIDIAN_ROUTER_NO_LINT_VAULT_LINKS=true` — disables `vault-link-linter`
 - `OBSIDIAN_ROUTER_NO_DOC_PROPAGATION_CHECK=true` — disables `doc-propagation-checker`
-- For the others (`hot-cache-load`, `hot-cache-update-prompt`, `wiki-autocommit`), the user can run `--uninstall-hooks` (removes ALL router hooks) and then re-run `--install-hooks --select <wanted-ones>` to keep a subset.
+- `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD=true` — disables the `hot-cache-update-prompt` blocking guard
+- For the others (`hot-cache-load`, `wiki-autocommit`), the user can run `--uninstall-hooks` (removes ALL router hooks) and then re-run `--install-hooks --select <wanted-ones>` to keep a subset.
 
 ### Verify after install
 

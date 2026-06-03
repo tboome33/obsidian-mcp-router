@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-06-03 — hot-cache freshness GUARD (deterministic, default-on for all vaults)
+
+Turns the `hot-cache-update-prompt` Stop hook from a soft *nudge* into a deterministic **guard**: if a session writes a note under a vault's `wiki/` but never refreshes that vault's `wiki-meta/hot.md`, the turn is **blocked (exit 2)** until hot.md is refreshed — so the recent-context cache stays current *by construction*. Same enforcement pattern as `vault-link-linter` / the user-level `chat-link-guard`. Born from Roland 2026-06-03 ("le hot doit toujours être à jour"): the nudge was advisory, so hot.md drifted stale whenever it wasn't acted on. The hook is already wired in the `Stop` event of every vault's `~/.claude/settings.json`, so the new behavior is **live for all vaults with zero re-wiring**.
+
+### Changed
+
+- **`hooks/hot-cache-update-prompt.mjs` rewritten as a blocking guard.** Was: `git diff`/`git log` detection + a stdout nudge (exit 0, never blocked). Now: **transcript-scoped** detection (this session's `tool_use` calls) + **exit 2** when a vault has a `wiki/` write but no `wiki-meta/hot.md` refresh. Transcript-scoped on purpose — git would also flag a *concurrent* session's uncommitted changes or a manual Obsidian edit (neither fixable by this Claude → false blocks), and Roland runs concurrent sessions on the same vaults; it also drops the git dependency. Trigger is `wiki/` **notes only** — pure `wiki-meta/` scaffold edits (index/log/overview) don't trigger, since the hot refresh is the satisfying action. **Per-vault**: each vault is judged independently; a vault whose root can't be resolved is skipped (fail-open). Recursion guard via `stop_hook_active`; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD=true`; fails **open** on any error. Filename + Stop-event wiring unchanged → no `settings.json` churn across the 10 deployed vaults.
+
+### Added
+
+- **`src/helpers/hot-staleness.mjs`** — pure, dependency-free classification logic (`extractWriteToolUses`, `classifyToolUse`, `pathKind`, `findStaleVaults`). All I/O (router config, platform) is injected by the hook, so the decision layer is unit-tested without touching the filesystem or spawning a subprocess.
+
+### Tests
+
+- **`tests/hot-cache-guard.test.mjs`** (29 tests) — pure layer (write-tool detection incl. MCPHub-namespaced names, path kinds, per-vault staleness, built-in `Edit` ↔ MCP cross-matching on the same vault, Windows case-insensitive root matching, unresolvable-vault fail-open) + the hook end-to-end via `spawnSync` (exit 2 on stale, exit 0 on refreshed / scaffold-only / opt-out / recursion-guard / no-transcript). Full suite 1680 → **1709**.
+
 ## [0.24.0] — 2026-06-02 — `open_in_obsidian` tool (browser-free "open this note")
 
 A new MCP tool that opens a note in the running Obsidian — and raises its window — **without a browser**. Born from a long click-to-open debugging session: in **Claude Desktop**, every clicked link is routed through a `claude.ai` proxy that opens it in a browser tab, so a click-to-open *link* can never be browser-free there. Calling the bridge server-side sidesteps that entirely.
