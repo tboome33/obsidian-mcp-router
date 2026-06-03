@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-06-03 — global WireGuard enforcement (per-vault `wireguard` flag removed)
+
+Replaces the per-vault `wireguard` boolean — wrong granularity (WireGuard is a *deployment-wide* invariant, not a per-vault attribute) and unused in production — with a **global boot-time enforcement**. Born from Roland 2026-06-03 ("on sait que dans MCPHub WireGuard doit être activé, point final"): a per-vault opt-in flag contradicts a uniform invariant. The `VAULT_*` descriptor now reduces to 3 fields (`name`/`baseUrl`/`apiKey`) on an MCPHub deployment — `tlsInsecure`/`https` only apply to the local-HTTPS-loopback case, not the http-over-WG hop.
+
+### Added
+
+- **`OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` env var.** When truthy (`true`/`1`/`yes`/`on`), `loadRegistry` **refuses to start** (throws, naming the offenders — baseUrl shown, never apiKey) if any *served* vault's `baseUrl` host is neither loopback (`127.0.0.1`/`::1`/`localhost`) nor inside the `10.8.0.0/24` WireGuard mesh. Fail-closed; loopback exempt (co-located vault transits no network); runs **after** the `OBSIDIAN_ROUTER_ALLOWED_VAULTS` whitelist (a non-WG vault filtered out doesn't trip it). Opt-in — unset = no enforcement, local mode byte-identical. Helpers `isTruthyEnv` + `hostIsWireguardOrLoopback` (exposed in `_internals`).
+
+### Removed
+
+- **Per-vault `wireguard` flag.** Dropped from the `VAULT_*` / `remoteVaults` descriptor and from `parseEnvVaults` (with its per-vault "host outside 10.8.0.x" warning). A leftover `wireguard` key in a JSON entry is now silently ignored. `scripts/gen-obsidian-deploy.mjs` no longer emits the field (the `wg`-mode `10.8.0.x` host validation stays — it keeps a generated `wg` baseUrl inside the mesh so it passes the global enforce).
+
+### Tests
+
+- **`tests/vault-env-config.test.mjs`** — per-vault-flag tests replaced by "leftover key ignored" + 4 global-enforcement integration tests (refuse on non-WG served vault, pass on WG/loopback, offender filtered by ALLOWED_VAULTS doesn't trip, unset = no-op) + unit tests for `hostIsWireguardOrLoopback` / `isTruthyEnv`. `tests/gen-obsidian-deploy.test.mjs` round-trip assertions updated. Full suite 1722 → **1728**.
+
 ## [0.25.0] — 2026-06-03 — hot-cache freshness GUARD (deterministic, default-on for all vaults)
 
 Turns the `hot-cache-update-prompt` Stop hook from a soft *nudge* into a deterministic **guard**: if a session writes a note under a vault's `wiki/` but never refreshes that vault's `wiki-meta/hot.md`, the turn is **blocked (exit 2)** until hot.md is refreshed — so the recent-context cache stays current *by construction*. Same enforcement pattern as `vault-link-linter` / the user-level `chat-link-guard`. Born from Roland 2026-06-03 ("le hot doit toujours être à jour"): the nudge was advisory, so hot.md drifted stale whenever it wasn't acted on. The hook is already wired in the `Stop` event of every vault's `~/.claude/settings.json`, so the new behavior is **live for all vaults with zero re-wiring**.

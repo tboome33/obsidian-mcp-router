@@ -59,7 +59,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 | Env var | What it does | Default when unset |
 |---|---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
-| `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `wireguard`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
+| `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
 | `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 8 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
 | `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
 
@@ -528,14 +528,14 @@ Besides the `config.json` file below, a vault can be defined entirely in an **en
 VAULT_<NAME> = <vault config as JSON>
 ```
 
-Required: `name`, `baseUrl`, `apiKey` (the **bare token** — the router adds `Authorization: Bearer ` itself). Optional: `description`, `wireguard` (security-policy metadata), `tlsInsecure`, `timeoutMs` (default `10000`).
+Required: `name`, `baseUrl`, `apiKey` (the **bare token** — the router adds `Authorization: Bearer ` itself). Optional: `description`, `tlsInsecure`, `timeoutMs` (default `10000`). (There is no per-vault `wireguard` flag — WireGuard is enforced deployment-wide; see below. A leftover `wireguard` key is ignored.)
 
 The three connection modes (all selected purely by `baseUrl`):
 
 ```bash
-# 1. WireGuard tunnel (sensitive/medical — encrypted). wireguard:true asks the
-#    SaaS firewall generator for a WG-only rule; the router still connects via baseUrl.
-VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161","apiKey":"<token>","wireguard":true,"timeoutMs":15000}
+# 1. WireGuard tunnel (sensitive/medical — encrypted). Selected purely by the
+#    10.8.0.x baseUrl; WG can be enforced deployment-wide (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD).
+VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161","apiKey":"<token>","timeoutMs":15000}
 
 # 2. LAN / co-located (non-sensitive) — plain HTTP on the local network.
 VAULT_NOTES={"name":"notes","baseUrl":"http://192.168.0.10:27124","apiKey":"<token>"}
@@ -544,7 +544,9 @@ VAULT_NOTES={"name":"notes","baseUrl":"http://192.168.0.10:27124","apiKey":"<tok
 VAULT_REMOTE={"name":"remote","baseUrl":"https://vault.example.com","apiKey":"<token>","tlsInsecure":false}
 ```
 
-Defensive parsing: a malformed entry is **skipped** with a clear stderr warning naming the faulty key (one bad var never crashes the others). On a JSON-parse failure neither the raw value nor the parser message is logged (both can echo the `apiKey`); a `wireguard:true` vault whose host is outside `10.8.0.x` raises a warning. The reserved `VAULT_PATH` env var is ignored by the scan.
+Defensive parsing: a malformed entry is **skipped** with a clear stderr warning naming the faulty key (one bad var never crashes the others). On a JSON-parse failure neither the raw value nor the parser message is logged (both can echo the `apiKey`). The reserved `VAULT_PATH` env var is ignored by the scan.
+
+**Deployment-wide WireGuard enforcement** — set `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true` (typically on a multi-tenant MCPHub instance) to make the router **refuse to start** if any served vault's `baseUrl` host is neither loopback (`127.0.0.1`/`::1`/`localhost`) nor inside the `10.8.0.0/24` WireGuard mesh. Fail-closed — a vault can never be silently served over a non-WireGuard link; the check runs after the `OBSIDIAN_ROUTER_ALLOWED_VAULTS` whitelist. Opt-in; unset = no enforcement (local mode unchanged). This replaces the former per-vault `wireguard` flag.
 
 ### Generating a host deployment (`gen-obsidian-deploy`)
 
@@ -1276,9 +1278,11 @@ En plus du fichier `config.json` ci-dessous, un vault peut être défini entièr
 VAULT_<NOM> = <config du vault en JSON>
 ```
 
-Requis : `name`, `baseUrl`, `apiKey` (le **token seul** — le router ajoute `Authorization: Bearer ` lui-même). Optionnel : `description`, `wireguard` (métadonnée de politique de sécurité), `tlsInsecure`, `timeoutMs` (défaut `10000`). Les trois modes de connexion sont choisis uniquement par `baseUrl` (tunnel WireGuard `10.8.0.x` / LAN / distant TLS — cf. exemples de la section EN « `VAULT_*` env-var config »).
+Requis : `name`, `baseUrl`, `apiKey` (le **token seul** — le router ajoute `Authorization: Bearer ` lui-même). Optionnel : `description`, `tlsInsecure`, `timeoutMs` (défaut `10000`). Il n'y a **pas** de flag `wireguard` par-vault — WireGuard est enforced au niveau **déploiement** (voir ci-dessous) ; une clé `wireguard` résiduelle est ignorée. Les trois modes de connexion sont choisis uniquement par `baseUrl` (tunnel WireGuard `10.8.0.x` / LAN / distant TLS — cf. exemples de la section EN « `VAULT_*` env-var config »).
 
-Parsing défensif : une entrée malformée est **ignorée** avec un warning stderr clair nommant la clé fautive (une mauvaise var ne fait jamais planter les autres). Sur un échec de parse JSON, ni la valeur brute ni le message du parser ne sont loggés (les deux peuvent contenir l'`apiKey`) ; un vault `wireguard:true` dont l'hôte est hors `10.8.0.x` lève un warning. La variable réservée `VAULT_PATH` est ignorée par le scan.
+Parsing défensif : une entrée malformée est **ignorée** avec un warning stderr clair nommant la clé fautive (une mauvaise var ne fait jamais planter les autres). Sur un échec de parse JSON, ni la valeur brute ni le message du parser ne sont loggés (les deux peuvent contenir l'`apiKey`). La variable réservée `VAULT_PATH` est ignorée par le scan.
+
+**Enforce WireGuard au niveau déploiement** — poser `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true` (typiquement sur une instance MCPHub multi-tenant) fait **REFUSER le démarrage** du router si un vault servi a un `baseUrl` dont l'hôte n'est ni loopback (`127.0.0.1`/`::1`/`localhost`) ni dans le mesh WireGuard `10.8.0.0/24`. Fail-closed — un vault ne peut jamais être servi silencieusement sur un lien non-WireGuard ; le check tourne après la whitelist `OBSIDIAN_ROUTER_ALLOWED_VAULTS`. Opt-in ; variable absente = aucun enforce (mode local inchangé). Remplace l'ancien flag `wireguard` par-vault.
 
 ### Config
 
