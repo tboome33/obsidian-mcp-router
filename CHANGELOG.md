@@ -13,11 +13,11 @@ The v0.26.0 env var `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` was misleading on two co
 ### Changed
 
 - **Renamed `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` → `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK`.** Identical behavior (refuse to start if any *served* vault's `baseUrl` host is neither loopback nor in `10.8.0.0/24`). The boot error message + docstring now state it's a **config check that does not require the tunnel to be up**, and list loopback (`127.0.0.1`/`::1`/`localhost`) explicitly.
-- **Backward-compatible alias.** The old `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` is still honored: `loadRegistry` reads `ENFORCE_WG_OR_LOOPBACK ?? REQUIRE_WIREGUARD` (new name wins when both are set). Using the old name logs a one-line deprecation warning to stderr. **No existing deployment breaks.**
+- **Backward-compatible alias.** The old `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` is still honored: `loadRegistry` reads `ENFORCE_WG_OR_LOOPBACK ?? REQUIRE_WIREGUARD` (new name wins when both are set). Using the old name logs a **one-time** (once-per-process) deprecation warning to stderr — latched so a `config.json` hot-reload doesn't re-spam it (review+ pass 1). **No existing deployment breaks.**
 
 ### Tests
 
-- **`tests/vault-env-config.test.mjs`** — the global-guard tests migrated to the new name + 2 added (deprecated alias still triggers the guard; new name takes precedence over the alias). Full suite **1730 → 1732**.
+- **`tests/vault-env-config.test.mjs`** — the global-guard tests migrated to the new name + 3 added (deprecated alias still triggers the guard; new name takes precedence over the alias; deprecation warning fires once per process, not on every reload). Full suite **1730 → 1733**.
 
 ## [0.26.0] — 2026-06-03 — global WireGuard enforcement (per-vault `wireguard` flag removed)
 

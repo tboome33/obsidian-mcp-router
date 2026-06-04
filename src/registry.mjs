@@ -42,6 +42,12 @@ const DEFAULT_CONFIG_PATH = path.join(
   'config.json',
 );
 
+// Module-level latch so the deprecated-env-var warning logs at most ONCE per
+// process. loadRegistry re-runs on every config.json hot-reload (the file
+// watcher in index.mjs's reload()), and re-logging the deprecation line on
+// each reload would spam stderr. Reset only for tests via _internals.
+let deprecationWarned = false;
+
 export function resolveConfigPath({ configPath } = {}) {
   return configPath || process.env.OBSIDIAN_ROUTER_CONFIG || DEFAULT_CONFIG_PATH;
 }
@@ -228,9 +234,11 @@ export async function loadRegistry({ configPath } = {}) {
     process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK ??
     process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD;
   if (
+    !deprecationWarned &&
     process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK == null &&
     process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD != null
   ) {
+    deprecationWarned = true;
     console.error(
       `[obsidian-mcp-router] OBSIDIAN_ROUTER_REQUIRE_WIREGUARD is DEPRECATED — ` +
         `renamed to OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK (clearer: loopback also ` +
@@ -662,6 +670,11 @@ export const _internals = {
   parseEnvVaults,
   isTruthyEnv,
   hostIsWireguardOrLoopback,
+  // Test-only: reset the once-per-process deprecation-warning latch so a test
+  // can assert the warning fires (and fires only once) deterministically.
+  __resetDeprecationWarningForTests: () => {
+    deprecationWarned = false;
+  },
 };
 
 // Exposed for the list_vaults tool which needs the on-disk casing for the

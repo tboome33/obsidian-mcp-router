@@ -518,6 +518,30 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['lan']);
   });
+
+  test('deprecated alias logs a one-time stderr warning, not on every (re)load', async () => {
+    await writeConfig({
+      portRegistry: {},
+      // WG host → enforce passes, loadRegistry does NOT throw, so we can call it
+      // twice (simulating a config hot-reload) and count the warnings.
+      remoteVaults: [{ name: 'wg', baseUrl: 'http://10.8.0.10:27161', apiKey: 'k' }],
+    });
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true'; // old name only → alias path + warning
+    _internals.__resetDeprecationWarningForTests();
+    const calls = [];
+    const origErr = console.error;
+    console.error = (...a) => calls.push(a.join(' '));
+    try {
+      await loadRegistry({ configPath: cfgPath });
+      await loadRegistry({ configPath: cfgPath }); // second load = simulated hot-reload
+    } finally {
+      console.error = origErr;
+    }
+    const dep = calls.filter(
+      (c) => /DEPRECATED/.test(c) && /OBSIDIAN_ROUTER_REQUIRE_WIREGUARD/.test(c),
+    );
+    assert.equal(dep.length, 1, 'deprecation warning must fire exactly once per process, not on every reload');
+  });
 });
 
 // ---------------------------------------------------------------------------
