@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.25.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.27.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -534,7 +534,7 @@ The three connection modes (all selected purely by `baseUrl`):
 
 ```bash
 # 1. WireGuard tunnel (sensitive/medical — encrypted). Selected purely by the
-#    10.8.0.x baseUrl; WG can be enforced deployment-wide (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD).
+#    10.8.0.x baseUrl; WG can be enforced deployment-wide (OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK).
 VAULT_DEDIBOX={"name":"dedibox","baseUrl":"http://10.8.0.10:27161","apiKey":"<token>","timeoutMs":15000}
 
 # 2. LAN / co-located (non-sensitive) — plain HTTP on the local network.
@@ -546,7 +546,7 @@ VAULT_REMOTE={"name":"remote","baseUrl":"https://vault.example.com","apiKey":"<t
 
 Defensive parsing: a malformed entry is **skipped** with a clear stderr warning naming the faulty key (one bad var never crashes the others). On a JSON-parse failure neither the raw value nor the parser message is logged (both can echo the `apiKey`). The reserved `VAULT_PATH` env var is ignored by the scan.
 
-**Deployment-wide WireGuard enforcement** — set `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true` (typically on a multi-tenant MCPHub instance) to make the router **refuse to start** if any served vault's `baseUrl` host is neither loopback (`127.0.0.1`/`::1`/`localhost`) nor inside the `10.8.0.0/24` WireGuard mesh. Fail-closed — a vault can never be silently served over a non-WireGuard link; the check runs after the `OBSIDIAN_ROUTER_ALLOWED_VAULTS` whitelist. Opt-in; unset = no enforcement (local mode unchanged). This replaces the former per-vault `wireguard` flag.
+**Deployment-wide transport guard** — set `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK=true` (typically on a multi-tenant MCPHub instance) to make the router **refuse to start** if any served vault's `baseUrl` host is neither loopback (`127.0.0.1`/`::1`/`localhost`) nor inside the `10.8.0.0/24` WireGuard mesh. This is a **boot-time config check on the configured baseUrls** — it does *not* require the WireGuard tunnel to be up, and **loopback passes** (so it is not "WireGuard-only"). Fail-closed — a vault can never be silently served over an exposed link; the check runs after the `OBSIDIAN_ROUTER_ALLOWED_VAULTS` whitelist. Opt-in; unset = no enforcement (local mode unchanged). This replaces the former per-vault `wireguard` flag. *(Renamed from `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` in v0.27.0 — that name wrongly implied "WG must be up"; the old name still works as a deprecated alias.)*
 
 ### Generating a host deployment (`gen-obsidian-deploy`)
 
@@ -795,7 +795,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.25.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.27.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1282,7 +1282,7 @@ Requis : `name`, `baseUrl`, `apiKey` (le **token seul** — le router ajoute `Au
 
 Parsing défensif : une entrée malformée est **ignorée** avec un warning stderr clair nommant la clé fautive (une mauvaise var ne fait jamais planter les autres). Sur un échec de parse JSON, ni la valeur brute ni le message du parser ne sont loggés (les deux peuvent contenir l'`apiKey`). La variable réservée `VAULT_PATH` est ignorée par le scan.
 
-**Enforce WireGuard au niveau déploiement** — poser `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true` (typiquement sur une instance MCPHub multi-tenant) fait **REFUSER le démarrage** du router si un vault servi a un `baseUrl` dont l'hôte n'est ni loopback (`127.0.0.1`/`::1`/`localhost`) ni dans le mesh WireGuard `10.8.0.0/24`. Fail-closed — un vault ne peut jamais être servi silencieusement sur un lien non-WireGuard ; le check tourne après la whitelist `OBSIDIAN_ROUTER_ALLOWED_VAULTS`. Opt-in ; variable absente = aucun enforce (mode local inchangé). Remplace l'ancien flag `wireguard` par-vault.
+**Garde de transport au niveau déploiement** — poser `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK=true` (typiquement sur une instance MCPHub multi-tenant) fait **REFUSER le démarrage** du router si un vault servi a un `baseUrl` dont l'hôte n'est ni loopback (`127.0.0.1`/`::1`/`localhost`) ni dans le mesh WireGuard `10.8.0.0/24`. C'est un **check de config au boot sur les baseUrls configurés** — il n'exige *pas* que le tunnel WireGuard soit up, et le **loopback passe** (donc ce n'est pas « WireGuard-only »). Fail-closed — un vault ne peut jamais être servi silencieusement sur un lien exposé ; le check tourne après la whitelist `OBSIDIAN_ROUTER_ALLOWED_VAULTS`. Opt-in ; variable absente = aucun enforce (mode local inchangé). Remplace l'ancien flag `wireguard` par-vault. *(Renommé depuis `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` en v0.27.0 — ce nom laissait croire à tort que « WG doit être up » ; l'ancien nom marche encore comme alias déprécié.)*
 
 ### Config
 

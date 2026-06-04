@@ -6,7 +6,7 @@
  *   explicit optionals, invalid JSON (skip + NO secret leak), missing required
  *   field (skip + apiKey redacted), the now-ignored leftover `wireguard` key,
  *   the VAULT_PATH exclusion, and the retro-compat no-VAULT_* → [] case.
- * - Global WireGuard enforcement (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD): refuses to
+ * - Global transport guard (OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK, alias REQUIRE_WIREGUARD): refuses to
  *   start when a served vault's baseUrl is not loopback/WG; loopback + 10.8.0.x
  *   pass; offenders filtered out by ALLOWED_VAULTS don't trip it; unset = no-op.
  * - loadRegistry: integration tests with a temp config file proving the merge
@@ -203,7 +203,7 @@ describe('parseEnvVaults — parsing + validation', () => {
 
   test('a leftover `wireguard` key is ignored (no per-vault warning, no field)', () => {
     // The per-vault wireguard flag was removed — WireGuard is now enforced
-    // globally (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD). A stray `wireguard:true`
+    // globally (OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK). A stray `wireguard:true`
     // in a non-10.8.0.x entry must NOT warn at parse time and must NOT appear
     // on the descriptor; enforcement (if any) happens later in loadRegistry.
     const env = {
@@ -276,6 +276,7 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     'OBSIDIAN_ROUTER_DEFAULT_VAULT',
     'VAULT_PATH',
     'OBSIDIAN_ROUTER_ALLOWED_VAULTS',
+    'OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK',
     'OBSIDIAN_ROUTER_REQUIRE_WIREGUARD',
   ];
   const saved = {};
@@ -409,16 +410,16 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     assert.ok(r.skipped.some((s) => s.name === 'beta' && s.reason === 'disabled'));
   });
 
-  test('REQUIRE_WIREGUARD: refuses to start when a served vault is not loopback/WG', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK: refuses to start when a served vault is not loopback/WG', async () => {
     await writeConfig({
       portRegistry: {},
       remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
     });
-    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = 'true';
     await assert.rejects(
       () => loadRegistry({ configPath: cfgPath }),
       (err) => {
-        assert.match(err.message, /REQUIRE_WIREGUARD/);
+        assert.match(err.message, /ENFORCE_WG_OR_LOOPBACK/);
         assert.match(err.message, /lan/); // names the offender
         assert.match(err.message, /192\.168\.0\.10/); // surfaces baseUrl (not a secret)
         return true;
@@ -426,17 +427,17 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
     );
   });
 
-  test('REQUIRE_WIREGUARD: loads fine when every served vault is WG or loopback', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK: loads fine when every served vault is WG or loopback', async () => {
     await writeConfig({
       portRegistry: { 'C:\\VAULTS\\Local': 27124 }, // https://127.0.0.1 → loopback, exempt
       remoteVaults: [{ name: 'wg', baseUrl: 'http://10.8.0.10:27161', apiKey: 'k' }],
     });
-    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = '1';
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = '1';
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name).sort(), ['local', 'wg']);
   });
 
-  test('REQUIRE_WIREGUARD: an offender filtered out by ALLOWED_VAULTS does not trip the guard', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK: an offender filtered out by ALLOWED_VAULTS does not trip the guard', async () => {
     await writeConfig({
       portRegistry: {},
       remoteVaults: [
@@ -444,49 +445,78 @@ describe('loadRegistry — VAULT_* 3rd source merge', () => {
         { name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' },
       ],
     });
-    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'yes';
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = 'yes';
     process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'wg'; // 'lan' filtered out before the check
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['wg']);
     assert.ok(r.skipped.some((s) => s.name === 'lan'));
   });
 
-  test('REQUIRE_WIREGUARD unset: a non-WG vault loads without enforcement', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK unset: a non-WG vault loads without enforcement', async () => {
     await writeConfig({
       portRegistry: {},
       remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
     });
-    // env wiped by beforeEach → REQUIRE_WIREGUARD unset
+    // env wiped by beforeEach → ENFORCE_WG_OR_LOOPBACK (and its alias) unset
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['lan']);
   });
 
-  test('REQUIRE_WIREGUARD: fail-closed end-to-end on a malformed baseUrl', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK: fail-closed end-to-end on a malformed baseUrl', async () => {
     // remoteVaults only requires a truthy baseUrl → 'not a url' passes the parse
     // and reaches the enforce, where new URL() throws → treated as an offender.
     await writeConfig({
       portRegistry: {},
       remoteVaults: [{ name: 'bad', baseUrl: 'not a url', apiKey: 'k' }],
     });
-    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = 'true';
     await assert.rejects(
       () => loadRegistry({ configPath: cfgPath }),
       (err) => {
-        assert.match(err.message, /REQUIRE_WIREGUARD/);
+        assert.match(err.message, /ENFORCE_WG_OR_LOOPBACK/);
         assert.match(err.message, /bad/);
         return true;
       },
     );
   });
 
-  test('REQUIRE_WIREGUARD: a localhost-host vault is exempt (loads)', async () => {
+  test('ENFORCE_WG_OR_LOOPBACK: a localhost-host vault is exempt (loads)', async () => {
     await writeConfig({
       portRegistry: {},
       remoteVaults: [{ name: 'lh', baseUrl: 'http://localhost:27161', apiKey: 'k' }],
     });
-    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'on';
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = 'on';
     const r = await loadRegistry({ configPath: cfgPath });
     assert.deepEqual(r.vaults.map((v) => v.name), ['lh']);
+  });
+
+  test('deprecated alias OBSIDIAN_ROUTER_REQUIRE_WIREGUARD still triggers the guard', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
+    });
+    // Old name only (new name unset) → alias path: enforcement still active.
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    await assert.rejects(
+      () => loadRegistry({ configPath: cfgPath }),
+      (err) => {
+        assert.match(err.message, /ENFORCE_WG_OR_LOOPBACK/); // error uses the canonical name
+        assert.match(err.message, /lan/);
+        return true;
+      },
+    );
+  });
+
+  test('new name takes precedence over the deprecated alias (new=off beats old=on)', async () => {
+    await writeConfig({
+      portRegistry: {},
+      remoteVaults: [{ name: 'lan', baseUrl: 'http://192.168.0.10:27161', apiKey: 'k' }],
+    });
+    // New name explicitly off wins over old name on → enforcement disabled.
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK = 'false';
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD = 'true';
+    const r = await loadRegistry({ configPath: cfgPath });
+    assert.deepEqual(r.vaults.map((v) => v.name), ['lan']);
   });
 });
 

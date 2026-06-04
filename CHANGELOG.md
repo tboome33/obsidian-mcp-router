@@ -6,6 +6,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-06-04 — rename `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` → `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` (clearer; old name kept as a deprecated alias)
+
+The v0.26.0 env var `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` was misleading on two counts: **"REQUIRE"** implied the WireGuard tunnel had to be *up* (it's a boot-time config check on the configured baseUrls, not a runtime probe), and the name hid that **loopback also passes** (so it's not "WireGuard-only"). Renamed to `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK`, which says exactly what passes. Born from Roland 2026-06-04 ("le flag REQUIRE_WIREGUARD n'est pas assez explicite, il m'a induit en erreur").
+
+### Changed
+
+- **Renamed `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` → `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK`.** Identical behavior (refuse to start if any *served* vault's `baseUrl` host is neither loopback nor in `10.8.0.0/24`). The boot error message + docstring now state it's a **config check that does not require the tunnel to be up**, and list loopback (`127.0.0.1`/`::1`/`localhost`) explicitly.
+- **Backward-compatible alias.** The old `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` is still honored: `loadRegistry` reads `ENFORCE_WG_OR_LOOPBACK ?? REQUIRE_WIREGUARD` (new name wins when both are set). Using the old name logs a one-line deprecation warning to stderr. **No existing deployment breaks.**
+
+### Tests
+
+- **`tests/vault-env-config.test.mjs`** — the global-guard tests migrated to the new name + 2 added (deprecated alias still triggers the guard; new name takes precedence over the alias). Full suite **1730 → 1732**.
+
 ## [0.26.0] — 2026-06-03 — global WireGuard enforcement (per-vault `wireguard` flag removed)
 
 Replaces the per-vault `wireguard` boolean — wrong granularity (WireGuard is a *deployment-wide* invariant, not a per-vault attribute) and unused in production — with a **global boot-time enforcement**. Born from Roland 2026-06-03 ("on sait que dans MCPHub WireGuard doit être activé, point final"): a per-vault opt-in flag contradicts a uniform invariant. The `VAULT_*` descriptor now reduces to 3 fields (`name`/`baseUrl`/`apiKey`) on an MCPHub deployment — `tlsInsecure`/`https` only apply to the local-HTTPS-loopback case, not the http-over-WG hop.

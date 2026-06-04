@@ -20,7 +20,7 @@
  *
  * Modes (the security profile of a vault's exposure):
  *   - 'wg'     → WireGuard-only. baseUrl uses a 10.8.0.x host (so it passes the
- *                router's global OBSIDIAN_ROUTER_REQUIRE_WIREGUARD enforcement);
+ *                router's global OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK guard);
  *                nginx adds an Access List
  *                `allow 10.8.0.0/24; deny all;`. For sensitive / medical vaults.
  *   - 'public' → public HTTPS via nginx + Let's Encrypt + bearer apiKey. baseUrl
@@ -134,7 +134,7 @@ export function normalizeDeployOpts(raw = {}) {
     if (!/^10\.8\.0\.\d{1,3}$/.test(o.wgHost)) {
       errors.push(
         `wg mode: wgHost "${o.wgHost}" must be in the 10.8.0.x WireGuard range ` +
-          `(else the router's global OBSIDIAN_ROUTER_REQUIRE_WIREGUARD enforcement refuses it).`,
+          `(else the router's global OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK guard refuses it).`,
       );
     }
   } else if (o.mode === 'lan') {
@@ -231,7 +231,7 @@ export function buildVaultEnvLine(opts) {
   };
   if (o.description) descriptor.description = o.description;
   // NB: no per-vault `wireguard` field — it was removed from the router. WireGuard
-  // is enforced deployment-wide via OBSIDIAN_ROUTER_REQUIRE_WIREGUARD (the wgHost
+  // is enforced deployment-wide via OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK (the wgHost
   // 10.8.0.x validation above keeps a 'wg'-mode baseUrl inside the mesh so it
   // passes that global enforcement).
   // Default false: public = real Let's Encrypt cert (verify); wg/lan = plain HTTP

@@ -15,13 +15,18 @@
  *                    same-name vault from sources 1-2. Opt-in: with no VAULT_* set,
  *                    behavior is byte-identical to v0.19.x. (v0.20.0)
  *
- * Deployment-wide WireGuard enforcement: OBSIDIAN_ROUTER_REQUIRE_WIREGUARD=true
+ * Deployment-wide transport guard: OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK=true
  * makes the router REFUSE TO START if any served vault's baseUrl host is neither
- * loopback nor in the 10.8.0.0/24 WG mesh. This is a GLOBAL invariant — it
- * replaces the former per-vault `wireguard` boolean flag (removed; that field is
- * now ignored if still present in a VAULT_* / remoteVaults entry). Rationale:
- * "MCPHub → vault is WG, full stop" is a deployment policy, not a per-vault
- * attribute (see the vault's wg-mandatory decision note).
+ * loopback (127.0.0.1/::1/localhost) nor in the 10.8.0.0/24 WG mesh. It is a
+ * BOOT-TIME CONFIG CHECK on the configured baseUrls — it does NOT require the WG
+ * tunnel to be up, and loopback passes (so it is NOT "WireGuard-only"). This is a
+ * GLOBAL invariant — it replaces the former per-vault `wireguard` boolean flag
+ * (removed; that field is now ignored if still present in a VAULT_* / remoteVaults
+ * entry). Rationale: "no vault served over an exposed link" is a deployment policy,
+ * not a per-vault attribute (see the vault's wg-mandatory decision note).
+ * Renamed from OBSIDIAN_ROUTER_REQUIRE_WIREGUARD in v0.27.0 (that name wrongly
+ * implied "WG must be running" and hid that loopback also passes); the old name
+ * is still honored as a deprecated alias.
  *
  * Vault names default to the lowercased basename of the local vault path,
  * unless overridden in `vaultNames` ({ "<path>": "<name>" }).
@@ -197,31 +202,54 @@ export async function loadRegistry({ configPath } = {}) {
     }
   }
 
-  // --- 2.7. Global WireGuard enforcement (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD) ---
+  // --- 2.7. Global transport guard (OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK) ---
   //
   // Opt-in, deployment-wide invariant. Replaces the former per-vault `wireguard`
   // boolean flag (removed). When set truthy — typically on a multi-tenant MCPHub
-  // instance whose policy is "every served vault MUST be reached over the
-  // WireGuard tunnel, full stop" — the router REFUSES TO START if any served
-  // vault's baseUrl host is neither loopback (same-machine, no network exposure,
-  // strictly safer than WG) nor inside the 10.8.0.0/24 WireGuard mesh.
+  // instance whose policy is "no vault may be served over an exposed network
+  // link" — the router REFUSES TO START if any served vault's baseUrl host is
+  // neither loopback (127.0.0.1/::1/localhost — same-machine, no network
+  // exposure, strictly safer than WG) nor inside the 10.8.0.0/24 WireGuard mesh.
+  //
+  // NOTE — this is a BOOT-TIME CONFIG CHECK on the configured baseUrls, NOT a
+  // runtime probe: it does NOT require the WireGuard tunnel to be up, and it does
+  // NOT turn WireGuard on. It only validates that every served vault is addressed
+  // over loopback or the WG mesh. (Renamed from OBSIDIAN_ROUTER_REQUIRE_WIREGUARD
+  // in v0.27.0 — that name wrongly implied "WG must be running" and hid that
+  // loopback also passes; the old name is still honored as a deprecated alias.)
   //
   // Fail-closed: a misconfigured vault (public IP, plain LAN like 192.168.x, a
-  // typo) can never be SILENTLY served over a non-WireGuard link — the operator
-  // is forced to fix it. Runs AFTER the ALLOWED_VAULTS filter so only vaults this
+  // typo) can never be SILENTLY served over an exposed link — the operator is
+  // forced to fix it. Runs AFTER the ALLOWED_VAULTS filter so only vaults this
   // instance actually serves are validated (a non-WG vault filtered out by the
   // whitelist is not a violation). baseUrl is safe to surface in the error;
   // apiKey is never logged.
-  if (isTruthyEnv(process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD)) {
+  const enforceWgOrLoopback =
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK ??
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD;
+  if (
+    process.env.OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK == null &&
+    process.env.OBSIDIAN_ROUTER_REQUIRE_WIREGUARD != null
+  ) {
+    console.error(
+      `[obsidian-mcp-router] OBSIDIAN_ROUTER_REQUIRE_WIREGUARD is DEPRECATED — ` +
+        `renamed to OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK (clearer: loopback also ` +
+        `passes, and it is a boot-time config check, not a "WG must be up" switch). ` +
+        `The old name still works for now; please migrate.`,
+    );
+  }
+  if (isTruthyEnv(enforceWgOrLoopback)) {
     const offenders = vaults.filter((v) => !hostIsWireguardOrLoopback(v.baseUrl));
     if (offenders.length > 0) {
       const list = offenders.map((v) => `${v.name} (${v.baseUrl})`).join(', ');
       throw new Error(
-        `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD is set, but ${offenders.length} served ` +
-          `vault(s) have a baseUrl host outside the WireGuard mesh (10.8.0.0/24) ` +
-          `and not loopback: ${list}. Fix each baseUrl to http://10.8.0.x:<port> ` +
-          `(WG tunnel) or remove the vault. Refusing to start to avoid serving a ` +
-          `vault over a non-WireGuard link.`,
+        `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK is enabled, but ${offenders.length} ` +
+          `served vault(s) have a baseUrl host that is neither loopback ` +
+          `(127.0.0.1/::1/localhost) nor in the WireGuard mesh (10.8.0.0/24): ${list}. ` +
+          `This is a boot-time config check — it does NOT require the WG tunnel to be ` +
+          `up. Fix each baseUrl to a loopback or http://10.8.0.x:<port> address, remove ` +
+          `the vault, or disable the check. Refusing to start to avoid serving a vault ` +
+          `over an exposed (non-WG, non-loopback) link.`,
       );
     }
   }
@@ -409,7 +437,7 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
 /**
  * Loose truthy parse for string env vars ("true"/"1"/"yes"/"on", case-insensitive).
  * Anything else (including undefined) is false. Used by the global WireGuard
- * enforcement switch (OBSIDIAN_ROUTER_REQUIRE_WIREGUARD).
+ * enforcement switch (OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK, alias OBSIDIAN_ROUTER_REQUIRE_WIREGUARD).
  */
 function isTruthyEnv(val) {
   if (typeof val !== 'string') return false;
@@ -493,7 +521,7 @@ const RESERVED_VAULT_ENV_KEYS = new Set(['VAULT_PATH']);
  * `Authorization: Bearer ` itself). Optional: description, tlsInsecure,
  * timeoutMs, extraHeaders. (The former per-vault `wireguard` boolean is GONE —
  * WireGuard is now a deployment-wide invariant enforced globally via
- * OBSIDIAN_ROUTER_REQUIRE_WIREGUARD in loadRegistry; a leftover `wireguard` key
+ * OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK in loadRegistry; a leftover `wireguard` key
  * in the JSON is simply ignored.) On MCPHub the descriptor reduces to the 3
  * required fields: tlsInsecure/https only apply to the local-HTTPS-loopback case,
  * not to the http-over-WG hop.
