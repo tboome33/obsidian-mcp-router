@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-06-08 — `get_view_link` tool — ephemeral one-click "view link" to a vault's live Obsidian GUI
+
+New MCP tool `get_view_link({ vault?, note? })` that returns an ephemeral, ready-to-click browser link to **view** a vault's live Obsidian GUI, navigated to a specific note, with HTTP basic-auth baked into the URL (the user types nothing). The interim answer — before the headless web app's per-note magic-links — to Roland's "every memory the AI writes should come with a one-click read link" (2026-06-08). The router calls a small **view-agent** service (on the Dedibox, where the GUIs live) over WireGuard; the agent starts an on-demand `cloudflared` quick tunnel to the container's Selkies GUI, navigates Obsidian to the note (Local REST API `/open`), and returns the URL. Tunnels auto-close after an idle timeout, so the GUI is never permanently exposed.
+
+### Added
+
+- **`get_view_link` MCP tool** (`src/tools/get-view-link.mjs`). Read-only wrt vault content (it only spins a tunnel + moves the UI) → **excluded from `WRITE_TOOL_NAMES`** (stays exposed under `OBSIDIAN_ROUTER_READONLY`). Resolves the vault through the registry (honours the default-vault cascade), then issues `GET <agent>/view?vault=&note=`. Optional `note` opens the GUI on that file; omit `vault` for the default vault.
+- **Two config env vars** (per router instance): `OBSIDIAN_ROUTER_VIEW_AGENT_URL` (required, e.g. `http://10.8.0.1:27200`) and `OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN` (optional shared secret, sent as `X-View-Token`). An unset URL makes the tool throw a clear "not configured" error rather than failing obscurely.
+
+### Tests
+
+- **`tests/get-view-link.test.mjs`** (8 tests, added to the `npm test` list) — happy path (vault/note query, auth-in-URL passthrough, idle-timeout echo), token header, trailing-slash base, and errors (unset config, non-string note, view-agent error status, unreachable agent).
+
+### Notes
+
+- The companion **view-agent** (python stdlib + `cloudflared`) runs on the Dedibox, bound to the WireGuard IP only, with cron `@reboot` + `*/2` crash-recovery. It is deployment infrastructure for the Tribu MCPHub instance, not part of the npm package.
 ## [0.27.0] — 2026-06-04 — rename `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` → `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` (clearer; old name kept as a deprecated alias)
 
 The v0.26.0 env var `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` was misleading on two counts: **"REQUIRE"** implied the WireGuard tunnel had to be *up* (it's a boot-time config check on the configured baseUrls, not a runtime probe), and the name hid that **loopback also passes** (so it's not "WireGuard-only"). Renamed to `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK`, which says exactly what passes. Born from Roland 2026-06-04 ("le flag REQUIRE_WIREGUARD n'est pas assez explicite, il m'a induit en erreur").

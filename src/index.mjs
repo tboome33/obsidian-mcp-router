@@ -59,6 +59,7 @@ import {
 } from './tools/download-page-assets.mjs';
 import { buildOpenLinkTool } from './tools/build-open-link.mjs';
 import { openInObsidianTool } from './tools/open-in-obsidian.mjs';
+import { getViewLinkTool } from './tools/get-view-link.mjs';
 import {
   TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
   getWikiContextPack,
@@ -700,6 +701,31 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  // Interim "view link" to a vault's LIVE Obsidian GUI via the Dedibox view-agent
+  // (on-demand cloudflared tunnel + Local REST /open navigate, credentials baked
+  // into the URL). The stop-gap before the headless web app's per-note magic-links.
+  // Read-only wrt content → excluded from WRITE_TOOL_NAMES.
+  {
+    name: 'get_view_link',
+    description:
+      'Get an ephemeral, ready-to-click browser link to VIEW a vault\'s LIVE Obsidian GUI — navigated to a specific note, with credentials baked into the URL so the user types nothing. Use this right after writing or updating a note in a memory vault, to offer the user a one-click read link. Served by an on-demand Cloudflare tunnel that auto-closes after an idle timeout (ephemeral, never permanently exposed). Optional `note` opens the GUI on that file; omit `vault` for the default vault. Requires the view-agent service configured on this router instance; only the configured memory vaults are supported. Read-only — never changes vault content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        vault: {
+          type: 'string',
+          description: 'Vault name (see list_vaults). Omit for the default vault.',
+        },
+        note: {
+          type: 'string',
+          description:
+            'Optional vault-relative path of the note to open the GUI on (e.g. "Voyages/italie.md").',
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    },
+  },
   // Roadmap item #6 (llm-wiki-compiler) — structured JSON context pack for
   // non-Claude agents. Read-only (queries the wiki via index.md + smart
   // search + frontmatter), excluded from WRITE_TOOL_NAMES.
@@ -769,6 +795,8 @@ const TOOL_HANDLERS = {
   build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
   // v0.24.0 — browser-free "open this note in Obsidian" (server-side /open call).
   open_in_obsidian: (reg, args) => openInObsidianTool(reg, args),
+  // Interim ephemeral view-link to a vault's live Obsidian GUI (Dedibox view-agent).
+  get_view_link: (reg, args) => getViewLinkTool(reg, args),
   // Roadmap item #6 — structured JSON context pack (v1 envelope).
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
   // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.
