@@ -2,8 +2,8 @@
 /**
  * bump-version.mjs
  *
- * Synchronizes the plugin version across the FOUR places Claude Code,
- * its marketplace, and humans look at:
+ * Synchronizes the plugin version across the FIVE places Claude Code,
+ * its marketplace, npm, and humans look at:
  *
  *   - `package.json`                          (npm package version + what
  *                                              hooks/check-router-update.mjs
@@ -14,6 +14,10 @@
  *   - `README.md`                             (the shields.io version badge,
  *                                              EN + FR — drifted repeatedly
  *                                              because earlier bumps ignored it)
+ *   - `package-lock.json`                     (OPTIONAL — npm's lockfile version
+ *                                              fields: top-level + packages[""];
+ *                                              `npm ci` ignores them but they
+ *                                              drifted to v0.25.0 regardless)
  *
  * Historically these drifted (e.g. v0.13.x in `package.json` but still
  * v0.12.7 in plugin.json + marketplace.json), which silently breaks
@@ -257,7 +261,7 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
     throw new Error(`Invalid semver: ${newVersion}`);
   }
 
-  const report = { files: {}, changelog: { changed: false }, readme: { changed: false } };
+  const report = { files: {}, changelog: { changed: false }, readme: { changed: false }, lockfile: { changed: false } };
 
   for (const { relPath, keyPaths } of targets) {
     const fullPath = path.join(root, relPath);
@@ -308,6 +312,31 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
     }
   }
 
+  // package-lock.json — npm's lockfile carries the package version in two spots: the
+  // top-level `version` and the root entry `packages[""].version`. `npm ci` IGNORES these
+  // (it hashes the dependency tree, not the version string), so a stale value never breaks
+  // an install — but it's sloppy, misleads anyone reading the lockfile, and drifted to
+  // v0.25.0 while everything else moved on. Optional: skipped if the repo has no lockfile
+  // (e.g. minimal test fixtures). Only the version fields are touched — never the dep tree.
+  const lockPath = path.join(root, 'package-lock.json');
+  if (fs.existsSync(lockPath)) {
+    const beforeLock = fs.readFileSync(lockPath, 'utf8');
+    let lockCurrent = null;
+    try {
+      lockCurrent = getNested(JSON.parse(beforeLock), ['version']);
+    } catch (err) {
+      throw new Error(`Malformed JSON in ${lockPath}: ${err.message}`);
+    }
+    if (lockCurrent && parseSemver(lockCurrent) && compareSemver(newVersion, lockCurrent) < 0) {
+      throw new Error(
+        `Refusing to downgrade package-lock.json from v${lockCurrent} to v${newVersion}. ` +
+        `If this is intentional, edit the file manually.`,
+      );
+    }
+    report.lockfile = updateJsonVersion(lockPath, [['version'], ['packages', '', 'version']], newVersion);
+    if (dryRun) fs.writeFileSync(lockPath, beforeLock);
+  }
+
   if (withChangelog) {
     const changelogPath = path.join(root, 'CHANGELOG.md');
     if (fs.existsSync(changelogPath)) {
@@ -336,7 +365,8 @@ if (isMain) {
       '\n' +
       'Bumps the version in package.json, .claude-plugin/plugin.json,\n' +
       '.claude-plugin/marketplace.json (both metadata.version and plugins[0].version),\n' +
-      'and the shields.io version badge in README.md (EN + FR),\n' +
+      'the shields.io version badge in README.md (EN + FR),\n' +
+      'package-lock.json (version fields, if present),\n' +
       'and inserts a stub entry at the top of CHANGELOG.md.\n',
     );
     process.exit(args.length === 0 ? 1 : 0);
@@ -365,6 +395,9 @@ if (isMain) {
     }
     process.stdout.write(
       `${prefix}README.md badge: ${report.readme.changed ? `synced → v${newVersion}` : 'unchanged (already at this version, or no README)'}\n`,
+    );
+    process.stdout.write(
+      `${prefix}package-lock.json: ${report.lockfile.changed ? `synced → v${newVersion}` : 'unchanged (already at this version, or no lockfile)'}\n`,
     );
     if (dryRun) {
       process.stdout.write('\n(Dry-run — no files were written.)\n');

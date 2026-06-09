@@ -53,6 +53,7 @@ function makeFakeRepo({
   marketplacePluginVersion = '0.13.0',
   changelog = `# Changelog\n\n## [Unreleased]\n\nNothing pending right now.\n\n## [0.13.0] — 2026-01-01 — initial\n\nInitial release.\n`,
   readmeVersion = null,
+  packageLockVersion = null,
 } = {}) {
   const root = fs.mkdtempSync(path.join(workDir, 'repo-'));
   scratchRoots.push(root);
@@ -92,6 +93,20 @@ function makeFakeRepo({
         `<a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-${readmeVersion}-blueviolet.svg" alt="version"></a>`,
         '',
       ].join('\n'),
+    );
+  }
+
+  // Optional package-lock.json (npm lockfile) carrying the version in both spots npm writes it.
+  if (packageLockVersion !== null) {
+    fs.writeFileSync(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'obsidian-mcp-router',
+        version: packageLockVersion,
+        lockfileVersion: 3,
+        requires: true,
+        packages: { '': { name: 'obsidian-mcp-router', version: packageLockVersion } },
+      }, null, 2) + '\n',
     );
   }
 
@@ -268,6 +283,55 @@ describe('bumpAll', () => {
     bumpAll(root, '0.22.0', { dryRun: true, withChangelog: false });
     const after = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
     assert.equal(after, before, 'README unchanged in dry-run');
+  });
+
+  test('updates package-lock.json (top-level + packages[""].version) when present', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.13.0', packageLockVersion: '0.13.0' });
+    const report = bumpAll(root, '0.14.0', { withChangelog: false });
+    assert.equal(report.lockfile.changed, true);
+    const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+    assert.equal(lock.version, '0.14.0');
+    assert.equal(lock.packages[''].version, '0.14.0');
+  });
+
+  test('syncs a lagging package-lock.json up to the new version (the v0.25→0.30 drift)', () => {
+    const root = makeFakeRepo({
+      pkgVersion: '0.30.0', pluginVersion: '0.30.0',
+      marketplaceMetaVersion: '0.30.0', marketplacePluginVersion: '0.30.0',
+      packageLockVersion: '0.25.0',
+    });
+    const report = bumpAll(root, '0.30.1', { withChangelog: false });
+    assert.equal(report.lockfile.changed, true);
+    const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+    assert.equal(lock.version, '0.30.1');
+    assert.equal(lock.packages[''].version, '0.30.1');
+  });
+
+  test('skips package-lock.json gracefully when absent', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.13.0' }); // no packageLockVersion → no lockfile
+    const report = bumpAll(root, '0.14.0', { withChangelog: false });
+    assert.equal(report.lockfile.changed, false);
+  });
+
+  test('refuses to downgrade package-lock.json even when package.json itself is unchanged', () => {
+    // package.json stays at 0.13.0 (no-op), but the lockfile is AHEAD at 0.14.0 → must refuse.
+    const root = makeFakeRepo({
+      pkgVersion: '0.13.0', pluginVersion: '0.13.0',
+      marketplaceMetaVersion: '0.13.0', marketplacePluginVersion: '0.13.0',
+      packageLockVersion: '0.14.0',
+    });
+    assert.throws(
+      () => bumpAll(root, '0.13.0', { withChangelog: false }),
+      /Refusing to downgrade package-lock/,
+    );
+  });
+
+  test('dry-run does not write package-lock.json', () => {
+    const root = makeFakeRepo({ pkgVersion: '0.13.0', packageLockVersion: '0.13.0' });
+    const before = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
+    bumpAll(root, '0.14.0', { dryRun: true, withChangelog: false });
+    const after = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
+    assert.equal(after, before, 'lockfile unchanged in dry-run');
   });
 });
 
