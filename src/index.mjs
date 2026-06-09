@@ -60,6 +60,7 @@ import {
 import { buildOpenLinkTool } from './tools/build-open-link.mjs';
 import { openInObsidianTool } from './tools/open-in-obsidian.mjs';
 import { getViewLinkTool } from './tools/get-view-link.mjs';
+import { viewLinkForWrite, noteForWriteResult } from './helpers/view-link.mjs';
 import {
   TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
   getWikiContextPack,
@@ -708,7 +709,7 @@ const TOOLS = [
   {
     name: 'get_view_link',
     description:
-      'Get an ephemeral, ready-to-click browser link to VIEW a vault\'s LIVE Obsidian GUI — navigated to a specific note, with credentials baked into the URL so the user types nothing. Use this right after writing or updating a note in a memory vault, to offer the user a one-click read link. Served by an on-demand Cloudflare tunnel that auto-closes after an idle timeout (ephemeral, never permanently exposed). Optional `note` opens the GUI on that file; omit `vault` for the default vault. Requires the view-agent service configured on this router instance; only the configured memory vaults are supported. Read-only — never changes vault content.',
+      'Get an ephemeral, ready-to-click browser link to VIEW/READ a vault\'s LIVE Obsidian GUI — navigated to a specific note, with credentials baked into the URL so the user types nothing. Call this WHENEVER the user asks for a link to read/see/open a note (e.g. "give me the link to the document", "can I see it", "où puis-je lire ça"), OR right after writing/updating a note to proactively offer a read link. IMPORTANT: this is the ONLY way to get a public URL for a REMOTE vault — when the `clickToOpenUrl` field comes back null (remote vault, no local data.json), do NOT tell the user "there is no public link", call get_view_link instead. Served by an on-demand Cloudflare tunnel that auto-closes after an idle timeout (ephemeral, never permanently exposed). Optional `note` opens the GUI on that file; omit `vault` for the default vault. Requires the view-agent configured on this router instance. Read-only — never changes vault content.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -853,6 +854,23 @@ const WRITE_TOOL_NAMES = new Set([
 ]);
 
 /**
+ * Subset of WRITE_TOOL_NAMES that writes a NOTE the member may want to read — the
+ * tools that get a deterministic `viewLink` attached to their result (Option B), via
+ * the central hook in the CallTool dispatch. Excludes delete_file (note gone),
+ * download_page_assets / build_wiki_graph (not notes), and execute_template (variable
+ * result shape). The hook reads the note path from `result.to` (move_file) or
+ * `result.path` (all others) and the vault name from `result.vault`.
+ */
+const VIEW_LINK_TOOLS = new Set([
+  'write_file',
+  'append_to_file',
+  'patch_file',
+  'set_frontmatter',
+  'merge_frontmatter',
+  'move_file',
+]);
+
+/**
  * Parse the OBSIDIAN_ROUTER_READONLY env var into a boolean. Truthy
  * recognised tokens: "true", "1", "yes", "on" (case-insensitive). Anything
  * else (unset, empty, "false", "0", "no", "off", typos) → false.
@@ -863,6 +881,22 @@ export function isReadonlyMode(rawEnvValue) {
   if (rawEnvValue == null) return false;
   const v = String(rawEnvValue).trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes' || v === 'on';
+}
+
+/**
+ * Compute the ListTools surface from the full catalog + the active gates. Pure (no env
+ * reads) so it is unit-testable. Two filters:
+ *   - readonly             → drop WRITE_TOOL_NAMES (v0.9.0).
+ *   - !viewAgentConfigured → drop `get_view_link` (v0.29.0, geste 1 of the "provider model"):
+ *     a router with no OBSIDIAN_ROUTER_VIEW_AGENT_URL shows ZERO view-link tool, so a
+ *     published build without the optional view-agent infra carries no dead/confusing tool.
+ *     (The `viewLink` auto-injection is separately gated inside `viewLinkForWrite`.)
+ * Exported for testing.
+ */
+export function computeExposedTools(tools, { readonly = false, viewAgentConfigured = false } = {}) {
+  let out = readonly ? tools.filter((t) => !WRITE_TOOL_NAMES.has(t.name)) : tools;
+  if (!viewAgentConfigured) out = out.filter((t) => t.name !== 'get_view_link');
+  return out;
 }
 
 /**
@@ -1191,9 +1225,20 @@ export async function startServer({ configPath, watch = true } = {}) {
         [...WRITE_TOOL_NAMES].join(', '),
     );
   }
-  const exposedTools = readonly
-    ? TOOLS.filter((t) => !WRITE_TOOL_NAMES.has(t.name))
-    : TOOLS;
+  // Tool EXPOSURE filtering. Two gates:
+  //  - READONLY (v0.9.0): hide write tools.
+  //  - view-agent (v0.29.0, geste 1 of the provider model): hide `get_view_link` when no
+  //    view-agent is configured, so a published router without the optional Dedibox-style
+  //    infra shows zero dead/confusing tool. The `viewLink` auto-injection is independently
+  //    gated inside `viewLinkForWrite` (silent + zero latency when unconfigured).
+  const viewAgentConfigured = !!(process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim();
+  const exposedTools = computeExposedTools(TOOLS, { readonly, viewAgentConfigured });
+  if (!viewAgentConfigured) {
+    console.error(
+      '[obsidian-mcp-router] OBSIDIAN_ROUTER_VIEW_AGENT_URL unset — get_view_link hidden, ' +
+        'no viewLink injection (the view-link provider is optional).',
+    );
+  }
 
   // v0.9.0 — audit log (USER_ID). When OBSIDIAN_ROUTER_USER_ID is set,
   // every SUCCESSFUL write tool call gets a line appended to the touched
@@ -1278,6 +1323,24 @@ export async function startServer({ configPath, watch = true } = {}) {
         }
       }
 
+      // v0.29.0 — DETERMINISTIC ephemeral view-link on note writes (Option B).
+      // After a successful note write, ask the view-agent for a read link and attach it
+      // to the result. Cross-cutting + async + expensive → centralized HERE (next to the
+      // audit-log block above, the closest precedent), NOT per-tool like the cheap sync
+      // `clickToOpenUrl`. `viewLinkForWrite` is gated by OBSIDIAN_ROUTER_VIEW_AGENT_URL
+      // (silent + zero latency when unset), skips wiki-meta/ housekeeping, and NEVER
+      // throws — a view-link problem must never break the write that triggered it.
+      // Deliberately NOT gated on `userId`: the link applies regardless of audit config.
+      if (VIEW_LINK_TOOLS.has(name) && result && typeof result === 'object') {
+        // `noteForWriteResult` selects result.to (move_file) / result.path (others) and
+        // returns null to SKIP — e.g. merge_frontmatter that applied 0 keys (nothing written,
+        // so no read link to promise). review+ pass 1 (Code Reviewer + codex convergent).
+        const note = noteForWriteResult(result);
+        if (note) {
+          Object.assign(result, await viewLinkForWrite({ vaultName: result.vault, note }));
+        }
+      }
+
       return await wrapResult(Promise.resolve(result));
     } catch (err) {
       // Friendly errors when the underlying RestApiError carries a `hint`.
@@ -1356,5 +1419,7 @@ export const _internals = {
   TOOLS,
   TOOL_HANDLERS,
   WRITE_TOOL_NAMES,
+  VIEW_LINK_TOOLS,
+  computeExposedTools,
   PKG_VERSION,
 };

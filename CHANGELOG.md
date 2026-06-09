@@ -6,6 +6,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-06-09 — deterministic `viewLink` on note writes (Option B) + view-link exposure gating
+
+Makes the ephemeral read-link **deterministic**. Instead of relying on the AI to remember to call `get_view_link` (a prompt nudge that, in the field, the AI skipped — it told Roland "no public link" when `clickToOpenUrl` came back null for a remote vault), the router now **attaches a `viewLink` to the result of every note write**, server-side. The write *fabricates* the link; the AI only has to relay it. Born from Roland 2026-06-09 ("B même si transitoire je veux que ça fonctionne parfaitement"). Same view-agent transport as `get_view_link`; both now share `src/helpers/view-link.mjs`.
+
+### Added
+
+- **Deterministic `viewLink` auto-injection** on the 6 note-write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file` — the `VIEW_LINK_TOOLS` set). A central hook in the CallTool dispatch (next to the audit-log block) calls `viewLinkForWrite({ vaultName: result.vault, note: result.to || result.path })` after a successful write and merges `{ viewLink }` into the result. **Never breaks a write**: gated by `OBSIDIAN_ROUTER_VIEW_AGENT_URL` (silent + zero latency when unset), skips `wiki-meta/` housekeeping (no link, no wasted tunnel), and on a configured-but-failing agent returns a discreet `{ viewLinkError }` instead of throwing. Excludes `delete_file` (note gone) + non-note writes.
+- **`src/helpers/view-link.mjs`** — shared transport. `fetchViewLink(...)` (pure, used by `get_view_link` with `throwOnError: true`) + `viewLinkForWrite(...)` (spread-ready `{ viewLink } | { viewLinkError } | {}`, never throws). `get_view_link` refactored onto it (no behaviour change).
+
+### Changed
+
+- **Exposure gating (geste 1 of the "provider model")** — `get_view_link` is now **hidden from ListTools when `OBSIDIAN_ROUTER_VIEW_AGENT_URL` is unset**, via the new pure, testable `computeExposedTools(tools, { readonly, viewAgentConfigured })` (which also subsumes the existing READONLY filter). A published router without the optional view-agent infra carries **zero dead/confusing view-link tool** — the feature is invisible until you bring your own provider. The router is coupled to a `/view` **contract**, not to any specific host.
+- **`get_view_link` description broadened** so the AI reaches for it whenever the user asks for a link to read/see/open a note (not only right after a write), and is explicitly told that a null `clickToOpenUrl` (remote vault) means "call get_view_link", not "there is no public link" — the exact failure observed in the field.
+
+### Tests
+
+- **`tests/view-link.test.mjs`** (transport + `viewLinkForWrite` never-throws / gating / skip-wiki-meta) + **`tests/view-link-wiring.test.mjs`** (`VIEW_LINK_TOOLS` membership + `computeExposedTools` gating matrix). Full suite **1741 → 1761** green.
+
+### Notes
+
+- The companion view-agent's idle-timeout was raised (15 → 30 min) so consecutive writes in a conversation reuse a warm tunnel — only the first write of a cold conversation pays the ~15 s `cloudflared` cold-start. Deployment infra (Dedibox), not part of the npm package.
 ## [0.28.0] — 2026-06-08 — `get_view_link` tool — ephemeral one-click "view link" to a vault's live Obsidian GUI
 
 New MCP tool `get_view_link({ vault?, note? })` that returns an ephemeral, ready-to-click browser link to **view** a vault's live Obsidian GUI, navigated to a specific note, with HTTP basic-auth baked into the URL (the user types nothing). The interim answer — before the headless web app's per-note magic-links — to Roland's "every memory the AI writes should come with a one-click read link" (2026-06-08). The router calls a small **view-agent** service (on the Dedibox, where the GUIs live) over WireGuard; the agent starts an on-demand `cloudflared` quick tunnel to the container's Selkies GUI, navigates Obsidian to the note (Local REST API `/open`), and returns the URL. Tunnels auto-close after an idle timeout, so the GUI is never permanently exposed.

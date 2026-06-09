@@ -17,6 +17,16 @@ export async function mergeFrontmatterTool(registry, args = {}) {
     throw new Error('Missing or invalid argument: values (must be a key/value object)');
   }
 
+  // Resolve the vault ONCE up front so the result carries the CANONICAL vault name
+  // (honouring the default-vault cascade + single-vault lock) — the per-key sub-calls
+  // resolve internally but only return the name. Best-effort: an unknown name throws here
+  // and the per-key writes below surface it; we then fall back to the raw arg. The
+  // deterministic viewLink hook reads `result.vault`, so a non-canonical name here would
+  // point the view-agent at the WRONG vault (review+ pass 1 — Code Reviewer + codex convergent).
+  let resolvedVault = null;
+  try { resolvedVault = registry.resolveVault(name); } catch { /* best-effort */ }
+  const resolvedVaultName = resolvedVault ? resolvedVault.name : name || registry.defaultVault;
+
   const results = [];
   let firstError = null;
 
@@ -36,17 +46,11 @@ export async function mergeFrontmatterTool(registry, args = {}) {
     }
   }
 
-  // Resolve the vault again to build the click-to-open URL — the
-  // sub-calls don't return the resolved vault object, only its name.
-  // Tolerate resolveVault throwing (e.g. unknown name): the URL is best-effort.
-  let clickToOpenUrl = null;
-  try {
-    const vault = registry.resolveVault(name);
-    clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
-  } catch { /* no URL — keep the rest of the result */ }
+  // best-effort click-to-open URL from the already-resolved vault (local vaults only).
+  const clickToOpenUrl = resolvedVault ? buildClickToOpenUrl(resolvedVault, filePath) : null;
 
   return {
-    vault: name || registry.defaultVault,
+    vault: resolvedVaultName,
     path: filePath,
     applied: results.filter((r) => r.status === 'ok').length,
     failed: results.filter((r) => r.status === 'failed').length,
