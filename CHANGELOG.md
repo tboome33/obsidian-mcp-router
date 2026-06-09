@@ -6,6 +6,21 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-06-09 — `open_in_obsidian` returns a `viewLink` for remote-container vaults
+
+Closes the READ side of the view-link story. The v0.29.0 `viewLink` auto-injection only fires on note WRITES; a pure "show me / open note X" is a read, so it produced no link — and in the field the AI reached for `open_in_obsidian` (browser-less local navigate), which can't work for a remote container vault (the user has no local Obsidian to raise) and gave up instead of falling through to `get_view_link`. Now `open_in_obsidian` itself returns a view-link when a view-agent is configured, so "show me a note" yields the link whichever of the two "open" tools the AI picks.
+
+### Changed
+
+- **`open_in_obsidian` returns a `viewLink` when `OBSIDIAN_ROUTER_VIEW_AGENT_URL` is set.** For a remote-container deployment it asks the view-agent for an ephemeral browser link to the live GUI on the note (the agent also navigates the container's Obsidian there) instead of the bridge `/open` navigate the user couldn't see. **Best-effort + non-breaking**: if the view-agent is unreachable it falls through to the original bridge navigate; with no view-agent configured the behaviour is byte-identical to before (local deployments unaffected). Uses the shared `fetchViewLink` (throwOnError:false). The tool description is updated so the AI knows it yields a link for remote vaults.
+
+### Tests
+
+- **`tests/open-in-obsidian.test.mjs`** — +2 (view-agent configured → `viewLink`, no bridge `/open`; view-agent unreachable → falls through to the bridge) + a `beforeEach` that clears the env so the existing bridge-path tests stay isolated. Full suite **1769 → 1771** green.
+
+### Notes
+
+- The deterministic complement to v0.29.0's write-time injection: writes fabricate the link in their result; "open/show" reads now fabricate it via `open_in_obsidian`. Both "open a note" tools (`get_view_link`, `open_in_obsidian`) now yield a view-link on a remote deployment — the user gets the link regardless of which one the AI reaches for.
 ## [0.29.0] — 2026-06-09 — deterministic `viewLink` on note writes (Option B) + view-link exposure gating
 
 Makes the ephemeral read-link **deterministic**. Instead of relying on the AI to remember to call `get_view_link` (a prompt nudge that, in the field, the AI skipped — it told Roland "no public link" when `clickToOpenUrl` came back null for a remote vault), the router now **attaches a `viewLink` to the result of every note write**, server-side. The write *fabricates* the link; the AI only has to relay it. Born from Roland 2026-06-09 ("B même si transitoire je veux que ça fonctionne parfaitement"). Same view-agent transport as `get_view_link`; both now share `src/helpers/view-link.mjs`.

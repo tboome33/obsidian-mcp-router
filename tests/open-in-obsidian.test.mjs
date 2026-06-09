@@ -21,7 +21,10 @@ before(async () => {
   received = [];
   server = http.createServer((req, res) => {
     received.push({ method: req.method, url: req.url });
-    if (req.url.startsWith('/open/')) {
+    if (req.url.startsWith('/view')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ url: 'https://obsidian:pw@vt.trycloudflare.com/', idle_timeout_s: 1800 }));
+    } else if (req.url.startsWith('/open/')) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html>Opened in Obsidian.');
     } else {
@@ -35,10 +38,12 @@ before(async () => {
 
 after(() => {
   server.close();
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL; // self-sufficient: don't leak to later files
 });
 
 beforeEach(() => {
   received.length = 0;
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL; // bridge-path tests must NOT see a view-agent
 });
 
 function makeRegistry(vault) {
@@ -129,5 +134,25 @@ describe('open_in_obsidian — validation + errors', () => {
     // Port 1 is unbindable/refused — simulates Obsidian not running.
     const dead = { type: 'local', name: 'dead', baseUrl: 'http://127.0.0.1:1', timeoutMs: 2000 };
     await assert.rejects(() => openInObsidianTool(makeRegistry(dead), { path: 'a.md' }));
+  });
+});
+
+describe('open_in_obsidian — remote view-agent returns a viewLink (deterministic "show me")', () => {
+  test('view-agent configured → returns viewLink, does NOT hit the bridge /open', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'Voyages/x.md' });
+    assert.equal(r.opened, true);
+    assert.equal(r.viewLink, 'https://obsidian:pw@vt.trycloudflare.com/');
+    const viewHit = received.find((x) => x.url.startsWith('/view'));
+    assert.ok(viewHit && viewHit.url.includes('note=Voyages%2Fx.md'), 'hit /view with the note');
+    assert.ok(!received.some((x) => x.url.startsWith('/open/')), 'did NOT call the bridge /open');
+  });
+
+  test('view-agent configured but unreachable → falls through to the bridge navigate', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = 'http://127.0.0.1:1';
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/foo.md' });
+    assert.equal(r.opened, true);
+    assert.ok(!('viewLink' in r), 'no viewLink when the agent is down');
+    assert.ok(received.some((x) => x.url.startsWith('/open/')), 'fell through to the bridge /open');
   });
 });

@@ -681,7 +681,7 @@ const TOOLS = [
   {
     name: 'open_in_obsidian',
     description:
-      'Navigate the running Obsidian for a vault to a file — and bring its window to the front — WITHOUT opening a browser. Use this when the user asks to "open" / "show" / "go to" a note: the router calls the bridge\'s /open route server-side, so (unlike a click-to-open LINK, which a browser-proxying client such as Claude Desktop always opens in a browser tab) no browser is involved. Optional `anchor` scrolls to a heading. Requires the mcp-router-bridge plugin (>= 0.2.0) + Obsidian running for that vault. Navigation-only — never changes content.',
+      'Navigate the running Obsidian for a vault to a file — and bring its window to the front — WITHOUT opening a browser. Use this when the user asks to "open" / "show" / "go to" a note: the router calls the bridge\'s /open route server-side, so (unlike a click-to-open LINK, which a browser-proxying client such as Claude Desktop always opens in a browser tab) no browser is involved. Optional `anchor` scrolls to a heading. On a remote-vault deployment where a view-agent is configured, this instead returns an ephemeral browser `viewLink` to the live GUI on that note (the user has no local Obsidian to raise) — so "show me / open this note" works for remote vaults too. Requires the mcp-router-bridge plugin (>= 0.2.0) + Obsidian running for that vault (local path). Navigation-only — never changes content.',
     inputSchema: {
       type: 'object',
       properties: {
