@@ -46,6 +46,12 @@ export async function openInObsidianTool(registry, args = {}) {
   // Obsidian to raise — return a browser view-link to the live GUI on the note instead
   // (the agent also navigates the container's Obsidian to it). Best-effort: if the agent
   // is unreachable, fall through to the bridge navigate below. See the docblock.
+  //
+  // Timeout: this path is USER-INITIATED (the user asked to see the note + is waiting), so it
+  // keeps fetchViewLink's default (long) timeout to allow a cold cloudflared tunnel (~15-18s)
+  // — unlike the eager write-time path (short timeout + circuit-breaker) which rides EVERY
+  // write. A persistently black-holed agent thus costs the full timeout here, but this path is
+  // on-demand + infrequent and falls through to the bridge on failure (review+ 159adac).
   if ((process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim()) {
     const data = await fetchViewLink({ vaultName: vault.name, note: filePath, throwOnError: false });
     if (data && data.url) {
@@ -54,9 +60,15 @@ export async function openInObsidianTool(registry, args = {}) {
         path: filePath,
         opened: true,
         viewLink: data.url,
+        // The tunnel opens the GUI ON the note, but an Obsidian heading is NOT deep-linkable
+        // through it — so a requested `anchor` is echoed with `anchorApplied: false` (NOT
+        // silently dropped, since the schema/description advertise anchor support; review+
+        // 159adac, codex P2 + Code Reviewer convergent).
+        ...(anchor ? { anchor, anchorApplied: false } : {}),
         hint:
           'Remote vault — open this browser link to view the note in the live Obsidian GUI ' +
-          '(credentials in the URL, nothing to type); it auto-closes after the idle timeout.',
+          '(credentials in the URL, nothing to type); it auto-closes after the idle timeout.' +
+          (anchor ? ' The note opens at the top — heading anchors are not deep-linkable here.' : ''),
       };
     }
   }
@@ -73,7 +85,10 @@ export async function openInObsidianTool(registry, args = {}) {
   return {
     vault: vault.name,
     path: filePath,
-    ...(result.anchor ? { anchor: result.anchor } : {}),
+    // Symmetric anchor contract with the view-link branch above: when an anchor is honoured
+    // (local bridge navigate), echo it WITH `anchorApplied: true`; the remote viewLink branch
+    // echoes `anchorApplied: false`; no anchor → neither field (review+ 159adac, Code Reviewer nit).
+    ...(result.anchor ? { anchor: result.anchor, anchorApplied: true } : {}),
     opened: true,
   };
 }

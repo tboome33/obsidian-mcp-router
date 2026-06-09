@@ -148,6 +148,14 @@ describe('open_in_obsidian — remote view-agent returns a viewLink (determinist
     assert.ok(!received.some((x) => x.url.startsWith('/open/')), 'did NOT call the bridge /open');
   });
 
+  test('view-agent + anchor → echoes anchor as anchorApplied:false (not silently dropped)', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/foo.md', anchor: '#Section 2' });
+    assert.equal(r.viewLink, 'https://obsidian:pw@vt.trycloudflare.com/');
+    assert.equal(r.anchor, '#Section 2');
+    assert.equal(r.anchorApplied, false);
+  });
+
   test('view-agent configured but unreachable → falls through to the bridge navigate', async () => {
     process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = 'http://127.0.0.1:1';
     const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/foo.md' });
