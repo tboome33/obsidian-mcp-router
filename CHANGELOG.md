@@ -6,6 +6,17 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.30.1] — 2026-06-09 — `open_in_obsidian`: honour the anchor contract on the remote view-link path
+
+`/review+` follow-up to v0.30.0 (Code Reviewer + codex, convergent finding). The remote view-link path of `open_in_obsidian` silently dropped a requested `anchor`, even though the schema/description advertise heading scroll. An Obsidian heading is not deep-linkable through the tunnel (the GUI opens on the note), so the behaviour can't be honoured remotely — but it must not be silent.
+
+### Fixed
+
+- **`open_in_obsidian` no longer silently drops `anchor` on the remote view-link path.** It now echoes the anchor with **`anchorApplied: false`** (remote viewLink) / **`anchorApplied: true`** (local bridge navigate, when honoured) — a symmetric, predictable contract — plus a hint stating the note opens at the top. The tool description states the limitation. A comment documents the deliberate long timeout on the user-initiated view-agent call (allows a cold cloudflared tunnel; the eager write path uses a short timeout + circuit-breaker instead). **No behaviour change for the common no-anchor "show me a note" case.**
+
+### Tests
+
+- **`tests/open-in-obsidian.test.mjs`** — +1 (view-agent + anchor → `viewLink` + `anchorApplied:false`). Full suite **1771 → 1772** green.
 ## [0.30.0] — 2026-06-09 — `open_in_obsidian` returns a `viewLink` for remote-container vaults
 
 Closes the READ side of the view-link story. The v0.29.0 `viewLink` auto-injection only fires on note WRITES; a pure "show me / open note X" is a read, so it produced no link — and in the field the AI reached for `open_in_obsidian` (browser-less local navigate), which can't work for a remote container vault (the user has no local Obsidian to raise) and gave up instead of falling through to `get_view_link`. Now `open_in_obsidian` itself returns a view-link when a view-agent is configured, so "show me a note" yields the link whichever of the two "open" tools the AI picks.
