@@ -61,6 +61,7 @@ import { buildOpenLinkTool } from './tools/build-open-link.mjs';
 import { openInObsidianTool } from './tools/open-in-obsidian.mjs';
 import { getViewLinkTool } from './tools/get-view-link.mjs';
 import { viewLinkForWrite, noteForWriteResult } from './helpers/view-link.mjs';
+import { smartLinkEnabled } from './helpers/smart-link.mjs';
 import {
   TOOL_DEFINITION as GET_WIKI_CONTEXT_PACK_TOOL_DEFINITION,
   getWikiContextPack,
@@ -1233,10 +1234,32 @@ export async function startServer({ configPath, watch = true } = {}) {
   //    gated inside `viewLinkForWrite` (silent + zero latency when unconfigured).
   const viewAgentConfigured = !!(process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim();
   const exposedTools = computeExposedTools(TOOLS, { readonly, viewAgentConfigured });
+  // Smart links (resolver provider) take PRIORITY over the view-agent inside
+  // viewLinkForWrite / open_in_obsidian — pure HMAC emission, no network call.
+  const smartLinksOn = smartLinkEnabled(process.env);
+  if (smartLinksOn) {
+    console.error(
+      '[obsidian-mcp-router] smart links enabled (OBSIDIAN_ROUTER_SMART_LINK_URL) — note ' +
+        'writes carry a resolver viewLink (no view-agent call; takes priority over the agent).',
+    );
+  } else if (
+    (process.env.OBSIDIAN_ROUTER_SMART_LINK_URL || '').trim() ||
+    (process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET || '').trim()
+  ) {
+    // Exactly one of the two vars set = almost certainly a typo'd deploy. Without this
+    // line the misconfiguration is fully silent (gate closed → agent/none fallback).
+    console.error(
+      '[obsidian-mcp-router] smart links HALF-configured — set BOTH ' +
+        'OBSIDIAN_ROUTER_SMART_LINK_URL and OBSIDIAN_ROUTER_SMART_LINK_SECRET to enable them. ' +
+        'Smart links are OFF; falling back to the view-agent (or no viewLink).',
+    );
+  }
   if (!viewAgentConfigured) {
     console.error(
-      '[obsidian-mcp-router] OBSIDIAN_ROUTER_VIEW_AGENT_URL unset — get_view_link hidden, ' +
-        'no viewLink injection (the view-link provider is optional).',
+      '[obsidian-mcp-router] OBSIDIAN_ROUTER_VIEW_AGENT_URL unset — get_view_link hidden' +
+        (smartLinksOn
+          ? '.'
+          : ', no viewLink injection (the view-link provider is optional).'),
     );
   }
 

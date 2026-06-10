@@ -29,6 +29,7 @@
  */
 import { openInObsidian } from '../rest-client.mjs';
 import { fetchViewLink } from '../helpers/view-link.mjs';
+import { buildSmartLink, smartLinkEnabled } from '../helpers/smart-link.mjs';
 
 export async function openInObsidianTool(registry, args = {}) {
   const { vault: name, path: filePath, anchor } = args;
@@ -41,6 +42,31 @@ export async function openInObsidianTool(registry, args = {}) {
   }
 
   const vault = registry.resolveVault(name);
+
+  // REMOTE deployment, PRIORITY 1 — smart link (resolver configured): return the stable
+  // signed URL computed locally (pure HMAC, zero network — nothing to fall through from).
+  // The resolver page decides AT CLICK TIME, on the clicking device, between a local
+  // Obsidian mirror, the obsidian:// deep link, and the streamed GUI. Same anchor
+  // contract as the view-agent branch below: remote links can't deep-link a heading.
+  if (smartLinkEnabled(process.env)) {
+    return {
+      vault: vault.name,
+      path: filePath,
+      opened: true,
+      viewLink: buildSmartLink({
+        baseUrl: process.env.OBSIDIAN_ROUTER_SMART_LINK_URL,
+        vault: vault.name,
+        note: filePath,
+        secret: process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET, // raw, per contract
+      }),
+      viewLinkKind: 'smart',
+      ...(anchor ? { anchor, anchorApplied: false } : {}),
+      hint:
+        'Remote vault — open this smart link to view the note; it resolves on the clicking ' +
+        'device (local Obsidian mirror if present, otherwise the live streamed GUI).' +
+        (anchor ? ' The note opens at the top — heading anchors are not deep-linkable here.' : ''),
+    };
+  }
 
   // REMOTE-CONTAINER deployment: a configured view-agent means the user has no local
   // Obsidian to raise — return a browser view-link to the live GUI on the note instead
@@ -60,6 +86,7 @@ export async function openInObsidianTool(registry, args = {}) {
         path: filePath,
         opened: true,
         viewLink: data.url,
+        viewLinkKind: 'agent',
         // The tunnel opens the GUI ON the note, but an Obsidian heading is NOT deep-linkable
         // through it — so a requested `anchor` is echoed with `anchorApplied: false` (NOT
         // silently dropped, since the schema/description advertise anchor support; review+

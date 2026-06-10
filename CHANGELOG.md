@@ -6,6 +6,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-06-10 — Smart links: durable per-note links with device-side resolution
+
+The multi-device answer to "which open-link do I give?" — local mirror vs streamed GUI. The server can never know which device will click (the same chat is read from a desktop with a synced mirror AND a phone), so the choice moves to click time: the router emits ONE stable https smart link per note; a tiny resolver page (private saas repo) probes the clicking device's OWN loopback for a live mirror (presence heartbeats from the bridge v0.4.0, replicated by LiveSync), falls back to an `obsidian://` deep link, then to the streamed GUI via the view-agent (tunnel mounted lazily at that moment). Full design: vault note `smart-link-resolver`.
+
+### Added
+
+- **`src/helpers/smart-link.mjs`** — HMAC-SHA256 token (`base64url(JSON{v,n,exp}) + '.' + base64url(sig)`, 30-day default TTL, timing-safe verify) + smart-link URL builder + `smartLinkEnabled(env)` gating on **`OBSIDIAN_ROUTER_SMART_LINK_URL`** + **`OBSIDIAN_ROUTER_SMART_LINK_SECRET`**. The token format is contract-pinned cross-repo (the resolver pins the same literal test vector; byte-exact + cross-verify proven at integration).
+- **Smart link takes priority over the view-agent everywhere a `viewLink` is produced** (v0.29.0 write auto-injection + `open_in_obsidian` remote path): when configured, the `viewLink` field carries the smart URL with `viewLinkKind: 'smart'` — a pure local HMAC computation, **zero network call on writes** (faster, immune to a dead agent). Without the env vars, behaviour is byte-identical to v0.30.1 (`viewLinkKind: 'agent'` on the agent path). The `viewLink` field name is unchanged — zero breaking change for memory-directive consumers.
+- **Boot-time warning when smart links are HALF-configured** (exactly one of the two env vars set — likely a typo): stderr notice instead of a silent fallback.
+
+### Tests
+
+- **`tests/smart-link.test.mjs`** (new, +16) — build/verify round-trip, expiry/tamper rejection, URL shape, gating, and the pinned cross-implementation vector. **`tests/view-link.test.mjs`** / **`tests/open-in-obsidian.test.mjs`** — +10 (smart-priority routing, no-fetch assertion, never-throws guard, env-off regression). Full suite **1772 → 1803** green.
+
 ## [0.30.1] — 2026-06-09 — `open_in_obsidian`: honour the anchor contract on the remote view-link path
 
 `/review+` follow-up to v0.30.0 (Code Reviewer + codex, convergent finding). The remote view-link path of `open_in_obsidian` silently dropped a requested `anchor`, even though the schema/description advertise heading scroll. An Obsidian heading is not deep-linkable through the tunnel (the GUI opens on the note), so the behaviour can't be honoured remotely — but it must not be silent.

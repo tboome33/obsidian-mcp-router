@@ -10,16 +10,22 @@
  *   - `viewLinkForWrite({ vaultName, note })` — the DETERMINISTIC auto-injection used by
  *     the CallTool dispatch after a successful note write (Option B). Returns a
  *     spread-ready `{ viewLink }` / `{ viewLinkError }` / `{}`:
- *       • not configured (no OBSIDIAN_ROUTER_VIEW_AGENT_URL)         → {}      (silent)
+ *       • smart link configured (resolver) — HIGHEST priority        → { viewLink, viewLinkKind:'smart' }
+ *       • not configured (no smart link, no VIEW_AGENT_URL)          → {}      (silent)
  *       • housekeeping write (wiki-meta/…) or no note path           → {}      (skipped)
- *       • configured + view-agent returned a link                    → { viewLink }
- *       • configured but the view-agent failed/timed out             → { viewLinkError }
+ *       • view-agent configured + returned a link                    → { viewLink, viewLinkKind:'agent' }
+ *       • view-agent configured but failed/timed out                 → { viewLinkError }
  *     It NEVER throws — a view-link problem must never break the write that triggered it.
  *
- * Configured via two env vars on the router instance:
- *   OBSIDIAN_ROUTER_VIEW_AGENT_URL    e.g. http://10.8.0.1:27200   (required to emit)
+ * Configured via env vars on the router instance:
+ *   OBSIDIAN_ROUTER_SMART_LINK_URL    resolver base URL — with OBSIDIAN_ROUTER_SMART_LINK_SECRET,
+ *                                     emits stable signed smart links (pure HMAC, no network;
+ *                                     takes priority over the view-agent — see smart-link.mjs)
+ *   OBSIDIAN_ROUTER_VIEW_AGENT_URL    e.g. http://10.8.0.1:27200   (required for the agent path)
  *   OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN  shared secret (optional; sent as X-View-Token)
  */
+
+import { buildSmartLink, smartLinkEnabled } from './smart-link.mjs';
 
 // First call per vault waits on a cloudflared cold-start (~15s); reused tunnels are
 // near-instant. The eager auto-injection blocks the write up to this long ONLY when the
@@ -159,16 +165,38 @@ export function noteForWriteResult(result) {
 /**
  * Deterministic auto-injection for note-write tools (Option B). Spread-ready, NEVER throws.
  * Uses a SHORT eager timeout + a circuit-breaker so a down/hung view-agent can't stall writes.
+ * Provider priority: smart link (pure HMAC, zero network — can't be slowed by a dead
+ * agent) → view-agent fetch (existing) → none. `viewLinkKind` traces which one emitted.
  * @param {object} opts
  * @param {string} opts.vaultName   resolved (canonical) vault name from the write result
  * @param {string} opts.note        written note path
- * @returns {Promise<{viewLink?: string, viewLinkError?: string}>}
+ * @returns {Promise<{viewLink?: string, viewLinkKind?: 'smart'|'agent', viewLinkError?: string}>}
  */
 export async function viewLinkForWrite({ vaultName, note } = {}) {
   // Not enough to build a link, or housekeeping/scaffold write → emit nothing, silently.
-  if (!vaultName || !note || typeof note !== 'string') return {};
+  if (!vaultName || typeof vaultName !== 'string' || !note || typeof note !== 'string') return {};
   if (note.startsWith('wiki-meta/')) return {};
-  // Gate: instances without a view-agent stay completely silent + pay ZERO latency.
+  // PRIORITY 1 — smart link (resolver configured): stable signed URL, computed locally.
+  // No fetch, no timeout, no circuit-breaker — the write pays ~zero latency.
+  if (smartLinkEnabled(process.env)) {
+    try {
+      return {
+        viewLink: buildSmartLink({
+          baseUrl: process.env.OBSIDIAN_ROUTER_SMART_LINK_URL,
+          vault: vaultName,
+          note,
+          secret: process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET, // raw, per contract
+        }),
+        viewLinkKind: 'smart',
+      };
+    } catch (err) {
+      // Defensive: inputs are validated above, so this should be unreachable — but the
+      // never-throws guarantee must hold even against a builder bug. A link problem must
+      // never convert a SUCCESSFUL write into a tool error.
+      return { viewLinkError: String((err && err.message) || err).slice(0, 140) };
+    }
+  }
+  // PRIORITY 2 — view-agent. Gate: instances without one stay silent + pay ZERO latency.
   if (!(process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim()) return {};
 
   // Circuit open after a recent burst of failures → skip the fetch (no per-write latency).
@@ -187,7 +215,7 @@ export async function viewLinkForWrite({ vaultName, note } = {}) {
     cbOpenUntil = 0; // ...incl. an in-flight success that lands after an overlapping burst
     //                  had opened it — otherwise writes keep skipping for the full cooldown
     //                  even though the agent is back (codex review+ pass 2).
-    return { viewLink: data.url };
+    return { viewLink: data.url, viewLinkKind: 'agent' };
   } catch (err) {
     // Only AGENT-HEALTH failures (transport / timeout / 5xx) trip the breaker — NEVER a
     // per-vault 4xx, else one unsupported vault would suppress links for healthy vaults for

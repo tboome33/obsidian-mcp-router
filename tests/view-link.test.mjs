@@ -18,6 +18,7 @@ import {
   noteForWriteResult,
   __resetViewLinkCircuit,
 } from '../src/helpers/view-link.mjs';
+import { verifySmartLinkToken } from '../src/helpers/smart-link.mjs';
 
 let server;
 let baseUrl;
@@ -55,6 +56,8 @@ beforeEach(() => {
   __resetViewLinkCircuit();
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL;
   delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
 });
 
 describe('fetchViewLink — pure transport', () => {
@@ -96,10 +99,11 @@ describe('fetchViewLink — pure transport', () => {
 });
 
 describe('viewLinkForWrite — deterministic injection, never throws', () => {
-  test('returns {viewLink} on success', async () => {
+  test('returns {viewLink} on success (kind: agent)', async () => {
     process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
     const r = await viewLinkForWrite({ vaultName: 'roland', note: 'Voyages/x.md' });
     assert.equal(r.viewLink, 'https://obsidian:pw@abc.trycloudflare.com/');
+    assert.equal(r.viewLinkKind, 'agent');
     assert.ok(!('viewLinkError' in r));
   });
 
@@ -184,6 +188,70 @@ describe('viewLinkForWrite — deterministic injection, never throws', () => {
       assert.ok((await viewLinkForWrite({ vaultName: 'zzz', note: 'x.md' })).viewLinkError);
     }
     assert.equal(attempts(), 4, '4xx must not open the breaker — every write still tries');
+  });
+});
+
+describe('viewLinkForWrite — smart-link priority (resolver provider)', () => {
+  const SMART_URL = 'https://open.example.test';
+  const SMART_SECRET = 'fake-test-smart-secret';
+
+  test('smart link configured → viewLink is the resolver URL, kind smart, ZERO fetch', async () => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL;
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl; // agent ALSO configured — smart wins
+    const r = await viewLinkForWrite({ vaultName: 'roland', note: 'Voyages/x.md' });
+    assert.equal(r.viewLinkKind, 'smart');
+    assert.ok(!('viewLinkError' in r));
+    assert.match(r.viewLink, /^https:\/\/open\.example\.test\/o\/[A-Za-z0-9_.-]+$/);
+    // The embedded token round-trips to the written note.
+    const token = r.viewLink.slice(r.viewLink.indexOf('/o/') + 3);
+    assert.deepEqual(verifySmartLinkToken({ token, secret: SMART_SECRET }), {
+      ok: true,
+      vault: 'roland',
+      note: 'Voyages/x.md',
+    });
+    assert.equal(received.length, 0, 'smart link must NOT hit the view-agent');
+  });
+
+  test('smart link works WITHOUT a view-agent (no agent URL set)', async () => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL;
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
+    const r = await viewLinkForWrite({ vaultName: 'roland', note: 'a.md' });
+    assert.equal(r.viewLinkKind, 'smart');
+    assert.ok(r.viewLink.startsWith(`${SMART_URL}/o/`));
+    assert.equal(received.length, 0);
+  });
+
+  test('housekeeping (wiki-meta/) writes stay silent even with smart links on', async () => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL;
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
+    assert.deepEqual(await viewLinkForWrite({ vaultName: 'roland', note: 'wiki-meta/log.md' }), {});
+    assert.equal(received.length, 0);
+  });
+
+  test('HALF-configured smart link (URL only) → falls back to the view-agent', async () => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL; // no secret → gate closed
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    const r = await viewLinkForWrite({ vaultName: 'roland', note: 'a.md' });
+    assert.equal(r.viewLink, 'https://obsidian:pw@abc.trycloudflare.com/');
+    assert.equal(r.viewLinkKind, 'agent');
+    assert.equal(received.filter((x) => x.url.startsWith('/view')).length, 1);
+  });
+
+  test('regression: smart env unset → behavior unchanged (silent {} with no provider)', async () => {
+    const r = await viewLinkForWrite({ vaultName: 'roland', note: 'a.md' });
+    assert.deepEqual(r, {});
+    assert.equal(received.length, 0);
+  });
+
+  test('never-throws: truthy NON-STRING vaultName with smart links on → silent {}, no throw', async () => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL;
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
+    // A truthy non-string vault would make buildSmartLinkToken throw — the guard must
+    // reject it BEFORE the smart branch so a successful write never becomes a tool error.
+    const r = await viewLinkForWrite({ vaultName: { name: 'roland' }, note: 'a.md' });
+    assert.deepEqual(r, {});
+    assert.equal(received.length, 0);
   });
 });
 

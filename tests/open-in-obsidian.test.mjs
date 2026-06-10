@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import { openInObsidianTool } from '../src/tools/open-in-obsidian.mjs';
+import { verifySmartLinkToken } from '../src/helpers/smart-link.mjs';
 
 let server;
 let baseUrl;
@@ -38,12 +39,18 @@ before(async () => {
 
 after(() => {
   server.close();
-  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL; // self-sufficient: don't leak to later files
+  // self-sufficient: don't leak to later files
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
 });
 
 beforeEach(() => {
   received.length = 0;
-  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL; // bridge-path tests must NOT see a view-agent
+  // bridge-path tests must NOT see a view-agent nor a smart-link resolver
+  delete process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
+  delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
 });
 
 function makeRegistry(vault) {
@@ -143,6 +150,7 @@ describe('open_in_obsidian — remote view-agent returns a viewLink (determinist
     const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'Voyages/x.md' });
     assert.equal(r.opened, true);
     assert.equal(r.viewLink, 'https://obsidian:pw@vt.trycloudflare.com/');
+    assert.equal(r.viewLinkKind, 'agent');
     const viewHit = received.find((x) => x.url.startsWith('/view'));
     assert.ok(viewHit && viewHit.url.includes('note=Voyages%2Fx.md'), 'hit /view with the note');
     assert.ok(!received.some((x) => x.url.startsWith('/open/')), 'did NOT call the bridge /open');
@@ -162,5 +170,62 @@ describe('open_in_obsidian — remote view-agent returns a viewLink (determinist
     assert.equal(r.opened, true);
     assert.ok(!('viewLink' in r), 'no viewLink when the agent is down');
     assert.ok(received.some((x) => x.url.startsWith('/open/')), 'fell through to the bridge /open');
+  });
+});
+
+describe('open_in_obsidian — smart link takes priority over the view-agent (remote)', () => {
+  const SMART_URL = 'https://open.example.test';
+  const SMART_SECRET = 'fake-test-smart-secret';
+
+  beforeEach(() => {
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_URL = SMART_URL;
+    process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
+  });
+
+  test('smart + agent configured → smart viewLink, ZERO network (no /view, no /open)', async () => {
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'Voyages/x.md' });
+    assert.equal(r.opened, true);
+    assert.equal(r.vault, 'test');
+    assert.equal(r.path, 'Voyages/x.md');
+    assert.equal(r.viewLinkKind, 'smart');
+    assert.ok(r.viewLink.startsWith(`${SMART_URL}/o/`));
+    const token = r.viewLink.slice(r.viewLink.indexOf('/o/') + 3);
+    assert.deepEqual(verifySmartLinkToken({ token, secret: SMART_SECRET }), {
+      ok: true,
+      vault: 'test',
+      note: 'Voyages/x.md',
+    });
+    assert.equal(received.length, 0, 'no view-agent call, no bridge call — pure HMAC');
+    assert.ok(!('anchor' in r), 'no anchor field when none requested');
+  });
+
+  test('smart link keeps the remote anchor contract: anchorApplied:false', async () => {
+    const r = await openInObsidianTool(makeRegistry(localVault()), {
+      path: 'wiki/foo.md',
+      anchor: '#Section 2',
+    });
+    assert.equal(r.viewLinkKind, 'smart');
+    assert.equal(r.anchor, '#Section 2');
+    assert.equal(r.anchorApplied, false);
+    assert.equal(received.length, 0);
+  });
+
+  test('half-configured smart link (secret missing) → existing agent path, kind agent', async () => {
+    delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/foo.md' });
+    assert.equal(r.viewLink, 'https://obsidian:pw@vt.trycloudflare.com/');
+    assert.equal(r.viewLinkKind, 'agent');
+    assert.ok(received.some((x) => x.url.startsWith('/view')));
+  });
+
+  test('regression: neither provider configured → bridge navigate, no viewLink fields', async () => {
+    delete process.env.OBSIDIAN_ROUTER_SMART_LINK_URL;
+    delete process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET;
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/foo.md' });
+    assert.equal(r.opened, true);
+    assert.ok(!('viewLink' in r) && !('viewLinkKind' in r));
+    assert.ok(received.some((x) => x.url.startsWith('/open/')), 'bridge /open as before');
   });
 });
