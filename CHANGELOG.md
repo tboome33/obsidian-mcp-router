@@ -18,7 +18,7 @@ The multi-device answer to "which open-link do I give?" — local mirror vs stre
 
 ### Tests
 
-- **`tests/smart-link.test.mjs`** (new, +16) — build/verify round-trip, expiry/tamper rejection, URL shape, gating, and the pinned cross-implementation vector. **`tests/view-link.test.mjs`** / **`tests/open-in-obsidian.test.mjs`** — +10 (smart-priority routing, no-fetch assertion, never-throws guard, env-off regression). Full suite **1772 → 1803** green.
+- **`tests/smart-link.test.mjs`** (new) — build/verify round-trip, expiry/tamper rejection, strict canonical token shape (malleability hardening), URL shape, gating, and the pinned cross-implementation vector; plus smart-priority / never-throws / existence-check / env-off-regression coverage across **`tests/view-link.test.mjs`** and **`tests/open-in-obsidian.test.mjs`**. Full suite **1772 → 1814** green.
 
 ## [0.30.1] — 2026-06-09 — `open_in_obsidian`: honour the anchor contract on the remote view-link path
 

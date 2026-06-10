@@ -26,8 +26,13 @@
  * couldn't see anyway). → "show me a note" yields the link whichever tool the AI reaches for
  * (get_view_link OR open_in_obsidian) — the deterministic complement to the write-time
  * `viewLink` auto-injection (which only fires on writes, not reads).
+ *
+ * Configuring smart links signals a REMOTE deployment: do NOT set
+ * OBSIDIAN_ROUTER_SMART_LINK_URL / OBSIDIAN_ROUTER_SMART_LINK_SECRET on a purely
+ * local router — this tool would hand back a link (`opened: false`,
+ * `delivered: 'link'`) instead of navigating your local Obsidian.
  */
-import { openInObsidian } from '../rest-client.mjs';
+import { openInObsidian, getFileContent, RestApiError } from '../rest-client.mjs';
 import { fetchViewLink } from '../helpers/view-link.mjs';
 import { buildSmartLink, smartLinkEnabled } from '../helpers/smart-link.mjs';
 
@@ -44,15 +49,38 @@ export async function openInObsidianTool(registry, args = {}) {
   const vault = registry.resolveVault(name);
 
   // REMOTE deployment, PRIORITY 1 — smart link (resolver configured): return the stable
-  // signed URL computed locally (pure HMAC, zero network — nothing to fall through from).
-  // The resolver page decides AT CLICK TIME, on the clicking device, between a local
-  // Obsidian mirror, the obsidian:// deep link, and the streamed GUI. Same anchor
-  // contract as the view-agent branch below: remote links can't deep-link a heading.
+  // signed URL (pure HMAC, no resolver round-trip). The resolver page decides AT CLICK
+  // TIME, on the clicking device, between a local Obsidian mirror, the obsidian:// deep
+  // link, and the streamed GUI. Same anchor contract as the view-agent branch below:
+  // remote links can't deep-link a heading.
+  //
+  // EXISTENCE GUARD (review codex P2 + reviewer I2): the other branches surface a
+  // missing note as an error (bridge /open 404s, the agent navigates a real note) —
+  // signing a link to a non-existent note would silently regress that. So check the
+  // note against the vault's Local REST API first: 404 → throw (pre-smart parity).
+  // Any OTHER failure (vault offline, timeout, auth) must NOT block the link — the
+  // link is still the right deliverable; it just carries an explicit "unverified" hint.
   if (smartLinkEnabled(process.env)) {
+    let unverified = false;
+    try {
+      await getFileContent(vault, filePath);
+    } catch (err) {
+      if (err instanceof RestApiError && err.kind === 'not_found') {
+        // Rethrow the ORIGINAL RestApiError (message customized) so the CallTool
+        // wrapper keeps the machine-readable kind/hint classification — wrapping in
+        // a plain Error degraded it to "unknown" (review+ pass 2, codex P2).
+        err.message = `Note not found: ${filePath} (vault: ${vault.name})`;
+        throw err;
+      }
+      unverified = true;
+    }
     return {
       vault: vault.name,
       path: filePath,
-      opened: true,
+      // Nothing was navigated server-side — the link IS the deliverable. The old
+      // `opened: true` here was a lie (review codex P2 + reviewer I2).
+      opened: false,
+      delivered: 'link',
       viewLink: buildSmartLink({
         baseUrl: process.env.OBSIDIAN_ROUTER_SMART_LINK_URL,
         vault: vault.name,
@@ -64,7 +92,8 @@ export async function openInObsidianTool(registry, args = {}) {
       hint:
         'Remote vault — open this smart link to view the note; it resolves on the clicking ' +
         'device (local Obsidian mirror if present, otherwise the live streamed GUI).' +
-        (anchor ? ' The note opens at the top — heading anchors are not deep-linkable here.' : ''),
+        (anchor ? ' The note opens at the top — heading anchors are not deep-linkable here.' : '') +
+        (unverified ? ' (existence non vérifiée — vault injoignable au moment de la demande)' : ''),
     };
   }
 

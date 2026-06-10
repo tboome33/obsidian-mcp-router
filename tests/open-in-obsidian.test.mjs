@@ -28,6 +28,16 @@ before(async () => {
     } else if (req.url.startsWith('/open/')) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end('<!doctype html>Opened in Obsidian.');
+    } else if (req.url.startsWith('/vault/')) {
+      // Local REST API note GET — used by the smart-link branch's existence check.
+      // Paths containing "missing" simulate a non-existent note (404).
+      if (decodeURIComponent(req.url).includes('missing')) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ errorCode: 40400, message: 'File does not exist.' }));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/markdown' });
+        res.end('# fake note content');
+      }
     } else {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('not found');
@@ -182,10 +192,12 @@ describe('open_in_obsidian — smart link takes priority over the view-agent (re
     process.env.OBSIDIAN_ROUTER_SMART_LINK_SECRET = SMART_SECRET;
   });
 
-  test('smart + agent configured → smart viewLink, ZERO network (no /view, no /open)', async () => {
+  test('smart + agent configured → smart viewLink, opened:false + delivered:link, no /view no /open', async () => {
     process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = baseUrl;
     const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'Voyages/x.md' });
-    assert.equal(r.opened, true);
+    // Nothing was navigated server-side — the link is the deliverable (review codex P2 + I2).
+    assert.equal(r.opened, false);
+    assert.equal(r.delivered, 'link');
     assert.equal(r.vault, 'test');
     assert.equal(r.path, 'Voyages/x.md');
     assert.equal(r.viewLinkKind, 'smart');
@@ -196,7 +208,8 @@ describe('open_in_obsidian — smart link takes priority over the view-agent (re
       vault: 'test',
       note: 'Voyages/x.md',
     });
-    assert.equal(received.length, 0, 'no view-agent call, no bridge call — pure HMAC');
+    assert.ok(!received.some((x) => x.url.startsWith('/view')), 'no view-agent call');
+    assert.ok(!received.some((x) => x.url.startsWith('/open/')), 'no bridge /open call');
     assert.ok(!('anchor' in r), 'no anchor field when none requested');
   });
 
@@ -208,7 +221,36 @@ describe('open_in_obsidian — smart link takes priority over the view-agent (re
     assert.equal(r.viewLinkKind, 'smart');
     assert.equal(r.anchor, '#Section 2');
     assert.equal(r.anchorApplied, false);
-    assert.equal(received.length, 0);
+    assert.ok(!received.some((x) => x.url.startsWith('/view') || x.url.startsWith('/open/')));
+  });
+
+  test('existence verified (REST 200) → link delivered, no "unverified" hint', async () => {
+    const r = await openInObsidianTool(makeRegistry(localVault()), { path: 'Voyages/x.md' });
+    assert.equal(r.opened, false);
+    assert.equal(r.delivered, 'link');
+    assert.equal(r.viewLinkKind, 'smart');
+    const check = received.find((x) => x.url.startsWith('/vault/'));
+    assert.ok(check, 'existence check hit the Local REST API');
+    assert.equal(check.method, 'GET');
+    assert.equal(check.url, '/vault/Voyages/x.md');
+    assert.ok(!r.hint.includes('non vérifiée'), 'verified note carries no unverified hint');
+  });
+
+  test('note does not exist (REST 404) → throws Note not found, no link', async () => {
+    await assert.rejects(
+      () => openInObsidianTool(makeRegistry(localVault()), { path: 'wiki/missing.md' }),
+      /Note not found: wiki\/missing\.md/,
+    );
+  });
+
+  test('REST unreachable → link still delivered, with the "existence non vérifiée" hint', async () => {
+    const dead = { type: 'local', name: 'dead', baseUrl: 'http://127.0.0.1:1', timeoutMs: 2000 };
+    const r = await openInObsidianTool(makeRegistry(dead), { path: 'wiki/foo.md' });
+    assert.equal(r.opened, false);
+    assert.equal(r.delivered, 'link');
+    assert.equal(r.viewLinkKind, 'smart');
+    assert.ok(r.viewLink.startsWith(`${SMART_URL}/o/`));
+    assert.match(r.hint, /existence non vérifiée — vault injoignable/);
   });
 
   test('half-configured smart link (secret missing) → existing agent path, kind agent', async () => {

@@ -6,6 +6,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 
 import {
   buildSmartLinkToken,
@@ -98,6 +99,79 @@ describe('buildSmartLinkToken / verifySmartLinkToken — round-trip', () => {
     assert.throws(() => buildSmartLinkToken({ note: 'a.md', secret: SECRET }), /vault/);
     assert.throws(() => buildSmartLinkToken({ vault: 'r', secret: SECRET }), /note/);
     assert.throws(() => buildSmartLinkToken({ vault: 'r', note: 'a.md' }), /secret/);
+  });
+});
+
+describe('verifySmartLinkToken — strict canonical shape (malleability hardening, codex P3)', () => {
+  // Node's Buffer.from(s, 'base64url') is lenient (classic +/ alphabet, = padding,
+  // stray chars ignored) — these non-canonical spellings of a VALID token used to
+  // verify. They must all be rejected as 'malformed' now.
+  const token = buildSmartLinkToken({ vault: 'r', note: 'a.md', secret: SECRET, nowSeconds: 100 });
+  const [payload, sig] = token.split('.');
+
+  test('the canonical token itself still verifies (sanity)', () => {
+    assert.equal(verifySmartLinkToken({ token, secret: SECRET, nowSeconds: 100 }).ok, true);
+  });
+
+  test('token with a trailing dot (`<token>.`) → malformed', () => {
+    assert.deepEqual(verifySmartLinkToken({ token: `${token}.`, secret: SECRET, nowSeconds: 100 }), {
+      ok: false,
+      reason: 'malformed',
+    });
+  });
+
+  test('padded signature (`<sig>===`) → malformed', () => {
+    assert.deepEqual(
+      verifySmartLinkToken({ token: `${payload}.${sig}===`, secret: SECRET, nowSeconds: 100 }),
+      { ok: false, reason: 'malformed' },
+    );
+  });
+
+  test('base64-CLASSIC signature of the SAME digest bytes → malformed', () => {
+    // Same HMAC digest, encoded with the classic alphabet + padding instead of
+    // base64url — Buffer.from(.., 'base64url') used to decode it to the same
+    // bytes, so it verified. The strict charset gate kills it before decoding.
+    const classicSig = createHmac('sha256', SECRET).update(payload).digest('base64');
+    assert.notEqual(classicSig, sig, 'vector sanity: classic encoding differs from base64url');
+    assert.deepEqual(
+      verifySmartLinkToken({ token: `${payload}.${classicSig}`, secret: SECRET, nowSeconds: 100 }),
+      { ok: false, reason: 'malformed' },
+    );
+  });
+
+  test('signature containing "+" or "/" (classic alphabet chars) → malformed', () => {
+    for (const badSig of ['ab+cd', 'ab/cd', `${sig.slice(0, -1)}+`, `${sig.slice(0, -1)}/`]) {
+      assert.deepEqual(
+        verifySmartLinkToken({ token: `${payload}.${badSig}`, secret: SECRET, nowSeconds: 100 }),
+        { ok: false, reason: 'malformed' },
+        `sig ${JSON.stringify(badSig)} must be rejected as malformed`,
+      );
+    }
+  });
+
+  test('3 segments → malformed', () => {
+    for (const bad of ['a.b.c', `${payload}.${sig}.${sig}`, `${payload}..${sig}`]) {
+      assert.deepEqual(verifySmartLinkToken({ token: bad, secret: SECRET, nowSeconds: 100 }), {
+        ok: false,
+        reason: 'malformed',
+      });
+    }
+  });
+
+  test('empty segment → malformed', () => {
+    for (const bad of ['.', `.${sig}`, `${payload}.`, '..']) {
+      assert.deepEqual(verifySmartLinkToken({ token: bad, secret: SECRET, nowSeconds: 100 }), {
+        ok: false,
+        reason: 'malformed',
+      });
+    }
+  });
+
+  test('padded payload (`<payload>=`) → malformed', () => {
+    assert.deepEqual(
+      verifySmartLinkToken({ token: `${payload}=.${sig}`, secret: SECRET, nowSeconds: 100 }),
+      { ok: false, reason: 'malformed' },
+    );
   });
 });
 

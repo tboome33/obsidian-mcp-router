@@ -51,8 +51,23 @@ export function buildSmartLinkToken({
   return `${payload}.${sig}`;
 }
 
+/** Canonical base64url segment — what buildSmartLinkToken emits, nothing else. */
+const B64URL_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
 /**
- * Verify a smart-link token. Constant-time signature comparison, then expiry check.
+ * Verify a smart-link token. Strict canonical-shape check, then constant-time
+ * signature comparison, then expiry check.
+ *
+ * MALLEABILITY hardening (codex P3): Node's `Buffer.from(s, 'base64url')` is
+ * LENIENT — it accepts the classic `+/` alphabet, `=` padding, and ignores stray
+ * characters — so a naive decode-then-compare admits infinitely many non-canonical
+ * spellings of a valid token (`<token>.`, `<sig>===`, base64-classic sigs, ...).
+ * Two gates make every non-canonical form unverifiable BY CONSTRUCTION:
+ *  1. shape: exactly 2 dot-separated segments, each non-empty and strictly
+ *     base64url (`[A-Za-z0-9_-]+`) — rejected as 'malformed' before any decode;
+ *  2. the signature comparison is over the canonical base64url STRINGS (the
+ *     expected sig is re-encoded canonically), not over decoded bytes.
+ *
  * @param {object}  opts
  * @param {string}  opts.token
  * @param {string}  opts.secret
@@ -67,14 +82,23 @@ export function verifySmartLinkToken({
   if (typeof token !== 'string' || typeof secret !== 'string' || !secret) {
     return { ok: false, reason: 'malformed' };
   }
-  const dot = token.indexOf('.');
-  if (dot <= 0 || dot === token.length - 1) return { ok: false, reason: 'malformed' };
-  const payload = token.slice(0, dot);
-  const sig = token.slice(dot + 1);
+  // Strict shape FIRST (before any decoding): exactly 2 segments, no empty
+  // segment, canonical base64url charset only. See malleability note above.
+  const segments = token.split('.');
+  if (segments.length !== 2 || !segments.every((s) => B64URL_SEGMENT.test(s))) {
+    return { ok: false, reason: 'malformed' };
+  }
+  const [payload, sig] = segments;
 
-  // Signature FIRST (before parsing anything) — never JSON.parse unauthenticated input.
-  const expected = createHmac('sha256', secret).update(payload).digest();
-  const given = Buffer.from(sig, 'base64url');
+  // Signature SECOND (before parsing anything) — never JSON.parse unauthenticated
+  // input. Compare the canonical base64url STRINGS via timingSafeEqual on their
+  // utf8 buffers: the expected side is re-encoded canonically, so any non-canonical
+  // spelling of the same digest bytes is unequal by construction.
+  const expected = Buffer.from(
+    createHmac('sha256', secret).update(payload).digest('base64url'),
+    'utf8',
+  );
+  const given = Buffer.from(sig, 'utf8');
   // Length is not secret; timingSafeEqual requires equal lengths anyway.
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
     return { ok: false, reason: 'bad-signature' };
