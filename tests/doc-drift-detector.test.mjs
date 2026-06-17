@@ -179,6 +179,27 @@ describe('detectDocDrift — version drift cases', () => {
     assert.ok(report.issues.some((i) => i.kind === 'index-version'));
   });
 
+  test('unrelated vault (no wiki/<project>/ folder) → no drift even with a stale index (TradingView regression 2026-06-17)', () => {
+    writePackage('2.0.0');
+    fs.writeFileSync(path.join(repoDir, 'CHANGELOG.md'), '## [2.0.0] — d');
+    // A router-scaffolded vault that does NOT document THIS project: it has
+    // its own wiki-meta/index.md (stale wrt our version) but no
+    // wiki/my-project/. Must NOT be flagged — the index-version check used to
+    // leak onto every such vault once the real project vault was up to date.
+    const otherVault = fs.mkdtempSync(path.join(workDir, 'othervault-'));
+    fs.mkdirSync(path.join(otherVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(
+      path.join(otherVault, 'wiki-meta', 'index.md'),
+      'TradingView vault index — no router content, no v2.0.0 mention',
+    );
+    const report = detectDocDrift(repoDir, otherVault);
+    assert.equal(
+      report.issues.length,
+      0,
+      `unrelated vault must not drift; got: ${JSON.stringify(report.issues)}`,
+    );
+  });
+
   test('project-router-version: frontmatter `current-version` mismatch', () => {
     writePackage('3.0.0');
     fs.writeFileSync(path.join(vaultDir, 'wiki', 'my-project', 'project-router.md'),

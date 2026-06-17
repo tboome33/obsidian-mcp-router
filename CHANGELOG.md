@@ -6,6 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.31.2] — 2026-06-17 — doc-drift detector: scope to vaults that document the project
+
+### Fixed
+
+- **`doc-drift-detector` no longer flags unrelated vaults.** The SessionStart `vault-doc-startup-check` reports the first candidate vault with drift; once the project's own vault was up to date, the loop fell through and the `index-version` check flagged an *unrelated* router-scaffolded vault (e.g. a TradingView vault) for "wiki-meta/index.md doesn't mention vX.Y.Z" — it never does, it has zero router content. The detector now gates on `wiki/<projectSlug>/` existing: a vault that doesn't host the project's wiki folder returns no drift. Checks #1/#3/#4 were already guarded by their project-specific pages existing; #2 (index) was the only leak. +1 regression test (`doc-drift-detector.test.mjs`).
+
 ## [0.31.1] — 2026-06-17 — youtube_to_markdown: yt-dlp caption fallback
 
 ### Added

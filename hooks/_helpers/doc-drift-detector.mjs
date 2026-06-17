@@ -298,6 +298,24 @@ export function detectDocDrift(repoCwd, vaultPath, opts = {}) {
   }
 
   // -----------------------------------------------------------------
+  // 0) GATE — does this vault actually DOCUMENT this project?
+  // -----------------------------------------------------------------
+  // A vault is a drift target for this project only if it hosts the
+  // project's wiki folder (`wiki/<projectSlug>/`). Without this gate the
+  // `index-version` check (#2) keys solely on `wiki-meta/index.md`, which
+  // EVERY router-scaffolded vault has (TradingView, smile, …) — so once the
+  // real project vault is up to date, the SessionStart hook's
+  // "first-candidate-with-drift" loop falls through and flags an unrelated
+  // vault for "index doesn't mention vX.Y.Z" (it never mentions it — it has
+  // zero router content). Checks #1/#3/#4 are already guarded by their
+  // project-specific pages existing under this folder; #2 was the only leak.
+  // Bug surfaced 2026-06-17: TradingView's index flagged for v0.31.1.
+  const projectDir = path.join(vaultPath, 'wiki', projectSlug);
+  if (!fs.existsSync(projectDir)) {
+    return { vaultPath, projectSlug, currentVersion, issues };
+  }
+
+  // -----------------------------------------------------------------
   // 1) Wiki changelog — current version + cumulative window
   // -----------------------------------------------------------------
   const wikiChangelogPath = path.join(vaultPath, 'wiki', projectSlug, 'router-changelog.md');
