@@ -533,7 +533,7 @@ const TOOLS = [
   {
     name: 'youtube_to_markdown',
     description:
-      'Convert a YouTube video page to markdown — includes the transcript when one is available. URL must be http(s); private/loopback hosts are refused (SSRF guard).',
+      'Convert a YouTube video page to markdown — includes the transcript when one is available. Falls back to yt-dlp caption extraction when the primary (MarkItDown) path fails; the fallback needs yt-dlp on PATH (or YTDLP_PATH) and degrades with a clear error if it is absent. URL must be http(s); private/loopback hosts are refused (SSRF guard).',
     inputSchema: {
       type: 'object',
       properties: {

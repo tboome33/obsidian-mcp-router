@@ -21,6 +21,7 @@
  *   stay useful for ingestion.
  */
 import { toMarkdown, fromRepo } from '../markdownify/markitdown.mjs';
+import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 
 function assertString(value, fieldName) {
@@ -119,8 +120,46 @@ function mathPreservingTransform(buffer, ctx = {}) {
 
 /* ---------- URL-input tools (YouTube, Bing, generic webpage) ---------- */
 
-export async function youtubeToMarkdown(_registry, { url } = {}) {
-  return convertUrl(url);
+/**
+ * YouTube → markdown with a yt-dlp caption fallback.
+ *
+ * The primary path is MarkItDown's YouTubeConverter (page scrape +
+ * youtube-transcript-api), which is fragile — it returns "fetch failed" on
+ * videos that DO have captions (observed twice on watch?v=iYG5tiFfK3E). When
+ * it throws, we retry via yt-dlp, which is far more robust at reaching caption
+ * tracks. The contract is unchanged: still a plain markdown string, still no
+ * vault writes (yt-dlp writes only to a private temp dir, cleaned up after).
+ *
+ * `assertString` runs BEFORE the try so a missing `url` fails cleanly with the
+ * standard "Missing required argument" error instead of triggering a fallback
+ * against `undefined`. The `_deps` bag is an injection seam for tests
+ * (production callers pass only `(registry, args)`).
+ */
+export async function youtubeToMarkdown(_registry, { url } = {}, _deps = {}) {
+  assertString(url, 'url');
+  const primary = _deps.primary || ((u) => convertUrl(u));
+  const fallback = _deps.fallback || ((u) => fetchYoutubeTranscriptViaYtdlp(u));
+  try {
+    return await primary(url);
+  } catch (primaryErr) {
+    // Only escalate to the yt-dlp fallback for real YouTube VIDEO URLs (a
+    // parseable 11-char id — not just a youtube.com host, which still exposes
+    // open-redirect endpoints). yt-dlp follows redirects + resolves its own DNS
+    // outside the router's per-hop SSRF guard, so handing it arbitrary URLs
+    // would be a broader network gadget than this tool's name implies (codex
+    // P1). Non-video URLs keep the original MarkItDown behaviour.
+    if (!isYoutubeVideoUrl(url)) throw primaryErr;
+    try {
+      return await fallback(url);
+    } catch (fallbackErr) {
+      // Surface BOTH failures so the user can tell the primary path broke AND
+      // the fallback didn't save it (e.g. yt-dlp absent, or no captions).
+      throw new Error(
+        `${primaryErr?.message ?? 'Unknown error'}\n\n` +
+          `yt-dlp fallback also failed: ${fallbackErr?.message ?? 'Unknown error'}`,
+      );
+    }
+  }
 }
 
 export async function bingSearchToMarkdown(_registry, { url } = {}) {
