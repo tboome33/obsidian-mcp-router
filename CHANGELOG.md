@@ -6,6 +6,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.31.1] — 2026-06-17 — youtube_to_markdown: yt-dlp caption fallback
+
+### Added
+
+- **`youtube_to_markdown` yt-dlp caption fallback** (`src/markdownify/youtube-fallback.mjs`). MarkItDown's YouTube path (page scrape + youtube-transcript-api) returns "fetch failed" on videos that DO have captions; on primary failure the tool now extracts captions via `yt-dlp` (`--skip-download`, native VTT/SRT, parsed in-process — no ffmpeg needed) and assembles a markdown transcript. Contract unchanged — plain markdown string, no vault writes (yt-dlp writes only to a private mkdtemp, cleaned up). New env vars **`YTDLP_PATH`** + **`OBSIDIAN_ROUTER_VIDEO_SUBLANGS`** (default `en.*,en`); the fallback degrades with a clear install hint when yt-dlp is absent.
+
+### Security
+
+- The yt-dlp fallback is bounded to real YouTube **video** URLs: it extracts a canonical 11-char video id and hands yt-dlp a freshly-rebuilt `https://www.youtube.com/watch?v=<id>` — **never the caller's raw URL**. This closes the SSRF surface (open-redirect `youtube.com/redirect?q=…`, query-param smuggling, playlist fan-out) that a host-only check would leave open. Subprocess hardening mirrors the existing converters: `execFile` (never `shell:true`), `--` separator, `maxBuffer`, `AbortSignal.timeout`, plus a 10 MB cap on the caption-file read (yt-dlp writes outside the stdout `maxBuffer`). Surfaced + closed across a 4-pass `/review+` (Code Reviewer + codex review).
+
+### Tests
+
+- **`tests/youtube-fallback.test.mjs`** (new, 23 cases — node:test + dependency-injection seams). Full suite **1814 → 1837** green.
+
 ## [0.31.0] — 2026-06-10 — Smart links: durable per-note links with device-side resolution
 
 The multi-device answer to "which open-link do I give?" — local mirror vs streamed GUI. The server can never know which device will click (the same chat is read from a desktop with a synced mirror AND a phone), so the choice moves to click time: the router emits ONE stable https smart link per note; a tiny resolver page (private saas repo) probes the clicking device's OWN loopback for a live mirror (presence heartbeats from the bridge v0.4.0, replicated by LiveSync), falls back to an `obsidian://` deep link, then to the streamed GUI via the view-agent (tunnel mounted lazily at that moment). Full design: vault note `smart-link-resolver`.
