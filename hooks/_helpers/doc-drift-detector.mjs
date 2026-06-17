@@ -279,6 +279,11 @@ export function listCatalogBasenames(repoCwd, dirName) {
  * path. Returns { vaultPath, issues: DriftIssue[] }. An empty issues
  * array means "no drift".
  *
+ * Early-returns with NO issues when the vault does not host
+ * `wiki/<projectSlug>/` — i.e. it doesn't document this project, so it must
+ * not be flagged (esp. by the index-version check, which keys on
+ * `wiki-meta/index.md`, present in every router-scaffolded vault).
+ *
  * Options:
  *   - cumulativeWindow: number — how many of the most recent CHANGELOG
  *     versions to require in the vault wiki changelog. Default 5.
@@ -311,7 +316,7 @@ export function detectDocDrift(repoCwd, vaultPath, opts = {}) {
   // project-specific pages existing under this folder; #2 was the only leak.
   // Bug surfaced 2026-06-17: TradingView's index flagged for v0.31.1.
   const projectDir = path.join(vaultPath, 'wiki', projectSlug);
-  if (!fs.existsSync(projectDir)) {
+  if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
     return { vaultPath, projectSlug, currentVersion, issues };
   }
 

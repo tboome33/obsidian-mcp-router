@@ -188,9 +188,13 @@ describe('detectDocDrift — version drift cases', () => {
     // leak onto every such vault once the real project vault was up to date.
     const otherVault = fs.mkdtempSync(path.join(workDir, 'othervault-'));
     fs.mkdirSync(path.join(otherVault, 'wiki-meta'), { recursive: true });
+    // The fixture MUST NOT contain the current version token (`v2.0.0`):
+    // otherwise the old `index-version` regex matches it, treats the vault as
+    // up to date, and this test passes even WITHOUT the gate — testing
+    // nothing. Keep it version-free so removing the gate makes it fail.
     fs.writeFileSync(
       path.join(otherVault, 'wiki-meta', 'index.md'),
-      'TradingView vault index — no router content, no v2.0.0 mention',
+      'TradingView vault index — only trading notes, zero router content',
     );
     const report = detectDocDrift(repoDir, otherVault);
     assert.equal(

@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.31.3] — 2026-06-17 — doc-drift detector: hardening + a regression test that actually guards
+
+`/review+` follow-up to v0.31.2 (Code Reviewer + codex). codex caught that the v0.31.2 regression test didn't actually test the fix.
+
+### Fixed
+
+- **`doc-drift-detector` gate hardened** — the `wiki/<projectSlug>/` existence check now also requires it to be a directory (`statSync().isDirectory()`, parity with `listCatalogBasenames`), and `detectDocDrift`'s JSDoc documents the early-return precondition.
+
+### Tests
+
+- **The v0.31.2 regression test now actually guards the regression.** Its fixture string accidentally contained the current version token (`v2.0.0`), so the old `index-version` regex matched it and the test passed even *without* the gate — testing nothing. The fixture is now version-token-free; **verified empirically** (gate disabled → test fails with the `index-version` issue; gate restored → green). Full suite 1838 green.
+
 ## [0.31.2] — 2026-06-17 — doc-drift detector: scope to vaults that document the project
 
 ### Fixed
