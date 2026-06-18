@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-06-18 — Hot Reload propagation + `--force` preserves plugin `data.json`
+
+The router half of the bridge v0.5.0 click-to-open foreground work: make pjeby's [Hot Reload](https://github.com/pjeby/hot-reload) propagate to vaults "like the bridge", so `deploy:all` live-reloads the bridge in every open vault with no manual "Reload app" per instance. Plus a `--force` data-loss fix surfaced by that work's `/review+`.
+
+### Added
+
+- **`hot-reload` in `OPTIONAL_PLUGINS`.** `setup-vault.mjs` now clones pjeby's Hot Reload from the reference vault (when present) and enables it in the target's `community-plugins.json`, exactly like the other optional plugins. Combined with the `.hotreload` marker the bridge's `deploy.mjs` drops into its own folder (bridge v0.5.0+), a Hot-Reload-equipped vault auto-reloads the bridge whenever its `main.js` changes on disk — i.e. on every `deploy:all`. Propagation rides the existing recursive plugin copy (`fs.cpSync`), which carries the dotfile marker. *Not* added to the shipped `reference-vault-skeleton/community-plugins.json`: Hot Reload is GitHub-only (not in the marketplace) and the skeleton ships no binaries, so a skeleton entry would just be enabled-but-absent; propagation is via the clone-from-reference path instead.
+
+### Fixed
+
+- **`setupVault` (`--force`) now preserves each plugin's `data.json`.** The full-bootstrap clone loop did a bare `rmSync` + re-clone with no preservation, so re-running `setup-vault.mjs <vault> --force` (a documented repair action) silently reset per-vault plugin settings to the reference's defaults. Now that the bridge's `data.json` holds real user settings (the v0.5.0 `foregroundViaProtocol` toggle, plus the presence heartbeat config), that clobber would lose them. The loop now reads → preserves → writes-back `data.json` on a `--force` re-clone for every non-credential plugin — matching what `syncPluginsMode` already did (the two paths had diverged). The REST API's `data.json` stays exempt (it's intentionally re-derived by the port/apiKey adoption logic). Caught by `/review+`.
+
 ## [0.31.3] — 2026-06-17 — doc-drift detector: hardening + a regression test that actually guards
 
 `/review+` follow-up to v0.31.2 (Code Reviewer + codex). codex caught that the v0.31.2 regression test didn't actually test the fix.

@@ -113,7 +113,15 @@ const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
 // existing reference vault that already has them. This divergence is
 // intentional: the skeleton ships an opinionated minimal-but-useful set, the
 // script accommodates any user-grown reference.
-const OPTIONAL_PLUGINS = ['smart-connections', 'templater-obsidian', 'dataview', 'obsidian-bases', 'obsidian-quiet-outline'];
+// `hot-reload` (pjeby) auto-reloads a plugin whose files change on disk IF its
+// folder carries a `.hotreload` (or `.git`) marker. The bridge's deploy.mjs
+// drops that marker into the bridge folder, so once hot-reload is installed +
+// enabled, the BRIDGE repo's `npm run deploy:all` reloads the bridge live in
+// every open vault — no manual "Reload app" per instance. (Retrofitting the
+// marker onto an already-synced vault needs `--sync-plugins --force`; the
+// non-force path skips folders that already exist.) See project-bridge
+// "Hot Reload".
+const OPTIONAL_PLUGINS = ['smart-connections', 'templater-obsidian', 'dataview', 'obsidian-bases', 'obsidian-quiet-outline', 'hot-reload'];
 const PLUGINS_TO_CLONE = [...REQUIRED_PLUGINS, ...OPTIONAL_PLUGINS];
 
 // --- Reference-vault skeleton: shipped with the repo, used by --bootstrap-reference --
@@ -1911,8 +1919,27 @@ function setupVault(vaultPath, opts = {}) {
       warn(`Plugin already present, skipping clone: ${p} (use --force to overwrite)`);
       continue;
     }
-    if (fs.existsSync(dstPlugin)) fs.rmSync(dstPlugin, { recursive: true, force: true });
-    copyDirRecursive(srcPlugin, dstPlugin);
+    if (fs.existsSync(dstPlugin)) {
+      // --force re-clone: preserve the target's local data.json (per-vault user
+      // settings — e.g. mcp-router-bridge's `foregroundViaProtocol` + presence).
+      // syncPluginsMode already does this; this clone path MUST match or
+      // re-running `setup-vault.mjs <vault> --force` (a documented repair action)
+      // silently resets those prefs to defaults. The REST API's data.json is
+      // exempt: it's intentionally (re)written by the port/apiKey adoption logic
+      // a few lines below, so preserving it here would be pointless.
+      let preservedData = null;
+      const dataJsonPath = path.join(dstPlugin, 'data.json');
+      if (!CREDENTIAL_LEAK_PLUGINS.has(p) && fs.existsSync(dataJsonPath)) {
+        try { preservedData = fs.readFileSync(dataJsonPath); } catch {}
+      }
+      fs.rmSync(dstPlugin, { recursive: true, force: true });
+      copyDirRecursive(srcPlugin, dstPlugin);
+      if (preservedData) {
+        try { fs.writeFileSync(dataJsonPath, preservedData); } catch {}
+      }
+    } else {
+      copyDirRecursive(srcPlugin, dstPlugin);
+    }
     ok(`Cloned plugin: ${p}`);
   }
 
