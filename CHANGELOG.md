@@ -6,6 +6,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-07-03 — OKF interop: export any wiki subset as an Open Knowledge Format bundle + conformance validator
+
+First brick of the OKF interoperability commitment (see the vault page `okf-interop`): Google's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog) (spec v0.1) formalizes the Karpathy LLM-wiki pattern the router has implemented all along. Decision on record: **OKF is the exchange format at the edges** — the vault's internal structure (wikilinks, `wiki-meta/` scaffolds, newest-last log) never changes; everything the standard requires is regenerated at export time. Import (`mount`/`ingest`) and the headless-app integration are the next bricks.
+
+### Added
+
+- **`wiki-export --target okf`** — export a scoped subset of a vault's wiki as a conformant OKF v0.1 knowledge bundle under `wiki-meta/exports/okf/<name>/`, ready to `git init` + push and be consumed by any OKF-aware agent. New pure helper **`src/helpers/okf-bundle-exporter.mjs`** (`buildOkfBundle`, deterministic, injected clock): filename slugification to Google's reference-implementation charset (no spaces/accents — `Cours 2 - Réseaux.md` → `cours-2-reseaux.md`) with full link remapping; `[[wikilink]]`/`![[embed]]` → **relative** markdown links (the spec recommends root-absolute `/x.md`, but Google's own reference agent forbids leading `/` — we side with the implementation); frontmatter mapping emitting the **four keys Google's tooling requires in practice** (`type`, `title`, `description`, `timestamp` — the spec alone requires only `type`), `url`→`resource`, newest known date → `timestamp`, `description` synthesized from the first paragraph when missing, unmapped keys (e.g. `source_type`) preserved as legal OKF extensions; one `index.md` per directory grouped by `type` (`* [Title](file.md) - description`), bundle-root index carrying only `okf_version: '0.1'`; newest-first `log.md`; reserved-name (`index.md`/`log.md` as content pages, §3.1) and slug-collision renames; optional self-installing agent README (`--readme-agent`, the Cole Medin bundle pattern). Dangling links to non-exported pages are kept and reported — legal OKF ("not-yet-written knowledge", §5.3). Heading/block anchors and embeds are lossy conversions and are reported, never silent.
+- **`wiki-lint --okf <path>`** — Check M: validate any bundle (our exports or third-party clones) against the spec's **three conformance rules** via the new pure helper **`src/helpers/okf-conformance-checker.mjs`** (`checkOkfConformance`). Google ships no standalone validator — this is one of the ecosystem's first. Severity calibrated to OKF's permissive-consumption philosophy: rule violations are errors; spec-by-example deviations (index heading level, bullet marker, log order) are warnings; reference-implementation compat gaps (filename charset, the 4-key requirement) are warnings/info.
+
+### Tests
+
+- **`tests/okf-bundle-exporter.test.mjs`** + **`tests/okf-conformance-checker.test.mjs`** (61 new cases), including the cross-check that every exporter-produced bundle passes the conformance checker with zero errors. Full suite **1838 → 1899** green.
+
 ## [0.32.0] — 2026-06-18 — Hot Reload propagation + `--force` preserves plugin `data.json`
 
 The router half of the bridge v0.5.0 click-to-open foreground work: make pjeby's [Hot Reload](https://github.com/pjeby/hot-reload) propagate to vaults "like the bridge", so `deploy:all` live-reloads the bridge in every open vault with no manual "Reload app" per instance. Plus a `--force` data-loss fix surfaced by that work's `/review+`.

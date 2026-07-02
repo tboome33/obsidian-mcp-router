@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.32.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.33.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -165,7 +165,7 @@ A small workflow on top of the router for an LLM-maintained, structured markdown
 | `/obsidian-router:obsidian-bases` | Create/edit Obsidian `.base` files (database-like views over frontmatter) | *"create a base for X"*, *"task tracker base"* / *"crée une base pour X"*, *"base task tracker"* |
 | `/obsidian-router:wiki-graph` | Build a typed knowledge-graph JSON from the vault (Understand-Anything schema; feeds the native graph viewer) | *"build the wiki graph"*, *"generate the knowledge graph"* / *"construis le graphe du wiki"*, *"génère le knowledge graph"* |
 | `/obsidian-router:wiki-tour` | Generate an ordered pedagogical reading tour from the vault's link topology | *"give me a tour of this vault"*, *"where do I start"* / *"fais-moi un tour du vault"*, *"par où je commence"* |
-| `/obsidian-router:wiki-export` | Export the vault as a portable single file (`llms.txt` / `llms-full.txt`) | *"export the wiki as llms.txt"*, *"make a portable export"* / *"exporte le wiki en llms.txt"*, *"fais un export portable"* |
+| `/obsidian-router:wiki-export` | Export the vault as a portable single file (`llms.txt` / `llms-full.txt`) or as an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1, shareable with any OKF-aware agent) | *"export the wiki as llms.txt"*, *"export as an OKF bundle"* / *"exporte le wiki en llms.txt"*, *"exporte en bundle OKF"* |
 | `/obsidian-router:wiki-refresh-digests` | Regenerate the per-page digest sidecars (concepts/claims/keywords) used by `wiki-lint --deep` and the graph | *"refresh the digests"*, *"rebuild page digests"* / *"rafraîchis les digests"*, *"régénère les digests de page"* |
 | `/obsidian-router:who-is-speaking` | Identify the current family member in a shared vault and lock routing per-member | *"who is speaking"*, *"it's Karine"* / *"qui parle"*, *"c'est Karine"* |
 
@@ -801,7 +801,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.32.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.33.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -921,7 +921,7 @@ Un petit workflow par-dessus le router pour une base de connaissances en markdow
 | `/obsidian-router:obsidian-bases` | Crée/édite des fichiers `.base` Obsidian (vues database sur frontmatter) | *"crée une base pour X"*, *"base task tracker"* / *"create a base for X"*, *"task tracker base"* |
 | `/obsidian-router:wiki-graph` | Construit un knowledge-graph JSON typé depuis le vault (schéma Understand-Anything ; alimente le viewer graphe natif) | *"construis le graphe du wiki"*, *"génère le knowledge graph"* / *"build the wiki graph"*, *"generate the knowledge graph"* |
 | `/obsidian-router:wiki-tour` | Génère un parcours de lecture pédagogique ordonné depuis la topologie de liens du vault | *"fais-moi un tour du vault"*, *"par où je commence"* / *"give me a tour of this vault"*, *"where do I start"* |
-| `/obsidian-router:wiki-export` | Exporte le vault en fichier unique portable (`llms.txt` / `llms-full.txt`) | *"exporte le wiki en llms.txt"*, *"fais un export portable"* / *"export the wiki as llms.txt"*, *"make a portable export"* |
+| `/obsidian-router:wiki-export` | Exporte le vault en fichier unique portable (`llms.txt` / `llms-full.txt`) ou en **bundle OKF** (Open Knowledge Format v0.1 de Google, partageable avec tout agent compatible OKF) | *"exporte le wiki en llms.txt"*, *"exporte en bundle OKF"* / *"export the wiki as llms.txt"*, *"export as an OKF bundle"* |
 | `/obsidian-router:wiki-refresh-digests` | Régénère les digests sidecar par page (concepts/claims/keywords) utilisés par `wiki-lint --deep` et le graphe | *"rafraîchis les digests"*, *"régénère les digests de page"* / *"refresh the digests"*, *"rebuild page digests"* |
 | `/obsidian-router:who-is-speaking` | Identifie le membre de la famille courant dans un vault partagé et lock le routing par membre | *"qui parle"*, *"c'est Karine"* / *"who is speaking"*, *"it's Karine"* |
 

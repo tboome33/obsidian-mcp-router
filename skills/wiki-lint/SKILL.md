@@ -9,15 +9,17 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 
 ## Modes
 
-The skill has two modes :
+The skill has three modes :
 
 - **Default (structural)** — runs Checks A through H. Cheap, scans page metadata + wikilinks + citations only. The right mode for routine health checks.
 - **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L, which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
+- **`--okf <path>` (v0.33.0+)** — runs Check M ONLY : validates an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1) against the spec's three conformance rules. The path is either a bundle exported by `wiki-export --target okf` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned repo containing a third-party bundle. This mode doesn't lint the wiki itself.
 
 Trigger phrases :
 - "lint the wiki" / "health check" / "audit my wiki" → default mode
 - "deep lint" / "find redundant concepts" / "detect contradictions" / "wiki-lint --deep" → deep mode
 - "lint the wiki and fix what you can" → default mode with auto-fix offered for ERRORs
+- "validate this OKF bundle" / "is this bundle conformant" / "check OKF conformance" / "wiki-lint --okf <path>" → OKF mode
 
 A related skill, `wiki-refresh-digests`, regenerates stale digests detected by Check I (see `skills/wiki-refresh-digests/SKILL.md`).
 
@@ -122,6 +124,27 @@ For each pair of digests with `conceptOverlap ≥ 0.4` (i.e. they share at least
 3. If NEITHER page references the other → WARNING `missing-wikilink` : "pages X and Y share concepts [list] but don't reference each other ; consider adding `[[X]]` or `[[Y]]` to the other page".
 
 This check often surfaces genuine knowledge-graph gaps that humans miss when adding new pages incrementally.
+
+### 2c. Check M (--okf mode only): OKF bundle conformance (v0.33.0+)
+
+Validates a bundle against the Open Knowledge Format v0.1 conformance rules (SPEC.md §9). Google ships no standalone validator — this check is one of the ecosystem's first.
+
+1. **Collect the bundle files.** For a bundle inside a vault (`wiki-meta/exports/okf/<name>/`) : recursive `list_files` + parallel `get_file`. For a local directory outside a vault : read from disk. Build `[{ path, content }]` with bundle-relative posix paths (strip the bundle root prefix).
+2. **Run the checker** :
+
+```javascript
+import { checkOkfConformance } from 'src/helpers/okf-conformance-checker.mjs';
+const result = checkOkfConformance(files);
+// → { conformant, errors, warnings, info, stats }
+```
+
+3. **Severity mapping** (calibrated to OKF's permissive-consumption philosophy — deliberate, don't tighten it) :
+   - **ERRORS** = violations of the three conformance rules only : `frontmatter-missing` (rule 1), `type-missing` (rule 2), `index-frontmatter-forbidden` / `index-frontmatter-extra-keys` / `log-date-not-iso` (rule 3).
+   - **WARNINGS** = deviations the spec shows by example but never marks MUST : `index-heading-level`, `index-bullet-marker`, `index-bullet-form`, `index-unexpected-content`, `log-not-newest-first`, `log-frontmatter-unexpected` ; plus compat signals : `filename-charset` (Google's reference tooling rejects spaces/accents), `wikilink-syntax` (Obsidian-only links in bodies).
+   - **INFO** = `reference-impl-keys` (Google's reference implementation wants `type`+`title`+`description`+`timestamp`), `okf-version-missing`, `root-index-missing`, `readme-without-frontmatter`.
+4. **Verdict line** : `✅ conformant OKF v0.1` when zero errors, `❌ NOT conformant` otherwise — then the standard severity tables. A bundle with warnings is still conformant ; say so explicitly (consumers MUST tolerate those deviations).
+
+This check is read-only like everything else in the skill. Do NOT offer to auto-fix a third-party bundle (it's someone else's artifact) ; for bundles produced by our own `wiki-export --target okf`, an error means an exporter bug — report it as such.
 
 ### 3. Render the report
 
