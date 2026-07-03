@@ -6,6 +6,32 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-07-03 — Vault wizard W1: engine flags (`--dry-run/--json`, `--name`, `--from-vault`, `--plugins`, `--wiki-mode`, `--claude-workspace`, `--open`, `--probe`, `--git-init`)
+
+Layer 0 of the guided vault-creation wizard (spec + plan under `docs/superpowers/`). Every flag is ADDITIVE — a plain `setup-vault.mjs <path>` bootstrap is byte-identical to before (the entire prior test suite stays green).
+
+### Added
+
+- **`--dry-run [--json]`** — build the complete provisioning plan (resolved name/slug/path/source/plugins/theme/wiki-mode + ordered steps + warnings) WITHOUT touching the filesystem. New pure planning module `scripts/vault-plan.mjs` (`buildProvisionPlan`, `resolveSourceVault`, `resolvePluginProfile`, `knownVaultRoots`, `isPathWithinRoots`) — imported by the CLI and (next, W2) by the `plan_vault` MCP tool, so the wizard lives in the plan DATA, not any harness. `--json` emits the machine-readable plan consumed by the `meta-attach-vault` skill's pre-flight.
+- **`--name "<Display>"`** — display name → lowercased slug; writes `vaultNames` when it differs from the path basename; the plan flags slug collisions against the registry.
+- **`--from-vault <slug|path>` [`--with-folder-tree`]** — clone config ONLY from an existing vault (plugins, snippets, appearance, `.smart-env`, root `CLAUDE.md`). `workspace.json` and credentialed `data.json` are never copied; the REST API port + API key are always regenerated. `--with-folder-tree` recreates the source's `wiki/` folder tree EMPTY — structure without a single note.
+- **`--from-skeleton`** — scaffold from the shipped skeleton + download the bridge (delegates to the existing `--bootstrap-reference` flow, whose distinct end-state — a skeleton to finish in Obsidian — is intentional: the skeleton ships no marketplace plugin binaries).
+- **`--bare`** — minimal vault: the 2 REQUIRED plugins only.
+- **`--plugins recommended|minimal|custom:a,b,c`** — plugin profile (default `recommended` = the source's enabled set, per the W0 derive-from-source refactor).
+- **`--wiki-mode personal|research|business|code|domain` [`--wiki-sections "A,B,C"`]** — seed `index.md`/`overview.md` per mode. `domain` lays out the sections the frontend passes explicitly (engine stays 100% deterministic — no AI). No `--wiki-mode` → the generic template, unchanged.
+- **`--claude-workspace`** — enable the router plugin in the bound workspace's `.claude/settings.json` (idempotent merge, preserves other keys; needs `--link-workspace`). Verifies the global marketplace registration read-only and guides the user rather than blind-writing global settings.
+- **`--open`** — launch Obsidian on the new vault via `obsidian://open`.
+- **`--probe [--probe-timeout N]`** — poll the REST port for a health verdict (non-zero exit if red; expected red until the user clicks "Trust author and enable plugins").
+- **`--git-init`** — `git init` + initial commit inside the new vault (off by default — vaults often live on Google Drive / iCloud).
+
+### Blocked / deferred
+
+- **`--theme "<name>"`** is parsed and recorded in the plan but NOT applied — the `cssTheme` write lands with the in-flight Lot 2 Blue Topaz chantier. A real run warns rather than silently ignoring the choice.
+
+### Tests
+
+- **`tests/vault-plan.test.mjs`** (15) + **`tests/setup-vault-wizard-flags.test.mjs`** (16) — the latter includes a `--from-vault` security suite (zero secret copied, `workspace.json` excluded, no note content, folder-tree only with the flag) and a backward-compat plain-bootstrap proof. Full suite **1943 → 1974** green.
+
 ## [0.33.1] — 2026-07-03 — Vault wizard W0: clone `Documentation/` root docs + derive the plugin list from the source
 
 Prerequisite fixes for the guided vault-creation wizard (spec `docs/superpowers/specs/2026-07-03-vault-wizard-design.md`, plan `docs/superpowers/plans/2026-07-03-vault-wizard.md`), landed as their own release before any wizard feature. No behavior change for existing invocations.

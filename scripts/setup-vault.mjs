@@ -28,12 +28,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
+import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { samePath, canonicalPath } from './path-helpers.mjs';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
+import {
+  buildProvisionPlan,
+  resolveSourceVault,
+  resolvePluginProfile,
+} from './vault-plan.mjs';
 
 // --- Config path: user-home, NOT relative to this script ---------------------
 // The script lives inside the router repo (which is git-tracked and may live
@@ -1449,7 +1455,42 @@ function appendGitignore(vaultPath) {
 //
 // Does NOT touch CLAUDE.md — that's owned by the `meta-attach-vault`
 // conventions-picker step (and by the `wiki` skill for the wiki block).
-function scaffoldWikiMeta(vaultPath) {
+
+// Wizard `--wiki-mode` section seeds. The engine stays 100% deterministic: for
+// the `domain` mode the frontend (LLM) translates the user's one-line domain
+// description into a flat section list passed via `--wiki-sections`, and the
+// engine simply lays those out. When no mode is given, scaffoldWikiMeta uses
+// the shipped generic template verbatim (unchanged pre-wizard behaviour).
+const WIKI_MODE_SECTIONS = {
+  personal: ['People', 'Concepts', 'Decisions', 'References', 'Projects'],
+  research: ['Papers', 'Concepts', 'Hypotheses', 'Methodology', 'Findings'],
+  business: ['Competitors', 'Clients', 'Decisions', 'Stakeholders', 'Meetings'],
+  code: ['Codebases', 'Architecture Decisions (ADR)', 'Runbooks', 'Concepts', 'Sessions'],
+};
+
+function buildModeIndexContent(mode, sections) {
+  const list = (mode === 'domain' && sections && sections.length)
+    ? sections
+    : (WIKI_MODE_SECTIONS[mode] || WIKI_MODE_SECTIONS.personal);
+  let body =
+    '---\n' +
+    'type: index\n' +
+    'title: "Wiki Index"\n' +
+    `mode: ${mode}\n` +
+    '---\n\n' +
+    '# Wiki Index\n\n' +
+    'This file is the catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.\n\n' +
+    '## Overview\n\n' +
+    '- [[overview]] — what this wiki covers\n' +
+    '- [[hot]] — recent-context cache\n' +
+    '- [[log]] — append-only operation history\n';
+  for (const header of list) {
+    body += `\n## ${header}\n\n_One row per page._\n`;
+  }
+  return body;
+}
+
+function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
   const wikiDir = path.join(vaultPath, 'wiki');
   const sessionsDir = path.join(wikiDir, 'sessions');
   const metaDir = path.join(vaultPath, 'wiki-meta');
@@ -1473,18 +1514,29 @@ function scaffoldWikiMeta(vaultPath) {
       preserved++;
       continue;
     }
-    const src = path.join(templatesDir, scaffold);
-    if (!fs.existsSync(src)) {
-      // Loud-fail rather than silently skipping: if WIKI_META_SCAFFOLDS gains
-      // a new entry without a matching template file, this catches it on the
-      // next bootstrap instead of letting the partial scaffold ship silently.
-      // (review+ pass 1 Reviewer A NIT #5)
-      warn(`Wiki-meta scaffold template missing at ${src} — not creating ${scaffold} in target vault. Add the template file to fix.`);
-      continue;
+    // --wiki-mode: seed index.md programmatically from the mode's section list
+    // (and stamp overview.md's frontmatter). Without a mode, use the shipped
+    // template verbatim — the pre-wizard default.
+    let content;
+    if (scaffold === 'index.md' && wikiOpts.mode) {
+      content = buildModeIndexContent(wikiOpts.mode, wikiOpts.sections);
+    } else {
+      const src = path.join(templatesDir, scaffold);
+      if (!fs.existsSync(src)) {
+        // Loud-fail rather than silently skipping: if WIKI_META_SCAFFOLDS gains
+        // a new entry without a matching template file, this catches it on the
+        // next bootstrap instead of letting the partial scaffold ship silently.
+        // (review+ pass 1 Reviewer A NIT #5)
+        warn(`Wiki-meta scaffold template missing at ${src} — not creating ${scaffold} in target vault. Add the template file to fix.`);
+        continue;
+      }
+      content = fs.readFileSync(src, 'utf8')
+        .replace(/\{\{TIMESTAMP\}\}/g, timestamp)
+        .replace(/\{\{VAULT_PATH\}\}/g, vaultPath);
+      if (scaffold === 'overview.md' && wikiOpts.mode) {
+        content = content.replace(/^type: overview$/m, `type: overview\nmode: ${wikiOpts.mode}`);
+      }
     }
-    const content = fs.readFileSync(src, 'utf8')
-      .replace(/\{\{TIMESTAMP\}\}/g, timestamp)
-      .replace(/\{\{VAULT_PATH\}\}/g, vaultPath);
     fs.writeFileSync(dst, content);
     created++;
   }
@@ -1841,17 +1893,151 @@ async function bootstrapReference(targetPath, opts = {}) {
   console.log('');
 }
 
+// --with-folder-tree (with --from-vault): recreate the source vault's `wiki/`
+// DIRECTORY tree in the target, empty — no `.md` files, no content. Keeps the
+// organizational skeleton without cloning any notes (config-only copy, per Q3).
+export function recreateWikiFolderTree(sourceVault, targetVault) {
+  const srcWiki = path.join(sourceVault, 'wiki');
+  if (!fs.existsSync(srcWiki)) return 0;
+  let made = 0;
+  const walk = (relDir) => {
+    const abs = path.join(srcWiki, relDir);
+    let entries = [];
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const rel = path.join(relDir, e.name);
+      fs.mkdirSync(path.join(targetVault, 'wiki', rel), { recursive: true });
+      made++;
+      walk(rel);
+    }
+  };
+  walk('');
+  if (made > 0) ok(`Recreated ${made} empty wiki/ folder(s) from source (no notes copied)`);
+  return made;
+}
+
+// --claude-workspace: enable the router plugin in the WORKSPACE's
+// `.claude/settings.json` (idempotent merge, preserving other keys). Closes the
+// gap where a fresh vault got its slash commands via cloneRootDocs but the
+// bound code workspace never did. Best-effort verification of the global
+// marketplace registration — WARNS rather than blind-writing the user's global
+// settings (the correct marketplace source is not guessable safely).
+const ROUTER_PLUGIN_KEY = 'obsidian-router@obsidian-mcp-router-marketplace';
+const ROUTER_MARKETPLACE = 'obsidian-mcp-router-marketplace';
+function writeClaudeWorkspaceSettings(workspacePath) {
+  const dir = path.join(workspacePath, '.claude');
+  const file = path.join(dir, 'settings.json');
+  let settings = {};
+  if (fs.existsSync(file)) {
+    try { settings = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { settings = {}; }
+  }
+  if (!settings.enabledPlugins || typeof settings.enabledPlugins !== 'object' || Array.isArray(settings.enabledPlugins)) {
+    settings.enabledPlugins = {};
+  }
+  const already = settings.enabledPlugins[ROUTER_PLUGIN_KEY] === true;
+  settings.enabledPlugins[ROUTER_PLUGIN_KEY] = true;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
+  if (already) info(`Workspace .claude/settings.json already enabled the router plugin — no change.`);
+  else ok(`Enabled the router plugin in ${file} (~10k context tokens/session).`);
+
+  // Verify the marketplace is known globally (read-only). If not, guide the
+  // user rather than mutating their global settings with a guessed source.
+  try {
+    const globalSettings = loadUserSettings();
+    const known = globalSettings.extraKnownMarketplaces
+      && Object.prototype.hasOwnProperty.call(globalSettings.extraKnownMarketplaces, ROUTER_MARKETPLACE);
+    if (!known) {
+      warn(`Marketplace "${ROUTER_MARKETPLACE}" is not in ~/.claude/settings.json extraKnownMarketplaces.\n` +
+        `   The workspace plugin toggle only takes effect once Claude Code knows the marketplace.\n` +
+        `   Register it once (interactive session): /plugin marketplace add tboome33/obsidian-mcp-router`);
+    }
+  } catch { /* global settings unreadable — skip the advisory */ }
+  return { file, changed: !already };
+}
+
+// --open: launch Obsidian on the freshly-provisioned vault via its protocol
+// handler. Best-effort + guarded: a failure never aborts (the vault is already
+// provisioned). Returns the URI regardless so the caller can print it.
+export function obsidianOpenUri(obsidianName) {
+  return `obsidian://open?vault=${encodeURIComponent(obsidianName)}`;
+}
+function openObsidianVault(obsidianName) {
+  const uri = obsidianOpenUri(obsidianName);
+  try {
+    if (process.platform === 'win32') {
+      // `cmd /c start "" <uri>` dispatches the protocol handler. (Not spawning a
+      // .cmd file — this is cmd.exe with /c, which is allowed.)
+      spawnSync('cmd', ['/c', 'start', '', uri], { stdio: 'ignore' });
+    } else if (process.platform === 'darwin') {
+      spawnSync('open', [uri], { stdio: 'ignore' });
+    } else {
+      spawnSync('xdg-open', [uri], { stdio: 'ignore' });
+    }
+    ok(`Opened Obsidian on vault "${obsidianName}"`);
+  } catch (e) {
+    warn(`Could not auto-open Obsidian (${e.message}). Open manually: ${uri}`);
+  }
+  return uri;
+}
+
+// --probe: poll the vault's unencrypted loopback REST port until it answers (or
+// times out), then verdict. Reachability of the insecure HTTP server means
+// Local REST API is up in an opened + trusted vault; the bridge's /open route
+// rides on the same server. A red verdict (timeout) is expected until the user
+// opens Obsidian + clicks "Trust author and enable plugins", so this is the
+// wizard's post-open health check. Returns { ok, insecurePort, attempts }.
+async function probeVaultHealth(insecurePort, { timeoutMs = 15000, intervalMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  const tryOnce = () => new Promise((resolve) => {
+    const req = http.get(
+      { host: '127.0.0.1', port: insecurePort, path: '/', timeout: 2000 },
+      (res) => { res.resume(); resolve(true); });
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+  while (Date.now() < deadline) {
+    attempts++;
+    if (await tryOnce()) return { ok: true, insecurePort, attempts };
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return { ok: false, insecurePort, attempts };
+}
+
 function setupVault(vaultPath, opts = {}) {
   const cfg = loadConfig();
-  if (!cfg.referenceVault) {
+  const wizard = opts.wizard || {};
+
+  // Resolve the effective source vault + plugin set from the wizard opts. The
+  // DEFAULT (no wizard flags) is source 'reference' → cfg.referenceVault and
+  // profile 'recommended' → resolvePluginsToClone(reference), which reproduces
+  // the pre-wizard clone behaviour byte-for-byte. `--from-vault` swaps the
+  // source vault; `--bare` forces the minimal (REQUIRED-only) profile;
+  // `--plugins` overrides the profile.
+  const srcResolved = resolveSourceVault(
+    { source: wizard.source || 'reference', fromVault: wizard.fromVault }, cfg, SKELETON_DIR);
+  if (srcResolved.error) fail(srcResolved.error);
+  const sourceVault = srcResolved.sourceVault;
+  const sourceKind = srcResolved.kind;
+  if (!sourceVault) {
     fail(
       `No reference vault configured.\n  ` +
       `Run first:\n  ` +
       c('cyan', `  node "${fileURLToPath(import.meta.url)}" --init-reference <path-to-vault-with-plugins-installed>`)
     );
   }
-  if (!fs.existsSync(cfg.referenceVault)) {
-    fail(`Reference vault no longer exists: ${cfg.referenceVault}`);
+  if (!fs.existsSync(sourceVault)) {
+    fail(`Source vault no longer exists: ${sourceVault}`);
+  }
+  const pluginProfile = sourceKind === 'bare' ? 'minimal' : (wizard.pluginProfile || 'recommended');
+
+  // --theme is recorded but NOT applied yet — the cloneThemes()/cssTheme write
+  // lands with the Lot 2 Blue Topaz chantier. Warn loudly rather than silently
+  // ignoring the choice so the user isn't surprised the theme didn't change.
+  if (wizard.theme) {
+    warn(`--theme "${wizard.theme}" is not applied yet (waiting on the Lot 2 theme chantier). The vault keeps the source's theme.`);
   }
 
   // v0.12.7 — early validation of `--link-workspace <ws-path>` (review+ pass 1
@@ -1911,13 +2097,16 @@ function setupVault(vaultPath, opts = {}) {
     } catch {}
   }
 
-  // Clone plugins. The set is derived from the reference vault's own
-  // community-plugins.json (union REQUIRED_PLUGINS) — see plugin-resolver.mjs.
+  // Clone plugins. The set comes from the resolved wizard profile: 'recommended'
+  // (default) derives from the source vault's community-plugins.json (union
+  // REQUIRED — see plugin-resolver.mjs), 'minimal' is REQUIRED-only (also what
+  // --bare forces), 'custom:a,b,c' is an explicit list ∪ REQUIRED.
   const targetObsidian = path.join(abs, '.obsidian');
   fs.mkdirSync(path.join(targetObsidian, 'plugins'), { recursive: true });
-  const pluginsToClone = resolvePluginsToClone(cfg.referenceVault, REQUIRED_PLUGINS);
+  const pluginsToClone = resolvePluginProfile(
+    pluginProfile, wizard.pluginCustom, sourceVault, REQUIRED_PLUGINS);
   for (const p of pluginsToClone) {
-    const srcPlugin = path.join(cfg.referenceVault, '.obsidian', 'plugins', p);
+    const srcPlugin = path.join(sourceVault, '.obsidian', 'plugins', p);
     const dstPlugin = path.join(targetObsidian, 'plugins', p);
     if (!fs.existsSync(srcPlugin)) {
       if (REQUIRED_PLUGINS.includes(p)) fail(`Required plugin missing in reference vault: ${p}`);
@@ -1983,27 +2172,57 @@ function setupVault(vaultPath, opts = {}) {
   patchRestApiData(abs, port, apiKey);
   ensureCommunityPlugins(abs, pluginsToClone);
 
-  // Clone Smart Connections config + embedding cache from reference
-  cloneSmartEnv(cfg.referenceVault, abs, opts.force);
+  // Clone Smart Connections config + embedding cache from the source vault.
+  cloneSmartEnv(sourceVault, abs, opts.force);
 
   // Clone Obsidian CSS snippets (no-task-strikethrough.css + any others)
   // and patch appearance.json to enable them.
-  cloneSnippets(cfg.referenceVault, abs, opts.force);
+  cloneSnippets(sourceVault, abs, opts.force);
 
-  // Clone root-level docs (README.md etc.) from reference
-  cloneRootDocs(cfg.referenceVault, abs, opts.force);
+  // Clone root-level docs (README.md, Documentation/, .claude) from the source.
+  cloneRootDocs(sourceVault, abs, opts.force);
+
+  // --from-vault: also copy the source's root CLAUDE.md (conventions) when
+  // present — config-only, matching the spec. The reference `.template` keeps
+  // its CLAUDE.md under Documentation/ (already covered by cloneRootDocs), so
+  // this only fires for a from-vault source that keeps one at the root. Never
+  // copies content, workspace.json, or credential data.json (those are handled
+  // by the plugin clone loop, which regenerates the REST API port + key).
+  if (sourceKind === 'from-vault') {
+    const srcClaude = path.join(sourceVault, 'CLAUDE.md');
+    const dstClaude = path.join(abs, 'CLAUDE.md');
+    if (fs.existsSync(srcClaude) && (opts.force || !fs.existsSync(dstClaude))) {
+      fs.copyFileSync(srcClaude, dstClaude);
+      ok('Copied CLAUDE.md from source vault');
+    }
+    if (wizard.withFolderTree) {
+      recreateWikiFolderTree(sourceVault, abs);
+    }
+  }
 
   // Wiki scaffolding (v0.12.7+) — creates wiki/, wiki/sessions/, and the
   // 4 wiki-meta scaffolds so workspace-bound mode works out of the box.
   // Idempotent: existing wiki-meta/*.md files are preserved, missing ones are
   // created. The legacy-layout refusal that protects this step lives earlier
   // (just after `mkdirSync(abs)`) so a legacy vault never gets here.
-  scaffoldWikiMeta(abs);
+  scaffoldWikiMeta(abs, { mode: wizard.wikiMode || undefined, sections: wizard.wikiSections });
 
   // Project config files
   writeEnvFile(abs, apiKey, port, opts.force);
   writeMcpJson(abs, opts.force);
   appendGitignore(abs);
+
+  // --name: record a custom display slug in vaultNames when it differs from the
+  // basename-derived default, so the router (and the workspace link below)
+  // resolve this vault by the chosen name. Written BEFORE saveConfig + the link
+  // block so both pick it up.
+  if (wizard.name) {
+    const customSlug = wizard.name.toLowerCase();
+    if (customSlug !== defaultNameFromPath(abs)) {
+      cfg.vaultNames = cfg.vaultNames || {};
+      cfg.vaultNames[abs] = customSlug;
+    }
+  }
 
   // Persist port registry
   cfg.portRegistry[abs] = port;
@@ -2032,6 +2251,13 @@ function setupVault(vaultPath, opts = {}) {
     });
   }
 
+  // --claude-workspace: enable the router plugin in the bound workspace's
+  // .claude/settings.json (needs a workspace to target).
+  if (wizard.claudeWorkspace) {
+    if (opts.linkWorkspace) writeClaudeWorkspaceSettings(path.resolve(opts.linkWorkspace));
+    else warn('--claude-workspace needs a workspace: pass --link-workspace <path> to target one.');
+  }
+
   console.log('');
   console.log(c('bold', c('green', '✓ Vault setup complete')));
   console.log(`  Path:        ${abs}`);
@@ -2048,6 +2274,18 @@ function setupVault(vaultPath, opts = {}) {
   console.log(`  4. Verify in Settings → Community plugins: MCP Router Bridge is enabled`);
   console.log(`  5. Restart Claude Code in this project to load the new MCP server`);
   console.log('');
+
+  // Return provisioning metadata so the CLI dispatch can drive the optional
+  // tail (--open / --probe / --git-init). Callers that ignore the return value
+  // (the pre-wizard code path) are unaffected. insecurePort mirrors the
+  // convention patchRestApiData writes (port + 10).
+  return {
+    abs,
+    port,
+    insecurePort: port + 10,
+    slug: (cfg.vaultNames && cfg.vaultNames[abs]) || defaultNameFromPath(abs),
+    obsidianName: path.basename(abs),
+  };
 }
 
 function syncPluginsMode(vaultPath, opts = {}) {
@@ -2527,6 +2765,31 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
   }
 }
 
+// Human-readable rendering of a buildProvisionPlan() result (the `--dry-run`
+// default output; `--json` prints the raw object instead). Read-only preview —
+// the exact set of steps provision_vault / setupVault will perform.
+function printPlanHuman(plan) {
+  console.log('');
+  console.log(c('bold', 'Proposed plan (dry-run — nothing written):'));
+  console.log(`  Vault:        ${plan.name}  ${c('gray', `(slug: ${plan.slug})`)}`);
+  console.log(`  Path:         ${plan.path}`);
+  console.log(`  Source:       ${plan.source.kind}${plan.source.fromVault ? ` (${plan.source.fromVault})` : ''}`);
+  console.log(`  Plugins:      ${plan.plugins.profile} (${plan.plugins.resolved.length}) — ${plan.plugins.resolved.join(', ')}`);
+  console.log(`  Theme:        ${plan.theme ? plan.theme.name + (plan.theme.blocked ? c('yellow', ' [blocked: Lot 2]') : '') : c('gray', '(unchanged)')}`);
+  console.log(`  Wiki mode:    ${plan.wikiMode.mode}${plan.wikiMode.sections && plan.wikiMode.sections.length ? ` [${plan.wikiMode.sections.join(', ')}]` : ''}`);
+  console.log(`  Workspace CC: ${plan.claudeWorkspace ? 'yes' : 'no'}`);
+  console.log(`  Tail:         ${plan.open ? 'open' : '—'}${plan.probe ? ' + probe' : ''}`);
+  if (plan.warnings.length) {
+    console.log('');
+    console.log(c('yellow', '  Warnings:'));
+    for (const w of plan.warnings) console.log(`    ${c('yellow', '⚠')} [${w.code}] ${w.message}`);
+  }
+  console.log('');
+  console.log(c('bold', '  Steps:'));
+  for (const s of plan.steps) console.log(`    ${c('gray', '·')} ${s}`);
+  console.log('');
+}
+
 const args = process.argv.slice(2);
 if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   console.log(`Usage:
@@ -2606,6 +2869,34 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               with idempotent HTML-comment markers (re-runs
                                                               are no-ops). Add --force to replace an existing
                                                               marker block. Currently shipped: obsidian-vault-links.
+
+  Vault-creation wizard flags (v0.34.0) — additive; a plain bootstrap is unchanged:
+  node setup-vault.mjs <vault-path> --dry-run [--json]        Print the full provisioning plan WITHOUT writing
+                                                              anything. --json emits the machine-readable plan
+                                                              (consumed by the meta-attach-vault skill + the
+                                                              plan_vault MCP tool).
+  ... --name "<Display Name>"                                Display name → slug; writes vaultNames when it
+                                                              differs from the path basename.
+  ... --from-vault <slug|path> [--with-folder-tree]          Clone config ONLY from an existing vault (plugins,
+                                                              snippets, appearance, .smart-env, CLAUDE.md).
+                                                              workspace.json + credential data.json excluded;
+                                                              port + API key regenerated. --with-folder-tree
+                                                              recreates its wiki/ folder tree EMPTY (no notes).
+  ... --from-skeleton                                        Scaffold from the shipped skeleton + download the
+                                                              bridge (delegates to --bootstrap-reference).
+  ... --bare                                                 Minimal vault: the 2 REQUIRED plugins only.
+  ... --plugins recommended|minimal|custom:a,b,c             Plugin profile (default recommended = source set).
+  ... --wiki-mode personal|research|business|code|domain     Seed index.md/overview.md per mode. For 'domain',
+      [--wiki-sections "A,B,C"]                              pass the sections explicitly (engine stays
+                                                              deterministic; the frontend translates the domain).
+  ... --claude-workspace                                     Enable the router plugin in the bound workspace's
+                                                              .claude/settings.json (needs --link-workspace).
+  ... --open                                                 Launch Obsidian on the new vault (obsidian://open).
+  ... --probe [--probe-timeout N]                            Poll the REST port for a health verdict (non-zero
+                                                              exit if red). Expected red until you Trust author.
+  ... --git-init                                             git init + initial commit inside the new vault
+                                                              (off by default — vaults often live on cloud drives).
+  ... --theme "<name>"                                       (BLOCKED — lands with the Lot 2 theme chantier.)
 `);
   process.exit(0);
 }
@@ -3254,6 +3545,21 @@ const force = args.includes('--force');
 const quiet = args.includes('--quiet');
 const regenerate = args.includes('--regenerate');
 
+// Indices of argv tokens consumed as the VALUE of a value-taking flag. The
+// positional vault-path detection below must skip these so a value like
+// `--name "My Vault"` or `--from-vault roland` is never mistaken for the path.
+const consumedValueIdx = new Set();
+function flagValue(name) {
+  const i = args.indexOf(name);
+  if (i === -1) return null;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith('--')) {
+    fail(`${name} requires a value (e.g. \`${name} <value>\`).`);
+  }
+  consumedValueIdx.add(i + 1);
+  return v;
+}
+
 // v0.12.7+ — inline `--link-workspace <ws-path>` flag of the main bootstrap
 // subcommand. When present, setupVault() binds the workspace to the
 // freshly-provisioned vault in one shot (single permission prompt vs. two).
@@ -3267,26 +3573,158 @@ if (lwIdx !== -1) {
     fail('--link-workspace requires a workspace path argument (e.g. `--link-workspace /path/to/repo`).');
   }
   linkWorkspaceFlag = value;
+  consumedValueIdx.add(lwIdx + 1);
 }
 
-// Positional vault arg: skip the value consumed by --link-workspace so a path
-// like `--link-workspace /home/user/proj` is not mistaken for the vault path.
+// --- Wizard flags (W1) -----------------------------------------------------
+// Every one is ADDITIVE: when none are passed, the bootstrap behaves exactly as
+// before (the wizard opts object is threaded through but the default source is
+// 'reference', profile 'recommended', which reproduces the prior clone set).
+const nameFlag = flagValue('--name');
+const fromVaultFlag = flagValue('--from-vault');
+const pluginsFlag = flagValue('--plugins');
+const themeFlag = flagValue('--theme');
+const wikiModeFlag = flagValue('--wiki-mode');
+const wikiSectionsFlag = flagValue('--wiki-sections');
+const probeTimeoutFlag = flagValue('--probe-timeout');
+
+// Template source (mutually exclusive; default 'reference').
+const sourceFlags = [];
+if (fromVaultFlag) sourceFlags.push('--from-vault');
+if (args.includes('--from-skeleton')) sourceFlags.push('--from-skeleton');
+if (args.includes('--bare')) sourceFlags.push('--bare');
+if (sourceFlags.length > 1) {
+  fail(`Choose one template source, not several: ${sourceFlags.join(', ')}.`);
+}
+let sourceKind = 'reference';
+if (fromVaultFlag) sourceKind = 'from-vault';
+else if (args.includes('--from-skeleton')) sourceKind = 'skeleton';
+else if (args.includes('--bare')) sourceKind = 'bare';
+
+// Plugin profile: recommended (default) | minimal | custom:a,b,c
+let pluginProfile = null;
+let pluginCustom = null;
+if (pluginsFlag) {
+  if (pluginsFlag.startsWith('custom:')) {
+    pluginProfile = 'custom';
+    pluginCustom = pluginsFlag.slice('custom:'.length).split(',').map((s) => s.trim()).filter(Boolean);
+  } else if (pluginsFlag === 'recommended' || pluginsFlag === 'minimal') {
+    pluginProfile = pluginsFlag;
+  } else {
+    fail('--plugins must be one of: recommended | minimal | custom:a,b,c');
+  }
+}
+
+if (probeTimeoutFlag !== null && Number.isNaN(Number(probeTimeoutFlag))) {
+  fail('--probe-timeout must be a number of seconds.');
+}
+
+const wizardOpts = {
+  name: nameFlag,
+  source: sourceKind,
+  fromVault: fromVaultFlag,
+  withFolderTree: args.includes('--with-folder-tree'),
+  pluginProfile,
+  pluginCustom,
+  theme: themeFlag,
+  wikiMode: wikiModeFlag,
+  wikiSections: wikiSectionsFlag
+    ? wikiSectionsFlag.split(',').map((s) => s.trim()).filter(Boolean)
+    : null,
+  claudeWorkspace: args.includes('--claude-workspace'),
+  open: args.includes('--open'),
+  probe: args.includes('--probe'),
+  probeTimeout: probeTimeoutFlag ? Number(probeTimeoutFlag) : null,
+  gitInit: args.includes('--git-init'),
+  linkWorkspace: linkWorkspaceFlag,
+};
+
+// Positional vault arg: skip every token consumed as a flag value.
 const vaultArg = args.find((a, i) => {
   if (a.startsWith('--')) return false;
-  if (lwIdx !== -1 && i === lwIdx + 1) return false;
+  if (consumedValueIdx.has(i)) return false;
   return true;
 });
 if (!vaultArg) fail('No vault path provided');
+
+// --dry-run [--json] — build the full provisioning plan WITHOUT mutating
+// anything and print it. Consumed by the wizard skill's pre-flight and by the
+// MCP plan_vault tool (which imports buildProvisionPlan directly).
+if (args.includes('--dry-run')) {
+  const cfg = loadConfig();
+  const plan = buildProvisionPlan({
+    vaultPath: vaultArg,
+    opts: wizardOpts,
+    cfg,
+    requiredPlugins: REQUIRED_PLUGINS,
+    skeletonDir: SKELETON_DIR,
+  });
+  if (args.includes('--json')) console.log(JSON.stringify(plan, null, 2));
+  else printPlanHuman(plan);
+  process.exit(0);
+}
 
 if (args.includes('--sync-plugins')) {
   syncPluginsMode(vaultArg, { force, quiet });
   process.exit(0);
 }
 
-setupVault(vaultArg, { force, regenerate, linkWorkspace: linkWorkspaceFlag });
+// --from-skeleton delegates to the existing bootstrap-reference flow (scaffold
+// the shipped skeleton + download the bridge from GitHub releases). The
+// skeleton ships no marketplace plugin binaries, so REQUIRED plugins are
+// installed in Obsidian on first open — exactly the bootstrap-reference UX. The
+// distinct end-state (a skeleton to finish in Obsidian, not a fully-cloned
+// vault) is why it reuses that path rather than setupVault's clone loop.
+if (wizardOpts.source === 'skeleton') {
+  await bootstrapReference(vaultArg, { force });
+  await new Promise((resolve) => process.stdout.write('', resolve));
+  process.exit(0);
+}
+
+const provisionResult = setupVault(vaultArg, {
+  force,
+  regenerate,
+  linkWorkspace: linkWorkspaceFlag,
+  wizard: wizardOpts,
+});
 
 // v0.18.2 — wire the router hooks now, so a freshly-bootstrapped vault is
 // never left with dormant guards. setupVault() returns (does not exit) on
 // success; on an unsafe-target refusal it exits earlier and we never reach
 // here. Default-on; --no-hooks / OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS skip.
 maybeAutoInstallHooks({ quiet, noHooks: args.includes('--no-hooks') });
+
+// --git-init (opt-in): initialize a git repo in the freshly-scaffolded vault +
+// an initial commit. Off by default (vaults often live under Google Drive /
+// iCloud where a repo is undesirable). Operates ONLY inside the new vault dir.
+if (wizardOpts.gitInit && provisionResult && provisionResult.abs) {
+  const gi = spawnSync('git', ['init'], { cwd: provisionResult.abs, encoding: 'utf8' });
+  if (gi.status === 0) {
+    spawnSync('git', ['add', '-A'], { cwd: provisionResult.abs });
+    spawnSync('git', ['commit', '-m', 'Initial vault scaffold (setup-vault.mjs --git-init)'],
+      { cwd: provisionResult.abs, encoding: 'utf8' });
+    ok(`Initialized a git repo in ${provisionResult.abs}`);
+  } else {
+    warn(`--git-init: \`git init\` failed (${(gi.stderr || gi.error?.message || '').trim()}). Skipped.`);
+  }
+}
+
+// --open + --probe: the wizard's automated tail. --open launches Obsidian on
+// the new vault; --probe polls the REST port for a health verdict (expected red
+// until the user clicks "Trust author and enable plugins"). A red probe exits
+// non-zero so a scripted caller sees the failure.
+if (wizardOpts.open && provisionResult && provisionResult.obsidianName) {
+  openObsidianVault(provisionResult.obsidianName);
+}
+if (wizardOpts.probe && provisionResult && provisionResult.insecurePort) {
+  const timeoutMs = wizardOpts.probeTimeout ? wizardOpts.probeTimeout * 1000 : 15000;
+  info(`Probing REST health on http://127.0.0.1:${provisionResult.insecurePort}/ (timeout ${Math.round(timeoutMs / 1000)}s)…`);
+  const verdict = await probeVaultHealth(provisionResult.insecurePort, { timeoutMs });
+  if (verdict.ok) {
+    ok(`Probe green — Local REST API reachable on port ${provisionResult.insecurePort} (${verdict.attempts} attempt(s)).`);
+  } else {
+    warn(`Probe red — port ${provisionResult.insecurePort} not reachable after ${verdict.attempts} attempt(s).\n` +
+      `   Open Obsidian on the vault + click "Trust author and enable plugins", then re-run with --probe.`);
+    process.exit(3);
+  }
+}

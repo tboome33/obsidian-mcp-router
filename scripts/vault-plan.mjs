@@ -1,0 +1,240 @@
+// Pure planning layer for the vault-creation wizard (layer 0 → layer 1 bridge).
+//
+// Extracted from setup-vault.mjs so it is unit-testable WITHOUT triggering that
+// module's top-level CLI dispatch, and so the MCP tools (`plan_vault` /
+// `provision_vault`, layer 1) can import the SAME resolution logic the CLI uses
+// — the wizard lives in this data, not in any harness. Everything here is
+// read-only: no fs writes, no config mutation, no port allocation.
+//
+// The functions resolve the wizard's "answers → plan" mapping deterministically:
+//   - resolveSourceVault: which vault/skeleton the config + plugins are cloned from
+//   - resolvePluginProfile: recommended | minimal | custom:… → concrete list
+//   - existingSlugs / knownVaultRoots / isPathWithinRoots: collision + security
+//   - buildProvisionPlan: the whole resolved plan (defaults + context + warnings
+//     + ordered human-readable steps) that `--dry-run --json` emits and that
+//     `provision_vault` executes.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { resolvePluginsToClone } from './plugin-resolver.mjs';
+
+// Duplicated from setup-vault.mjs (which duplicates it from src/registry.mjs) —
+// this module is imported by setup-vault.mjs so the slug it computes and the
+// slug the CLI writes MUST agree. Kept here (not imported from setup-vault.mjs)
+// because importing that CLI module runs its dispatch. If you change any copy,
+// change all three and keep tests/*.test.mjs green.
+export function defaultNameFromPath(p) {
+  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
+  const base = (isWindows ? path.win32 : path.posix).basename(p);
+  return base.replace(/^\./, '').toLowerCase();
+}
+
+/**
+ * Map slug → registered vault path, so a new vault's slug can be checked for
+ * collisions against both the portRegistry (by derived slug) and vaultNames
+ * (by explicit custom name).
+ */
+export function existingSlugs(cfg) {
+  const map = new Map();
+  const names = cfg.vaultNames || {};
+  for (const vp of Object.keys(cfg.portRegistry || {})) {
+    const slug = (names[vp] || defaultNameFromPath(vp)).toLowerCase();
+    if (!map.has(slug)) map.set(slug, vp);
+  }
+  // Custom names not in portRegistry (rare, but honor them).
+  for (const [vp, name] of Object.entries(names)) {
+    const slug = String(name).toLowerCase();
+    if (!map.has(slug)) map.set(slug, vp);
+  }
+  return map;
+}
+
+/**
+ * Roots under which provisioning a new vault is allowed: the parent directory
+ * of every registered vault + the reference vault's parent. Used by the layer-1
+ * `provision_vault` path gate — no arbitrary remote-driven mkdir/writes.
+ */
+export function knownVaultRoots(cfg) {
+  const roots = new Set();
+  for (const vp of Object.keys(cfg.portRegistry || {})) {
+    try { roots.add(path.dirname(path.resolve(vp))); } catch { /* skip */ }
+  }
+  if (cfg.referenceVault) {
+    try { roots.add(path.dirname(path.resolve(cfg.referenceVault))); } catch { /* skip */ }
+  }
+  if (cfg.vaultsRoot) {
+    try { roots.add(path.resolve(cfg.vaultsRoot)); } catch { /* skip */ }
+  }
+  return [...roots];
+}
+
+/** True when `abs` is inside (or equal to) one of the given roots. */
+export function isPathWithinRoots(abs, roots) {
+  const a = path.resolve(abs);
+  for (const root of roots) {
+    const r = path.resolve(root);
+    if (a === r) return true;
+    const rel = path.relative(r, a);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve the source vault the config/plugins are cloned from.
+ * @returns {{ kind, sourceVault, fromVault, error }}
+ */
+export function resolveSourceVault({ source = 'reference', fromVault } = {}, cfg = {}, skeletonDir) {
+  if (source === 'from-vault') {
+    if (!fromVault) return { kind: source, error: '--from-vault requires a vault slug or path' };
+    // Slug → registered path, else treat as a direct path.
+    let resolved = null;
+    const bySlug = existingSlugs(cfg).get(String(fromVault).toLowerCase());
+    if (bySlug) resolved = bySlug;
+    else resolved = path.resolve(fromVault);
+    if (!fs.existsSync(resolved)) {
+      return { kind: source, fromVault, error: `--from-vault source not found: ${resolved}` };
+    }
+    if (!fs.existsSync(path.join(resolved, '.obsidian'))) {
+      return { kind: source, fromVault, error: `--from-vault source is not an Obsidian vault (no .obsidian/): ${resolved}` };
+    }
+    return { kind: source, fromVault, sourceVault: resolved };
+  }
+  if (source === 'skeleton') {
+    return { kind: source, sourceVault: skeletonDir };
+  }
+  // 'reference' and 'bare' both clone their (REQUIRED, for bare) plugins from
+  // the configured reference vault.
+  return { kind: source, sourceVault: cfg.referenceVault || null };
+}
+
+/**
+ * Resolve a plugin profile to a concrete clone list.
+ * @param {'recommended'|'minimal'|'custom'} profile
+ * @param {string[]|null} custom explicit plugin ids (for 'custom')
+ * @param {string} sourceVault used for 'recommended' (reads its community-plugins.json)
+ * @param {string[]} requiredPlugins always included
+ */
+export function resolvePluginProfile(profile, custom, sourceVault, requiredPlugins = []) {
+  if (profile === 'minimal') return [...requiredPlugins];
+  if (profile === 'custom') {
+    const seen = new Set();
+    const list = [];
+    for (const p of [...requiredPlugins, ...(custom || [])]) {
+      if (typeof p === 'string' && p && !seen.has(p)) { seen.add(p); list.push(p); }
+    }
+    return list;
+  }
+  // 'recommended' (default): everything the source enables + REQUIRED.
+  if (sourceVault) return resolvePluginsToClone(sourceVault, requiredPlugins);
+  return [...requiredPlugins];
+}
+
+/** Default wiki mode: `code` when a workspace drives the flow, else `personal`. */
+export function defaultWikiMode({ linkWorkspace } = {}) {
+  return linkWorkspace ? 'code' : 'personal';
+}
+
+/**
+ * Build the complete, resolved provisioning plan (read-only). This is what
+ * `--dry-run [--json]` prints and what `provision_vault` executes.
+ */
+export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlugins = [], skeletonDir } = {}) {
+  const warnings = [];
+  const abs = path.resolve(vaultPath);
+  const name = opts.name || defaultNameFromPath(abs);
+  const slug = (opts.name ? opts.name : defaultNameFromPath(abs)).toLowerCase();
+
+  // Slug collision (against a DIFFERENT registered path).
+  const slugs = existingSlugs(cfg);
+  if (slugs.has(slug) && path.resolve(slugs.get(slug)) !== abs) {
+    warnings.push({
+      code: 'slug-collision',
+      message: `Slug "${slug}" already maps to ${slugs.get(slug)}. Pass a distinct --name, or the router will not be able to disambiguate the two vaults.`,
+    });
+  }
+
+  // Source resolution.
+  const src = resolveSourceVault(
+    { source: opts.source || 'reference', fromVault: opts.fromVault }, cfg, skeletonDir);
+  if (src.error) warnings.push({ code: 'source-error', message: src.error });
+
+  // Plugin profile (bare forces minimal).
+  const rawProfile = opts.source === 'bare' ? 'minimal' : (opts.pluginProfile || 'recommended');
+  const resolvedPlugins = resolvePluginProfile(
+    rawProfile, opts.pluginCustom, src.sourceVault, requiredPlugins);
+
+  // Wiki mode.
+  const mode = opts.wikiMode || defaultWikiMode(opts);
+  const wikiMode = { mode, sections: mode === 'domain' ? (opts.wikiSections || []) : undefined };
+  if (mode === 'domain' && (!opts.wikiSections || opts.wikiSections.length === 0)) {
+    warnings.push({
+      code: 'domain-no-sections',
+      message: 'wiki mode "domain" without --wiki-sections — index/overview will use a generic seed.',
+    });
+  }
+
+  // Context.
+  const gitPresent = opts.linkWorkspace
+    ? fs.existsSync(path.join(path.resolve(opts.linkWorkspace), '.git'))
+    : false;
+  const flow = opts.linkWorkspace ? 'workspace-bound' : 'standalone';
+  const context = {
+    flow,
+    gitPresent,
+    referenceConfigured: Boolean(cfg.referenceVault),
+    knownRoots: knownVaultRoots(cfg),
+    existingBinding: null,
+  };
+
+  // Path within known roots? (informational at plan time; enforced by the gate.)
+  if (context.knownRoots.length && !isPathWithinRoots(abs, context.knownRoots)) {
+    warnings.push({
+      code: 'path-outside-known-roots',
+      message: `Target ${abs} is outside all known vault roots. The CLI allows it; the MCP provision_vault tool refuses it unless explicitly opted in.`,
+    });
+  }
+
+  const theme = opts.theme ? { name: opts.theme, blocked: true } : null;
+  if (theme) {
+    warnings.push({
+      code: 'theme-blocked',
+      message: '--theme is not yet applied (waiting on the Lot 2 cloneThemes() chantier). The choice is recorded but the engine will not write cssTheme.',
+    });
+  }
+
+  // Ordered, human-readable provisioning steps (what provision_vault will do).
+  const steps = [];
+  if (!fs.existsSync(abs)) steps.push(`create vault directory ${abs}`);
+  steps.push(`clone ${resolvedPlugins.length} plugin(s): ${resolvedPlugins.join(', ')}`);
+  steps.push('allocate a fresh REST API port + generate a fresh API key');
+  if (src.kind === 'from-vault') {
+    steps.push(`copy config-only from ${src.sourceVault} (exclude workspace.json + credentialed data.json; secrets regenerated)`);
+    if (opts.withFolderTree) steps.push('recreate the source wiki/ folder tree (empty, no notes)');
+  }
+  steps.push('clone .smart-env, snippets, root docs');
+  steps.push(`scaffold fresh wiki-meta/ (mode: ${mode})`);
+  steps.push('write .env, .mcp.json, .gitignore');
+  if (opts.claudeWorkspace && opts.linkWorkspace) steps.push(`merge enabledPlugins into ${opts.linkWorkspace}/.claude/settings.json + verify extraKnownMarketplaces`);
+  if (opts.linkWorkspace) steps.push(`bind workspace ${opts.linkWorkspace} to this vault`);
+  if (opts.open) steps.push('open Obsidian on the new vault (obsidian://open)');
+  if (opts.probe) steps.push('probe REST port + /open route → health verdict');
+
+  return {
+    name,
+    slug,
+    path: abs,
+    source: { kind: src.kind, fromVault: src.fromVault || null, sourceVault: src.sourceVault || null },
+    plugins: { profile: rawProfile, resolved: resolvedPlugins },
+    theme,
+    wikiMode,
+    conventions: opts.conventions || [],
+    claudeWorkspace: Boolean(opts.claudeWorkspace),
+    open: Boolean(opts.open),
+    gitInit: Boolean(opts.gitInit),
+    withFolderTree: Boolean(opts.withFolderTree),
+    context,
+    warnings,
+    steps,
+  };
+}
