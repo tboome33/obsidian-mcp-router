@@ -3759,6 +3759,38 @@ if (args.includes('--sync-plugins')) {
 // vault) is why it reuses that path rather than setupVault's clone loop.
 if (wizardOpts.source === 'skeleton') {
   await bootstrapReference(vaultArg, { force });
+  // Emit a result marker on --json so provision_vault gets a parseable result
+  // for the skeleton flow too (its end-state differs — a skeleton to finish in
+  // Obsidian, no port/.env yet). Without this, the MCP tool reported "no result"
+  // AFTER the disk was already mutated (review+ W2 P2).
+  if (args.includes('--json')) {
+    const _nonce = process.env.OBSIDIAN_ROUTER_PROVISION_NONCE;
+    const _marker = _nonce ? `##PROVISION_RESULT:${_nonce}##` : '##PROVISION_RESULT##';
+    const _abs = path.resolve(vaultArg);
+    const _name = path.basename(_abs);
+    // bootstrapReference CATCHES a failed bridge download (warns + removes the
+    // dir) rather than throwing, so check the bridge actually landed before
+    // claiming it — else provision_vault would report a false success (review+
+    // W2 pass 2).
+    const _bridgeDownloaded = fs.existsSync(
+      path.join(_abs, '.obsidian', 'plugins', 'mcp-router-bridge', 'main.js'));
+    console.log(_marker + ' ' + JSON.stringify({
+      ok: _bridgeDownloaded,
+      kind: 'skeleton',
+      abs: _abs,
+      slug: _name.toLowerCase(),
+      obsidianName: _name,
+      port: null,
+      insecurePort: null,
+      openUri: obsidianOpenUri(_name),
+      opened: false,
+      probe: null,
+      bridgeDownloaded: _bridgeDownloaded,
+      message: _bridgeDownloaded
+        ? 'Skeleton scaffolded + bridge downloaded. Open it in Obsidian to install the REQUIRED marketplace plugins, then run --init-reference.'
+        : 'Skeleton scaffolded, but the bridge download FAILED (check network / GitHub reachability). Install the mcp-router-bridge plugin manually or re-run.',
+    }));
+  }
   await new Promise((resolve) => process.stdout.write('', resolve));
   process.exit(0);
 }
@@ -3819,7 +3851,9 @@ if (wizardOpts.probe && provisionResult && provisionResult.insecurePort) {
 // console output above is ignored by the parser. Emitted BEFORE the exit so a
 // red probe still yields a parseable result.
 if (args.includes('--json') && provisionResult) {
-  console.log('##PROVISION_RESULT## ' + JSON.stringify({
+  const _nonce = process.env.OBSIDIAN_ROUTER_PROVISION_NONCE;
+  const _marker = _nonce ? `##PROVISION_RESULT:${_nonce}##` : '##PROVISION_RESULT##';
+  console.log(_marker + ' ' + JSON.stringify({
     ok: !probeVerdict || probeVerdict.ok,
     ...provisionResult,
     openUri: obsidianOpenUri(provisionResult.obsidianName),

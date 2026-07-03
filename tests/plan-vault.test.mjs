@@ -81,4 +81,20 @@ describe('plan_vault tool', () => {
   test('requires a path', async () => {
     await assert.rejects(() => planVaultTool({}, {}), /requires `path`/);
   });
+
+  test('surfaces a no-known-roots warning so the plan agrees with the provision gate', async () => {
+    // review+ W2 pass 2: an empty-roots config must warn in the PLAN, not only
+    // refuse at provision — so the frontend can request allowOutsideRoots first.
+    const emptyCfg = path.join(workDir, 'empty-plan-config.json');
+    fs.writeFileSync(emptyCfg, JSON.stringify({ portStart: 27960, portRegistry: {} }));
+    const src = path.join(workDir, 'PlanSrc');
+    for (const p of ['obsidian-local-rest-api', 'mcp-router-bridge']) {
+      fs.mkdirSync(path.join(src, '.obsidian', 'plugins', p), { recursive: true });
+    }
+    fs.writeFileSync(path.join(src, '.obsidian', 'community-plugins.json'),
+      JSON.stringify(['obsidian-local-rest-api', 'mcp-router-bridge']));
+    const res = await planVaultTool({ configPath: emptyCfg },
+      { path: path.join(os.tmpdir(), 'anywhere'), source: { kind: 'from-vault', fromVault: src } });
+    assert.ok(res.warnings.some((w) => w.code === 'no-known-roots'), 'plan warns about empty roots');
+  });
 });

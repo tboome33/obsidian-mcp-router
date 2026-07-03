@@ -76,6 +76,29 @@ describe('provision_vault tool', () => {
     }
   });
 
+  test('SECURITY (fail-closed): an EMPTY-roots config still refuses an arbitrary path', async () => {
+    // review+ W2 IMPORTANT: a config with no referenceVault / no portRegistry
+    // has zero known roots → buildProvisionPlan emits NO out-of-roots warning.
+    // The gate must still refuse without allowOutsideRoots.
+    const emptyCfg = path.join(workDir, 'empty-config.json');
+    fs.writeFileSync(emptyCfg, JSON.stringify({ portStart: 27950, portRegistry: {} }));
+    // A valid source vault so the ONLY reason to refuse is the empty-roots gate.
+    const src = path.join(workDir, 'FailClosedSrc');
+    for (const p of ['obsidian-local-rest-api', 'mcp-router-bridge']) {
+      fs.mkdirSync(path.join(src, '.obsidian', 'plugins', p), { recursive: true });
+      fs.writeFileSync(path.join(src, '.obsidian', 'plugins', p, 'main.js'), '//');
+    }
+    fs.writeFileSync(path.join(src, '.obsidian', 'community-plugins.json'),
+      JSON.stringify(['obsidian-local-rest-api', 'mcp-router-bridge']));
+    const target = path.join(os.tmpdir(), 'fail-closed-' + process.pid);
+    // Pass the empty config via reg.configPath (overrides the describe's env).
+    await assert.rejects(
+      () => provisionVaultTool({ configPath: emptyCfg }, { path: target, source: { kind: 'from-vault', fromVault: src } }),
+      /outside all known vault roots/i,
+    );
+    assert.ok(!fs.existsSync(target), 'refused target not created');
+  });
+
   test('--from-vault via provision copies config, regenerates the secret, excludes workspace.json', async () => {
     // Source under workDir so it's a known root.
     const src = path.join(workDir, 'CopySource');
@@ -114,5 +137,14 @@ describe('vault-wizard tools security gate', () => {
     const { TOOL_HANDLERS } = _internals;
     assert.equal(typeof TOOL_HANDLERS.plan_vault, 'function');
     assert.equal(typeof TOOL_HANDLERS.provision_vault, 'function');
+  });
+
+  test('READONLY hides provision_vault (a write tool) but keeps plan_vault', () => {
+    const { TOOLS, WRITE_TOOL_NAMES, computeExposedTools } = _internals;
+    assert.ok(WRITE_TOOL_NAMES.has('provision_vault'), 'provision_vault is a write tool');
+    assert.ok(!WRITE_TOOL_NAMES.has('plan_vault'), 'plan_vault is read-only');
+    const ro = computeExposedTools(TOOLS, { readonly: true }).map((t) => t.name);
+    assert.ok(!ro.includes('provision_vault'), 'provision_vault hidden in readonly');
+    assert.ok(ro.includes('plan_vault'), 'plan_vault still exposed in readonly');
   });
 });

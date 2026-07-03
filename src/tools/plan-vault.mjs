@@ -58,12 +58,14 @@ function buildQuestions(plan) {
   return questions;
 }
 
-export async function planVaultTool(_registry, args = {}) {
+export async function planVaultTool(registry, args = {}) {
   const input = { ...args, path: args.path || args.vaultPath };
   if (!input.path) {
     throw new Error('plan_vault requires `path` — the intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default; pass it here.');
   }
-  const plan = await runDryRunPlan(input);
+  // Plan against the server's active config (review+ W2 P2).
+  const configPath = registry && registry.configPath;
+  const plan = await runDryRunPlan(input, { configPath });
   return {
     context: plan.context,
     defaults: {

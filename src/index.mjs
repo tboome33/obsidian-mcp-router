@@ -905,10 +905,10 @@ const TOOL_HANDLERS = {
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;
-  // provision_vault writes a new vault. Both ignore the registry (they drive
-  // the setup-vault.mjs engine directly).
-  plan_vault: (_reg, args) => planVaultTool(_reg, args),
-  provision_vault: (_reg, args) => provisionVaultTool(_reg, args),
+  // provision_vault writes a new vault. Both drive the setup-vault.mjs engine
+  // and use `reg.configPath` so the child runs against the server's config.
+  plan_vault: (reg, args) => planVaultTool(reg, args),
+  provision_vault: (reg, args) => provisionVaultTool(reg, args),
 };
 
 // LOCAL-ONLY tools: they touch the local filesystem (provision_vault writes a
@@ -962,6 +962,10 @@ const WRITE_TOOL_NAMES = new Set([
   // Roadmap item #1 (understand-anything) — writes the knowledge-graph JSON
   // to wiki-meta/graph/ + .understand-anything/. Read-only must hide it.
   'build_wiki_graph',
+  // v0.35.0 — writes a NEW vault to the local filesystem. A read-only
+  // deployment must hide it too (not just the OBSIDIAN_ROUTER_USER_ID gate).
+  // plan_vault is read-only and is deliberately NOT in this set. (review+ W2 P1)
+  'provision_vault',
 ]);
 
 /**

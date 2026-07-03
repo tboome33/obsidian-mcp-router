@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 10 documented write tools', () => {
+  test('contains the 11 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -98,6 +98,9 @@ describe('WRITE_TOOL_NAMES', () => {
       // understand-anything #1 — writes the knowledge-graph JSON (canonical
       // wiki-meta/graph/ + derived .understand-anything/ copy).
       'build_wiki_graph',
+      // v0.35.0 — vault-creation wizard: writes a NEW vault to the local
+      // filesystem. plan_vault (read-only) is deliberately excluded.
+      'provision_vault',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {

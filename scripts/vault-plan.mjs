@@ -230,8 +230,19 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
     availableThemes: availableThemes(src.sourceVault),
   };
 
-  // Path within known roots? (informational at plan time; enforced by the gate.)
-  if (context.knownRoots.length && !isPathWithinRoots(abs, context.knownRoots)) {
+  // Path gate signals (informational at plan time; ENFORCED by provision_vault).
+  // Emitted so the plan and the provision gate agree — a clean plan never turns
+  // into a surprise refusal at write time (review+ W2 pass 2). Two cases:
+  //  - roots exist but the target is outside them → path-outside-known-roots
+  //  - NO roots at all (empty/fresh config) → no-known-roots
+  // provision_vault refuses on EITHER unless allowOutsideRoots is passed.
+  if (!context.knownRoots.length) {
+    warnings.push({
+      code: 'no-known-roots',
+      message: `No known vault roots configured (no referenceVault, no registered vaults, no vaultsRoot). ` +
+        `The CLI allows any path; the MCP provision_vault tool refuses one unless allowOutsideRoots is set.`,
+    });
+  } else if (!isPathWithinRoots(abs, context.knownRoots)) {
     warnings.push({
       code: 'path-outside-known-roots',
       message: `Target ${abs} is outside all known vault roots. The CLI allows it; the MCP provision_vault tool refuses it unless explicitly opted in.`,
