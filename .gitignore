@@ -35,6 +35,11 @@ config.local.json
 .claude/scheduled_tasks.lock
 .vault-meta/doc-drift-startup-fingerprint
 
+# Codex CLI machine-local config — `.codex/config.toml` holds a live MCP
+# Authorization bearer token + private endpoint. Must NEVER be committed.
+# Flagged by codex /review+ pass 2 on the vault-wizard W1 work.
+.codex/
+
 # OS
 .DS_Store
 Thumbs.db

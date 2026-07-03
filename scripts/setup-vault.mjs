@@ -39,6 +39,7 @@ import {
   buildProvisionPlan,
   resolveSourceVault,
   resolvePluginProfile,
+  existingSlugs,
 } from './vault-plan.mjs';
 
 // --- Config path: user-home, NOT relative to this script ---------------------
@@ -160,12 +161,22 @@ const COLORS = {
 };
 const c = (color, s) => `${COLORS[color]}${s}${COLORS.reset}`;
 
+const DEFAULT_CONFIG = { referenceVault: null, portStart: 27124, portRegistry: {} };
+
+// Read-only config load: returns the on-disk config, or an in-memory default
+// WITHOUT creating the file. Used by `--dry-run`, which must never write.
+function loadConfigReadOnly() {
+  if (!fs.existsSync(CONFIG_PATH)) return { ...DEFAULT_CONFIG };
+  try { return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')); }
+  catch { return { ...DEFAULT_CONFIG }; }
+}
+
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
     fs.writeFileSync(
       CONFIG_PATH,
-      JSON.stringify({ referenceVault: null, portStart: 27124, portRegistry: {} }, null, 2),
+      JSON.stringify(DEFAULT_CONFIG, null, 2),
     );
   }
   return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
@@ -1917,6 +1928,32 @@ export function recreateWikiFolderTree(sourceVault, targetVault) {
   return made;
 }
 
+// --from-vault: copy the source vault's visual config (appearance.json + the
+// themes/ folder — CSS only, no secrets) so a vault chosen for its look keeps
+// it (spec Q3). Called BEFORE cloneSnippets so the snippet-enablement merges
+// INTO the copied appearance.json rather than overwriting it. NOT applied to
+// the reference bootstrap path (which never copied appearance — unchanged).
+// The custom-theme cssTheme carries over with its themes/ folder; the shipped
+// `--theme` picker (cloneThemes) is the separate Lot 2 chantier.
+function copyVaultAppearance(sourceVault, targetVault, force) {
+  const srcApp = path.join(sourceVault, '.obsidian', 'appearance.json');
+  const dstApp = path.join(targetVault, '.obsidian', 'appearance.json');
+  if (fs.existsSync(srcApp) && (force || !fs.existsSync(dstApp))) {
+    fs.mkdirSync(path.dirname(dstApp), { recursive: true });
+    fs.copyFileSync(srcApp, dstApp);
+    ok('Copied appearance.json from source vault');
+  }
+  const srcThemes = path.join(sourceVault, '.obsidian', 'themes');
+  const dstThemes = path.join(targetVault, '.obsidian', 'themes');
+  if (fs.existsSync(srcThemes)) {
+    if (fs.existsSync(dstThemes) && force) fs.rmSync(dstThemes, { recursive: true, force: true });
+    if (!fs.existsSync(dstThemes)) {
+      fs.cpSync(srcThemes, dstThemes, { recursive: true });
+      ok('Copied .obsidian/themes/ from source vault');
+    }
+  }
+}
+
 // --claude-workspace: enable the router plugin in the WORKSPACE's
 // `.claude/settings.json` (idempotent merge, preserving other keys). Closes the
 // gap where a fresh vault got its slash commands via cloneRootDocs but the
@@ -2057,6 +2094,23 @@ function setupVault(vaultPath, opts = {}) {
   }
 
   const abs = path.resolve(vaultPath);
+
+  // --name slug-collision guard (review+ W1 pass 1). Checked HERE — before any
+  // mutation — so a colliding name fails fast with zero side-effects, rather
+  // than provisioning a full vault and only then discovering the registry can't
+  // disambiguate it. The dry-run planner surfaces the same warning; this is the
+  // enforcing counterpart on the real write path.
+  if (wizard.name) {
+    const customSlug = wizard.name.toLowerCase();
+    if (customSlug !== defaultNameFromPath(abs)) {
+      const slugs = existingSlugs(cfg);
+      if (slugs.has(customSlug) && path.resolve(slugs.get(customSlug)) !== abs) {
+        fail(`Slug "${customSlug}" already maps to ${slugs.get(customSlug)}.\n` +
+          `   Pass a distinct --name so the router can disambiguate the two vaults.`);
+      }
+    }
+  }
+
   if (!fs.existsSync(abs)) {
     fs.mkdirSync(abs, { recursive: true });
     ok(`Created vault directory: ${abs}`);
@@ -2105,6 +2159,30 @@ function setupVault(vaultPath, opts = {}) {
   fs.mkdirSync(path.join(targetObsidian, 'plugins'), { recursive: true });
   const pluginsToClone = resolvePluginProfile(
     pluginProfile, wizard.pluginCustom, sourceVault, REQUIRED_PLUGINS);
+
+  // SECURITY (review+ W1 pass 1, codex P1): validate ALL required plugins exist
+  // in the source BEFORE copying anything. Otherwise, if a required plugin that
+  // sorts AFTER obsidian-local-rest-api is missing, the loop would copy the
+  // credentialed REST data.json first and then fail() — leaving the source's
+  // API key + port in the half-built target. Failing here guarantees the
+  // credential file is never written on a doomed run.
+  for (const req of REQUIRED_PLUGINS) {
+    if (!fs.existsSync(path.join(sourceVault, '.obsidian', 'plugins', req))) {
+      fail(`Required plugin missing in source vault: ${req}\n   Source: ${sourceVault}`);
+    }
+  }
+  // --plugins custom:… names an explicit set; warn (don't silently skip) when a
+  // requested plugin isn't present in the source, since the clone loop below
+  // skips non-existent optional plugins.
+  if (pluginProfile === 'custom' && Array.isArray(wizard.pluginCustom)) {
+    for (const p of wizard.pluginCustom) {
+      if (!REQUIRED_PLUGINS.includes(p) &&
+          !fs.existsSync(path.join(sourceVault, '.obsidian', 'plugins', p))) {
+        warn(`--plugins custom: "${p}" is not installed in the source vault — it will NOT be cloned or enabled.`);
+      }
+    }
+  }
+
   for (const p of pluginsToClone) {
     const srcPlugin = path.join(sourceVault, '.obsidian', 'plugins', p);
     const dstPlugin = path.join(targetObsidian, 'plugins', p);
@@ -2174,6 +2252,10 @@ function setupVault(vaultPath, opts = {}) {
 
   // Clone Smart Connections config + embedding cache from the source vault.
   cloneSmartEnv(sourceVault, abs, opts.force);
+
+  // --from-vault: copy the source's appearance.json + themes/ BEFORE snippets,
+  // so cloneSnippets merges snippet-enablement into the copied appearance.
+  if (sourceKind === 'from-vault') copyVaultAppearance(sourceVault, abs, opts.force);
 
   // Clone Obsidian CSS snippets (no-task-strikethrough.css + any others)
   // and patch appearance.json to enable them.
@@ -3615,8 +3697,8 @@ if (pluginsFlag) {
   }
 }
 
-if (probeTimeoutFlag !== null && Number.isNaN(Number(probeTimeoutFlag))) {
-  fail('--probe-timeout must be a number of seconds.');
+if (probeTimeoutFlag !== null && !(Number(probeTimeoutFlag) > 0)) {
+  fail('--probe-timeout must be a positive number of seconds.');
 }
 
 const wizardOpts = {
@@ -3651,7 +3733,7 @@ if (!vaultArg) fail('No vault path provided');
 // anything and print it. Consumed by the wizard skill's pre-flight and by the
 // MCP plan_vault tool (which imports buildProvisionPlan directly).
 if (args.includes('--dry-run')) {
-  const cfg = loadConfig();
+  const cfg = loadConfigReadOnly();
   const plan = buildProvisionPlan({
     vaultPath: vaultArg,
     opts: wizardOpts,
@@ -3721,7 +3803,8 @@ if (wizardOpts.probe && provisionResult && provisionResult.insecurePort) {
   info(`Probing REST health on http://127.0.0.1:${provisionResult.insecurePort}/ (timeout ${Math.round(timeoutMs / 1000)}s)…`);
   const verdict = await probeVaultHealth(provisionResult.insecurePort, { timeoutMs });
   if (verdict.ok) {
-    ok(`Probe green — Local REST API reachable on port ${provisionResult.insecurePort} (${verdict.attempts} attempt(s)).`);
+    ok(`Probe: Local REST API reachable on port ${provisionResult.insecurePort} (Obsidian open + trusted, ${verdict.attempts} attempt(s)).`);
+    info('Reachability only — for the full bridge /open readiness check, run `npm run audit:bridge-readiness`.');
   } else {
     warn(`Probe red — port ${provisionResult.insecurePort} not reachable after ${verdict.attempts} attempt(s).\n` +
       `   Open Obsidian on the vault + click "Trust author and enable plugins", then re-run with --probe.`);

@@ -164,9 +164,17 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
   const resolvedPlugins = resolvePluginProfile(
     rawProfile, opts.pluginCustom, src.sourceVault, requiredPlugins);
 
-  // Wiki mode.
+  // Wiki mode. `explicit` distinguishes a user-passed --wiki-mode (which the
+  // engine actually seeds) from the computed default (the engine keeps the
+  // generic template unless told). The frontend/plan_vault presents `mode` as
+  // the recommended default; the raw CLI only seeds when explicit.
+  const explicitMode = Boolean(opts.wikiMode);
   const mode = opts.wikiMode || defaultWikiMode(opts);
-  const wikiMode = { mode, sections: mode === 'domain' ? (opts.wikiSections || []) : undefined };
+  const wikiMode = {
+    mode,
+    explicit: explicitMode,
+    sections: mode === 'domain' ? (opts.wikiSections || []) : undefined,
+  };
   if (mode === 'domain' && (!opts.wikiSections || opts.wikiSections.length === 0)) {
     warnings.push({
       code: 'domain-no-sections',
@@ -205,20 +213,30 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
 
   // Ordered, human-readable provisioning steps (what provision_vault will do).
   const steps = [];
-  if (!fs.existsSync(abs)) steps.push(`create vault directory ${abs}`);
-  steps.push(`clone ${resolvedPlugins.length} plugin(s): ${resolvedPlugins.join(', ')}`);
-  steps.push('allocate a fresh REST API port + generate a fresh API key');
-  if (src.kind === 'from-vault') {
-    steps.push(`copy config-only from ${src.sourceVault} (exclude workspace.json + credentialed data.json; secrets regenerated)`);
-    if (opts.withFolderTree) steps.push('recreate the source wiki/ folder tree (empty, no notes)');
+  if (src.kind === 'skeleton') {
+    // --from-skeleton delegates to the bootstrap-reference flow — a DIFFERENT
+    // end-state (a skeleton to finish in Obsidian, not a fully-cloned vault).
+    // The steps reflect that so a machine consumer of the plan isn't misled.
+    steps.push(`scaffold from the shipped reference skeleton (${skeletonDir || 'templates/reference-vault-skeleton'})`);
+    steps.push('download the mcp-router-bridge plugin from GitHub releases');
+    steps.push('print next-steps: open in Obsidian → install REQUIRED marketplace plugins → --init-reference');
+    steps.push('(no port/.env/wiki-meta at this stage — that is the bootstrap-reference end-state)');
+  } else {
+    if (!fs.existsSync(abs)) steps.push(`create vault directory ${abs}`);
+    steps.push(`clone ${resolvedPlugins.length} plugin(s): ${resolvedPlugins.join(', ')}`);
+    steps.push('allocate a fresh REST API port + generate a fresh API key');
+    if (src.kind === 'from-vault') {
+      steps.push(`copy config-only from ${src.sourceVault} (appearance + themes/ + CLAUDE.md; exclude workspace.json + credentialed data.json; secrets regenerated)`);
+      if (opts.withFolderTree) steps.push('recreate the source wiki/ folder tree (empty, no notes)');
+    }
+    steps.push('clone .smart-env, snippets, root docs');
+    steps.push(`scaffold fresh wiki-meta/ (mode: ${mode}${explicitMode ? '' : ' — DEFAULT; generic template unless --wiki-mode is passed'})`);
+    steps.push('write .env, .mcp.json, .gitignore');
+    if (opts.claudeWorkspace && opts.linkWorkspace) steps.push(`merge enabledPlugins into ${opts.linkWorkspace}/.claude/settings.json (+ verify global marketplace)`);
+    if (opts.linkWorkspace) steps.push(`bind workspace ${opts.linkWorkspace} to this vault`);
+    if (opts.open) steps.push('open Obsidian on the new vault (obsidian://open)');
+    if (opts.probe) steps.push('probe REST port reachability → health verdict');
   }
-  steps.push('clone .smart-env, snippets, root docs');
-  steps.push(`scaffold fresh wiki-meta/ (mode: ${mode})`);
-  steps.push('write .env, .mcp.json, .gitignore');
-  if (opts.claudeWorkspace && opts.linkWorkspace) steps.push(`merge enabledPlugins into ${opts.linkWorkspace}/.claude/settings.json + verify extraKnownMarketplaces`);
-  if (opts.linkWorkspace) steps.push(`bind workspace ${opts.linkWorkspace} to this vault`);
-  if (opts.open) steps.push('open Obsidian on the new vault (obsidian://open)');
-  if (opts.probe) steps.push('probe REST port + /open route → health verdict');
 
   return {
     name,
@@ -231,6 +249,7 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
     conventions: opts.conventions || [],
     claudeWorkspace: Boolean(opts.claudeWorkspace),
     open: Boolean(opts.open),
+    probe: Boolean(opts.probe),
     gitInit: Boolean(opts.gitInit),
     withFolderTree: Boolean(opts.withFolderTree),
     context,

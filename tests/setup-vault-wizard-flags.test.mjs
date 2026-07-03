@@ -155,6 +155,39 @@ describe('setup-vault.mjs wizard flags', () => {
     assert.equal(conf.vaultNames[path.resolve(target)], 'pretty name');
   });
 
+  test('--name colliding with an existing registered slug fails fast with no side-effects', () => {
+    // Register an existing vault under slug "taken", then try to --name a NEW
+    // vault "Taken". Must fail BEFORE creating the target dir (early guard).
+    const snapshot = fs.readFileSync(cfg, 'utf8'); // restore verbatim afterward
+    const existing = path.join(workDir, 'ExistingVault');
+    fs.mkdirSync(existing, { recursive: true });
+    const conf = JSON.parse(snapshot);
+    conf.portRegistry[path.resolve(existing)] = 28000;
+    conf.vaultNames = { ...(conf.vaultNames || {}), [path.resolve(existing)]: 'taken' };
+    fs.writeFileSync(cfg, JSON.stringify(conf));
+    try {
+      const target = path.join(workDir, 'CollideTarget');
+      const r = run([target, '--name', 'Taken']);
+      assert.notEqual(r.status, 0, 'colliding --name must fail');
+      assert.match((r.stdout || '') + (r.stderr || ''), /already maps to/i);
+      assert.ok(!fs.existsSync(target), 'target dir must not be created on a collision');
+    } finally {
+      fs.writeFileSync(cfg, snapshot); // exact restore for later tests
+    }
+  });
+
+  test('--dry-run does NOT create the config file when it is missing', () => {
+    // A first-time --dry-run must not write anything — including the config.
+    const isolatedCfg = path.join(workDir, 'nested', 'fresh-config.json');
+    const r = spawnSync(process.execPath, [SCRIPT, path.join(workDir, 'DryTarget'), '--dry-run', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: isolatedCfg, OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS: '1' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    JSON.parse(r.stdout); // valid plan
+    assert.ok(!fs.existsSync(isolatedCfg), '--dry-run must not create the config file');
+  });
+
   test('--git-init initializes a git repo in the new vault', () => {
     const target = path.join(workDir, 'GitVault');
     const r = run([target, '--git-init']);
@@ -210,6 +243,15 @@ describe('setup-vault.mjs --from-vault (config-only copy + security)', () => {
       path.join(source, '.obsidian', 'community-plugins.json'),
       JSON.stringify(['obsidian-local-rest-api', 'mcp-router-bridge', 'smart-connections']));
     fs.writeFileSync(path.join(source, '.obsidian', 'workspace.json'), JSON.stringify({ secret: 'UI-STATE' }));
+    // Visual config (config-only, copied) + a theme folder.
+    fs.writeFileSync(path.join(source, '.obsidian', 'appearance.json'),
+      JSON.stringify({ theme: 'obsidian', cssTheme: 'Cool Theme', accentColor: '#abcdef' }));
+    fs.mkdirSync(path.join(source, '.obsidian', 'themes', 'Cool Theme'), { recursive: true });
+    fs.writeFileSync(path.join(source, '.obsidian', 'themes', 'Cool Theme', 'theme.css'), '/* theme */');
+    // A snippet so cloneSnippets runs — proves appearance is copied BEFORE
+    // snippets (the enablement merges into the copied appearance, not over it).
+    fs.mkdirSync(path.join(source, '.obsidian', 'snippets'), { recursive: true });
+    fs.writeFileSync(path.join(source, '.obsidian', 'snippets', 'src-snippet.css'), '/* snippet */');
     fs.writeFileSync(path.join(source, 'CLAUDE.md'), '# Source conventions');
     fs.mkdirSync(path.join(source, 'wiki', 'People'), { recursive: true });
     fs.mkdirSync(path.join(source, 'wiki', 'Projects', 'Alpha'), { recursive: true });
@@ -243,6 +285,15 @@ describe('setup-vault.mjs --from-vault (config-only copy + security)', () => {
     assert.notEqual(rest.apiKey, 'SOURCE-VAULT-SECRET-KEY-123', 'source secret NOT copied');
     assert.notEqual(rest.port, 27300, 'fresh port allocated');
 
+    // Visual config copied (spec Q3): appearance.json + themes/, snippet
+    // enablement merged into the copied appearance (cssTheme preserved).
+    const app = JSON.parse(fs.readFileSync(path.join(target, '.obsidian', 'appearance.json'), 'utf8'));
+    assert.equal(app.cssTheme, 'Cool Theme', 'source cssTheme carried over');
+    assert.equal(app.accentColor, '#abcdef', 'source accent carried over');
+    assert.ok(Array.isArray(app.enabledCssSnippets) && app.enabledCssSnippets.includes('src-snippet'),
+      'snippet enablement merged INTO the copied appearance (copy-before-snippets ordering)');
+    assert.ok(fs.existsSync(path.join(target, '.obsidian', 'themes', 'Cool Theme', 'theme.css')), 'theme folder copied');
+
     // UI state never copied.
     assert.ok(!fs.existsSync(path.join(target, '.obsidian', 'workspace.json')), 'workspace.json excluded');
 
@@ -260,5 +311,34 @@ describe('setup-vault.mjs --from-vault (config-only copy + security)', () => {
     const r = run([target, '--from-vault', source]);
     assert.equal(r.status, 0, r.stderr);
     assert.ok(!fs.existsSync(path.join(target, 'wiki', 'People')), 'no folder tree without the flag');
+  });
+
+  test('SECURITY: a source missing a REQUIRED plugin fails BEFORE the secret data.json is copied', () => {
+    // Build a source that has obsidian-local-rest-api (credentialed, sorts
+    // first) but is MISSING mcp-router-bridge (REQUIRED, sorts after). Pre-fix,
+    // the clone loop copied the REST data.json then failed → source secret left
+    // in the half-built target. The pre-validate must fail with no secret file.
+    const badSource = path.join(workDir, 'BadSource');
+    fs.mkdirSync(path.join(badSource, '.obsidian', 'plugins', 'obsidian-local-rest-api'), { recursive: true });
+    fs.writeFileSync(
+      path.join(badSource, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+      JSON.stringify({ apiKey: 'LEAK-ME-SECRET', port: 27999 }));
+    fs.writeFileSync(path.join(badSource, '.obsidian', 'community-plugins.json'),
+      JSON.stringify(['obsidian-local-rest-api']));
+
+    const target = path.join(workDir, 'LeakTarget');
+    const r = run([target, '--from-vault', badSource]);
+    assert.notEqual(r.status, 0, 'must fail on the missing REQUIRED plugin');
+    assert.match((r.stdout || '') + (r.stderr || ''), /Required plugin missing in source/i);
+    // No credential file must have been written into the target.
+    const leaked = path.join(target, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
+    assert.ok(!fs.existsSync(leaked), 'source secret data.json must NOT be left in the target');
+  });
+
+  test('--plugins custom names a plugin absent from the source → surfaced warning, still exits 0', () => {
+    const target = path.join(workDir, 'CustomMissing');
+    const r = run([target, '--from-vault', source, '--plugins', 'custom:not-a-real-plugin']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match((r.stdout || '') + (r.stderr || ''), /custom: "not-a-real-plugin" is not installed/i);
   });
 });

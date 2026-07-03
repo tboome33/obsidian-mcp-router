@@ -165,6 +165,39 @@ test('buildProvisionPlan: --wiki-mode code when linkWorkspace; domain w/o sectio
   } finally { fs.rmSync(src, { recursive: true, force: true }); }
 });
 
+test('buildProvisionPlan: wikiMode.explicit distinguishes passed mode from default', () => {
+  const src = tmpVault(['smart-connections']);
+  try {
+    const cfg = { referenceVault: src, portRegistry: {} };
+    const passed = buildProvisionPlan({ vaultPath: path.join(os.tmpdir(), 'e1'), opts: { wikiMode: 'research' }, cfg, requiredPlugins: REQUIRED });
+    assert.equal(passed.wikiMode.explicit, true);
+    const defaulted = buildProvisionPlan({ vaultPath: path.join(os.tmpdir(), 'e2'), opts: {}, cfg, requiredPlugins: REQUIRED });
+    assert.equal(defaulted.wikiMode.explicit, false, 'no --wiki-mode → not explicit (engine keeps generic template)');
+    assert.match(defaulted.steps.join('\n'), /generic template unless --wiki-mode/, 'step notes the default caveat');
+  } finally { fs.rmSync(src, { recursive: true, force: true }); }
+});
+
+test('buildProvisionPlan: skeleton source steps reflect the bootstrap-reference delegation', () => {
+  const cfg = { referenceVault: null, portRegistry: {} };
+  const plan = buildProvisionPlan({
+    vaultPath: path.join(os.tmpdir(), 'sk'),
+    opts: { source: 'skeleton' }, cfg, requiredPlugins: REQUIRED, skeletonDir: '/repo/templates/reference-vault-skeleton',
+  });
+  const joined = plan.steps.join('\n');
+  assert.match(joined, /skeleton/i);
+  assert.match(joined, /download the mcp-router-bridge/i);
+  assert.ok(!/write \.env/.test(joined), 'skeleton plan does NOT promise the full-clone end-state');
+});
+
+test('buildProvisionPlan: plan.probe mirrors opts.probe', () => {
+  const src = tmpVault(['smart-connections']);
+  try {
+    const cfg = { referenceVault: src, portRegistry: {} };
+    assert.equal(buildProvisionPlan({ vaultPath: path.join(os.tmpdir(), 'p1'), opts: { probe: true }, cfg, requiredPlugins: REQUIRED }).probe, true);
+    assert.equal(buildProvisionPlan({ vaultPath: path.join(os.tmpdir(), 'p2'), opts: {}, cfg, requiredPlugins: REQUIRED }).probe, false);
+  } finally { fs.rmSync(src, { recursive: true, force: true }); }
+});
+
 test('buildProvisionPlan: --theme records choice but flags it blocked', () => {
   const src = tmpVault(['smart-connections']);
   try {
