@@ -163,6 +163,35 @@ describe('rule 2 — non-empty type', () => {
     ]);
     assert.equal(result.conformant, true);
   });
+
+  test('REGRESSION (codex pass 3, confirmed independently by 2 reviewers): a quote that never closes is caught, not silently absorbed', () => {
+    // `type: '[concept` opens a single-quote that never closes anywhere in
+    // the frontmatter block — genuinely invalid YAML. Before this fix, the
+    // quote-tracking reset per line meant the never-closed quote silently
+    // absorbed the rest of the line (including the `[`), and nothing
+    // downstream ever flagged the fact that a quote was left open —
+    // exactly the failure mode the quote-awareness fix (pass 2) risked
+    // introducing when taken to its logical conclusion.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: "---\ntype: '[concept\ntitle: T\n---\n\nBody.\n" },
+    ]);
+    assert.equal(result.conformant, false);
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('a legitimate multi-line single-quoted scalar (quote opens on one line, closes on the next) does NOT false-positive', () => {
+    // Valid YAML flow-scalar folding — third-party bundles may use this
+    // even though our own exporter never emits it (always single-line).
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      {
+        path: 'doc.md',
+        content: "---\ntype: concept\ntitle: 'A folded\n  title with [a bracket]'\n---\n\nBody.\n",
+      },
+    ]);
+    assert.equal(result.conformant, true);
+  });
 });
 
 describe('rule 3 — reserved index.md structure', () => {

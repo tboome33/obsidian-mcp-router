@@ -103,12 +103,19 @@ export function slugifyOkfPath(pagePath) {
  * `joinVaultRelativePath('wiki/concepts', '../refs/Other.md')` →
  * `'wiki/refs/Other.md'`
  *
+ * A `relativePath` starting with `/` is ROOT-relative (CommonMark: a link
+ * target beginning with a single `/` is relative to the site/document
+ * root, not to the citing file's folder — distinct from `../` which IS
+ * folder-relative) and is resolved ignoring `fromDir` entirely:
+ * `joinVaultRelativePath('wiki/concepts', '/refs/Other.md')` → `'refs/Other.md'`.
+ *
  * @param {string} fromDir Vault-relative directory of the citing page ('' for root)
  * @param {string} relativePath The raw markdown-link target as authored
  * @returns {string} Vault-relative resolved path (posix)
  */
 export function joinVaultRelativePath(fromDir, relativePath) {
-  const parts = fromDir ? fromDir.split('/').filter(Boolean) : [];
+  const isRootRelative = relativePath.startsWith('/');
+  const parts = !isRootRelative && fromDir ? fromDir.split('/').filter(Boolean) : [];
   for (const seg of relativePath.split('/')) {
     if (seg === '' || seg === '.') continue;
     if (seg === '..') {
@@ -204,15 +211,20 @@ function makeTargetResolver(mappings, report) {
   }
 
   // Tie-break priority: (1) a candidate matching the target's basename in
-  // the EXACT case it was written, (2) a candidate in the same bundle
-  // folder as the citing page, (3) alphabetically-first. Every ambiguous
-  // resolution (2+ distinct candidates) is reported regardless of which
-  // tier resolved it — an exact-case match existing does NOT mean a
-  // case-differing twin elsewhere is not worth flagging to the user.
+  // the EXACT case it was written, BUT ONLY when exactly one candidate
+  // does — if ALL candidates equally match the exact case (a pure
+  // same-basename-different-folder collision, no case ambiguity at play),
+  // this tier is a no-op and must NOT short-circuit the more meaningful
+  // (2) same-bundle-folder-as-citing-page tier below it. (3)
+  // alphabetically-first. Every ambiguous resolution (2+ distinct
+  // candidates) is reported regardless of which tier resolved it — an
+  // exact-case match existing does NOT mean a case-differing twin
+  // elsewhere is not worth flagging to the user.
   const pickCandidate = (candidates, fromNewPath, rawTarget, exactBasename) => {
-    const exactCase = candidates.find(
+    const exactCaseMatches = candidates.filter(
       (c) => c.path.replace(/\.md$/i, '').split('/').pop() === exactBasename,
     );
+    const exactCase = exactCaseMatches.length === 1 ? exactCaseMatches[0] : null;
     const fromDir = fromNewPath.split('/').slice(0, -1).join('/');
     const sameDir = candidates.find(
       (c) => c.newPath.split('/').slice(0, -1).join('/') === fromDir,
@@ -232,7 +244,7 @@ function makeTargetResolver(mappings, report) {
     return chosen.newPath;
   };
 
-  return (target, fromNewPath) => {
+  const resolve = (target, fromNewPath) => {
     const clean = target.replace(/\.md$/i, '');
     const exact = byVaultPath.get(clean);
     if (exact) return exact;
@@ -257,6 +269,18 @@ function makeTargetResolver(mappings, report) {
     if (allCandidates.length === 1) return allCandidates[0].newPath;
     return pickCandidate(allCandidates, fromNewPath, target, basename);
   };
+
+  // Exact-vault-path-only resolution, no basename fallback, no ambiguity
+  // reporting. Used for the FIRST (file-relative-join) attempt on a
+  // standard markdown link: a joined path that fails this exact lookup
+  // must be treated as genuinely not-found (dangling) by that attempt,
+  // never silently reinterpreted as "well, ITS basename happens to match
+  // some unrelated page elsewhere" — that basename-fallback behavior is
+  // only appropriate for the caller's SECOND attempt, on the raw
+  // as-authored target (see rewriteWikilinks' convertMarkdownLink).
+  resolve.exact = (target) => byVaultPath.get(target.replace(/\.md$/i, '')) ?? null;
+
+  return resolve;
 }
 
 // Standard markdown link/image to a `.md` target, with an optional
@@ -386,14 +410,29 @@ export function rewriteWikilinks(body, fromNewPath, resolve, report, fromVaultPa
       // Malformed percent-encoding — resolve against the raw text instead
       // of throwing; worst case the lookup simply misses (link untouched).
     }
-    // Resolve as a file-relative path FIRST (join against the citing
-    // page's own original folder → an exact, unambiguous vault-path match)
-    // before ever falling back to basename matching, which can only guess.
+    const resolveExact = (p) => (typeof resolve.exact === 'function' ? resolve.exact(p) : null);
     let resolved = null;
-    if (fromVaultDir !== null) {
-      resolved = resolve(joinVaultRelativePath(fromVaultDir, decoded), fromNewPath);
+    if (decoded.includes('/')) {
+      // Path-shaped target (contains a `/`, e.g. `../refs/Other.md` or
+      // `sub/Other.md`) — the author gave us STRUCTURAL information that
+      // must be respected. Try an EXACT vault-path match only: join
+      // against the citing page's own original folder first, then the raw
+      // text as-is (covers an already vault-relative path). NEVER fall
+      // back to basename matching for a path-shaped target — that would
+      // let an explicit but broken relative link (e.g.
+      // `../nonexistent/Target.md`) get silently "accidentally" repointed
+      // at any unrelated page elsewhere in the vault that happens to share
+      // the same basename, which is worse than leaving it dangling.
+      if (fromVaultDir !== null) {
+        resolved = resolveExact(joinVaultRelativePath(fromVaultDir, decoded));
+      }
+      if (!resolved) resolved = resolveExact(decoded);
+    } else {
+      // Bare filename, no path information at all — basename-style
+      // resolution (with ambiguity detection/reporting) is the only
+      // option, matching how Obsidian itself resolves a bare wikilink.
+      resolved = resolve(decoded, fromNewPath);
     }
-    if (!resolved) resolved = resolve(decoded, fromNewPath);
     if (!resolved) return full; // not one of our exported pages — leave as-authored
     if (anchorPart) {
       report.anchorsDropped.push(

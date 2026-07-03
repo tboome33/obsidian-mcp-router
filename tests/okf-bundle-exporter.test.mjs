@@ -514,6 +514,95 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     assert.equal(report.ambiguousLinks.length, 0);
   });
 
+  test('BLOCKER REGRESSION (codex pass 3): a broken relative markdown link stays dangling, never "accidentally" repointed via basename fallback', () => {
+    // Confirmed by direct reproduction: `../nonexistent/Target.md` doesn't
+    // resolve to ANY real page, but before the fix, the resolve() cascade
+    // let the joined-but-nonexistent path fall through to basename
+    // matching (its basename "Target" coincidentally matched two OTHER
+    // unrelated pages elsewhere), silently repointing the link at a random
+    // one of them instead of leaving it dangling — the exact failure mode
+    // the pass-1 fix was meant to eliminate, reintroduced by the two-step
+    // resolve cascade.
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/other/Target.md', ['type: note', 'title: Other Target'], 'x'),
+        page('wiki/deep/Target.md', ['type: note', 'title: Deep Target'], 'y'),
+        page(
+          'wiki/concepts/Foo Bar.md',
+          ['type: note', 'title: Foo Bar'],
+          'See [ref](../nonexistent/Target.md) for details.',
+        ),
+      ],
+    });
+    const fooBar = fileByPath(files, 'concepts/foo-bar.md');
+    // Left EXACTLY as authored — a path-shaped target that doesn't
+    // resolve is untouched, not silently redirected.
+    assert.match(fooBar.content, /\[ref\]\(\.\.\/nonexistent\/Target\.md\)/);
+    assert.equal(report.ambiguousLinks.length, 0);
+  });
+
+  test('REGRESSION (codex pass 3): a root-relative markdown link (/path.md) resolves against the vault root, ignoring the citing page folder', () => {
+    const { files } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/refs/Other.md', ['type: reference', 'title: Root Target'], 'z'),
+        page(
+          'wiki/concepts/Foo Bar.md',
+          ['type: note', 'title: Foo Bar'],
+          'Root link: [r2](/refs/Other.md).',
+        ),
+      ],
+    });
+    const fooBar = fileByPath(files, 'concepts/foo-bar.md');
+    assert.match(fooBar.content, /\[r2\]\(\.\.\/refs\/other\.md\)/);
+  });
+
+  test('a bare-filename markdown link (no "/" at all) still uses basename resolution as before', () => {
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/refs/Other.md', ['type: reference', 'title: The target'], 'z'),
+        page(
+          'wiki/concepts/Foo Bar.md',
+          ['type: note', 'title: Foo Bar'],
+          'See [ref](Other.md) for details.',
+        ),
+      ],
+    });
+    const fooBar = fileByPath(files, 'concepts/foo-bar.md');
+    assert.match(fooBar.content, /\[ref\]\(\.\.\/refs\/other\.md\)/);
+    assert.equal(report.ambiguousLinks.length, 0);
+  });
+
+  test('REGRESSION (codex pass 3): when ALL candidates equally match exact-case, that tier is a no-op and same-folder still wins', () => {
+    // a-folder/Foo.md and b-folder/Foo.md have the IDENTICAL case — the
+    // exact-case tier doesn't discriminate anything here (both equally
+    // match the target's written case). Before the fix, `.find()` picked
+    // whichever candidate happened to iterate first (array/insertion
+    // order, i.e. alphabetical-by-SOURCE-path) as "the" exact-case match
+    // and returned it immediately — even when the CITING page lived in
+    // the OTHER (later-sorted) folder, silently overriding the more
+    // meaningful same-folder tie-break.
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/a-folder/Foo.md', ['type: concept', 'title: Foo A'], 'x'),
+        page('wiki/b-folder/Foo.md', ['type: concept', 'title: Foo B'], 'y'),
+        // Citing page lives in b-folder — the LATER-sorted candidate.
+        page('wiki/b-folder/Bar.md', ['type: concept', 'title: Bar'], 'See [[Foo]].'),
+      ],
+    });
+    const bar = fileByPath(files, 'b-folder/bar.md');
+    assert.match(bar.content, /\[Foo\]\(foo\.md\)/); // same folder → b-folder/foo.md
+    assert.equal(report.ambiguousLinks.length, 1);
+    assert.match(report.ambiguousLinks[0], /same-folder preference/);
+  });
+
   test('unambiguous basename resolution produces no ambiguousLinks entries', () => {
     const { report } = buildOkfBundle({
       vaultName: 'V',

@@ -61,18 +61,26 @@ function finding(rule, path, detail) {
  * escaping (`''` = a literal quote inside a single-quoted scalar) and
  * double-quote backslash-escaping are both honored while scanning.
  *
+ * Quote state is carried ACROSS line boundaries (not reset per line) so a
+ * legitimate YAML flow-scalar that folds onto a second line (`title: 'A
+ * long\n  title'` — valid YAML) is never flagged just because its opening
+ * quote doesn't close on the same line. Only when a quote is STILL open at
+ * the very end of the whole frontmatter block — i.e. never closes anywhere
+ * — is it flagged: that's unambiguously invalid YAML, not a legitimate
+ * multi-line scalar, and would otherwise silently swallow any real bracket
+ * imbalance following it (confirmed independently by two review passes).
+ *
  * @param {string} rawFrontmatterBody Text between the `---` fences (no fences)
  * @returns {string[]} Offending lines (empty when nothing looks wrong)
  */
 function findUnbalancedBracketLines(rawFrontmatterBody) {
   const problems = [];
+  let inSingle = false;
+  let inDouble = false;
   for (const line of rawFrontmatterBody.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
     let opens = 0;
     let closes = 0;
-    let inSingle = false;
-    let inDouble = false;
     for (let i = 0; i < trimmed.length; i += 1) {
       const ch = trimmed[i];
       if (inSingle) {
@@ -93,6 +101,9 @@ function findUnbalancedBracketLines(rawFrontmatterBody) {
       else if (ch === ']' || ch === '}') closes += 1;
     }
     if (opens !== closes) problems.push(trimmed);
+  }
+  if (inSingle || inDouble) {
+    problems.push('(a quoted value never closes its quote before the frontmatter ends)');
   }
   return problems;
 }
@@ -280,7 +291,7 @@ export function checkOkfConformance(files) {
     if (unbalancedLines.length > 0) {
       out.errors.push(finding(
         'frontmatter-not-parseable', file.path,
-        `frontmatter has unbalanced brackets — not valid YAML despite matching the \`---\` fences (conformance rule 1, §9): "${unbalancedLines[0].slice(0, 60)}"`,
+        `frontmatter is not valid YAML despite matching the \`---\` fences — unbalanced brackets or an unterminated quote (conformance rule 1, §9): "${unbalancedLines[0].slice(0, 60)}"`,
       ));
     }
     const { frontmatter } = parseFrontmatter(file.content);
