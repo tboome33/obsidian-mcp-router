@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.33.1] — 2026-07-03 — Vault wizard W0: clone `Documentation/` root docs + derive the plugin list from the source
+
+Prerequisite fixes for the guided vault-creation wizard (spec `docs/superpowers/specs/2026-07-03-vault-wizard-design.md`, plan `docs/superpowers/plans/2026-07-03-vault-wizard.md`), landed as their own release before any wizard feature. No behavior change for existing invocations.
+
+### Fixed
+
+- **`cloneRootDocs` clones the reference's `Documentation/` folder.** The reference vault (`.template`) reorganized its human docs (quick-reference PDFs, `SETUP.md`, the vault-facing `CLAUDE.md`) from the vault root into `Documentation/`, but `ROOT_FILES_TO_CLONE` still listed the individual PDFs at root — so a fresh vault silently cloned only `.claude`. The list is now `['README.md', 'Documentation', '.claude']`: the reference's whole docs folder is cloned (the dir-aware recursive copy was already in place), `README.md` still covers the shipped skeleton (which keeps its README at root and has no `Documentation/`), and non-existent entries are skipped so the list is a safe union across source shapes.
+
+### Changed
+
+- **Plugin clone list is now DERIVED from the source vault's `community-plugins.json`.** New pure helper `scripts/plugin-resolver.mjs` (`resolvePluginsToClone(referenceVault, requiredPlugins)`) reads the reference's own enabled-plugin list and unions it with `REQUIRED_PLUGINS`. This replaces the hardcoded `OPTIONAL_PLUGINS`/`PLUGINS_TO_CLONE` constants, which drifted out of sync with the skeleton's `community-plugins.json` ("activated but never cloned" — plugins added to the skeleton were enabled but absent from the constant). Any plugin the reference enables now propagates automatically; `REQUIRED_PLUGINS` stays the only hard list (a physically-missing required plugin still fails loudly). `--sync-plugins` was already reference-dir-listing-based and is unchanged. The helper is a separate pure module (like `path-helpers.mjs`) so it is unit-testable without triggering `setup-vault.mjs`'s top-level CLI dispatch.
+
+### Tests
+
+- **`tests/setup-vault-plugins-derived.test.mjs`** (6 cases) + **`tests/setup-vault-root-docs.test.mjs`** (2 cases). Full suite **1935 → 1943** green — the entire prior suite stays green, proving zero behavior change for existing `setup-vault.mjs` invocations.
+
 ## [0.33.0] — 2026-07-03 — OKF interop: export any wiki subset as an Open Knowledge Format bundle + conformance validator
 
 First brick of the OKF interoperability commitment (see the vault page `okf-interop`): Google's [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog) (spec v0.1) formalizes the Karpathy LLM-wiki pattern the router has implemented all along. Decision on record: **OKF is the exchange format at the edges** — the vault's internal structure (wikilinks, `wiki-meta/` scaffolds, newest-last log) never changes; everything the standard requires is regenerated at export time. Import (`mount`/`ingest`) and the headless-app integration are the next bricks.

@@ -111,7 +111,11 @@ Then enable inside Obsidian: Settings → Community plugins → toggle on "MCP R
 
 ## Optional plugins
 
-These get cloned if present in the reference, skipped silently if not.
+These get cloned if present in the reference, skipped silently if not. The clone
+list is **derived from the reference vault's own `.obsidian/community-plugins.json`**
+(the plugins Obsidian has enabled there) — so anything you enable in your reference
+propagates to fresh vaults automatically. The examples below are the plugins the
+shipped skeleton enables; a user-grown reference can enable more.
 
 | Plugin | Plugin id | Source | Why optional |
 |---|---|---|---|
@@ -120,7 +124,10 @@ These get cloned if present in the reference, skipped silently if not.
 | Dataview | `dataview` | Community plugins → "Dataview" | Not used by the router today, but commonly installed across vaults. Cloning it from the reference saves manual install per-vault. |
 | Bases | `obsidian-bases` | Community plugins → "Bases" | Same rationale — convenience cloning. |
 
-The full list lives in [`scripts/setup-vault.mjs`](../scripts/setup-vault.mjs) under `OPTIONAL_PLUGINS`.
+There is no hardcoded list anymore: the resolver lives in
+[`scripts/plugin-resolver.mjs`](../scripts/plugin-resolver.mjs)
+(`resolvePluginsToClone`), which unions the reference's enabled plugins with the
+two REQUIRED plugins (`obsidian-local-rest-api`, `mcp-router-bridge`).
 
 ## What else to put in the reference
 

@@ -33,6 +33,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { samePath, canonicalPath } from './path-helpers.mjs';
+import { resolvePluginsToClone } from './plugin-resolver.mjs';
 
 // --- Config path: user-home, NOT relative to this script ---------------------
 // The script lives inside the router repo (which is git-tracked and may live
@@ -103,26 +104,23 @@ const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 // with a freshly-generated port + key via `patchRestApiData()`
 // immediately after the clone.
 const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
-// --- Optional plugins: cloned if present in reference vault, else skipped ---
-// Note: this list is the SUPERSET of plugins setup-vault.mjs is willing to
-// clone from a reference. The shipped skeleton's `community-plugins.json`
-// (templates/reference-vault-skeleton/.obsidian/community-plugins.json) lists
-// a SUBSET — the "default recommended set" enabled out of the box. `dataview`
-// and `obsidian-bases` are NOT in the skeleton; they're cloned only if the
-// user (a) adds them to their own reference vault later, OR (b) uses an
-// existing reference vault that already has them. This divergence is
-// intentional: the skeleton ships an opinionated minimal-but-useful set, the
-// script accommodates any user-grown reference.
+// --- Plugin clone list: DERIVED from the source, not a hardcoded constant ---
+// `resolvePluginsToClone(referenceVault, REQUIRED_PLUGINS)` (plugin-resolver.mjs)
+// reads the reference vault's own `.obsidian/community-plugins.json` — the set
+// Obsidian has ENABLED there — and unions it with REQUIRED_PLUGINS. Any plugin
+// the reference enables (smart-connections, templater, dataview, bases,
+// quiet-outline, hot-reload, obsidian42-brat, realclaudian, …) propagates
+// automatically. This replaced the old hardcoded OPTIONAL_PLUGINS list, which
+// drifted out of sync with the skeleton's community-plugins.json ("activated
+// but never cloned"). REQUIRED_PLUGINS remains the only hard list: those MUST
+// physically exist in the reference or the clone loop fails loudly.
+//
 // `hot-reload` (pjeby) auto-reloads a plugin whose files change on disk IF its
-// folder carries a `.hotreload` (or `.git`) marker. The bridge's deploy.mjs
-// drops that marker into the bridge folder, so once hot-reload is installed +
-// enabled, the BRIDGE repo's `npm run deploy:all` reloads the bridge live in
-// every open vault — no manual "Reload app" per instance. (Retrofitting the
-// marker onto an already-synced vault needs `--sync-plugins --force`; the
-// non-force path skips folders that already exist.) See project-bridge
-// "Hot Reload".
-const OPTIONAL_PLUGINS = ['smart-connections', 'templater-obsidian', 'dataview', 'obsidian-bases', 'obsidian-quiet-outline', 'hot-reload'];
-const PLUGINS_TO_CLONE = [...REQUIRED_PLUGINS, ...OPTIONAL_PLUGINS];
+// folder carries a `.hotreload` (or `.git`) marker — the bridge's deploy.mjs
+// drops that marker so `npm run deploy:all` reloads the bridge live in every
+// open vault. `obsidian42-brat` (TfTHacker, MIT) auto-installs + auto-updates
+// GitHub-only plugins (the bridge, hot-reload) from releases at startup. Both
+// are cloned automatically when the reference enables them.
 
 // --- Reference-vault skeleton: shipped with the repo, used by --bootstrap-reference --
 // Contains: .obsidian/community-plugins.json + app.json, .smart-env/smart_env.json,
@@ -707,7 +705,7 @@ function initReference(refPath) {
 
   saveConfig(cfg);
   ok(`Reference vault set to: ${abs}`);
-  info('Plugins detected in reference: ' + PLUGINS_TO_CLONE.filter((p) =>
+  info('Plugins detected in reference: ' + resolvePluginsToClone(abs, REQUIRED_PLUGINS).filter((p) =>
     fs.existsSync(path.join(abs, '.obsidian', 'plugins', p))
   ).join(', '));
 }
@@ -1211,14 +1209,14 @@ function installGlobalConvention(name, opts = {}) {
   return result;
 }
 
-function ensureCommunityPlugins(vaultPath) {
+function ensureCommunityPlugins(vaultPath, pluginsToEnable) {
   const cpPath = path.join(vaultPath, '.obsidian', 'community-plugins.json');
   let list = [];
   if (fs.existsSync(cpPath)) {
     try { list = JSON.parse(fs.readFileSync(cpPath, 'utf8')); } catch { list = []; }
   }
   const enabled = [];
-  for (const p of PLUGINS_TO_CLONE) {
+  for (const p of pluginsToEnable) {
     const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', p);
     if (!fs.existsSync(pluginDir)) continue;
     if (!list.includes(p)) list.push(p);
@@ -1519,7 +1517,15 @@ function scaffoldWikiMeta(vaultPath) {
 // settings.json` is the canonical content; cpSync handles the directory clone
 // recursively. Existing per-vault `.claude/settings.json` files are preserved by
 // the no-overwrite guard (use --force to push template updates).
-const ROOT_FILES_TO_CLONE = ['README.md', 'quick-reference-fr.pdf', 'quick-reference-en.pdf', '.claude'];
+// Human-facing docs cloned to a fresh vault. `Documentation/` is the reference
+// vault's docs folder (quick-reference PDFs, SETUP.md, the vault-facing
+// CLAUDE.md) — reorganized there from the vault root, so the old per-PDF root
+// entries found nothing and only `.claude` still cloned. Dir entries
+// (`Documentation`, `.claude`) are cloned recursively by cloneRootDocs();
+// `README.md` covers the shipped skeleton (which keeps its README at root and
+// has no Documentation/). Non-existent entries are silently skipped, so this
+// list is a union across source shapes.
+const ROOT_FILES_TO_CLONE = ['README.md', 'Documentation', '.claude'];
 
 function cloneRootDocs(referenceVault, targetVault, force) {
   for (const item of ROOT_FILES_TO_CLONE) {
@@ -1905,10 +1911,12 @@ function setupVault(vaultPath, opts = {}) {
     } catch {}
   }
 
-  // Clone plugins
+  // Clone plugins. The set is derived from the reference vault's own
+  // community-plugins.json (union REQUIRED_PLUGINS) — see plugin-resolver.mjs.
   const targetObsidian = path.join(abs, '.obsidian');
   fs.mkdirSync(path.join(targetObsidian, 'plugins'), { recursive: true });
-  for (const p of PLUGINS_TO_CLONE) {
+  const pluginsToClone = resolvePluginsToClone(cfg.referenceVault, REQUIRED_PLUGINS);
+  for (const p of pluginsToClone) {
     const srcPlugin = path.join(cfg.referenceVault, '.obsidian', 'plugins', p);
     const dstPlugin = path.join(targetObsidian, 'plugins', p);
     if (!fs.existsSync(srcPlugin)) {
@@ -1973,7 +1981,7 @@ function setupVault(vaultPath, opts = {}) {
   }
   // Always patch data.json so the values match (plugin clone may have overwritten with .template's port/key)
   patchRestApiData(abs, port, apiKey);
-  ensureCommunityPlugins(abs);
+  ensureCommunityPlugins(abs, pluginsToClone);
 
   // Clone Smart Connections config + embedding cache from reference
   cloneSmartEnv(cfg.referenceVault, abs, opts.force);
