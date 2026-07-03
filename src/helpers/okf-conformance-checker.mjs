@@ -24,7 +24,7 @@
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
 
-const FRONTMATTER_BLOCK_RE = /^---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/;
+const FRONTMATTER_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REFERENCE_IMPL_SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9_.\-]*$/;
 const REFERENCE_IMPL_REQUIRED_KEYS = ['type', 'title', 'description', 'timestamp'];
@@ -34,6 +34,38 @@ const RESERVED = new Set(['index.md', 'log.md']);
 
 function finding(rule, path, detail) {
   return { rule, path, detail };
+}
+
+/**
+ * Coarse "is this actually parseable YAML" sanity check for rule 1. Our own
+ * frontmatter reader (`parseFrontmatter`, a minimal line/colon parser, not a
+ * real YAML parser) is lenient enough to silently accept syntactically
+ * invalid YAML — e.g. `type: [concept` (unclosed bracket) is read as the
+ * plain string `"[concept"`, a non-empty value that passes rule 2 despite
+ * the frontmatter not actually being parseable YAML.
+ *
+ * This checks only bracket/brace balance per line, deliberately NOT quote
+ * balance — an ordinary apostrophe in prose (`title: "Cole's loop"`) makes a
+ * naive quote-parity check false-positive constantly, while an unbalanced
+ * `[`/`]`/`{`/`}` is both rare in legitimate single-line scalar values and a
+ * strong signal of genuinely broken YAML. Block-sequence item lines
+ * (`- foo`) are skipped individually but still contribute to the same
+ * per-line balance check, since each line of a block sequence must itself
+ * be self-contained YAML.
+ *
+ * @param {string} rawFrontmatterBody Text between the `---` fences (no fences)
+ * @returns {string[]} Offending lines (empty when nothing looks wrong)
+ */
+function findUnbalancedBracketLines(rawFrontmatterBody) {
+  const problems = [];
+  for (const line of rawFrontmatterBody.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const opens = (trimmed.match(/[[{]/g) || []).length;
+    const closes = (trimmed.match(/[\]}]/g) || []).length;
+    if (opens !== closes) problems.push(trimmed);
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,12 +239,20 @@ export function checkOkfConformance(files) {
 
     // Concept document — rules 1 + 2.
     stats.documents += 1;
-    if (!FRONTMATTER_BLOCK_RE.test(file.content)) {
+    const blockMatch = FRONTMATTER_BLOCK_RE.exec(file.content);
+    if (!blockMatch) {
       out.errors.push(finding(
         'frontmatter-missing', file.path,
         'no parseable YAML frontmatter block (conformance rule 1, §9)',
       ));
       continue;
+    }
+    const unbalancedLines = findUnbalancedBracketLines(blockMatch[1]);
+    if (unbalancedLines.length > 0) {
+      out.errors.push(finding(
+        'frontmatter-not-parseable', file.path,
+        `frontmatter has unbalanced brackets — not valid YAML despite matching the \`---\` fences (conformance rule 1, §9): "${unbalancedLines[0].slice(0, 60)}"`,
+      ));
     }
     const { frontmatter } = parseFrontmatter(file.content);
     const type = frontmatter.type;

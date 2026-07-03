@@ -86,6 +86,49 @@ describe('rule 2 — non-empty type', () => {
     ]);
     assert.equal(result.conformant, true);
   });
+
+  test('REGRESSION (codex): unclosed bracket in a scalar value is caught even though a lenient parser reads it as non-empty', () => {
+    // `type: [concept` (missing closing bracket) is invalid YAML, but our
+    // minimal line/colon parseFrontmatter reads it as the plain string
+    // "[concept" — a non-empty value that would otherwise pass rule 2
+    // despite the frontmatter not actually being parseable YAML.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: '---\ntype: [concept\ntitle: T\n---\n\nBody.\n' },
+    ]);
+    assert.equal(result.conformant, false);
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('unbalanced brace is also caught', () => {
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: '---\ntype: concept\ntitle: {oops\n---\n\nBody.\n' },
+    ]);
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('balanced inline arrays and legitimate brackets in prose do not false-positive', () => {
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      {
+        path: 'doc.md',
+        content: "---\ntype: concept\ntitle: T\ndescription: 'Contains [brackets] and {braces} in prose.'\ntags: [a, b, c]\n---\n\nBody.\n",
+      },
+    ]);
+    assert.equal(result.conformant, true);
+    assert.ok(!rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('an unescaped apostrophe in prose does NOT false-positive (no quote-parity check)', () => {
+    // A naive quote-parity heuristic would flag this (1 unmatched '), which
+    // is exactly why the checker only balances brackets/braces, not quotes.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: '---\ntype: concept\ntitle: "Cole\'s loop"\n---\n\nBody.\n' },
+    ]);
+    assert.equal(result.conformant, true);
+  });
 });
 
 describe('rule 3 — reserved index.md structure', () => {

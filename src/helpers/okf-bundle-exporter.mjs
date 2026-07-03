@@ -38,7 +38,12 @@ import { parseFrontmatter } from './llms-txt-exporter.mjs';
 
 export const OKF_VERSION = '0.1';
 
-/** Reserved filenames (§3.1) — never usable as concept documents. */
+/**
+ * Reserved filenames (§3.1) — never usable as concept documents.
+ * `readme.md` is ALSO reserved, but only when `includeAgentReadme` is on —
+ * that conditional entry is added at the `buildOkfBundle` call site, not
+ * here, since it's not part of the spec's own reserved set.
+ */
 const RESERVED_BASENAMES = new Set(['index.md', 'log.md']);
 
 // ---------------------------------------------------------------------------
@@ -55,10 +60,12 @@ const RESERVED_BASENAMES = new Set(['index.md', 'log.md']);
  * @param {string} segment Raw folder/file-stem name
  * @returns {string} Slugified segment (never empty — falls back to 'page')
  */
+const COMBINING_DIACRITICS_RE = /[̀-ͯ]/g;
+
 export function slugifyOkfSegment(segment) {
   const slug = String(segment)
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '') // strip combining diacritics (NFD)
+    .replace(COMBINING_DIACRITICS_RE, '') // strip combining diacritics (NFD) — escaped range, not a literal glyph (editor/diff-tool safety)
     .replace(/[^A-Za-z0-9_.-]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^[-.]+/, '') // first char must be [A-Za-z0-9_]
@@ -133,18 +140,28 @@ function splitWikiTarget(raw) {
 }
 
 /**
- * Build a resolver that maps a wikilink target string to the NEW
- * bundle-relative path of the page it designates.
+ * Build a resolver that maps a wikilink (or markdown-link) target string to
+ * the NEW bundle-relative path of the page it designates.
  *
  * Resolution order (mirrors Obsidian's basename resolution):
  *   1. exact vault path (with or without `wiki/` prefix, with or without `.md`)
  *   2. basename, case-sensitive
  *   3. basename, case-insensitive
  *
+ * When step 2 or 3 matches MULTIPLE pages (two source pages share a
+ * basename across folders — an ambiguity Obsidian itself has, since a bare
+ * `[[Foo]]` is basename-resolved there too), this resolver breaks the tie
+ * by preferring a candidate that lives in the SAME bundle folder as the
+ * citing page, falling back to the alphabetically-first candidate. The
+ * choice is never silent — every ambiguous resolution is pushed to
+ * `report.ambiguousLinks` so the export report surfaces it.
+ *
  * @param {Array<{ path: string, newPath: string }>} mappings
- * @returns {(target: string) => string | null} New path, or null if not exported
+ * @param {{ ambiguousLinks: string[] }} report Mutated on ambiguous matches
+ * @returns {(target: string, fromNewPath: string) => string | null}
+ *   New path, or null if not exported
  */
-function makeTargetResolver(mappings) {
+function makeTargetResolver(mappings, report) {
   const byVaultPath = new Map();
   const byBasename = new Map();
   const byBasenameLower = new Map();
@@ -153,41 +170,91 @@ function makeTargetResolver(mappings) {
     byVaultPath.set(noExt, m.newPath);
     byVaultPath.set(noExt.replace(/^wiki\//, ''), m.newPath);
     const basename = noExt.split('/').pop();
-    if (!byBasename.has(basename)) byBasename.set(basename, m.newPath);
+    if (!byBasename.has(basename)) byBasename.set(basename, []);
+    byBasename.get(basename).push(m);
     const lower = basename.toLowerCase();
-    if (!byBasenameLower.has(lower)) byBasenameLower.set(lower, m.newPath);
+    if (!byBasenameLower.has(lower)) byBasenameLower.set(lower, []);
+    byBasenameLower.get(lower).push(m);
   }
-  return (target) => {
-    const clean = target.replace(/\.md$/i, '');
-    return (
-      byVaultPath.get(clean) ??
-      byBasename.get(clean.split('/').pop()) ??
-      byBasenameLower.get(clean.split('/').pop().toLowerCase()) ??
-      null
+
+  const pickCandidate = (candidates, fromNewPath, rawTarget) => {
+    if (candidates.length === 1) return candidates[0].newPath;
+    const fromDir = fromNewPath.split('/').slice(0, -1).join('/');
+    const sameDir = candidates.find(
+      (c) => c.newPath.split('/').slice(0, -1).join('/') === fromDir,
     );
+    const sorted = candidates.slice().sort((a, b) => a.newPath.localeCompare(b.newPath));
+    const chosen = sameDir ?? sorted[0];
+    report.ambiguousLinks.push(
+      `${fromNewPath}: [[${rawTarget}]] matches ${candidates.length} pages (${sorted
+        .map((c) => c.newPath)
+        .join(', ')}) — resolved to ${chosen.newPath}${
+        sameDir ? ' (same-folder preference)' : ' (first match, alphabetical — ambiguous)'
+      }`,
+    );
+    return chosen.newPath;
+  };
+
+  return (target, fromNewPath) => {
+    const clean = target.replace(/\.md$/i, '');
+    const exact = byVaultPath.get(clean);
+    if (exact) return exact;
+    const basename = clean.split('/').pop();
+    const candidates = byBasename.get(basename);
+    if (candidates?.length) return pickCandidate(candidates, fromNewPath, target);
+    const candidatesLower = byBasenameLower.get(basename.toLowerCase());
+    if (candidatesLower?.length) return pickCandidate(candidatesLower, fromNewPath, target);
+    return null;
   };
 }
 
+// Standard markdown link/image to a `.md` target, with an optional
+// `#anchor`. Captures the `!`-or-not label bracket verbatim so image syntax
+// is preserved; only the path inside `(...)` is ever rewritten.
+const MARKDOWN_MD_LINK_RE = /(!?\[[^\]]*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
+
 /**
- * Rewrite every `[[wikilink]]` / `![[embed]]` in a page body into relative
+ * Rewrite every `[[wikilink]]`, `![[embed]]`, AND pre-existing standard
+ * markdown link/image pointing at a `.md` file in a page body into relative
  * markdown links between the bundle's slugified paths.
  *
  * Policies (all reported, never silent):
  *   - heading/block anchors are dropped (no OKF equivalent) → `anchorsDropped`
+ *   - a same-document reference (`[[#Heading]]`, `[[^block-id]]` — empty
+ *     target) has no OKF equivalent (no "current document" concept) and is
+ *     demoted to plain text rather than guessing a nonexistent file →
+ *     `anchorsDropped`
  *   - links to pages outside the export set become dangling links to the
  *     slugified guess of where the page WOULD live → `dangling`
  *   - embeds of markdown pages are demoted to plain links; embeds of assets
  *     become standard image links (assets are not exported) → `embeds`
+ *   - existing markdown links whose target resolves to an exported page are
+ *     repointed at its new slugified path (a source page can legally mix
+ *     wikilinks and standard markdown links) → silent when already correct,
+ *     otherwise folded into the same rewrite as wikilinks
+ *
+ * Resolution of an ambiguous bare target (two exported pages share a
+ * basename) is handled by `resolve` itself → `report.ambiguousLinks`.
  *
  * @param {string} body Page body (frontmatter already removed)
  * @param {string} fromNewPath Bundle-relative path of the page being rewritten
- * @param {(target: string) => string | null} resolve Target resolver
- * @param {{ anchorsDropped: string[], dangling: string[], embeds: string[] }} report
- * @returns {string} Body with all Obsidian link syntax converted
+ * @param {(target: string, fromNewPath: string) => string | null} resolve Target resolver
+ * @param {{ anchorsDropped: string[], dangling: string[], embeds: string[], ambiguousLinks: string[] }} report
+ * @returns {string} Body with all Obsidian + markdown link syntax converted
  */
 export function rewriteWikilinks(body, fromNewPath, resolve, report) {
   const convertTarget = (raw, { isEmbed }) => {
     const { target, anchor, alias } = splitWikiTarget(raw);
+    if (!target) {
+      // Same-document reference — OKF has no notion of "the current
+      // document" as a link target; a link to a synthesized dangling file
+      // would be actively wrong, not just imprecise. Demote to plain text.
+      const selfLabel = alias || anchor || raw;
+      report.anchorsDropped.push(
+        `${fromNewPath}: [[${raw}]] (self-document reference, link dropped)`,
+      );
+      return selfLabel;
+    }
     if (anchor) report.anchorsDropped.push(`${fromNewPath}: [[${raw}]]`);
     const label = alias || target.split('/').pop().replace(/\.md$/i, '');
     if (isEmbed && ASSET_EXT_RE.test(target)) {
@@ -199,7 +266,7 @@ export function rewriteWikilinks(body, fromNewPath, resolve, report) {
       report.embeds.push(`${fromNewPath}: ![[${raw}]] (asset, not exported)`);
       return `![${label}](${slugifyOkfSegment(stem)}${ext.toLowerCase()})`;
     }
-    const resolved = resolve(target);
+    const resolved = resolve(target, fromNewPath);
     let linkPath;
     if (resolved) {
       linkPath = relativeLink(fromNewPath, resolved);
@@ -216,7 +283,34 @@ export function rewriteWikilinks(body, fromNewPath, resolve, report) {
     return `[${label}](${linkPath})`;
   };
 
+  const convertMarkdownLink = (full, labelPart, rawPath, anchorPart) => {
+    // Absolute URLs (http(s):, mailto:, protocol-relative //) are never
+    // vault pages — leave untouched. A relative path is anything else.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(rawPath) || rawPath.startsWith('//')) return full;
+    let decoded = rawPath;
+    try {
+      decoded = decodeURIComponent(rawPath);
+    } catch {
+      // Malformed percent-encoding — resolve against the raw text instead
+      // of throwing; worst case the lookup simply misses (link untouched).
+    }
+    const resolved = resolve(decoded, fromNewPath);
+    if (!resolved) return full; // not one of our exported pages — leave as-authored
+    if (anchorPart) {
+      report.anchorsDropped.push(
+        `${fromNewPath}: ${labelPart}(${rawPath}${anchorPart}) [markdown link anchor]`,
+      );
+    }
+    const newRelative = relativeLink(fromNewPath, resolved);
+    // Truly a no-op only when BOTH the path is already correct AND there's
+    // no anchor to strip — a matching path with a trailing #anchor must
+    // still be rewritten to actually drop that anchor.
+    if (newRelative === rawPath && !anchorPart) return full;
+    return `${labelPart}(${newRelative})`;
+  };
+
   return body
+    .replace(MARKDOWN_MD_LINK_RE, convertMarkdownLink)
     .replace(EMBED_RE, (_m, raw) => convertTarget(raw, { isEmbed: true }))
     .replace(WIKILINK_RE, (_m, raw) => convertTarget(raw, { isEmbed: false }));
 }
@@ -343,7 +437,16 @@ export function buildOkfFrontmatter(frontmatter, body, basename, now, warnings =
 const ALWAYS_QUOTED_KEYS = new Set(['timestamp', 'okf_version']);
 
 function yamlScalar(value, key) {
-  const s = String(value);
+  // Collapse literal newlines to a single space FIRST. A frontmatter value
+  // containing a real `\n` (plausible for any pass-through extension key —
+  // see buildOkfFrontmatter's key preservation) would otherwise be emitted
+  // as a multi-line single-quoted YAML block scalar that can itself contain
+  // a bare `---` line. Our own frontmatter reader (parseFrontmatter, a
+  // naive line/colon parser, not a real YAML parser) then misreads that
+  // line as a second frontmatter fence and silently truncates/corrupts the
+  // document. Frontmatter values are single-line metadata by contract —
+  // sanitize rather than round-trip embedded newlines literally.
+  const s = String(value).replace(/\r\n|\r|\n/g, ' ').trim();
   const needsQuotes =
     ALWAYS_QUOTED_KEYS.has(key) ||
     s === '' ||
@@ -526,6 +629,7 @@ Generated by [obsidian-mcp-router](https://github.com/tboome/obsidian-mcp-router
  *     dangling: string[],
  *     anchorsDropped: string[],
  *     embeds: string[],
+ *     ambiguousLinks: string[],
  *     warnings: string[],
  *   }
  * }}
@@ -553,12 +657,19 @@ export function buildOkfBundle({
     dangling: [],
     anchorsDropped: [],
     embeds: [],
+    ambiguousLinks: [],
     warnings: [],
   };
 
-  // 1. Filter + deterministic order.
+  // 1. Filter + deterministic order. Paths are normalized (backslashes,
+  // leading `./`) BEFORE the wiki-meta/ exclusion — this is the only
+  // enforcement point keeping private working data (hot cache, digests,
+  // session journals) out of a shared bundle, so it must not depend on the
+  // caller passing already-canonical posix paths (mirrors the same
+  // normalization in checkOkfConformance).
   const exportable = pages
     .filter((p) => p && typeof p.path === 'string' && typeof p.content === 'string')
+    .map((p) => ({ ...p, path: p.path.replace(/\\/g, '/').replace(/^\.?\//, '') }))
     .filter((p) => p.path.endsWith('.md'))
     .filter((p) => !p.path.startsWith('wiki-meta/'))
     .slice()
@@ -596,7 +707,7 @@ export function buildOkfBundle({
     mappings.push({ path: page.path, content: page.content, newPath });
   }
 
-  const resolve = makeTargetResolver(mappings);
+  const resolve = makeTargetResolver(mappings, report);
 
   // 3. Transform each page: frontmatter mapping + link rewriting.
   const documents = [];

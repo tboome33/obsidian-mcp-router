@@ -17,6 +17,7 @@ import {
   OKF_VERSION,
 } from '../src/helpers/okf-bundle-exporter.mjs';
 import { checkOkfConformance } from '../src/helpers/okf-conformance-checker.mjs';
+import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
 
 const NOW = '2026-07-03T10:00:00+00:00';
 
@@ -203,6 +204,34 @@ describe('serializeOkfFrontmatter', () => {
     const yaml = serializeOkfFrontmatter({ description: "Cole's loop: x" });
     assert.match(yaml, /description: 'Cole''s loop: x'/);
   });
+
+  test('SECURITY: embedded newlines are collapsed, never emitted as a multi-line YAML block scalar', () => {
+    // A literal \n in a value would otherwise produce a single-quoted YAML
+    // BLOCK scalar (valid YAML — single-quoted scalars allow literal
+    // newlines) that can itself contain a bare `---` line. Our own
+    // frontmatter reader (parseFrontmatter, a line/colon parser, not a real
+    // YAML parser) then misreads that line as a second frontmatter fence
+    // and silently corrupts the rest of the document. Regression for a
+    // /review+ BLOCKER finding.
+    const evil = 'end of doc\n---\ntype: hacked';
+    const yaml = serializeOkfFrontmatter({ type: 'note', notes: evil });
+    assert.ok(!yaml.includes('\n---\n'), 'no bare --- line must appear inside the frontmatter block');
+    // Reparsing must NOT let the corrupted body forge a second document —
+    // the notes value must round-trip as a single sanitized line.
+    const full = `${yaml}\n\nBody.\n`;
+    const { frontmatter, body } = parseFrontmatter(full);
+    assert.equal(frontmatter.type, 'note');
+    assert.equal(frontmatter.notes, 'end of doc --- type: hacked');
+    assert.equal(body.trim(), 'Body.');
+  });
+
+  test('CRLF values are also collapsed to a single space', () => {
+    const yaml = serializeOkfFrontmatter({ title: 'Line one\r\nLine two' });
+    // The collapsed value has no trigger character left, so it's emitted
+    // unquoted — a bare scalar is still valid, unambiguous YAML.
+    assert.match(yaml, /title: Line one Line two$/m);
+    assert.ok(!yaml.includes('\r'));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -214,7 +243,7 @@ function makeResolver(map) {
 }
 
 function emptyReport() {
-  return { anchorsDropped: [], dangling: [], embeds: [] };
+  return { anchorsDropped: [], dangling: [], embeds: [], ambiguousLinks: [] };
 }
 
 describe('rewriteWikilinks', () => {
@@ -273,6 +302,132 @@ describe('rewriteWikilinks', () => {
     assert.equal(out, '![Schéma Final.PNG](schema-final.png)');
     assert.equal(report.embeds.length, 1);
   });
+
+  test('REGRESSION (codex): self-document heading link is demoted to plain text, not a broken link', () => {
+    // [[#Details]] has an EMPTY target (a same-document heading reference).
+    // Before the fix, this fell into the dangling-link branch and slugified
+    // the empty string into a nonsensical `page.md` target.
+    const report = emptyReport();
+    const out = rewriteWikilinks('See [[#Details]] below.', 'here.md', makeResolver({}), report);
+    assert.equal(out, 'See Details below.');
+    assert.equal(report.dangling.length, 0);
+    assert.equal(report.anchorsDropped.length, 1);
+    assert.match(report.anchorsDropped[0], /self-document reference/);
+  });
+
+  test('REGRESSION (codex): self-document block-ref link uses the alias when present', () => {
+    // Obsidian's same-document block-reference syntax is `[[#^block-id]]`
+    // (the `#` before `^` is what marks it same-document — `[[^id]]` alone
+    // would be a same-document link to a DIFFERENT page literally named "^id").
+    const out = rewriteWikilinks(
+      '[[#^my-block|jump here]]', 'here.md', makeResolver({}), emptyReport(),
+    );
+    assert.equal(out, 'jump here');
+  });
+
+  test('REGRESSION (codex): a pre-existing markdown link to an exported page is repointed at the new slugified path', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      'See [the other page](reseau-vital-original.md) for details.',
+      'concepts/foo-bar.md',
+      makeResolver({ 'reseau-vital-original.md': 'refs/reseau-vital.md' }),
+      report,
+    );
+    assert.equal(out, 'See [the other page](../refs/reseau-vital.md) for details.');
+  });
+
+  test('REGRESSION (codex): a percent-encoded markdown link target (spaces/accents) is decoded before resolution', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      'See [the other page](R%C3%A9seau%20Vital.md) for details.',
+      'concepts/foo-bar.md',
+      makeResolver({ 'Réseau Vital.md': 'refs/reseau-vital.md' }),
+      report,
+    );
+    assert.equal(out, 'See [the other page](../refs/reseau-vital.md) for details.');
+  });
+
+  test('markdown link left untouched when it does not resolve to an exported page', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      'See [external](https://example.com/x.md) and [unrelated](not-exported.md).',
+      'here.md', makeResolver({}), report,
+    );
+    assert.equal(out, 'See [external](https://example.com/x.md) and [unrelated](not-exported.md).');
+  });
+
+  test('markdown link already pointing at the correct path is left as-is (no report noise)', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      '[Other](other.md)', 'here.md', makeResolver({ 'other.md': 'other.md' }), report,
+    );
+    assert.equal(out, '[Other](other.md)');
+    assert.equal(report.anchorsDropped.length, 0);
+  });
+
+  test('markdown link anchor is dropped and reported like a wikilink anchor', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      '[Other](other.md#Section)', 'here.md', makeResolver({ 'other.md': 'other.md' }), report,
+    );
+    assert.equal(out, '[Other](other.md)');
+    assert.equal(report.anchorsDropped.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rewriteWikilinks — ambiguous basename resolution (makeTargetResolver via buildOkfBundle)
+// ---------------------------------------------------------------------------
+
+describe('buildOkfBundle — ambiguous basename resolution (codex regression)', () => {
+  test('two exported pages sharing a basename: same-folder candidate wins, reported', () => {
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/concepts/Foo.md', ['type: concept', 'title: Foo in concepts'], 'x'),
+        page('wiki/refs/Foo.md', ['type: reference', 'title: Foo in refs'], 'y'),
+        page(
+          'wiki/concepts/Bar.md',
+          ['type: concept', 'title: Bar'],
+          'See [[Foo]] for details.',
+        ),
+      ],
+    });
+    const bar = fileByPath(files, 'concepts/bar.md');
+    // Bar.md lives in concepts/ — the same-folder Foo (concepts/foo.md) must win.
+    assert.match(bar.content, /\[Foo\]\(foo\.md\)/);
+    assert.equal(report.ambiguousLinks.length, 1);
+    assert.match(report.ambiguousLinks[0], /matches 2 pages/);
+  });
+
+  test('ambiguous basename with no same-folder candidate falls back to alphabetical, still reported', () => {
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/b-folder/Foo.md', ['type: concept', 'title: Foo B'], 'x'),
+        page('wiki/a-folder/Foo.md', ['type: concept', 'title: Foo A'], 'y'),
+        page('wiki/notes/Bar.md', ['type: concept', 'title: Bar'], 'See [[Foo]].'),
+      ],
+    });
+    const bar = fileByPath(files, 'notes/bar.md');
+    assert.match(bar.content, /\[Foo\]\(\.\.\/a-folder\/foo\.md\)/);
+    assert.equal(report.ambiguousLinks.length, 1);
+    assert.match(report.ambiguousLinks[0], /first match, alphabetical/);
+  });
+
+  test('unambiguous basename resolution produces no ambiguousLinks entries', () => {
+    const { report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/refs/Baz.md', ['type: reference', 'title: Baz'], 'x'),
+        page('wiki/concepts/Foo.md', ['type: concept', 'title: Foo'], 'See [[Baz]].'),
+      ],
+    });
+    assert.equal(report.ambiguousLinks.length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -300,6 +455,24 @@ describe('buildOkfBundle', () => {
     });
     assert.equal(report.documentCount, 1);
     assert.ok(!files.some((f) => f.path.includes('hot')));
+  });
+
+  test('REGRESSION: wiki-meta/ exclusion survives backslash and leading-./ paths', () => {
+    // The wiki-meta/ filter is a prefix check on `p.path` — this is the
+    // ONLY enforcement point keeping private working data out of a shared
+    // bundle, so it must not silently stop working if a caller passes a
+    // non-canonical path (backslashes, leading ./). Regression for a
+    // /review+ IMPORTANT finding.
+    const { report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        { path: 'wiki-meta\\hot.md', content: '---\ntype: hot\n---\n\nHot.' },
+        { path: './wiki-meta/log.md', content: '---\ntype: log\n---\n\nLog.' },
+        page('wiki/notes/a.md', ['type: note', 'title: A', 'description: d'], 'A.'),
+      ],
+    });
+    assert.equal(report.documentCount, 1);
   });
 
   test('is deterministic — same input, byte-identical output', () => {

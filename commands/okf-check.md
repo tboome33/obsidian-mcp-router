@@ -4,6 +4,8 @@ description: Validate an OKF knowledge bundle (ours or a third-party clone) agai
 
 Invoke the `wiki-lint` skill in `--okf <path>` mode (Check M only — this does not lint the wiki itself).
 
+ARGUMENTS: $ARGUMENTS
+
 Argument (required): `<path>` — either a bundle exported by `/obsidian-router:okf-export` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned git repo containing an OKF bundle. If the user gives a GitHub URL, clone it to the scratchpad first, then validate the clone.
 
 Default behaviour:

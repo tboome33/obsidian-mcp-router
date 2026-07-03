@@ -4,6 +4,8 @@ description: Export a wiki subset as a shareable OKF knowledge bundle (Google's 
 
 Invoke the `wiki-export` skill with `--target okf`.
 
+ARGUMENTS: $ARGUMENTS
+
 Arguments (all optional): `[scope] [--name <bundle-name>] [--readme-agent] [--vault <slug>]`
 - `scope` — what to export: a folder (`wiki/Divers`), a tag filter (`#trading`), or nothing for the whole `wiki/` tree. When ambiguous, ask the user which subset they want to share BEFORE fetching pages.
 - `--name` — bundle folder name; default: slugified vault name.
