@@ -60,6 +60,12 @@ import {
 import { buildOpenLinkTool } from './tools/build-open-link.mjs';
 import { openInObsidianTool } from './tools/open-in-obsidian.mjs';
 import { getViewLinkTool } from './tools/get-view-link.mjs';
+// Layer-1 vault-creation wizard tools (v0.35.0). LOCAL-ONLY: registered only on
+// a non-gated router (hidden when OBSIDIAN_ROUTER_USER_ID is set — see
+// LOCAL_ONLY_TOOL_NAMES + computeExposedTools). They write to the local
+// filesystem, so they must never be reachable on a shared/gated deployment.
+import { planVaultTool } from './tools/plan-vault.mjs';
+import { provisionVaultTool } from './tools/provision-vault.mjs';
 import { viewLinkForWrite, noteForWriteResult } from './helpers/view-link.mjs';
 import { smartLinkEnabled } from './helpers/smart-link.mjs';
 import {
@@ -740,6 +746,99 @@ const TOOLS = [
   // from the knowledge graph. Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
   BUILD_WIKI_TOUR_TOOL_DEFINITION,
+  // v0.35.0 — vault-creation wizard (LOCAL-ONLY, gated out when
+  // OBSIDIAN_ROUTER_USER_ID is set). plan_vault is read-only; provision_vault
+  // writes a new vault to the local filesystem.
+  {
+    name: 'plan_vault',
+    description:
+      'READ-ONLY. Plan the creation of a NEW local Obsidian vault: returns the computed defaults + a structured questionnaire (the 5 wiki modes with explanations, the themes installed in the source, the registered vaults you can copy config from, the plugin profiles) + warnings, WITHOUT writing anything. The harness LLM drives the conversation from this data, then calls provision_vault. LOCAL-ONLY: absent on gated deployments.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'The intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default.' },
+        name: { type: 'string', description: 'Optional display name (→ slug).' },
+        source: {
+          type: 'object',
+          description: 'Template source override. kind: reference (default) | from-vault | skeleton | bare.',
+          properties: {
+            kind: { type: 'string', enum: ['reference', 'from-vault', 'skeleton', 'bare'] },
+            fromVault: { type: 'string', description: 'Source vault slug or path (for kind=from-vault).' },
+            withFolderTree: { type: 'boolean', description: 'Recreate the source wiki/ folder tree empty (from-vault only).' },
+          },
+          additionalProperties: false,
+        },
+        plugins: {
+          type: 'object',
+          properties: {
+            profile: { type: 'string', enum: ['recommended', 'minimal', 'custom'] },
+            custom: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        wikiMode: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['personal', 'research', 'business', 'code', 'domain'] },
+            sections: { type: 'array', items: { type: 'string' }, description: 'Flat section list for mode=domain.' },
+          },
+          additionalProperties: false,
+        },
+        theme: { type: 'string', description: 'Theme name (currently recorded but not applied — Lot 2).' },
+        linkWorkspace: { type: 'string', description: 'Code workspace path to bind to this vault.' },
+        claudeWorkspace: { type: 'boolean' },
+      },
+      required: ['path'],
+      additionalProperties: true,
+    },
+  },
+  {
+    name: 'provision_vault',
+    description:
+      'Create a NEW local Obsidian vault in one call from a set of wizard answers (typically the defaults/adjustments surfaced by plan_vault). Returns a step-by-step report + port, insecurePort, openUri, and probeResult. SECURITY: refuses any path outside the known vault roots unless allowOutsideRoots:true; --from-vault copies config only (workspace.json + credential data.json excluded, port + API key regenerated). LOCAL-ONLY: absent on gated deployments. Writes to the local filesystem.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Target vault location (must be under a known vault root unless allowOutsideRoots).' },
+        name: { type: 'string' },
+        source: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['reference', 'from-vault', 'skeleton', 'bare'] },
+            fromVault: { type: 'string' },
+            withFolderTree: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+        plugins: {
+          type: 'object',
+          properties: {
+            profile: { type: 'string', enum: ['recommended', 'minimal', 'custom'] },
+            custom: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        wikiMode: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['personal', 'research', 'business', 'code', 'domain'] },
+            sections: { type: 'array', items: { type: 'string' } },
+          },
+          additionalProperties: false,
+        },
+        theme: { type: 'string' },
+        linkWorkspace: { type: 'string' },
+        claudeWorkspace: { type: 'boolean' },
+        open: { type: 'boolean', description: 'Launch Obsidian on the new vault.' },
+        probe: { type: 'boolean', description: 'Poll the REST port for a health verdict after open.' },
+        probeTimeout: { type: 'number', description: 'Probe timeout in seconds.' },
+        gitInit: { type: 'boolean', description: 'git init + initial commit inside the vault.' },
+        allowOutsideRoots: { type: 'boolean', description: 'Override the path gate to allow a target outside known vault roots.' },
+      },
+      required: ['path'],
+      additionalProperties: true,
+    },
+  },
 ];
 
 /**
@@ -805,7 +904,18 @@ const TOOL_HANDLERS = {
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
+  // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;
+  // provision_vault writes a new vault. Both ignore the registry (they drive
+  // the setup-vault.mjs engine directly).
+  plan_vault: (_reg, args) => planVaultTool(_reg, args),
+  provision_vault: (_reg, args) => provisionVaultTool(_reg, args),
 };
+
+// LOCAL-ONLY tools: they touch the local filesystem (provision_vault writes a
+// new vault), so they are HIDDEN from the tool list — and refused at CallTool —
+// on any gated/multi-tenant deployment (OBSIDIAN_ROUTER_USER_ID set). Same
+// spirit as the MD_ALLOWED_PATHS sandbox gate. Exported for testing.
+const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault']);
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
 // module load — any mismatch (typo, forgotten handler, orphan handler) is a
@@ -894,9 +1004,11 @@ export function isReadonlyMode(rawEnvValue) {
  *     (The `viewLink` auto-injection is separately gated inside `viewLinkForWrite`.)
  * Exported for testing.
  */
-export function computeExposedTools(tools, { readonly = false, viewAgentConfigured = false } = {}) {
+export function computeExposedTools(tools, { readonly = false, viewAgentConfigured = false, gated = false } = {}) {
   let out = readonly ? tools.filter((t) => !WRITE_TOOL_NAMES.has(t.name)) : tools;
   if (!viewAgentConfigured) out = out.filter((t) => t.name !== 'get_view_link');
+  // Gated/multi-tenant deployments hide the local-only vault-provisioning tools.
+  if (gated) out = out.filter((t) => !LOCAL_ONLY_TOOL_NAMES.has(t.name));
   return out;
 }
 
@@ -1233,7 +1345,18 @@ export async function startServer({ configPath, watch = true } = {}) {
   //    infra shows zero dead/confusing tool. The `viewLink` auto-injection is independently
   //    gated inside `viewLinkForWrite` (silent + zero latency when unconfigured).
   const viewAgentConfigured = !!(process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim();
-  const exposedTools = computeExposedTools(TOOLS, { readonly, viewAgentConfigured });
+  // v0.35.0 — the local-only vault-wizard tools (plan_vault / provision_vault)
+  // are hidden on any gated deployment (OBSIDIAN_ROUTER_USER_ID set), since
+  // provision_vault writes to the local filesystem and must never be reachable
+  // from a shared/multi-tenant router.
+  const gated = !!(process.env.OBSIDIAN_ROUTER_USER_ID || '').trim();
+  if (gated) {
+    console.error(
+      `[obsidian-mcp-router] OBSIDIAN_ROUTER_USER_ID set — local-only tools hidden: ` +
+        [...LOCAL_ONLY_TOOL_NAMES].join(', '),
+    );
+  }
+  const exposedTools = computeExposedTools(TOOLS, { readonly, viewAgentConfigured, gated });
   // Smart links (resolver provider) take PRIORITY over the view-agent inside
   // viewLinkForWrite / open_in_obsidian — pure HMAC emission, no network call.
   const smartLinksOn = smartLinkEnabled(process.env);
@@ -1310,6 +1433,15 @@ export async function startServer({ configPath, watch = true } = {}) {
           `Tool "${name}" is disabled in read-only mode ` +
             `(OBSIDIAN_ROUTER_READONLY is set). Restart the router with the env ` +
             `var cleared to enable writes.`,
+        );
+      }
+      // v0.35.0 — second-layer gate for the local-only wizard tools. Refuse
+      // even if a client skipped ListTools and called the name directly.
+      if (gated && LOCAL_ONLY_TOOL_NAMES.has(name)) {
+        throw new Error(
+          `Tool "${name}" is disabled on this deployment ` +
+            `(OBSIDIAN_ROUTER_USER_ID is set — the local-only vault-provisioning ` +
+            `tools are hidden). Use the local, non-gated router to create vaults.`,
         );
       }
       // Map-based dispatch (IMP-3). The boot-time cross-check between TOOLS
@@ -1443,6 +1575,7 @@ export const _internals = {
   TOOL_HANDLERS,
   WRITE_TOOL_NAMES,
   VIEW_LINK_TOOLS,
+  LOCAL_ONLY_TOOL_NAMES,
   computeExposedTools,
   PKG_VERSION,
 };

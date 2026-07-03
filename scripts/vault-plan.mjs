@@ -135,6 +135,38 @@ export function defaultWikiMode({ linkWorkspace } = {}) {
   return linkWorkspace ? 'code' : 'personal';
 }
 
+// The 5 wiki modes, each with a one-line explanation. The "guided creation"
+// flow (plan_vault + the meta-attach-vault skill) presents ALL FIVE with these
+// descriptions so any harness shows the same choices (spec §4.2). `domain` is
+// user-tailored: the frontend translates a one-line domain description into a
+// flat --wiki-sections list; the engine stays deterministic.
+export const WIKI_MODES = [
+  { id: 'personal', label: '🧠 personal', description: 'Second brain — people, concepts, decisions, references, personal projects.' },
+  { id: 'research', label: '🔬 research', description: 'Studying a subject — papers, concepts, hypotheses, methodology, findings.' },
+  { id: 'business', label: '💼 business', description: 'A business — competitors, clients, decisions, stakeholders, meetings.' },
+  { id: 'code', label: '💻 code', description: 'Tied to a repo — codebases, architecture decisions (ADR), runbooks.' },
+  { id: 'domain', label: '🎯 domain', description: 'Custom — describe the domain in one line; index sections are generated for you (pass --wiki-sections).' },
+];
+
+/** Themes installed in a vault (its `.obsidian/themes/` folders) + the built-in default. */
+export function availableThemes(sourceVault) {
+  const out = [{ id: 'obsidian-default', label: 'Obsidian default (no custom theme)' }];
+  if (!sourceVault) return out;
+  try {
+    for (const e of fs.readdirSync(path.join(sourceVault, '.obsidian', 'themes'), { withFileTypes: true })) {
+      if (e.isDirectory()) out.push({ id: e.name, label: e.name });
+    }
+  } catch { /* no themes dir → default only */ }
+  return out;
+}
+
+/** Registered vaults you can copy config FROM (--from-vault), as {slug, path}. */
+export function copyableVaults(cfg = {}) {
+  const out = [];
+  for (const [slug, vp] of existingSlugs(cfg)) out.push({ slug, path: vp });
+  return out;
+}
+
 /**
  * Build the complete, resolved provisioning plan (read-only). This is what
  * `--dry-run [--json]` prints and what `provision_vault` executes.
@@ -193,6 +225,9 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
     referenceConfigured: Boolean(cfg.referenceVault),
     knownRoots: knownVaultRoots(cfg),
     existingBinding: null,
+    // Questionnaire inputs (consumed by plan_vault to build the option lists).
+    copyableVaults: copyableVaults(cfg),
+    availableThemes: availableThemes(src.sourceVault),
   };
 
   // Path within known roots? (informational at plan time; enforced by the gate.)

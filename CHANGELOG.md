@@ -6,6 +6,26 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-07-03 — Vault wizard W2: `plan_vault` + `provision_vault` MCP tools (harness-agnostic) + security gates
+
+Layer 1 of the guided vault-creation wizard: the wizard becomes usable from ANY MCP client (Claude, Codex, Hermes, a raw MCP call…), not just the CLI. Both tools drive the SAME layer-0 engine (`scripts/setup-vault.mjs`), so there's one source of truth for provisioning.
+
+### Added
+
+- **`plan_vault` (read-only)** — returns the computed defaults + a structured questionnaire (the 5 wiki modes each with an explanation, the themes actually installed in the source vault, the registered vaults you can copy config from, the plugin profiles) + warnings + ordered steps, WITHOUT writing anything. Runs the engine in `--dry-run --json` and shapes the result. New `src/tools/plan-vault.mjs`. The wizard lives in this data — any harness LLM drives the conversation, then calls `provision_vault`.
+- **`provision_vault`** — creates a vault in one call from a set of answers; returns a step report + `port`, `insecurePort`, `openUri`, `probeResult`. New `src/tools/provision-vault.mjs`. Shared engine bridge `src/helpers/vault-wizard-engine.mjs` (compose flags → spawn `setup-vault.mjs` → parse the `##PROVISION_RESULT##` marker the engine now emits on a real `--json` run).
+- **`scripts/vault-plan.mjs`**: exported `WIKI_MODES` (the 5 modes + descriptions), `availableThemes`, `copyableVaults`; `buildProvisionPlan` now enriches `context` with `copyableVaults` + `availableThemes` for the questionnaire.
+
+### Security (non-negotiable — spec §7.3)
+
+- **Both tools are LOCAL-ONLY**: absent from the tool list AND refused at CallTool when `OBSIDIAN_ROUTER_USER_ID` is set (a gated MCPHub/Tribu deployment) — same pattern as the `MD_ALLOWED_PATHS` sandbox. `provision_vault` writes to the local filesystem, so it must never be reachable from a shared/multi-tenant router. New `LOCAL_ONLY_TOOL_NAMES` gate in `computeExposedTools` + the CallTool guard.
+- **`provision_vault` refuses any target path outside the known vault roots** (config `vaultsRoot` + `portRegistry` roots) unless `allowOutsideRoots: true` — no remote-driven arbitrary `mkdir`/write. The gate reuses the engine's own `path-outside-known-roots` computation, so the CLI and the tool agree.
+- **`--from-vault` credential exclusions** (`workspace.json` + secret `data.json` never copied, port + API key regenerated) apply regardless of the calling layer. `provision_vault` never wires the user's global `~/.claude/settings.json` hooks (`hooksWired: false`) — an MCP call must not silently mutate global config.
+
+### Tests
+
+- **`tests/plan-vault.test.mjs`** (3) + **`tests/provision-vault.test.mjs`** (6, incl. the path gate refuse+override, the gated-hidden gate, and a `--from-vault` secret-exclusion check). Full suite **1981 → 1990** green.
+
 ## [0.34.0] — 2026-07-03 — Vault wizard W1: engine flags (`--dry-run/--json`, `--name`, `--from-vault`, `--plugins`, `--wiki-mode`, `--claude-workspace`, `--open`, `--probe`, `--git-init`)
 
 Layer 0 of the guided vault-creation wizard (spec + plan under `docs/superpowers/`). Every flag is ADDITIVE — a plain `setup-vault.mjs <path>` bootstrap is byte-identical to before (the entire prior test suite stays green).

@@ -3795,19 +3795,37 @@ if (wizardOpts.gitInit && provisionResult && provisionResult.abs) {
 // the new vault; --probe polls the REST port for a health verdict (expected red
 // until the user clicks "Trust author and enable plugins"). A red probe exits
 // non-zero so a scripted caller sees the failure.
+let opened = false;
 if (wizardOpts.open && provisionResult && provisionResult.obsidianName) {
   openObsidianVault(provisionResult.obsidianName);
+  opened = true;
 }
+let probeVerdict = null;
 if (wizardOpts.probe && provisionResult && provisionResult.insecurePort) {
   const timeoutMs = wizardOpts.probeTimeout ? wizardOpts.probeTimeout * 1000 : 15000;
   info(`Probing REST health on http://127.0.0.1:${provisionResult.insecurePort}/ (timeout ${Math.round(timeoutMs / 1000)}s)…`);
-  const verdict = await probeVaultHealth(provisionResult.insecurePort, { timeoutMs });
-  if (verdict.ok) {
-    ok(`Probe: Local REST API reachable on port ${provisionResult.insecurePort} (Obsidian open + trusted, ${verdict.attempts} attempt(s)).`);
+  probeVerdict = await probeVaultHealth(provisionResult.insecurePort, { timeoutMs });
+  if (probeVerdict.ok) {
+    ok(`Probe: Local REST API reachable on port ${provisionResult.insecurePort} (Obsidian open + trusted, ${probeVerdict.attempts} attempt(s)).`);
     info('Reachability only — for the full bridge /open readiness check, run `npm run audit:bridge-readiness`.');
   } else {
-    warn(`Probe red — port ${provisionResult.insecurePort} not reachable after ${verdict.attempts} attempt(s).\n` +
+    warn(`Probe red — port ${provisionResult.insecurePort} not reachable after ${probeVerdict.attempts} attempt(s).\n` +
       `   Open Obsidian on the vault + click "Trust author and enable plugins", then re-run with --probe.`);
-    process.exit(3);
   }
 }
+
+// Machine-readable result on a REAL run with --json (consumed by the
+// provision_vault MCP tool). Printed on a dedicated marker line so the human
+// console output above is ignored by the parser. Emitted BEFORE the exit so a
+// red probe still yields a parseable result.
+if (args.includes('--json') && provisionResult) {
+  console.log('##PROVISION_RESULT## ' + JSON.stringify({
+    ok: !probeVerdict || probeVerdict.ok,
+    ...provisionResult,
+    openUri: obsidianOpenUri(provisionResult.obsidianName),
+    opened,
+    probe: probeVerdict,
+  }));
+}
+
+if (probeVerdict && !probeVerdict.ok) process.exit(3);
