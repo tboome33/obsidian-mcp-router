@@ -95,6 +95,32 @@ export function slugifyOkfPath(pagePath) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Join a standard markdown-link relative path (CommonMark links are
+ * relative to the CITING FILE's own directory — unlike Obsidian wikilinks,
+ * which are vault-root/basename-relative) against that file's ORIGINAL
+ * vault-relative directory, resolving `.`/`..` segments.
+ *
+ * `joinVaultRelativePath('wiki/concepts', '../refs/Other.md')` →
+ * `'wiki/refs/Other.md'`
+ *
+ * @param {string} fromDir Vault-relative directory of the citing page ('' for root)
+ * @param {string} relativePath The raw markdown-link target as authored
+ * @returns {string} Vault-relative resolved path (posix)
+ */
+export function joinVaultRelativePath(fromDir, relativePath) {
+  const parts = fromDir ? fromDir.split('/').filter(Boolean) : [];
+  for (const seg of relativePath.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (parts.length > 0) parts.pop();
+      continue;
+    }
+    parts.push(seg);
+  }
+  return parts.join('/');
+}
+
+/**
  * Compute the relative link from one bundle file to another.
  *
  * @param {string} fromPath Bundle-relative path of the linking file
@@ -177,20 +203,31 @@ function makeTargetResolver(mappings, report) {
     byBasenameLower.get(lower).push(m);
   }
 
-  const pickCandidate = (candidates, fromNewPath, rawTarget) => {
-    if (candidates.length === 1) return candidates[0].newPath;
+  // Tie-break priority: (1) a candidate matching the target's basename in
+  // the EXACT case it was written, (2) a candidate in the same bundle
+  // folder as the citing page, (3) alphabetically-first. Every ambiguous
+  // resolution (2+ distinct candidates) is reported regardless of which
+  // tier resolved it — an exact-case match existing does NOT mean a
+  // case-differing twin elsewhere is not worth flagging to the user.
+  const pickCandidate = (candidates, fromNewPath, rawTarget, exactBasename) => {
+    const exactCase = candidates.find(
+      (c) => c.path.replace(/\.md$/i, '').split('/').pop() === exactBasename,
+    );
     const fromDir = fromNewPath.split('/').slice(0, -1).join('/');
     const sameDir = candidates.find(
       (c) => c.newPath.split('/').slice(0, -1).join('/') === fromDir,
     );
     const sorted = candidates.slice().sort((a, b) => a.newPath.localeCompare(b.newPath));
-    const chosen = sameDir ?? sorted[0];
+    const chosen = exactCase ?? sameDir ?? sorted[0];
+    const reason = exactCase
+      ? ' (exact-case preference)'
+      : sameDir
+        ? ' (same-folder preference)'
+        : ' (first match, alphabetical — ambiguous)';
     report.ambiguousLinks.push(
       `${fromNewPath}: [[${rawTarget}]] matches ${candidates.length} pages (${sorted
         .map((c) => c.newPath)
-        .join(', ')}) — resolved to ${chosen.newPath}${
-        sameDir ? ' (same-folder preference)' : ' (first match, alphabetical — ambiguous)'
-      }`,
+        .join(', ')}) — resolved to ${chosen.newPath}${reason}`,
     );
     return chosen.newPath;
   };
@@ -200,11 +237,25 @@ function makeTargetResolver(mappings, report) {
     const exact = byVaultPath.get(clean);
     if (exact) return exact;
     const basename = clean.split('/').pop();
-    const candidates = byBasename.get(basename);
-    if (candidates?.length) return pickCandidate(candidates, fromNewPath, target);
-    const candidatesLower = byBasenameLower.get(basename.toLowerCase());
-    if (candidatesLower?.length) return pickCandidate(candidatesLower, fromNewPath, target);
-    return null;
+    // Union exact-case and case-insensitive candidate pools BEFORE deciding
+    // whether the resolution is ambiguous. Checking exact-case alone and
+    // stopping there (the original design) meant a single exact-case match
+    // short-circuited even when a case-differing twin existed elsewhere
+    // (e.g. `a/Foo.md` + `b/foo.md`, both realistically coexistable on a
+    // case-preserving-but-insensitive filesystem across two different
+    // folders) — that ambiguity went completely unreported.
+    const exactCandidates = byBasename.get(basename) ?? [];
+    const lowerCandidates = byBasenameLower.get(basename.toLowerCase()) ?? [];
+    const seenPaths = new Set();
+    const allCandidates = [];
+    for (const c of [...exactCandidates, ...lowerCandidates]) {
+      if (seenPaths.has(c.newPath)) continue;
+      seenPaths.add(c.newPath);
+      allCandidates.push(c);
+    }
+    if (allCandidates.length === 0) return null;
+    if (allCandidates.length === 1) return allCandidates[0].newPath;
+    return pickCandidate(allCandidates, fromNewPath, target, basename);
   };
 }
 
@@ -212,6 +263,31 @@ function makeTargetResolver(mappings, report) {
 // `#anchor`. Captures the `!`-or-not label bracket verbatim so image syntax
 // is preserved; only the path inside `(...)` is ever rewritten.
 const MARKDOWN_MD_LINK_RE = /(!?\[[^\]]*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
+
+// Fenced code blocks (``` or ~~~, opening fence to the next occurrence of
+// the same fence) and single-backtick inline code spans. Link-looking
+// syntax inside either is illustrative example text (e.g. a wiki page
+// documenting markdown-link or wikilink syntax itself), not a real link —
+// none of the three rewriting passes below should ever touch it. Pragmatic
+// approximation, not a full CommonMark tokenizer (doesn't match backtick-run
+// length for nested inline code containing a literal backtick), but covers
+// the vault content this router itself produces and consumes.
+const CODE_SEGMENT_RE = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g;
+
+/**
+ * Split `body` on code segments (see `CODE_SEGMENT_RE`) and apply `rewrite`
+ * only to the non-code segments, leaving fenced/inline code byte-for-byte
+ * untouched.
+ * @param {string} body
+ * @param {(segment: string) => string} rewrite
+ * @returns {string}
+ */
+function rewriteOutsideCode(body, rewrite) {
+  return body
+    .split(CODE_SEGMENT_RE)
+    .map((segment, i) => (i % 2 === 0 ? rewrite(segment) : segment))
+    .join('');
+}
 
 /**
  * Rewrite every `[[wikilink]]`, `![[embed]]`, AND pre-existing standard
@@ -231,7 +307,16 @@ const MARKDOWN_MD_LINK_RE = /(!?\[[^\]]*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
  *   - existing markdown links whose target resolves to an exported page are
  *     repointed at its new slugified path (a source page can legally mix
  *     wikilinks and standard markdown links) → silent when already correct,
- *     otherwise folded into the same rewrite as wikilinks
+ *     otherwise folded into the same rewrite as wikilinks. Unlike
+ *     wikilinks (vault-root/basename-relative, Obsidian's own model),
+ *     standard markdown links are CommonMark file-relative — when
+ *     `fromVaultPath` is provided, the raw target is joined against the
+ *     citing page's own original directory FIRST (an unambiguous exact
+ *     match) before ever falling back to basename matching, so an explicit
+ *     `../refs/Other.md` can't be silently redirected to an unrelated
+ *     same-named page in a different folder by the ambiguity tie-break
+ *   - fenced code blocks and inline code spans are NEVER rewritten (see
+ *     `rewriteOutsideCode`) — link-looking syntax there is example text
  *
  * Resolution of an ambiguous bare target (two exported pages share a
  * basename) is handled by `resolve` itself → `report.ambiguousLinks`.
@@ -240,9 +325,16 @@ const MARKDOWN_MD_LINK_RE = /(!?\[[^\]]*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
  * @param {string} fromNewPath Bundle-relative path of the page being rewritten
  * @param {(target: string, fromNewPath: string) => string | null} resolve Target resolver
  * @param {{ anchorsDropped: string[], dangling: string[], embeds: string[], ambiguousLinks: string[] }} report
+ * @param {string} [fromVaultPath] Original vault-relative path of the page
+ *   being rewritten (e.g. `wiki/concepts/Foo.md`) — enables correct
+ *   file-relative resolution of standard markdown links. Omit only in
+ *   isolated unit tests; production callers always have this.
  * @returns {string} Body with all Obsidian + markdown link syntax converted
  */
-export function rewriteWikilinks(body, fromNewPath, resolve, report) {
+export function rewriteWikilinks(body, fromNewPath, resolve, report, fromVaultPath) {
+  const fromVaultDir = fromVaultPath
+    ? fromVaultPath.split('/').slice(0, -1).join('/')
+    : null;
   const convertTarget = (raw, { isEmbed }) => {
     const { target, anchor, alias } = splitWikiTarget(raw);
     if (!target) {
@@ -294,7 +386,14 @@ export function rewriteWikilinks(body, fromNewPath, resolve, report) {
       // Malformed percent-encoding — resolve against the raw text instead
       // of throwing; worst case the lookup simply misses (link untouched).
     }
-    const resolved = resolve(decoded, fromNewPath);
+    // Resolve as a file-relative path FIRST (join against the citing
+    // page's own original folder → an exact, unambiguous vault-path match)
+    // before ever falling back to basename matching, which can only guess.
+    let resolved = null;
+    if (fromVaultDir !== null) {
+      resolved = resolve(joinVaultRelativePath(fromVaultDir, decoded), fromNewPath);
+    }
+    if (!resolved) resolved = resolve(decoded, fromNewPath);
     if (!resolved) return full; // not one of our exported pages — leave as-authored
     if (anchorPart) {
       report.anchorsDropped.push(
@@ -309,10 +408,12 @@ export function rewriteWikilinks(body, fromNewPath, resolve, report) {
     return `${labelPart}(${newRelative})`;
   };
 
-  return body
-    .replace(MARKDOWN_MD_LINK_RE, convertMarkdownLink)
-    .replace(EMBED_RE, (_m, raw) => convertTarget(raw, { isEmbed: true }))
-    .replace(WIKILINK_RE, (_m, raw) => convertTarget(raw, { isEmbed: false }));
+  return rewriteOutsideCode(body, (segment) =>
+    segment
+      .replace(MARKDOWN_MD_LINK_RE, convertMarkdownLink)
+      .replace(EMBED_RE, (_m, raw) => convertTarget(raw, { isEmbed: true }))
+      .replace(WIKILINK_RE, (_m, raw) => convertTarget(raw, { isEmbed: false })),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +818,7 @@ export function buildOkfBundle({
     const okfFrontmatter = buildOkfFrontmatter(
       frontmatter, body, basename, now, report.warnings,
     );
-    const newBody = rewriteWikilinks(body, m.newPath, resolve, report).trim();
+    const newBody = rewriteWikilinks(body, m.newPath, resolve, report, m.path).trim();
     const content = `${serializeOkfFrontmatter(okfFrontmatter)}\n\n${newBody}\n`;
     documents.push({ ...m, okfFrontmatter, content });
   }

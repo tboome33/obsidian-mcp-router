@@ -129,6 +129,40 @@ describe('rule 2 — non-empty type', () => {
     ]);
     assert.equal(result.conformant, true);
   });
+
+  test('REGRESSION (codex pass 2): a bracket INSIDE a quoted scalar does not false-positive — our own exporter can produce this', () => {
+    // Confirmed empirically: buildOkfFrontmatter({ title: 'Model [draft' })
+    // emits `title: 'Model [draft'` (single-quoted, since the value
+    // contains a trigger char) — perfectly valid YAML, since quoting makes
+    // the bracket inert. The naive (pre-fix) per-line bracket count flagged
+    // this as frontmatter-not-parseable despite it being conformant,
+    // meaning our OWN exporter's self-check could reject its own output.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      {
+        path: 'doc.md',
+        content: "---\ntype: concept\ntitle: 'Model [draft'\ndescription: D\ntimestamp: '2026-07-03'\n---\n\nBody.\n",
+      },
+    ]);
+    assert.equal(result.conformant, true);
+    assert.ok(!rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('a genuinely unbalanced bracket OUTSIDE any quotes on the same line is still caught', () => {
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: "---\ntype: concept\ntitle: 'ok' extra ]\n---\n\nBody.\n" },
+    ]);
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('a doubled single-quote (YAML escape for a literal quote) does not confuse the scanner', () => {
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: "---\ntype: concept\ntitle: 'It''s [fine]'\n---\n\nBody.\n" },
+    ]);
+    assert.equal(result.conformant, true);
+  });
 });
 
 describe('rule 3 — reserved index.md structure', () => {

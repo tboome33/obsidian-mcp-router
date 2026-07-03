@@ -373,6 +373,54 @@ describe('rewriteWikilinks', () => {
     assert.equal(out, '[Other](other.md)');
     assert.equal(report.anchorsDropped.length, 1);
   });
+
+  test('REGRESSION (codex pass 2): a wikilink inside a fenced code block is NOT rewritten', () => {
+    const report = emptyReport();
+    const body = [
+      'Here is an example:',
+      '',
+      '```',
+      'See [[Other Page]] for the syntax.',
+      '```',
+      '',
+      'And a real reference: [[Other Page]].',
+    ].join('\n');
+    const out = rewriteWikilinks(body, 'here.md', makeResolver({ 'Other Page': 'other-page.md' }), report);
+    assert.match(out, /```\nSee \[\[Other Page\]\] for the syntax\.\n```/);
+    assert.match(out, /And a real reference: \[Other Page\]\(other-page\.md\)\./);
+  });
+
+  test('REGRESSION (codex pass 2): a markdown link inside inline code is NOT rewritten', () => {
+    const report = emptyReport();
+    const out = rewriteWikilinks(
+      'Write it like `[label](other.md)` — see [the real one](other.md) below.',
+      'here.md', makeResolver({ 'other.md': 'renamed.md' }), report,
+    );
+    assert.equal(
+      out,
+      'Write it like `[label](other.md)` — see [the real one](renamed.md) below.',
+    );
+  });
+
+  test('REGRESSION (codex pass 2): a fenced code block documenting markdown-link syntax survives untouched', () => {
+    const body = [
+      '# How to link pages',
+      '',
+      '```markdown',
+      '[Customers table](/tables/customers.md)',
+      '```',
+    ].join('\n');
+    const out = rewriteWikilinks(body, 'here.md', makeResolver({}), emptyReport());
+    assert.equal(out, body);
+  });
+
+  test('code-span protection does not affect bodies with no code at all', () => {
+    const out = rewriteWikilinks(
+      'See [[Other Page]].', 'here.md',
+      makeResolver({ 'Other Page': 'other-page.md' }), emptyReport(),
+    );
+    assert.equal(out, 'See [Other Page](other-page.md).');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -401,7 +449,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     assert.match(report.ambiguousLinks[0], /matches 2 pages/);
   });
 
-  test('ambiguous basename with no same-folder candidate falls back to alphabetical, still reported', () => {
+  test('ambiguous basename, both candidates equally exact-case, no same-folder: falls back to alphabetical, still reported', () => {
     const { files, report } = buildOkfBundle({
       vaultName: 'V',
       now: NOW,
@@ -414,7 +462,56 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     const bar = fileByPath(files, 'notes/bar.md');
     assert.match(bar.content, /\[Foo\]\(\.\.\/a-folder\/foo\.md\)/);
     assert.equal(report.ambiguousLinks.length, 1);
-    assert.match(report.ambiguousLinks[0], /first match, alphabetical/);
+  });
+
+  test('REGRESSION (codex pass 2): a case-differing twin is detected even when the exact-case lookup alone would find a single match', () => {
+    // Before the fix: byBasename.get('foo') found exactly 1 candidate
+    // (concepts/foo.md) and returned immediately, NEVER consulting
+    // byBasenameLower — so the existence of refs/FOO.md (a different file,
+    // realistically coexistable across two folders even on a
+    // case-insensitive filesystem) went completely undetected/unreported.
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/concepts/foo.md', ['type: concept', 'title: foo lowercase'], 'x'),
+        page('wiki/refs/FOO.md', ['type: reference', 'title: FOO uppercase'], 'y'),
+        page('wiki/notes/Bar.md', ['type: concept', 'title: Bar'], 'See [[foo]].'),
+      ],
+    });
+    assert.equal(report.ambiguousLinks.length, 1);
+    assert.match(report.ambiguousLinks[0], /matches 2 pages/);
+    // The link text matched the LOWERCASE candidate exactly — exact-case
+    // preference must still pick it over the uppercase twin.
+    const bar = fileByPath(files, 'notes/bar.md');
+    assert.match(bar.content, /\[foo\]\(\.\.\/concepts\/foo\.md\)/);
+    assert.match(report.ambiguousLinks[0], /exact-case preference/);
+  });
+
+  test('REGRESSION (codex pass 2): an explicit relative markdown link is resolved against its OWN target, not redirected by same-folder tie-break', () => {
+    // The citing page's own folder (concepts/) also contains a DIFFERENT
+    // page named Other.md. Before the fix, the raw `../refs/Other.md`
+    // target was passed straight to basename resolution (losing the
+    // relative-path information), and the same-folder-preference
+    // tie-break silently redirected the link to concepts/other.md instead
+    // of the explicitly-linked refs/other.md.
+    const { files, report } = buildOkfBundle({
+      vaultName: 'V',
+      now: NOW,
+      pages: [
+        page('wiki/refs/Other.md', ['type: reference', 'title: The real target'], 'refs body'),
+        page('wiki/concepts/Other.md', ['type: concept', 'title: Unrelated same-name page'], 'decoy body'),
+        page(
+          'wiki/concepts/Foo Bar.md',
+          ['type: concept', 'title: Foo Bar'],
+          'See [ref](../refs/Other.md) for details.',
+        ),
+      ],
+    });
+    const fooBar = fileByPath(files, 'concepts/foo-bar.md');
+    assert.match(fooBar.content, /\[ref\]\(\.\.\/refs\/other\.md\)/);
+    // Exact vault-path resolution — never ambiguous, nothing to report.
+    assert.equal(report.ambiguousLinks.length, 0);
   });
 
   test('unambiguous basename resolution produces no ambiguousLinks entries', () => {

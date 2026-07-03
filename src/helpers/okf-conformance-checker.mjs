@@ -53,6 +53,14 @@ function finding(rule, path, detail) {
  * per-line balance check, since each line of a block sequence must itself
  * be self-contained YAML.
  *
+ * Bracket-counting is QUOTE-AWARE: characters inside a single- or
+ * double-quoted scalar are inert to YAML structure, so `title: 'Model
+ * [draft'` (a legitimate quoted value that happens to contain a literal
+ * unmatched bracket — our own exporter can produce this from any source
+ * title/description containing one) must NOT be flagged. Single-quote
+ * escaping (`''` = a literal quote inside a single-quoted scalar) and
+ * double-quote backslash-escaping are both honored while scanning.
+ *
  * @param {string} rawFrontmatterBody Text between the `---` fences (no fences)
  * @returns {string[]} Offending lines (empty when nothing looks wrong)
  */
@@ -61,8 +69,29 @@ function findUnbalancedBracketLines(rawFrontmatterBody) {
   for (const line of rawFrontmatterBody.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const opens = (trimmed.match(/[[{]/g) || []).length;
-    const closes = (trimmed.match(/[\]}]/g) || []).length;
+    let opens = 0;
+    let closes = 0;
+    let inSingle = false;
+    let inDouble = false;
+    for (let i = 0; i < trimmed.length; i += 1) {
+      const ch = trimmed[i];
+      if (inSingle) {
+        if (ch === "'") {
+          if (trimmed[i + 1] === "'") { i += 1; continue; } // '' escape — stay quoted
+          inSingle = false;
+        }
+        continue; // bracket chars inside a quoted scalar are inert
+      }
+      if (inDouble) {
+        if (ch === '\\') { i += 1; continue; } // skip the escaped character
+        if (ch === '"') inDouble = false;
+        continue;
+      }
+      if (ch === "'") { inSingle = true; continue; }
+      if (ch === '"') { inDouble = true; continue; }
+      if (ch === '[' || ch === '{') opens += 1;
+      else if (ch === ']' || ch === '}') closes += 1;
+    }
     if (opens !== closes) problems.push(trimmed);
   }
   return problems;
