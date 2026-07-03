@@ -192,6 +192,47 @@ describe('rule 2 — non-empty type', () => {
     ]);
     assert.equal(result.conformant, true);
   });
+
+  test("REGRESSION (codex pass 4): an apostrophe mid-scalar in a PLAIN (unquoted) YAML value is never mistaken for an opening quote", () => {
+    // `title: John's loop` is a valid plain scalar (no outer quotes at
+    // all) — the apostrophe is just a literal character. Cross-line quote
+    // tracking (pass 3) treated ANY `'` anywhere as opening a quoted span
+    // regardless of position, so this apostrophe was misread as "opens a
+    // quote that never closes" and the whole document was wrongly flagged
+    // frontmatter-not-parseable. A quote can now only open a new span at
+    // the VALUE-START position of a line (right after `key: ` or `- `).
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      {
+        path: 'doc.md',
+        content: "---\ntype: concept\ntitle: John's loop\ndescription: D\ntimestamp: '2026-07-03'\n---\n\nBody.\n",
+      },
+    ]);
+    assert.equal(result.conformant, true);
+    assert.ok(!rules(result.errors).includes('frontmatter-not-parseable'));
+  });
+
+  test('an apostrophe mid-scalar in a block-sequence item is also tolerated', () => {
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      {
+        path: 'doc.md',
+        content: "---\ntype: concept\ntitle: T\ndescription: D\ntimestamp: '2026-07-03'\ntags:\n- Cole's tag\n- another\n---\n\nBody.\n",
+      },
+    ]);
+    assert.equal(result.conformant, true);
+  });
+
+  test('a value that legitimately STARTS with a quote is still recognized as opening a quoted scalar', () => {
+    // Guards against an overcorrection: value-start gating must not
+    // disable quote-opening entirely — only mid-scalar quotes are inert.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: "---\ntype: '[still-unclosed\ntitle: T\n---\n\nBody.\n" },
+    ]);
+    assert.equal(result.conformant, false);
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
 });
 
 describe('rule 3 — reserved index.md structure', () => {

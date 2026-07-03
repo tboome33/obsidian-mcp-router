@@ -70,6 +70,14 @@ function finding(rule, path, detail) {
  * multi-line scalar, and would otherwise silently swallow any real bracket
  * imbalance following it (confirmed independently by two review passes).
  *
+ * A quote character can only OPEN a quoted scalar at the VALUE-START
+ * position of a line (right after `key: ` or `- `) — never mid-scalar.
+ * `title: John's loop` is a valid PLAIN (unquoted) YAML scalar where the
+ * apostrophe is just a literal character; without this gate, that
+ * apostrophe would be misread as opening a quoted span that never closes,
+ * false-positiving on completely ordinary prose (codex-reported
+ * regression from the line-spanning quote-tracking above).
+ *
  * @param {string} rawFrontmatterBody Text between the `---` fences (no fences)
  * @returns {string[]} Offending lines (empty when nothing looks wrong)
  */
@@ -81,6 +89,22 @@ function findUnbalancedBracketLines(rawFrontmatterBody) {
     const trimmed = line.trim();
     let opens = 0;
     let closes = 0;
+    // Where does this line's VALUE start (so a quote there — and only
+    // there — may open a new quoted span)? Only computed when we're not
+    // already inside a quote carried over from a previous line; a
+    // continuation line of a multi-line scalar has no "value start" of
+    // its own — every character on it is part of the still-open quote.
+    let valueStart = -1;
+    if (!inSingle && !inDouble) {
+      const blockSeqMatch = /^-\s+/.exec(trimmed);
+      const keyMatch = /^[^:\s][^:]*:\s+/.exec(trimmed);
+      if (blockSeqMatch) valueStart = blockSeqMatch[0].length;
+      else if (keyMatch) valueStart = keyMatch[0].length;
+      // Neither pattern matched (e.g. a `#` comment, or a line whose shape
+      // this coarse heuristic doesn't recognize) → valueStart stays -1, so
+      // no quote on this line can open — conservative, avoids false
+      // positives on lines we can't confidently interpret.
+    }
     for (let i = 0; i < trimmed.length; i += 1) {
       const ch = trimmed[i];
       if (inSingle) {
@@ -95,8 +119,8 @@ function findUnbalancedBracketLines(rawFrontmatterBody) {
         if (ch === '"') inDouble = false;
         continue;
       }
-      if (ch === "'") { inSingle = true; continue; }
-      if (ch === '"') { inDouble = true; continue; }
+      if (i === valueStart && ch === "'") { inSingle = true; continue; }
+      if (i === valueStart && ch === '"') { inDouble = true; continue; }
       if (ch === '[' || ch === '{') opens += 1;
       else if (ch === ']' || ch === '}') closes += 1;
     }
