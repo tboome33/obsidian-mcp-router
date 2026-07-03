@@ -233,6 +233,26 @@ describe('rule 2 — non-empty type', () => {
     assert.equal(result.conformant, false);
     assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
   });
+
+  test('KNOWN LIMITATION (codex pass 5, documented not fixed — hit the /review+ 5-pass safety limit): a quoted scalar opening inside a flow collection false-positives', () => {
+    // `tags: ["a [", b]` is valid YAML (a flow sequence whose first item is
+    // a double-quoted string containing a literal bracket) -- verified
+    // against a real YAML parser during review. Our value-start gate only
+    // recognizes a quote opening right after `key: ` or `- `, not after a
+    // flow-collection delimiter (`[`, `{`, `,`), so the bracket inside the
+    // quoted item is (wrongly) counted as unquoted structure. Deliberately
+    // left as a documented limitation rather than a fix at the pass limit
+    // -- our own exporter never emits flow-style arrays (always block-style
+    // `tags:\n- a\n- b`), so this only affects unusual third-party bundles.
+    // This test pins the CURRENT behavior so a future fix updates it
+    // knowingly rather than being surprised by it.
+    const result = checkOkfConformance([
+      ROOT_INDEX,
+      { path: 'doc.md', content: '---\ntype: concept\ntags: ["a [", b]\n---\n\nBody.\n' },
+    ]);
+    assert.equal(result.conformant, false); // known false positive, not a crash/silent-wrong-accept
+    assert.ok(rules(result.errors).includes('frontmatter-not-parseable'));
+  });
 });
 
 describe('rule 3 — reserved index.md structure', () => {

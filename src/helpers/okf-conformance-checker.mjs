@@ -78,6 +78,27 @@ function finding(rule, path, detail) {
  * false-positiving on completely ordinary prose (codex-reported
  * regression from the line-spanning quote-tracking above).
  *
+ * KNOWN LIMITATIONS (found at the /review+ 5-pass safety limit, deliberately
+ * left as documented edge cases rather than risking a 6th subtle bug in this
+ * already heavily-adversarially-tested function — neither is reachable via
+ * our own exporter, which never emits either shape):
+ *   - A quoted scalar that opens INSIDE a flow collection (e.g.
+ *     `tags: ["a [", b]` — the quote starts right after `[` or `,`, not at
+ *     the mapping value-start) is not recognized as an opener; a bracket
+ *     inside such a quoted item would be double-counted as unquoted,
+ *     producing a false `frontmatter-not-parseable` on valid YAML. Our own
+ *     `serializeOkfFrontmatter` always writes block-style lists
+ *     (`tags:\n- a\n- b`), never inline flow arrays, so this never affects
+ *     our own output — only unusual third-party flow-style authoring.
+ *   - A line whose "key" portion itself contains a `:` (e.g. `a:b: 'x'`)
+ *     matches neither the block-sequence nor the key-value value-start
+ *     regex, so `valueStart` stays -1 and no quote on that line can open —
+ *     a legitimate quoted value there with an internal bracket imbalance
+ *     would false-positive. This is already unreachable via our own
+ *     pipeline: `parseFrontmatter` (llms-txt-exporter.mjs) splits on the
+ *     FIRST `:`, so a colon-containing key can never round-trip through it
+ *     in the first place.
+ *
  * @param {string} rawFrontmatterBody Text between the `---` fences (no fences)
  * @returns {string[]} Offending lines (empty when nothing looks wrong)
  */
