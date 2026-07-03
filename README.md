@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.35.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.36.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -219,6 +219,8 @@ You also need:
 - **Node.js ≥ 20.18.1** (required by `undici@7`)
 - At least one vault provisioned in `~/.claude/obsidian-mcp-router/config.json`. If you've never set this up, run `npm run setup-vault -- "<vault-path>"` from a clone of this repo, or invoke [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directly — it'll bootstrap the config interactively. Schema reference: [`examples/config.example.json`](./examples/config.example.json).
 - A **reference vault** registered with the router. It holds the canonical plugin set + config that `setup-vault.mjs` clones into every new vault. Fast path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` scaffolds it from the shipped skeleton ([`templates/reference-vault-skeleton/`](./templates/reference-vault-skeleton/)) and auto-downloads the bridge plugin. Full procedure (manual + troubleshooting): [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
+
+> 🧙 **Guided vault-creation wizard (v0.35.0+).** Creating a new vault is defaults-first: the engine computes a complete default plan, shows it in one line, and you accept it as-is (happy path = 1 interaction) or adjust any point (name · location · template source · plugins · theme · wiki mode). It works from **any LLM harness** via the `plan_vault` (read-only) + `provision_vault` MCP tools — not just the CLI. In Claude Code: the [`meta-attach-vault`](./skills/meta-attach-vault/SKILL.md) skill. From any other agent (Codex, Hermes, a raw MCP client): the [`docs/vault-wizard.md`](./docs/vault-wizard.md) playbook. Directly: `node scripts/setup-vault.mjs "<vault-path>" --dry-run --json` to preview, then without `--dry-run` to apply (`--help` lists all wizard flags). The two tools are LOCAL-ONLY (hidden on gated deployments); `provision_vault` refuses paths outside known vault roots; `--from-vault` copies config only (secrets always regenerated).
 
 > **CSS snippets are cloned automatically.** Since v0.10.1, every `setup-vault.mjs` invocation also copies `<referenceVault>/.obsidian/snippets/*.css` into the target vault and merges the basenames into `<target>/.obsidian/appearance.json` `enabledCssSnippets`. The shipped skeleton ships `no-task-strikethrough.css` (kills Obsidian's default `text-decoration: line-through` on `- [x]` items, aligned with the [`roadmap-discipline`](./skills/conventions/snippets/roadmap-discipline.md) §2bis convention). Opt-out per vault in Settings → Appearance → CSS snippets. To push a snippet (or plugin) update to ALL configured vaults at once: `node scripts/setup-vault.mjs --sync-all` (idempotent; add `--force` to re-clone existing files).
 
@@ -803,7 +805,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.35.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.36.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).

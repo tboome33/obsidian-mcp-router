@@ -1,6 +1,6 @@
 ---
 name: meta-attach-vault
-description: Interactive wizard to attach an Obsidian vault to a code/dev workspace (the dominant case), or bootstrap a standalone local vault, or register a remote vault. Provisions plugins + scaffolds wiki structure + binds the workspace's .env + edits .gitignore + offers a conventions picker. Use whenever the user wants to "set up Obsidian for this project", "attach a vault to this workspace", "add a vault to the router", "register a new obsidian vault", "create a wiki for this repo", "connect my remote vault" — in EN or FR. Replaces the old `meta-add-vault` skill (v0.12.7+).
+description: Interactive DEFAULTS-FIRST wizard to attach an Obsidian vault to a code/dev workspace (the dominant case), or bootstrap a standalone local vault, or register a remote vault. Computes a complete default plan via the `plan_vault` MCP tool, shows it in one line, lets the user accept it as-is (happy path = 1 interaction) or adjust any single point, then provisions in one `provision_vault` call (plugins + wiki scaffold + workspace binding + .gitignore + conventions picker + programmatic Obsidian open + health probe). Use whenever the user wants to "set up Obsidian for this project", "attach a vault to this workspace", "add a vault to the router", "register a new obsidian vault", "create a wiki for this repo", "connect my remote vault" — in EN or FR. Replaces the old `meta-add-vault` skill (v0.12.7+); v2 defaults-first + MCP tools (v0.35.0+).
 ---
 
 # meta-attach-vault
@@ -64,42 +64,68 @@ Wait for confirmation. If yes:
 
 If the user declines: warn that the `.gitignore` step later will still create the file but the protection isn't active until git tracks it. Continue.
 
-### 1A.2 — Choose the vault path
+### 1A.2 — Compute the plan (DEFAULTS-FIRST) with `plan_vault`, then adjust
 
-The default proposal is `C:\VAULTS\<basename-cwd-as-is>` (Windows) or `~/VAULTS/<basename-cwd-as-is>` (POSIX). Preserve the basename **exactly as-is** — case, version suffixes, all of it. The user can edit before validation.
+The v2 wizard is **defaults-first**: instead of asking every question up front, it computes a complete default plan, shows it in ONE line, and lets the user accept it as-is (happy path = **1 interaction**) or adjust any single point.
 
-Ask:
+Propose a default vault path: `C:\VAULTS\<basename-cwd-as-is>` (Windows) or `~/VAULTS/<basename-cwd-as-is>` (POSIX) — HORS du workspace so the vault's `.env` (API key) never lands in the code repo. Preserve the basename **exactly as-is** (case, version suffixes).
 
-> Je propose de créer le vault à `<default-path>`. C'est volontairement HORS de ton workspace (`<cwd>`) pour que ton `.env` du vault — qui contient la clé API — ne se retrouve jamais dans le dépôt git de ton code. Tu valides ce chemin ou tu veux changer ?
+Call the **`plan_vault`** MCP tool (read-only, zero mutation):
 
-Wait for confirmation/edit.
-
-### 1A.3 — Run the provisioning script (provisions vault + binds workspace, single call)
-
-Pre-flight (in chat, before the Bash call):
-
-> Je vais lancer le script de provisioning. Voici ce qu'il va faire concrètement, en une seule commande :
->
-> 1. **Créer le dossier du vault** à `<vault-path>` (si absent).
-> 2. **Installer 5 plugins Obsidian** en clonant depuis le vault de référence : Local REST API (l'API HTTP qu'utilise le router), MCP Router Bridge (le pont qui expose les routes `/open` cliquables), Smart Connections (embeddings pour la recherche sémantique), Templater (templates dynamiques), Quiet Outline (panneau de plan rétractile).
-> 3. **Allouer un port HTTPS unique** pour ce vault (et un port HTTP `+10` pour les liens cliquables qui contournent Bitdefender).
-> 4. **Générer une clé API fraîche** propre à ce vault et l'écrire dans `<vault>/.obsidian/plugins/obsidian-local-rest-api/data.json`.
-> 5. **Créer la structure wiki** : `wiki/`, `wiki/sessions/`, `wiki-meta/{index,hot,overview,log}.md` (les 4 scaffolds canoniques).
-> 6. **Écrire `<vault>/.env`** (chemin + clé API + URL du vault) et `<vault>/.mcp.json` (déclare le router comme MCP server pour Claude Code).
-> 7. **Enregistrer le vault** dans `~/.claude/obsidian-mcp-router/config.json` (registre central de tous tes vaults).
-> 8. **Lier le workspace au vault** : ajout de `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` dans `<cwd>/.env` (active le mode workspace-bound — à la prochaine session Claude Code dans ce workspace, le hot-cache du vault sera chargé automatiquement).
-
-Then call (single command — provisioning + linking in one shot via the `--link-workspace` flag, shipped in router v0.12.7):
-
-```bash
-node "<router-repo>/scripts/setup-vault.mjs" "<vault-path>" --link-workspace "<cwd>"
+```
+mcp__obsidian-router__plan_vault({ path: "<default-vault-path>", linkWorkspace: "<cwd>" })
 ```
 
-Bash `description`: `"Provisionner le vault <vault-basename> ET lier le workspace <cwd-basename> : installer les plugins Obsidian, allouer un port, générer une clé API, scaffolder wiki/wiki-meta/, écrire .env + .mcp.json, enregistrer dans ~/.claude/obsidian-mcp-router/config.json, et ajouter OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug> dans <cwd>/.env"`.
+It returns `defaults` (name, slug, path, source, plugins profile + resolved list, wikiMode, theme), `questions` (option lists — the **5 wiki modes each with an explanation**, the themes installed in the source, the copyable vaults, the plugin profiles), `warnings`, and `steps`.
 
-(Resolve `<router-repo>` from the plugin install path: `${CLAUDE_PLUGIN_ROOT}` env var, OR `~/.claude/plugins/marketplaces/obsidian-mcp-router-marketplace/` on Windows, OR ask the user where they cloned the router repo.)
+> **Fallback** (older router / gated deployment where the tools are hidden): run the engine directly — `node "<router-repo>/scripts/setup-vault.mjs" "<vault-path>" --link-workspace "<cwd>" --dry-run --json` — and parse the SAME plan shape. Resolve `<router-repo>` from `${CLAUDE_PLUGIN_ROOT}`, or `~/.claude/plugins/marketplaces/obsidian-mcp-router-marketplace/`, or ask.
 
-Show the user a brief recap of what the script printed (port allocated, slug derived, plugins synced, workspace linked) — NOT the full output.
+Present the plan as a ONE-LINER (match the user's language):
+
+> **Plan proposé** : vault « `<name>` » → `<path>` · source : `<source.kind>` · plugins : profil `<profile>` (`<n>`) · thème : `<theme|défaut>` · mode wiki : `<wikiMode.mode>` · slash commands workspace : oui (~10k tokens/session)
+>
+> **OK tel quel, ou tu veux ajuster quelque chose ?** (nom · emplacement · source · plugins · thème · mode wiki)
+
+Surface any `warnings` right here (slug collision, path outside known roots → the user must confirm `allowOutsideRoots`, etc.).
+
+**If the user wants to adjust** — each point is individually adjustable. Use `AskUserQuestion` with the option lists straight from `plan_vault`'s `questions` (they already carry descriptions + which is the default):
+
+- **Wiki mode** — present ALL 5 with their explanations (`questions.wikiMode.options`): 🧠 personal · 🔬 research · 💼 business · 💻 code · 🎯 domain. For `domain`, ask the user to describe the domain in one line, then translate it into a flat section list YOURSELF and pass it as `wikiMode.sections` — the engine stays 100% deterministic, it only lays out your sections.
+- **Source** — reference (default) · copy config from an existing vault (`questions.source` lists the copyable vaults; config-only, secrets regenerated) · fresh skeleton · bare.
+- **Plugins** — recommended (default = the source's full set) · minimal · custom.
+- **Theme** — pick from `questions.theme.options`. ⚠️ `--theme` is currently **recorded but NOT applied** (Lot 2 chantier) — tell the user their pick is noted but the theme change lands in a later release.
+
+Re-run `plan_vault` with the adjusted args to show the updated one-liner, then proceed once the user is happy.
+
+### 1A.3 — Provision in ONE call with `provision_vault`
+
+Pre-flight (in chat, before the call) — explain the concrete effects:
+
+> Je provisionne le vault en un seul appel. Concrètement :
+>
+> 1. **Créer le dossier** à `<vault-path>` (si absent).
+> 2. **Installer les plugins** en clonant depuis la source : Local REST API (l'API HTTP du router), MCP Router Bridge (les routes `/open` cliquables), + le profil choisi (Smart Connections, Templater, …).
+> 3. **Allouer un port HTTPS unique** (+ un port HTTP `+10` pour les liens qui contournent Bitdefender) et **générer une clé API fraîche**.
+> 4. **Scaffolder** `wiki/`, `wiki/sessions/`, `wiki-meta/{index,hot,overview,log}.md` (mode wiki choisi).
+> 5. **Écrire** `<vault>/.env` + `<vault>/.mcp.json`, **enregistrer** dans `~/.claude/obsidian-mcp-router/config.json`, **lier** le workspace (`OBSIDIAN_ROUTER_DEFAULT_VAULT` dans `<cwd>/.env`) et activer les slash commands du workspace.
+> 6. **Ouvrir Obsidian** sur le vault + **sonder** la santé REST.
+
+Call **`provision_vault`** with the accepted/adjusted answers + the automated tail:
+
+```
+mcp__obsidian-router__provision_vault({
+  path: "<vault-path>", linkWorkspace: "<cwd>", claudeWorkspace: true,
+  source: { kind: "<...>", fromVault: "<...>" }, plugins: { profile: "<...>" },
+  wikiMode: { mode: "<...>", sections: [ ... ] },
+  open: true, probe: true
+})
+```
+
+It returns a step-by-step report + `port`, `insecurePort`, `openUri`, `probeResult`. `open: true` launches Obsidian on the new vault; `probe: true` polls the REST port for a health verdict (**expected red until the user clicks "Trust author and enable plugins"** — that's the one incompressible manual gesture).
+
+> **Fallback** (no tools): `node "<router-repo>/scripts/setup-vault.mjs" "<vault-path>" --link-workspace "<cwd>" --claude-workspace <adjusted-flags> --open --probe`. Bash `description`: full sentence listing the effects (plugins, port, key, wiki scaffold, .env/.mcp.json, registry, workspace link, open, probe).
+
+Show the user the step report (port allocated, slug, plugins) + the probe verdict: ✅ reachable, or 🔴 "pas encore joignable — clique **Trust author** dans Obsidian puis je relance la sonde". NOT the full raw output.
 
 ### 1A.4 — Edit the workspace `.gitignore`
 
@@ -146,18 +172,22 @@ Show progress: `✓ source-type installed`, `✓ wiki-query-first installed`, �
 
 Before composing the recap, call `mcp__obsidian-router__list_vaults` once to get `defaultVaultStatus` (or look up the newly-attached vault by slug in the `vaults[]` array). Use its `openUri` field for the clickable Obsidian link — it's pre-encoded for spaces/accents and ships in router v0.10.0+. Do NOT compose the `obsidian://` URI by hand: vault names with spaces or accents (e.g. `opsidian-mcp-router et bridge`) need proper URL-encoding that's easy to get wrong.
 
-End with a short recap (FR or EN matching the user):
+End with a short recap (FR or EN matching the user). `provision_vault` with `open: true` already launched Obsidian and `probe: true` already ran the health check, so the recap reflects that:
 
-> ✅ Vault `<slug>` attaché au workspace `<cwd-basename>`.
+> ✅ Vault `<slug>` attaché au workspace `<cwd-basename>`. Obsidian a été ouvert automatiquement sur le vault.
 >
-> **Avant que ça marche, deux gestes manuels** :
+> **Le geste incompressible qui reste** :
 >
-> 1. **Ouvre le vault dans Obsidian** : `[Lance Obsidian sur <obsidianName>](<openUri-from-list_vaults>)` — sans Obsidian ouvert, le serveur Local REST API ne tourne pas et le router ne peut rien lire ni écrire.
+> 1. **Dans Obsidian, clique « Trust author and enable plugins »** — sans ça, le serveur Local REST API ne démarre pas et le router ne peut rien lire ni écrire. (La sonde a dit : `<probeResult ✅ joignable | 🔴 pas encore — c'est normal avant le Trust author>`.)
 > 2. **Redémarre Claude Code dans ce workspace** pour que le router charge le nouveau vault et que le hot-cache active le mode workspace-bound.
+>
+> Si la sonde était rouge : une fois « Trust author » cliqué, je peux relancer `provision_vault` en mode `probe` seul (ou `/obsidian-router:meta-audit-bridge-readiness`) pour confirmer le vert.
 >
 > Conventions installées : `<comma-separated-list>` (visibles dans `<vault>/CLAUDE.md`).
 >
 > Pour vérifier que tout est bien câblé : `/obsidian-router:meta-status` (diagnostic complet) ou `/obsidian-router:discover-list-vaults` (liste rapide).
+
+> If `provision_vault` returned a `path-outside-known-roots` / `no-known-roots` refusal, DON'T silently retry with `allowOutsideRoots` — surface it: *"le chemin `<path>` est hors des racines de vaults connues ; tu confirmes que je crée le vault là quand même ?"* and only pass `allowOutsideRoots: true` after the user says yes.
 
 ---
 

@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-07-03 — Vault wizard W3: `meta-attach-vault` v2 (defaults-first) + harness-agnostic playbook
+
+Layer 2 of the guided vault-creation wizard — the frontends. The wizard is now defaults-first end-to-end: compute a complete plan, show it in one line, accept as-is (happy path = 1 interaction) or adjust any single point, provision in one call.
+
+### Changed
+
+- **`meta-attach-vault` skill → v2 (defaults-first).** The workspace-first flow now calls **`plan_vault`** to compute the default plan + questionnaire, presents it as a one-liner ("Plan proposé: … · OK tel quel, ou ajuster ?"), collects only the adjustments the user wants (each point individually, the 5 wiki modes shown with their explanations), then provisions in ONE **`provision_vault`** call with `open: true` + `probe: true`. Preserves the existing didactics — git pedagogy, credential-safety rationale, the conventions picker, the workspace `.gitignore` edit — and adds the automated tail (programmatic Obsidian open + health probe). A `--dry-run`/CLI fallback keeps it working on older or gated routers where the tools are hidden.
+
+### Added
+
+- **`docs/vault-wizard.md`** — the harness-agnostic playbook: the manual an agent WITHOUT a skill system (Codex, Hermes, a raw MCP client…) reads to drive the same `plan_vault` → present → adjust → `provision_vault` flow. Documents the 5 wiki modes, the security gates (LOCAL-ONLY, path-restricted), the tool-input ↔ CLI-flag mapping, and the layer-0 fallback.
+- **README** — a "Guided vault-creation wizard" callout in Prerequisites pointing at the skill, the playbook, and the CLI.
+
+### Tests
+
+- Docs/skill phase — no new engine code; full suite stays **1998** green.
+
 ## [0.35.0] — 2026-07-03 — Vault wizard W2: `plan_vault` + `provision_vault` MCP tools (harness-agnostic) + security gates
 
 Layer 1 of the guided vault-creation wizard: the wizard becomes usable from ANY MCP client (Claude, Codex, Hermes, a raw MCP call…), not just the CLI. Both tools drive the SAME layer-0 engine (`scripts/setup-vault.mjs`), so there's one source of truth for provisioning.
