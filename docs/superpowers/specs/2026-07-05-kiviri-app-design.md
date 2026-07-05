@@ -31,6 +31,11 @@ Kiviri est une **plateforme de connaissance AI-native** : on y jette n'importe q
 | D17 | Chatbot intégré | **Assistant complet dès le départ : il lit ET écrit librement.** Remplace la décision de juin « pas d'app chat à construire ». Réutilise **la boîte à outils du router** (les ~35 tools MCP) en interne — une seule boîte à outils, trois consommateurs (Claude externe via MCP, assistant intégré, voix future). Managed → payant. **Garde-fous produit obligatoires** : historique des modifications de l'assistant + annulation. |
 | D18 | Éditeur | **Éditeur à blocs façon Notion** (famille ProseMirror) : blocs déplaçables, menu d'insertion « / », barre d'outils flottante, callouts — **strictement cantonné au markdown**. **Exigence non négociable** : aller-retour parfait (ouvrir + enregistrer sans toucher = fichier byte-identique), testé automatiquement — sinon Kiviri Sync génèrerait de faux diffs. Piste future : « **pages Kiviri** » à mise en page libre (type ContentBuilder), app-only, **non synchronisées** vers Obsidian. Mode source (à la Obsidian) possible plus tard en option. |
 | D19 | Release 1 | **La promesse complète dès le premier jour**, Kiviri Sync inclus (voir §7). Trois garde-fous actés : le plugin se construit **en premier et en parallèle** ; **bêta privée** sur de vrais vaults avant la sortie ; périmètre v1 = **Obsidian de bureau** (mobile en suite rapide — les mobiles ont l'app web responsive). |
+| D20 | Grille tarifaire | **Édition × Niveau d'usage** : chaque édition (Personal, Family, Enterprise) existe en **X1 / X5 / X20** — mêmes capacités, volume d'usage IA multiplié (patron des forfaits Claude Pro/Max). **Dedicated hors grille** : sur-mesure, proposition commerciale. Le builder de Kiviri Control ne gère qu'un multiplicateur. |
+| D21 | Limites & cascade hors-forfait | **Limites hebdomadaires** par famille de capacité (assistant courant vs capacités lourdes), avec barres de progression + date de réinitialisation visibles (UX à la Claude, capture de référence 2026-07-05). Cascade au dépassement : **forfait → crédits d'utilisation (opt-in, à la consommation) → BYO-key**. Jamais de blocage brutal. |
+| D22 | Modèles par capacité | Choix courants (config dans Kiviri Control, swappables sans coder — les modèles évoluent) : **OCR = Mistral OCR ou DeepSeek OCR** (à départager par benchmark au plan) · **voix en session = GPT Realtime** · **traduction vocale entre utilisateurs = GPT Realtime (mode traduction)** · **transcription temps réel = Whisper / GPT Realtime**. |
+| D23 | Messagerie vocale | Extension de D15 : les membres d'un vault peuvent **se parler à la voix dans l'application**, avec **traduction en direct** (chacun parle sa langue) et **transcription en temps réel** — transcription **filable en note du vault** (une réunion vocale devient de la mémoire). |
+| D24 | Usage multi-utilisateurs | En Family/Enterprise, le volume hebdomadaire est un **pool partagé par l'organisation** avec **plafond équitable par membre** (défaut ≈50 % du pool, paramétrable dans Kiviri Control) ; consommation par membre visible par l'admin d'organisation. |
 
 ## 3. Architecture (vue d'ensemble)
 
@@ -72,6 +77,8 @@ Kiviri Free (solo, SMS, MCP, app complète, petit quota, 0 managed)
 
 Tous les paramètres d'offres sont des **valeurs par défaut modifiables sans code** dans Kiviri Control (D11) — la structure est figée, pas les nombres.
 
+**Modèle d'usage (D20/D21/D24)** : la grille est **Édition × Niveau (X1/X5/X20)** — l'édition donne les capacités, le niveau donne le volume d'IA. Les limites sont **hebdomadaires par famille de capacité**, affichées avec barres de progression et date de réinitialisation. Au dépassement, cascade **crédits d'utilisation → BYO-key**. En Family/Enterprise, le volume est un **pool d'organisation** avec plafond équitable par membre.
+
 ## 6. Les deux tracks de la roadmap applicative
 
 **Track A — App-cœur** : store + adaptateur router → import (Obsidian + OKF) → éditeur à blocs + arborescence + wikilinks/backlinks + tags → recherche (texte + Resonance) → collaboration niveau 1 → Kiviri Sync → graphe → édition simultanée (Enterprise) → polish/mobile/sécurité.
@@ -80,7 +87,7 @@ Tous les paramètres d'offres sont des **valeurs par défaut modifiables sans co
 - **IA-1** : mémoire always-on + ask-your-vault (RAG Resonance+LLM) + ingestion de base (web/YouTube/PDF, outils existants) + auto-liaison.
 - **IA-2** : ingestion haute fidélité — PDF précis (tables/images/schémas), OCR (DeepSeek), traductions.
 - **IA-3** : multimodal lourd — audio long + diarisation ; vidéo → keyframes sur changement de scène + description IA.
-- **IA-4** : interrogation vocale temps réel (STT/TTS + RAG).
+- **IA-4** : interrogation vocale temps réel (GPT Realtime + RAG) · **voix entre utilisateurs dans la messagerie** (D23) — conversation vocale, **traduction en direct**, **transcription temps réel** filable en note du vault. Modèles = config Kiviri Control (D22).
 - **IA-5** : collaboration assistée (rejoint l'édition simultanée Enterprise).
 
 ## 7. Releases
