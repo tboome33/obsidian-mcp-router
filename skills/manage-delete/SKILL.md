@@ -51,9 +51,8 @@ This guard exists because Claude can hallucinate delete calls in long sessions. 
 
 ## On failure — remediate, NEVER fall back to filesystem operations
 
-If the call fails, diagnose the failure class — do NOT silently delete the file with direct-filesystem tools (shell `rm` / `Remove-Item` on the vault's real path):
+If the call fails, do NOT delete the file with shell `rm` / `Remove-Item` on the vault's real path:
+- **Connection error** (`ECONNREFUSED`, timeout) → vault closed; `list_vaults`, then ask the user to open it via the `openUri` link and wait.
+- **Validation / API error** (e.g. the `confirm=true` guard) → follow the safety protocol above; never bypass it via the filesystem.
 
-- **Connection error** (`ECONNREFUSED`, timeout, "unreachable") → the vault is closed or Local REST API is off. Call `list_vaults`, then **ask the user to open the vault** via the clickable `openUri` link (message template: `default-vault-health-check` convention) and WAIT for their go-ahead.
-- **Validation / API error** (e.g. the `confirm=true` guard) → follow the safety protocol above; never bypass it through the filesystem.
-
-Direct FS deletes bypass the Local REST API guard rails entirely — that's precisely what this skill's two-step confirm is designed to prevent. (Rule added 2026-07-05 at Roland's request after an FS-fallback incident.)
+Why FS deletes are worse here: they skip this skill's two-step confirm entirely. See the `default-vault-health-check` convention (canonical source).
