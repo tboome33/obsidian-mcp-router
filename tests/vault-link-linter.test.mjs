@@ -954,6 +954,162 @@ describe('vault-link-linter — anchored URLs (v0.22.0)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// v0.36.1 — wrong-port FALSE POSITIVE on multi-vault path collision.
+// Roland incident 2026-07-06: a CORRECT click-to-open URL
+// (http://127.0.0.1:27134/open/wiki-meta%2Findex.md → vault RECHERCHES
+// ETUDES SUP) was flagged [wrong-port] with a suggested "fix" pointing at
+// the .template vault's port (27161). Cause: Pass 2 resolved the owning
+// vault by PATH ONLY (default vault first, then portRegistry insertion
+// order) — but scaffold paths like wiki-meta/index.md exist in EVERY
+// bootstrapped vault, so the first-registered vault (.template) won and
+// its port became the "expected" one. The URL's port is itself the
+// authoritative vault-disambiguation signal: if ANY active vault owning
+// the path serves that exact port for the scheme, the URL is correct.
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — wrong-port multi-vault collision (v0.36.1)', () => {
+  // Mirror of the incident topology: an early-registered vault (like
+  // .template) and the real target vault, BOTH containing the same
+  // scaffold file. No defaultVault → path-only resolution picks earlyVault.
+  let earlyVault, targetVault, collisionConfigPath;
+
+  before(() => {
+    earlyVault = path.join(workDir, 'early-vault');
+    targetVault = path.join(workDir, 'target-vault');
+    for (const [vp, ports] of [
+      [earlyVault, { port: 27151, insecurePort: 27161 }],
+      [targetVault, { port: 27124, insecurePort: 27134 }],
+    ]) {
+      fs.mkdirSync(path.join(vp, 'wiki-meta'), { recursive: true });
+      fs.writeFileSync(path.join(vp, 'wiki-meta', 'index.md'), '# index');
+      fs.mkdirSync(
+        path.join(vp, '.obsidian', 'plugins', 'obsidian-local-rest-api'),
+        { recursive: true },
+      );
+      fs.writeFileSync(
+        path.join(vp, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+        JSON.stringify({ ...ports, enableInsecureServer: true }),
+      );
+    }
+    collisionConfigPath = path.join(workDir, 'collision-config.json');
+    fs.writeFileSync(collisionConfigPath, JSON.stringify({
+      portRegistry: { [earlyVault]: 27151, [targetVault]: 27124 },
+      portStart: 27124,
+    }, null, 2));
+  });
+
+  after(() => {
+    fs.rmSync(earlyVault, { recursive: true, force: true });
+    fs.rmSync(targetVault, { recursive: true, force: true });
+    fs.rmSync(collisionConfigPath, { force: true });
+  });
+
+  // Manual spawn: strip session default-vault env vars so the path-only
+  // fallback order is deterministic (registry insertion order), and point
+  // CLAUDE_PROJECT_DIR at a dir without a .env.
+  function runCollision(assistantText) {
+    const entry = {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: assistantText }] },
+    };
+    fs.writeFileSync(transcriptPath, JSON.stringify(entry) + '\n');
+    const baseEnv = { ...process.env };
+    delete baseEnv.VAULT_PATH;
+    delete baseEnv.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    delete baseEnv.OBSIDIAN_ROUTER_LOCKED;
+    delete baseEnv.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
+    return spawnSync(process.execPath, [HOOK_PATH], {
+      input: JSON.stringify({ hook_event_name: 'Stop', transcript_path: transcriptPath }),
+      encoding: 'utf8',
+      env: {
+        ...baseEnv,
+        OBSIDIAN_ROUTER_CONFIG: collisionConfigPath,
+        CLAUDE_PROJECT_DIR: workDir,
+      },
+    });
+  }
+
+  test('REGRESSION: passes a CORRECT http URL whose path also exists in an earlier-registered vault', () => {
+    // The exact incident shape: port 27134 belongs to targetVault, which
+    // owns wiki-meta/index.md — the URL is valid. Pre-fix the linter
+    // resolved the path to earlyVault (first in registry) and flagged
+    // "used port 27134, expected 27161".
+    const r = runCollision(
+      'Voir [index](http://127.0.0.1:27134/open/wiki-meta%2Findex.md).',
+    );
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('REGRESSION: passes a CORRECT https URL targeting the later-registered vault', () => {
+    const r = runCollision(
+      'Voir [index](https://127.0.0.1:27124/open/wiki-meta%2Findex.md).',
+    );
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+  });
+
+  test('still blocks when the port matches NO vault owning the path', () => {
+    const r = runCollision(
+      'Voir [index](http://127.0.0.1:59999/open/wiki-meta%2Findex.md).',
+    );
+    assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+    assert.match(r.stderr, /wrong-port/);
+    // Suggestion falls back to the first owner in registry order.
+    assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27161\/open\/wiki-meta%2Findex\.md/);
+  });
+
+  test('still blocks an http URL whose port matches a vault with enableInsecureServer=false', () => {
+    // Port ownership only validates the URL if the vault actually SERVES
+    // that scheme on that port. Disable targetVault's insecure server:
+    // http://...:27134 hits nothing → must still be flagged.
+    const dataJsonPath = path.join(
+      targetVault, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+    );
+    const original = fs.readFileSync(dataJsonPath, 'utf8');
+    try {
+      fs.writeFileSync(
+        dataJsonPath,
+        JSON.stringify({ port: 27124, insecurePort: 27134, enableInsecureServer: false }),
+      );
+      const r = runCollision(
+        'Voir [index](http://127.0.0.1:27134/open/wiki-meta%2Findex.md).',
+      );
+      assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+      assert.match(r.stderr, /wrong-port/);
+    } finally {
+      fs.writeFileSync(dataJsonPath, original);
+    }
+  });
+
+  test('REGRESSION: still flags + suggests when the FIRST owner has no readable data.json', () => {
+    // earlyVault (registry-first) never had its REST API plugin configured
+    // (no data.json at all) — a realistic shape for `.template`, which may
+    // exist without ever running Local REST API. The wrong-port check must
+    // not silently bail on owners[0]; it should find targetVault (the
+    // second owner) has readable port info and build the suggestion from
+    // it, instead of swallowing a genuinely wrong-port URL.
+    const dataJsonPath = path.join(
+      earlyVault, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+    );
+    fs.rmSync(dataJsonPath, { force: true });
+    try {
+      const r = runCollision(
+        'Voir [index](http://127.0.0.1:59999/open/wiki-meta%2Findex.md).',
+      );
+      assert.equal(r.status, 2, `expected exit 2, got ${r.status}. stderr=${r.stderr}`);
+      assert.match(r.stderr, /wrong-port/);
+      // Suggestion is built from targetVault (the only owner with readable
+      // port info), NOT silently dropped.
+      assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27134\/open\/wiki-meta%2Findex\.md/);
+    } finally {
+      fs.writeFileSync(
+        dataJsonPath,
+        JSON.stringify({ port: 27151, insecurePort: 27161, enableInsecureServer: true }),
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Robustness — malformed inputs should never crash the hook
 // ---------------------------------------------------------------------------
 

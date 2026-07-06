@@ -38,7 +38,14 @@
  *      these slipped through because the scheme-skip guard at the
  *      bare-path stage treated any `http://`-prefixed href as
  *      "already in the correct format". The v0.12.8 extension verifies
- *      the port instead of assuming it.
+ *      the port instead of assuming it. Since v0.36.1 the owning vault is
+ *      resolved with the PORT as the primary disambiguation signal: a URL
+ *      is valid if ANY active vault containing the file serves the actual
+ *      port for the scheme. (Path-only first-match resolution false-
+ *      flagged correct URLs whose path — e.g. `wiki-meta/index.md` —
+ *      exists in every bootstrapped vault, proposing the port of
+ *      whichever vault sorted first, `.template` in the 2026-07-06
+ *      incident.)
  *
  *   3. **`cwd-vault-mix`** (v0.18.1 — added after Roland incident
  *      2026-05-29 where Claude emitted
@@ -563,11 +570,24 @@ function safeDecodeURI(s) {
  * the vault root.
  */
 function findOwningVault(href) {
+  return findOwningVaults(href)[0] || null;
+}
+
+/**
+ * All-owners variant of `findOwningVault` (v0.36.1): returns EVERY active
+ * vault containing the file, in the same preference order (default vault
+ * first, then portRegistry insertion order). Scaffold paths like
+ * `wiki-meta/index.md` exist in every bootstrapped vault, so callers that
+ * have an extra disambiguation signal (Pass 2's URL port) need the full
+ * owner set — first-match resolution picks the wrong vault for them.
+ */
+function findOwningVaults(href) {
   const decoded = safeDecodeURI(href);
   // Try default first, then the rest (deduped).
   const order = defaultVaultPath
     ? [defaultVaultPath, ...vaultPaths.filter((p) => p !== defaultVaultPath)]
     : vaultPaths;
+  const owners = [];
   for (const vaultPath of order) {
     const candidate = path.resolve(vaultPath, decoded);
     const vaultResolved = path.resolve(vaultPath);
@@ -577,12 +597,12 @@ function findOwningVault(href) {
     // The candidate must be inside (not equal to) the vault root.
     if (!candidate.startsWith(vaultPrefix)) continue;
     try {
-      if (fs.statSync(candidate).isFile()) return { vault: vaultPath, decodedHref: decoded };
+      if (fs.statSync(candidate).isFile()) owners.push({ vault: vaultPath, decodedHref: decoded });
     } catch {
       /* not a file in this vault */
     }
   }
-  return null;
+  return owners;
 }
 
 /**
@@ -667,25 +687,51 @@ for (const c of bareCandidates) {
   });
 }
 
-// Pass 2 — click-to-open URLs with the wrong port (v0.12.8).
+// Pass 2 — click-to-open URLs with the wrong port (v0.12.8; owner
+// resolution made port-aware in v0.36.1).
 //
 // Logic: extract the (scheme, port, encodedPath) from the URL, resolve
-// the owning vault from the path, read the vault's REST API plugin
-// `data.json`, and compare against the expected port for the scheme.
-// If the expected port matches the actual port, the URL is correct —
-// no violation. Otherwise flag it and propose the canonical version.
+// ALL vaults owning the path, and accept the URL if ANY of them serves
+// the actual port for the scheme (http → `insecurePort` with
+// `enableInsecureServer`, https → `port`, read from each vault's REST
+// API plugin `data.json`). Only when no owner serves that port is the
+// URL flagged, with a suggestion built against the best-guess owner
+// (default-vault-first order).
 //
 // Edge cases handled:
 //   - Path doesn't resolve to any active vault → skip silently (a
 //     hallucinated URL that doesn't reference a real file isn't this
 //     hook's concern; matches the bare-path skip behavior).
-//   - Vault's data.json unreadable → skip (can't verify either way).
-//   - http:// scheme but the vault has `enableInsecureServer: false`
-//     → flag as violation (the URL won't work anyway because the HTTP
-//     server isn't listening); the suggestion will route through
-//     `composeSuggestion` which surfaces the HTTPS fallback.
+//   - Vault's data.json unreadable → that vault can't validate the port
+//     (skipped in the owner scan) and is skipped as a suggestion source
+//     too (the fallback picks the first owner WITH readable port info,
+//     not blindly `owners[0]`); if NO owner has readable port info at
+//     all, the fallback suggestion bails: skip entirely.
+//   - http:// scheme but the port-owning vault has
+//     `enableInsecureServer: false` → flag as violation (the URL won't
+//     work anyway because the HTTP server isn't listening); the
+//     suggestion routes through `composeSuggestion` which surfaces the
+//     HTTPS fallback.
 //   - https:// with a port that matches `insecurePort` but not `port`
 //     → flag (user clearly intended HTTPS, port is wrong for HTTPS).
+//   - Path exists in SEVERAL vaults (scaffold files like
+//     `wiki-meta/index.md` exist in every bootstrapped vault) and the
+//     port belongs to one of them → correct URL, no violation. Pre-
+//     v0.36.1 first-match resolution flagged these as wrong-port with a
+//     "fix" pointing at whichever vault sorted first (the 2026-07-06
+//     `.template` incident).
+//   - KNOWN TRADEOFF (accepted, not a bug): if a path exists in 2+ vaults
+//     and the URL's port matches a vault OTHER than the one the author
+//     meant (e.g. a memorized port pasted from the wrong vault), this
+//     pass now accepts it silently — the click opens a real, existing
+//     file, just not the intended one. This is the mirror image of the
+//     bug just fixed and isn't resolvable without more context: a port
+//     valid for some real owner is indistinguishable from a deliberate
+//     cross-vault link. Reverting to first-match-only to catch this would
+//     resurrect the 2026-07-06 false positive on every correct link to a
+//     non-default/non-first-registered vault — strictly worse, since it
+//     breaks a working link every time instead of occasionally opening a
+//     plausible-but-wrong file.
 for (const c of clickToOpenCandidates) {
   // The encoded path may carry a query string (e.g. `?h=<heading>` for a
   // heading anchor, v0.22.0). Resolve the file by the PATH part only, but
@@ -696,24 +742,38 @@ for (const c of clickToOpenCandidates) {
   const encodedPathOnly = qIdx === -1 ? c.encodedPath : c.encodedPath.slice(0, qIdx);
   const queryStr = qIdx === -1 ? '' : c.encodedPath.slice(qIdx); // includes leading '?'
 
-  const owner = findOwningVault(encodedPathOnly);
-  if (!owner) continue;
-  const { vault, decodedHref } = owner;
-  const info = vaultPortInfo(vault);
-  if (!info) continue;
+  // Resolve ALL vaults owning the path, not just the first (v0.36.1).
+  // Scaffold paths (`wiki-meta/index.md`, `wiki-meta/log.md`, …) exist in
+  // every bootstrapped vault, and the URL's PORT already identifies which
+  // vault the author targeted. First-match resolution ignored that signal
+  // and compared against whichever vault happened to sort first (default
+  // vault, else registry insertion order — the `.template` reference vault
+  // in the 2026-07-06 incident), flagging perfectly correct URLs as
+  // wrong-port with a "fix" pointing at the wrong vault. A URL is valid
+  // iff SOME owner vault actually serves the actual port for the scheme.
+  const owners = findOwningVaults(encodedPathOnly);
+  if (owners.length === 0) continue;
+  const portMatchesOwner = owners.some((o) => {
+    const oInfo = vaultPortInfo(o.vault);
+    if (!oInfo) return false;
+    return c.scheme === 'http'
+      ? oInfo.enableInsecureServer && oInfo.insecurePort === c.actualPort
+      : oInfo.port === c.actualPort;
+  });
+  if (portMatchesOwner) continue; // correct URL — no violation
 
-  let expectedPort;
-  let portIsValid;
-  if (c.scheme === 'http') {
-    expectedPort = info.insecurePort;
-    // http only valid if insecureServer enabled AND port matches.
-    portIsValid = info.enableInsecureServer && expectedPort === c.actualPort;
-  } else {
-    expectedPort = info.port;
-    portIsValid = expectedPort === c.actualPort;
-  }
+  // No owner serves this port → genuine wrong-port. Suggest against the
+  // first owner WITH a readable data.json (default-first order, same
+  // heuristic as Pass 1) — NOT blindly owners[0], which may be a vault
+  // whose Local REST API plugin was never configured (e.g. `.template`,
+  // which owns every scaffold path but often has no data.json at all).
+  const ownerWithInfo = owners
+    .map((o) => ({ ...o, info: vaultPortInfo(o.vault) }))
+    .find((o) => o.info);
+  if (!ownerWithInfo) continue;
+  const { vault, decodedHref, info } = ownerWithInfo;
 
-  if (portIsValid) continue; // correct URL — no violation
+  const expectedPort = c.scheme === 'http' ? info.insecurePort : info.port;
 
   violations.push({
     kind: 'wrong-port',
