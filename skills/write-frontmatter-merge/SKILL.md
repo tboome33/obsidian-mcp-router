@@ -48,3 +48,12 @@ This is NOT atomic. If applying 5 updates and the 3rd fails, the first two are a
 - list the failed keys with their error
 
 For atomic multi-key updates, the alternative is to read the current frontmatter (`read-frontmatter`), modify the object client-side, and `write-create-or-replace` the entire file back — but that rewrites the body too.
+
+## On failure — remediate, NEVER fall back to filesystem writes
+
+If the call fails entirely (not a per-key partial failure), diagnose the failure class — do NOT silently redo the operation with direct-filesystem tools (`Read`/`Edit`/`Write` on the vault's real path):
+
+- **Connection error** (`ECONNREFUSED`, timeout, "unreachable") → the vault is closed or Local REST API is off. Call `list_vaults`, then **ask the user to open the vault** via the clickable `openUri` link (message template: `default-vault-health-check` convention) and WAIT for their go-ahead.
+- **Validation / API error** (HTTP 4xx) → the vault is reachable; the CALL is malformed. Fix the arguments — still through the router.
+
+Direct FS writes bypass the Local REST API and lose the authoritative `clickToOpenUrl` (per-vault port) — hand-guessed citation links break. (Rule added 2026-07-05 at Roland's request after an FS-fallback incident.)

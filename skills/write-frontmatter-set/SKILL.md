@@ -41,6 +41,15 @@ Call the obsidian-router `set_frontmatter` MCP tool with arguments parsed from $
 - starts with `{` → JSON-parse as object
 - otherwise → string
 
+## On failure — remediate, NEVER fall back to filesystem writes
+
+If the call fails, diagnose the failure class — do NOT silently redo the operation with direct-filesystem tools (`Read`/`Edit`/`Write` on the vault's real path):
+
+- **Connection error** (`ECONNREFUSED`, timeout, "unreachable") → the vault is closed or Local REST API is off. Call `list_vaults`, then **ask the user to open the vault** via the clickable `openUri` link (message template: `default-vault-health-check` convention) and WAIT for their go-ahead.
+- **Validation / API error** (HTTP 4xx) → the vault is reachable; the CALL is malformed. Fix the arguments — still through the router.
+
+Direct FS writes bypass the Local REST API and lose the authoritative `clickToOpenUrl` (per-vault port) — hand-guessed citation links break. (Rule added 2026-07-05 at Roland's request after an FS-fallback incident.)
+
 ## Output
 
 After the set, confirm: `<path>: <key> = <value>`.

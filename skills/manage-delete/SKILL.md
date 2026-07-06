@@ -48,3 +48,12 @@ Call the obsidian-router `delete_file` MCP tool with arguments parsed from $ARGU
 If the user clearly types `confirm=true` from the start, you can call directly — but err on the side of confirming.
 
 This guard exists because Claude can hallucinate delete calls in long sessions. The protocol gives the user one more chance to catch it.
+
+## On failure — remediate, NEVER fall back to filesystem operations
+
+If the call fails, diagnose the failure class — do NOT silently delete the file with direct-filesystem tools (shell `rm` / `Remove-Item` on the vault's real path):
+
+- **Connection error** (`ECONNREFUSED`, timeout, "unreachable") → the vault is closed or Local REST API is off. Call `list_vaults`, then **ask the user to open the vault** via the clickable `openUri` link (message template: `default-vault-health-check` convention) and WAIT for their go-ahead.
+- **Validation / API error** (e.g. the `confirm=true` guard) → follow the safety protocol above; never bypass it through the filesystem.
+
+Direct FS deletes bypass the Local REST API guard rails entirely — that's precisely what this skill's two-step confirm is designed to prevent. (Rule added 2026-07-05 at Roland's request after an FS-fallback incident.)

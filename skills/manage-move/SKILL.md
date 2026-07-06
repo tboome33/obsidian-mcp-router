@@ -37,6 +37,15 @@ The Local REST API plugin has no native move endpoint. The router falls back to 
 
 If the DELETE step fails after the PUT, the file is duplicated. The tool returns `sourceDeleted: false` and a `warning` field — surface this clearly so the user can clean up manually if needed.
 
+## On failure — remediate, NEVER fall back to filesystem operations
+
+If the call fails, diagnose the failure class — do NOT silently redo the move with direct-filesystem tools (shell `mv`, `Write`+delete on the vault's real path):
+
+- **Connection error** (`ECONNREFUSED`, timeout, "unreachable") → the vault is closed or Local REST API is off. Call `list_vaults`, then **ask the user to open the vault** via the clickable `openUri` link (message template: `default-vault-health-check` convention) and WAIT for their go-ahead.
+- **Validation / API error** (e.g. destination exists without `overwrite`) → the vault is reachable; resolve with the user or adjust the arguments — still through the router.
+
+Direct FS operations bypass the Local REST API and lose the authoritative `clickToOpenUrl` (per-vault port) — hand-guessed citation links break. (Rule added 2026-07-05 at Roland's request after an FS-fallback incident.)
+
 ## Output
 
 After the move, report `from`, `to`, `overwrite`, `moved`, `sourceDeleted` (and any warning).

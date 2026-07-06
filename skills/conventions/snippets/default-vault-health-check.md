@@ -64,6 +64,15 @@ Utiliser un **markdown link standard** : `[label](obsidian://open?vault=<encoded
 
 Si l'user clique le lien et dit *"voilà, c'est ouvert"*, OU si l'user répond *"continue"* après un délai, refaire un `list_vaults` discret pour confirmer `online: true` avant le prochain write tool call. Si toujours offline, re-poser la question (peut-être un autre problème : port changé, plugin crashé).
 
+### Échec d'un appel router EN COURS DE SESSION — remédier, jamais de fallback filesystem
+
+La même logique s'applique quand un tool call router **échoue au milieu d'une session** (pas seulement au session start). Deux classes d'échec, deux remédiations — et dans AUCUN cas un fallback silencieux vers les outils filesystem (`Read`/`Edit`/`Write` sur le chemin réel du vault) :
+
+1. **Erreur de connexion** (`ECONNREFUSED`, timeout, "unreachable") → le vault s'est fermé (ou Local REST API désactivé) depuis le début de session. **Demander l'ouverture du vault** avec le même template de message + lien `openUri` cliquable que ci-dessus, et ATTENDRE l'acknowledgment avant de retenter. Ne PAS écrire dans le vault "par en dessous" via le filesystem pendant ce temps.
+2. **Erreur de validation / API** (HTTP 400 `invalid-target`, 409 conflit…) → le vault est joignable, c'est l'APPEL qui est mal formé. Corriger les arguments (ex. `patch_file` heading = chemin complet `::`) ou utiliser un outil router plus grossier (`write_file` réécriture complète, `append_to_file`) — toujours via le router.
+
+**Pourquoi pas le filesystem** : l'écriture FS contourne l'API Local REST, perd le `clickToOpenUrl` autoritatif (le port diffère par vault → liens de citation composés à la main = cassés), et saute les garde-fous du router (confirm de delete, partial-failure reporting du move…).
+
 ### Anti-patterns
 
 - ❌ Lancer des `write_file` / `patch_file` directement sans avoir vérifié `defaultVaultStatus.online` → erreur réseau cryptique pour l'user
@@ -71,7 +80,10 @@ Si l'user clique le lien et dit *"voilà, c'est ouvert"*, OU si l'user répond *
 - ❌ Boucler des retries silencieusement quand le vault est offline → délai pour rien, l'user voit "claude réfléchit" pendant 30s
 - ❌ Spammer le warning à chaque tool call vault-related — un seul affichage au début + après une tentative ratée explicite suffit
 - ❌ Composer le lien `obsidian://` à la main au lieu d'utiliser `defaultVaultStatus.openUri` (le routeur l'a déjà construit + URL-encodé correctement)
+- ❌ **Basculer silencieusement sur les outils filesystem quand un appel router échoue** — la remédiation est "demande l'ouverture du vault" (connexion) ou "corrige l'appel" (validation), jamais "contourne l'API" (ajouté 2026-07-05, incident FS-fallback)
 
 ### Source
 
 Convention shippée en v0.10.0 du router (2026-05-21) à la demande de Roland : *"il faudrait un moyen d'alerter lors d'une session que le vault par défaut n'est pas ouvert"* + *"tu pourrais donner une explication en un language plus naturel, on ne comprend pas trop ce qui va se passer si le vault par défaut n'est pas ouvert. Ensuite est ce qu'il n'existe pas un moyen de l'ouvrir depuis un lien avec claude ?"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user pour application par défaut sans installation per-vault. Voir aussi `wiki/obsidian-mcp-router/router-ux-improvements-roadmap.md` Phase 1.
+
+Section "Échec en cours de session" ajoutée le 2026-07-05 après un incident FS-fallback (session DEDIBOX) : un `patch_file` avait échoué (HTTP 400 `invalid-target`) et Claude avait basculé silencieusement sur `Read`/`Edit` filesystem au lieu de corriger l'appel — puis composé une URL click-to-open à mauvais port faute de `clickToOpenUrl`. Roland : *"Quand un appel router échoue il faudrait plutôt demander l'ouverture du vault ! et cette regle devrait être dans le skill du router"*. La même règle est répliquée en section "On failure" dans les skills `write-*` / `manage-*`.

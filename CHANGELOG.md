@@ -6,6 +6,11 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### Changed
+
+- **Skills `write-*` / `manage-*` — new "On failure" section (no silent FS fallback).** When a router call fails, the skill now mandates remediation instead of a silent fallback to direct-filesystem tools: connection error (`ECONNREFUSED`/timeout) → `list_vaults` + **ask the user to open the vault** via the clickable `openUri` link and wait; validation/API error (HTTP 400 `invalid-target`, 409…) → fix the call or use a coarser ROUTER tool (`write_file`, `append_to_file`) — never `Read`/`Edit`/`Write` on the vault's real path. Applied to `write-patch`, `write-append`, `write-create-or-replace`, `write-frontmatter-set`, `write-frontmatter-merge`, `manage-move`, `manage-delete`. Rationale: FS writes bypass the Local REST API, lose the authoritative `clickToOpenUrl` (per-vault port → hand-guessed citation links break) and skip the router's guard rails (delete confirm, move partial-failure reporting). Requested by Roland 2026-07-05 after an FS-fallback incident in a DEDIBOX session.
+- **Convention `default-vault-health-check` — new "Échec en cours de session" section.** The installable snippet now covers mid-session failures with the same two-class remediation (connection → open-the-vault prompt; validation → fix the call) and a new anti-pattern line banning the silent FS fallback.
+
 ## [0.36.0] — 2026-07-03 — Vault wizard W3: `meta-attach-vault` v2 (defaults-first) + harness-agnostic playbook
 
 Layer 2 of the guided vault-creation wizard — the frontends. The wizard is now defaults-first end-to-end: compute a complete plan, show it in one line, accept as-is (happy path = 1 interaction) or adjust any single point, provision in one call.
