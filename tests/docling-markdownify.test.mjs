@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { resolveDoclingPath } from '../src/markdownify/utils.mjs';
 import { toMarkdownDocling, buildDoclingArgs } from '../src/markdownify/docling.mjs';
+import { pdfToMarkdownDocling } from '../src/tools/convert.mjs';
+import { _internals } from '../src/index.mjs';
 
 test('resolveDoclingPath honors DOCLING_PATH override, else returns a non-empty string', () => {
   const old = process.env.DOCLING_PATH;
@@ -61,4 +63,38 @@ test('toMarkdownDocling surfaces an actionable ENOENT when docling is not instal
     }),
     /OBSIDIAN_ROUTER_ENABLE_DOCLING=1/,
   );
+});
+
+test('pdf_to_markdown_docling is registered in TOOLS with a handler, not a write tool', () => {
+  const advertised = _internals.TOOLS.map((t) => t.name);
+  assert.ok(advertised.includes('pdf_to_markdown_docling'), 'missing TOOLS entry');
+  assert.strictEqual(
+    typeof _internals.TOOL_HANDLERS['pdf_to_markdown_docling'],
+    'function',
+    'missing handler',
+  );
+  assert.strictEqual(
+    _internals.WRITE_TOOL_NAMES.has('pdf_to_markdown_docling'),
+    false,
+    'must not be a write tool — it touches no vault',
+  );
+});
+
+test('pdf_to_markdown_docling schema requires filepath', () => {
+  const byName = Object.fromEntries(_internals.TOOLS.map((t) => [t.name, t]));
+  assert.deepStrictEqual(byName['pdf_to_markdown_docling'].inputSchema.required, ['filepath']);
+});
+
+test('pdfToMarkdownDocling rejects a missing filepath before touching Docling', async () => {
+  await assert.rejects(() => pdfToMarkdownDocling(null, {}), /Missing required argument: filepath/);
+  await assert.rejects(() => pdfToMarkdownDocling(null, { filepath: '' }), /Missing required argument: filepath/);
+});
+
+test('pdfToMarkdownDocling returns the raw markdown string via the injected runner', async () => {
+  const out = await pdfToMarkdownDocling(
+    null,
+    { filepath: '/tmp/report.pdf' },
+    { run: async () => '# Report\n' },
+  );
+  assert.strictEqual(out, '# Report\n');
 });

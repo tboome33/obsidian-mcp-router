@@ -38,6 +38,7 @@ import {
   bingSearchToMarkdown,
   webpageToMarkdown,
   pdfToMarkdown,
+  pdfToMarkdownDocling,
   imageToMarkdown,
   audioToMarkdown,
   docxToMarkdown,
@@ -472,6 +473,22 @@ const TOOLS = [
     },
   },
   {
+    name: 'pdf_to_markdown_docling',
+    description:
+      "Convert a local PDF to markdown via Docling's standard pipeline (layout + table-structure recognition) — higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10x the CPU cost. OPT-IN: requires the Docling extra (install with OBSIDIAN_ROUTER_ENABLE_DOCLING=1, or `npm run install-docling`); if it is not installed the call returns an actionable install hint. Returns markdown text only — does NOT write to any vault. For fast/simple PDFs or office formats use `pdf_to_markdown` instead.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: {
+          type: 'string',
+          description: 'Absolute path of the PDF file to convert.',
+        },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'docx_to_markdown',
     description:
       'Convert a local DOCX file to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
@@ -876,6 +893,7 @@ const TOOL_HANDLERS = {
   // vault — they return markdown text only. Excluded from WRITE_TOOL_NAMES so
   // OBSIDIAN_ROUTER_READONLY keeps them exposed for ingestion use cases.
   pdf_to_markdown: (reg, args) => pdfToMarkdown(reg, args),
+  pdf_to_markdown_docling: (reg, args) => pdfToMarkdownDocling(reg, args),
   docx_to_markdown: (reg, args) => docxToMarkdown(reg, args),
   xlsx_to_markdown: (reg, args) => xlsxToMarkdown(reg, args),
   pptx_to_markdown: (reg, args) => pptxToMarkdown(reg, args),

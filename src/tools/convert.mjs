@@ -21,6 +21,7 @@
  *   stay useful for ingestion.
  */
 import { toMarkdown, fromRepo } from '../markdownify/markitdown.mjs';
+import { toMarkdownDocling } from '../markdownify/docling.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 
@@ -174,6 +175,16 @@ export async function webpageToMarkdown(_registry, { url } = {}) {
 
 export async function pdfToMarkdown(_registry, { filepath } = {}) {
   return convertFile(filepath);
+}
+
+async function convertFileDocling(filepath, run) {
+  assertString(filepath, 'filepath');
+  const { text } = await toMarkdownDocling({ filePath: filepath, run });
+  return text;
+}
+
+export async function pdfToMarkdownDocling(_registry, { filepath } = {}, _deps = {}) {
+  return convertFileDocling(filepath, _deps.run);
 }
 
 export async function imageToMarkdown(_registry, { filepath } = {}) {
