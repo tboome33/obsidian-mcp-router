@@ -8,6 +8,9 @@ node_modules/
 # Created by scripts/install-markitdown.mjs at npm postinstall.
 .venv/
 
+# Opt-in Python venv for the `docling` CLI (pdf_to_markdown_docling).
+.venv-docling/
+
 # MCPHub bundle build artifacts (scripts/build-mcpb.ps1). The staging dir holds
 # a full copy of source + node_modules; the .mcpb is the zipped output. Both are
 # regenerable and large (~36 MB) — never committed.
