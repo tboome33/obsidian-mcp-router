@@ -57,6 +57,29 @@ export function resolveMarkitdownPath(projectRoot) {
 }
 
 /**
+ * Resolve the absolute path to the `docling` executable. Same cascade as
+ * `resolveMarkitdownPath`, but pointed at the SEPARATE opt-in venv:
+ *
+ *   1. `DOCLING_PATH` env var — explicit override (e.g. `pipx install docling`).
+ *   2. `<projectRoot>/.venv-docling/bin/docling` (POSIX) or
+ *      `<projectRoot>\.venv-docling\Scripts\docling.exe` (Windows) — created by
+ *      `scripts/install-docling.mjs` at postinstall time WHEN opted in.
+ *   3. Bare `docling` — `PATH` lookup. ENOENT at call time if not installed.
+ */
+export function resolveDoclingPath(projectRoot) {
+  if (process.env.DOCLING_PATH) return process.env.DOCLING_PATH;
+  const isWin = process.platform === 'win32';
+  const venvBin = path.join(
+    projectRoot,
+    '.venv-docling',
+    isWin ? 'Scripts' : 'bin',
+    `docling${isWin ? '.exe' : ''}`,
+  );
+  if (fs.existsSync(venvBin)) return venvBin;
+  return 'docling';
+}
+
+/**
  * Resolve the absolute path to the `repomix` executable, used by
  * `git_repo_to_markdown`. Same cascade as `resolveMarkitdownPath`:
  *
