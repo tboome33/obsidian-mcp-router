@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { resolveDoclingPath } from '../src/markdownify/utils.mjs';
-import { toMarkdownDocling, buildDoclingArgs } from '../src/markdownify/docling.mjs';
+import { toMarkdownDocling, buildDoclingArgs, readProducedMarkdown } from '../src/markdownify/docling.mjs';
 import { pdfToMarkdownDocling } from '../src/tools/convert.mjs';
 import { _internals } from '../src/index.mjs';
 
@@ -97,4 +97,72 @@ test('pdfToMarkdownDocling returns the raw markdown string via the injected runn
     { run: async () => '# Report\n' },
   );
   assert.strictEqual(out, '# Report\n');
+});
+
+/* ---- review+ pass 1 fixes: on-disk output cap + multi-file guard + sandbox ---- */
+
+test('readProducedMarkdown returns the single produced markdown file', () => {
+  const out = readProducedMarkdown('/tmp/outdir', {
+    readdirSync: () => ['report.md'],
+    statSync: () => ({ size: 42 }),
+    readFileSync: () => '# Report\n',
+  });
+  assert.strictEqual(out, '# Report\n');
+});
+
+test('readProducedMarkdown throws when docling produced no markdown', () => {
+  assert.throws(
+    () => readProducedMarkdown('/tmp/outdir', {
+      readdirSync: () => ['diagram.png'],
+      statSync: () => ({ size: 1 }),
+      readFileSync: () => '',
+    }),
+    /produced no markdown output/,
+  );
+});
+
+test('readProducedMarkdown refuses to guess when >1 markdown file is produced', () => {
+  assert.throws(
+    () => readProducedMarkdown('/tmp/outdir', {
+      readdirSync: () => ['report.md', 'appendix.md'],
+      statSync: () => ({ size: 1 }),
+      readFileSync: () => '',
+    }),
+    /expected exactly 1/,
+  );
+});
+
+test('readProducedMarkdown enforces the MAX_OUTPUT_BYTES cap on the file (codex P2)', () => {
+  let read = false;
+  assert.throws(
+    () => readProducedMarkdown('/tmp/outdir', {
+      readdirSync: () => ['huge.md'],
+      statSync: () => ({ size: 51 * 1024 * 1024 }), // > 50 MB ceiling
+      readFileSync: () => { read = true; return 'should never be read'; },
+    }),
+    /exceeds the \d+-byte cap/,
+  );
+  assert.strictEqual(read, false, 'must refuse BEFORE reading the oversized file into memory');
+});
+
+test('toMarkdownDocling honors the MD_ALLOWED_PATHS sandbox (Reviewer A)', async () => {
+  const old = process.env.MD_ALLOWED_PATHS;
+  try {
+    process.env.MD_ALLOWED_PATHS = '/sandbox/in';
+    // Outside the sandbox → rejected by the shared assertPathAllowed guard,
+    // before the runner is ever reached.
+    await assert.rejects(
+      () => toMarkdownDocling({ filePath: '/sandbox/out/doc.pdf', run: async () => '# nope' }),
+      /outside the allowed directories/,
+    );
+    // Inside the sandbox → passes the guard, reaches the injected runner.
+    const { text } = await toMarkdownDocling({
+      filePath: '/sandbox/in/doc.pdf',
+      run: async () => '# ok\n',
+    });
+    assert.strictEqual(text, '# ok\n');
+  } finally {
+    if (old !== undefined) process.env.MD_ALLOWED_PATHS = old;
+    else delete process.env.MD_ALLOWED_PATHS;
+  }
 });

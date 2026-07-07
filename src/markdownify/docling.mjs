@@ -3,7 +3,10 @@
  *
  * Mirrors src/markdownify/markitdown.mjs (same spirit: shell out to a Python
  * CLI, talk pure argv/stdout, no Python embedding). Simpler because the tool
- * is file-input only (no URL path → no safeFetch / SSRF guard / streaming cap).
+ * is file-input only (no URL path → no safeFetch / SSRF guard). The output
+ * size is still capped at MAX_OUTPUT_BYTES — Docling writes the markdown to
+ * disk, so that ceiling is enforced on the file in readProducedMarkdown (the
+ * subprocess `maxBuffer` alone only bounds stderr chatter).
  *
  * Docling's standard pipeline (layout detection + TableFormer table-structure
  * recognition) reconstructs tables and reading order that MarkItDown's
@@ -47,9 +50,45 @@ export function buildDoclingArgs(outDir, filePath) {
 }
 
 /**
+ * Read the single markdown file Docling produced into `outDir`, enforcing the
+ * output ceiling. Docling writes `<stem>.md` to DISK (not stdout), so the
+ * `maxBuffer` on the subprocess only caps stderr — the real payload is capped
+ * HERE, before it is read into memory (an unbounded `readFileSync` would defeat
+ * the intended MAX_OUTPUT_BYTES ceiling on a huge/complex PDF). `fsDeps` is an
+ * injection seam for unit tests. Three refusals, all consistent with the repo's
+ * "no silent fallback" discipline:
+ *
+ *   - 0 `.md` produced        → the conversion silently failed; throw.
+ *   - >1 `.md` produced       → ambiguous (a companion file); refuse rather
+ *                               than silently return an arbitrary one.
+ *   - file > MAX_OUTPUT_BYTES → refuse before the unbounded read.
+ */
+export function readProducedMarkdown(outDir, fsDeps = fs) {
+  const produced = fsDeps
+    .readdirSync(outDir)
+    .filter((f) => f.toLowerCase().endsWith('.md'));
+  if (produced.length === 0) {
+    throw new Error('docling produced no markdown output');
+  }
+  if (produced.length > 1) {
+    throw new Error(
+      `docling produced ${produced.length} markdown files (expected exactly 1): ${produced.join(', ')}`,
+    );
+  }
+  const outPath = path.join(outDir, produced[0]);
+  const { size } = fsDeps.statSync(outPath);
+  if (size > MAX_OUTPUT_BYTES) {
+    throw new Error(
+      `docling output (${size} bytes) exceeds the ${MAX_OUTPUT_BYTES}-byte cap.`,
+    );
+  }
+  return fsDeps.readFileSync(outPath, 'utf-8');
+}
+
+/**
  * Default runner: docling writes `<stem>.md` into a private temp dir; we read
- * the single produced `.md` back and clean up. This avoids depending on any
- * stdout-streaming flag (whose availability is version-dependent).
+ * the single produced `.md` back (capped — see readProducedMarkdown) and clean
+ * up. This avoids depending on any stdout-streaming flag (version-dependent).
  */
 async function defaultRun(doclingPath, filePath) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docling-'));
@@ -57,11 +96,7 @@ async function defaultRun(doclingPath, filePath) {
     await execFileAsync(doclingPath, buildDoclingArgs(outDir, filePath), {
       maxBuffer: MAX_OUTPUT_BYTES,
     });
-    const produced = fs.readdirSync(outDir).filter((f) => f.toLowerCase().endsWith('.md'));
-    if (produced.length === 0) {
-      throw new Error('docling produced no markdown output');
-    }
-    return fs.readFileSync(path.join(outDir, produced[0]), 'utf-8');
+    return readProducedMarkdown(outDir);
   } finally {
     try { fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
   }
