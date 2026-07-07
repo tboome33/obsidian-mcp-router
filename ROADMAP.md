@@ -2,6 +2,16 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.37.0 — Docling opt-in high-fidelity PDF conversion (shipped 2026-07-07)
+
+New in-process conversion tool `pdf_to_markdown_docling` (+ `/pdf-to-markdown-docling` and `/pdf-to-markdown` slash commands). Runs [Docling](https://github.com/docling-project/docling)'s standard pipeline (layout + TableFormer) for PDFs with complex tables / multi-column layouts, where MarkItDown's `pdfminer.six` backend does plain text-stream extraction with no structure (88% vs 82% F1 on document extraction). Scoped to PDF only — DOCX/PPTX/XLSX keep MarkItDown (Docling's models are PDF-first, no demonstrated advantage there).
+
+- **Opt-in, in-process, separate venv.** Mirrors the MarkItDown wrapper (`scripts/install-docling.mjs` ⇄ `scripts/install-markitdown.mjs`, `src/markdownify/docling.mjs` ⇄ `markitdown.mjs`). Postinstall is a NO-OP unless `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` is set before `npm install` (Docling pulls ~1-2 GB of torch/onnxruntime + models, ~10× slower than MarkItDown). Installs into `.venv-docling` — never mixed with the MarkItDown `.venv`.
+- **Always listed, degrades gracefully.** The tool is advertised even when Docling isn't installed; a missing binary yields an actionable call-time hint (`OBSIDIAN_ROUTER_ENABLE_DOCLING=1` / `npm run install-docling` / `DOCLING_PATH`). Never fails `npm install`, never crashes at boot. No silent fallback to MarkItDown.
+- **Env vars:** `OBSIDIAN_ROUTER_ENABLE_DOCLING` (opt-in gate), `DOCLING_PATH` (system-wide override).
+- **Tests:** `tests/docling-markdownify.test.mjs` (resolver, argv `--` injection guard, wrapper happy path via injected runner, ENOENT hint, tool registration) + `tests/install-docling.test.mjs` (opt-in predicate). Full suite green.
+- **Docs:** README (capability tables EN+FR, runtime-deps section, env-var table), CHANGELOG, design spec `docs/superpowers/specs/2026-07-07-docling-pdf-integration-design.md`.
+
 ## ✅ v0.19.0 — self-healing session reconciliation (shipped 2026-05-29)
 
 Closes the `wiki-meta/log.md` ↔ `wiki-meta/Sessions/` desync. `session-auto-journal` wrote the journal incrementally but *finished* a session (status flip → `closed`, recap, **log.md line**) only in its `SessionEnd` handler. Claude Code does not guarantee `SessionEnd` (abrupt terminal close, kill, crash, OS shutdown), so crashed sessions stayed `status: open` forever with no log line — a Sessions/ file with no chronological summary. Observed on a live vault: 16/16 `closed` sessions logged, 0/11 `open` ones.

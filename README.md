@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.36.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.37.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -37,7 +37,7 @@ What you get:
 | File management | `move_file` |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown` — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
+| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
 | Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `build_open_link` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
@@ -620,6 +620,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `lock_vault` / `unlock_vaults` | Restrict the router to a single vault for the session (single-vault isolation). See the **Lock mode** section. |
 | `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (installed by default at postinstall). Returns markdown text only — chain with `write_file` to persist. |
+| `pdf_to_markdown_docling` | Convert a local PDF to markdown via **Docling**'s standard pipeline (layout detection + TableFormer table-structure recognition). Higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10× the CPU cost. **Opt-in** — requires the Docling extra (see *Conversion tools — runtime dependencies*). PDF only; for office formats keep `pdf_to_markdown`. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convert a remote URL to markdown via `markitdown`. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-heavy SPAs prefer the `defuddle` skill (headless browser). |
 | `git_repo_to_markdown` | Bundle a git repository (file tree + source code) into a single markdown document via `repomix`. Accepts a full URL or the `owner/repo` shorthand. Pass `compress: true` for ~70% size reduction via Tree-sitter. |
 | `extract_page_metadata` | Deterministic page-metadata extractor (JSON-LD + OpenGraph + meta tags + title) — feeds non-fabricated frontmatter for ingestion. |
@@ -642,6 +643,12 @@ The `*_to_markdown` family is a JS/ESM port of [zcaceres/markdownify-mcp](https:
 - To use a system-wide install instead of the bundled venv: `pipx install "markitdown[all]"` and set `MARKITDOWN_PATH=/abs/path/to/markitdown`.
 - `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup).
 
+**High-fidelity PDF via Docling (opt-in).** `pdf_to_markdown_docling` uses [Docling](https://github.com/docling-project/docling) (IBM / LF AI & Data Foundation, MIT) instead of MarkItDown — its layout + TableFormer models reconstruct table structure and reading order that MarkItDown's `pdfminer.six` backend loses, at ~10× the CPU cost. Docling pulls ~1-2 GB of torch/onnxruntime + model weights, so it is **not** installed by default:
+
+- Enable it by setting `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` **before** `npm install` — the postinstall then creates a separate `.venv-docling` and runs `pip install docling` (standard pipeline; no VLM/ASR extras). Re-run any time with the env var set: `npm run install-docling`. Needs Python 3.10+.
+- To use a system-wide install instead: `pipx install docling` and set `DOCLING_PATH=/abs/path/to/docling`.
+- `pdf_to_markdown_docling` stays listed even when Docling isn't installed; calling it then returns an actionable install hint. `pdf_to_markdown` (MarkItDown) is unaffected and remains the default fast path. Docling is PDF-only here — DOCX/PPTX/XLSX keep using MarkItDown.
+
 Optional sandbox env vars:
 
 | Variable | Purpose |
@@ -653,6 +660,8 @@ Optional sandbox env vars:
 | `MD_ALLOWED_PATHS` | `:`-separated (POSIX) or `;`-separated (Windows) list of directories the conversion tools are allowed to read. When unset (default), any absolute path is fair game. When set, the file-input conversion tools reject paths outside the listed directories. |
 | `MD_SHARE_DIR` | Legacy single-directory alias for `MD_ALLOWED_PATHS`, kept for backward compatibility with markdownify-mcp setups. Prefer `MD_ALLOWED_PATHS`. |
 | `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | Set to `1` to skip the venv creation at postinstall. |
+| `OBSIDIAN_ROUTER_ENABLE_DOCLING` | Set to `1` **before install** to opt into the Docling backend for `pdf_to_markdown_docling` (creates `.venv-docling`, `pip install docling`). Any other value → the tool is listed but errors with an install hint at call time. |
+| `DOCLING_PATH` | Absolute path to the `docling` executable. Override when not using the bundled `.venv-docling`. |
 
 ## Usage examples
 
@@ -805,7 +814,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.36.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.37.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -832,7 +841,7 @@ Ce que tu obtiens :
 | Gestion de fichiers | `move_file` |
 | Templater | `execute_template` |
 | État du router | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown` — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
+| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
 | Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `build_open_link` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
@@ -1354,6 +1363,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `lock_vault` / `unlock_vaults` | Restreint le router à un seul vault pour la session (isolation mono-vault). Voir la section **Mode lock**. |
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (installés par défaut au postinstall). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
+| `pdf_to_markdown_docling` | Convertit un PDF local en markdown via le pipeline standard de **Docling** (détection de mise en page + reconnaissance de structure de tableau TableFormer). Plus haute fidélité que `pdf_to_markdown` sur les tableaux complexes / mises en page multi-colonnes, à ~10× le coût CPU. **Opt-in** — nécessite l'extra Docling (voir la section dépendances de conversion). PDF uniquement ; pour les formats bureautiques, garder `pdf_to_markdown`. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convertit une URL distante en markdown via `markitdown`. URL http(s) uniquement ; hôtes privés/loopback refusés (garde SSRF). Pour les SPA JS-lourdes, préfère le skill `defuddle` (navigateur headless). |
 | `git_repo_to_markdown` | Bundle un dépôt git (arbre de fichiers + code source) en un seul document markdown via `repomix`. Accepte une URL complète ou le raccourci `owner/repo`. Passe `compress: true` pour ~70% de réduction via Tree-sitter. |
 | `extract_page_metadata` | Extracteur déterministe de métadonnées de page (JSON-LD + OpenGraph + meta tags + titre) — alimente un frontmatter non-fabriqué pour l'ingestion. |
