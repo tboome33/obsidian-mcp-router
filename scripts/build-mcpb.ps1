@@ -56,7 +56,7 @@ if (Test-Path $staging) {
 
 # --- 2. Robocopy source ---
 Write-Host "[2/5] Copying source to staging (excluding .git, node_modules, tests, .venv, secrets...)..."
-$excludeDirs  = @('.git', 'node_modules', 'tests', '.github', 'docs', '.vscode', 'mcpb-staging', '.venv', '.claude', 'worktrees', '.vault-meta')
+$excludeDirs  = @('.git', 'node_modules', 'tests', '.github', 'docs', '.vscode', 'mcpb-staging', '.venv', '.venv-docling', '.claude', 'worktrees', '.vault-meta')
 # SECURITY: config.json / config.local.json are gitignored because they hold API keys.
 # A normal user of this tool HAS a local config.json — without these exclusions, /MIR
 # would copy it into the bundle and ship credentials to MCPHub. Keep aligned with .gitignore.
@@ -93,7 +93,7 @@ Write-Host "  Source copied (robocopy exit $rcExitCode = success bitmask)" -Fore
 # secrets wherever they sit. `*.log` is a wildcard, so scope it to the staging root only
 # (where a credential-bearing log would sit) to avoid nuking a legit *.log a dep ships.
 $secretFilesRecursive = @('config.json', 'config.local.json', '.env', '.env.*')
-$secretDirNames       = @('.claude', '.vault-meta', '.venv', '.git')
+$secretDirNames       = @('.claude', '.vault-meta', '.venv', '.venv-docling', '.git')
 foreach ($pat in $secretFilesRecursive) {
     Get-ChildItem -Path $serverDir -Recurse -File -Filter $pat -Force -ErrorAction SilentlyContinue |
         Remove-Item -Force -ErrorAction SilentlyContinue
