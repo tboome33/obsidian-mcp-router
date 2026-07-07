@@ -26,10 +26,12 @@ Décisions héritées de la conversation (non re-débattues en brainstorming, d�
 ## 3. Architecture
 
 ```
-scripts/install-docling.mjs      (jumeau de scripts/install-markitdown.mjs)
-src/markdownify/docling.mjs      (jumeau de src/markdownify/markitdown.mjs, plus simple)
-src/tools/convert.mjs            (+ export pdfToMarkdownDocling)
-src/index.mjs                    (+ enregistrement du 34ᵉ tool)
+scripts/install-docling.mjs        (jumeau de scripts/install-markitdown.mjs)
+src/markdownify/docling.mjs        (jumeau de src/markdownify/markitdown.mjs, plus simple)
+src/tools/convert.mjs              (+ export pdfToMarkdownDocling)
+src/index.mjs                      (+ enregistrement du 34ᵉ tool)
+commands/pdf-to-markdown.md        (NOUVEAU — invoque pdf_to_markdown, tool déjà existant)
+commands/pdf-to-markdown-docling.md (NOUVEAU — invoque pdf_to_markdown_docling, cf §4.5)
 ```
 
 Flux d'installation :
@@ -89,6 +91,15 @@ Nouvel enregistrement de tool (34ᵉ), description honnête sur le modèle des a
 > « Convert a local PDF to markdown via Docling's standard pipeline (layout + table-structure recognition) — higher fidelity than `pdf_to_markdown` on complex tables/layouts, at ~10x the CPU cost. Requires opt-in install: set `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` before `npm install`, or re-run the install script manually. »
 
 Pas dans `WRITE_TOOL_NAMES` (mêmes raisons que les 10 tools existants : lecture seule, pas de mutation de vault).
+
+### 4.5 Slash commands (ajout 2026-07-07, demandé par Roland)
+
+Aucun des 10 tools `*_to_markdown` n'a de slash command aujourd'hui — les commandes existantes (`commands/*.md`) enveloppent des skills, pas des tools bruts. Ce lot en ajoute deux, sur le même modèle terse que les commandes existantes (frontmatter `description:` + instruction courte, pas de couche skill puisqu'aucune n'existe pour ces convertisseurs) :
+
+- **`commands/pdf-to-markdown.md`** → invoque le tool `pdf_to_markdown` (MarkItDown, existant). Peut être créé indépendamment du reste (le tool existe déjà).
+- **`commands/pdf-to-markdown-docling.md`** → invoque `pdf_to_markdown_docling` (§4.3-4.4). Doit être livré **avec** le tool (referencer un tool pas encore implémenté serait cassé).
+
+Invocation résultante : `/obsidian-router:pdf-to-markdown` et `/obsidian-router:pdf-to-markdown-docling` (le préfixe `obsidian-router:` vient du namespace du plugin, pas du nom de fichier). Chaque description renvoie vers l'autre commande pour aider au choix (rapide/léger vs haute-fidélité/lent).
 
 ## 5. Comportement d'erreur
 
