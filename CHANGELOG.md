@@ -6,6 +6,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-07-09 — `build_wiki_graph`: layers are now Louvain communities
+
+### Added
+
+- **`src/helpers/louvain.mjs` — deterministic Louvain community detection.** A dependency-free, pure implementation of the Louvain modularity-maximisation algorithm (local-moving + aggregation levels) that partitions an undirected weighted graph into communities. It is built to be **byte-stable**: nodes are indexed in code-unit id order (not locale-sensitive `localeCompare`), edges are folded in a canonical `(min-endpoint, max-endpoint, weight)` order so parallel/mixed-orientation edges sum the same regardless of input order, and community-gain ties are broken toward *staying put* then by lowest index — no `Math.random`, no clock. Exposes `detectCommunities(nodeIds, edges, { resolution })` and a `modularity(...)` utility. Correctness (gain formula, the `2m` normalisation, the aggregation self-loop bookkeeping, and every determinism property) was verified across four adversarial Codex review passes. Tests: `tests/louvain.test.mjs` (23 cases, including the canonical two-triangles-with-a-bridge structure, weighted graphs, and order-independence).
+
+### Changed
+
+- **`build_wiki_graph` — `layers[]` now reflects the graph's real community structure, not the `index.md` sections.** Previously each `index.md` heading became one layer. That is a hand-written table of contents, and many nodes (entities, claims, sources, unlisted pages) landed in no layer at all — so it could not drive "colour by community" in the graph viewer, which needs every node assigned to exactly one group. The builder now runs Louvain over the whole graph and emits one layer per detected community, each named after its most-connected member (usually a topic or a hub page) and tagged `method: "louvain"`. **The `index.md` taxonomy is not lost** — it still produces the `topic` nodes and `categorized_under` edges it always did; the two groupings now coexist and complement each other (curated taxonomy vs. discovered clusters). Community detection stays fully deterministic, so the written `knowledge-graph.json` remains byte-stable for a given vault. `src/helpers/wiki-graph-builder.mjs` (new `buildLayers` helper + a `communityResolution` option, default `1`). Roadmap item #1 step 2.5 of the Understand-Anything borrowings.
+
 ## [0.37.1] — 2026-07-08 — Docling: placeholder image export (no base64 bloat)
 
 ### Changed

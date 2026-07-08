@@ -141,9 +141,14 @@ describe('buildWikiGraphTool — happy path', () => {
     assert.ok(ids.includes('entity:rag'));
     assert.ok(ids.includes('source:raw/paper.pdf'));
     assert.ok(ids.includes('source:wiki/Refs/notes')); // citation range stripped
-    // Refs topic + layer from index.md
+    // Refs topic node from index.md (the human taxonomy).
     assert.ok(ids.includes('topic:refs'));
-    assert.ok(graph.layers.some((l) => l.id === 'layer:refs'));
+    // layers[] are Louvain communities now (id `layer:community-N`), not index
+    // sections — and they partition every node exactly once.
+    assert.ok(graph.layers.length >= 1);
+    assert.ok(graph.layers.every((l) => /^layer:community-\d+$/.test(l.id)));
+    const inLayers = graph.layers.flatMap((l) => l.nodeIds).sort();
+    assert.deepEqual(inLayers, graph.nodes.map((n) => n.id).sort());
   });
 
   test('dryRun builds + reports counts but writes nothing', async () => {

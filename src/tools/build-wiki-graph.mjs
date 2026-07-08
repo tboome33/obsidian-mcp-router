@@ -58,7 +58,7 @@ const READ_CONCURRENCY = 12;
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Assemble a typed knowledge graph (Understand-Anything-compatible schema) from a vault\'s wiki and write it as JSON. Deterministic — no LLM: maps wiki pages → article nodes, digest concepts/claims → entity/claim nodes, wikilinks → related edges, referenced sources (frontmatter sources:/^[citations]/![[embeds]]) → source nodes + cites edges, and index.md sections → topic nodes + layers. Writes a canonical copy to `wiki-meta/graph/knowledge-graph.json` and a derived copy to `.understand-anything/knowledge-graph.json` (so Understand-Anything\'s `/understand-dashboard` reads it directly). Use `dryRun: true` to build + validate + report counts without writing.',
+    'Assemble a typed knowledge graph (Understand-Anything-compatible schema) from a vault\'s wiki and write it as JSON. Deterministic — no LLM: maps wiki pages → article nodes, digest concepts/claims → entity/claim nodes, wikilinks → related edges, referenced sources (frontmatter sources:/^[citations]/![[embeds]]) → source nodes + cites edges, and index.md sections → topic nodes + categorized_under edges. `layers[]` are communities detected by Louvain over the whole graph (a partition — every node in exactly one layer — that drives colour-by-community in the viewer). Writes a canonical copy to `wiki-meta/graph/knowledge-graph.json` and a derived copy to `.understand-anything/knowledge-graph.json` (so Understand-Anything\'s `/understand-dashboard` reads it directly). Use `dryRun: true` to build + validate + report counts without writing.',
   inputSchema: {
     type: 'object',
     properties: {

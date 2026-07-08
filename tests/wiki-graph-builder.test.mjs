@@ -243,8 +243,8 @@ describe('buildWikiGraph — source nodes (the invariant)', () => {
 // Topics + layers from index.md
 // ---------------------------------------------------------------------------
 
-describe('buildWikiGraph — topics + layers', () => {
-  test('index sections → topic nodes + categorized_under edges + layers', () => {
+describe('buildWikiGraph — topics from index.md', () => {
+  test('index sections → topic nodes + categorized_under edges', () => {
     const pages = [
       { path: 'wiki/a.md', content: 'A' },
       { path: 'wiki/b.md', content: 'B' },
@@ -266,10 +266,78 @@ describe('buildWikiGraph — topics + layers', () => {
     assert.equal(nodeById(g, 'topic:wiki-core'), undefined);
     assert.ok(hasEdge(g, 'article:wiki/a', 'topic:refs', 'categorized_under'));
     assert.ok(hasEdge(g, 'article:wiki/b', 'topic:refs', 'categorized_under'));
+    // layers[] are Louvain communities (see the dedicated suite), NOT the index
+    // sections: no `layer:<section-slug>` id is emitted any more.
+    assert.equal(g.layers.find((l) => l.id === 'layer:refs'), undefined);
+    assert.ok(validateGraph(g).valid, validateGraph(g).errors.join('; '));
+  });
+});
 
-    const layer = g.layers.find((l) => l.id === 'layer:refs');
-    assert.ok(layer);
-    assert.deepEqual([...layer.nodeIds].sort(), ['article:wiki/a', 'article:wiki/b']);
+// ---------------------------------------------------------------------------
+// Layers = Louvain communities (roadmap #1 step 2.5)
+// ---------------------------------------------------------------------------
+
+describe('buildWikiGraph — layers (Louvain communities)', () => {
+  test('two unlinked clusters → two community layers', () => {
+    // a↔b mutually linked, c↔d mutually linked, no link across → 2 communities.
+    const pages = [
+      { path: 'wiki/a.md', content: 'A links [[b]]' },
+      { path: 'wiki/b.md', content: 'B links [[a]]' },
+      { path: 'wiki/c.md', content: 'C links [[d]]' },
+      { path: 'wiki/d.md', content: 'D links [[c]]' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    assert.equal(g.layers.length, 2, 'two disconnected clusters → two layers');
+    for (const l of g.layers) assert.match(l.id, /^layer:community-\d+$/);
+    // a with b, c with d, a apart from c.
+    const layerOf = (id) => g.layers.findIndex((l) => l.nodeIds.includes(id));
+    assert.equal(layerOf('article:wiki/a'), layerOf('article:wiki/b'));
+    assert.equal(layerOf('article:wiki/c'), layerOf('article:wiki/d'));
+    assert.notEqual(layerOf('article:wiki/a'), layerOf('article:wiki/c'));
+    assert.ok(validateGraph(g).valid, validateGraph(g).errors.join('; '));
+  });
+
+  test('layers partition every node exactly once (articles, entities, sources…)', () => {
+    const pages = [
+      { path: 'wiki/a.md', content: '---\nsources: ["paper.pdf"]\n---\nA links [[b]]' },
+      { path: 'wiki/b.md', content: 'B' },
+    ];
+    const digests = [digestFor('wiki/a.md', pages[0].content, { concepts: ['RAG'] })];
+    const g = buildWikiGraph({ vaultName: 'V', pages, digests, generatedAt: FIXED_TS });
+    const inLayers = g.layers.flatMap((l) => l.nodeIds).sort();
+    const allNodeIds = g.nodes.map((n) => n.id).sort();
+    assert.deepEqual(inLayers, allNodeIds, 'every node in exactly one layer');
+    assert.equal(new Set(inLayers).size, inLayers.length, 'no node in two layers');
+  });
+
+  test('each layer carries a method:"louvain" marker and a non-empty name', () => {
+    const pages = [
+      { path: 'wiki/a.md', content: 'A links [[b]]' },
+      { path: 'wiki/b.md', content: 'B' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    assert.ok(g.layers.length >= 1);
+    for (const l of g.layers) {
+      assert.equal(l.method, 'louvain');
+      assert.ok(typeof l.name === 'string' && l.name.length > 0);
+    }
+  });
+
+  test('community layers do not depend on index.md, and index.md still yields topic nodes', () => {
+    // index.md contributes topic nodes + categorized_under edges (unchanged),
+    // but layers now come from Louvain, not from the index sections.
+    const pages = [
+      { path: 'wiki/a.md', content: 'A links [[b]]' },
+      { path: 'wiki/b.md', content: 'B' },
+    ];
+    const indexMd = '## Refs\n- [[a]] — A\n- [[b]] — B\n';
+    const g = buildWikiGraph({ vaultName: 'V', pages, indexMd, generatedAt: FIXED_TS });
+    // Topic node + categorized_under still built from the index section.
+    assert.ok(nodeById(g, 'topic:refs'), 'index section still yields a topic node');
+    assert.ok(hasEdge(g, 'article:wiki/a', 'topic:refs', 'categorized_under'));
+    // No layer is named after the index section id any more.
+    assert.equal(g.layers.find((l) => l.id === 'layer:refs'), undefined);
+    for (const l of g.layers) assert.match(l.id, /^layer:community-\d+$/);
     assert.ok(validateGraph(g).valid, validateGraph(g).errors.join('; '));
   });
 });

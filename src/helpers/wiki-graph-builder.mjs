@@ -18,20 +18,24 @@
  *        embeds) — created EVEN IF the referenced file matches `.wikiignore`
  *        (the "source référencée" invariant, Roland 2026-05-29)
  *   - `wiki-meta/index.md` sections        → `topic` nodes + `categorized_under`
- *                                            edges + `layers[]`
+ *                                            edges (the human-curated taxonomy)
+ *   - graph link topology                  → `layers[]` via Louvain community
+ *                                            detection (#1 step 2.5) — every
+ *                                            node lands in exactly one layer
  *
  * Deferred to later commits (kept out of the deterministic core):
- *   - Louvain community detection → `layers[]` (#1 step 2.5)
  *   - LLM enrich: builds_on / contradicts / exemplifies (#1 step 3)
  *   - autogen of missing/stale digests (#1 step 1)
  *   - tour[] generation (#3)
  *
- * Reuses `parseFrontmatter` + `parseIndex` from llms-txt-exporter and
- * `parseDigest` from digest-generator rather than re-deriving them.
+ * Reuses `parseFrontmatter` + `parseIndex` from llms-txt-exporter,
+ * `parseDigest` from digest-generator, and `detectCommunities` from louvain
+ * rather than re-deriving them.
  */
 
 import { parseFrontmatter, parseIndex } from './llms-txt-exporter.mjs';
 import { parseDigest } from './digest-generator.mjs';
+import { detectCommunities } from './louvain.mjs';
 import {
   emptyGraph,
   articleId,
@@ -182,6 +186,58 @@ function sourceName(ref) {
   return String(ref).split('/').pop() || ref;
 }
 
+/**
+ * Turn a Louvain community partition into UA `Layer[]`. Each community becomes
+ * one layer whose `name` is its highest-degree member — the community's hub,
+ * usually a `topic` node or a well-linked article — with ties broken by the
+ * lowest id. `id` is `layer:community-<N>` where N (1-based) follows the
+ * deterministic community order `detectCommunities` returns (communities sorted
+ * by their smallest member id), so the array is already canonically ordered.
+ *
+ * @param {string[]} nodeIds  every node id in the graph
+ * @param {Array<{source:string,target:string,weight?:number}>} edges
+ * @param {Map<string,object>} nodesById  id → node (for the hub's display name)
+ * @param {number} resolution  Louvain resolution γ
+ * @returns {Array<{id:string,name:string,description:string,nodeIds:string[],method:string}>}
+ */
+function buildLayers(nodeIds, edges, nodesById, resolution) {
+  const communities = detectCommunities(nodeIds, edges, { resolution });
+  if (communities.length === 0) return [];
+
+  // Undirected weighted degree per node — used only to pick each community's
+  // hub (the node that best labels the group).
+  const degree = new Map();
+  for (const e of edges) {
+    const w = typeof e.weight === 'number' && Number.isFinite(e.weight) ? e.weight : 1;
+    degree.set(e.source, (degree.get(e.source) || 0) + w);
+    degree.set(e.target, (degree.get(e.target) || 0) + w);
+  }
+
+  return communities.map((members, i) => {
+    // `members` is already id-sorted, so a strict `>` keeps the lowest id on a
+    // degree tie — deterministic hub selection.
+    let hub = members[0];
+    let hubDegree = degree.get(hub) || 0;
+    for (const id of members) {
+      const d = degree.get(id) || 0;
+      if (d > hubDegree) {
+        hubDegree = d;
+        hub = id;
+      }
+    }
+    const hubNode = nodesById.get(hub);
+    const name = (hubNode && typeof hubNode.name === 'string' && hubNode.name) || hub;
+    const count = members.length;
+    return {
+      id: `layer:community-${i + 1}`,
+      name,
+      description: `Community of ${count} node${count === 1 ? '' : 's'} · detected via Louvain modularity`,
+      nodeIds: members,
+      method: 'louvain',
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
@@ -216,6 +272,7 @@ export function buildWikiGraph({
   generatedAt = '',
   description = '',
   gitCommitHash = '',
+  communityResolution = 1,
 } = {}) {
   if (typeof vaultName !== 'string' || !vaultName) {
     throw new TypeError('buildWikiGraph: vaultName is required (string)');
@@ -456,8 +513,12 @@ export function buildWikiGraph({
     }
   }
 
-  // ---- Pass 3: topics + layers from index.md sections -----------------------
-  const layers = [];
+  // ---- Pass 3: topic nodes from index.md sections ---------------------------
+  // index.md sections become `topic` nodes + `categorized_under` edges — the
+  // human-curated taxonomy. They no longer populate `layers[]`: that is now the
+  // Louvain community partition built in Pass 4 (roadmap #1 step 2.5). The two
+  // groupings are complementary — a hand-written table of contents (topics) vs
+  // the clusters the link structure actually forms (layers).
   if (typeof indexMd === 'string' && indexMd.trim()) {
     let sections = [];
     try {
@@ -487,14 +548,21 @@ export function buildWikiGraph({
         complexity: 'simple',
       });
       for (const aid of memberIds) addEdge(aid, tid, 'categorized_under', 0.5);
-      layers.push({
-        id: `layer:${kebab(section.title)}`,
-        name: section.title,
-        description: '',
-        nodeIds: memberIds,
-      });
     }
   }
+
+  // ---- Pass 4: layers = Louvain communities over the whole graph ------------
+  // Community detection runs on the FULL node/edge set (articles, entities,
+  // claims, sources AND the topic nodes built above), so the human taxonomy
+  // informs the partition without dictating it, and every node lands in exactly
+  // one layer — the partition that color-by-community and hub detection want.
+  // Deterministic (see louvain.mjs), so byte-stability is preserved.
+  const layers = buildLayers(
+    [...nodesById.keys()],
+    edges,
+    nodesById,
+    communityResolution,
+  );
 
   // ---- Canonical ordering (stable, diff-friendly) ---------------------------
   graph.nodes = [...nodesById.values()].sort((a, b) => a.id.localeCompare(b.id));
@@ -504,7 +572,9 @@ export function buildWikiGraph({
       a.target.localeCompare(b.target) ||
       a.type.localeCompare(b.type),
   );
-  graph.layers = layers.sort((a, b) => a.id.localeCompare(b.id));
+  // `layers` is already canonically ordered: detectCommunities sorts communities
+  // by their smallest member id, and the `community-N` numbering follows that.
+  graph.layers = layers;
   // tour[] left empty (deferred to #3).
 
   return graph;
