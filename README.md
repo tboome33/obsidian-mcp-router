@@ -643,11 +643,12 @@ The `*_to_markdown` family is a JS/ESM port of [zcaceres/markdownify-mcp](https:
 - To use a system-wide install instead of the bundled venv: `pipx install "markitdown[all]"` and set `MARKITDOWN_PATH=/abs/path/to/markitdown`.
 - `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup).
 
-**High-fidelity PDF via Docling (opt-in).** `pdf_to_markdown_docling` uses [Docling](https://github.com/docling-project/docling) (IBM / LF AI & Data Foundation, MIT) instead of MarkItDown — its layout + TableFormer models reconstruct table structure and reading order that MarkItDown's `pdfminer.six` backend loses, at ~10× the CPU cost. Docling pulls ~1-2 GB of torch/onnxruntime + model weights, so it is **not** installed by default:
+**High-fidelity PDF via Docling (opt-in).** `pdf_to_markdown_docling` uses [Docling](https://github.com/docling-project/docling) (IBM / LF AI & Data Foundation, MIT) instead of MarkItDown — its layout + TableFormer models reconstruct table structure and reading order that MarkItDown's `pdfminer.six` backend loses, at ~10× the CPU cost. Docling pulls torch/onnxruntime + model weights, so it is **not** installed by default. Disk footprint depends on the OS's default torch wheel: **~1.3 GB on Windows/macOS** (CPU-only torch) vs **~5.5 GB on Linux** (its default wheel bundles CUDA libraries, unused on a CPU-only box). The models (layout + TableFormer + OCR, a few hundred MB) download on first conversion into the Hugging Face cache (`HF_HOME`).
 
 - Enable it by setting `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` **before** `npm install` — the postinstall then creates a separate `.venv-docling` and runs `pip install docling` (standard pipeline; no VLM/ASR extras). Re-run any time with the env var set: `npm run install-docling`. Needs Python 3.10+.
 - To use a system-wide install instead: `pipx install docling` and set `DOCLING_PATH=/abs/path/to/docling`.
 - `pdf_to_markdown_docling` stays listed even when Docling isn't installed; calling it then returns an actionable install hint. `pdf_to_markdown` (MarkItDown) is unaffected and remains the default fast path. Docling is PDF-only here — DOCX/PPTX/XLSX keep using MarkItDown.
+- **Figures are not embedded.** The tool runs Docling with `--image-export-mode placeholder`, so each picture becomes a `<!-- image -->` marker instead of an inline base64 data-URI. The output stays text-only and small — an illustrated PDF that comes back as ~3 MB of base64 in Docling's default `embedded` mode is ~15 KB here — at the cost of dropping the figure images (table structure and reading order are still reconstructed).
 
 Optional sandbox env vars:
 

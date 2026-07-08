@@ -2,6 +2,12 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.37.1 — Docling: placeholder image export + local-path validation (shipped 2026-07-08)
+
+`pdf_to_markdown_docling` now runs Docling with `--image-export-mode placeholder` by default. Docling's default (`embedded`) inlines every figure as a base64 data-URI — on an illustrated PDF that dwarfs the text (a 4-page course sheet → 3.3 MB output, 99.6% base64, for ~14 KB of real text) and can hit the `MAX_OUTPUT_BYTES` cap for no readable gain. Figures now become `<!-- image -->` markers: text-only, vault-friendly, ×228 smaller on that document; table structure and reading order are still reconstructed. `buildDoclingArgs` + regression test in `tests/docling-markdownify.test.mjs`.
+
+- **Local install path validated on Windows.** The real self-hoster route — `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` + `npm run install-docling` — was exercised end-to-end: a **1.3 GB** `.venv-docling` (CPU-only torch on Windows/macOS; Linux's default torch wheel bundles CUDA → ~5.5 GB), `resolveDoclingPath` discovers the venv with no `DOCLING_PATH`, and a real conversion returned the placeholder output. README updated with the OS-dependent size + a "figures are not embedded" note.
+
 ## ✅ v0.37.0 — Docling opt-in high-fidelity PDF conversion (shipped 2026-07-07)
 
 New in-process conversion tool `pdf_to_markdown_docling` (+ `/pdf-to-markdown-docling` and `/pdf-to-markdown` slash commands). Runs [Docling](https://github.com/docling-project/docling)'s standard pipeline (layout + TableFormer) for PDFs with complex tables / multi-column layouts, where MarkItDown's `pdfminer.six` backend does plain text-stream extraction with no structure (88% vs 82% F1 on document extraction). Scoped to PDF only — DOCX/PPTX/XLSX keep MarkItDown (Docling's models are PDF-first, no demonstrated advantage there).
