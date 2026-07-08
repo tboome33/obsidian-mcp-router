@@ -31,6 +31,17 @@ test('buildDoclingArgs puts the user filepath after -- (argv injection guard)', 
   );
 });
 
+test('buildDoclingArgs requests placeholder image export (no base64 bloat)', () => {
+  const args = buildDoclingArgs('/tmp/out', '/tmp/x.pdf');
+  const i = args.indexOf('--image-export-mode');
+  assert.ok(i >= 0, 'must pass --image-export-mode');
+  assert.strictEqual(args[i + 1], 'placeholder', 'image export mode must be placeholder');
+  assert.ok(
+    i < args.indexOf('--'),
+    'the flag must precede the -- separator (it is ours, not user input)',
+  );
+});
+
 test('toMarkdownDocling rejects a missing filepath', async () => {
   await assert.rejects(() => toMarkdownDocling({}), /Missing required argument: filepath/);
   await assert.rejects(() => toMarkdownDocling({ filePath: '' }), /Missing required argument: filepath/);

@@ -6,6 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.37.1] — 2026-07-08 — Docling: placeholder image export (no base64 bloat)
+
+### Changed
+
+- **`pdf_to_markdown_docling` now defaults to `--image-export-mode placeholder`.** Docling's default (`embedded`) inlines every figure as a base64 data-URI: on an illustrated PDF the images dwarf the text and can blow the `MAX_OUTPUT_BYTES` cap for no readable gain — real case: a 4-page SVT course sheet → **3.3 MB output, 99.6% base64, for ~14 KB of actual text**. `buildDoclingArgs` now passes `--image-export-mode placeholder`, so each figure becomes a `<!-- image -->` marker and the same PDF yields **14.6 KB** of vault-friendly text (×228 smaller) — hierarchy, the comparison table (TableFormer), and UTF-8 accents all preserved. Externalizing images as files (`referenced` mode) stays out of scope: it would require persisting the output dir, which the single-file read-back in `readProducedMarkdown` does not do. New regression test in `tests/docling-markdownify.test.mjs`; `src/markdownify/docling.mjs`.
+
 ## [0.37.0] — 2026-07-07 — Docling opt-in high-fidelity PDF conversion
 
 ### Added

@@ -44,9 +44,18 @@ const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
  * reading a `filePath` that begins with `-` (e.g. `--version`) as an option —
  * same guard as runMarkitdown. `filePath` is the only user-controlled value
  * and it sits AFTER `--`.
+ *
+ * `--image-export-mode placeholder` keeps figures OUT of the markdown. Docling's
+ * default (`embedded`) inlines every picture as a base64 data-URI, which on an
+ * illustrated PDF dwarfs the actual text — observed: a 4-page course sheet →
+ * 3.3 MB output, 99.6% of it base64, for ~14 KB of real text — and can blow the
+ * MAX_OUTPUT_BYTES cap for no readable gain. `placeholder` emits a
+ * `<!-- image -->` marker at each figure's position instead: text-only,
+ * vault-friendly output. (Externalizing images as files would need `referenced`
+ * mode + persisting the output dir, which the single-file read-back does not do.)
  */
 export function buildDoclingArgs(outDir, filePath) {
-  return ['--to', 'md', '--output', outDir, '--', filePath];
+  return ['--to', 'md', '--image-export-mode', 'placeholder', '--output', outDir, '--', filePath];
 }
 
 /**
