@@ -2,6 +2,14 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.39.0 — `pdf_to_images`: render PDF pages for the model to SEE (shipped 2026-07-09)
+
+New tool `pdf_to_images` renders a local PDF's pages to PNG images and returns them as **MCP image content blocks**, so the model can visually SEE a page — complementing the text-extracting `pdf_to_markdown` / `pdf_to_markdown_docling`. Rendering via **pypdfium2** (PDFium/Google, BSD) + Pillow, both already in `.venv-docling` (the Docling extra) — NOT poppler (GPL) or MuPDF (AGPL). Delivers the borrowings-roadmap §2.14 idea.
+
+- **Image delivery, finally proven.** The router's first non-text tool result: `wrapResult` gained an `isMcpContentPayload` pass-through so a ready `{content:[{type:'image',…}]}` payload survives untouched. The base64-image-delivery contract that `video_to_markdown` (claude-watch §2.11) flagged as unproven is now real and tested.
+- **Bounded by design.** Images are token-expensive → hard caps: `max_pages` default 8 / ceiling 30, `scale` 2.0 clamped 0.5–4.0, per-image 12 MB + total 24 MB (refused before the read). Same "don't ship megabytes of base64" lesson as Docling's placeholder default.
+- **Sandbox + injection guards** reused from the conversion family (`MD_ALLOWED_PATHS`, `--` argv separator). TDD: 24 new tests; full suite 2070 green. Verified end-to-end: rendered a real 6-page PDF and viewed the page.
+
 ## ✅ v0.37.1 — Docling: placeholder image export + local-path validation (shipped 2026-07-08)
 
 `pdf_to_markdown_docling` now runs Docling with `--image-export-mode placeholder` by default. Docling's default (`embedded`) inlines every figure as a base64 data-URI — on an illustrated PDF that dwarfs the text (a 4-page course sheet → 3.3 MB output, 99.6% base64, for ~14 KB of real text) and can hit the `MAX_OUTPUT_BYTES` cap for no readable gain. Figures now become `<!-- image -->` markers: text-only, vault-friendly, ×228 smaller on that document; table structure and reading order are still reconstructed. `buildDoclingArgs` + regression test in `tests/docling-markdownify.test.mjs`.

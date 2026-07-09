@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.38.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.39.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -621,6 +621,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (installed by default at postinstall). Returns markdown text only — chain with `write_file` to persist. |
 | `pdf_to_markdown_docling` | Convert a local PDF to markdown via **Docling**'s standard pipeline (layout detection + TableFormer table-structure recognition). Higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10× the CPU cost. **Opt-in** — requires the Docling extra (see *Conversion tools — runtime dependencies*). PDF only; for office formats keep `pdf_to_markdown`. |
+| `pdf_to_images` | **Render** a local PDF's pages to PNG images, returned as MCP image blocks so the model can visually **see** a page (not just read its text). Renders with **pypdfium2** (BSD) + Pillow from the same `.venv-docling` as Docling — returns an actionable install hint if absent. Params: `filepath`, `first_page`, `max_pages` (default 8, cap 30), `scale` (≈144 DPI). Hard page/byte caps bound token cost. Does not write to any vault. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convert a remote URL to markdown via `markitdown`. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-heavy SPAs prefer the `defuddle` skill (headless browser). |
 | `git_repo_to_markdown` | Bundle a git repository (file tree + source code) into a single markdown document via `repomix`. Accepts a full URL or the `owner/repo` shorthand. Pass `compress: true` for ~70% size reduction via Tree-sitter. |
 | `extract_page_metadata` | Deterministic page-metadata extractor (JSON-LD + OpenGraph + meta tags + title) — feeds non-fabricated frontmatter for ingestion. |
@@ -815,7 +816,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.38.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.39.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1365,6 +1366,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (installés par défaut au postinstall). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
 | `pdf_to_markdown_docling` | Convertit un PDF local en markdown via le pipeline standard de **Docling** (détection de mise en page + reconnaissance de structure de tableau TableFormer). Plus haute fidélité que `pdf_to_markdown` sur les tableaux complexes / mises en page multi-colonnes, à ~10× le coût CPU. **Opt-in** — nécessite l'extra Docling (voir la section dépendances de conversion). PDF uniquement ; pour les formats bureautiques, garder `pdf_to_markdown`. |
+| `pdf_to_images` | **Rend** les pages d'un PDF local en images PNG, renvoyées comme blocs image MCP pour que le modèle **voie** une page (pas seulement son texte). Rendu via **pypdfium2** (BSD) + Pillow, du même `.venv-docling` que Docling — renvoie un hint d'install si absent. Paramètres : `filepath`, `first_page`, `max_pages` (défaut 8, plafond 30), `scale` (≈144 DPI). Plafonds durs de pages/octets pour borner le coût en tokens. N'écrit dans aucun coffre. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convertit une URL distante en markdown via `markitdown`. URL http(s) uniquement ; hôtes privés/loopback refusés (garde SSRF). Pour les SPA JS-lourdes, préfère le skill `defuddle` (navigateur headless). |
 | `git_repo_to_markdown` | Bundle un dépôt git (arbre de fichiers + code source) en un seul document markdown via `repomix`. Accepte une URL complète ou le raccourci `owner/repo`. Passe `compress: true` pour ~70% de réduction via Tree-sitter. |
 | `extract_page_metadata` | Extracteur déterministe de métadonnées de page (JSON-LD + OpenGraph + meta tags + titre) — alimente un frontmatter non-fabriqué pour l'ingestion. |

@@ -6,6 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-07-09 — `pdf_to_images`: render PDF pages for the model to SEE
+
+### Added
+
+- **`pdf_to_images` — render a local PDF's pages to PNG images, returned as MCP image content blocks so the model can visually SEE a page** (not just read its text via `pdf_to_markdown` / `pdf_to_markdown_docling`). Rendering uses **pypdfium2** (Google's PDFium, BSD — the engine behind Chrome's PDF viewer) + Pillow, deliberately NOT poppler (GPL system binary) or MuPDF (AGPL, incompatible with the router's Apache-2.0). Both packages already ship inside the opt-in `.venv-docling`, so a user who enabled Docling gets `pdf_to_images` for free; otherwise the tool returns an actionable install hint. Params: `filepath` (required), `first_page` (default 1), `max_pages` (default 8, hard cap 30), `scale` (default 2.0 ≈ 144 DPI, clamped 0.5–4.0). Because every rendered page is a base64 image billed against the model's context, the tool enforces hard page-count and per-image (12 MB) / total (24 MB) byte caps — refused BEFORE an over-cap file is read into memory (same discipline as Docling's on-disk output cap). **Core plumbing:** `wrapResult` now passes a ready MCP `{content:[…]}` payload through untouched (via the new `isMcpContentPayload`) instead of JSON-stringifying it — `pdf_to_images` is the router's first tool to return non-text (image) content; every existing text/object-returning tool is unaffected. New: `scripts/render-pdf-images.py`, `src/markdownify/pdf-images.mjs`, `pdfToImagesTool` in `src/tools/convert.mjs`, env var `PDF_IMAGES_PYTHON`. TDD: 24 new tests in `tests/pdf-images.test.mjs`; full suite green (2070). Implements the borrowings-roadmap §2.14 idea (pypdfium2, base64 delivery).
+
 ## [0.38.0] — 2026-07-09 — `build_wiki_graph`: layers are now Louvain communities
 
 ### Added

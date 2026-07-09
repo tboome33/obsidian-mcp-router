@@ -22,6 +22,7 @@
  */
 import { toMarkdown, fromRepo } from '../markdownify/markitdown.mjs';
 import { toMarkdownDocling } from '../markdownify/docling.mjs';
+import { pdfToImages } from '../markdownify/pdf-images.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 
@@ -185,6 +186,25 @@ async function convertFileDocling(filepath, run) {
 
 export async function pdfToMarkdownDocling(_registry, { filepath } = {}, _deps = {}) {
   return convertFileDocling(filepath, _deps.run);
+}
+
+/**
+ * Render local PDF pages to PNG images, returned as MCP image content
+ * blocks (see `pdfToImages` in ../markdownify/pdf-images.mjs). Unlike every
+ * other conversion tool in this file, the return value is NOT a markdown
+ * string — it's a ready `{ content: [...] }` MCP payload that must pass
+ * through `wrapResult` (src/index.mjs) untouched. Named `pdfToImagesTool`
+ * (not `pdfToImages`) to avoid colliding with the imported markdownify
+ * function of the same name.
+ */
+export async function pdfToImagesTool(_registry, { filepath, max_pages, first_page, scale } = {}, _deps = {}) {
+  return pdfToImages({
+    filePath: filepath,
+    maxPages: max_pages,
+    firstPage: first_page,
+    scale,
+    run: _deps.run,
+  });
 }
 
 export async function imageToMarkdown(_registry, { filepath } = {}) {

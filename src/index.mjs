@@ -39,6 +39,7 @@ import {
   webpageToMarkdown,
   pdfToMarkdown,
   pdfToMarkdownDocling,
+  pdfToImagesTool,
   imageToMarkdown,
   audioToMarkdown,
   docxToMarkdown,
@@ -489,6 +490,34 @@ const TOOLS = [
     },
   },
   {
+    name: 'pdf_to_images',
+    description:
+      "Render a local PDF's pages to PNG images and return them as MCP image content blocks so the model can visually SEE the pages — complements `pdf_to_markdown`/`pdf_to_markdown_docling`, which only extract TEXT and lose layout, figures, diagrams, and visual formatting. OPT-IN: requires pypdfium2 + Pillow, which ship with the Docling extra (install with OBSIDIAN_ROUTER_ENABLE_DOCLING=1, or `npm run install-docling`); if not installed the call returns an actionable install hint. Page count and render scale are capped (max_pages hard limit 30, scale clamped 0.5-4.0) to bound the token cost of the returned images. Does NOT write to any vault.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: {
+          type: 'string',
+          description: 'Absolute path of the PDF file to render.',
+        },
+        max_pages: {
+          type: 'number',
+          description: 'Max pages to render (default 8, hard cap 30).',
+        },
+        first_page: {
+          type: 'number',
+          description: '1-based first page (default 1).',
+        },
+        scale: {
+          type: 'number',
+          description: 'Render scale, ~2.0 ≈ 144 DPI (default 2.0, clamped 0.5–4.0).',
+        },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'docx_to_markdown',
     description:
       'Convert a local DOCX file to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
@@ -894,6 +923,12 @@ const TOOL_HANDLERS = {
   // OBSIDIAN_ROUTER_READONLY keeps them exposed for ingestion use cases.
   pdf_to_markdown: (reg, args) => pdfToMarkdown(reg, args),
   pdf_to_markdown_docling: (reg, args) => pdfToMarkdownDocling(reg, args),
+  // Returns a ready MCP `{content}` payload (image blocks), not a string —
+  // see `isMcpContentPayload` / `wrapResult` below, which passes it through
+  // untouched instead of JSON.stringify-ing it. Read-only wrt vault state,
+  // same rationale as the other conversion tools — excluded from
+  // WRITE_TOOL_NAMES.
+  pdf_to_images: (reg, args) => pdfToImagesTool(reg, args),
   docx_to_markdown: (reg, args) => docxToMarkdown(reg, args),
   xlsx_to_markdown: (reg, args) => xlsxToMarkdown(reg, args),
   pptx_to_markdown: (reg, args) => pptxToMarkdown(reg, args),
@@ -1577,8 +1612,32 @@ export async function startServer({ configPath, watch = true } = {}) {
   );
 }
 
+/**
+ * Is `result` already a ready-to-ship MCP content payload — i.e. does it
+ * have the `{ content: [{ type, ... }, ...] }` shape the MCP SDK expects
+ * verbatim? Used by `wrapResult` to distinguish tools like `pdf_to_images`
+ * (which build their own typed `content[]`, including `image` blocks that
+ * must NOT be stringified) from every other tool, which returns either a
+ * plain string or a plain object with no typed `content[]` of its own.
+ */
+export function isMcpContentPayload(result) {
+  return !!result && typeof result === 'object' && Array.isArray(result.content)
+    && result.content.length > 0
+    && result.content.every((c) => c && typeof c === 'object' && typeof c.type === 'string');
+}
+
 async function wrapResult(promise) {
   const result = await promise;
+  // Image-returning tools (currently only `pdf_to_images`) already return a
+  // finished MCP content payload — `{ content: [{type:'text',...}, {type:
+  // 'image', data, mimeType}, ...] }`. That must pass through UNTOUCHED: the
+  // generic stringify path below would JSON.stringify the whole object
+  // (including the base64 image data) into a single text block, destroying
+  // the typed image blocks the MCP client needs to actually render them.
+  // Every other existing tool returns a plain string or a plain object with
+  // no typed `content[]` — `isMcpContentPayload` is false for those, so they
+  // fall through to the existing behavior unchanged.
+  if (isMcpContentPayload(result)) return result;
   return {
     content: [
       {
@@ -1600,4 +1659,5 @@ export const _internals = {
   LOCAL_ONLY_TOOL_NAMES,
   computeExposedTools,
   PKG_VERSION,
+  isMcpContentPayload,
 };
