@@ -87,6 +87,10 @@ import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
 } from './tools/get-page-neighbors.mjs';
+import {
+  TOOL_DEFINITION as WIKI_PATH_TOOL_DEFINITION,
+  wikiPathTool,
+} from './tools/wiki-path.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -800,6 +804,10 @@ const TOOLS = [
   // (backlinks + forward-links, bounded depth). Read-only (reads the graph JSON)
   // — excluded from WRITE_TOOL_NAMES.
   GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
+  // Page-neighbors roadmap W-B — the shortest link chain between TWO pages
+  // (undirected). Read-only (reads the graph JSON) — excluded from
+  // WRITE_TOOL_NAMES.
+  WIKI_PATH_TOOL_DEFINITION,
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY, gated out when
   // OBSIDIAN_ROUTER_USER_ID is set). plan_vault is read-only; provision_vault
   // writes a new vault to the local filesystem.
@@ -967,6 +975,8 @@ const TOOL_HANDLERS = {
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
   // Page-neighbors roadmap W-A — read-only page-neighbourhood query.
   get_page_neighbors: (reg, args) => getPageNeighborsTool(reg, args),
+  // Page-neighbors roadmap W-B — read-only shortest-path query between two pages.
+  wiki_path: (reg, args) => wikiPathTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;
   // provision_vault writes a new vault. Both drive the setup-vault.mjs engine
   // and use `reg.configPath` so the child runs against the server's config.

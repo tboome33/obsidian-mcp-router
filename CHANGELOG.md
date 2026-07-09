@@ -6,6 +6,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.41.0] — 2026-07-09 — `wiki_path`: the shortest link chain between two pages
+
+### Added
+
+- **`wiki_path` — "how are page A and page B connected?"** The companion to `get_page_neighbors` (0.40.0): where that tool explores the neighbourhood of one page, this one finds the shortest chain of links **between two** pages and returns the route hop by hop — the "brain GPS" for a wiki. It reuses the exact graph-loading + page-resolution core W-A introduced, so both endpoints resolve the same three ways (exact path / bare name / unique suffix, ambiguity refused with candidates), and it reads the same persisted `wiki-meta/graph/knowledge-graph.json` (run `build_wiki_graph` / `/wiki-graph` first).
+
+  Two semantics matter here and differ from `get_page_neighbors` on purpose. (1) Traversal is **undirected** — a link read either way still connects the two topics, which is the sensible reading of "how are these related?" (whereas neighbours care about link direction). (2) When the two pages are genuinely unconnected, that is **not an error**: the tool returns `found: false` with an explicit `path: null` — two pages can simply be unrelated. `maxDepth` (default 6, ceiling 20) bounds the search; a shortest path longer than it is reported as no path. `from === to` yields the trivial one-page path (length 0). By default the route runs through pages only (`nodeTypes: ["article"]`); widen it to e.g. `["article","entity","topic"]` for "connected via a **shared concept**" paths — often the interesting answer to "what relates A and B?" — with the endpoints always reachable regardless of their own type.
+
+  The traversal (`computePath`, an undirected level-order BFS with parent reconstruction) shipped and was fully tested in 0.40.0's shared helper; this release adds only the thin tool shell (`src/tools/wiki-path.mjs`, same read-validate-delegate-sanitize shape as `get_page_neighbors`) plus its registration. TDD: 11 new tool tests (`tests/wiki-path.test.mjs`); Codex review verdict CLEAN; full suite green (2127). Validated end-to-end against the live vault graph (a real 2-hop route `project-router → Crawl4AI → license-audit`, the trivial self-path, and a `maxDepth: 1` boundary). Completes item W-B of the page-neighbors roadmap (W-C — semantically-enriched neighbours — stays deferred).
+
 ## [0.40.0] — 2026-07-09 — `get_page_neighbors`: query one page's neighbourhood in the graph
 
 ### Added
