@@ -6,6 +6,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-07-09 — `get_page_neighbors`: query one page's neighbourhood in the graph
+
+### Added
+
+- **`get_page_neighbors` — ask the knowledge graph for the neighbours of ONE wiki page.** Until now there was no direct way to answer "which pages are related to X?": `get_wiki_context_pack`'s `graphNeighbors[]` only works off the pages a text query already surfaced (you can't point it at a specific page), and `build_wiki_graph` builds the whole graph but gives you no way to interrogate it locally. The new tool closes that gap — give it a page and it returns the pages that page links to (`forward`), the pages that link to it (`backward`, i.e. backlinks), or both, out to a configurable hop `depth`. It reads the **persisted** `wiki-meta/graph/knowledge-graph.json` that `build_wiki_graph` already wrote — deliberately NOT re-scraping wikilinks from page bodies the way `graphNeighbors[]` does — so it inherits the builder's ambiguity resolution and its backlink bookkeeping for free (run `build_wiki_graph` / `/wiki-graph` first; a missing graph yields an actionable "run it first" message, same as `build_wiki_tour`).
+
+  Three design points earned during a second-pass review of the roadmap, and enforced in code: (1) the graph's `related` edges connect a page not just to other pages but also to the **concepts and claims** it mentions, so the tool filters by **node type** (`nodeTypes`, default `["article"]`) — otherwise "the neighbours of X" would return a mix of pages, concepts and sources; widen it (e.g. `["entity"]`) to instead ask "which concepts does this page mention?". (2) A crossroads page at depth 2 can fan out to hundreds of neighbours, so results are **capped** (`maxNeighbors`, default 50, hard ceiling 200) with a `truncated` flag. (3) An **ambiguous** page name (two `dup.md` in different folders) is **refused with the list of candidate paths** rather than silently resolving to the first — the deliberate difference from the builder's internal resolver, which must pick one to lay down an edge. Output is deterministic (sorted by hop distance then id) and carries `graphAnalyzedAt` so the caller can judge the graph's freshness. Read-only.
+
+  The maths lives in a pure, dependency-injected helper (`src/helpers/graph-neighbors.mjs` — a directed BFS with visited-on-enqueue for minimal hop distances, edge-type + node-type filtering, and the three-step page resolver ported from `wiki-graph-builder.mjs`), with the tool shell (`src/tools/get-page-neighbors.mjs`) mirroring `build_wiki_tour`'s read-validate-delegate-sanitize shape. Because the neighbours query and the upcoming `wiki_path` query (roadmap W-B) share the same graph-loading + page-resolution core, the helper also lands its sibling `computePath` (an UNDIRECTED shortest-path BFS) now — fully tested here, exposed by the `wiki_path` tool in the next release. TDD: 46 new tests (`tests/graph-neighbors.test.mjs`, `tests/get-page-neighbors.test.mjs`); an adversarial Codex correctness pass caught and fixed a `computePath` node-type-filter edge case before ship; full suite green (2116). Implements item W-A of the page-neighbors roadmap.
+
 ## [0.39.0] — 2026-07-09 — `pdf_to_images`: render PDF pages for the model to SEE
 
 ### Added

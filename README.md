@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.39.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.40.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -39,7 +39,7 @@ What you get:
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `build_open_link` |
+| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `build_open_link` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
 Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` so the postinstall can install `markitdown[all]` into a local `.venv` — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
@@ -632,6 +632,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `get_wiki_context_pack` | Return a structured JSON context envelope for a query (primaryPages / semanticChunks / graphNeighbors / citations) so non-Claude agents can consume the vault programmatically. |
 | `build_wiki_graph` | Assemble the vault into a typed knowledge-graph JSON (Understand-Anything schema: 21 node / 35 edge types). Writes `wiki-meta/graph/knowledge-graph.json` + a derived `.understand-anything/` copy. |
 | `build_wiki_tour` | Generate a deterministic, ordered pedagogical reading tour from the knowledge-graph link topology. Read-only. |
+| `get_page_neighbors` | Return the neighbours of ONE page from the knowledge graph — the pages it links to (`forward`), the pages that link to it (`backward`), or both — out to `depth` hops. Defaults to page↔page links; widen `nodeTypes` to surface the concepts/sources a page also touches. An ambiguous page name is refused with the list of candidates. Read-only. |
 
 More tools (CLI flags, hot config reload, skills) are on the roadmap — see [ROADMAP.md](./ROADMAP.md).
 
@@ -816,7 +817,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.39.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.40.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -845,7 +846,7 @@ Ce que tu obtiens :
 | État du router | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `build_open_link` |
+| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `build_open_link` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
 La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_template`) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart` et `/templates/execute` sur Local REST API. Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
@@ -1377,6 +1378,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `get_wiki_context_pack` | Retourne une enveloppe de contexte JSON structurée pour une requête (primaryPages / semanticChunks / graphNeighbors / citations) afin que des agents non-Claude consomment le vault programmatiquement. |
 | `build_wiki_graph` | Assemble le vault en un knowledge-graph JSON typé (schéma Understand-Anything : 21 types de nœuds / 35 d'arêtes). Écrit `wiki-meta/graph/knowledge-graph.json` + une copie dérivée `.understand-anything/`. |
 | `build_wiki_tour` | Génère un parcours de lecture pédagogique déterministe et ordonné depuis la topologie de liens du knowledge-graph. Read-only. |
+| `get_page_neighbors` | Retourne les voisines d'UNE page depuis le knowledge-graph — celles qu'elle cite (`forward`), celles qui la citent (`backward`), ou les deux — jusqu'à `depth` sauts. Par défaut des liens page↔page ; élargir `nodeTypes` pour faire apparaître les concepts/sources que la page touche aussi. Un nom de page ambigu est refusé avec la liste des candidats. Read-only. |
 
 D'autres outils (flags CLI, hot reload de la config, skills) sont sur la roadmap — voir [ROADMAP.md](./ROADMAP.md).
 

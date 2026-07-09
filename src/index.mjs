@@ -83,6 +83,10 @@ import {
   TOOL_DEFINITION as BUILD_WIKI_TOUR_TOOL_DEFINITION,
   buildWikiTourTool,
 } from './tools/build-wiki-tour.mjs';
+import {
+  TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
+  getPageNeighborsTool,
+} from './tools/get-page-neighbors.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -792,6 +796,10 @@ const TOOLS = [
   // from the knowledge graph. Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
   BUILD_WIKI_TOUR_TOOL_DEFINITION,
+  // Page-neighbors roadmap W-A — the neighbourhood of ONE page from the graph
+  // (backlinks + forward-links, bounded depth). Read-only (reads the graph JSON)
+  // — excluded from WRITE_TOOL_NAMES.
+  GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY, gated out when
   // OBSIDIAN_ROUTER_USER_ID is set). plan_vault is read-only; provision_vault
   // writes a new vault to the local filesystem.
@@ -957,6 +965,8 @@ const TOOL_HANDLERS = {
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
+  // Page-neighbors roadmap W-A — read-only page-neighbourhood query.
+  get_page_neighbors: (reg, args) => getPageNeighborsTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;
   // provision_vault writes a new vault. Both drive the setup-vault.mjs engine
   // and use `reg.configPath` so the child runs against the server's config.
