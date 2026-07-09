@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.41.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.42.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -147,7 +147,7 @@ See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and 
 | `/obsidian-router:meta-audit-bridge-readiness` | Audit click-to-open readiness across vaults (bridge ≥0.2.0, REST API ≥4.0.0, insecure HTTP, live `/open` probe) | *"audit bridge readiness"*, *"is click-to-open ready"* / *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* |
 | `/obsidian-router:conventions` | Install / remove / status / propagate CLAUDE.md conventions (source-type, bilingual, heading-hierarchy, ...) across vaults | *"install source-type convention on X"*, *"list conventions"* / *"installe la convention source-type sur X"*, *"liste les conventions"* |
 
-### 📚 15 knowledge-management commands (Karpathy-style LLM-wiki)
+### 📚 17 knowledge-management commands (Karpathy-style LLM-wiki)
 
 A small workflow on top of the router for an LLM-maintained, structured markdown knowledge base where pages reference each other and grow with use.
 
@@ -165,6 +165,8 @@ A small workflow on top of the router for an LLM-maintained, structured markdown
 | `/obsidian-router:obsidian-bases` | Create/edit Obsidian `.base` files (database-like views over frontmatter) | *"create a base for X"*, *"task tracker base"* / *"crée une base pour X"*, *"base task tracker"* |
 | `/obsidian-router:wiki-graph` | Build a typed knowledge-graph JSON from the vault (Understand-Anything schema; feeds the native graph viewer) | *"build the wiki graph"*, *"generate the knowledge graph"* / *"construis le graphe du wiki"*, *"génère le knowledge graph"* |
 | `/obsidian-router:wiki-tour` | Generate an ordered pedagogical reading tour from the vault's link topology | *"give me a tour of this vault"*, *"where do I start"* / *"fais-moi un tour du vault"*, *"par où je commence"* |
+| `/obsidian-router:wiki-neighbors` | Show one page's neighbours from the knowledge graph — what it links to, what links to it (backlinks), or both | *"what links to X"*, *"show me the backlinks of X"* / *"quelles pages sont liées à X"*, *"voisins de X"* |
+| `/obsidian-router:wiki-path` | Find the shortest chain of links between two pages ("how are A and B connected?") | *"how is X connected to Y"*, *"path between X and Y"* / *"quel rapport entre X et Y"*, *"chemin entre X et Y"* |
 | `/obsidian-router:wiki-export` | Export the vault as a portable single file (`llms.txt` / `llms-full.txt`) or as an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1, shareable with any OKF-aware agent) | *"export the wiki as llms.txt"*, *"export as an OKF bundle"* / *"exporte le wiki en llms.txt"*, *"exporte en bundle OKF"* |
 | `/obsidian-router:okf-export` | Export a wiki subset as a shareable **OKF v0.1 knowledge bundle** — slugified filenames, relative links, per-folder indexes, conformance self-checked, optional agent README | *"export this folder as an OKF bundle"*, *"publish my wiki as a knowledge bundle"* / *"exporte ce dossier en bundle OKF"*, *"publie mon wiki en bundle"* |
 | `/obsidian-router:okf-check` | Validate an OKF bundle (ours or third-party) against the Open Knowledge Format v0.1 conformance rules — one of the ecosystem's first OKF validators | *"validate this OKF bundle"*, *"is this bundle conformant?"* / *"valide ce bundle OKF"*, *"ce bundle est-il conforme ?"* |
@@ -818,7 +820,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.41.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.42.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -920,7 +922,7 @@ Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le c
 | `/obsidian-router:meta-audit-bridge-readiness` | Audite la disponibilité du click-to-open sur les vaults (bridge ≥0.2.0, REST API ≥4.0.0, HTTP insecure, probe live `/open`) | *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* / *"audit bridge readiness"*, *"is click-to-open ready"* |
 | `/obsidian-router:conventions` | Installe / retire / statut / propage les conventions CLAUDE.md (source-type, bilingual, heading-hierarchy, ...) sur les vaults | *"installe la convention source-type sur X"*, *"liste les conventions"* / *"install source-type convention on X"*, *"list conventions"* |
 
-#### 📚 15 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
+#### 📚 17 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
 
 Un petit workflow par-dessus le router pour une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et croissent avec l'usage.
 
@@ -938,6 +940,8 @@ Un petit workflow par-dessus le router pour une base de connaissances en markdow
 | `/obsidian-router:obsidian-bases` | Crée/édite des fichiers `.base` Obsidian (vues database sur frontmatter) | *"crée une base pour X"*, *"base task tracker"* / *"create a base for X"*, *"task tracker base"* |
 | `/obsidian-router:wiki-graph` | Construit un knowledge-graph JSON typé depuis le vault (schéma Understand-Anything ; alimente le viewer graphe natif) | *"construis le graphe du wiki"*, *"génère le knowledge graph"* / *"build the wiki graph"*, *"generate the knowledge graph"* |
 | `/obsidian-router:wiki-tour` | Génère un parcours de lecture pédagogique ordonné depuis la topologie de liens du vault | *"fais-moi un tour du vault"*, *"par où je commence"* / *"give me a tour of this vault"*, *"where do I start"* |
+| `/obsidian-router:wiki-neighbors` | Montre les voisines d'une page depuis le knowledge-graph — ce qu'elle cite, ce qui la cite (backlinks), ou les deux | *"quelles pages sont liées à X"*, *"voisins de X"* / *"what links to X"*, *"show me the backlinks of X"* |
+| `/obsidian-router:wiki-path` | Trouve la chaîne de liens la plus courte entre deux pages (« quel rapport entre A et B ? ») | *"quel rapport entre X et Y"*, *"chemin entre X et Y"* / *"how is X connected to Y"*, *"path between X and Y"* |
 | `/obsidian-router:wiki-export` | Exporte le vault en fichier unique portable (`llms.txt` / `llms-full.txt`) ou en **bundle OKF** (Open Knowledge Format v0.1 de Google, partageable avec tout agent compatible OKF) | *"exporte le wiki en llms.txt"*, *"exporte en bundle OKF"* / *"export the wiki as llms.txt"*, *"export as an OKF bundle"* |
 | `/obsidian-router:okf-export` | Exporte un sous-ensemble du wiki en **bundle OKF v0.1** partageable — noms slugifiés, liens relatifs, index par dossier, conformité auto-vérifiée, README agent optionnel | *"exporte ce dossier en bundle OKF"*, *"publie mon wiki en bundle"* / *"export this folder as an OKF bundle"*, *"publish my wiki as a knowledge bundle"* |
 | `/obsidian-router:okf-check` | Valide un bundle OKF (le nôtre ou un tiers) contre les règles de conformité Open Knowledge Format v0.1 — l'un des premiers validateurs de l'écosystème | *"valide ce bundle OKF"*, *"ce bundle est-il conforme ?"* / *"validate this OKF bundle"*, *"is this bundle conformant?"* |

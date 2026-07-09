@@ -6,6 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-07-09 — `wiki-neighbors` / `wiki-path` skills — natural-language discovery for the page-neighbors tools
+
+### Added
+
+- **Skills + slash commands for `get_page_neighbors` and `wiki_path`.** The two MCP tools shipped in v0.40.0/v0.41.0 were reachable only by a direct tool call — unlike their closest siblings `build_wiki_graph`/`build_wiki_tour`, which each ship a skill + `/obsidian-router:*` slash command with documented natural-language trigger phrasings. That asymmetry meant a user (or a fresh Claude session) had no discoverable "just ask" entry point into page-neighbourhood/path lookups. This release closes the gap: **`skills/wiki-neighbors/SKILL.md`** + **`commands/wiki-neighbors.md`** (triggers: "what links to X", "show me the backlinks of X" / "quelles pages sont liées à X", "voisins de X") and **`skills/wiki-path/SKILL.md`** + **`commands/wiki-path.md`** (triggers: "how is X connected to Y", "path between X and Y" / "quel rapport entre X et Y", "chemin entre X et Y"), following the exact `wiki-graph`/`wiki-tour` pattern (pre-condition check, ambiguity/not-found/no-path handling, wikilink-formatted output, "when not to use" + anti-patterns + quirks sections). README: two new rows in both the EN and FR "knowledge-management commands" tables (now 17, up from 15). No server code changed — this is a Claude Code plugin-only addition (skills/commands ship with the plugin, not with the `.mcpb` MCP-server bundle), so no MCPHub redeploy is needed for this release.
+
 ## [0.41.0] — 2026-07-09 — `wiki_path`: the shortest link chain between two pages
 
 ### Added
