@@ -34,9 +34,11 @@ function makeGraph() {
     kind: 'knowledge',
     project: { name: 'V', analyzedAt: '2026-07-09T10:00:00.000Z' },
     nodes: [
-      { id: 'article:wiki/a', type: 'article', name: 'A', filePath: 'wiki/a.md', summary: '', tags: ['article'], complexity: 'simple' },
-      { id: 'article:wiki/b', type: 'article', name: 'B', filePath: 'wiki/b.md', summary: '', tags: ['article'], complexity: 'simple' },
-      { id: 'article:wiki/c', type: 'article', name: 'C', filePath: 'wiki/c.md', summary: '', tags: ['article'], complexity: 'simple' },
+      // Tags for A5 (same-folder/shared-tag enrichment): a↔b share "roadmap",
+      // a↔c share "featured". d/hub/dup carry only the universal "article" tag.
+      { id: 'article:wiki/a', type: 'article', name: 'A', filePath: 'wiki/a.md', summary: '', tags: ['article', 'roadmap', 'featured'], complexity: 'simple' },
+      { id: 'article:wiki/b', type: 'article', name: 'B', filePath: 'wiki/b.md', summary: '', tags: ['article', 'roadmap'], complexity: 'simple' },
+      { id: 'article:wiki/c', type: 'article', name: 'C', filePath: 'wiki/c.md', summary: '', tags: ['article', 'featured'], complexity: 'simple' },
       { id: 'article:wiki/d', type: 'article', name: 'D', filePath: 'wiki/d.md', summary: '', tags: ['article'], complexity: 'simple' },
       { id: 'article:wiki/hub', type: 'article', name: 'Hub', filePath: 'wiki/hub.md', summary: '', tags: ['article'], complexity: 'simple' },
       { id: 'article:wiki/sub/dup', type: 'article', name: 'Dup', filePath: 'wiki/sub/dup.md', summary: '', tags: ['article'], complexity: 'simple' },
@@ -256,6 +258,93 @@ describe('computeNeighbors — defensive', () => {
     const res = computeNeighbors(makeGraph(), { page: 'wiki/d.md', direction: 'forward', depth: 1 });
     assert.deepEqual(res.neighbors, []);
     assert.equal(res.truncated, false);
+  });
+});
+
+describe('computeNeighbors — same-folder enrichment (A5, opt-in)', () => {
+  test('off by default: sameFolderNeighbors is empty', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md' });
+    assert.deepEqual(res.sameFolderNeighbors, []);
+    assert.equal(res.sameFolderTruncated, false);
+  });
+
+  test('includeSameFolder: true surfaces OTHER article pages in the same directory', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md', includeSameFolder: true });
+    // a.md, b.md, c.md, d.md, hub.md all live directly under wiki/ — same dir.
+    // sub/dup.md and other/dup.md live in DIFFERENT dirs — excluded.
+    const sameFolderIds = res.sameFolderNeighbors.map((n) => n.id);
+    assert.deepEqual(sameFolderIds, ['article:wiki/b', 'article:wiki/c', 'article:wiki/d', 'article:wiki/hub']);
+    assert.ok(!sameFolderIds.includes('article:wiki/a'), 'must exclude itself');
+    assert.ok(!sameFolderIds.includes('article:wiki/sub/dup'), 'must exclude a different folder');
+  });
+
+  test('never surfaces non-article nodes (entity/topic/source)', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md', includeSameFolder: true });
+    assert.ok(!res.sameFolderNeighbors.some((n) => n.id.startsWith('entity:') || n.id.startsWith('topic:') || n.id.startsWith('source:')));
+  });
+
+  test('caps + flags truncation independently from the link-based cap', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md', includeSameFolder: true, maxNeighbors: 2 });
+    assert.equal(res.sameFolderNeighbors.length, 2);
+    assert.equal(res.sameFolderTruncated, true);
+    assert.equal(res.sameFolderTotalFound, 4);
+    // Deterministic: sorted by id → the two lowest ids kept.
+    assert.deepEqual(res.sameFolderNeighbors.map((n) => n.id), ['article:wiki/b', 'article:wiki/c']);
+  });
+
+  test('a page with no same-folder siblings → empty, not an error', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/sub/dup.md', includeSameFolder: true });
+    assert.deepEqual(res.sameFolderNeighbors, []);
+  });
+
+  test('order-independent (input node order does not affect output)', () => {
+    const g1 = makeGraph();
+    const g2 = makeGraph();
+    g2.nodes.reverse();
+    const r1 = computeNeighbors(g1, { page: 'wiki/a.md', includeSameFolder: true });
+    const r2 = computeNeighbors(g2, { page: 'wiki/a.md', includeSameFolder: true });
+    assert.deepEqual(r1.sameFolderNeighbors, r2.sameFolderNeighbors);
+  });
+});
+
+describe('computeNeighbors — shared-tag enrichment (A5, opt-in)', () => {
+  test('off by default: sharedTagNeighbors is empty', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md' });
+    assert.deepEqual(res.sharedTagNeighbors, []);
+    assert.equal(res.sharedTagTruncated, false);
+  });
+
+  test('includeSharedTags: true surfaces pages sharing a REAL tag (not the universal "article" tag)', () => {
+    // a: [roadmap, featured] · b: [roadmap] · c: [featured] · d/hub/dup: no real tag.
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/a.md', includeSharedTags: true });
+    const byId = Object.fromEntries(res.sharedTagNeighbors.map((n) => [n.id, n]));
+    assert.deepEqual(Object.keys(byId).sort(), ['article:wiki/b', 'article:wiki/c']);
+    assert.deepEqual(byId['article:wiki/b'].sharedTags, ['roadmap']);
+    assert.deepEqual(byId['article:wiki/c'].sharedTags, ['featured']);
+  });
+
+  test('a page with only the universal "article" tag has no shared-tag neighbours', () => {
+    const res = computeNeighbors(makeGraph(), { page: 'wiki/d.md', includeSharedTags: true });
+    assert.deepEqual(res.sharedTagNeighbors, []);
+  });
+
+  test('caps + flags truncation independently', () => {
+    const g = makeGraph();
+    g.nodes.find((n) => n.id === 'article:wiki/d').tags = ['article', 'roadmap'];
+    g.nodes.find((n) => n.id === 'article:wiki/hub').tags = ['article', 'roadmap'];
+    const res = computeNeighbors(g, { page: 'wiki/a.md', includeSharedTags: true, maxNeighbors: 2 });
+    assert.equal(res.sharedTagNeighbors.length, 2);
+    assert.equal(res.sharedTagTruncated, true);
+    assert.equal(res.sharedTagTotalFound, 4);
+  });
+
+  test('order-independent (input node order does not affect output)', () => {
+    const g1 = makeGraph();
+    const g2 = makeGraph();
+    g2.nodes.reverse();
+    const r1 = computeNeighbors(g1, { page: 'wiki/a.md', includeSharedTags: true });
+    const r2 = computeNeighbors(g2, { page: 'wiki/a.md', includeSharedTags: true });
+    assert.deepEqual(r1.sharedTagNeighbors, r2.sharedTagNeighbors);
   });
 });
 

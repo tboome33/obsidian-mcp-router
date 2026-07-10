@@ -6,12 +6,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-07-10 — `get_page_neighbors` A5: same-folder + shared-tag enrichment
+
+### Added
+
+- **`get_page_neighbors` — two opt-in structural enrichments: `includeSameFolder` and `includeSharedTags`.** The link-based neighbours (`neighbors[]`) only surface pages connected by an actual wikilink — but two pages can be obviously related without ever linking to each other: siblings filed in the same folder, or pages sharing a topical tag. Both signals were already sitting on every article node (`filePath`, `tags`) from the very first knowledge-graph build, so surfacing them costs zero extra graph traversal or network calls. `includeSameFolder: true` adds `sameFolderNeighbors[]` — other pages whose directory prefix matches the resolved page's. `includeSharedTags: true` adds `sharedTagNeighbors[]` — pages sharing at least one REAL tag (the universal `article` tag every page carries is excluded, or every page in the vault would "match" every other page), each entry listing which tags matched via `sharedTags`. Both are **off by default** (existing responses are unchanged), scoped to `article`-type pages regardless of the caller's `nodeTypes`, and capped/flagged the same way as the main neighbour list (`sameFolderTruncated`/`sameFolderTotalFound`, `sharedTagTruncated`/`sharedTagTotalFound`) — no silent truncation. Implements the **A5** appoint of the page-neighbors roadmap, the one item left over from W-A. TDD: 15 new tests (10 helper-level in `tests/graph-neighbors.test.mjs`, 5 tool-level in `tests/get-page-neighbors.test.mjs`); full suite green (2142). Validated end-to-end against the live vault graph (e.g. `Crawl4AI`'s one same-folder sibling, and its 50 tag-sharing pages via the near-universal `bilingual` tag — a useful reminder that shared-tag enrichment is only as discriminating as the vault's own tagging habits).
+
 ## [0.42.1] — 2026-07-10 — `docs/features/`: the feature guide, in prose, by category
 
 ### Added
 
 - **`docs/features/` — a readable, categorized guide to every feature.** The README documents the whole surface in compact tables — fine as a reference card, hard to read when discovering the project or deciding *whether* a feature fits a need. The new folder reorganizes the same material into 13 category pages (multi-vault routing · read/search · write/edit · templates & Obsidian content · document conversion · web ingestion · wiki/knowledge management · knowledge graph · export/interop (OKF, llms.txt) · links & navigation · security & isolation · hooks · install & administration) plus an index. Every feature follows the same prose structure: **the need it answers → what it actually does → how to use it** (natural-language phrasing, slash command, and raw MCP-call JSON where useful) **→ gotchas** (prerequisites, known traps like the `patch_file` full-heading-ancestry rule or the `tp.mcpTools.prompt` Templater footgun). Written in French (the requesting user's language); an English mirror can follow the quick-reference precedent (`-en`/`-fr`) if needed. Both READMEs (EN + FR) gained a pointer callout next to the quick-reference-PDF one. Docs-only — no server or plugin code changed.
- — `wiki-neighbors` / `wiki-path` skills — natural-language discovery for the page-neighbors tools
+
+## [0.42.0] — 2026-07-09 — `wiki-neighbors` / `wiki-path` skills — natural-language discovery for the page-neighbors tools
 
 ### Added
 

@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.42.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.43.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -636,7 +636,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `get_wiki_context_pack` | Return a structured JSON context envelope for a query (primaryPages / semanticChunks / graphNeighbors / citations) so non-Claude agents can consume the vault programmatically. |
 | `build_wiki_graph` | Assemble the vault into a typed knowledge-graph JSON (Understand-Anything schema: 21 node / 35 edge types). Writes `wiki-meta/graph/knowledge-graph.json` + a derived `.understand-anything/` copy. |
 | `build_wiki_tour` | Generate a deterministic, ordered pedagogical reading tour from the knowledge-graph link topology. Read-only. |
-| `get_page_neighbors` | Return the neighbours of ONE page from the knowledge graph — the pages it links to (`forward`), the pages that link to it (`backward`), or both — out to `depth` hops. Defaults to page↔page links; widen `nodeTypes` to surface the concepts/sources a page also touches. An ambiguous page name is refused with the list of candidates. Read-only. |
+| `get_page_neighbors` | Return the neighbours of ONE page from the knowledge graph — the pages it links to (`forward`), the pages that link to it (`backward`), or both — out to `depth` hops. Defaults to page↔page links; widen `nodeTypes` to surface the concepts/sources a page also touches. An ambiguous page name is refused with the list of candidates. Two optional structural enrichments (`includeSameFolder`, `includeSharedTags`) surface non-linked siblings — same directory, or a shared real tag — at zero extra cost. Read-only. |
 | `wiki_path` | Find the shortest chain of links between TWO pages ("how are A and B connected?"). Undirected traversal; returns the ordered list of pages hop by hop, or an explicit null path when they are not connected (not an error). Widen `nodeTypes` (e.g. `["article","entity","topic"]`) for "connected via a shared concept" paths. Read-only. |
 
 More tools (CLI flags, hot config reload, skills) are on the roadmap — see [ROADMAP.md](./ROADMAP.md).
@@ -822,7 +822,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.42.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.43.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1387,7 +1387,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `get_wiki_context_pack` | Retourne une enveloppe de contexte JSON structurée pour une requête (primaryPages / semanticChunks / graphNeighbors / citations) afin que des agents non-Claude consomment le vault programmatiquement. |
 | `build_wiki_graph` | Assemble le vault en un knowledge-graph JSON typé (schéma Understand-Anything : 21 types de nœuds / 35 d'arêtes). Écrit `wiki-meta/graph/knowledge-graph.json` + une copie dérivée `.understand-anything/`. |
 | `build_wiki_tour` | Génère un parcours de lecture pédagogique déterministe et ordonné depuis la topologie de liens du knowledge-graph. Read-only. |
-| `get_page_neighbors` | Retourne les voisines d'UNE page depuis le knowledge-graph — celles qu'elle cite (`forward`), celles qui la citent (`backward`), ou les deux — jusqu'à `depth` sauts. Par défaut des liens page↔page ; élargir `nodeTypes` pour faire apparaître les concepts/sources que la page touche aussi. Un nom de page ambigu est refusé avec la liste des candidats. Read-only. |
+| `get_page_neighbors` | Retourne les voisines d'UNE page depuis le knowledge-graph — celles qu'elle cite (`forward`), celles qui la citent (`backward`), ou les deux — jusqu'à `depth` sauts. Par défaut des liens page↔page ; élargir `nodeTypes` pour faire apparaître les concepts/sources que la page touche aussi. Un nom de page ambigu est refusé avec la liste des candidats. Deux enrichissements structurels optionnels (`includeSameFolder`, `includeSharedTags`) font apparaître des voisines non liées — même dossier, ou un tag réel partagé — à coût nul. Read-only. |
 | `wiki_path` | Trouve la chaîne de liens la plus courte entre DEUX pages (« quel rapport entre A et B ? »). Parcours non-orienté ; retourne la liste ordonnée des pages saut par saut, ou un chemin null explicite si elles ne sont pas connectées (pas une erreur). Élargir `nodeTypes` (ex. `["article","entity","topic"]`) pour des chemins « par concept partagé ». Read-only. |
 
 D'autres outils (flags CLI, hot reload de la config, skills) sont sur la roadmap — voir [ROADMAP.md](./ROADMAP.md).

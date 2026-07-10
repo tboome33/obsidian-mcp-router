@@ -30,7 +30,7 @@ export const TOOL_NAME = 'get_page_neighbors';
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Return the neighbours of ONE wiki page from the knowledge graph (the `wiki-meta/graph/knowledge-graph.json` written by build_wiki_graph). Read-only. Give a page (exact vault-relative path, or just its name if unambiguous) and get the pages it links to (`forward`), the pages that link to it (`backward`), or both (default), out to `depth` hops. By default only page↔page links are followed (`edgeTypes: ["related"]`, `nodeTypes: ["article"]`) so you get pages, not the concepts/claims/sources the page also touches — widen `nodeTypes` (e.g. ["entity"]) to ask "which concepts does this page mention?" instead. Results are capped (`maxNeighbors`, default 50) and sorted by hop distance then id. An ambiguous page name is REFUSED with the list of candidates so you can re-specify. If no graph exists yet, run build_wiki_graph (/wiki-graph) first.',
+    'Return the neighbours of ONE wiki page from the knowledge graph (the `wiki-meta/graph/knowledge-graph.json` written by build_wiki_graph). Read-only. Give a page (exact vault-relative path, or just its name if unambiguous) and get the pages it links to (`forward`), the pages that link to it (`backward`), or both (default), out to `depth` hops. By default only page↔page links are followed (`edgeTypes: ["related"]`, `nodeTypes: ["article"]`) so you get pages, not the concepts/claims/sources the page also touches — widen `nodeTypes` (e.g. ["entity"]) to ask "which concepts does this page mention?" instead. Results are capped (`maxNeighbors`, default 50) and sorted by hop distance then id. An ambiguous page name is REFUSED with the list of candidates so you can re-specify. Two optional structural enrichments (opt-in, off by default, zero extra I/O): `includeSameFolder` for other pages in the same directory, `includeSharedTags` for pages sharing a real tag. If no graph exists yet, run build_wiki_graph (/wiki-graph) first.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -65,6 +65,14 @@ export const TOOL_DEFINITION = {
         type: 'number',
         description: `Cap on the number of neighbours returned. Default ${DEFAULT_MAX_NEIGHBORS}, hard ceiling ${MAX_NEIGHBORS_CEIL}. When the cap trims the list, \`truncated\` is true.`,
       },
+      includeSameFolder: {
+        type: 'boolean',
+        description: 'When true, also return OTHER pages living in the same folder as `page` (a structural signal, not a graph link) — off by default. Result in `sameFolderNeighbors`.',
+      },
+      includeSharedTags: {
+        type: 'boolean',
+        description: 'When true, also return pages sharing a real tag with `page` (the universal "article" tag every page carries is ignored) — off by default. Result in `sharedTagNeighbors`, each entry carrying `sharedTags`.',
+      },
     },
     required: ['page'],
     additionalProperties: false,
@@ -86,6 +94,8 @@ export async function getPageNeighborsTool(registry, args = {}, _deps = {}) {
     edgeTypes,
     nodeTypes,
     maxNeighbors = DEFAULT_MAX_NEIGHBORS,
+    includeSameFolder = false,
+    includeSharedTags = false,
   } = args;
   const deps = {
     getFileContent: _deps.getFileContent || defaultRestClient.getFileContent,
@@ -128,7 +138,16 @@ export async function getPageNeighborsTool(registry, args = {}, _deps = {}) {
 
   // Delegate the maths to the pure helper. Page-resolution errors (not found /
   // ambiguous) surface as thrown Errors with actionable messages.
-  const result = computeNeighbors(graph, { page, direction, depth, edgeTypes, nodeTypes, maxNeighbors });
+  const result = computeNeighbors(graph, {
+    page,
+    direction,
+    depth,
+    edgeTypes,
+    nodeTypes,
+    maxNeighbors,
+    includeSameFolder,
+    includeSharedTags,
+  });
 
   return sanitizeResponse({
     vault: vault.name,
@@ -146,6 +165,12 @@ export async function getPageNeighborsTool(registry, args = {}, _deps = {}) {
     totalFound: result.totalFound,
     truncated: result.truncated,
     neighbors: result.neighbors,
+    sameFolderNeighbors: result.sameFolderNeighbors,
+    sameFolderTruncated: result.sameFolderTruncated,
+    sameFolderTotalFound: result.sameFolderTotalFound,
+    sharedTagNeighbors: result.sharedTagNeighbors,
+    sharedTagTruncated: result.sharedTagTruncated,
+    sharedTagTotalFound: result.sharedTagTotalFound,
   });
 }
 

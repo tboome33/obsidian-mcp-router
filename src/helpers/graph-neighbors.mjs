@@ -126,6 +126,52 @@ function notFoundError(label, raw) {
   );
 }
 
+/** Directory portion of a vault-relative path (everything before the last `/`). */
+function dirOf(filePath) {
+  if (typeof filePath !== 'string') return '';
+  const norm = filePath.replace(/\\/g, '/');
+  const idx = norm.lastIndexOf('/');
+  return idx === -1 ? '' : norm.slice(0, idx);
+}
+
+/**
+ * A5 enrichment (page-neighbors-roadmap): pages in the SAME folder as `startNode`
+ * (same directory prefix of `filePath`) — a structural signal already present on
+ * every article node, no graph traversal needed. Scoped to `type: 'article'`
+ * regardless of the caller's `nodeTypes` (folders are a page-level concept; other
+ * node types don't carry a meaningful `filePath`). Deterministic: sorted by id.
+ */
+function computeSameFolderNeighbors(articles, startNode, cap) {
+  const startDir = dirOf(startNode.filePath);
+  const matches = articles
+    .filter((n) => n.id !== startNode.id && dirOf(n.filePath) === startDir)
+    .map((n) => ({ id: n.id, name: n.name || n.id, filePath: n.filePath || null }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return { neighbors: matches.slice(0, cap), truncated: matches.length > cap, totalFound: matches.length };
+}
+
+/**
+ * A5 enrichment: pages that share at least one REAL tag with `startNode` (the
+ * universal `"article"` tag every article carries is excluded — matching on it
+ * would pair every page in the vault with every other page). Scoped to
+ * `type: 'article'`, same rationale as `computeSameFolderNeighbors`. Each result
+ * carries `sharedTags` (sorted) so the caller knows WHY it matched.
+ */
+function computeSharedTagNeighbors(articles, startNode, cap) {
+  const startTags = new Set((startNode.tags || []).filter((t) => t !== 'article'));
+  if (startTags.size === 0) return { neighbors: [], truncated: false, totalFound: 0 };
+  const matches = [];
+  for (const n of articles) {
+    if (n.id === startNode.id) continue;
+    const shared = [...new Set((n.tags || []).filter((t) => t !== 'article' && startTags.has(t)))].sort();
+    if (shared.length > 0) {
+      matches.push({ id: n.id, name: n.name || n.id, filePath: n.filePath || null, sharedTags: shared });
+    }
+  }
+  matches.sort((a, b) => a.id.localeCompare(b.id));
+  return { neighbors: matches.slice(0, cap), truncated: matches.length > cap, totalFound: matches.length };
+}
+
 /**
  * Build directed adjacency over the edges whose type ∈ edgeTypes.
  *   out.get(id) → [{ to, type }]   (edges where id is the SOURCE)
@@ -167,11 +213,21 @@ function buildAdjacency(edges, edgeTypesSet) {
  *   through (default: pages only — without this, entities/claims/sources pollute
  *   "the neighbours of X").
  * @param {number} [opts.maxNeighbors=50]  Result cap (clamped to [1, 200]).
+ * @param {boolean} [opts.includeSameFolder=false]  A5 enrichment: also return
+ *   OTHER article pages living in the same folder (opt-in, off by default).
+ * @param {boolean} [opts.includeSharedTags=false]  A5 enrichment: also return
+ *   article pages sharing a real tag (opt-in, off by default).
  * @returns {{
  *   page: { id, name, filePath, nodeType },
  *   neighbors: Array<{ id, name, filePath, nodeType, hopDistance, viaEdgeType }>,
  *   truncated: boolean,
  *   totalFound: number,
+ *   sameFolderNeighbors: Array<{ id, name, filePath }>,
+ *   sameFolderTruncated: boolean,
+ *   sameFolderTotalFound: number,
+ *   sharedTagNeighbors: Array<{ id, name, filePath, sharedTags: string[] }>,
+ *   sharedTagTruncated: boolean,
+ *   sharedTagTotalFound: number,
  * }}
  */
 export function computeNeighbors(graph, opts = {}) {
@@ -183,6 +239,8 @@ export function computeNeighbors(graph, opts = {}) {
     edgeTypes,
     nodeTypes,
     maxNeighbors = DEFAULT_MAX_NEIGHBORS,
+    includeSameFolder = false,
+    includeSharedTags = false,
   } = opts;
 
   const dir = direction === 'forward' || direction === 'backward' ? direction : 'both';
@@ -240,6 +298,16 @@ export function computeNeighbors(graph, opts = {}) {
   const totalFound = neighbors.length;
   const capped = neighbors.slice(0, cap);
 
+  // A5 enrichment (opt-in): structural signals already on the article nodes —
+  // no traversal needed, so these are computed independently of the BFS above.
+  const articles = [...articlesById.values()];
+  const sameFolder = includeSameFolder
+    ? computeSameFolderNeighbors(articles, startNode, cap)
+    : { neighbors: [], truncated: false, totalFound: 0 };
+  const sharedTag = includeSharedTags
+    ? computeSharedTagNeighbors(articles, startNode, cap)
+    : { neighbors: [], truncated: false, totalFound: 0 };
+
   return {
     page: {
       id: startNode.id,
@@ -250,6 +318,12 @@ export function computeNeighbors(graph, opts = {}) {
     neighbors: capped,
     truncated: totalFound > cap,
     totalFound,
+    sameFolderNeighbors: sameFolder.neighbors,
+    sameFolderTruncated: sameFolder.truncated,
+    sameFolderTotalFound: sameFolder.totalFound,
+    sharedTagNeighbors: sharedTag.neighbors,
+    sharedTagTruncated: sharedTag.truncated,
+    sharedTagTotalFound: sharedTag.totalFound,
   };
 }
 
@@ -368,4 +442,12 @@ export function computePath(graph, opts = {}) {
   return wrap(null);
 }
 
-export const _internals = { basenameNoMd, resolveArticleNode, buildAdjacency, coerceTypeList };
+export const _internals = {
+  basenameNoMd,
+  resolveArticleNode,
+  buildAdjacency,
+  coerceTypeList,
+  dirOf,
+  computeSameFolderNeighbors,
+  computeSharedTagNeighbors,
+};

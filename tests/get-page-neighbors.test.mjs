@@ -54,6 +54,11 @@ describe('TOOL_DEFINITION', () => {
     assert.equal(TOOL_DEFINITION.inputSchema.additionalProperties, false);
     assert.ok(TOOL_DEFINITION.inputSchema.required.includes('page'));
   });
+
+  test('schema declares includeSameFolder + includeSharedTags (A5)', () => {
+    assert.equal(TOOL_DEFINITION.inputSchema.properties.includeSameFolder.type, 'boolean');
+    assert.equal(TOOL_DEFINITION.inputSchema.properties.includeSharedTags.type, 'boolean');
+  });
 });
 
 describe('getPageNeighborsTool', () => {
@@ -133,5 +138,36 @@ describe('getPageNeighborsTool', () => {
       () => getPageNeighborsTool(makeRegistry(), { page: 'nope' }, depsReturning(JSON.stringify(GRAPH))),
       /not found/i,
     );
+  });
+});
+
+describe('getPageNeighborsTool — A5 enrichment pass-through', () => {
+  test('sameFolderNeighbors/sharedTagNeighbors default to empty when not requested', async () => {
+    const res = await getPageNeighborsTool(makeRegistry(), { page: 'wiki/a.md' }, depsReturning(JSON.stringify(GRAPH)));
+    assert.deepEqual(res.sameFolderNeighbors, []);
+    assert.deepEqual(res.sharedTagNeighbors, []);
+  });
+
+  test('includeSameFolder: true surfaces same-directory siblings', async () => {
+    const res = await getPageNeighborsTool(
+      makeRegistry(),
+      { page: 'wiki/a.md', includeSameFolder: true },
+      depsReturning(JSON.stringify(GRAPH)),
+    );
+    // a, b, c all live at wiki/*.md in this fixture.
+    assert.deepEqual(res.sameFolderNeighbors.map((n) => n.id).sort(), ['article:wiki/b', 'article:wiki/c']);
+  });
+
+  test('includeSharedTags: true surfaces tag-sharing pages', async () => {
+    const g = JSON.parse(JSON.stringify(GRAPH));
+    g.nodes.find((n) => n.id === 'article:wiki/a').tags = ['article', 'roadmap'];
+    g.nodes.find((n) => n.id === 'article:wiki/b').tags = ['article', 'roadmap'];
+    const res = await getPageNeighborsTool(
+      makeRegistry(),
+      { page: 'wiki/a.md', includeSharedTags: true },
+      depsReturning(JSON.stringify(g)),
+    );
+    assert.deepEqual(res.sharedTagNeighbors.map((n) => n.id), ['article:wiki/b']);
+    assert.deepEqual(res.sharedTagNeighbors[0].sharedTags, ['roadmap']);
   });
 });
