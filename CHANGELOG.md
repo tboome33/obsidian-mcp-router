@@ -6,7 +6,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-## [0.42.0] — 2026-07-09 — `wiki-neighbors` / `wiki-path` skills — natural-language discovery for the page-neighbors tools
+## [0.42.1] — 2026-07-10 — `docs/features/`: the feature guide, in prose, by category
+
+### Added
+
+- **`docs/features/` — a readable, categorized guide to every feature.** The README documents the whole surface in compact tables — fine as a reference card, hard to read when discovering the project or deciding *whether* a feature fits a need. The new folder reorganizes the same material into 13 category pages (multi-vault routing · read/search · write/edit · templates & Obsidian content · document conversion · web ingestion · wiki/knowledge management · knowledge graph · export/interop (OKF, llms.txt) · links & navigation · security & isolation · hooks · install & administration) plus an index. Every feature follows the same prose structure: **the need it answers → what it actually does → how to use it** (natural-language phrasing, slash command, and raw MCP-call JSON where useful) **→ gotchas** (prerequisites, known traps like the `patch_file` full-heading-ancestry rule or the `tp.mcpTools.prompt` Templater footgun). Written in French (the requesting user's language); an English mirror can follow the quick-reference precedent (`-en`/`-fr`) if needed. Both READMEs (EN + FR) gained a pointer callout next to the quick-reference-PDF one. Docs-only — no server or plugin code changed.
+ — `wiki-neighbors` / `wiki-path` skills — natural-language discovery for the page-neighbors tools
 
 ### Added
 
