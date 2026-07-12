@@ -47,6 +47,14 @@ import {
   readRouterConfig,
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
+import {
+  countHotSize,
+  parseHotLimits,
+  isOverLimit,
+  selectBoundedContent,
+  buildOversizeBanner,
+  INJECTION_CAP_BYTES,
+} from '../src/helpers/hot-size.mjs';
 
 // ---- Resolve cwd from stdin or env ----------------------------------
 // Claude Code passes `{ cwd, hook_event_name, session_id, ... }` on
@@ -88,6 +96,32 @@ try {
   // — common before the user runs `/save` for the first time. Silent
   // exit so the absence isn't surfaced as an error.
   process.exit(0);
+}
+
+// ---- Size discipline (v0.44.0) ---------------------------------------
+// The hot is a CACHE whose own rule is "< 500 words". Injecting an
+// oversized hot verbatim silently burns context on EVERY session start
+// (observed: 129 KB ≈ 35k tokens on the oldest vault). Measure through the
+// SHARED helper (same numbers as the Stop guard and the compaction skill),
+// and when over limit inject only a bounded, newest-first excerpt topped
+// with an actionable banner. This hook never MODIFIES the vault — the
+// rewrite is the session's job (`/obsidian-router:hot-compact`).
+const limits = parseHotLimits(hotContent);
+const size = countHotSize(hotContent);
+if (isOverLimit(size, limits)) {
+  const budget = Math.min(limits.maxBytes, INJECTION_CAP_BYTES);
+  const bounded = selectBoundedContent(hotContent, budget);
+  const banner = buildOversizeBanner({
+    words: size.words,
+    bytes: size.bytes,
+    limits,
+    vaultLabel: path.basename(ctx.vaultPath),
+  });
+  hotContent = banner + '\n\n' + bounded.content;
+} else if (size.bytes > INJECTION_CAP_BYTES) {
+  // Defensive: within word/byte limits can't exceed the cap in practice
+  // (12 KiB hard cap < 16 KiB), but never let ANY code path inject more.
+  hotContent = selectBoundedContent(hotContent, INJECTION_CAP_BYTES).content;
 }
 
 // In workspace-bound mode, prefix the output with a clear marker so

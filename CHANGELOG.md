@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-07-12 — hot-cache size discipline: bounded injection, guard enforcement, `/hot-compact`
+
+The hot cache (`wiki-meta/hot.md`) finally gets its size ENFORCED. Its own header rule says "< 500 words, overwritten on update — a cache, not a journal", but nothing checked it: the freshness guard (v0.25.0) pushed every wiki-writing session to ADD an entry and nothing ever removed one — an add-only ratchet. The oldest vault's hot silently grew to 129 KB / ~17.8k words (35×), injected into EVERY session start on that vault (~35k tokens burned before any work). Diagnosed 2026-07-12; design pressure-tested with codex the same day; the 129 KB pilot compaction (full backup → 3.3 KB state-first rewrite) was human-approved before this mechanism shipped.
+
+### Added
+
+- **`src/helpers/hot-size.mjs` — the single source of truth for hot sizing.** Words + UTF-8 bytes counting, OR-based over-limit test (> 500 words OR > 6 KiB — words track the semantic promise, bytes catch URL/id-heavy content), compaction targets with hysteresis (≤ 350 words AND ≤ 4 KiB — compacting to 499 would re-trigger immediately), per-vault frontmatter override (`hot-limit-words` / `hot-limit-bytes`, clamped to 1000 words / 12 KiB — an EXPLICIT exception, never implicit growth), block-aware bounded selection (splits prologue vs dated entries, auto-detects newest-first vs append-at-bottom ordering by comparing entry dates, keeps whole blocks from the RECENT side, emits an omission marker — never a mid-line cut), and the bilingual oversize banner. Loader, guard and compaction skill all measure through THIS module so they can never disagree (a disagreement would loop). 26 unit tests (`tests/hot-size.test.mjs`).
+- **`/obsidian-router:hot-compact` (skill + command) — the deterministic compaction procedure.** Strict order: measure WITHOUT loading a huge hot into context (script + the vault's own Local REST API) → byte-identical backup `wiki-meta/hot.full-backup-<date-hhmm>.md` VERIFIED by size comparison before any overwrite → thin state-first rewrite (Key Recent Facts · Recent Changes · Active Threads; pinned 📌 blocks always preserved) → concurrency re-check before the final write → traceability line in `log.md`. Human preview required for a vault's FIRST compaction at > 5× the limit; autonomous afterwards (the verified backup makes it reversible).
+
+### Changed
+
+- **`hooks/hot-cache-load.mjs` — bounded injection.** An over-limit hot is no longer injected verbatim: the hook now injects an actionable oversize banner + a bounded excerpt (newest entries first, whole blocks, ≤ the 6 KiB budget; absolute cap 16 KiB whatever the override). Within-limits hots are injected verbatim as before. The hook still never MODIFIES the vault — the rewrite is the session's job. 3 new integration tests.
+- **`hooks/hot-cache-update-prompt.mjs` — the guard now enforces SIZE, and its message stops feeding the ratchet.** Two independent violations, both scoped to vaults THIS session touched (a session unrelated to a vault is never blocked for inherited debt): STALE (wiki/ note written, hot not refreshed — as before, but the message now says "REWRITE the current state, don't just stack another entry", the very wording that manufactured the 129 KB file) and OVERSIZED (hot.md on disk exceeds its limits → the block demands `/obsidian-router:hot-compact`). Passing is stateless: a successful compaction brings the file under limits, so the next check clears — no receipt bookkeeping. Fail-open everywhere (unreadable hot → skip, never block).
+
+Full suite: 2171 tests green (2142 + 29 new).
+
+- TODO
 ## [0.43.0] — 2026-07-10 — `get_page_neighbors` A5: same-folder + shared-tag enrichment
 
 ### Added

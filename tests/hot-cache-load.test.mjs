@@ -216,3 +216,66 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     assert.doesNotMatch(r.stdout, /workspace-bound mode/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// size discipline (v0.44.0) — bounded injection + oversize banner
+// ---------------------------------------------------------------------------
+
+describe('hot-cache-load — size discipline (v0.44.0)', () => {
+  let bigVault;
+
+  before(() => {
+    bigVault = path.join(workDir, 'big-vault');
+    fs.mkdirSync(path.join(bigVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(bigVault, 'wiki-meta', 'index.md'), '# Index\n');
+    // Newest-first oversized hot: > 500 words across dated entries.
+    const entries = [];
+    for (let i = 0; i < 80; i++) {
+      const day = String(Math.max(1, 28 - i)).padStart(2, '0');
+      const tok = i === 0 ? 'TOKEN-NEWEST' : i === 79 ? 'TOKEN-OLDEST' : `fait-${i}`;
+      entries.push(
+        `> 🆕 **Entrée ${i}** (2026-06-${day}) — ${tok} lorem ipsum dolor sit amet consectetur adipiscing elit sed do`,
+      );
+    }
+    const big = `---\ntype: wiki-hot\n---\n\n# Hot\n\n${entries.join('\n\n')}\n`;
+    fs.writeFileSync(path.join(bigVault, 'wiki-meta', 'hot.md'), big);
+  });
+
+  test('oversized hot → banner + bounded newest-side excerpt', () => {
+    const r = runHook({ cwd: bigVault });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /HORS LIMITE/);
+    assert.match(r.stdout, /hot-compact/);
+    assert.match(r.stdout, /TOKEN-NEWEST/);
+    assert.doesNotMatch(r.stdout, /TOKEN-OLDEST/);
+    assert.match(r.stdout, /omis/);
+    // Bounded: ≤ the 6 KiB injection budget + banner/marker allowance —
+    // regardless of how big the raw file is.
+    const outBytes = Buffer.byteLength(r.stdout, 'utf8');
+    assert.ok(outBytes <= 6144 + 900, `output ${outBytes} bytes exceeds budget+allowance`);
+  });
+
+  test('within-limits hot is injected verbatim without banner (regression)', () => {
+    const r = runHook({ cwd: vaultDir });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /did X/);
+    assert.doesNotMatch(r.stdout, /HORS LIMITE/);
+    assert.doesNotMatch(r.stdout, /omis/);
+  });
+
+  test('frontmatter override raises the limit (no banner under 800 words)', () => {
+    const midVault = path.join(workDir, 'mid-vault');
+    fs.mkdirSync(path.join(midVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(midVault, 'wiki-meta', 'index.md'), '# Index\n');
+    // ~600 words: over the 500 default, under an 800 override.
+    const words = Array.from({ length: 600 }, (_, i) => `mot${i}`).join(' ');
+    fs.writeFileSync(
+      path.join(midVault, 'wiki-meta', 'hot.md'),
+      `---\nhot-limit-words: 800\n---\n\n# Hot\n\n${words}\n`,
+    );
+    const r = runHook({ cwd: midVault });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.stdout, /HORS LIMITE/);
+    assert.match(r.stdout, /mot599/);
+  });
+});

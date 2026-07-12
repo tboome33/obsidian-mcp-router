@@ -58,6 +58,7 @@ import {
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
 import { findStaleVaults } from '../src/helpers/hot-staleness.mjs';
+import { countHotSize, parseHotLimits, isOverLimit } from '../src/helpers/hot-size.mjs';
 
 const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -122,7 +123,17 @@ try {
 }
 
 // ---- Decide ------------------------------------------------------------
+// Two independent violations, both scoped to vaults THIS session touched:
+//   - STALE: wiki/ note written, hot.md not refreshed afterwards (v0.25.0).
+//   - OVERSIZED (v0.44.0): the vault's hot.md on disk exceeds its size
+//     limits. Checked ONLY for touched vaults — a session unrelated to a
+//     vault is never blocked for debt it inherited. Size is measured via
+//     the SAME helper as the loader and the compaction skill, so the three
+//     can never disagree. Passing is stateless: a successful compaction
+//     brings the file under limits, so the very next check clears — no
+//     receipt bookkeeping needed.
 let stale = [];
+const oversized = [];
 try {
   const result = findStaleVaults(jsonl, {
     vaultRoots,
@@ -137,33 +148,70 @@ try {
     isWin,
   });
   stale = (result && result.stale) || [];
+
+  const touched = result && result.byVault ? [...result.byVault.keys()] : [];
+  for (const vaultKey of touched) {
+    try {
+      const hotPath = path.join(vaultKey, 'wiki-meta', 'hot.md');
+      if (!fs.existsSync(hotPath)) continue;
+      const text = fs.readFileSync(hotPath, 'utf8');
+      const limits = parseHotLimits(text);
+      const size = countHotSize(text);
+      if (isOverLimit(size, limits)) {
+        oversized.push({ vaultRoot: vaultKey, size, limits });
+      }
+    } catch {
+      /* fail-open per vault: unreadable hot → skip, never block */
+    }
+  }
 } catch {
   process.exit(0); // fail-open on any analysis error
 }
 
-if (stale.length === 0) process.exit(0);
+if (stale.length === 0 && oversized.length === 0) process.exit(0);
 
 // ---- Block (exit 2) with a bilingual, actionable message --------------
-const names = stale.map((s) => path.basename(s.vaultRoot)).join(', ');
 const lines = [];
-lines.push('[obsidian-mcp-router/hot-cache-guard] hot.md non rafraîchi');
-lines.push('');
-lines.push(
-  `FR — Tu as écrit des notes sous \`wiki/\` dans ${stale.length} vault(s) (${names}) ` +
-    'sans rafraîchir leur `wiki-meta/hot.md` cette session.',
-);
-lines.push('Le `hot` est le cache de contexte récent : il doit TOUJOURS refléter les dernières pages touchées.');
-lines.push('Mets-le à jour AVANT de terminer le tour :');
-lines.push('  • ajoute une entrée en tête : `> 🆕 **<sujet>** (<date>) — <résumé bilingue 1 phrase> · [[lien]]`');
-lines.push('  • corrige toute ligne devenue obsolète (version, statut) ;');
-lines.push('  • écris dans `wiki-meta/hot.md` du vault concerné (write_file ou patch_file).');
-lines.push('');
-lines.push(
-  `EN — You wrote notes under \`wiki/\` in ${stale.length} vault(s) (${names}) ` +
-    'without refreshing their `wiki-meta/hot.md` this session.',
-);
-lines.push('The `hot` file is the recent-context cache: it must ALWAYS reflect the latest touched pages.');
-lines.push('Update it BEFORE finishing: prepend a fresh one-line entry, fix any now-stale line, write to that vault\'s `wiki-meta/hot.md`.');
+lines.push('[obsidian-mcp-router/hot-cache-guard] hot.md non conforme');
+if (stale.length > 0) {
+  const names = stale.map((s) => path.basename(s.vaultRoot)).join(', ');
+  lines.push('');
+  lines.push(
+    `FR — Tu as écrit des notes sous \`wiki/\` dans ${stale.length} vault(s) (${names}) ` +
+      'sans rafraîchir leur `wiki-meta/hot.md` cette session.',
+  );
+  lines.push('Le `hot` est un CACHE D\'ÉTAT, pas un journal : RÉÉCRIS-le pour refléter l\'état courant —');
+  lines.push('ne te contente pas d\'empiler une entrée de plus.');
+  lines.push('  • mets à jour les faits récents (remplace ce qui est périmé, fusionne les doublons) ;');
+  lines.push('  • garde le fichier sous sa limite (≤ 500 mots / 6 Kio par défaut) ;');
+  lines.push('  • écris dans `wiki-meta/hot.md` du vault concerné (write_file ou patch_file).');
+  lines.push('');
+  lines.push(
+    `EN — You wrote notes under \`wiki/\` in ${stale.length} vault(s) (${names}) ` +
+      'without refreshing their `wiki-meta/hot.md` this session.',
+  );
+  lines.push('The hot is a STATE cache, not a journal: REWRITE it to reflect the current state —');
+  lines.push('replace stale facts and keep the file under its limit (≤ 500 words / 6 KiB by default).');
+}
+if (oversized.length > 0) {
+  const kib = (n) => (n / 1024).toFixed(1);
+  lines.push('');
+  for (const o of oversized) {
+    const name = path.basename(o.vaultRoot);
+    lines.push(
+      `FR — ⚠️ Le \`wiki-meta/hot.md\` du vault « ${name} » est HORS LIMITE : ` +
+        `${o.size.words} mots / ${kib(o.size.bytes)} Kio (règle ≤ ${o.limits.maxWords} mots ET ≤ ${kib(o.limits.maxBytes)} Kio).`,
+    );
+    lines.push(
+      `   COMPACTION REQUISE avant de terminer : lance \`/obsidian-router:hot-compact\` ` +
+        `(backup intégral vérifié → réécriture ≤ ${o.limits.targetWords} mots / ${kib(o.limits.targetBytes)} Kio → trace dans log.md).`,
+    );
+    lines.push(
+      `EN — "${name}" hot.md is OVER LIMIT (${o.size.words} words / ${kib(o.size.bytes)} KiB). ` +
+        `Run \`/obsidian-router:hot-compact\` (verified full backup → rewrite ≤ ${o.limits.targetWords} words) before finishing.`,
+    );
+  }
+}
 lines.push('');
 lines.push('Opt-out (per-session): OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD=true');
 
