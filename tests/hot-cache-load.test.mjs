@@ -249,10 +249,12 @@ describe('hot-cache-load — size discipline (v0.44.0)', () => {
     assert.match(r.stdout, /TOKEN-NEWEST/);
     assert.doesNotMatch(r.stdout, /TOKEN-OLDEST/);
     assert.match(r.stdout, /omis/);
-    // Bounded: ≤ the 6 KiB injection budget + banner/marker allowance —
-    // regardless of how big the raw file is.
+    // Bounded: ≤ the injection budget (absoluteCapTokens×4 ≈ 7200 B, the max a
+    // legitimate hot could ever be) + banner/marker allowance — regardless of
+    // how big the raw file is. (v0.46.0: budget is token-derived, not the old
+    // 6 KiB byte cap.)
     const outBytes = Buffer.byteLength(r.stdout, 'utf8');
-    assert.ok(outBytes <= 6144 + 900, `output ${outBytes} bytes exceeds budget+allowance`);
+    assert.ok(outBytes <= 7200 + 1000, `output ${outBytes} bytes exceeds budget+allowance`);
   });
 
   test('within-limits hot is injected verbatim without banner (regression)', () => {

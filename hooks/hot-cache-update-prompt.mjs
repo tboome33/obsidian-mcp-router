@@ -58,7 +58,7 @@ import {
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
 import { findStaleVaults } from '../src/helpers/hot-staleness.mjs';
-import { countHotSize, parseHotLimits, isOverLimit } from '../src/helpers/hot-size.mjs';
+import { hotStatus, tokensToWords } from '../src/helpers/hot-size.mjs';
 
 const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 
@@ -155,10 +155,9 @@ try {
       const hotPath = path.join(vaultKey, 'wiki-meta', 'hot.md');
       if (!fs.existsSync(hotPath)) continue;
       const text = fs.readFileSync(hotPath, 'utf8');
-      const limits = parseHotLimits(text);
-      const size = countHotSize(text);
-      if (isOverLimit(size, limits)) {
-        oversized.push({ vaultRoot: vaultKey, size, limits });
+      const st = hotStatus(text);
+      if (st.over) {
+        oversized.push({ vaultRoot: vaultKey, ...st });
       }
     } catch {
       /* fail-open per vault: unreadable hot → skip, never block */
@@ -183,7 +182,7 @@ if (stale.length > 0) {
   lines.push('Le `hot` est un CACHE D\'ÉTAT, pas un journal : RÉÉCRIS-le pour refléter l\'état courant —');
   lines.push('ne te contente pas d\'empiler une entrée de plus.');
   lines.push('  • mets à jour les faits récents (remplace ce qui est périmé, fusionne les doublons) ;');
-  lines.push('  • garde le fichier sous sa limite (≤ 500 mots / 6 Kio par défaut) ;');
+  lines.push('  • garde le fichier sous sa limite (≤ ~900 tokens ≈ ~500 mots par défaut) ;');
   lines.push('  • écris dans `wiki-meta/hot.md` du vault concerné (write_file ou patch_file).');
   lines.push('');
   lines.push(
@@ -191,24 +190,24 @@ if (stale.length > 0) {
       'without refreshing their `wiki-meta/hot.md` this session.',
   );
   lines.push('The hot is a STATE cache, not a journal: REWRITE it to reflect the current state —');
-  lines.push('replace stale facts and keep the file under its limit (≤ 500 words / 6 KiB by default).');
+  lines.push('replace stale facts and keep the file under its limit (≤ ~900 tokens ≈ ~500 words by default).');
 }
 if (oversized.length > 0) {
-  const kib = (n) => (n / 1024).toFixed(1);
+  const w = (t) => tokensToWords(t);
   lines.push('');
   for (const o of oversized) {
     const name = path.basename(o.vaultRoot);
     lines.push(
       `FR — ⚠️ Le \`wiki-meta/hot.md\` du vault « ${name} » est HORS LIMITE : ` +
-        `${o.size.words} mots / ${kib(o.size.bytes)} Kio (règle ≤ ${o.limits.maxWords} mots ET ≤ ${kib(o.limits.maxBytes)} Kio).`,
+        `~${o.tokens} tokens (~${w(o.tokens)} mots) — règle ≤ ~${o.limitTokens} tokens (~${w(o.limitTokens)} mots).`,
     );
     lines.push(
       `   COMPACTION REQUISE avant de terminer : lance \`/obsidian-router:hot-compact\` ` +
-        `(backup intégral vérifié → réécriture ≤ ${o.limits.targetWords} mots / ${kib(o.limits.targetBytes)} Kio → trace dans log.md).`,
+        `(backup intégral vérifié → réécriture ≤ ~${o.targetTokens} tokens (~${w(o.targetTokens)} mots) → trace dans log.md).`,
     );
     lines.push(
-      `EN — "${name}" hot.md is OVER LIMIT (${o.size.words} words / ${kib(o.size.bytes)} KiB). ` +
-        `Run \`/obsidian-router:hot-compact\` (verified full backup → rewrite ≤ ${o.limits.targetWords} words) before finishing.`,
+      `EN — "${name}" hot.md is OVER LIMIT (~${o.tokens} tokens / ~${w(o.tokens)} words). ` +
+        `Run \`/obsidian-router:hot-compact\` (verified full backup → rewrite ≤ ~${o.targetTokens} tokens) before finishing.`,
     );
   }
 }

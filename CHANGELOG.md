@@ -6,6 +6,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-07-14 — hot-cache size limit goes dynamic (single token unit, sober role/threads band)
+
+The hot-cache size discipline (v0.44.0) was a STATIC, two-unit test: block when `words > 500` **OR** `bytes > 6 KiB`, with a separate 1000-word hard cap. Three numbers in two units that aren't directly comparable — Hermès flagged the incoherence (1000 words ≈ 750 tokens, so a token-denominated soft target and a word-denominated hard cap describe contradictory spaces). This release collapses the SEMANTIC size decision onto ONE unit — estimated tokens, what context actually costs — and lets the enforced limit breathe within a NARROW band around the proven ~500-word anchor, driven by only two defensible signals: the vault's role and the number of active threads. Design pressure-tested with three independent voices (Claude + Codex + Hermès); the vault design note `hot-cache-dynamic-limit-design` records the full reasoning, including what was deliberately dropped.
+
+### Added
+
+- **Token-based dynamic budget in `src/helpers/hot-size.mjs`** (additive layer — the historical word/byte functions stay in place and tested):
+  - `estimateTokens(text) = ceil(max(chars/4, words×1.3))` — the SINGLE measurement unit. `chars/4` dominates on real (dense) hot content and replaces the old bytes dimension; `words×1.3` is only a conservative floor for char-sparse text; `chars = text.length` (JS code units, NOT UTF-8 bytes) so accented FR isn't over-counted.
+  - `computeHotBudget()` / `hotStatus()` — the enforced limit = `clamp(BASE × role + activeThreads×20, floor, ceil)`, an explicit `hot-limit-tokens:` frontmatter override honored up to a fixed absolute cap. Compaction target = 0.7 × limit (hysteresis). No LLM, no I/O — a pure, auditable function of the file text.
+  - `parseHotMode()` (vault role from `mode:`/`type:` frontmatter) and `countActiveThreads()` (bullets under `## Active Threads`, capped at 5).
+
+### Changed
+
+- **Calibration to REAL hots.** Measuring live vault hots showed pointer-dense content (markdown + accents + `[[wikilinks]]`/URLs) runs **~1.8 tokens/word**, not the generic 1.3 (398 w → 728 t; 492 w → 889 t). So the proven "500-word" rule, expressed honestly in tokens, is **~900 tokens — NOT 650**: `BASE_LIMIT_TOKENS = 900`, absolute cap `1800` (~1000 words), band `[774, 1224]`. Anchoring at 650 would have false-flagged every healthy hot on disk.
+- **The two hooks now decide via `hotStatus`**: `hot-cache-update-prompt.mjs` (Stop guard) blocks only when over the enforced token limit; `hot-cache-load.mjs` (SessionStart injection) bounds by a token-derived byte budget and banners in token language. Guard/loader/`hot-compact` still measure through the ONE shared module, so they can never disagree.
+- **Deliberately NOT used** (Hermès's substance): raw edit velocity (measures editorial noise, not the facts worth caching) and a session-frequency term (its sign is disputed — Codex reads it as budget-decreasing, Hermès as budget-increasing). Only vault role + active-thread count drive the modest band.
+- `templates/wiki-meta/hot.md` contract line updated to token language. Full suite: **2205 tests** (`tests/hot-size.test.mjs` token battery + band invariant; `tests/hot-cache-load.test.mjs` injection budget).
+- **Version resync**: `.claude-plugin/plugin.json` + `marketplace.json` had drifted to v0.44.0; bumped back in sync with `package.json` at v0.46.0.
+
 ## [0.45.0] — 2026-07-14 — `build_open_link` verifies the path on disk (no more dead links)
 
 `build_open_link` only URL-encoded whatever path it was handed — garbage in, garbage out. A wrong path (an invented sub-folder, a typo) produced a perfectly-formed URL that 404s at the bridge, indistinguishable from a good one; the chat-link linter/guard exempt well-formed http links, so nothing caught it. Real incident: a link to `wiki/Projects/KIVIRI/SaaS/kiviri-v2-secrets.md` when the file lives at `wiki/Projects/KIVIRI/kiviri-v2-secrets.md`. Diagnosed + design pressure-tested with codex (read-only) on 2026-07-14.

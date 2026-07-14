@@ -49,10 +49,9 @@ import {
 } from './_helpers/workspace-vault.mjs';
 import {
   countHotSize,
-  parseHotLimits,
-  isOverLimit,
+  hotStatus,
   selectBoundedContent,
-  buildOversizeBanner,
+  buildHotBanner,
   INJECTION_CAP_BYTES,
 } from '../src/helpers/hot-size.mjs';
 
@@ -98,29 +97,32 @@ try {
   process.exit(0);
 }
 
-// ---- Size discipline (v0.44.0) ---------------------------------------
-// The hot is a CACHE whose own rule is "< 500 words". Injecting an
-// oversized hot verbatim silently burns context on EVERY session start
-// (observed: 129 KB ≈ 35k tokens on the oldest vault). Measure through the
-// SHARED helper (same numbers as the Stop guard and the compaction skill),
-// and when over limit inject only a bounded, newest-first excerpt topped
-// with an actionable banner. This hook never MODIFIES the vault — the
-// rewrite is the session's job (`/obsidian-router:hot-compact`).
-const limits = parseHotLimits(hotContent);
-const size = countHotSize(hotContent);
-if (isOverLimit(size, limits)) {
-  const budget = Math.min(limits.maxBytes, INJECTION_CAP_BYTES);
+// ---- Size discipline (v0.46.0 — sober dynamic token budget) ----------
+// The hot is a CACHE. Injecting an oversized hot verbatim silently burns
+// context on EVERY session start (observed: 129 KB ≈ 35k tokens on the
+// oldest vault). Measure through the SHARED module (same enforced limit as
+// the Stop guard and the compaction skill), in ONE unit — estimated tokens —
+// with the limit breathing within a narrow band around the ~500-word anchor
+// (vault role + active threads) under a fixed absolute cap. When over the
+// enforced limit, inject only a bounded, newest-first excerpt topped with an
+// actionable banner. This hook never MODIFIES the vault — the rewrite is the
+// session's job (`/obsidian-router:hot-compact`).
+const st = hotStatus(hotContent);
+if (st.over) {
+  // Inject up to the absolute-cap worth of bytes (~4 bytes/token), bounded by
+  // the hard injection ceiling — enough context without re-importing the drift.
+  const budget = Math.min(st.absoluteCapTokens * 4, INJECTION_CAP_BYTES);
   const bounded = selectBoundedContent(hotContent, budget);
-  const banner = buildOversizeBanner({
-    words: size.words,
-    bytes: size.bytes,
-    limits,
+  const banner = buildHotBanner({
+    tokens: st.tokens,
+    limitTokens: st.limitTokens,
+    targetTokens: st.targetTokens,
     vaultLabel: path.basename(ctx.vaultPath),
   });
   hotContent = banner + '\n\n' + bounded.content;
-} else if (size.bytes > INJECTION_CAP_BYTES) {
-  // Defensive: within word/byte limits can't exceed the cap in practice
-  // (12 KiB hard cap < 16 KiB), but never let ANY code path inject more.
+} else if (countHotSize(hotContent).bytes > INJECTION_CAP_BYTES) {
+  // Defensive: an under-limit hot cannot exceed the cap in practice, but
+  // never let ANY code path inject more than the absolute injection ceiling.
   hotContent = selectBoundedContent(hotContent, INJECTION_CAP_BYTES).content;
 }
 

@@ -241,3 +241,197 @@ export function buildOversizeBanner({ words, bytes, limits, vaultLabel = '' }) {
     `   Only a bounded excerpt is injected. Run /obsidian-router:hot-compact (full backup, then rewrite ≤ ${limits.targetWords} words).`,
   ].join('\n');
 }
+
+// ===========================================================================
+// Sober dynamic token budget (v0.46.0)
+// ===========================================================================
+//
+// WHY a second layer over the words|bytes OR above. That OR is a STATIC,
+// two-unit test: it blocks as soon as EITHER dimension overruns a fixed
+// threshold, and it mixes a 500-word default trigger, a 1000-word hard cap
+// and a bytes dimension — three numbers in two units that are not directly
+// comparable (Hermès flagged the incoherence: 1000 words ≈ 750 tokens, so a
+// token-denominated soft target and a word-denominated hard cap describe
+// different, contradictory spaces). This layer collapses the SEMANTIC size
+// decision onto ONE unit — estimated tokens, which is what context actually
+// costs — and lets the ENFORCED limit breathe within a NARROW band around the
+// proven ~500-word anchor, driven by only two defensible signals: the vault's
+// role and the number of active threads. The anti-drift guarantee is kept by
+// an absolute never-exceed cap (~1000 words) that no dynamic term can lift.
+//
+// Deliberately NOT used: raw edit velocity (measures editorial noise, not the
+// facts worth caching) and a session-frequency term (its sign is disputed —
+// Codex reads it as budget-decreasing, Hermès as budget-increasing, so it is
+// omitted rather than hard-coded in either direction). Rationale in the router
+// vault design note "hot-cache-dynamic-limit-design" (Claude+Codex+Hermès).
+//
+// This is the SOBER Phase-1 prototype: a single-unit token cap plus a small,
+// bounded active-threads bump. Richer ideas (per-block score/token eviction,
+// LLM-bounded compaction, retrieval-cost weighting) are staged as follow-ups
+// in that note, NOT implemented here.
+
+/**
+ * Empirical density of REAL hot.md content: ~1.8 estimated tokens per word.
+ * Markdown, FR accents and [[wikilink]]/URL pointers push hot content well
+ * above generic prose's ~1.3 t/w. Measured on live vault hots (398 w → 728 t,
+ * 492 w → 889 t ⇒ ~1.8). Used to derive the token anchors from the proven
+ * ~500-word rule and to display an indicative word count.
+ *
+ * CALIBRATION NOTE. The old fixed "500 words" limit, re-expressed HONESTLY in
+ * tokens, is therefore ~900 tokens — NOT 650. A healthy 500-word pointer-dense
+ * hot really costs ~900 tokens; anchoring at 500×1.3=650 would false-flag every
+ * healthy hot on disk (both live sample vaults measured over such a cap). So the
+ * anchor is 500 × this density, keeping the enforced block point where the
+ * proven word rule always put it.
+ */
+export const TOKENS_PER_WORD = 1.8;
+
+/** Convert an estimated-token count back to an indicative word count. */
+export function tokensToWords(tokens) {
+  return Math.round((Number(tokens) || 0) / TOKENS_PER_WORD);
+}
+
+/**
+ * Deterministic, dependency-free token estimate — the SINGLE measurement unit
+ * for the semantic size decision. tokens ≈ ceil(max(chars/4, words×1.3)):
+ *   - chars/4 is the standard cheap proxy and DOMINATES on real hot content
+ *     (markdown + accents + URLs/ids), collapsing the old words+bytes pair
+ *     into one unit;
+ *   - words×1.3 is only a conservative FLOOR for the degenerate char-sparse
+ *     case, so such text is never under-counted; max() takes the worse of two.
+ *     (This is an internal lower bound, distinct from TOKENS_PER_WORD, which is
+ *     the measured density of actual hot content used to set the limits.)
+ *   - chars = text.length (JS code units), NOT UTF-8 bytes: a French "é" is
+ *     one char but two bytes, and tokenizers track characters — counting bytes
+ *     would massively over-count accented FR text (the robustness fix vs the
+ *     old byte counting).
+ */
+export function estimateTokens(text) {
+  if (typeof text !== 'string' || !text.trim()) return 0;
+  const chars = text.length;
+  const words = text.trim().split(/\s+/).length;
+  return Math.ceil(Math.max(chars / 4, words * 1.3));
+}
+
+/** The proven ~500-word cache rule, expressed once in tokens (see TOKENS_PER_WORD). */
+export const BASE_LIMIT_TOKENS = Math.round(500 * TOKENS_PER_WORD); // 900
+/** Absolute never-exceed ceiling (ulimit): ~1000 words. Clamps overrides. */
+export const ABSOLUTE_CAP_TOKENS = Math.round(1000 * TOKENS_PER_WORD); // 1800
+/** Narrow band the dynamic enforced limit may move within (~430–680 words). */
+export const LIMIT_FLOOR_TOKENS = Math.round(430 * TOKENS_PER_WORD); // 774
+export const LIMIT_CEIL_TOKENS = Math.round(680 * TOKENS_PER_WORD); // 1224
+/** The two — and only two — dynamic signals, both modest and bounded. */
+export const ROLE_MULT = Object.freeze({ project: 1.1, personal: 1.0, reference: 0.9, default: 1.0 });
+export const PER_THREAD_TOKENS = 20;
+export const MAX_THREADS_COUNTED = 5; // bump capped at +100 tokens (~+56 words)
+
+function clampInt(n, lo, hi) {
+  return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+/**
+ * Vault role from the hot.md frontmatter: `mode:` first, `type:` as fallback.
+ * One of project | personal | reference; anything else → 'default'. Reuses the
+ * same frontmatter-slice pattern as parseHotLimits.
+ */
+export function parseHotMode(text) {
+  if (typeof text !== 'string' || !text.startsWith('---')) return 'default';
+  const end = text.indexOf('\n---', 3);
+  if (end === -1) return 'default';
+  const fm = text.slice(0, end);
+  const m = fm.match(/^mode:\s*([A-Za-z]+)/m) || fm.match(/^type:\s*(?:wiki-)?([A-Za-z]+)/m);
+  const v = m && m[1].toLowerCase();
+  return (v === 'project' || v === 'personal' || v === 'reference') ? v : 'default';
+}
+
+/**
+ * Count the bullets under the `## Active Threads` heading — the ONE dynamic
+ * work signal we trust (a proxy for "how many threads of work are actually in
+ * flight", NOT how many files churned). Simple bullets and checkboxes count;
+ * the `_(empty …)_` placeholder does not. Any other heading ends the section.
+ * A renamed/translated heading → 0 (safe degradation: lower limit, never
+ * higher).
+ */
+export function countActiveThreads(text) {
+  let inSection = false;
+  let n = 0;
+  for (const line of String(text || '').split('\n')) {
+    const h = line.match(/^(#{2,6})\s+(.*)$/);
+    if (h) { inSection = /active\s+threads/i.test(h[2]); continue; }
+    if (inSection && /^\s*[-*+]\s+(?:\[[ xX]\]\s+)?\S/.test(line) && !/^\s*[-*+]\s+_\(/.test(line)) n++;
+  }
+  return n;
+}
+
+/**
+ * Optional per-vault override. Prefers `hot-limit-tokens`; falls back to the
+ * legacy `hot-limit-words` (× conversion) for back-compat. Clamped to
+ * [LIMIT_FLOOR_TOKENS, ABSOLUTE_CAP_TOKENS] — an EXPLICIT exception may exceed
+ * the dynamic band, up to the absolute cap, but never past it. Returns null
+ * when no valid override is present.
+ */
+export function parseTokenOverride(text) {
+  if (typeof text !== 'string' || !text.startsWith('---')) return null;
+  const end = text.indexOf('\n---', 3);
+  if (end === -1) return null;
+  const fm = text.slice(0, end);
+  const mT = fm.match(/^hot-limit-tokens:\s*(\d+)\s*$/m);
+  if (mT) return clampInt(parseInt(mT[1], 10), LIMIT_FLOOR_TOKENS, ABSOLUTE_CAP_TOKENS);
+  const mW = fm.match(/^hot-limit-words:\s*(\d+)\s*$/m);
+  if (mW) return clampInt(parseInt(mW[1], 10) * TOKENS_PER_WORD, LIMIT_FLOOR_TOKENS, ABSOLUTE_CAP_TOKENS);
+  return null;
+}
+
+/**
+ * The central deterministic budget. Produces:
+ *   - tokens:        measured size of the hot;
+ *   - limitTokens:   the ENFORCED (blocking) limit — dynamic within a narrow
+ *                    band around BASE_LIMIT_TOKENS, or an explicit override;
+ *   - targetTokens:  compaction target (70% of the limit — hysteresis so a
+ *                    fresh compaction doesn't re-trigger);
+ *   - role, activeThreads, absoluteCapTokens, overridden: metadata.
+ * No LLM, no I/O — a pure, auditable function of the file text.
+ */
+export function computeHotBudget(text) {
+  const tokens = estimateTokens(text);
+  const role = parseHotMode(text);
+  const threads = Math.min(countActiveThreads(text), MAX_THREADS_COUNTED);
+  const mult = ROLE_MULT[role] ?? 1.0;
+  const dynamic = BASE_LIMIT_TOKENS * mult + threads * PER_THREAD_TOKENS;
+  const override = parseTokenOverride(text);
+  const limitTokens = override != null ? override : clampInt(dynamic, LIMIT_FLOOR_TOKENS, LIMIT_CEIL_TOKENS);
+  const targetTokens = Math.round(limitTokens * 0.7);
+  return {
+    tokens,
+    role,
+    activeThreads: threads,
+    limitTokens,
+    targetTokens,
+    absoluteCapTokens: ABSOLUTE_CAP_TOKENS,
+    overridden: override != null,
+  };
+}
+
+/** Budget + an `over` flag (tokens strictly above the enforced limit). */
+export function hotStatus(text) {
+  const b = computeHotBudget(text);
+  return { over: b.tokens > b.limitTokens, ...b };
+}
+
+/**
+ * Bilingual oversize banner in TOKEN language (words kept as an indicative
+ * parenthesis). Injected above the bounded hot content by the loader and
+ * echoed by the Stop guard's message.
+ */
+export function buildHotBanner({ tokens, limitTokens, targetTokens, vaultLabel = '' }) {
+  const w = (t) => tokensToWords(t);
+  const label = vaultLabel ? ` (${vaultLabel})` : '';
+  return [
+    `⚠️ [hot-cache] wiki-meta/hot.md${label} est HORS LIMITE : ~${tokens} tokens (~${w(tokens)} mots)`,
+    `   (règle : ≤ ~${limitTokens} tokens (~${w(limitTokens)} mots) — c'est un cache, pas un journal).`,
+    `   Seul un extrait borné est injecté ci-dessous. Compaction requise :`,
+    `   /obsidian-router:hot-compact — backup intégral puis réécriture ≤ ~${targetTokens} tokens (~${w(targetTokens)} mots).`,
+    `   EN — hot.md is OVER LIMIT (~${tokens} tokens / ~${w(tokens)} words; rule ≤ ~${limitTokens} tokens).`,
+    `   Only a bounded excerpt is injected. Run /obsidian-router:hot-compact (full backup, then rewrite ≤ ~${targetTokens} tokens).`,
+  ].join('\n');
+}

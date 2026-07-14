@@ -5,7 +5,7 @@ title: "Hot Cache"
 
 # Hot Cache
 
-Recent-context cache. Read first by Claude on session start and after compaction. Maintain under 500 words. Overwrite completely on update — this is a cache, not a journal.
+Recent-context cache. Read first by Claude on session start and after compaction. Keep under ~900 tokens (~500 words) — the enforced limit flexes modestly with the vault role and the number of Active Threads below, under a fixed absolute cap. Overwrite completely on update — this is a cache, not a journal.
 
 ## Last Updated
 
