@@ -213,6 +213,13 @@ describe('build_open_link end-to-end smoke', () => {
       path.join(pluginDir, 'data.json'),
       JSON.stringify({ insecurePort: 27123, enableInsecureServer: true }),
     );
+    // build_open_link verifies existence on disk (v0.45.0) → the cited files
+    // must exist in the smoke vault.
+    for (const rel of ['wiki/foo.md', 'a.md', 'wiki/b.md', 'wiki/Divers/c.md']) {
+      const abs = path.join(vaultPath, ...rel.split('/'));
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, '# ' + rel);
+    }
     registry = {
       resolveVault: () => ({ type: 'local', path: vaultPath, name: 'smoke' }),
       defaultVault: 'smoke',

@@ -22,6 +22,15 @@ before(() => {
     path.join(pluginDir, 'data.json'),
     JSON.stringify({ insecurePort: 27142, enableInsecureServer: true }),
   );
+  // build_open_link now VERIFIES existence on disk (v0.45.0), so every path the
+  // encoding tests cite must actually exist in the temp vault. Note: foo.md is
+  // created at TWO locations on purpose — it makes `foo.md` an ambiguous
+  // basename, exercised by the verification tests below.
+  for (const rel of ['wiki/foo.md', 'wiki/Divers/foo.md', 'wiki/Divers/bar.md', 'wiki-meta/index.md']) {
+    const abs = path.join(vaultPath, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, '# ' + rel);
+  }
 });
 
 after(() => {
@@ -208,5 +217,51 @@ describe('buildOpenLinkTool — argument validation', () => {
       () => buildOpenLinkTool(makeRegistry(), { path: 'a.md', paths: ['b.md'] }),
       /not both/,
     );
+  });
+});
+
+describe('buildOpenLinkTool — path verification (v0.45.0, fail-closed)', () => {
+  test('single mode THROWS on a non-existent path — never a dead URL', async () => {
+    await assert.rejects(
+      () => buildOpenLinkTool(makeRegistry(), { path: 'wiki/ghostfolder/unique-nope-xyz.md' }),
+      /does not exist in vault/i,
+    );
+  });
+
+  test('auto-corrects a UNIQUE basename in the wrong folder', async () => {
+    // index.md exists only at wiki-meta/index.md → unique → corrected.
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      path: 'wiki/Projects/KIVIRI/SaaS/index.md', // wrong folder, right basename
+    });
+    assert.equal(result.path, 'wiki-meta/index.md');
+    assert.equal(result.corrected, true);
+    assert.equal(result.requestedPath, 'wiki/Projects/KIVIRI/SaaS/index.md');
+    assert.equal(result.clickToOpenUrl, 'http://127.0.0.1:27142/open/wiki-meta%2Findex.md');
+    assert.equal(result.markdownLink, '[index](http://127.0.0.1:27142/open/wiki-meta%2Findex.md)');
+  });
+
+  test('single mode THROWS on an AMBIGUOUS basename (foo.md exists twice)', async () => {
+    await assert.rejects(
+      () => buildOpenLinkTool(makeRegistry(), { path: 'nowhere/foo.md' }),
+      /ambiguous/i,
+    );
+  });
+
+  test('batch: bad entry gets error + null URL, good entries still resolve', async () => {
+    const result = await buildOpenLinkTool(makeRegistry(), {
+      paths: ['wiki-meta/index.md', 'totally/missing-unique-abc.md'],
+    });
+    assert.equal(result.links.length, 2);
+    assert.equal(result.links[0].clickToOpenUrl, 'http://127.0.0.1:27142/open/wiki-meta%2Findex.md');
+    assert.equal(result.links[1].clickToOpenUrl, null);
+    assert.equal(result.links[1].error, 'not_found');
+    assert.match(result.links[1].message, /does not exist/i);
+  });
+
+  test('remote vault is unverifiable → no throw, null URL, path unchanged', async () => {
+    const remote = { type: 'remote', name: 'r' };
+    const result = await buildOpenLinkTool(makeRegistry(remote), { path: 'anything/at/all.md' });
+    assert.equal(result.clickToOpenUrl, null);
+    assert.equal(result.path, 'anything/at/all.md');
   });
 });

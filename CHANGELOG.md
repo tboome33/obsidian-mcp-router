@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-07-14 — `build_open_link` verifies the path on disk (no more dead links)
+
+`build_open_link` only URL-encoded whatever path it was handed — garbage in, garbage out. A wrong path (an invented sub-folder, a typo) produced a perfectly-formed URL that 404s at the bridge, indistinguishable from a good one; the chat-link linter/guard exempt well-formed http links, so nothing caught it. Real incident: a link to `wiki/Projects/KIVIRI/SaaS/kiviri-v2-secrets.md` when the file lives at `wiki/Projects/KIVIRI/kiviri-v2-secrets.md`. Diagnosed + design pressure-tested with codex (read-only) on 2026-07-14.
+
+### Changed
+
+- **`build_open_link` now VERIFIES the path against the local vault on disk before emitting a URL** — fail-closed. New helper `src/helpers/resolve-vault-path.mjs::resolveVaultPathOnDisk()` (filesystem-only, mirrors how `click-to-open.mjs` reads `data.json` — no REST call, works offline):
+  - exact path exists → normal result;
+  - exact miss, **unique** basename match → auto-corrected to the real path (result carries `corrected: true` + `requestedPath`);
+  - exact miss, **no** match → single mode THROWS a clear error; batch marks that entry with `error: 'not_found'` + null URL (good entries still resolve);
+  - exact miss, **ambiguous** basename (≥2 files) → THROWS / `error: 'ambiguous'` + the candidates — never silently picks one;
+  - basename walk truncated on a huge vault → `resolution_incomplete` (never a false not_found/unique);
+  - remote vault → `unverifiable`, prior behaviour kept (null URL — remote vaults have no local disk to stat).
+- Net guarantee: **no success branch of `build_open_link` reaches the URL builder without a vault-proven path** → the caller can no longer walk away with a dead link. 16 tests (`tests/build-open-link.test.mjs`, `tests/resolve-vault-path.test.mjs`).
+- Complements `mcp-router-bridge` v0.5.1, whose `/open` self-heals a wrong-folder path by basename at click time (covers hand-composed / historical links too).
+- **Known follow-ups** (codex audit, not fixed here): `move_file` (from===to), `merge_frontmatter` (all-ops-failed), `execute_template` (build from `result.path`) can still emit a URL after a no-op/failure; and the port cache in `click-to-open.mjs` never invalidates on a `data.json` port change.
+
 ## [0.44.0] — 2026-07-12 — hot-cache size discipline: bounded injection, guard enforcement, `/hot-compact`
 
 The hot cache (`wiki-meta/hot.md`) finally gets its size ENFORCED. Its own header rule says "< 500 words, overwritten on update — a cache, not a journal", but nothing checked it: the freshness guard (v0.25.0) pushed every wiki-writing session to ADD an entry and nothing ever removed one — an add-only ratchet. The oldest vault's hot silently grew to 129 KB / ~17.8k words (35×), injected into EVERY session start on that vault (~35k tokens burned before any work). Diagnosed 2026-07-12; design pressure-tested with codex the same day; the 129 KB pilot compaction (full backup → 3.3 KB state-first rewrite) was human-approved before this mechanism shipped.
