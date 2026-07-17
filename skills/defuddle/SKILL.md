@@ -55,6 +55,8 @@ Defuddle is rarely a terminal action. The output is the input to the next skill.
 - If invoked from `autoresearch`: same.
 - If invoked directly by the user ("defuddle <url>"): show them the cleaned content + a compact metadata header (title / author / published / wordCount), ask "ingest this?" — if yes, hand off to `wiki-ingest`.
 
+**Optional relevance filter (v0.47.0+, Crawl4AI W-A)**: if the consumer has an explicit **topic** for this page (a targeted ingest, an autoresearch question), it can narrow the cleaned markdown to the on-topic blocks with `mcp__obsidian-router__filter_relevant_blocks({markdown, query: <topic>})` — a cheap BM25 second pass, no re-fetch. Defuddle strips *chrome*; this strips *off-topic content*. Leave it to the consumer (wiki-ingest step 1.6 already does this); don't filter inside defuddle, which has no notion of the caller's topic.
+
 ## Caching (optional, not required for v1)
 
 If the same URL gets defuddled multiple times in a session, cache the result in `wiki/.raw/defuddle-cache/<sha256-of-url>.md`. Skip if already cached and < 1 hour old. Keeps autoresearch loops cheap when they revisit the same domains.

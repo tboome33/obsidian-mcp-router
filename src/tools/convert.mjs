@@ -25,6 +25,7 @@ import { toMarkdownDocling } from '../markdownify/docling.mjs';
 import { pdfToImages } from '../markdownify/pdf-images.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
+import { bm25FilterBlocks, MAX_DROP_FRACTION } from '../helpers/bm25-filter.mjs';
 
 function assertString(value, fieldName) {
   if (typeof value !== 'string' || value.length === 0) {
@@ -168,8 +169,48 @@ export async function bingSearchToMarkdown(_registry, { url } = {}) {
   return convertUrl(url);
 }
 
-export async function webpageToMarkdown(_registry, { url } = {}) {
-  return convertUrl(url, { transformContent: mathPreservingTransform });
+/**
+ * Format the one-line HTML stats comment appended when `relevanceQuery` is used.
+ * Kept to a single line so it never disturbs the H1-first shape that defuddle /
+ * downstream validators expect (it lives at the END of the document).
+ */
+function bm25StatsComment(filtered, stats) {
+  if (filtered) {
+    return `<!-- bm25-filter: kept ${stats.kept}/${stats.scoredBlocks} scored blocks (threshold ${stats.threshold}) -->`;
+  }
+  if (stats.reason === 'over-filter-guard') {
+    const pct = Math.round(stats.dropFraction * 100);
+    const cap = Math.round(MAX_DROP_FRACTION * 100);
+    return `<!-- bm25-filter: no-op (over-filter-guard: would drop ${pct}% > ${cap}%) -->`;
+  }
+  return `<!-- bm25-filter: no-op (${stats.reason || 'nothing-dropped'}) -->`;
+}
+
+/**
+ * Convert a webpage to markdown, with an OPT-IN BM25 relevance second-pass.
+ *
+ * Without `relevanceQuery` the output is byte-identical to the historical
+ * behaviour (the string contract every existing caller depends on). With it, the
+ * output stays a markdown string; the filter stats are appended as one trailing
+ * HTML comment. The heavy lifting is delegated to the shared bm25-filter helper,
+ * the same one behind the `filter_relevant_blocks` tool.
+ */
+export async function webpageToMarkdown(_registry, { url, relevanceQuery, relevanceThreshold } = {}, _deps = {}) {
+  // `_deps.convert` is an injection seam for tests (production callers pass only
+  // `(registry, args)`), mirroring youtubeToMarkdown's `_deps`.
+  const convert = _deps.convert || ((u) => convertUrl(u, { transformContent: mathPreservingTransform }));
+  const markdown = await convert(url);
+  // Strict no-op path: no (or blank) relevanceQuery → return unchanged. Catches
+  // undefined AND whitespace-only so passing an empty query never mutates output.
+  if (typeof relevanceQuery !== 'string' || relevanceQuery.trim() === '') {
+    return markdown;
+  }
+  const { markdown: filteredMd, filtered, stats } = bm25FilterBlocks({
+    markdown,
+    query: relevanceQuery,
+    threshold: typeof relevanceThreshold === 'number' ? relevanceThreshold : undefined,
+  });
+  return `${filteredMd}\n\n${bm25StatsComment(filtered, stats)}`;
 }
 
 /* ---------- File-input tools (binary formats) ---------- */
@@ -234,3 +275,6 @@ export async function gitRepoToMarkdown(_registry, { url, branch, compress } = {
   const { text } = await fromRepo({ repoUrl: url, branch, compress });
   return text;
 }
+
+// Test-only exports.
+export const _internals = { bm25StatsComment };

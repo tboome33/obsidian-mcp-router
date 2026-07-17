@@ -91,6 +91,10 @@ import {
   TOOL_DEFINITION as WIKI_PATH_TOOL_DEFINITION,
   wikiPathTool,
 } from './tools/wiki-path.mjs';
+import {
+  TOOL_DEFINITION as FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
+  filterRelevantBlocksTool,
+} from './tools/filter-relevant-blocks.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -619,11 +623,21 @@ const TOOLS = [
   {
     name: 'webpage_to_markdown',
     description:
-      'Convert an arbitrary webpage to markdown. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-rendered SPAs prefer the `defuddle` skill which uses a headless browser.',
+      'Convert an arbitrary webpage to markdown. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-rendered SPAs prefer the `defuddle` skill which uses a headless browser. Optionally pass `relevanceQuery` to apply a BM25 relevance second-pass (see filter_relevant_blocks) that drops blocks unrelated to your topic — no re-fetch; the output stays a markdown string with a one-line HTML stats comment appended.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL of the webpage to convert.' },
+        relevanceQuery: {
+          type: 'string',
+          description:
+            'Optional. When set, filter the converted markdown to the blocks relevant to this topic (BM25, no re-fetch). Omit for the full unfiltered page.',
+        },
+        relevanceThreshold: {
+          type: 'number',
+          description:
+            'Optional relevance cutoff in [0,1], normalized against the top block. Default 0.2. Ignored without relevanceQuery.',
+        },
       },
       required: ['url'],
       additionalProperties: false,
@@ -808,6 +822,9 @@ const TOOLS = [
   // (undirected). Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
   WIKI_PATH_TOOL_DEFINITION,
+  // Crawl4AI roadmap W-A — BM25 relevance second-pass over already-acquired
+  // markdown (no fetch, no vault I/O) — excluded from WRITE_TOOL_NAMES.
+  FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY, gated out when
   // OBSIDIAN_ROUTER_USER_ID is set). plan_vault is read-only; provision_vault
   // writes a new vault to the local filesystem.
@@ -977,6 +994,8 @@ const TOOL_HANDLERS = {
   get_page_neighbors: (reg, args) => getPageNeighborsTool(reg, args),
   // Page-neighbors roadmap W-B — read-only shortest-path query between two pages.
   wiki_path: (reg, args) => wikiPathTool(reg, args),
+  // Crawl4AI roadmap W-A — read-only BM25 relevance filter over given markdown.
+  filter_relevant_blocks: (reg, args) => filterRelevantBlocksTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;
   // provision_vault writes a new vault. Both drive the setup-vault.mjs engine
   // and use `reg.configPath` so the child runs against the server's config.

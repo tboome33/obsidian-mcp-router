@@ -80,6 +80,28 @@ Before processing the acquired content further, check whether this source has be
 
 **Reference**: convention documented in `src/helpers/ingest-state.mjs`. Tests in `tests/ingest-state.test.mjs`.
 
+### 1.6 Relevance filter — keep only on-topic blocks (v0.47.0+, Crawl4AI W-A)
+
+**Only when this ingestion has an EXPLICIT theme** — a targeted user request ("ingest this page *about WireGuard config*"), or an `autoresearch` question driving the fetch. Skip it for open-ended "just file this article" ingests, where every block might matter.
+
+When a theme exists, run the acquired markdown through the BM25 relevance filter **before** extracting structure, so the synthesis works on the on-topic blocks only (denser, cheaper, less noise):
+
+```javascript
+mcp__obsidian-router__filter_relevant_blocks({
+  markdown: <the defuddled markdown from step 1>,
+  query: <the ingestion theme — the user's topic words / the research question>,
+})
+// → { markdown, filtered, stats: { kept, scoredBlocks, dropped, usedFallback, reason } }
+```
+
+- **`filtered: true`** → synthesize from the returned `markdown`. Mention the trim in your summary, e.g. *"filtered to 15/34 on-topic blocks before ingesting."*
+- **`usedFallback: true`** (the filter would have dropped >70% — likely the theme didn't match the page well) → **silently continue on the ORIGINAL markdown.** Don't nag; the guard exists precisely so a bad theme can't gut a page.
+- **`reason: "empty-query" | "too-few-blocks"`** → no-op; use the original. Frontmatter and headings are always preserved, so the metadata block from step 1 is untouched either way.
+
+**Hash note**: the freshness hash in step 1.5 is computed on the **post-defuddle** markdown (pre-filter), so the filter never affects change-detection — a page is "unchanged" based on its full content, not on what a particular theme happened to keep.
+
+**No theme? Skip this step entirely** — filtering without a real topic just risks dropping content you wanted.
+
 ### 2. Extract structure (do this before writing anything)
 
 Identify:
