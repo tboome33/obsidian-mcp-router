@@ -2218,11 +2218,22 @@ function setupVault(vaultPath, opts = {}) {
     ok(`Cloned plugin: ${p}`);
   }
 
-  // Ensure app.json exists so vault is "valid"
+  // Ensure app.json exists so vault is "valid". Prefer the reference vault's
+  // app.json so app-level defaults (e.g. defaultViewMode: "preview",
+  // livePreview) propagate from the template — same model as cloneSnippets().
+  // Falls back to an empty object when the template has none.
   const appJsonPath = path.join(targetObsidian, 'app.json');
   if (!fs.existsSync(appJsonPath)) {
-    fs.writeFileSync(appJsonPath, '{}\n');
-    ok('Created app.json');
+    const refAppJson = cfg.referenceVault
+      ? path.join(cfg.referenceVault, '.obsidian', 'app.json')
+      : null;
+    if (refAppJson && fs.existsSync(refAppJson)) {
+      fs.copyFileSync(refAppJson, appJsonPath);
+      ok('Created app.json (from reference template)');
+    } else {
+      fs.writeFileSync(appJsonPath, '{}\n');
+      ok('Created app.json');
+    }
   }
 
   // Decide port + apiKey: adopt pre-existing values if found, else generate fresh

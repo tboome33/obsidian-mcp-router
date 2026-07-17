@@ -1,0 +1,12 @@
+{
+  "pluginList": [
+    "tboome33/obsidian-mcp-router-bridge",
+    "pjeby/hot-reload"
+  ],
+  "pluginSubListFrozenVersion": [],
+  "themesList": [],
+  "updateAtStartup": true,
+  "updateThemesAtStartup": false,
+  "enableAfterInstall": true,
+  "notificationsEnabled": true
+}
