@@ -38,15 +38,20 @@ La philosophie, apprise à l'usage : **une convention seule ne règle pas un pro
 
 **Le besoin.** Une base de connaissances enregistre ce qu'on sait ; la couche décision enregistre ce qui est **tranché** et ce qui a été **écarté**. Mais les deux sont passives : une nouvelle session — ou un autre agent, ou le même après une remise à zéro du contexte — repart d'une page blanche et re-propose une approche rejetée il y a six mois. Écrire la décision est nécessaire et insuffisant : il faut que quelque chose la **présente**, sans qu'on le demande, au moment où le prompt arrive.
 
-**Ce que ça fait.** À chaque prompt substantiel, remonte les décisions `accepted` dont le sujet recoupe le prompt : titre, verdict en une ligne, périmètre, chemin pour lire la page entière.
+**Ce que ça fait.** À chaque prompt substantiel, remonte les décisions tranchées dont le sujet recoupe le prompt : titre, verdict en une ligne, périmètre, chemin pour lire la page entière.
 
-Trois garde-fous, chacun délibéré :
+Quatre garde-fous, chacun délibéré :
 
-- **Déterministe d'abord.** Filtrage par statut puis recouvrement de tokens — aucun embedding, aucun appel modèle. Le chemin chaud de chaque prompt est le mauvais endroit pour l'un comme pour l'autre, et une sélection qu'on ne peut pas expliquer est une sélection qu'on ne peut pas déboguer le jour où elle remonte la mauvaise page.
-- **Échu ≠ silencieux, échu ≠ contraignant.** Une décision passée sa date `review_after:` est quand même affichée, marquée « à réévaluer ». La cacher perdrait le contexte ; la présenter comme une contrainte ossifierait un arbitrage dont les conditions ont changé.
-- **Donnée citée, jamais instruction.** Une page de vault est du contenu utilisateur, et un contenu lu par un agent ne doit jamais pouvoir le piloter — sinon le vault devient une surface d'injection de prompt. Le bloc injecté le dit explicitement et demande de **signaler** un désaccord, pas d'obéir ni de contredire en silence.
+- **Déterministe d'abord.** Filtrage par statut puis recouvrement de tokens — aucun embedding, aucun appel modèle. Le chemin chaud de chaque prompt est le mauvais endroit pour l'un comme pour l'autre, et une sélection qu'on ne peut pas expliquer est une sélection qu'on ne peut pas déboguer le jour où elle remonte la mauvaise page. Le statut compte `accepted` **et** les synonymes hérités que le linter tolère encore (`decided`, `active`, `shipped`…) : une décision tranchée mais pas encore normalisée reste tranchée, et l'ignorer serait exactement l'échec que le hook prévient.
+- **Le vocabulaire omniprésent est démoté.** Dans un repo « router », le mot *router* est dans presque toutes les décisions : matché seul, il les remonterait toutes. Les tokens portés par une grosse part du corpus ne comptent donc plus **quand ils apparaissent dans les champs périphériques** (périmètre, projet, tags, nom de fichier). Dans le titre ou le verdict ils comptent toujours — un vault focalisé doit pouvoir répondre sur son sujet central.
+- **Échu ≠ silencieux, échu ≠ contraignant.** Une décision passée sa date `review_after:` est quand même affichée, marquée « à réévaluer » — et une date illisible aussi : une faute de frappe ne doit pas promouvoir en silence une décision périssable au rang de contrainte permanente.
+- **Donnée citée, jamais instruction.** Une page de vault est du contenu utilisateur, et un contenu lu par un agent ne doit jamais pouvoir le piloter — sinon le vault devient une surface d'injection de prompt. Le bloc injecté le dit explicitement et demande de **signaler** un désaccord, pas d'obéir ni de contredire en silence. Le cadrage vit en tête ET en pied de bloc, et seules les entrées (le texte contrôlé par les pages) peuvent être coupées — jamais le cadrage, jamais au milieu d'une entrée.
 
-Silencieux quand rien ne matche, borné (fichiers scannés, octets par fichier, décisions remontées, caractères injectés). Opt-out : `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=true`.
+Silencieux quand rien ne matche. **Borné en temps** (budget wall-clock) plutôt qu'en nombre de fichiers : un vault sur lecteur virtuel coûte ~30× un vault local par fichier, et un plafond de fichiers y produirait soit une coupe arbitraire, soit un prompt qui traîne.
+
+Un budget de temps ne supprime pas à lui seul la dépendance à l'ordre de traversée — sur un stockage lent, il peut s'épuiser avant d'atteindre le dossier des décisions. C'est pour ça que les dossiers où les décisions vivent conventionnellement (`decisions/`, `adr/`, `wiki/`) sont parcourus **en premier** : la coupe tombe alors sur la partie improbable de l'arborescence. Et quand le scan a été écourté, le bloc le dit au lieu de faire passer une liste partielle pour exhaustive.
+
+Opt-out : `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=true` ; diagnostic : `OBSIDIAN_ROUTER_HOOK_DEBUG=true` (signale un scan écourté et toute erreur avalée).
 
 ## `vault-link-linter` — plus de liens cassés dans les réponses
 
