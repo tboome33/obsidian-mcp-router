@@ -6,6 +6,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.51.2] — 2026-07-26 — long frontmatter values were being truncated everywhere
+
+Found by using the thing. Back-filling the reference vault's decision corpus (roadmap Phase 2bis) produced `decision:` one-liners long enough that Obsidian's YAML writer folded them onto continuation lines — the normal representation of a long quoted scalar. The recall block then displayed them **cut mid-sentence and starting with a stray quote**.
+
+The gap was in the minimal frontmatter readers, and it was not confined to the hook: the shared `parseFrontmatter` in `src/helpers/llms-txt-exporter.mjs` had it too, which means **every export built on it** (llms.txt, OKF bundles, page metadata) has been carrying truncated `title:` / `description:` values whenever they were long enough to wrap.
+
+### Fixed
+
+- **Folded quoted scalars are read in full** — in `hooks/_helpers/decisions-recall-core.mjs` and in `src/helpers/llms-txt-exporter.mjs`. Continuation lines are consumed until the quote closes (escape-aware), and parsing resumes cleanly on the next key. Single-line scalars are untouched. Tests pin both readers.
+- **A lone `~` is no longer escaped.** Strikethrough needs `~~`, so escaping every tilde only printed backslashes through ordinary values like "~36 tools" — the same over-caution already reverted for `_`. Only the doubled form is neutralized now.
+
+### Changed
+
+- **`decision-input` pages are no longer asked what they ruled out.** The "alternatives considered" rule now applies to verdict types (`decision`, `adr`) only — a decision *input* is material feeding a decision, not a ruling, so demanding its rejected options is a category error. The recall hook already drew that line; the linter now agrees (`VERDICT_TYPES`).
+
+### Reference vault (roadmap Phase 2bis, not shipped code)
+
+The decision corpus was back-filled in the same pass: two decisions that existed nowhere as pages were written (**BM25 over embeddings**, **HTTP `insecurePort` over HTTPS loopback** — the first being the hole the recall hook exposed on the day it shipped), seven pages gained the `decision:` one-liner the recall block is built around, and eight gained an "alternatives considered" section **extracted from their own body**, never invented, each carrying a note saying so. Linter over the corpus: **0 errors, 1 warning** — that warning being a page whose frontmatter no router tool can write, see below.
+
+### Known issue, unfixed
+
+- Two vault pages carry frontmatter that Local REST API's YAML writer rejects with a 500, so **no router tool can modify their properties**: an unquoted `title:` containing a colon, and an inline `related: [[a]], [[b]]` sequence. The second was repaired by full rewrite; the first (`click-to-open-access-modes`) still needs one. Worth a lint rule of its own — invalid frontmatter is silent until something tries to write.
 ## [0.51.1] — 2026-07-26 — `decisions-recall` hardened by a two-reviewer audit
 
 Two independent reviewers audited v0.51.0 (`/review+`, five passes). The hook worked on the fixtures it shipped with and failed on ordinary real input in several ways — and nearly every round of fixes introduced a regression the next pass caught, which is the argument for the loop existing at all: pass 1's noise fix silenced a focused vault; pass 2's re-read guard dropped French frontmatter; pass 3's markdown escaping mangled the very paths the block exists to hand over. All fixed and pinned by tests.

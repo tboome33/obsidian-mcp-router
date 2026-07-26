@@ -381,6 +381,25 @@ describe('lintDecisions — rule 5: alternatives considered', () => {
     assert.deepEqual(result.warnings, [], 'cannot judge a body that was never provided');
   });
 
+  test('a decision-input is not asked what it ruled out', () => {
+    // It is material feeding a decision, not a verdict — the same line the
+    // recall hook draws when it refuses to surface one as "settled".
+    const fm = ['type: decision-input', 'status: accepted', 'scope: router', 'evidence:', '  - "[[x]]"'];
+    const result = lintDecisions([
+      { path: 'wiki/i.md', content: `---\n${fm.join('\n')}\n---\n\n# I\n\nDu matériau, pas un verdict.\n` },
+    ]);
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.stats.decisions, 1, 'it is still linted for everything else');
+  });
+
+  test('an adr is asked, like a decision', () => {
+    const fm = ['type: adr', 'status: accepted', 'scope: router', 'evidence:', '  - "[[x]]"'];
+    const result = lintDecisions([
+      { path: 'wiki/a.md', content: `---\n${fm.join('\n')}\n---\n\n# A\n\nUn verdict sans options.\n` },
+    ]);
+    assert.deepEqual(rules(result.warnings), ['alternatives-missing']);
+  });
+
   test('non-decision pages are never checked for the section', () => {
     const result = lintDecisions([{ path: 'wiki/refs/x.md', content: '---\ntype: reference\n---\n\n# X\n\nprose\n' }]);
     assert.deepEqual(result.warnings, []);

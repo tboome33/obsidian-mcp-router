@@ -39,6 +39,14 @@ import { parseFrontmatter } from './llms-txt-exporter.mjs';
 /** Frontmatter `type` values that put a page under decision discipline. */
 export const DECISION_TYPES = new Set(['decision', 'adr', 'decision-input']);
 
+/**
+ * The subset that records a VERDICT. A `decision-input` is material feeding
+ * a decision — asking it what it ruled out is a category error, so the
+ * "alternatives considered" rule applies to these types only. (The recall
+ * hook draws the same line for the same reason: an input is not a ruling.)
+ */
+export const VERDICT_TYPES = new Set(['decision', 'adr']);
+
 /** The only `status` values a decision page may carry. */
 export const VALID_STATUSES = ['proposed', 'accepted', 'superseded', 'rejected'];
 
@@ -381,8 +389,10 @@ export function lintDecisions(pages, options = {}) {
 
     // --- Rule 5: the section that justifies the whole practice ------------
     // Skipped entirely for frontmatter-only callers: a body rule must not
-    // fire against a body it was never given.
-    if (entry.body !== null) {
+    // fire against a body it was never given. Skipped for `decision-input`
+    // too — see VERDICT_TYPES.
+    const isVerdict = VERDICT_TYPES.has(String(frontmatter.type ?? '').trim().toLowerCase());
+    if (entry.body !== null && isVerdict) {
       const alternatives = findAlternativesSection(entry.body);
       if (!alternatives.found) {
         warnings.push(

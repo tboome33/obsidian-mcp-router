@@ -18,6 +18,25 @@ import {
 // ---------------------------------------------------------------------------
 
 describe('parseFrontmatter', () => {
+  test('reads a quoted scalar folded over continuation lines', () => {
+    // What Obsidian's YAML writer produces for any long value. Reading only
+    // the first line kept the opening quote and cut the value mid-sentence,
+    // so every export (llms.txt, OKF bundles) carried truncated metadata.
+    const result = parseFrontmatter(
+      '---\ntype: decision\ndescription: "Une valeur trop longue pour tenir\n'
+      + '  sur une seule ligne, repliée par le writer."\nstatus: accepted\n---\n\nBody.\n',
+    );
+    assert.equal(result.frontmatter.description.startsWith('"'), false, 'no leftover quote');
+    assert.match(result.frontmatter.description, /repliée par le writer\.$/, 'read in full');
+    assert.equal(result.frontmatter.status, 'accepted', 'parsing resumes after the scalar');
+  });
+
+  test('a single-line quoted scalar is unaffected', () => {
+    const result = parseFrontmatter('---\ntitle: "Court"\nstatus: ok\n---\n\nBody.\n');
+    assert.equal(result.frontmatter.title, 'Court');
+    assert.equal(result.frontmatter.status, 'ok');
+  });
+
   test('returns empty frontmatter when no --- block', () => {
     const result = parseFrontmatter('# Hello\n\nBody.');
     assert.deepEqual(result.frontmatter, {});

@@ -183,7 +183,23 @@ export function readFrontmatter(text) {
     if (colon <= 0) continue;
     const key = line.slice(0, colon).trim();
     if (!key) continue;
-    const value = line.slice(colon + 1).trim();
+    let value = line.slice(colon + 1).trim();
+    // A quoted scalar too long for one line is folded by YAML writers onto
+    // indented continuation lines. Reading only the first line kept the
+    // opening quote and cut the value mid-sentence — which is exactly what
+    // happens to a `decision:` one-liner, the field this block is built
+    // around. Consume the continuations until the quote closes.
+    const opener = value[0];
+    if ((opener === '"' || opener === "'") && !closesQuote(value, opener)) {
+      let j = i + 1;
+      while (j < lines.length && !/^---/.test(lines[j])) {
+        value += ` ${lines[j].trim()}`;
+        const done = closesQuote(value, opener);
+        j += 1;
+        if (done) break;
+      }
+      i = j - 1;
+    }
     if (value === '') {
       const items = [];
       let j = i + 1;
@@ -198,6 +214,18 @@ export function readFrontmatter(text) {
     out[key] = unquote(value);
   }
   return out;
+}
+
+/**
+ * Does this partial scalar already close the quote it opened? Counts only
+ * unescaped quotes after the opening one.
+ */
+function closesQuote(text, quote) {
+  for (let k = 1; k < text.length; k += 1) {
+    if (text[k] === '\\') { k += 1; continue; }
+    if (text[k] === quote) return true;
+  }
+  return false;
 }
 
 function unquote(value) {
@@ -495,8 +523,12 @@ function sanitize(text) {
     // no business in a one-line summary and can garble a terminal.
     .replace(/[\p{Cc}\p{Cf}]/gu, '')
     .replace(/[<>]/g, (char) => (char === '<' ? '&lt;' : '&gt;'))
-    // `*` and `~` are escaped: two unmatched ones in different fields can
-    // pair up and italicize everything between them, footer included.
+    // `*` is escaped: two unmatched ones in different fields can pair up and
+    // italicize everything between them, footer included. A lone `~` cannot
+    // (strikethrough needs `~~`), so only the doubled form is neutralized —
+    // escaping every tilde printed backslashes through ordinary values like
+    // "~36 tools".
+    .replace(/~~/g, '\\~\\~')
     //
     // `_` deliberately is NOT. CommonMark forbids intraword emphasis with
     // underscores, so `hot_cache` and `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD`
@@ -505,7 +537,7 @@ function sanitize(text) {
     // vars, filenames, frontmatter keys), degrading what the reader and the
     // model actually see to defend against a failure the spec already
     // prevents.
-    .replace(/[*~]/g, (char) => `\\${char}`)
+    .replace(/\*/g, '\\*')
     .trim();
 }
 

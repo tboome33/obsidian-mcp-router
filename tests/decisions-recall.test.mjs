@@ -114,6 +114,25 @@ describe('readFrontmatter', () => {
     assert.deepEqual(fm.tags, ['a', 'b']);
   });
 
+  test('reads a quoted scalar folded over several lines', () => {
+    // What Obsidian's YAML writer produces for a long `decision:` — reading
+    // only the first line kept the opening quote and cut the sentence.
+    const fm = readFrontmatter(
+      '---\ntype: decision\ndecision: "La feature n\'est pas adoptée : elle résout un\n'
+      + '  problème de volume que notre architecture n\'a pas,\n'
+      + '  au prix d\'un hop probabiliste."\nstatus: accepted\n---\n\n# X\n',
+    );
+    assert.equal(fm.decision.startsWith('"'), false, 'no leftover opening quote');
+    assert.match(fm.decision, /hop probabiliste\.$/, 'the whole value is read');
+    assert.equal(fm.status, 'accepted', 'and parsing resumes on the next key');
+  });
+
+  test('a single-line quoted scalar is unaffected', () => {
+    const fm = readFrontmatter('---\ntype: decision\ntitle: "Court"\nstatus: accepted\n---\n\n# X\n');
+    assert.equal(fm.title, 'Court');
+    assert.equal(fm.status, 'accepted');
+  });
+
   test('returns null when there is no frontmatter', () => {
     assert.equal(readFrontmatter('# Just a title\n'), null);
     assert.equal(readFrontmatter(''), null);
@@ -603,11 +622,17 @@ describe('block framing survives hostile input (review+ BLOCKER)', () => {
   test('unmatched emphasis in a page field cannot absorb the footer', () => {
     const selection = fullSizedSelection();
     selection[0].title = 'Titre **avec emphase jamais fermée';
-    selection[1].decision = 'Verdict ~barré et jamais fermé';
+    selection[1].decision = 'Verdict ~~barré et jamais fermé';
     const block = formatRecallBlock(selection);
     assert.equal((block.match(/(?<!\\)\*/g) || []).length % 2, 0, 'no orphan asterisk survives');
-    assert.equal(block.includes('\\~'), true, 'strikethrough markers are escaped too');
+    assert.equal(block.includes('\\~\\~'), true, 'doubled tildes are escaped');
     assert.match(block, /Never contradict an accepted decision silently/);
+  });
+
+  test('a lone tilde is left alone — it cannot open strikethrough', () => {
+    const selection = fullSizedSelection();
+    selection[0].decision = 'environ ~36 tools par instance';
+    assert.match(formatRecallBlock(selection), /~36 tools/, 'no backslash through an ordinary value');
   });
 
   test('snake_case is left readable — underscores cannot open emphasis intraword', () => {

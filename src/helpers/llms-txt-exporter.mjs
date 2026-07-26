@@ -34,6 +34,18 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
  * @param {string} content Raw markdown content (may or may not have frontmatter)
  * @returns {{ frontmatter: Record<string, any>, body: string }}
  */
+/**
+ * Does this partial scalar already close the quote it opened? Counts only
+ * unescaped quotes after the opening one.
+ */
+function closesQuotedScalar(text, quote) {
+  for (let k = 1; k < text.length; k += 1) {
+    if (text[k] === '\\') { k += 1; continue; }
+    if (text[k] === quote) return true;
+  }
+  return false;
+}
+
 export function parseFrontmatter(content) {
   const match = FRONTMATTER_RE.exec(content);
   if (!match) return { frontmatter: {}, body: content };
@@ -75,6 +87,23 @@ export function parseFrontmatter(content) {
         continue;
       }
       // else fall through — genuine empty scalar
+    }
+
+    // Quoted scalar folded over continuation lines — what Obsidian's YAML
+    // writer produces for any long value (a `decision:` one-liner, a
+    // `description:`, a long `title:`). Reading only the first line kept the
+    // opening quote AND cut the value mid-sentence, so exports carried
+    // truncated metadata. Consume the continuations until the quote closes.
+    const opener = value[0];
+    if ((opener === '"' || opener === "'") && !closesQuotedScalar(value, opener)) {
+      let j = i + 1;
+      while (j < lines.length) {
+        value += ` ${lines[j].trim()}`;
+        const closed = closesQuotedScalar(value, opener);
+        j += 1;
+        if (closed) break;
+      }
+      i = j - 1;
     }
 
     // Strip surrounding quotes
