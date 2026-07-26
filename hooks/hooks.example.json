@@ -44,6 +44,10 @@
           },
           {
             "type": "command",
+            "command": "node \"<router-repo>/hooks/decisions-recall.mjs\""
+          },
+          {
+            "type": "command",
             "command": "node \"<router-repo>/hooks/session-auto-journal.mjs\""
           }
         ]

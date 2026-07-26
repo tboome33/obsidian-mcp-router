@@ -34,6 +34,20 @@ La philosophie, apprise à l'usage : **une convention seule ne règle pas un pro
 
 **Ce que ça fait.** À chaque prompt substantiel, injecte un rappel poussant Claude à consulter le wiki (index, pages pertinentes, recherche sémantique) avant de composer sa réponse. Injecte aussi les **règles de résolution de chemins** en mode workspace-bound : les chemins absolus réels du workspace et du vault, pour empêcher les chemins fantômes qui mélangent les deux racines. Opt-out : `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true`.
 
+## `decisions-recall` — ce qui est déjà tranché revient de lui-même
+
+**Le besoin.** Une base de connaissances enregistre ce qu'on sait ; la couche décision enregistre ce qui est **tranché** et ce qui a été **écarté**. Mais les deux sont passives : une nouvelle session — ou un autre agent, ou le même après une remise à zéro du contexte — repart d'une page blanche et re-propose une approche rejetée il y a six mois. Écrire la décision est nécessaire et insuffisant : il faut que quelque chose la **présente**, sans qu'on le demande, au moment où le prompt arrive.
+
+**Ce que ça fait.** À chaque prompt substantiel, remonte les décisions `accepted` dont le sujet recoupe le prompt : titre, verdict en une ligne, périmètre, chemin pour lire la page entière.
+
+Trois garde-fous, chacun délibéré :
+
+- **Déterministe d'abord.** Filtrage par statut puis recouvrement de tokens — aucun embedding, aucun appel modèle. Le chemin chaud de chaque prompt est le mauvais endroit pour l'un comme pour l'autre, et une sélection qu'on ne peut pas expliquer est une sélection qu'on ne peut pas déboguer le jour où elle remonte la mauvaise page.
+- **Échu ≠ silencieux, échu ≠ contraignant.** Une décision passée sa date `review_after:` est quand même affichée, marquée « à réévaluer ». La cacher perdrait le contexte ; la présenter comme une contrainte ossifierait un arbitrage dont les conditions ont changé.
+- **Donnée citée, jamais instruction.** Une page de vault est du contenu utilisateur, et un contenu lu par un agent ne doit jamais pouvoir le piloter — sinon le vault devient une surface d'injection de prompt. Le bloc injecté le dit explicitement et demande de **signaler** un désaccord, pas d'obéir ni de contredire en silence.
+
+Silencieux quand rien ne matche, borné (fichiers scannés, octets par fichier, décisions remontées, caractères injectés). Opt-out : `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=true`.
+
 ## `vault-link-linter` — plus de liens cassés dans les réponses
 
 **Le besoin.** Un chemin de vault cité en texte brut dans une réponse de chat devient un lien cassé au rendu ([fiche 10](10-liens-et-navigation.md) pour le bon format). Ce bug a été signalé de nombreuses fois avant d'être traité par l'enforcement.

@@ -6,6 +6,31 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-07-26 — `decisions-recall`: the settled decisions come back on their own
+
+The last two releases made the decision layer **complete and checkable**. It was still **passive**: nothing presented a decision to an agent before it acted, so nothing actually stopped the loop the whole practice exists to break — a new session, a different agent, or the same one after a context reset starts blank and re-proposes an approach that was ruled out months ago. Writing the decision down is necessary and insufficient. This release is where the practice starts paying.
+
+Phase 3 of the vault-side ADR roadmap, and the tenth hook in the router: a convention is a nudge, and nudge ≠ enforce — the same lesson that already turned `vault-link-linter` and `wiki-query-first-nudge` into hooks rather than paragraphs.
+
+### Added
+
+- **`hooks/decisions-recall.mjs`** (UserPromptSubmit) — on every substantive prompt, surfaces the `accepted` decisions whose subject overlaps it: title, one-line verdict, scope, and the path to read the full page. Dual-mode like `wiki-query-first-nudge` (workspace-is-vault and workspace-bound-to-a-vault). Silent when nothing matches, so ordinary prompts pay nothing; exits 0 on any error, because a recall hook that breaks the session it was meant to help is worse than one that misses a decision.
+- **`hooks/_helpers/decisions-recall-core.mjs`** — the pure half (scan, select, format), testable without spawning a process and dependency-free, since hooks must run in a fresh checkout before `npm install`.
+- **Tests** — `tests/decisions-recall.test.mjs` (29 cases): the core (tokenizing with accent folding and a stopword floor, the minimal frontmatter reader, the bounded walker, selection, formatting) plus a spawned-shell layer for the wiring, the prompt filters and the opt-out. Full suite **2337 tests**, 0 failures.
+
+Three design properties, each deliberate and each covered by a test:
+
+- **Deterministic first.** Candidates are filtered by `status: accepted`, then ranked by plain token overlap against title, verdict, scope, project, tags and basename. No embeddings, no model call: the hot path of every prompt is the wrong place for either, and a selection you cannot explain is one you cannot debug the day it surfaces the wrong page. `proposed` decisions are not binding and `superseded` / `rejected` ones must never be shown as constraints — surfacing a retired decision is precisely the failure the layer prevents.
+- **Expired is neither silent nor binding.** Past its `review_after:` date a decision is still shown, flagged **due for re-evaluation**. Hiding it loses the context; presenting it as a constraint ossifies a ruling whose conditions have changed. That is the anti-ossification rule made operational.
+- **Cited data, never instructions.** Vault pages are user content, and content an agent reads must never be able to direct it — otherwise the vault becomes a prompt-injection surface. The injected block says so explicitly, and asks the agent to *flag* disagreement rather than obey or silently contradict.
+
+### Changed
+
+- **`hooks/hooks.example.json`** wires the hook into `UserPromptSubmit` (so `setup-vault.mjs --install-hooks` picks it up), README (EN + FR) goes from 9 to **10 hooks**, and `docs/features/12-hooks-et-automatisations.md` gains its section.
+
+### Field note from the first real run
+
+Fired against the reference vault with *"could we replace the filter with an embeddings scorer?"*, the hook surfaced the mcphub smart-routing decision — correctly, via its `embeddings` tag — and, just as informatively, **nothing about BM25**: that verdict has never been written as a decision page, it lives diluted in a roadmap. The recall layer is exactly as good as the decisions actually recorded, which is the argument for the qualification charter, not against the hook. Second observation: the surfaced page carries no `title:` or `decision:` frontmatter, so its recall entry is thin — those two fields are what make a recall block readable at a glance.
 ## [0.50.0] — 2026-07-26 — the field that justifies the practice becomes checkable ("alternatives considered")
 
 v0.49.0 gave decision pages a frontmatter contract; this one closes the part that frontmatter cannot express. A decision record without its **rejected options** is a decorated changelog: the code holds the path taken and never the paths refused, the PRD holds the goal and never the trade-off, and a session that reads only those two re-proposes what was ruled out months ago. The convention already said the section mattered — nothing verified it, so nothing prevented it from quietly disappearing.

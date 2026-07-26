@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.50.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.51.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -190,12 +190,13 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `wiki-ingest` agent — fan out one source per agent, parallel
 - `wiki-lint` agent — read-only diagnostic in a separate context
 
-**Hooks** — **9 cross-platform Node hooks, auto-wired into `~/.claude/settings.json` at vault bootstrap since v0.18.2** (opt out with `setup-vault.mjs --no-hooks`):
+**Hooks** — **10 cross-platform Node hooks, auto-wired into `~/.claude/settings.json` at vault bootstrap since v0.18.2** (opt out with `setup-vault.mjs --no-hooks`):
 - `session-auto-journal` — auto-journals each Claude session under `wiki-meta/Sessions/` + a 2-line recap to `wiki-meta/log.md` (self-healing reconciliation)
 - `hot-cache-load` — loads `wiki-meta/hot.md` into context at SessionStart / PostCompact
 - `hot-cache-update-prompt` — deterministic guard: **blocks the turn** (exit 2) until `wiki-meta/hot.md` is refreshed when this session wrote a `wiki/` note (per-vault, transcript-scoped; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
 - `wiki-autocommit` — auto-commits `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` to git after writes
 - `wiki-query-first-nudge` — nudges Claude to check the vault before answering (+ injects PATH RESOLUTION RULES)
+- `decisions-recall` — surfaces the **already-settled decisions** touching the prompt, so an option ruled out months ago isn't re-proposed. Deterministic (accepted status + token overlap, no model call), silent when nothing matches; an expired `review_after:` is shown as *due for re-evaluation*, never as a constraint. Injected as cited data, never as instructions (opt-out `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL`)
 - `vault-link-linter` — catches broken/phantom vault links before they reach you
 - `doc-propagation-checker` — flags docs drifting from shipped code
 - `vault-doc-startup-check` — surfaces vault & doc health at session start
@@ -834,7 +835,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.50.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.51.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -979,12 +980,13 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - agent `wiki-ingest` — fan-out un agent par source, en parallèle
 - agent `wiki-lint` — diagnostic read-only dans un contexte isolé
 
-**Hooks** — **9 hooks Node cross-platform, auto-câblés dans `~/.claude/settings.json` au bootstrap du vault depuis v0.18.2** (opt-out via `setup-vault.mjs --no-hooks`) :
+**Hooks** — **10 hooks Node cross-platform, auto-câblés dans `~/.claude/settings.json` au bootstrap du vault depuis v0.18.2** (opt-out via `setup-vault.mjs --no-hooks`) :
 - `session-auto-journal` — journalise automatiquement chaque session Claude sous `wiki-meta/Sessions/` + un récap 2 lignes dans `wiki-meta/log.md` (réconciliation auto-réparatrice)
 - `hot-cache-load` — charge `wiki-meta/hot.md` dans le contexte au SessionStart / PostCompact
 - `hot-cache-update-prompt` — garde déterministe : **bloque le tour** (exit 2) tant que `wiki-meta/hot.md` n'est pas rafraîchi quand la session a écrit une note `wiki/` (par vault, scopé au transcript ; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
 - `wiki-autocommit` — auto-commit `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` sur git après les écritures
 - `wiki-query-first-nudge` — rappelle à Claude de consulter le vault avant de répondre (+ injecte les PATH RESOLUTION RULES)
+- `decisions-recall` — remonte les **décisions déjà tranchées** que le prompt touche, pour qu'une option écartée il y a six mois ne soit pas re-proposée. Déterministe (statut `accepted` + recouvrement de tokens, aucun appel modèle), silencieux quand rien ne matche ; une `review_after:` échue est présentée comme *à réévaluer*, jamais comme une contrainte. Injecté comme donnée citée, jamais comme instruction (opt-out `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL`)
 - `vault-link-linter` — attrape les liens vault cassés/fantômes avant qu'ils ne t'atteignent
 - `doc-propagation-checker` — signale les docs qui dérivent du code shippé
 - `vault-doc-startup-check` — surface la santé vault & docs au démarrage de session
