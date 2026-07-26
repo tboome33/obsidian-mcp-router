@@ -132,6 +132,23 @@ chaining `safe_name | kebab` in templates).
 
 ---
 
+Vendored third-party components shipped in templates/reference-vault-skeleton/
+(each keeps its upstream LICENSE file next to the vendored code; both are
+redistributed unmodified so provisioned vaults work offline, per the
+template-distribution Lot 2 decisions of 2026-06-19):
+
+  Blue Topaz (Obsidian theme) — MIT License
+    Copyright (c) 2020 whyt-byte (authors: WhyI & Pkmer)
+    https://github.com/whyt-byte/Blue-Topaz_Obsidian-css
+    Vendored at: templates/reference-vault-skeleton/.obsidian/themes/Blue Topaz/
+
+  BRAT — obsidian42-brat (Obsidian plugin) — MIT License
+    Copyright (c) 2024 TfTHacker
+    https://github.com/TfTHacker/obsidian42-brat
+    Vendored at: templates/reference-vault-skeleton/.obsidian/plugins/obsidian42-brat/
+
+---
+
 Methodology credit (knowledge-management skills, v0.6+):
 
 The wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold / save /

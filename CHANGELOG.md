@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-07-26 — template idéal Lot 2: themes propagate, `--theme` applies, BRAT never downgraded
+
+Lot 2 of the template-distribution roadmap (the `template-distribution-roadmap` page in the meta vault). The skeleton already carried Blue Topaz + BRAT + `app.json` defaults (committed `f804151`, reconciled item by item before this work); what was missing was everything that makes those reach vaults: BRAT wasn't even ENABLED in the skeleton's `community-plugins.json`, themes never propagated on bootstrap or sync, the wizard's `--theme` choice was recorded-but-blocked, and a template sync could silently DOWNGRADE a plugin BRAT had auto-updated in a user vault.
+
+### Added
+
+- **`cloneThemes(source, target, force)`** — theme propagation on EVERY path (bootstrap from reference/skeleton/from-vault + `--sync-plugins`/`--sync-all`). Per-theme granularity: an existing theme dir is skipped unless `--force`, and a theme that exists only in the target is NEVER deleted (the old from-vault behavior wiped the whole `themes/` dir on `--force`).
+- **`syncAppearanceDefaults(source, target)`** — fresh vaults inherit the template's `appearance.json` (cssTheme / light-dark scheme / accentColor); an existing `appearance.json` is never touched, not even with `--force` — the theme is a per-user preference, not template state.
+- **`applyThemeChoice(target, theme)`** — the wizard's `--theme` is now APPLIED: writes `cssTheme` (merge-style, only that key), validates the theme folder exists in the target first, `"obsidian-default"` → `""`. The `plan_vault` planner drops the `theme-blocked` warning and lists an apply step; `provision_vault`'s schema description updated.
+- **`isTargetPluginNewer(src, dst)` anti-downgrade guard** — BRAT auto-updates GitHub plugins (bridge, hot-reload) inside user vaults, so sync/`--force` now compares `manifest.json` versions and NEVER replaces a newer installed copy (locked decision 2026-06-19). Fail-open on missing/unparseable manifests. Reported per-vault as `Kept N plugin(s) at the target's NEWER version`.
+- **Skeleton completions** — `obsidian42-brat` added to `community-plugins.json` (vendored since `f804151` but never enabled → BRAT never loaded); non-secret `data.json` vendored for `obsidian-quiet-outline` + `obsidian-icon-folder` (per the Lot 2 curation rule: config yes, history/UI-state no — `realclaudian`'s `tabManagerState`, `recent-files`' history and `smart-connections`' install-state are deliberately NOT shipped).
+- **NOTICE** — MIT redistribution credits for the two vendored components: Blue Topaz (© 2020 whyt-byte, authors WhyI & Pkmer) and BRAT (© 2024 TfTHacker), with upstream URLs and vendor paths.
+- **Tests** — `tests/setup-vault-themes.test.mjs` (16 cases): per-theme skip/force/target-only-preserved, appearance fill-if-absent, `--theme` apply/refuse/default, anti-downgrade newer/equal/older/fail-open. Full suite **2382 tests**, 0 failures.
+
+### Changed
+
+- `setupVault()` prefers the SOURCE vault's `app.json` (skeleton and `--from-vault` carry their own defaults) before falling back to the configured reference vault's.
+- Stale comments refreshed: the skeleton-contents doc block (still claimed "no plugin binaries"), `--bootstrap-reference` next-steps (BRAT is in place and auto-updates the bridge at startup).
 ## [0.51.2] — 2026-07-26 — long frontmatter values were being truncated everywhere
 
 Found by using the thing. Back-filling the reference vault's decision corpus (roadmap Phase 2bis) produced `decision:` one-liners long enough that Obsidian's YAML writer folded them onto continuation lines — the normal representation of a long quoted scalar. The recall block then displayed them **cut mid-sentence and starting with a stray quote**.

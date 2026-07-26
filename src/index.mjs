@@ -863,7 +863,7 @@ const TOOLS = [
           },
           additionalProperties: false,
         },
-        theme: { type: 'string', description: 'Theme name (currently recorded but not applied — Lot 2).' },
+        theme: { type: 'string', description: 'Theme to apply: a theme folder name cloned from the source (see plan_vault\'s themes list), or "obsidian-default" for the built-in look. Written as cssTheme in the new vault\'s appearance.json.' },
         linkWorkspace: { type: 'string', description: 'Code workspace path to bind to this vault.' },
         claudeWorkspace: { type: 'boolean' },
       },

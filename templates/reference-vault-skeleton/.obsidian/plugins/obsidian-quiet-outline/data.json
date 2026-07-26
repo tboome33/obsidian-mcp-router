@@ -1,0 +1,11 @@
+{
+  "search_support": true,
+  "level_switch": true,
+  "markdown": true,
+  "expand_level": "6",
+  "hide_unsearched": true,
+  "auto_expand_ext": "expand-and-collapse-related",
+  "regex_search": false,
+  "primary_color_light": "#ce305e",
+  "primary_color_dark": "#cc5e6c"
+}

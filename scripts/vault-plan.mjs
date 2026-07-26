@@ -249,13 +249,12 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
     });
   }
 
-  const theme = opts.theme ? { name: opts.theme, blocked: true } : null;
-  if (theme) {
-    warnings.push({
-      code: 'theme-blocked',
-      message: '--theme is not yet applied (waiting on the Lot 2 cloneThemes() chantier). The choice is recorded but the engine will not write cssTheme.',
-    });
-  }
+  // Lot 2 (shipped): the engine clones the source's themes/ then writes the
+  // chosen cssTheme via applyThemeChoice() — the choice is applied, no longer
+  // recorded-but-blocked. `blocked: false` is kept in the shape (rather than
+  // dropping the key) so plan consumers written against the blocked era keep
+  // reading a boolean.
+  const theme = opts.theme ? { name: opts.theme, blocked: false } : null;
 
   // Ordered, human-readable provisioning steps (what provision_vault will do).
   const steps = [];
@@ -275,7 +274,8 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
       steps.push(`copy config-only from ${src.sourceVault} (appearance + themes/ + CLAUDE.md; exclude workspace.json + credentialed data.json; secrets regenerated)`);
       if (opts.withFolderTree) steps.push('recreate the source wiki/ folder tree (empty, no notes)');
     }
-    steps.push('clone .smart-env, snippets, root docs');
+    steps.push('clone .smart-env, themes/ (per-theme, target-newer preserved), snippets, root docs');
+    if (opts.theme) steps.push(`apply theme "${opts.theme}" (write cssTheme in appearance.json)`);
     steps.push(`scaffold fresh wiki-meta/ (mode: ${mode}${explicitMode ? '' : ' — DEFAULT; generic template unless --wiki-mode is passed'})`);
     steps.push('write .env, .mcp.json, .gitignore');
     if (opts.claudeWorkspace && opts.linkWorkspace) steps.push(`merge enabledPlugins into ${opts.linkWorkspace}/.claude/settings.json (+ verify global marketplace)`);

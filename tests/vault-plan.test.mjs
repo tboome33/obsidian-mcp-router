@@ -198,7 +198,7 @@ test('buildProvisionPlan: plan.probe mirrors opts.probe', () => {
   } finally { fs.rmSync(src, { recursive: true, force: true }); }
 });
 
-test('buildProvisionPlan: --theme records choice but flags it blocked', () => {
+test('buildProvisionPlan: --theme is applied (no longer blocked), with an apply step', () => {
   const src = tmpVault(['smart-connections']);
   try {
     const cfg = { referenceVault: src, portRegistry: {} };
@@ -207,7 +207,8 @@ test('buildProvisionPlan: --theme records choice but flags it blocked', () => {
       opts: { theme: 'Blue Topaz' }, cfg, requiredPlugins: REQUIRED,
     });
     assert.equal(plan.theme.name, 'Blue Topaz');
-    assert.equal(plan.theme.blocked, true);
-    assert.ok(plan.warnings.some((w) => w.code === 'theme-blocked'));
+    assert.equal(plan.theme.blocked, false);
+    assert.ok(!plan.warnings.some((w) => w.code === 'theme-blocked'));
+    assert.ok(plan.steps.some((s) => s.includes('apply theme "Blue Topaz"')));
   } finally { fs.rmSync(src, { recursive: true, force: true }); }
 });

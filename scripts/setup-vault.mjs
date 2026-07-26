@@ -35,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 
 import { samePath, canonicalPath } from './path-helpers.mjs';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
+import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
 import {
   buildProvisionPlan,
   resolveSourceVault,
@@ -130,11 +131,15 @@ const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
 // are cloned automatically when the reference enables them.
 
 // --- Reference-vault skeleton: shipped with the repo, used by --bootstrap-reference --
-// Contains: .obsidian/community-plugins.json + app.json, .smart-env/smart_env.json,
-// .claude/settings.json, CLAUDE.md, wiki/{index,log,hot,overview}.md, README.md.
-// Does NOT contain plugin binaries (license + size reasons); --bootstrap-reference
-// downloads the bridge plugin from GitHub releases, and the user installs the
-// remaining marketplace plugins via Obsidian's Community Plugins browser.
+// Contains: .obsidian/{community-plugins,app,appearance}.json, the vendored
+// Blue Topaz theme + obsidian42-brat plugin (both MIT — see NOTICE) with BRAT's
+// data.json pre-wired on the bridge repo, non-secret data.json for the
+// quiet-outline/icon-folder/bridge plugins, .smart-env/smart_env.json,
+// .claude/settings.json, CLAUDE.md, wiki-meta scaffolds, README.md.
+// Marketplace plugin BINARIES are still not vendored (license + size);
+// --bootstrap-reference downloads the bridge plugin from GitHub releases, BRAT
+// pulls its pluginList at startup, and the user installs the remaining
+// marketplace plugins via Obsidian's Community Plugins browser.
 const SKELETON_DIR = path.join(REPO_ROOT, 'templates', 'reference-vault-skeleton');
 
 // --- Bridge plugin release: only non-marketplace required plugin --
@@ -1893,7 +1898,8 @@ async function bootstrapReference(targetPath, opts = {}) {
   console.log(`  2. Trust the vault when prompted.`);
   console.log(`  3. Obsidian will prompt you to install the plugins listed in community-plugins.json.`);
   console.log(`     Click ${c('cyan', 'Install')} for: Local REST API, Smart Connections, Templater, Quiet Outline.`);
-  console.log(`     (The bridge plugin is already in place — no action needed for it.)`);
+  console.log(`     (The bridge plugin and BRAT are already in place — no action needed for those;`);
+  console.log(`      BRAT auto-updates the bridge + hot-reload from GitHub releases at startup.)`);
   console.log(`  4. Enable all four in Settings → Community plugins.`);
   console.log(`  5. Restart Obsidian once so Local REST API generates its certificate.`);
   console.log(`  6. ${c('bold', 'Finalize')}: ${c('cyan', `node "${fileURLToPath(import.meta.url)}" --init-reference "${abs}"`)}`);
@@ -1928,13 +1934,13 @@ export function recreateWikiFolderTree(sourceVault, targetVault) {
   return made;
 }
 
-// --from-vault: copy the source vault's visual config (appearance.json + the
-// themes/ folder — CSS only, no secrets) so a vault chosen for its look keeps
-// it (spec Q3). Called BEFORE cloneSnippets so the snippet-enablement merges
-// INTO the copied appearance.json rather than overwriting it. NOT applied to
-// the reference bootstrap path (which never copied appearance — unchanged).
-// The custom-theme cssTheme carries over with its themes/ folder; the shipped
-// `--theme` picker (cloneThemes) is the separate Lot 2 chantier.
+// --from-vault: copy the source vault's appearance.json (visual config, no
+// secrets) so a vault chosen for its look keeps it (spec Q3). Called BEFORE
+// cloneSnippets so the snippet-enablement merges INTO the copied
+// appearance.json rather than overwriting it. The themes/ folder itself is
+// handled by cloneThemes() below (per-theme granularity, all bootstrap paths)
+// — this function used to wipe-and-replace the whole themes/ dir on --force,
+// which destroyed target-only themes; cloneThemes never does.
 function copyVaultAppearance(sourceVault, targetVault, force) {
   const srcApp = path.join(sourceVault, '.obsidian', 'appearance.json');
   const dstApp = path.join(targetVault, '.obsidian', 'appearance.json');
@@ -1943,14 +1949,95 @@ function copyVaultAppearance(sourceVault, targetVault, force) {
     fs.copyFileSync(srcApp, dstApp);
     ok('Copied appearance.json from source vault');
   }
+}
+
+// Lot 2 — theme propagation, every bootstrap/sync path. Copies each theme
+// folder under the source's `.obsidian/themes/` into the target, PER THEME:
+// an existing theme dir in the target is left untouched unless --force, and
+// a theme that exists ONLY in the target is never deleted (unlike a
+// wipe-and-replace of the whole themes/ dir). Theme folders are CSS +
+// manifest by construction — no credentials to leak.
+export function cloneThemes(sourceVault, targetVault, force) {
   const srcThemes = path.join(sourceVault, '.obsidian', 'themes');
-  const dstThemes = path.join(targetVault, '.obsidian', 'themes');
-  if (fs.existsSync(srcThemes)) {
-    if (fs.existsSync(dstThemes) && force) fs.rmSync(dstThemes, { recursive: true, force: true });
-    if (!fs.existsSync(dstThemes)) {
-      fs.cpSync(srcThemes, dstThemes, { recursive: true });
-      ok('Copied .obsidian/themes/ from source vault');
+  const result = { cloned: [], skipped: [] };
+  if (!fs.existsSync(srcThemes)) return result;
+  for (const entry of fs.readdirSync(srcThemes, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const src = path.join(srcThemes, entry.name);
+    const dst = path.join(targetVault, '.obsidian', 'themes', entry.name);
+    if (fs.existsSync(dst)) {
+      if (!force) { result.skipped.push(entry.name); continue; }
+      fs.rmSync(dst, { recursive: true, force: true });
     }
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.cpSync(src, dst, { recursive: true });
+    result.cloned.push(entry.name);
+  }
+  if (result.cloned.length > 0) ok(`Cloned theme(s): ${result.cloned.join(', ')}`);
+  return result;
+}
+
+// Lot 2 — appearance bootstrap for the reference/skeleton paths. Copies the
+// source's appearance.json ONLY when the target has none: a fresh vault
+// inherits the template's look (cssTheme / light-dark scheme / accentColor),
+// an existing vault's choices are NEVER touched — not even with --force,
+// because the theme is a per-user preference, not template state. Per-key
+// writes stay with enableSnippetsInAppearance() and applyThemeChoice().
+export function syncAppearanceDefaults(sourceVault, targetVault) {
+  const srcApp = path.join(sourceVault, '.obsidian', 'appearance.json');
+  const dstApp = path.join(targetVault, '.obsidian', 'appearance.json');
+  if (!fs.existsSync(srcApp) || fs.existsSync(dstApp)) return false;
+  fs.mkdirSync(path.dirname(dstApp), { recursive: true });
+  fs.copyFileSync(srcApp, dstApp);
+  ok('Created appearance.json (from source template)');
+  return true;
+}
+
+// Lot 2 — the `--theme` wizard picker, applied (it used to be recorded but
+// blocked). Merge-writes ONLY `cssTheme` in the target's appearance.json:
+// 'obsidian-default' (the planner's id for the built-in look) → "" ; any
+// other value must match a theme folder present in the target AFTER
+// cloneThemes ran — otherwise warn-and-keep rather than writing a cssTheme
+// Obsidian cannot resolve (which silently renders as the default theme).
+export function applyThemeChoice(targetVault, themeChoice) {
+  const isDefault = themeChoice === 'obsidian-default' || themeChoice === 'default';
+  if (!isDefault) {
+    const manifest = path.join(targetVault, '.obsidian', 'themes', themeChoice, 'manifest.json');
+    if (!fs.existsSync(manifest)) {
+      warn(`--theme "${themeChoice}" has no .obsidian/themes/${themeChoice}/manifest.json in the target — keeping the current theme.`);
+      return false;
+    }
+  }
+  const appPath = path.join(targetVault, '.obsidian', 'appearance.json');
+  let appearance = {};
+  if (fs.existsSync(appPath)) {
+    try { appearance = JSON.parse(fs.readFileSync(appPath, 'utf8')); } catch { appearance = {}; }
+  }
+  appearance.cssTheme = isDefault ? '' : themeChoice;
+  fs.mkdirSync(path.dirname(appPath), { recursive: true });
+  fs.writeFileSync(appPath, JSON.stringify(appearance, null, 2) + '\n');
+  ok(`Applied theme: ${isDefault ? 'Obsidian default' : themeChoice}`);
+  return true;
+}
+
+// Lot 2 — anti-downgrade guard. BRAT auto-updates GitHub-sourced plugins
+// (the bridge, hot-reload) inside USER vaults at Obsidian startup, so a
+// target's installed plugin can legitimately be NEWER than the copy sitting
+// in the reference vault. Overwriting it would downgrade live code — locked
+// decision 2026-06-19: never. Compares manifest.json versions; returns false
+// (= keep the historical overwrite behavior) whenever either manifest is
+// missing or unparseable, so the guard can only ever SKIP a copy, never
+// break one.
+export function isTargetPluginNewer(srcPluginDir, dstPluginDir) {
+  try {
+    const readVersion = (dir) =>
+      JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
+    const srcV = readVersion(srcPluginDir);
+    const dstV = readVersion(dstPluginDir);
+    if (!parseSemver(srcV) || !parseSemver(dstV)) return false;
+    return compareSemver(dstV, srcV) > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -2070,13 +2157,6 @@ function setupVault(vaultPath, opts = {}) {
   }
   const pluginProfile = sourceKind === 'bare' ? 'minimal' : (wizard.pluginProfile || 'recommended');
 
-  // --theme is recorded but NOT applied yet — the cloneThemes()/cssTheme write
-  // lands with the Lot 2 Blue Topaz chantier. Warn loudly rather than silently
-  // ignoring the choice so the user isn't surprised the theme didn't change.
-  if (wizard.theme) {
-    warn(`--theme "${wizard.theme}" is not applied yet (waiting on the Lot 2 theme chantier). The vault keeps the source's theme.`);
-  }
-
   // v0.12.7 — early validation of `--link-workspace <ws-path>` (review+ pass 1
   // codex P2 #2). Without this, a typo in --link-workspace would still let the
   // provisioning succeed (plugins cloned, port allocated, registry updated)
@@ -2194,6 +2274,13 @@ function setupVault(vaultPath, opts = {}) {
       warn(`Plugin already present, skipping clone: ${p} (use --force to overwrite)`);
       continue;
     }
+    // Lot 2 anti-downgrade: even under --force, never replace a plugin the
+    // target has at a NEWER version than the source (BRAT keeps user vaults
+    // fresh; the reference copy can lag). See isTargetPluginNewer().
+    if (fs.existsSync(dstPlugin) && isTargetPluginNewer(srcPlugin, dstPlugin)) {
+      warn(`Kept ${p}: target version is newer than the source's (BRAT-updated) — not downgrading.`);
+      continue;
+    }
     if (fs.existsSync(dstPlugin)) {
       // --force re-clone: preserve the target's local data.json (per-vault user
       // settings — e.g. mcp-router-bridge's `foregroundViaProtocol` + presence).
@@ -2218,18 +2305,21 @@ function setupVault(vaultPath, opts = {}) {
     ok(`Cloned plugin: ${p}`);
   }
 
-  // Ensure app.json exists so vault is "valid". Prefer the reference vault's
-  // app.json so app-level defaults (e.g. defaultViewMode: "preview",
-  // livePreview) propagate from the template — same model as cloneSnippets().
-  // Falls back to an empty object when the template has none.
+  // Ensure app.json exists so vault is "valid". Prefer the SOURCE vault's
+  // app.json (skeleton and --from-vault sources carry their own app-level
+  // defaults, e.g. defaultViewMode: "preview" / livePreview: false), then the
+  // configured reference vault's, then an empty object. Same model as
+  // cloneSnippets().
   const appJsonPath = path.join(targetObsidian, 'app.json');
   if (!fs.existsSync(appJsonPath)) {
-    const refAppJson = cfg.referenceVault
-      ? path.join(cfg.referenceVault, '.obsidian', 'app.json')
-      : null;
-    if (refAppJson && fs.existsSync(refAppJson)) {
-      fs.copyFileSync(refAppJson, appJsonPath);
-      ok('Created app.json (from reference template)');
+    const candidates = [
+      path.join(sourceVault, '.obsidian', 'app.json'),
+      cfg.referenceVault ? path.join(cfg.referenceVault, '.obsidian', 'app.json') : null,
+    ].filter(Boolean);
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (found) {
+      fs.copyFileSync(found, appJsonPath);
+      ok('Created app.json (from source template)');
     } else {
       fs.writeFileSync(appJsonPath, '{}\n');
       ok('Created app.json');
@@ -2264,9 +2354,20 @@ function setupVault(vaultPath, opts = {}) {
   // Clone Smart Connections config + embedding cache from the source vault.
   cloneSmartEnv(sourceVault, abs, opts.force);
 
-  // --from-vault: copy the source's appearance.json + themes/ BEFORE snippets,
+  // --from-vault: copy the source's appearance.json BEFORE snippets,
   // so cloneSnippets merges snippet-enablement into the copied appearance.
   if (sourceKind === 'from-vault') copyVaultAppearance(sourceVault, abs, opts.force);
+
+  // Lot 2 — every bootstrap path propagates the source's themes plus a
+  // default appearance.json (fill-if-absent), so the shipped Blue Topaz
+  // decision (skeleton) or the reference vault's current look reaches new
+  // vaults. from-vault already force-copied appearance above; per-theme
+  // skip keeps every path idempotent. The wizard's `--theme` choice is
+  // applied LAST so it wins over whatever cssTheme the copied appearance
+  // carries.
+  cloneThemes(sourceVault, abs, opts.force);
+  if (sourceKind !== 'from-vault') syncAppearanceDefaults(sourceVault, abs);
+  if (wizard.theme) applyThemeChoice(abs, wizard.theme);
 
   // Clone Obsidian CSS snippets (no-task-strikethrough.css + any others)
   // and patch appearance.json to enable them.
@@ -2436,6 +2537,10 @@ function syncPluginsMode(vaultPath, opts = {}) {
 
   const newlySynced = [];
   const refreshed = [];
+  // Plugins whose installed version in the target is NEWER than the
+  // reference's copy (BRAT auto-update) — kept as-is, see the Lot 2
+  // anti-downgrade guard in the loop.
+  const keptNewer = [];
   // Plugins we refused to copy for safety reasons — currently
   // CREDENTIAL_LEAK_PLUGINS into a target that's missing the credential
   // file. Surfaced at the end of the loop with a clear "bootstrap
@@ -2467,6 +2572,13 @@ function syncPluginsMode(vaultPath, opts = {}) {
     }
 
     if (exists) {
+      // Lot 2 anti-downgrade: BRAT auto-updates GitHub plugins in user vaults,
+      // so the target can be ahead of the reference — never replace a newer
+      // installed version, even under --force.
+      if (isTargetPluginNewer(srcPlugin, dstPlugin)) {
+        keptNewer.push(p);
+        continue;
+      }
       // --force: re-clone but preserve local data.json (port + apiKey + user settings)
       const dataJson = path.join(dstPlugin, 'data.json');
       let preserved = null;
@@ -2488,6 +2600,12 @@ function syncPluginsMode(vaultPath, opts = {}) {
     cloneSmartEnv(cfg.referenceVault, abs, false);
     smartEnvAdded = true;
   }
+
+  // Lot 2 — themes + appearance ride the same sync: per-theme skip unless
+  // --force (target-only themes always preserved), appearance.json only when
+  // the target has none (a user's theme choice is never clobbered).
+  cloneThemes(cfg.referenceVault, abs, opts.force);
+  syncAppearanceDefaults(cfg.referenceVault, abs);
 
   // Sync Obsidian CSS snippets (no-task-strikethrough.css + any future ones)
   // and patch appearance.json — idempotent, never blocks existing snippets.
@@ -2528,6 +2646,7 @@ function syncPluginsMode(vaultPath, opts = {}) {
 
   if (newlySynced.length > 0) ok(`Synced ${newlySynced.length} new plugin(s): ${newlySynced.join(', ')}`);
   if (refreshed.length > 0) ok(`Refreshed ${refreshed.length} plugin(s) (--force): ${refreshed.join(', ')}`);
+  if (keptNewer.length > 0) info(`Kept ${keptNewer.length} plugin(s) at the target's NEWER version (BRAT-updated, never downgraded): ${keptNewer.join(', ')}`);
   if (smartEnvAdded) ok('Cloned .smart-env from reference vault');
   if (deferredForSafety.length > 0) {
     warn(
