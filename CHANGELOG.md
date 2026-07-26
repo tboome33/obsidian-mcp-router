@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-07-26 — docs catch up with reality + releases stop drifting (auto-tag hook, `npm run release`)
+
+Discovered while answering "why does GitHub say the last release was 2 months ago?": between v0.8.2 (2026-05-06) and v0.47.0, the repo shipped **40 versions with pushed commits but zero git tags and zero GitHub releases** — the Releases box was honest, the process wasn't. Same audit showed the user-facing docs lagging the 45-command / 42-tool surface. This release fixes both: the documentation is resynced everywhere, and tagging becomes a deterministic side effect of the existing bump→commit workflow instead of a memory-dependent manual step.
+
+### Added
+
+- **`.githooks/post-commit` auto-tag hook** — when a commit touches `package.json` and no `v<version>` tag exists for its `version` field, the commit is tagged `v<version>` (annotated) on the spot. Fail-open (a post-commit hook must never break a commit); merge commits skipped by design. Lives next to the existing gitleaks `pre-commit` in the versioned `.githooks/` directory.
+- **`ensureHooksPath()` in `scripts/bump-version.mjs`** — every real (non-dry-run) bump re-ensures `git config core.hooksPath = .githooks`, so the hook is armed on any clone the moment it bumps; nothing to remember, nothing to drift. The CLI now ends with the 3-step flow (write CHANGELOG → commit auto-tags → `npm run release`).
+- **`npm run release`** (`scripts/create-release.mjs`) — pushes the current branch + tag and creates the GitHub release (or idempotently updates it on re-run) with notes extracted from this file's entry for the version. Guards: refuses while the entry still contains the bump `TODO` stub, refuses when the bump isn't committed, self-heals a missing tag on the bump commit, `--dry-run` previews. Requires the `gh` CLI.
+- **Tests** — `tests/create-release.test.mjs` (12 cases): `extractChangelogSection` (middle/last entry, subsections, multi-em-dash titles, non-stub headings, literal version matching) + `ensureHooksPath` (unset → set, no-op when wired, rewires foreign paths, fail-open outside a repo). Full suite **2253 tests**, 0 failures.
+
+### Changed
+
+- **README (EN + FR) resynced with the shipped surface** — counts corrected everywhere (40→**45 slash commands**, 35→**42 MCP tools**, ~39→**42 skills**, wrappers 14→**16**, knowledge-management 17→**20**); new `convert/` wrapper section (`pdf-to-markdown`, `pdf-to-markdown-docling`) and `hot-compact` row added; `plan_vault`, `provision_vault`, `pdf_to_images`, `filter_relevant_blocks`, `open_in_obsidian` added to the **Capabilities** and **Tools exposed** tables (both languages).
+- **Quick-reference PDFs regenerated after 2 months of drift** — `docs/quick-reference-{en,fr}.html` fully rewritten from the v0.8.11-era content ("31 slash commands") to v0.48.0: 45 commands in 4 category tables, the 42 tools grouped in one page, multi-tenant env vars, `wiki-meta/` layout, wizard-first setup path. PDFs re-rendered via Chrome headless and propagated to the reference vault (`.template/Documentation/`).
+- **CONTRIBUTING.md release process** rewritten around the new flow (bump arms the hook → commit auto-tags → `npm run release` publishes); the manual `git tag` step that caused the drift is gone.
 ## [0.47.0] — 2026-07-17 — `filter_relevant_blocks`: BM25 relevance second-pass over already-acquired markdown (Crawl4AI W-A)
 
 When the router ingests a web page it usually knows *why* — the user asked about a specific topic, or an `autoresearch` loop is chasing a question. But a defuddled article still carries off-topic blocks (lifestyle intro, author bio, newsletter callout, digressions), and today all of it flows into synthesis: tokens wasted, noise in the wiki page. This release borrows Crawl4AI's pattern (`PruningContentFilter` → `BM25ContentFilter` on the same fetched HTML) as **borrowing #1 / workflow W-A**: a **second pass** — a topical-relevance filter — applied to markdown the caller **already holds**, with **no re-fetch, no LLM, no new dependency**, fully deterministic. Our first pass (chrome stripping) is already done by defuddle/MarkItDown; this adds the relevance pass on top. Implemented on Opus 4.8, gated through `/review+` (Claude Code Reviewer + codex) before ship. Design detail: the vault roadmap `bm25-filter-implementation-roadmap` (§4 frozen spec).

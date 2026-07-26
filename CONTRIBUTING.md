@@ -33,8 +33,8 @@ The release rhythm matches the rule pinned in [`docs/release-process.md`](./docs
 2. **Claude Review** — run a code-review pass via the Claude Code `code-reviewer` sub-agent on the staged diff. Triage findings.
 3. **Codex audit** — `codex review --commit <sha> --title "v<x.y.z> ..."` on the same surface. Triage.
 4. **Apply Critical + Major findings** before push; defer Minors with explicit follow-up.
-5. **Push** — `git push origin main`, then `git tag v<x.y.z> && git push --tags`.
-6. **Update plugin marketplace + npm package versions** in lockstep when the change spans both.
+5. **Version + tag** — `npm run bump <x.y.z>` syncs the 5 version files, inserts a CHANGELOG stub, and arms the versioned `.githooks/post-commit` hook (it re-ensures `core.hooksPath = .githooks` on every run). Write the real CHANGELOG entry, then commit — the hook auto-tags `v<x.y.z>` on the commit that carries the bump. No manual `git tag` step: forgetting it is what let the repo ship 40 untagged versions between v0.8.2 and v0.47.0.
+6. **Publish** — `npm run release` pushes the branch + the tag and creates (or idempotently updates) the GitHub release with notes taken from the version's CHANGELOG entry. It refuses to publish while the CHANGELOG entry still contains the `TODO` stub. `npm run release -- --dry-run` previews without touching anything.
 
 For doc-only commits (README, ROADMAP, comment-only edits, plugin manifest version bumps with no behavior change), the audit cycle is optional but encouraged for catching factual drift.
 

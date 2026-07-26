@@ -1,0 +1,33 @@
+#!/bin/sh
+# post-commit — auto-tag version-bump commits (v<X.Y.Z> from package.json).
+#
+# VERSIONED hook (lives in .githooks/, travels with the repo). Enabled by
+#   git config core.hooksPath .githooks
+# which `npm run bump` re-ensures on every run, so the tagging can't drift
+# the way it did between v0.8.2 and v0.47.0 (40 versions shipped, 0 tags).
+#
+# Behavior: if the commit that just landed touched package.json and no tag
+# exists yet for its "version" field, create an annotated tag v<version> on
+# HEAD. The tag stays local — publish it with `git push --follow-tags` or
+# `npm run release` (which also creates the GitHub release).
+#
+# Fail-OPEN everywhere: a post-commit hook must never break a commit.
+# Merge commits are skipped by design (git diff-tree prints nothing for
+# them without -m) — bumps land as regular commits on this repo.
+
+if ! git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null | grep -qx "package.json"; then
+  exit 0
+fi
+
+VERSION=$(git show HEAD:package.json 2>/dev/null | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.stdout.write(JSON.parse(d).version||'')}catch{}})" 2>/dev/null)
+[ -n "$VERSION" ] || exit 0
+
+TAG="v$VERSION"
+if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+  exit 0
+fi
+
+if git tag -a "$TAG" -m "$TAG" HEAD 2>/dev/null; then
+  printf '\033[32m[post-commit] tagged %s\033[0m — publish with: npm run release (or git push --follow-tags)\n' "$TAG"
+fi
+exit 0

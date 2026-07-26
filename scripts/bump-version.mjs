@@ -39,9 +39,18 @@
  * The `--no-changelog` flag skips inserting a stub entry at the top of
  * CHANGELOG.md (useful when you already wrote one by hand, or for a
  * resync where there is no new functional change).
+ *
+ * Tagging: the bump itself doesn't tag (the version-bump commit doesn't
+ * exist yet when this script runs — bumps ship inside the feature commit).
+ * Instead, every non-dry-run bump re-ensures `git config core.hooksPath
+ * .githooks`, which arms the versioned `.githooks/post-commit` hook: the
+ * NEXT commit that touches package.json gets an annotated `v<version>` tag
+ * automatically. Publish tag + GitHub release with `npm run release`.
+ * This closed the v0.8.2→v0.47.0 drift where 40 versions shipped untagged.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
@@ -352,6 +361,38 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
   return report;
 }
 
+/**
+ * Ensure the repo's git hooks path points at the versioned `.githooks/`
+ * directory, so the post-commit auto-tag hook is armed. Self-healing:
+ * called on every real bump, so a fresh clone (or a reset config) gets
+ * re-wired the first time it bumps — no separate setup step to forget.
+ *
+ * Fail-open: returns `{ ok: false, error }` instead of throwing when git
+ * is absent or `root` isn't a repo (e.g. test fixtures) — a bump must
+ * never fail because of hook wiring.
+ */
+export function ensureHooksPath(root) {
+  try {
+    let current = '';
+    try {
+      current = execFileSync('git', ['config', 'core.hooksPath'], {
+        cwd: root, encoding: 'utf8',
+      }).trim();
+    } catch {
+      // unset config exits non-zero — treat as empty
+    }
+    if (current === '.githooks') {
+      return { ok: true, changed: false };
+    }
+    execFileSync('git', ['config', 'core.hooksPath', '.githooks'], {
+      cwd: root, encoding: 'utf8',
+    });
+    return { ok: true, changed: true, before: current || null };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 // ────────────────────────────────────────────────────────────────────
 // CLI entry point
 // ────────────────────────────────────────────────────────────────────
@@ -401,6 +442,23 @@ if (isMain) {
     );
     if (dryRun) {
       process.stdout.write('\n(Dry-run — no files were written.)\n');
+    } else {
+      const hooks = ensureHooksPath(repoRoot);
+      if (hooks.ok) {
+        process.stdout.write(
+          `git hooks: ${hooks.changed ? 'core.hooksPath → .githooks (armed)' : 'core.hooksPath already .githooks'}\n`,
+        );
+      } else {
+        process.stdout.write(
+          `git hooks: NOT wired (${hooks.error}) — tag v${newVersion} manually after committing.\n`,
+        );
+      }
+      process.stdout.write(
+        '\nNext steps:\n' +
+        '  1. Replace the CHANGELOG.md stub with the real entry.\n' +
+        `  2. Commit as usual — the post-commit hook auto-tags v${newVersion}.\n` +
+        '  3. npm run release   → pushes branch + tag, publishes the GitHub release.\n',
+      );
     }
     process.exit(0);
   } catch (err) {

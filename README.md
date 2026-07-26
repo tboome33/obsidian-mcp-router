@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.47.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.48.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -37,9 +37,10 @@ What you get:
 | File management | `move_file` |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
+| Vault provisioning (v0.35+) | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine |
+| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link` |
+| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
 Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` so the postinstall can install `markitdown[all]` into a local `.venv` — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
@@ -81,13 +82,13 @@ See `wiki/obsidian-mcp-router sur Dedibox et MCPHub/` in the [opsidian-mcp-route
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes **40 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
+The repo doubles as a **Claude Code plugin marketplace** that exposes **45 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
 > 📄 **Quick reference PDF** (router overview + setup + config + every slash command with NL trigger phrases) — [English](./docs/quick-reference-en.pdf) · [Français](./docs/quick-reference-fr.pdf). 5 pages, accessible font sizes for printing or screen reference.
 
 > 📖 **Feature guide (prose, by category)** — the tables in this README are a reference card; for a readable walkthrough of every feature (the need it answers, what it does, how to use it), see [`docs/features/`](./docs/features/README.md) (13 categorized pages, French).
 
-### 🔧 14 MCP wrappers — one per core vault tool
+### 🔧 16 MCP wrappers — one per core vault tool
 
 #### `discover/` (2)
 
@@ -128,6 +129,13 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **40 slash
 |---|---|---|
 | `/obsidian-router:template-execute` | Execute a Templater template (preview or save) | *"render Templates/X.md with arg1=v1"*, *"run the daily template"* / *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* |
 
+#### `convert/` (2)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:pdf-to-markdown` | Convert a local PDF to markdown via the bundled MarkItDown CLI (fast, plain-text extraction) | *"convert this PDF to markdown"*, *"markdown of X.pdf"* / *"convertis ce PDF en markdown"*, *"markdown de X.pdf"* |
+| `/obsidian-router:pdf-to-markdown-docling` | High-fidelity PDF → markdown via Docling (layout + table-structure recognition, ~10× slower — needs the opt-in Docling install) | *"convert this PDF with docling"*, *"high-fidelity conversion of X.pdf"* / *"convertis ce PDF avec docling"*, *"conversion haute fidélité de X.pdf"* |
+
 ### 🔒 3 router-state commands (lock + auto-enrichment)
 
 | Command | Effect | Trigger phrasings |
@@ -149,7 +157,7 @@ See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and 
 | `/obsidian-router:meta-audit-bridge-readiness` | Audit click-to-open readiness across vaults (bridge ≥0.2.0, REST API ≥4.0.0, insecure HTTP, live `/open` probe) | *"audit bridge readiness"*, *"is click-to-open ready"* / *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* |
 | `/obsidian-router:conventions` | Install / remove / status / propagate CLAUDE.md conventions (source-type, bilingual, heading-hierarchy, ...) across vaults | *"install source-type convention on X"*, *"list conventions"* / *"installe la convention source-type sur X"*, *"liste les conventions"* |
 
-### 📚 17 knowledge-management commands (Karpathy-style LLM-wiki)
+### 📚 20 knowledge-management commands (Karpathy-style LLM-wiki)
 
 A small workflow on top of the router for an LLM-maintained, structured markdown knowledge base where pages reference each other and grow with use.
 
@@ -160,6 +168,7 @@ A small workflow on top of the router for an LLM-maintained, structured markdown
 | `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → index.md → drill into pages), wiki-only (no web) | *"based on my notes, ..."*, *"what does my wiki say about X"* / *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* |
 | `/obsidian-router:wiki-lint` | Health check (orphans, dead wikilinks, index drift, frontmatter gaps) | *"lint the wiki"*, *"audit my wiki"* / *"lint le wiki"*, *"audit mon wiki"* |
 | `/obsidian-router:wiki-fold` | Idempotent rollup of log entries under `wiki/folds/` | *"fold the log"*, *"roll up recent activity"* / *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* |
+| `/obsidian-router:hot-compact` | Compact an oversized `wiki-meta/hot.md` back to its cache contract (verified full backup → thin state-first rewrite → log trace) | *"compact the hot cache"*, *"hot.md is over limit"* / *"compacte le hot"*, *"hot.md dépasse la limite"* |
 | `/obsidian-router:save` | File the current conversation as a typed wiki note (session/answer/decision/ADR/...) | *"save this"*, *"file this conversation"* / *"sauvegarde ça"*, *"archive cette conversation"* |
 | `/obsidian-router:autoresearch` | Autonomous web→synth→file loop bounded by a research program | *"research X on the web"*, *"go investigate X online"* / *"fais une recherche web sur X"*, *"investigue X en ligne"* |
 | `/obsidian-router:canvas` | Create/edit Obsidian `.canvas` files (visual layer for wiki pages, images, PDFs) | *"create a canvas for X"*, *"add to my canvas"* / *"crée un canvas pour X"*, *"ajoute à mon canvas"* |
@@ -232,7 +241,7 @@ You also need:
 
 > 📘 **Reference vault required for `setup-vault.mjs`** — to bootstrap new vaults via the script (which most users will want), you first need a one-time-configured reference vault holding the canonical plugin set. Easiest path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolds the skeleton + downloads bridge plugin in one command, then guides you through installing the marketplace plugins via Obsidian). Full doc with troubleshooting: [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
-Two pieces to install: the **MCP server** (the router itself, exposes the 35 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
+Two pieces to install: the **MCP server** (the router itself, exposes the 42 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
 
 ### Step 1 — Install the MCP server
 
@@ -275,7 +284,7 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 }
 ```
 
-**Then enable the plugin per-workspace**, NOT globally. The plugin loads ~40 slash commands and ~39 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
+**Then enable the plugin per-workspace**, NOT globally. The plugin loads 45 slash commands and 42 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
 
 ```json
 {
@@ -287,11 +296,11 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 
 For vaults bootstrapped via `setup-vault.mjs`, this file is **cloned automatically** from `.template/.claude/settings.json` — you don't have to write it by hand. For non-vault workspaces (dev repos that work with vault content), copy the snippet above into `<workspace>/.claude/settings.json`.
 
-Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 40 slash commands should appear. From a workspace without, the namespace stays clean.
+Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 45 slash commands should appear. From a workspace without, the namespace stays clean.
 
 > **Why not enable it globally?** If you put `enabledPlugins` in `~/.claude/settings.json` instead of per-workspace, the plugin loads in EVERY Claude Code session — random scripts, debug sessions, unrelated repos — paying ~10k tokens for commands those sessions will never use. Project-scope keeps the budget tight.
 
-> **Bump the skill-listing budget (recommended).** The router contributes ~39 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
+> **Bump the skill-listing budget (recommended).** The router contributes 42 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -326,7 +335,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 38 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 45 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -623,6 +632,8 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `merge_frontmatter` | Apply multiple frontmatter updates in sequence (non-atomic — see ROADMAP for atomic alternative). |
 | `lock_vault` / `unlock_vaults` | Restrict the router to a single vault for the session (single-vault isolation). See the **Lock mode** section. |
 | `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
+| `plan_vault` | **Read-only.** Plan the creation of a NEW local vault: returns computed defaults + a structured questionnaire (the 5 wiki modes, themes installed in the source, registered vaults to copy config from, plugin profiles) + warnings — without writing anything. Feeds the guided wizard; chain with `provision_vault`. Local-only (absent on gated deployments). |
+| `provision_vault` | Create a NEW local vault in one call from the wizard answers (typically `plan_vault` defaults + adjustments). Returns a step-by-step report + port, insecurePort, openUri and probe result. Refuses paths outside the known vault roots unless `allowOutsideRoots: true`; `--from-vault` copies config only (credentials excluded, port + API key regenerated). Local-only. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (installed by default at postinstall). Returns markdown text only — chain with `write_file` to persist. |
 | `pdf_to_markdown_docling` | Convert a local PDF to markdown via **Docling**'s standard pipeline (layout detection + TableFormer table-structure recognition). Higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10× the CPU cost. **Opt-in** — requires the Docling extra (see *Conversion tools — runtime dependencies*). PDF only; for office formats keep `pdf_to_markdown`. |
 | `pdf_to_images` | **Render** a local PDF's pages to PNG images, returned as MCP image blocks so the model can visually **see** a page (not just read its text). Renders with **pypdfium2** (BSD) + Pillow from the same `.venv-docling` as Docling — returns an actionable install hint if absent. Params: `filepath`, `first_page`, `max_pages` (default 8, cap 30), `scale` (≈144 DPI). Hard page/byte caps bound token cost. Does not write to any vault. |
@@ -823,7 +834,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.47.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.48.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -850,22 +861,23 @@ Ce que tu obtiens :
 | Gestion de fichiers | `move_file` |
 | Templater | `execute_template` |
 | État du router | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). |
+| Provisionnement de vault (v0.35+) | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) |
+| Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Aussi `pdf_to_images` (rend les pages d'un PDF en PNG que le modèle peut *voir*) et `filter_relevant_blocks` (filtre de pertinence BM25 sur du markdown déjà acquis). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link` |
+| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
 La recherche sémantique (`search_smart`) et l'exécution Templater (`execute_template`) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart` et `/templates/execute` sur Local REST API. Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose **40 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **45 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
 > 📄 **PDF de référence rapide** (vue d'ensemble du router + setup + config + chaque slash command avec phrases déclencheuses en langage naturel) — [Français](./docs/quick-reference-fr.pdf) · [English](./docs/quick-reference-en.pdf). 5 pages, fontes lisibles pour impression ou consultation écran.
 
 > 📖 **Guide des features (en prose, par catégorie)** — les tables de ce README sont un aide-mémoire ; pour une explication lisible de chaque feature (le besoin auquel elle répond, ce qu'elle fait, comment l'utiliser), voir [`docs/features/`](./docs/features/README.md) (13 fiches classées par catégorie, en français).
 
-#### 🔧 14 wrappers MCP — un par outil de base du vault
+#### 🔧 16 wrappers MCP — un par outil de base du vault
 
 ##### `discover/` (2)
 
@@ -906,6 +918,13 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **40 slash
 |---|---|---|
 | `/obsidian-router:template-execute` | Exécute un template Templater (preview ou save) | *"rends Templates/X.md avec arg1=v1"*, *"exécute le template daily"* / *"render Templates/X.md with arg1=v1"*, *"run the daily template"* |
 
+##### `convert/` (2)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:pdf-to-markdown` | Convertit un PDF local en markdown via le CLI MarkItDown embarqué (rapide, extraction texte brut) | *"convertis ce PDF en markdown"*, *"markdown de X.pdf"* / *"convert this PDF to markdown"*, *"markdown of X.pdf"* |
+| `/obsidian-router:pdf-to-markdown-docling` | PDF → markdown haute fidélité via Docling (mise en page + structure de tableaux, ~10× plus lent — nécessite l'install Docling opt-in) | *"convertis ce PDF avec docling"*, *"conversion haute fidélité de X.pdf"* / *"convert this PDF with docling"*, *"high-fidelity conversion of X.pdf"* |
+
 #### 🔒 3 commandes d'état du router (lock + auto-enrichissement)
 
 | Commande | Effet | Phrases déclencheuses |
@@ -927,7 +946,7 @@ Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le c
 | `/obsidian-router:meta-audit-bridge-readiness` | Audite la disponibilité du click-to-open sur les vaults (bridge ≥0.2.0, REST API ≥4.0.0, HTTP insecure, probe live `/open`) | *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* / *"audit bridge readiness"*, *"is click-to-open ready"* |
 | `/obsidian-router:conventions` | Installe / retire / statut / propage les conventions CLAUDE.md (source-type, bilingual, heading-hierarchy, ...) sur les vaults | *"installe la convention source-type sur X"*, *"liste les conventions"* / *"install source-type convention on X"*, *"list conventions"* |
 
-#### 📚 17 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
+#### 📚 20 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
 
 Un petit workflow par-dessus le router pour une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et croissent avec l'usage.
 
@@ -938,6 +957,7 @@ Un petit workflow par-dessus le router pour une base de connaissances en markdow
 | `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → index.md → drill), wiki-only (sans web) | *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* / *"based on my notes, ..."*, *"what does my wiki say about X"* |
 | `/obsidian-router:wiki-lint` | Health check (orphelins, wikilinks morts, dérive d'index, frontmatter manquant) | *"lint le wiki"*, *"audit mon wiki"* / *"lint the wiki"*, *"audit my wiki"* |
 | `/obsidian-router:wiki-fold` | Rollup idempotent des entrées du log dans `wiki/folds/` | *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* / *"fold the log"*, *"roll up recent activity"* |
+| `/obsidian-router:hot-compact` | Recompacte un `wiki-meta/hot.md` hors limite vers son contrat de cache (backup complet vérifié → réécriture mince state-first → trace au log) | *"compacte le hot"*, *"hot.md dépasse la limite"* / *"compact the hot cache"*, *"hot.md is over limit"* |
 | `/obsidian-router:save` | File la conversation courante comme note typée (session/answer/decision/ADR/...) | *"sauvegarde ça"*, *"archive cette conversation"* / *"save this"*, *"file this conversation"* |
 | `/obsidian-router:autoresearch` | Boucle web→synthèse→file autonome bornée par un programme de recherche | *"fais une recherche web sur X"*, *"investigue X en ligne"* / *"research X on the web"*, *"go investigate X online"* |
 | `/obsidian-router:canvas` | Crée/édite des fichiers `.canvas` Obsidian (couche visuelle pour wiki, images, PDFs) | *"crée un canvas pour X"*, *"ajoute à mon canvas"* / *"create a canvas for X"*, *"add to my canvas"* |
@@ -1008,7 +1028,7 @@ Il te faut aussi :
 
 > 📘 **Vault de référence requis pour `setup-vault.mjs`** — pour bootstrapper de nouveaux vaults via le script (ce que la plupart des utilisateurs voudront), il faut d'abord un vault de référence configuré une seule fois qui contient le set canonique de plugins. Voie la plus rapide : `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolde le skeleton + télécharge le bridge plugin en une commande, puis te guide pour installer les plugins marketplace via Obsidian). Doc complète avec troubleshooting : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
 
-Deux composants à installer : le **MCP server** (le router lui-même, expose les 35 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
+Deux composants à installer : le **MCP server** (le router lui-même, expose les 42 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
 
 #### Étape 1 — Installer le MCP server
 
@@ -1051,7 +1071,7 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 }
 ```
 
-**Puis active le plugin par workspace**, PAS globalement. Le plugin charge ~40 slash commands et ~39 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
+**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 45 slash commands et 42 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
 
 ```json
 {
@@ -1063,11 +1083,11 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 
 Pour les vaults bootstrappés via `setup-vault.mjs`, ce fichier est **cloné automatiquement** depuis `.template/.claude/settings.json` — pas à écrire à la main. Pour les workspaces hors-vault (repos de code qui travaillent avec le contenu d'un vault), copie le snippet ci-dessus dans `<workspace>/.claude/settings.json`.
 
-Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 40 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
+Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 45 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
 
 > **Pourquoi pas en global ?** Si tu mets `enabledPlugins` dans `~/.claude/settings.json` au lieu de per-workspace, le plugin se charge dans CHAQUE session Claude Code — scripts random, sessions de debug, repos sans rapport — payant ~10k tokens pour des commandes que ces sessions n'utiliseront jamais. Le project-scope garde le budget serré.
 
-> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute ~39 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
+> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 42 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -1102,7 +1122,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 40 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 45 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 
@@ -1375,6 +1395,8 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `merge_frontmatter` | Applique plusieurs mises à jour de frontmatter en séquence (non-atomique — voir ROADMAP pour l'alternative atomique). |
 | `lock_vault` / `unlock_vaults` | Restreint le router à un seul vault pour la session (isolation mono-vault). Voir la section **Mode lock**. |
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
+| `plan_vault` | **Read-only.** Planifie la création d'un NOUVEAU vault local : retourne les défauts calculés + un questionnaire structuré (les 5 modes wiki, les thèmes installés dans la source, les vaults enregistrés dont copier la config, les profils de plugins) + avertissements — sans rien écrire. Alimente le wizard guidé ; enchaîner avec `provision_vault`. Local uniquement (absent des déploiements gated). |
+| `provision_vault` | Crée un NOUVEAU vault local en un appel depuis les réponses du wizard (typiquement les défauts de `plan_vault` + ajustements). Retourne un rapport étape par étape + port, insecurePort, openUri et résultat de probe. Refuse les chemins hors des racines de vaults connues sauf `allowOutsideRoots: true` ; `--from-vault` copie la config seule (credentials exclus, port + clé API régénérés). Local uniquement. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (installés par défaut au postinstall). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
 | `pdf_to_markdown_docling` | Convertit un PDF local en markdown via le pipeline standard de **Docling** (détection de mise en page + reconnaissance de structure de tableau TableFormer). Plus haute fidélité que `pdf_to_markdown` sur les tableaux complexes / mises en page multi-colonnes, à ~10× le coût CPU. **Opt-in** — nécessite l'extra Docling (voir la section dépendances de conversion). PDF uniquement ; pour les formats bureautiques, garder `pdf_to_markdown`. |
 | `pdf_to_images` | **Rend** les pages d'un PDF local en images PNG, renvoyées comme blocs image MCP pour que le modèle **voie** une page (pas seulement son texte). Rendu via **pypdfium2** (BSD) + Pillow, du même `.venv-docling` que Docling — renvoie un hint d'install si absent. Paramètres : `filepath`, `first_page`, `max_pages` (défaut 8, plafond 30), `scale` (≈144 DPI). Plafonds durs de pages/octets pour borner le coût en tokens. N'écrit dans aucun coffre. |
