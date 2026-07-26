@@ -19,7 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
-import { extractChangelogSection } from '../scripts/create-release.mjs';
+import { extractChangelogSection, isStubEntry } from '../scripts/create-release.mjs';
 import { ensureHooksPath } from '../scripts/bump-version.mjs';
 
 const SAMPLE = `# Changelog
@@ -85,6 +85,25 @@ describe('extractChangelogSection', () => {
   test('version string is treated literally, not as a regex', () => {
     // "0.4x.0" as a regex would match "0.47.0" via the dot — must not.
     assert.equal(extractChangelogSection(SAMPLE, '0.4..0'), null);
+  });
+});
+
+describe('isStubEntry', () => {
+  test('flags the untouched bump stub', () => {
+    const raw = '# Changelog\n\n## [1.0.0] — 2026-01-01 — TODO: one-line title\n\nTODO: short description of the change.\n\n### Added / Changed / Fixed\n\n- TODO\n';
+    assert.equal(isStubEntry(extractChangelogSection(raw, '1.0.0')), true);
+  });
+
+  test('flags a partially-filled stub that kept a "- TODO" bullet', () => {
+    const raw = '# Changelog\n\n## [1.0.0] — 2026-01-01 — real title\n\nReal intro.\n\n- TODO\n';
+    assert.equal(isStubEntry(extractChangelogSection(raw, '1.0.0')), true);
+  });
+
+  test('does NOT flag a real entry that mentions TODO in prose', () => {
+    // The v0.48.0 entry describes the guard itself ("refuses while the
+    // entry still contains the bump TODO stub") — that must pass.
+    const raw = '# Changelog\n\n## [1.0.0] — 2026-01-01 — guard shipped\n\nRefuses while the entry still contains the bump `TODO` stub; also tracks TODO comments in code.\n';
+    assert.equal(isStubEntry(extractChangelogSection(raw, '1.0.0')), false);
   });
 });
 

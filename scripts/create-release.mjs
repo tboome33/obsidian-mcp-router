@@ -78,6 +78,18 @@ export function extractChangelogSection(raw, version) {
   return { heading: lines[start], title, body };
 }
 
+/**
+ * True when a CHANGELOG section is still the untouched bump-version.mjs
+ * stub. Matches the stub's exact line signatures — NOT any occurrence of
+ * the word "TODO", which a real entry may legitimately mention in prose
+ * (the v0.48.0 entry describes this very guard and tripped the naive
+ * version of this check on its first run).
+ */
+export function isStubEntry(section) {
+  const text = section.heading + '\n' + section.body;
+  return /TODO: one-line title|TODO: short description|^-\s*TODO\s*$/m.test(text);
+}
+
 function git(args, opts = {}) {
   return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts }).trim();
 }
@@ -106,8 +118,8 @@ if (isMain) {
   if (!section) {
     fail(`CHANGELOG.md has no "## [${version}]" entry. Write it before releasing.`);
   }
-  if (/\bTODO\b/.test(section.heading + '\n' + section.body)) {
-    fail(`the CHANGELOG entry for ${version} still contains TODO — replace the bump stub with the real notes first.`);
+  if (isStubEntry(section)) {
+    fail(`the CHANGELOG entry for ${version} is still the bump stub — write the real notes first.`);
   }
 
   // 2. The bump must be committed (tag targets a commit, not the worktree).
