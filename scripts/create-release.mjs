@@ -90,12 +90,16 @@ export function isStubEntry(section) {
   return /TODO: one-line title|TODO: short description|^-\s*TODO\s*$/m.test(text);
 }
 
+// execFileSync returns null (not '') for captured streams when the caller
+// inherits stdio — the push/release calls do, to surface git's progress.
 function git(args, opts = {}) {
-  return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts }).trim();
+  const out = execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...opts });
+  return out == null ? '' : out.trim();
 }
 
 function gh(args, opts = {}) {
-  return execFileSync('gh', args, { cwd: repoRoot, encoding: 'utf8', ...opts }).trim();
+  const out = execFileSync('gh', args, { cwd: repoRoot, encoding: 'utf8', ...opts });
+  return out == null ? '' : out.trim();
 }
 
 function fail(msg) {
