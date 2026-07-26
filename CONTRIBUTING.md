@@ -17,7 +17,7 @@ Thanks for considering a contribution. This project is small and opinionated —
 
 ## Before you open a PR
 
-1. Run the test suite: `npm test` — should be 83 passing on the current ship. New code should add tests where it makes sense.
+1. Run the test suite: `npm test` — the full suite (2253 tests at v0.48.0) must pass with 0 failures. New code should add tests where it makes sense.
 2. Update `CHANGELOG.md` under `## [Unreleased]` with a one-line summary of your change.
 3. If the change touches the consigne (`templates/wiki/CLAUDE.md`), the slash command catalog (`README.md`), or any user-facing flow, update both EN and FR variants of the docs in lockstep.
 4. If the change adds a new MCP tool or env var, document it in:
