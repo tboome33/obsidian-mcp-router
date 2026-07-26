@@ -6,6 +6,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-07-26 — the field that justifies the practice becomes checkable ("alternatives considered")
+
+v0.49.0 gave decision pages a frontmatter contract; this one closes the part that frontmatter cannot express. A decision record without its **rejected options** is a decorated changelog: the code holds the path taken and never the paths refused, the PRD holds the goal and never the trade-off, and a session that reads only those two re-proposes what was ruled out months ago. The convention already said the section mattered — nothing verified it, so nothing prevented it from quietly disappearing.
+
+Phase 2 of the vault-side ADR roadmap (`adr-implementation-roadmap`). Calibrated as a **warning**, deliberately: an absent section leaves the decision layer incomplete, not lying — unlike a broken supersession chain, which makes two contradictory decisions both read as live. Errors are reserved for states that actively mislead, and a check that fails a whole existing corpus on day one is a check people learn to ignore.
+
+### Added
+
+- **Rule 5 in `decision-lint.mjs`** — `alternatives-missing` when a decision body carries no "what we ruled out" section, and `alternatives-empty` when the heading is there but nothing follows it. The second matters more than it looks: the escape hatch has to be **written**. "No serious alternative" plus the reason (an external constraint, a licence, a third-party limit) is a valid answer; a bare heading satisfies a naive "is the section present?" check while carrying exactly zero of the information the section exists for.
+- **`findAlternativesSection(body)`**, exported — returns `{found, empty, heading}` and recognizes both languages of a bilingual vault (`## Alternatives considered`, `## Options écartées`, `## Pourquoi pas autre chose`, `## Alternatives envisagées`, `## Options rejetées`), the decorated bilingual form (`## Alternatives considered · Options écartées`), H2 or H3, and treats a subsection under the heading as content. Heading matching normalizes accents and punctuation, so `## Options écartées :` and `## Options ecartees` both count.
+- **Tests** — 14 more cases (52 in the file), covering each heading variant, the written escape hatch, the empty-heading case, the trailing-section case, and the guarantee below. Full suite **2308 tests**, 0 failures.
+
+### Changed
+
+- **Body rules never fire on frontmatter-only input.** `lintDecisions` now tracks whether a page was given as `content` (parseable body) or as pre-parsed `frontmatter`; rule 5 is skipped entirely for the latter. A body rule that reports a missing section against a body it was never handed would make the frontmatter-only calling mode unusable — and that mode is what a caller uses when it already holds the metadata.
+- **`heading-hierarchy` convention** — `## Alternatives considered` moves from optional to **required** in the type-minimums table for `decision` / `adr` / `decision-input`, with the rationale, the escape hatch and the accepted French headings spelled out next to it.
+- **`wiki-lint` Check N** documents the two new warnings, including the "only checked when you passed `content`" caveat.
+
+### Known state of the reference vault
+
+- A read-only sweep of the vault's seven decision pages found **none** carrying an alternatives section — they predate the contract, and the new rule will flag all seven at the next lint. They were **not** back-filled: inventing options that were never weighed would be fabricating the historical record, which is the one thing a decision log cannot survive. Filling them is a pass to run with the human who made the calls. Related finding: the single page in the vault that *does* document its rejected options (`click-to-open-access-modes`) carries no frontmatter at all, so the decision layer cannot see it — typing it is a one-line fix worth making.
 ## [0.49.0] — 2026-07-26 — the decision layer gets a contract (normalized statuses + bidirectional `supersedes:`)
 
 A wiki records what is known and what happened; it has never recorded **what is settled** in a machine-checkable way. Decision pages existed (`type: decision` / `adr` / `decision-input`, a `save` flow, heading conventions), but their `status` was free-form — `active`, `decided`, `captured`, a hand-written "(awaiting-validation)" — so nothing could tell a live decision from a retired one, and nothing noticed when a superseding decision left its predecessor still reading as accepted. That is the failure mode the ADR practice exists to prevent: a new session (or a different agent) re-proposes an option that was ruled out months ago, because the ruling was never written in a form anything could query.

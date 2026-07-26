@@ -11,11 +11,17 @@ import {
   lintDecisions,
   linkKey,
   normalizeStatus,
+  findAlternativesSection,
   VALID_STATUSES,
   LEGACY_STATUS_MAP,
 } from '../src/helpers/decision-lint.mjs';
 
-/** Build a decision page with the given frontmatter fields. */
+/**
+ * Build a decision page with the given frontmatter fields. The body carries
+ * a filled `## Alternatives considered` section so the body rule (rule 5)
+ * stays silent — these fixtures exist to exercise the frontmatter rules, and
+ * the body rule has its own suite below.
+ */
 function decision(path, fields = {}) {
   const lines = Object.entries({ type: 'decision', ...fields })
     .filter(([, value]) => value !== undefined)
@@ -24,7 +30,8 @@ function decision(path, fields = {}) {
         ? `${key}:\n${value.map((item) => `  - "${item}"`).join('\n')}`
         : `${key}: ${value}`,
     );
-  return { path, content: `---\n${lines.join('\n')}\n---\n\n# Page\n\nBody.\n` };
+  const body = '# Page\n\nBody.\n\n## Alternatives considered\n\n- Option A: rejected because…\n';
+  return { path, content: `---\n${lines.join('\n')}\n---\n\n${body}` };
 }
 
 /** A minimal well-formed decision — every rule satisfied. */
@@ -303,6 +310,104 @@ describe('lintDecisions — rule 4: charter fields', () => {
     assert.deepEqual(rules(result.info), ['evidence-missing']);
     assert.equal(result.ok, true);
     assert.deepEqual(result.warnings, []);
+  });
+});
+
+describe('lintDecisions — rule 5: alternatives considered', () => {
+  /** A decision page WITH a body, so the body rules actually run. */
+  function withBody(path, body, fields = {}) {
+    const fm = ['type: decision', 'status: accepted', 'scope: router', 'evidence:', '  - "[[study]]"'];
+    for (const [key, value] of Object.entries(fields)) fm.push(`${key}: ${value}`);
+    return { path, content: `---\n${fm.join('\n')}\n---\n\n# Page\n\n${body}\n` };
+  }
+
+  const FULL_BODY = '## Context\n\nc\n\n## Decision\n\nd\n\n## Alternatives considered\n\n- Option A: rejected because…\n\n## Consequences\n\nk\n';
+
+  test('a decision with a filled alternatives section is clean', () => {
+    const result = lintDecisions([withBody('wiki/d.md', FULL_BODY)]);
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.ok, true);
+  });
+
+  test('warns when the section is absent', () => {
+    const result = lintDecisions([withBody('wiki/d.md', '## Context\n\nc\n\n## Decision\n\nd\n')]);
+    assert.deepEqual(rules(result.warnings), ['alternatives-missing']);
+    assert.equal(result.ok, true, 'incomplete is a warning, not a lie');
+  });
+
+  test('warns when the heading exists but nothing follows it', () => {
+    const result = lintDecisions([withBody('wiki/d.md', '## Decision\n\nd\n\n## Alternatives considered\n\n\n## Consequences\n\nk\n')]);
+    assert.deepEqual(rules(result.warnings), ['alternatives-empty']);
+    assert.equal(result.warnings[0].detail.includes('Alternatives considered'), true);
+  });
+
+  test('the written escape hatch satisfies the rule', () => {
+    const result = lintDecisions([
+      withBody('wiki/d.md', '## Decision\n\nd\n\n## Alternatives considered\n\n**No serious alternative** — the licence forbids the only other option.\n'),
+    ]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('recognizes the French headings of a bilingual vault', () => {
+    for (const heading of ['## Options écartées', '## Pourquoi pas autre chose', '## Alternatives envisagées', '## Options rejetées']) {
+      const result = lintDecisions([withBody('wiki/d.md', `## Décision\n\nd\n\n${heading}\n\n- A : rejetée parce que…\n`)]);
+      assert.deepEqual(result.warnings, [], `${heading} should count`);
+    }
+  });
+
+  test('recognizes a decorated bilingual heading', () => {
+    const result = lintDecisions([
+      withBody('wiki/d.md', '## Alternatives considered · Options écartées\n\n- A: rejected\n'),
+    ]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('accepts the section at H3 as well as H2', () => {
+    const result = lintDecisions([withBody('wiki/d.md', '## Decision\n\nd\n\n### Alternatives considered\n\n- A: rejected\n')]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('a subsection under the heading counts as content', () => {
+    const result = lintDecisions([
+      withBody('wiki/d.md', '## Alternatives considered\n\n### Option A\n\nrejected because…\n\n## Consequences\n\nk\n'),
+    ]);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('body rules stay silent for frontmatter-only callers', () => {
+    const result = lintDecisions([
+      { path: 'wiki/d.md', frontmatter: { type: 'decision', status: 'accepted', scope: 'router', evidence: ['x'] } },
+    ]);
+    assert.deepEqual(result.warnings, [], 'cannot judge a body that was never provided');
+  });
+
+  test('non-decision pages are never checked for the section', () => {
+    const result = lintDecisions([{ path: 'wiki/refs/x.md', content: '---\ntype: reference\n---\n\n# X\n\nprose\n' }]);
+    assert.deepEqual(result.warnings, []);
+  });
+});
+
+describe('findAlternativesSection', () => {
+  test('reports the matched heading verbatim', () => {
+    const found = findAlternativesSection('## Options écartées\n\n- A\n');
+    assert.deepEqual(found, { found: true, empty: false, heading: 'Options écartées' });
+  });
+
+  test('an unrelated heading is not a match', () => {
+    assert.equal(findAlternativesSection('## Consequences\n\n- A\n').found, false);
+  });
+
+  test('handles an empty or missing body', () => {
+    assert.equal(findAlternativesSection('').found, false);
+    assert.equal(findAlternativesSection(undefined).found, false);
+  });
+
+  test('a trailing section with nothing after it is empty', () => {
+    assert.deepEqual(findAlternativesSection('## Decision\n\nd\n\n## Alternatives considered\n'), {
+      found: true,
+      empty: true,
+      heading: 'Alternatives considered',
+    });
   });
 });
 

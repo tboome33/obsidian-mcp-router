@@ -161,7 +161,7 @@ const result = lintDecisions(pages, { today: '<YYYY-MM-DD>' });
 
 3. **Severity mapping** :
    - **ERRORS** = the decision layer actively misleads : `status-missing`, `status-invalid` (carries a `suggestion` when the value is a known legacy one — `active`/`decided` → `accepted`, `captured`/`awaiting-validation` → `proposed`), `supersedes-self`, `supersedes-target-missing`, `supersedes-target-not-decision`, `supersedes-target-not-superseded` (two decisions read as live at once), `supersedes-cycle`.
-   - **WARNINGS** = degraded but usable : `superseded-without-successor` (nothing claims it AND it has no `superseded_by:`), `superseded-by-not-reciprocated` (the named in-vault successor doesn't point back), `affects-target-missing`, `scope-missing`, `review-after-invalid`, `review-after-expired`.
+   - **WARNINGS** = degraded but usable : `superseded-without-successor` (nothing claims it AND it has no `superseded_by:`), `superseded-by-not-reciprocated` (the named in-vault successor doesn't point back), `affects-target-missing`, `scope-missing`, `review-after-invalid`, `review-after-expired`, `alternatives-missing` / `alternatives-empty` (v0.50.0+ — the "what we ruled out" section, EN or FR heading; only checked when you passed `content`, never for frontmatter-only input).
    - **INFO** = `evidence-missing`.
 4. **Corpus scope caveat.** Every cross-page rule resolves only against the pages you passed in. If you lint a subfolder, say so in the report — `supersedes-target-missing` may just mean the target lives outside the slice. That asymmetry is also why `superseded-without-successor` is a warning, not an error.
 

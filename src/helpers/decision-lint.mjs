@@ -65,6 +65,31 @@ export const LEGACY_STATUS_MAP = {
 };
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HEADING_RE = /^(#{1,6})\s+(.*)$/;
+
+/**
+ * Heading texts that open the "what we ruled out" section, normalized
+ * (lowercased, accents stripped, punctuation and emoji dropped). Matched as
+ * a PREFIX so decorated variants — `## Alternatives considered · Options
+ * écartées`, the bilingual form this vault family writes — still count.
+ *
+ * Both languages are listed because the convention that ships with the
+ * router is bilingual: an FR-only vault must not be told its perfectly
+ * good `## Options écartées` section is missing.
+ */
+const ALTERNATIVES_HEADINGS = [
+  'alternatives considered',
+  'alternative considered',
+  'considered options',
+  'why not something else',
+  'alternatives envisagees',
+  'alternatives ecartees',
+  'options envisagees',
+  'options ecartees',
+  'option ecartee',
+  'options rejetees',
+  'pourquoi pas autre chose',
+];
 
 function finding(rule, path, detail, extra = {}) {
   return { rule, path, detail, ...extra };
@@ -112,6 +137,51 @@ function pageKey(path) {
   return linkKey(path);
 }
 
+/** Lowercase, strip accents, drop everything that isn't a letter or space. */
+function normalizeHeading(text) {
+  return String(text)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Locate the "what we ruled out" section in a decision body.
+ *
+ * @returns {{found: boolean, empty: boolean, heading: string|null}}
+ *   `empty` is true when the heading exists but nothing but blank lines
+ *   follows before the next heading — the case that matters, because the
+ *   escape hatch ("no serious alternative" + why) has to be WRITTEN. A bare
+ *   heading satisfies a naive "is the section there?" check while carrying
+ *   exactly zero of the information the section exists for.
+ */
+export function findAlternativesSection(body) {
+  const lines = String(body ?? '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = HEADING_RE.exec(lines[i]);
+    if (!match) continue;
+    const level = match[1].length;
+    const normalized = normalizeHeading(match[2]);
+    if (!ALTERNATIVES_HEADINGS.some((phrase) => normalized.startsWith(phrase))) continue;
+
+    // Walk forward to the next heading of the same or a higher level.
+    let empty = true;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = HEADING_RE.exec(lines[j]);
+      if (next && next[1].length <= level) break;
+      if (lines[j].trim().length > 0) {
+        empty = false;
+        break;
+      }
+    }
+    return { found: true, empty, heading: match[2].trim() };
+  }
+  return { found: false, empty: false, heading: null };
+}
+
 /**
  * Lint the decision pages of a corpus.
  *
@@ -140,9 +210,12 @@ export function lintDecisions(pages, options = {}) {
   const parsed = [];
   for (const page of pages) {
     if (!page || typeof page.path !== 'string') continue;
-    const frontmatter =
-      page.frontmatter ?? parseFrontmatter(page.content ?? '').frontmatter ?? {};
-    const entry = { path: page.path, frontmatter };
+    const hasContent = typeof page.content === 'string' && page.content.length > 0;
+    const parsedContent = hasContent ? parseFrontmatter(page.content) : null;
+    const frontmatter = page.frontmatter ?? parsedContent?.frontmatter ?? {};
+    // `body` stays null for frontmatter-only callers so the body rules can
+    // skip them instead of reporting a missing section they cannot see.
+    const entry = { path: page.path, frontmatter, body: parsedContent?.body ?? null };
     parsed.push(entry);
     const key = pageKey(page.path);
     if (!byKey.has(key)) byKey.set(key, entry);
@@ -304,6 +377,30 @@ export function lintDecisions(pages, options = {}) {
 
     if (!toList(frontmatter.evidence).length) {
       info.push(finding('evidence-missing', path, 'no `evidence:` — link the study, session or source that motivated the verdict'));
+    }
+
+    // --- Rule 5: the section that justifies the whole practice ------------
+    // Skipped entirely for frontmatter-only callers: a body rule must not
+    // fire against a body it was never given.
+    if (entry.body !== null) {
+      const alternatives = findAlternativesSection(entry.body);
+      if (!alternatives.found) {
+        warnings.push(
+          finding(
+            'alternatives-missing',
+            path,
+            'no "alternatives considered" / "options écartées" section — the one thing the code and the PRD can never contain. If nothing was weighed, write "No serious alternative" and why (an external constraint, a licence, a third-party limit): an absent section is what is forbidden, not an honestly empty one',
+          ),
+        );
+      } else if (alternatives.empty) {
+        warnings.push(
+          finding(
+            'alternatives-empty',
+            path,
+            `section \`${alternatives.heading}\` is present but empty — the escape hatch has to be WRITTEN ("No serious alternative" + the reason), a bare heading carries none of the information the section exists for`,
+          ),
+        );
+      }
     }
   }
 

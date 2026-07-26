@@ -16,7 +16,7 @@ When generating content of these types, use AT LEAST these `## H2` sections (add
 |---|---|
 | `session` | `## Prompt`, `## What happened`, `## Outcome`, optional `## See also` |
 | `answer` | `## Question`, `## Answer`, optional `## See also` |
-| `decision` / `adr` / `decision-input` | `## Context`, `## Decision`, `## Consequences`, optional `## Alternatives considered` |
+| `decision` / `adr` / `decision-input` | `## Context`, `## Decision`, `## Consequences`, **`## Alternatives considered`** (required — see below) |
 | `technique` / `runbook` | `## Prerequisites`, `## Steps`, `## Gotchas`, optional `## See also` |
 | `idea` | `## The idea`, `## Why it matters`, `## Concrete first step` |
 | `fact` (standalone page > 100 words) | `## What`, `## Why it matters`, `## Source` |
@@ -39,6 +39,10 @@ Pages typed `decision` / `adr` / `decision-input` carry a decision that outlives
 | `affects` | optional | `[[wikilinks]]` to the user stories / specs / pages to re-review when this decision is superseded. Directional, unlike the symmetric `related:`. |
 | `evidence` | when derived | `[[wikilinks]]` to the study, session or source that motivated the verdict. |
 | `review_after` | when context-dependent | ISO `YYYY-MM-DD`. Set it whenever the decision depends on a state of the world that can change (a tool's performance, a price, a third-party bug workaround). An expired date does NOT void the decision — it surfaces it as "to re-evaluate". |
+
+**`## Alternatives considered` is required, not optional (v0.50.0+).** It is the only part of a decision that exists nowhere else — the code holds the path taken, never the paths refused, and neither does the PRD. Without it a decision record is a decorated changelog, and the next session re-proposes what was already ruled out. If nothing was genuinely weighed (an external constraint, a licence, a third-party limit decided for you), that IS the content: write **"No serious alternative"** followed by why. An absent section is what's forbidden — an honestly empty one is fine, but it has to be *written*: a bare heading with nothing under it carries none of the information the section exists for.
+
+In a bilingual vault the French headings count too — `## Options écartées`, `## Pourquoi pas autre chose`, `## Alternatives envisagées`, `## Options rejetées` — including in the decorated bilingual form `## Alternatives considered · Options écartées`.
 
 **Who flips `accepted`.** An agent writes decisions as `proposed` and says so; only the human accepts. An agent never self-validates.
 
