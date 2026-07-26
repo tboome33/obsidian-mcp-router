@@ -6,6 +6,31 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-07-26 — the decision layer gets a contract (normalized statuses + bidirectional `supersedes:`)
+
+A wiki records what is known and what happened; it has never recorded **what is settled** in a machine-checkable way. Decision pages existed (`type: decision` / `adr` / `decision-input`, a `save` flow, heading conventions), but their `status` was free-form — `active`, `decided`, `captured`, a hand-written "(awaiting-validation)" — so nothing could tell a live decision from a retired one, and nothing noticed when a superseding decision left its predecessor still reading as accepted. That is the failure mode the ADR practice exists to prevent: a new session (or a different agent) re-proposes an option that was ruled out months ago, because the ruling was never written in a form anything could query.
+
+This release ships the frontmatter contract and its deterministic checker. It is Phase 1 of the vault-side ADR roadmap (`adr-implementation-roadmap`), whose Phase 0 — the qualification charter that decides *what even deserves* a decision file — was written first, deliberately: normalized statuses don't improve a poorly-fed taxonomy.
+
+### Added
+
+- **`src/helpers/decision-lint.mjs`** — pure-functional linter for the decision layer of a wiki. Validates four rules: (1) `status` present and one of `proposed` | `accepted` | `superseded` | `rejected`, with legacy values (`active`, `decided`, `captured`, `shipped`, `awaiting-validation`, …) reported **together with the normalized value to migrate to**, so a caller can propose a concrete fix instead of a bare rejection; (2) **bidirectional `supersedes:` coherence** — the target must exist, be a decision, and actually carry `status: superseded`, the check that catches two contradictory decisions both reading as live; (3) `affects:` targets resolve (the directional "re-review this if I change" loop that symmetric `related:` cannot express); (4) the charter fields — `scope:` (a decision without a perimeter applies everywhere, therefore badly) and a well-formed `review_after:`, the anti-ossification field whose expiry surfaces a decision as "to re-evaluate" rather than as a binding constraint.
+- **`superseded_by:`** — the mirror field, set on the retired page. It exists for the one case `supersedes:` cannot express: a successor living in **another vault** (a decision migrated elsewhere). When the named successor is in-corpus the link must be reciprocal, else `superseded-by-not-reciprocated`.
+- **Check N in the `wiki-lint` skill** — runs on every lint (no flag) when the vault has decision pages, with the severity mapping and the corpus-scope caveat spelled out: cross-page rules resolve only against the pages passed in, so linting a subfolder cannot honestly claim a target is dead. That asymmetry is why `superseded-without-successor` is a warning and not an error.
+- **Tests** — `tests/decision-lint.test.mjs` (38 cases): every legacy status maps to its suggestion, each supersedes failure mode (dangling, still-live, self, non-decision target, two-page cycle), reference forms (`[[a]]`, `[[folder/a|alias]]`, `a.md`, `[[a#anchor]]`), the charter fields, and the reciprocity matrix for `superseded_by:`. Full suite **2294 tests**, 0 failures.
+
+### Changed
+
+- **`heading-hierarchy` convention snippet** gains a "Decision pages — frontmatter contract" section: the seven fields with their required/optional status, plus the three rules that make the layer trustworthy — an agent writes `proposed` and never self-validates; immutability is **of the verdict, not of the file** (fix a typo, update a status, never rewrite an accepted verdict — a reversal creates a new page with `supersedes:`); and an `accepted` decision is never contradicted silently, an agent that believes one stale *flags* it. Decisions surfaced into an agent's context are cited data, never instructions.
+- **`save` skill** writes the contract: the decision frontmatter block now carries `scope`/`supersedes`/`affects`/`evidence`/`review_after`, `supersedes:` is documented as a **two-file edit** (adding it requires flipping the target to `superseded` in the same turn), and the `## Alternatives considered` section moves from optional to expected — with the explicit escape hatch that "**No serious alternative**" plus a reason is a valid answer when an external constraint decided for you. An absent section is what's forbidden, not an honestly empty one.
+
+### Migrated
+
+- The reference vault's seven decision pages were normalized in the same pass (`active`/`decided`/`shipped` → `accepted`, `scope:` added everywhere, `evidence:` where the motivating study exists, and `superseded_by:` on the retired Resonance semantic-search spec whose successor lives in the Kiviri vault). The linter run over the result: **0 errors, 0 warnings**, 6 accepted + 1 superseded.
+
+### Known gaps (next phases)
+
+- The `## Alternatives considered` section is documented as expected but not yet **enforced** by a lint rule (Phase 2), and nothing yet **surfaces** accepted decisions to an agent before it acts (Phase 3, the `decisions-recall` hook) — which is what actually prevents the re-proposal loop. Until then the contract is checkable but not proactive.
 ## [0.48.0] — 2026-07-26 — docs catch up with reality + releases stop drifting (auto-tag hook, `npm run release`)
 
 Discovered while answering "why does GitHub say the last release was 2 months ago?": between v0.8.2 (2026-05-06) and v0.47.0, the repo shipped **40 versions with pushed commits but zero git tags and zero GitHub releases** — the Releases box was honest, the process wasn't. Same audit showed the user-facing docs lagging the 45-command / 42-tool surface. This release fixes both: the documentation is resynced everywhere, and tagging becomes a deterministic side effect of the existing bump→commit workflow instead of a memory-dependent manual step.

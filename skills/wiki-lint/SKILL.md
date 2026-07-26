@@ -146,13 +146,34 @@ const result = checkOkfConformance(files);
 
 This check is read-only like everything else in the skill. Do NOT offer to auto-fix a third-party bundle (it's someone else's artifact) ; for bundles produced by our own `wiki-export --target okf`, an error means an exporter bug — report it as such.
 
+### 2d. Check N: decision-layer coherence (v0.49.0+)
+
+Runs on every lint (no flag needed) whenever the vault has pages typed `decision` / `adr` / `decision-input`. Validates the frontmatter contract those pages must satisfy — see "Decision pages — frontmatter contract" in the vault `CLAUDE.md`.
+
+1. **Collect the pages.** You already have the inventory from step 1 ; you need each page's frontmatter. Pass `[{ path, content }]`, or `[{ path, frontmatter }]` if you already read the frontmatter. Include NON-decision pages too — `affects:` legitimately points at specs, user stories and plain notes, and a page missing from the input reads as a dead target.
+2. **Run the checker** :
+
+```javascript
+import { lintDecisions } from 'src/helpers/decision-lint.mjs';
+const result = lintDecisions(pages, { today: '<YYYY-MM-DD>' });
+// → { ok, errors, warnings, info, stats: { pages, decisions, byStatus } }
+```
+
+3. **Severity mapping** :
+   - **ERRORS** = the decision layer actively misleads : `status-missing`, `status-invalid` (carries a `suggestion` when the value is a known legacy one — `active`/`decided` → `accepted`, `captured`/`awaiting-validation` → `proposed`), `supersedes-self`, `supersedes-target-missing`, `supersedes-target-not-decision`, `supersedes-target-not-superseded` (two decisions read as live at once), `supersedes-cycle`.
+   - **WARNINGS** = degraded but usable : `superseded-without-successor` (nothing claims it AND it has no `superseded_by:`), `superseded-by-not-reciprocated` (the named in-vault successor doesn't point back), `affects-target-missing`, `scope-missing`, `review-after-invalid`, `review-after-expired`.
+   - **INFO** = `evidence-missing`.
+4. **Corpus scope caveat.** Every cross-page rule resolves only against the pages you passed in. If you lint a subfolder, say so in the report — `supersedes-target-missing` may just mean the target lives outside the slice. That asymmetry is also why `superseded-without-successor` is a warning, not an error.
+
+Auto-fix posture (step 4): `status-invalid` **with** a `suggestion` is the one decision finding worth offering to fix (a mechanical `set_frontmatter`). Never auto-fix `supersedes-target-not-superseded` silently — flipping the target's status is a semantic act the human should confirm, since it retires a decision.
+
 ### 3. Render the report
 
 Group findings by severity:
 
-- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep)
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep)
-- **Info** (informational): log out-of-order entries, hot.md staleness
+- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`)
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`
+- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`
 
 For each finding:
 - The path or wikilink involved

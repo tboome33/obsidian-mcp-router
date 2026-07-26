@@ -86,12 +86,24 @@ Choose `source_type` based on what you're filing:
 
 For pages whose paragraphs mix provenance (common for `session` notes — user verbatim + your inferences + your synthesis), set the frontmatter to the dominant kind and mark per-paragraph exceptions with inline callouts `[!extracted]` / `[!inferred]` / `[!claude_synthesized]`.
 
-For `decision` type, add:
+For `decision` / `adr` / `decision-input` types, add the decision contract (v0.49.0+ — see "Decision pages — frontmatter contract" in the vault `CLAUDE.md`):
+
 ```yaml
-status: proposed | accepted | rejected | superseded
+status: proposed        # proposed | accepted | superseded | rejected — no other value
+scope: <perimeter this decision applies to>   # required
 context: <1 line>
 consequences: <1 line>
+supersedes: "[[old-decision]]"   # only when replacing one — see below
+affects: ["[[impacted-page]]"]   # directional: re-review these if this is superseded
+evidence: ["[[study-or-session]]"]  # what motivated the verdict
+review_after: YYYY-MM-DD         # only if the decision depends on a changeable state of the world
 ```
+
+Three rules that are NOT negotiable:
+
+1. **Write `proposed`, never `accepted`.** You propose; the human accepts. Say so explicitly in your output: *"filed as `proposed` — tell me when you want it flipped to `accepted`"*. Never self-validate a decision, in any auto-enrichment mode.
+2. **`supersedes:` is a two-file edit.** Adding `supersedes: "[[old]]"` REQUIRES flipping `[[old]]` to `status: superseded` in the same turn (`set_frontmatter`). Skipping that leaves two contradictory decisions both reading as live — the exact failure the discipline prevents.
+3. **Never rewrite an accepted verdict.** If the user changed their mind, create a NEW decision page with `supersedes:` — don't edit the old one beyond its status. Its original context is what explains why it was decided that way.
 
 For `session`, add:
 ```yaml
@@ -107,7 +119,7 @@ This is the part that requires care. Don't dump the raw transcript verbatim. Dis
 
 - **For `answer`**: `# <Title>` → `## Question` → `## Answer` → optional `## See also`. Future-you might read this in 6 months without context.
 - **For `session`**: `# <Title>` → `## Prompt` → `## What happened` → `## Outcome` → optional `## See also`. 200-500 words across the H2 sections.
-- **For `decision` / `adr`**: `# <Title>` → `## Context` → `## Decision` → `## Consequences` → optional `## Alternatives considered`. The conversation likely already had this implicitly.
+- **For `decision` / `adr`**: `# <Title>` → `## Context` → `## Decision` → `## Consequences` → `## Alternatives considered`. The conversation likely already had this implicitly. The alternatives section is what the code and the PRD can never contain — if genuinely no option was weighed, write "**No serious alternative**" plus why (an external constraint, a licence, a third-party limit); an absent section is what's forbidden, not an honestly empty one.
 - **For `technique` / `runbook`**: `# <Title>` → `## Prerequisites` → `## Steps` → `## Gotchas` → optional `## See also`. Step-by-step procedure with prerequisites and gotchas inline.
 - **For `idea`**: `# <Title>` → `## The idea` → `## Why it matters` → `## Concrete first step`. The nucleus of the idea, why it matters, what would make it concrete.
 
