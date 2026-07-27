@@ -6,6 +6,13 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.52.1] — 2026-07-27 — a cross-vault successor is not a local page
+
+Found by linting the real vault. A decision retired in favour of one living in **another vault** (`superseded_by: "kiviri:wiki/…"`) was resolved by basename against the local corpus, matched a same-named page there, and was then reported as a broken reciprocity — a requirement that cannot be met across vaults by construction.
+
+### Fixed
+
+- **`isExternalReference()`** in `src/helpers/decision-lint.mjs` — a reference carrying a `slug:` prefix *before any path separator* explicitly names another vault and is left unresolved. A colon inside a note name (`[[Titre: sous-titre]]`) is not one, and `http(s):` is excluded. Full suite **2383**, 0 failures.
 ## [0.52.0] — 2026-07-26 — template idéal Lot 2: themes propagate, `--theme` applies, BRAT never downgraded
 
 Lot 2 of the template-distribution roadmap (the `template-distribution-roadmap` page in the meta vault). The skeleton already carried Blue Topaz + BRAT + `app.json` defaults (committed `f804151`, reconciled item by item before this work); what was missing was everything that makes those reach vaults: BRAT wasn't even ENABLED in the skeleton's `community-plugins.json`, themes never propagated on bootstrap or sync, the wizard's `--theme` choice was recorded-but-blocked, and a template sync could silently DOWNGRADE a plugin BRAT had auto-updated in a user vault.

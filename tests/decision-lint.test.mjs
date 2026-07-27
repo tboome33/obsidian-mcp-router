@@ -202,6 +202,17 @@ describe('lintDecisions — rule 2: supersedes coherence', () => {
     assert.equal(result.ok, true);
   });
 
+  test('a cross-vault successor is not resolved against the local corpus', () => {
+    // Real case: a decision retired in favour of one living in the `kiviri`
+    // vault, whose basename also exists here. Basename resolution would
+    // demand a reciprocity that cannot exist across vaults.
+    const result = lintDecisions([
+      cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['kiviri:wiki/Projects/new.md'] }),
+      cleanDecision('wiki/new.md'),
+    ]);
+    assert.deepEqual(result.warnings, [], 'an explicitly cross-vault reference is left alone');
+  });
+
   test('an in-corpus successor named by superseded_by must reciprocate', () => {
     const result = lintDecisions([
       cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['[[new]]'] }),

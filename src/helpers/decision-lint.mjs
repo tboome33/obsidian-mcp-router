@@ -145,6 +145,21 @@ function pageKey(path) {
   return linkKey(path);
 }
 
+/**
+ * Is this reference explicitly pointing at ANOTHER vault (`kiviri:wiki/…`)?
+ *
+ * Such a reference must never be resolved against the local corpus: basename
+ * resolution would happily match a same-named page here, and then demand a
+ * reciprocity that cannot exist across vaults. Matches a `slug:` prefix
+ * before any path separator — `[[Titre: sous-titre]]` (a colon inside a
+ * note name, after a space) is not one.
+ */
+export function isExternalReference(reference) {
+  const text = String(reference).trim().replace(/^\[+/, '');
+  const [head] = text.split(/[/\\]/);
+  return /^[A-Za-z0-9][\w-]*:/.test(head) && !/^https?:/i.test(text);
+}
+
 /** Lowercase, strip accents, drop everything that isn't a letter or space. */
 function normalizeHeading(text) {
   return String(text)
@@ -336,6 +351,7 @@ export function lintDecisions(pages, options = {}) {
       // reciprocal — otherwise only one of the two pages knows about the
       // supersession, which is how a retired decision silently stays live.
       for (const reference of declared) {
+        if (isExternalReference(reference)) continue; // names another vault
         const successor = byKey.get(linkKey(reference));
         if (!successor) continue; // out-of-corpus successor: nothing to verify
         const back = toList(successor.frontmatter.supersedes).map(linkKey);
