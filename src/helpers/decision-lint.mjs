@@ -98,6 +98,8 @@ const ALTERNATIVES_HEADINGS = [
   'alternative considered',
   'considered options',
   'why not something else',
+  'alternatives considerees',
+  'alternative consideree',
   'alternatives envisagees',
   'alternatives ecartees',
   'options envisagees',

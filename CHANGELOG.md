@@ -6,6 +6,14 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.54.1] — 2026-07-28 — the linter now reads « Alternatives considérées »
+
+Found by running the pilot consolidation against the real vault, minutes after v0.54.0: the canonical compact form that `decision-consolidate` prescribes writes its table under `## Alternatives considérées` — the natural French for "alternatives considered" — and `ALTERNATIVES_HEADINGS` knew `envisagées` and `écartées` but not `considérées`. Every consolidated page would have shipped with a false `alternatives-missing` warning: the skill's own canon tripping the skill's own linter.
+
+### Fixed
+
+- **`ALTERNATIVES_HEADINGS`** in `src/helpers/decision-lint.mjs` gains `alternatives considerees` / `alternative consideree` (normalized forms — accents are stripped before matching, decorated variants still count via the prefix rule). Full suite **2420**, 0 failures.
+
 ## [0.54.0] — 2026-07-28 — decisions can be consolidated: compress + archive, never erase
 
 Roland's ask, verbatim: keep only the final decision and erase the deliberation that "pollutes the context and can mislead an LLM". The accepted contract (meta-vault decision `consolidation-sans-amnesie`, 2026-07-28) keeps the ADR payload intact by splitting the two: **the WHY stays on the page, the CHRONICLE moves out** — into an `archives/` note (`type: decision-archive`) that humans can still browse in Obsidian but that no LLM surface resurfaces by default. Nothing is erased; git keeps every byte anyway.

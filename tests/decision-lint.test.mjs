@@ -556,6 +556,16 @@ describe('rule 6 — consolidated marker', () => {
   });
 });
 
+describe('alternatives headings — French "considérées" variant', () => {
+  test('« Alternatives considérées » satisfies rule 5 (the form the decision-consolidate canon prescribes)', () => {
+    for (const heading of ['## Alternatives considérées', '## Alternative considérée', '### Alternatives considérées · options écartées']) {
+      const section = findAlternativesSection(`# T\n\n${heading}\n\n- Option A : écartée parce que…\n`);
+      assert.equal(section.found, true, heading);
+      assert.equal(section.empty, false, heading);
+    }
+  });
+});
+
 describe('findHistorySection', () => {
   test('finds the section and its wikilink', () => {
     const section = findHistorySection('# T\n\n## Historique\n\nChronique : [[x-deliberation]].\n');
