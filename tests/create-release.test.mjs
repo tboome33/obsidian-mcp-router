@@ -19,7 +19,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
-import { extractChangelogSection, isStubEntry } from '../scripts/create-release.mjs';
+import {
+  extractChangelogSection,
+  isStubEntry,
+  parseChangelogVersions,
+  selectPendingReleases,
+  highestVersion,
+} from '../scripts/create-release.mjs';
 import { ensureHooksPath } from '../scripts/bump-version.mjs';
 
 const SAMPLE = `# Changelog
@@ -85,6 +91,82 @@ describe('extractChangelogSection', () => {
   test('version string is treated literally, not as a regex', () => {
     // "0.4x.0" as a regex would match "0.47.0" via the dot — must not.
     assert.equal(extractChangelogSection(SAMPLE, '0.4..0'), null);
+  });
+});
+
+describe('parseChangelogVersions', () => {
+  test('lists every versioned heading, ignoring [Unreleased]', () => {
+    const raw = '# Changelog\n\n## [Unreleased]\n\n## [0.52.1] — d — t\n\nx\n\n## [0.51.0] — d — t\n\ny\n';
+    assert.deepEqual(parseChangelogVersions(raw), ['0.52.1', '0.51.0']);
+  });
+
+  test('an empty changelog yields no versions', () => {
+    assert.deepEqual(parseChangelogVersions('# Changelog\n'), []);
+  });
+});
+
+describe('selectPendingReleases', () => {
+  const changelogVersions = ['0.52.1', '0.52.0', '0.51.0', '0.8.2'];
+
+  test('returns the backlog ascending, newest last', () => {
+    const pending = selectPendingReleases({
+      changelogVersions,
+      localTags: ['v0.52.1', 'v0.52.0', 'v0.51.0', 'v0.8.2'],
+      publishedTags: ['v0.8.2'],
+    });
+    assert.deepEqual(pending, ['0.51.0', '0.52.0', '0.52.1'], 'oldest first, so GitHub chronology matches');
+  });
+
+  test('a version documented but never tagged is NOT resurrected', () => {
+    // The 40 pre-v0.48.0 versions: CHANGELOG entries, no tags, no commit to
+    // release. Requiring a tag is what keeps them out.
+    const pending = selectPendingReleases({
+      changelogVersions: ['0.52.1', '0.9.0'],
+      localTags: ['v0.52.1'],
+      publishedTags: [],
+    });
+    assert.deepEqual(pending, ['0.52.1']);
+  });
+
+  test('an already-published version is skipped', () => {
+    const pending = selectPendingReleases({
+      changelogVersions,
+      localTags: ['v0.52.1', 'v0.52.0'],
+      publishedTags: ['v0.52.1', 'v0.52.0'],
+    });
+    assert.deepEqual(pending, []);
+  });
+
+  test('a tag with no CHANGELOG entry has no notes, so no release', () => {
+    const pending = selectPendingReleases({
+      changelogVersions: ['0.52.1'],
+      localTags: ['v0.52.1', 'v0.99.0'],
+      publishedTags: [],
+    });
+    assert.deepEqual(pending, ['0.52.1']);
+  });
+
+  test('tolerates tags given with or without the v prefix', () => {
+    const pending = selectPendingReleases({
+      changelogVersions: ['0.52.1'],
+      localTags: ['0.52.1'],
+      publishedTags: [],
+    });
+    assert.deepEqual(pending, ['0.52.1']);
+  });
+});
+
+describe('highestVersion', () => {
+  test('compares by semver, not lexicographically', () => {
+    assert.equal(highestVersion(['0.9.0', '0.52.1', '0.10.0']), '0.52.1');
+  });
+
+  test('handles patch ordering', () => {
+    assert.equal(highestVersion(['0.52.0', '0.52.1']), '0.52.1');
+  });
+
+  test('returns null on an empty list', () => {
+    assert.equal(highestVersion([]), null);
   });
 });
 

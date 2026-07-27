@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-07-27 — `npm run release` publishes the backlog, not just the current version
+
+v0.48.0 ended a drift where 40 versions shipped with pushed commits, no tags and no releases. The tooling it introduced worked — for one rhythm: bump, commit, push, repeat. It had a blind spot for the other one, which is the rhythm actually used here: **let several versions accumulate locally, then push the lot**.
+
+Yesterday that blind spot bit. Five commits, five tags, five CHANGELOG entries — `npm run release` pushed the branch, **one** tag, published **one** release, and left four tags local and four holes in the Releases page. Backfilled by hand; the page then showed v0.52.0 as "Latest" because GitHub ranks by creation date and the backfill ran newest-last. Exactly the drift the tooling exists to prevent, arriving through the door it left open.
+
+### Changed
+
+- **`scripts/create-release.mjs` publishes the whole backlog.** It now collects every version that has a CHANGELOG entry **and** a local tag reachable from HEAD **and** no GitHub release, pushes each tag, and publishes them **oldest-first** so the Releases chronology matches the version order.
+- **`--latest` lands on the highest version overall**, computed by semver across pending *and* already-published releases — not on whichever release happened to be created last. Backfilling an old version can no longer steal the badge from a newer one.
+- **The 108 CHANGELOG entries with no tag are not resurrected.** Requiring a local tag is what excludes them: without a tag there is no commit to release. Requiring *reachable from HEAD* excludes tags belonging to another branch.
+- **Guards kept, calibrated per version**: the current version still fails hard on a stub CHANGELOG entry or an uncommitted bump; an older version in the backlog whose notes are a stub is skipped with a warning rather than failing the whole run — its missing notes are not this run's fault, and blocking would strand the versions after it.
+
+### Added
+
+- **Tests** — `parseChangelogVersions`, `selectPendingReleases` (backlog ordering, untagged versions not resurrected, already-published skipped, tag-without-notes skipped, `v` prefix tolerated) and `highestVersion` (semver, not lexicographic: `0.9.0` < `0.52.1`). Full suite **2393**, 0 failures. Replayed against yesterday's exact state, the new selection returns the full `v0.51.0 → v0.52.1` batch with `--latest` on v0.52.1.
 ## [0.52.1] — 2026-07-27 — a cross-vault successor is not a local page
 
 Found by linting the real vault. A decision retired in favour of one living in **another vault** (`superseded_by: "kiviri:wiki/…"`) was resolved by basename against the local corpus, matched a same-named page there, and was then reported as a broken reciprocity — a requirement that cannot be met across vaults by construction.

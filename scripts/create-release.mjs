@@ -8,6 +8,13 @@
  * repo shipped 40 versions with pushed commits but no tags and no
  * releases — GitHub's Releases box kept showing "v0.8.2, 2 months ago".
  *
+ * Publishes the whole BACKLOG, not just the current version. Several
+ * versions routinely accumulate locally before a push; the first version of
+ * this script handled only `package.json`'s, so the others stayed as local
+ * tags and left holes in the Releases page — the exact drift this tooling
+ * was written to end, reappearing through its blind spot (observed
+ * 2026-07-27 on four versions, backfilled by hand).
+ *
  * What it does (in order):
  *   1. Reads `version` from package.json → tag `v<version>`.
  *   2. Extracts the matching CHANGELOG.md section (refuses to publish a
@@ -15,9 +22,14 @@
  *   3. Self-heals the tag: if `v<version>` doesn't exist locally but HEAD's
  *      package.json already carries that version, tags HEAD (covers commits
  *      made before the hook was armed). Refuses if the bump isn't committed.
- *   4. Pushes the current branch and the tag to `origin`.
- *   5. Creates the GitHub release via `gh release create` (or updates it
- *      via `gh release edit` if it already exists — idempotent re-runs).
+ *   4. Collects every version that has a CHANGELOG entry AND a local tag
+ *      reachable from HEAD AND no GitHub release yet — the backlog.
+ *   5. Pushes the current branch, then every pending tag.
+ *   6. Creates each release oldest-first via `gh release create` (or
+ *      updates it via `gh release edit` — idempotent re-runs), with
+ *      `--latest` on the highest version overall. GitHub ranks "Latest" by
+ *      creation date, so publishing a backlog without that flag would leave
+ *      the badge on whichever release happened to be created last.
  *
  * Usage:
  *   npm run release              — the real thing (pushes + publishes)
@@ -31,6 +43,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { compareSemver } from '../src/helpers/semver-compare.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -88,6 +102,41 @@ export function extractChangelogSection(raw, version) {
 export function isStubEntry(section) {
   const text = section.heading + '\n' + section.body;
   return /TODO: one-line title|TODO: short description|^-\s*TODO\s*$/m.test(text);
+}
+
+/** Every version that has a `## [x.y.z]` entry in the CHANGELOG. */
+export function parseChangelogVersions(raw) {
+  return [...String(raw).matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]);
+}
+
+/**
+ * Which versions still need a GitHub release.
+ *
+ * A version qualifies when it has release notes (a CHANGELOG entry) AND a
+ * local tag AND no published release. The tag requirement is what keeps the
+ * 40 pre-v0.48.0 versions — documented in the CHANGELOG, never tagged —
+ * from being resurrected: without a tag there is no commit to release.
+ *
+ * Sorted ascending so a batch publishes oldest-first and GitHub's
+ * chronology matches the version order.
+ *
+ * Exists because the script used to handle only `package.json`'s version:
+ * pushing a batch of accumulated versions published the newest and left the
+ * others as local tags and holes in the Releases page — the very drift the
+ * release tooling was written to end, in its blind spot.
+ */
+export function selectPendingReleases({ changelogVersions, localTags, publishedTags }) {
+  const tagged = new Set(localTags.map((t) => t.replace(/^v/, '')));
+  const published = new Set(publishedTags.map((t) => t.replace(/^v/, '')));
+  return [...new Set(changelogVersions)]
+    .filter((v) => tagged.has(v) && !published.has(v))
+    .sort(compareSemver);
+}
+
+/** Highest version of a list, by semver. `null` for an empty list. */
+export function highestVersion(versions) {
+  const sorted = [...versions].filter(Boolean).sort(compareSemver);
+  return sorted.length ? sorted[sorted.length - 1] : null;
 }
 
 // execFileSync returns null (not '') for captured streams when the caller
@@ -158,48 +207,119 @@ if (isMain) {
     fail('the GitHub CLI (gh) is required to create the release — https://cli.github.com/');
   }
 
-  // 5. Publish: branch first (the tag's commit must be reachable), then tag.
+  // 5. Discover the BATCH. `npm run release` used to publish only the
+  //    version in package.json; when several versions accumulate locally
+  //    before a push (the normal rhythm here), the older ones stayed as
+  //    local tags with no release — holes in the Releases page.
+  //
+  //    Only tags reachable from HEAD are considered: a tag on another
+  //    branch is not part of this line of history and must not be
+  //    published as if it were.
+  const localTags = git(['tag', '--list', 'v*.*.*'])
+    .split('\n')
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .filter((t) => {
+      try {
+        git(['merge-base', '--is-ancestor', `${t}^{commit}`, 'HEAD']);
+        return true;
+      } catch {
+        return false; // unreachable from HEAD (other branch, or dangling)
+      }
+    });
+
+  let publishedTags = [];
+  try {
+    publishedTags = gh(['release', 'list', '--limit', '200', '--json', 'tagName', '--jq', '.[].tagName'])
+      .split('\n').map((t) => t.trim()).filter(Boolean);
+  } catch {
+    // No releases yet, or the repo has none — treat as empty, not fatal.
+    publishedTags = [];
+  }
+
+  const changelogVersions = parseChangelogVersions(changelogRaw);
+  const pending = selectPendingReleases({ changelogVersions, localTags, publishedTags });
+  // The current version always belongs to the batch: its tag may have just
+  // been self-healed above, so it isn't in `localTags` read before that.
+  if (!pending.includes(version)) pending.push(version);
+  pending.sort(compareSemver);
+
+  // `--latest` must land on the highest version overall, not on whichever
+  // release was created last: GitHub ranks by creation date, so publishing
+  // a backlog oldest-first would otherwise leave the badge on the wrong one.
+  const overallHighest = highestVersion([
+    ...pending,
+    ...publishedTags.map((t) => t.replace(/^v/, '')),
+  ]);
+
+  if (pending.length > 1) {
+    say(`${pending.length} versions to publish: ${pending.map((v) => `v${v}`).join(', ')}`);
+  }
+
+  // 6. Push: the branch once (tag commits must be reachable), then each tag.
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
-  say(`pushing ${branch} + ${tag} to origin…`);
+  say(`pushing ${branch} + ${pending.map((v) => `v${v}`).join(' ')} to origin…`);
   if (!dryRun) {
     git(['push', 'origin', branch], { stdio: ['ignore', 'inherit', 'inherit'] });
-    git(['push', 'origin', tag], { stdio: ['ignore', 'inherit', 'inherit'] });
-  }
-
-  // 6. Create or update the GitHub release. Notes go through a temp file so
-  //    multi-line markdown survives Windows shell quoting.
-  const title = section.title ? `${tag} — ${section.title}` : tag;
-  const notesFile = path.join(os.tmpdir(), `obsidian-mcp-router-release-${version}.md`);
-  fs.writeFileSync(notesFile, section.body + '\n');
-
-  let releaseExists = false;
-  try {
-    gh(['release', 'view', tag, '--json', 'tagName']);
-    releaseExists = true;
-  } catch {
-    releaseExists = false;
-  }
-
-  try {
-    if (dryRun) {
-      say(`would ${releaseExists ? 'update' : 'create'} GitHub release "${title}" from the CHANGELOG entry (${section.body.length} chars).`);
-    } else if (releaseExists) {
-      gh(['release', 'edit', tag, '--title', title, '--notes-file', notesFile], { stdio: ['ignore', 'inherit', 'inherit'] });
-      say(`updated existing release ${tag}.`);
-    } else {
-      gh(['release', 'create', tag, '--verify-tag', '--title', title, '--notes-file', notesFile], { stdio: ['ignore', 'inherit', 'inherit'] });
-      say(`created release ${tag}.`);
+    for (const v of pending) {
+      git(['push', 'origin', `v${v}`], { stdio: ['ignore', 'inherit', 'inherit'] });
     }
-  } finally {
-    fs.rmSync(notesFile, { force: true });
   }
 
-  if (!dryRun) {
+  // 7. Publish each pending version, oldest first. Notes go through a temp
+  //    file so multi-line markdown survives Windows shell quoting.
+  const published = [];
+  for (const v of pending) {
+    const vTag = `v${v}`;
+    const vSection = extractChangelogSection(changelogRaw, v);
+    if (!vSection) {
+      say(`⚠️  ${vTag}: no CHANGELOG entry — skipped.`);
+      continue;
+    }
+    if (isStubEntry(vSection)) {
+      // The current version already failed hard above; an older one in the
+      // backlog only warns — its notes are missing, not this run's fault.
+      say(`⚠️  ${vTag}: CHANGELOG entry is still the bump stub — skipped.`);
+      continue;
+    }
+
+    const vTitle = vSection.title ? `${vTag} — ${vSection.title}` : vTag;
+    const latestFlag = v === overallHighest ? '--latest' : '--latest=false';
+    const notesFile = path.join(os.tmpdir(), `obsidian-mcp-router-release-${v}.md`);
+    fs.writeFileSync(notesFile, vSection.body + '\n');
+
+    let releaseExists = false;
     try {
-      const url = gh(['release', 'view', tag, '--json', 'url', '--jq', '.url']);
-      process.stdout.write(`Release: ${url}\n`);
+      gh(['release', 'view', vTag, '--json', 'tagName']);
+      releaseExists = true;
     } catch {
-      // cosmetic only
+      releaseExists = false;
+    }
+
+    try {
+      if (dryRun) {
+        say(`would ${releaseExists ? 'update' : 'create'} "${vTitle}" (${vSection.body.length} chars, ${latestFlag}).`);
+      } else if (releaseExists) {
+        gh(['release', 'edit', vTag, '--title', vTitle, '--notes-file', notesFile, latestFlag], { stdio: ['ignore', 'inherit', 'inherit'] });
+        say(`updated existing release ${vTag}.`);
+      } else {
+        gh(['release', 'create', vTag, '--verify-tag', '--title', vTitle, '--notes-file', notesFile, latestFlag], { stdio: ['ignore', 'inherit', 'inherit'] });
+        say(`created release ${vTag}.`);
+      }
+      published.push(v);
+    } finally {
+      fs.rmSync(notesFile, { force: true });
+    }
+  }
+
+  if (!dryRun && published.length) {
+    for (const v of published) {
+      try {
+        const url = gh(['release', 'view', `v${v}`, '--json', 'url', '--jq', '.url']);
+        process.stdout.write(`Release: ${url}${v === overallHighest ? '  (latest)' : ''}\n`);
+      } catch {
+        // cosmetic only
+      }
     }
   }
 }
