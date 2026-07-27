@@ -19,6 +19,14 @@
  *      anti-ossification field. An expired one is surfaced so a recall layer
  *      can present the decision as "to re-evaluate" rather than as a binding
  *      constraint.
+ *   5. The `consolidated:` marker is coherent (decision
+ *      `consolidation-sans-amnesie`, accepted 2026-07-28): an ISO date, on a
+ *      SETTLED page only, with a `## Historique` / `## History` section
+ *      carrying the wikilink to the archive note — the pointer that keeps
+ *      "compressed" from degrading into "erased". Archive notes themselves
+ *      (`type: decision-archive`) are deliberately OUTSIDE `DECISION_TYPES`:
+ *      they are chronicle, not verdict, and neither this lint nor the recall
+ *      hook ever treats them as decisions.
  *
  * Calibration. ERRORS are states where the decision layer actively misleads
  * a reader (missing/invalid status, incoherent supersession, cycles).
@@ -203,6 +211,42 @@ export function findAlternativesSection(body) {
     return { found: true, empty, heading: match[2].trim() };
   }
   return { found: false, empty: false, heading: null };
+}
+
+/**
+ * Heading texts that open the pointer-to-the-archive section of a
+ * consolidated page, normalized like ALTERNATIVES_HEADINGS and matched as a
+ * prefix — `## Historique — délibération complète` counts.
+ */
+const HISTORY_HEADINGS = ['historique', 'history'];
+
+/**
+ * Locate the history section of a consolidated decision body and check it
+ * carries at least one wikilink (the pointer to the archive note).
+ *
+ * @returns {{found: boolean, hasLink: boolean, heading: string|null}}
+ */
+export function findHistorySection(body) {
+  const lines = String(body ?? '').split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = HEADING_RE.exec(lines[i]);
+    if (!match) continue;
+    const level = match[1].length;
+    const normalized = normalizeHeading(match[2]);
+    if (!HISTORY_HEADINGS.some((phrase) => normalized.startsWith(phrase))) continue;
+
+    let hasLink = false;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const next = HEADING_RE.exec(lines[j]);
+      if (next && next[1].length <= level) break;
+      if (/\[\[[^\]]+\]\]/.test(lines[j])) {
+        hasLink = true;
+        break;
+      }
+    }
+    return { found: true, hasLink, heading: match[2].trim() };
+  }
+  return { found: false, hasLink: false, heading: null };
 }
 
 /**
@@ -426,6 +470,46 @@ export function lintDecisions(pages, options = {}) {
             `section \`${alternatives.heading}\` is present but empty — the escape hatch has to be WRITTEN ("No serious alternative" + the reason), a bare heading carries none of the information the section exists for`,
           ),
         );
+      }
+    }
+
+    // --- Rule 6: consolidation marker -------------------------------------
+    // A consolidated page moved its deliberation chronicle to an archive
+    // note (`consolidation-sans-amnesie`): the marker must be a date, the
+    // page must be settled (consolidating a `proposed` removes its working
+    // material), and the body must keep a history section carrying the
+    // wikilink to the archive — the one pointer that keeps "compressed"
+    // from degrading into "erased".
+    const consolidated = String(frontmatter.consolidated ?? '').trim();
+    if (consolidated) {
+      if (!ISO_DATE_RE.test(consolidated)) {
+        warnings.push(
+          finding('consolidated-invalid', path, `\`consolidated: ${consolidated}\` is not an ISO date (YYYY-MM-DD)`),
+        );
+      }
+      if (statusKey === 'proposed') {
+        warnings.push(
+          finding(
+            'consolidated-proposed',
+            path,
+            'page is `proposed` but carries `consolidated:` — a proposed page must never be consolidated, its deliberation is the working material',
+          ),
+        );
+      }
+      // Body rule — skipped for frontmatter-only callers, like rule 5.
+      if (entry.body !== null) {
+        const history = findHistorySection(entry.body);
+        if (!history.found || !history.hasLink) {
+          warnings.push(
+            finding(
+              'consolidated-without-history-link',
+              path,
+              history.found
+                ? `section \`${history.heading}\` carries no wikilink to the archive note — without the pointer, "compressed" degrades into "erased"`
+                : 'no `## Historique` / `## History` section linking the archive note — a consolidated page must keep the pointer to its moved deliberation',
+            ),
+          );
+        }
       }
     }
   }

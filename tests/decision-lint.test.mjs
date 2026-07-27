@@ -12,6 +12,7 @@ import {
   linkKey,
   normalizeStatus,
   findAlternativesSection,
+  findHistorySection,
   VALID_STATUSES,
   LEGACY_STATUS_MAP,
 } from '../src/helpers/decision-lint.mjs';
@@ -463,5 +464,111 @@ describe('linkKey / normalizeStatus', () => {
     assert.equal(normalizeStatus('accepted'), null, 'already valid → nothing to migrate');
     assert.equal(normalizeStatus('banana'), null);
     assert.equal(normalizeStatus(undefined), null);
+  });
+});
+
+// ---- rule 6: consolidated marker (consolidation-sans-amnesie) -----------
+
+describe('rule 6 — consolidated marker', () => {
+  const HISTORY = '## Historique\n\nChronique complète : [[settled-deliberation]] · consolidée le 2026-07-28.\n';
+
+  function consolidated({ status = 'accepted', marker = '2026-07-28', history = HISTORY } = {}) {
+    const body = [
+      '# Page',
+      '',
+      '## Alternatives considered',
+      '',
+      '- Option A: rejected because…',
+      '',
+      history,
+    ].join('\n');
+    return {
+      path: 'wiki/decisions/settled.md',
+      content: `---\ntype: decision\nstatus: ${status}\nscope: router\nevidence:\n  - "[[study]]"\nconsolidated: ${marker}\n---\n\n${body}`,
+    };
+  }
+
+  test('a well-formed consolidated page raises no consolidated-* finding', () => {
+    const result = lintDecisions([consolidated(), OTHER_PAGE]);
+    assert.equal(result.ok, true);
+    assert.equal(rules(result.warnings).some((rule) => rule.startsWith('consolidated')), false);
+  });
+
+  test('EN heading and decorated FR heading both satisfy the pointer rule', () => {
+    for (const history of [
+      '## History\n\nFull chronicle: [[settled-deliberation]].\n',
+      '## Historique — délibération complète\n\n[[settled-deliberation]]\n',
+    ]) {
+      const result = lintDecisions([consolidated({ history }), OTHER_PAGE]);
+      assert.equal(rules(result.warnings).includes('consolidated-without-history-link'), false, history);
+    }
+  });
+
+  test('missing history section → consolidated-without-history-link', () => {
+    const result = lintDecisions([consolidated({ history: '' }), OTHER_PAGE]);
+    assert.equal(rules(result.warnings).includes('consolidated-without-history-link'), true);
+  });
+
+  test('history section without a wikilink → consolidated-without-history-link', () => {
+    const result = lintDecisions([
+      consolidated({ history: '## Historique\n\nDéplacée vers une archive, quelque part.\n' }),
+      OTHER_PAGE,
+    ]);
+    assert.equal(rules(result.warnings).includes('consolidated-without-history-link'), true);
+  });
+
+  test('non-ISO marker → consolidated-invalid', () => {
+    const result = lintDecisions([consolidated({ marker: 'hier' }), OTHER_PAGE]);
+    assert.equal(rules(result.warnings).includes('consolidated-invalid'), true);
+  });
+
+  test('consolidated on a proposed page → consolidated-proposed', () => {
+    const result = lintDecisions([consolidated({ status: 'proposed' }), OTHER_PAGE]);
+    assert.equal(rules(result.warnings).includes('consolidated-proposed'), true);
+  });
+
+  test('frontmatter-only caller: marker rules fire, the body rule stays silent', () => {
+    const result = lintDecisions([
+      {
+        path: 'wiki/decisions/head-only.md',
+        frontmatter: { type: 'decision', status: 'accepted', scope: 'r', evidence: ['[[s]]'], consolidated: 'nope' },
+      },
+    ]);
+    const found = rules(result.warnings);
+    assert.equal(found.includes('consolidated-invalid'), true);
+    assert.equal(found.includes('consolidated-without-history-link'), false);
+  });
+
+  test('a page without the marker never triggers rule 6', () => {
+    const result = lintDecisions([cleanDecision('wiki/decisions/plain.md'), OTHER_PAGE]);
+    assert.equal(rules(result.warnings).some((rule) => rule.startsWith('consolidated')), false);
+  });
+
+  test('an archive note (type decision-archive) is chronicle, not a decision', () => {
+    const archive = {
+      path: 'wiki/decisions/archives/settled-deliberation.md',
+      content: '---\ntype: decision-archive\nsource: "[[settled]]"\narchived: 2026-07-28\n---\n\n# Chronique\n\nLe récit complet, sans statut ni scope — et le linter n\'a rien à y redire.\n',
+    };
+    const result = lintDecisions([archive]);
+    assert.equal(result.ok, true);
+    assert.equal(result.stats.decisions, 0, 'not counted in the decision corpus');
+    assert.equal(result.errors.length + result.warnings.length, 0);
+  });
+});
+
+describe('findHistorySection', () => {
+  test('finds the section and its wikilink', () => {
+    const section = findHistorySection('# T\n\n## Historique\n\nChronique : [[x-deliberation]].\n');
+    assert.deepEqual(section, { found: true, hasLink: true, heading: 'Historique' });
+  });
+
+  test('stops at the next same-level heading', () => {
+    const section = findHistorySection('## Historique\n\nRien ici.\n\n## Voir aussi\n\n[[ailleurs]]\n');
+    assert.equal(section.found, true);
+    assert.equal(section.hasLink, false, 'the link lives in the NEXT section');
+  });
+
+  test('absent section', () => {
+    assert.deepEqual(findHistorySection('# T\n\nBody.\n'), { found: false, hasLink: false, heading: null });
   });
 });

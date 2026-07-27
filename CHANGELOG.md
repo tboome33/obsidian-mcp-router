@@ -6,6 +6,21 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-07-28 — decisions can be consolidated: compress + archive, never erase
+
+Roland's ask, verbatim: keep only the final decision and erase the deliberation that "pollutes the context and can mislead an LLM". The accepted contract (meta-vault decision `consolidation-sans-amnesie`, 2026-07-28) keeps the ADR payload intact by splitting the two: **the WHY stays on the page, the CHRONICLE moves out** — into an `archives/` note (`type: decision-archive`) that humans can still browse in Obsidian but that no LLM surface resurfaces by default. Nothing is erased; git keeps every byte anyway.
+
+### Added
+
+- **`decision-consolidate` skill + slash command** — transactional consolidation of a SETTLED decision page (`accepted` / `superseded` / `rejected`, never `proposed` — its deliberation is the working material). Archive written and VERIFIED first (`<page-folder>/archives/<slug>-deliberation.md`), then the page rewritten to canon: verdict **byte-intact**, minimal why, alternatives as a table, `consolidated:` marker, mandatory `## Historique` wikilink to the archive. Piloted on the meta vault's `adr-modes-ecriture` (13.6 KiB of double-banner history compressed, chronicle archived).
+- **`search_smart` excludes archived deliberation by default** — hits under an `archives/` folder are dropped by a path-segment test (no extra REST round-trips on the hot path), the response carries `archivesExcluded: N` so the cut is never silent, and the page is overfetched before filtering so exclusion cannot shrink the result set below `limit`. Opt back in with `includeArchives: true`. New helper `src/helpers/archive-filter.mjs`; a folder merely *named* `mes-archives` or a page `archives.md` does not match.
+- **Decision lint rule 6 — `consolidated:` coherence** (`src/helpers/decision-lint.mjs`): `consolidated-invalid` (not an ISO date), `consolidated-proposed` (a proposed page must never be consolidated), `consolidated-without-history-link` (no `## Historique` / `## History` section carrying the wikilink to the archive — the one pointer that keeps "compressed" from degrading into "erased"). New exported `findHistorySection()`.
+- **Recall exclusion locked by tests** — `type: decision-archive` is deliberately absent from `DECISION_TYPES` on BOTH sides of the contract pair (recall core + lint). New tests pin the three type sets and feed the recall walker an archive note that *mimics* a decision (same tokens, decision-ish fields): the type gate, not luck, is what keeps it out.
+
+### Tests
+
+- `tests/search-archive-filter.test.mjs` (12 cases: segment matching incl. backslashes/anchors/near-miss names, drop+count, overfetch trim, includeArchives pass-through, bridge error shape), rule-6 suite + `findHistorySection` suite in `tests/decision-lint.test.mjs`, archive fixtures in `tests/decisions-recall.test.mjs`. Full suite **2419**, 0 failures.
+
 ## [0.53.0] — 2026-07-27 — `npm run release` publishes the backlog, not just the current version
 
 v0.48.0 ended a drift where 40 versions shipped with pushed commits, no tags and no releases. The tooling it introduced worked — for one rhythm: bump, commit, push, repeat. It had a blind spot for the other one, which is the rhythm actually used here: **let several versions accumulate locally, then push the lot**.

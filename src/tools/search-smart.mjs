@@ -15,10 +15,22 @@
  * `sanitizeLabel` to strip ANSI escapes / control chars from breadcrumbs,
  * excerpts, paths — vault content can be authored by anyone and we don't
  * want corpus-injected escape sequences reaching Claude's context.
+ *
+ * Archived deliberation (v0.54.0): hits under an `archives/` folder — where
+ * the `decision-consolidate` skill parks the chronicle of a consolidated
+ * decision (`type: decision-archive`) — are excluded by default, with an
+ * `archivesExcluded` count so the cut is never silent. The page is
+ * overfetched before filtering so exclusion does not shrink the result set
+ * below `limit`. Opt back in with `includeArchives: true`.
  */
 import { searchSmart } from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
+import { filterArchiveResults } from '../helpers/archive-filter.mjs';
+
+/** Overfetch margin: enough that a handful of archive chunks in the top of
+ * the ranking cannot empty the page, small enough to stay cheap. */
+const ARCHIVE_OVERFETCH = 10;
 
 export async function searchSmartTool(registry, args = {}) {
   const {
@@ -27,6 +39,7 @@ export async function searchSmartTool(registry, args = {}) {
     folders,
     excludeFolders,
     limit = 10,
+    includeArchives = false,
   } = args;
 
   if (!query) {
@@ -40,6 +53,26 @@ export async function searchSmartTool(registry, args = {}) {
   }
   if (typeof limit === 'number') filter.limit = limit;
 
+  // The filter reported in the response keeps the caller's limit; the one
+  // sent to Smart Connections overfetches so dropping archive hits does not
+  // return fewer results than asked for.
+  const scFilter = includeArchives
+    ? filter
+    : { ...filter, limit: (Number.isFinite(filter.limit) ? filter.limit : 10) + ARCHIVE_OVERFETCH };
+
+  const searchOne = async (vault) => {
+    const raw = await searchSmart(vault, query, scFilter);
+    const { data, archivesExcluded } = filterArchiveResults(raw, {
+      includeArchives,
+      limit: filter.limit,
+    });
+    return {
+      ...data,
+      ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
+      ...collectClickToOpenLinks(vault, data),
+    };
+  };
+
   // Cross-vault fan-out
   if (name === '*') {
     // Lock guard: cross-vault fan-out is incompatible with single-vault
@@ -52,14 +85,7 @@ export async function searchSmartTool(registry, args = {}) {
     }
     const candidates = registry.vaults.filter((v) => !v.missingApiKey);
     const settled = await Promise.allSettled(
-      candidates.map(async (v) => {
-        const data = await searchSmart(v, query, filter);
-        return {
-          vault: v.name,
-          ...data,
-          ...collectClickToOpenLinks(v, data),
-        };
-      }),
+      candidates.map(async (v) => ({ vault: v.name, ...(await searchOne(v)) })),
     );
 
     return sanitizeResponse({
@@ -74,12 +100,10 @@ export async function searchSmartTool(registry, args = {}) {
   }
 
   const vault = registry.resolveVault(name);
-  const data = await searchSmart(vault, query, filter);
   return sanitizeResponse({
     vault: vault.name,
     query,
     filter,
-    ...data,
-    ...collectClickToOpenLinks(vault, data),
+    ...(await searchOne(vault)),
   });
 }

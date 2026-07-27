@@ -399,7 +399,7 @@ const TOOLS = [
   {
     name: 'search_smart',
     description:
-      'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Requires the target vault to have both the "obsidian-mcp-router-bridge" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
+      'Semantic (meaning-based) search using Smart Connections embeddings. Returns ranked chunks with cosine similarity scores and breadcrumbs (heading path). Hits under an `archives/` folder (archived decision deliberation, `type: decision-archive`) are excluded by default — the response then carries `archivesExcluded: N`; pass includeArchives: true to see them. Requires the target vault to have both the "obsidian-mcp-router-bridge" and "smart-connections" community plugins installed and enabled. Pass vault: "*" to fan-out across every vault.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -424,6 +424,11 @@ const TOOLS = [
         limit: {
           type: 'number',
           description: 'Maximum number of results. Default: 10.',
+        },
+        includeArchives: {
+          type: 'boolean',
+          description:
+            'Include hits from `archives/` folders (archived decision deliberation moved out by consolidation). Default false: those chunks are dropped and counted in `archivesExcluded`.',
         },
       },
       required: ['query'],

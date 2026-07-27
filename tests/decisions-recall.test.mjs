@@ -72,6 +72,16 @@ before(() => {
   w('wiki/refs/not-a-decision.md', page({ type: 'reference', title: 'BM25 expliqué', status: 'captured' }));
   // Sessions/ is skipped by the walker — a decision buried there must not surface.
   w('wiki-meta/Sessions/old.md', page({ ...ACCEPTED, title: 'Décision enterrée dans les sessions' }));
+  // An archive note that MIMICS a decision (same tokens, decision-ish fields):
+  // the `type` gate must be what excludes it from the recall, not luck.
+  fs.mkdirSync(path.join(vaultDir, 'wiki', 'decisions', 'archives'), { recursive: true });
+  w('wiki/decisions/archives/bm25-deliberation.md', page({
+    type: 'decision-archive',
+    status: 'accepted',
+    title: 'Chronique BM25 — délibération complète',
+    scope: 'router — filter_relevant_blocks',
+    decision: 'On retient BM25 ; le scorer par embeddings est écarté.',
+  }));
 });
 
 after(() => {
@@ -746,5 +756,25 @@ describe('decisions-recall hook shell', () => {
     const result = spawnSync(process.execPath, [HOOK_PATH], { input: 'not json', encoding: 'utf8' });
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
+  });
+});
+
+// ---- decision-archive exclusion (consolidation-sans-amnesie) ------------
+
+describe('decision-archive exclusion', () => {
+  test('an archive note is never collected, even when it mimics a decision', () => {
+    const paths = collect().map((d) => d.path);
+    assert.equal(paths.some((p) => p.includes('archives/')), false, `collected: ${paths.join(', ')}`);
+  });
+
+  test('an archive note never reaches the recall selection', () => {
+    const selected = selectRelevant(collect(), 'peux-tu utiliser des embeddings pour la pertinence ?');
+    assert.equal(selected.some((item) => item.path.includes('archives/')), false);
+  });
+
+  test('decision-archive is outside the type sets on BOTH sides of the contract pair', () => {
+    assert.equal(DECISION_TYPES.has('decision-archive'), false);
+    assert.equal(RECALLED_TYPES.has('decision-archive'), false);
+    assert.equal(LINT_DECISION_TYPES.has('decision-archive'), false);
   });
 });
