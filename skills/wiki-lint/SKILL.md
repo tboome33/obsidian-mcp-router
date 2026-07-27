@@ -160,20 +160,19 @@ const result = lintDecisions(pages, { today: '<YYYY-MM-DD>' });
 ```
 
 3. **Severity mapping** :
-   - **ERRORS** = the decision layer actively misleads : `status-missing`, `status-invalid` (carries a `suggestion` when the value is a known legacy one — `active`/`decided` → `accepted`, `captured`/`awaiting-validation` → `proposed`, and since the 2026-07-28 token rename `superseded` → `replaced`), `replaces-self`, `replaces-target-missing`, `replaces-target-not-decision`, `replaces-target-not-replaced` (two decisions read as live at once), `replaces-cycle`.
-   - **WARNINGS** = degraded but usable : `replaced-without-successor` (nothing claims it AND it has no `replaced_by:`), `replaced-by-not-reciprocated` (the named in-vault successor doesn't point back), `legacy-field-duplicate` (both `replaces:` and its pre-rename alias set), `affects-target-missing`, `scope-missing`, `review-after-invalid`, `review-after-expired`, `alternatives-missing` / `alternatives-empty` (v0.50.0+ — the "what we ruled out" section, EN or FR heading; only checked when you passed `content`, never for frontmatter-only input).
+   - **ERRORS** = the decision layer actively misleads : `status-missing`, `status-invalid` (carries a `suggestion` when the value is a known legacy one — `active`/`decided` → `accepted`, `captured`/`awaiting-validation` → `proposed`), `supersedes-self`, `supersedes-target-missing`, `supersedes-target-not-decision`, `supersedes-target-not-superseded` (two decisions read as live at once), `supersedes-cycle`.
+   - **WARNINGS** = degraded but usable : `superseded-without-successor` (nothing claims it AND it has no `superseded_by:`), `superseded-by-not-reciprocated` (the named in-vault successor doesn't point back), `affects-target-missing`, `scope-missing`, `review-after-invalid`, `review-after-expired`, `alternatives-missing` / `alternatives-empty` (v0.50.0+ — the "what we ruled out" section, EN or FR heading; only checked when you passed `content`, never for frontmatter-only input).
    - **INFO** = `evidence-missing`.
-4. **Corpus scope caveat.** Every cross-page rule resolves only against the pages you passed in. If you lint a subfolder, say so in the report — `replaces-target-missing` may just mean the target lives outside the slice. That asymmetry is also why `replaced-without-successor` is a warning, not an error.
-5. **Legacy tokens.** The pre-rename tokens (`supersedes` / `superseded` / `superseded_by`) are still read: the status errors with a `replaced` suggestion, the fields are honoured as aliases with an INFO `legacy-field-name` hint. An unmigrated vault lints usefully, it just gets nudged.
+4. **Corpus scope caveat.** Every cross-page rule resolves only against the pages you passed in. If you lint a subfolder, say so in the report — `supersedes-target-missing` may just mean the target lives outside the slice. That asymmetry is also why `superseded-without-successor` is a warning, not an error.
 
-Auto-fix posture (step 4): `status-invalid` **with** a `suggestion` is the one decision finding worth offering to fix (a mechanical `set_frontmatter`). Never auto-fix `replaces-target-not-replaced` silently — flipping the target's status is a semantic act the human should confirm, since it retires a decision.
+Auto-fix posture (step 4): `status-invalid` **with** a `suggestion` is the one decision finding worth offering to fix (a mechanical `set_frontmatter`). Never auto-fix `supersedes-target-not-superseded` silently — flipping the target's status is a semantic act the human should confirm, since it retires a decision.
 
 ### 3. Render the report
 
 Group findings by severity:
 
-- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `replaces-*`)
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `replaced-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`
+- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`)
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`
 - **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`
 
 For each finding:

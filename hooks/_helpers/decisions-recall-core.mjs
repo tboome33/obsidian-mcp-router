@@ -383,8 +383,7 @@ export function settledStatus(rawStatus) {
 /**
  * Pick the decisions worth showing for this prompt.
  *
- * `proposed` is not binding, and `replaced` / `rejected` (or the pre-rename
- * `superseded`) must never be
+ * `proposed` is not binding, and `superseded` / `rejected` must never be
  * surfaced as constraints — showing a retired decision is exactly the
  * failure the layer prevents. `decision-input` pages are excluded too: they
  * feed a decision, they are not one.
