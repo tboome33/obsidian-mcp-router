@@ -4,12 +4,12 @@
  * Checks the frontmatter contract that `decision` / `adr` / `decision-input`
  * pages must satisfy once a vault adopts the decision discipline:
  *
- *   1. `status` is present and one of proposed | accepted | superseded |
+ *   1. `status` is present and one of proposed | accepted | replaced |
  *      rejected. Legacy free-form values (`active`, `decided`, `captured`,
- *      `awaiting-validation`) are reported WITH the normalized value to
- *      migrate to, so the caller can propose a concrete fix.
- *   2. `supersedes:` is BIDIRECTIONALLY coherent — the target exists, is
- *      itself a decision page, and carries `status: superseded`. A dangling
+ *      `superseded`…) are reported WITH the normalized value to migrate to,
+ *      so the caller can propose a concrete fix.
+ *   2. `replaces:` is BIDIRECTIONALLY coherent — the target exists, is
+ *      itself a decision page, and carries `status: replaced`. A dangling
  *      or still-`accepted` target means two contradictory decisions are live
  *      at once, which is exactly what the discipline exists to prevent.
  *   3. `affects:` targets resolve (the "if I change, review that" loop).
@@ -19,16 +19,25 @@
  *      anti-ossification field. An expired one is surfaced so a recall layer
  *      can present the decision as "to re-evaluate" rather than as a binding
  *      constraint.
+ *   5. Verdict pages carry a written "alternatives considered" section.
+ *
+ * TOKEN RENAME (2026-07-28, decision `renommage-jetons-contrat`): the
+ * lifecycle tokens are `replaces` / `replaced` / `replaced_by` — one lexical
+ * family, active and passive forms that cannot be misread for each other.
+ * The pre-rename tokens (`supersedes` / `superseded` / `superseded_by`, the
+ * standard ADR vocabulary) remain READABLE as legacy: the status maps to
+ * `replaced` with a migration hint, the fields are read as aliases with an
+ * info-level rename hint. A vault that never migrates keeps working.
  *
  * Calibration. ERRORS are states where the decision layer actively misleads
- * a reader (missing/invalid status, incoherent supersession, cycles).
+ * a reader (missing/invalid status, incoherent replacement, cycles).
  * WARNINGS are degradations that still leave the layer usable (missing
  * scope, unresolvable `affects:` target, expired review date). INFO is
- * advisory (no `evidence:` backing).
+ * advisory (no `evidence:` backing, legacy field names).
  *
  * Corpus-scoped by design: every cross-page rule resolves ONLY against the
  * pages handed in. Linting a subfolder therefore cannot claim a link is
- * dead — that is why `superseded-without-successor` is a warning and not an
+ * dead — that is why `replaced-without-successor` is a warning and not an
  * error: the successor may simply live outside the slice being linted.
  *
  * Pure-functional: no I/O. The caller reads the pages and passes them in.
@@ -48,12 +57,14 @@ export const DECISION_TYPES = new Set(['decision', 'adr', 'decision-input']);
 export const VERDICT_TYPES = new Set(['decision', 'adr']);
 
 /** The only `status` values a decision page may carry. */
-export const VALID_STATUSES = ['proposed', 'accepted', 'superseded', 'rejected'];
+export const VALID_STATUSES = ['proposed', 'accepted', 'replaced', 'rejected'];
 
 /**
  * Free-form statuses observed in the wild, mapped to their normalized
  * equivalent. Used to turn a `status-invalid` finding into an actionable
- * migration hint instead of a bare rejection.
+ * migration hint instead of a bare rejection. `superseded` joined this list
+ * with the 2026-07-28 token rename — it is the pre-rename standard token,
+ * not a mistake, but it migrates all the same.
  */
 export const LEGACY_STATUS_MAP = {
   active: 'accepted',
@@ -66,10 +77,17 @@ export const LEGACY_STATUS_MAP = {
   draft: 'proposed',
   'awaiting-validation': 'proposed',
   pending: 'proposed',
-  obsolete: 'superseded',
-  deprecated: 'superseded',
+  superseded: 'replaced',
+  obsolete: 'replaced',
+  deprecated: 'replaced',
   abandoned: 'rejected',
   declined: 'rejected',
+};
+
+/** Modern lifecycle fields and the legacy alias each one still reads. */
+const FIELD_ALIASES = {
+  replaces: 'supersedes',
+  replaced_by: 'superseded_by',
 };
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -116,6 +134,36 @@ function toList(value) {
 }
 
 /**
+ * Read a lifecycle field, tolerating its pre-rename alias. The modern name
+ * wins when both are present; using the legacy name is reported by the
+ * caller as an info-level rename hint, never as a failure — a vault that
+ * predates the rename keeps linting cleanly.
+ */
+function lifecycleField(frontmatter, modernName) {
+  const legacyName = FIELD_ALIASES[modernName];
+  const modern = toList(frontmatter[modernName]);
+  const legacy = toList(frontmatter[legacyName]);
+  return {
+    values: modern.length ? modern : legacy,
+    usedLegacy: modern.length === 0 && legacy.length > 0,
+    bothPresent: modern.length > 0 && legacy.length > 0,
+    legacyName,
+  };
+}
+
+/**
+ * Resolve a raw status to its canonical form — a valid token, its legacy
+ * mapping, or null. Cross-page rules use this so an unmigrated
+ * `status: superseded` target still counts as retired (rule 1 separately
+ * reports the token itself as legacy).
+ */
+function canonicalStatus(raw) {
+  const key = String(raw ?? '').trim().toLowerCase();
+  if (VALID_STATUSES.includes(key)) return key;
+  return LEGACY_STATUS_MAP[key] ?? null;
+}
+
+/**
  * Reduce a link reference to the key used for resolution. Accepts
  * `[[basename]]`, `[[folder/basename|alias]]`, `folder/basename.md`, or a
  * bare basename — all collapse to the lowercased basename without
@@ -124,7 +172,7 @@ function toList(value) {
  *
  * Bracket stripping is deliberately lenient (leading `[`s and trailing `]`s
  * rather than a well-formed `[[...]]` match): `parseFrontmatter` reads an
- * unquoted `supersedes: [[a]], [[b]]` line as a YAML flow sequence and hands
+ * unquoted `replaces: [[a]], [[b]]` line as a YAML flow sequence and hands
  * back the bracket-mangled items `[a]]` and `[[b]` — a real authoring
  * mistake that must still resolve to `a` and `b` instead of silently
  * reporting two dead targets.
@@ -248,13 +296,15 @@ export function lintDecisions(pages, options = {}) {
     DECISION_TYPES.has(String(entry.frontmatter.type ?? '').trim().toLowerCase()),
   );
 
-  // Reverse index: which decisions claim to supersede a given page.
-  const supersededBy = new Map();
+  // Reverse index: which decisions claim to replace a given page (through
+  // the modern field or its legacy alias — an unmigrated claimer still
+  // counts as a successor).
+  const replacedByClaims = new Map();
   for (const entry of decisions) {
-    for (const reference of toList(entry.frontmatter.supersedes)) {
+    for (const reference of lifecycleField(entry.frontmatter, 'replaces').values) {
       const key = linkKey(reference);
-      if (!supersededBy.has(key)) supersededBy.set(key, []);
-      supersededBy.get(key).push(entry.path);
+      if (!replacedByClaims.has(key)) replacedByClaims.set(key, []);
+      replacedByClaims.get(key).push(entry.path);
     }
   }
 
@@ -282,18 +332,40 @@ export function lintDecisions(pages, options = {}) {
       );
     }
 
-    // --- Rule 2: supersedes coherence ------------------------------------
+    // --- Legacy field names (info, never a failure) -----------------------
+    for (const modernName of Object.keys(FIELD_ALIASES)) {
+      const field = lifecycleField(frontmatter, modernName);
+      if (field.bothPresent) {
+        warnings.push(
+          finding(
+            'legacy-field-duplicate',
+            path,
+            `both \`${modernName}:\` and its pre-rename alias \`${field.legacyName}:\` are set — the modern field wins; delete the alias`,
+          ),
+        );
+      } else if (field.usedLegacy) {
+        info.push(
+          finding(
+            'legacy-field-name',
+            path,
+            `\`${field.legacyName}:\` was renamed \`${modernName}:\` (2026-07-28) — still read, but rename it`,
+          ),
+        );
+      }
+    }
+
+    // --- Rule 2: replaces coherence ---------------------------------------
     const ownKey = pageKey(path);
-    for (const reference of toList(frontmatter.supersedes)) {
+    for (const reference of lifecycleField(frontmatter, 'replaces').values) {
       const key = linkKey(reference);
       if (key === ownKey) {
-        errors.push(finding('supersedes-self', path, 'page supersedes itself'));
+        errors.push(finding('replaces-self', path, 'page replaces itself'));
         continue;
       }
       const target = byKey.get(key);
       if (!target) {
         errors.push(
-          finding('supersedes-target-missing', path, `\`supersedes: ${reference}\` points to a page not found in the corpus`),
+          finding('replaces-target-missing', path, `\`replaces: ${reference}\` points to a page not found in the corpus`),
         );
         continue;
       }
@@ -301,66 +373,67 @@ export function lintDecisions(pages, options = {}) {
       if (!DECISION_TYPES.has(targetType)) {
         errors.push(
           finding(
-            'supersedes-target-not-decision',
+            'replaces-target-not-decision',
             path,
-            `\`supersedes: ${reference}\` points to ${target.path} whose type is \`${targetType || '(none)'}\` — only a decision can be superseded`,
+            `\`replaces: ${reference}\` points to ${target.path} whose type is \`${targetType || '(none)'}\` — only a decision can be replaced`,
           ),
         );
         continue;
       }
-      const targetStatus = String(target.frontmatter.status ?? '').trim().toLowerCase();
-      if (targetStatus !== 'superseded') {
+      if (canonicalStatus(target.frontmatter.status) !== 'replaced') {
+        const targetStatus = String(target.frontmatter.status ?? '').trim().toLowerCase();
         errors.push(
           finding(
-            'supersedes-target-not-superseded',
+            'replaces-target-not-replaced',
             path,
-            `\`supersedes: ${reference}\` but ${target.path} still has status \`${targetStatus || '(none)'}\` — both decisions read as live`,
+            `\`replaces: ${reference}\` but ${target.path} still has status \`${targetStatus || '(none)'}\` — both decisions read as live`,
             { target: target.path },
           ),
         );
       }
-      // Cycle: the target claims to supersede this page back.
-      const back = toList(target.frontmatter.supersedes).map(linkKey);
+      // Cycle: the target claims to replace this page back.
+      const back = lifecycleField(target.frontmatter, 'replaces').values.map(linkKey);
       if (back.includes(ownKey)) {
         errors.push(
-          finding('supersedes-cycle', path, `\`supersedes\` cycle with ${target.path} — each claims to replace the other`, {
+          finding('replaces-cycle', path, `\`replaces\` cycle with ${target.path} — each claims to replace the other`, {
             target: target.path,
           }),
         );
       }
     }
 
-    // Reverse direction: a superseded page must lead somewhere. Either a
-    // corpus page claims it via `supersedes:`, or the page itself names its
-    // successor via `superseded_by:` — the only way to express a successor
+    // Reverse direction: a replaced page must lead somewhere. Either a
+    // corpus page claims it via `replaces:`, or the page itself names its
+    // successor via `replaced_by:` — the only way to express a successor
     // that lives outside this vault (a decision migrated to another vault,
     // say). Warning, not error: the successor may simply sit outside the
-    // linted slice.
-    if (statusKey === 'superseded') {
-      const declared = toList(frontmatter.superseded_by);
-      if (!supersededBy.has(ownKey) && declared.length === 0) {
+    // linted slice. `canonicalStatus` keeps this working on an unmigrated
+    // `status: superseded` page.
+    if (canonicalStatus(statusKey) === 'replaced') {
+      const declared = lifecycleField(frontmatter, 'replaced_by').values;
+      if (!replacedByClaims.has(ownKey) && declared.length === 0) {
         warnings.push(
           finding(
-            'superseded-without-successor',
+            'replaced-without-successor',
             path,
-            'status is `superseded` but no page declares `supersedes:` pointing here and the page has no `superseded_by:`',
+            'status is `replaced` but no page declares `replaces:` pointing here and the page has no `replaced_by:`',
           ),
         );
       }
       // When the named successor IS in the corpus, the link must be
       // reciprocal — otherwise only one of the two pages knows about the
-      // supersession, which is how a retired decision silently stays live.
+      // replacement, which is how a retired decision silently stays live.
       for (const reference of declared) {
         if (isExternalReference(reference)) continue; // names another vault
         const successor = byKey.get(linkKey(reference));
         if (!successor) continue; // out-of-corpus successor: nothing to verify
-        const back = toList(successor.frontmatter.supersedes).map(linkKey);
+        const back = lifecycleField(successor.frontmatter, 'replaces').values.map(linkKey);
         if (!back.includes(ownKey)) {
           warnings.push(
             finding(
-              'superseded-by-not-reciprocated',
+              'replaced-by-not-reciprocated',
               path,
-              `\`superseded_by: ${reference}\` but ${successor.path} does not declare \`supersedes:\` pointing back here`,
+              `\`replaced_by: ${reference}\` but ${successor.path} does not declare \`replaces:\` pointing back here`,
               { target: successor.path },
             ),
           );

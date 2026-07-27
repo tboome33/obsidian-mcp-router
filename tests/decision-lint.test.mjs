@@ -1,6 +1,6 @@
 /**
  * Tests for src/helpers/decision-lint.mjs — the decision-layer frontmatter
- * contract (normalized statuses, bidirectional `supersedes:` coherence,
+ * contract (normalized statuses, bidirectional `replaces:` coherence,
  * `affects:` resolution, charter fields). Run with `npm test`.
  */
 
@@ -104,9 +104,9 @@ describe('lintDecisions — rule 1: status', () => {
   test('accepts every normalized status', () => {
     for (const status of VALID_STATUSES) {
       const pages = [cleanDecision('wiki/d.md', { status })];
-      // A superseded page needs a successor to avoid the reverse-direction warning.
-      if (status === 'superseded') {
-        pages.push(cleanDecision('wiki/new.md', { supersedes: ['[[d]]'] }));
+      // A replaced page needs a successor to avoid the reverse-direction warning.
+      if (status === 'replaced') {
+        pages.push(cleanDecision('wiki/new.md', { replaces: ['[[d]]'] }));
       }
       const result = lintDecisions(pages);
       assert.equal(result.ok, true, `status ${status} should be valid`);
@@ -143,11 +143,11 @@ describe('lintDecisions — rule 1: status', () => {
   });
 });
 
-describe('lintDecisions — rule 2: supersedes coherence', () => {
+describe('lintDecisions — rule 2: replaces coherence', () => {
   test('a coherent supersession passes', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/old.md', { status: 'superseded' }),
-      cleanDecision('wiki/new.md', { supersedes: ['[[old]]'] }),
+      cleanDecision('wiki/old.md', { status: 'replaced' }),
+      cleanDecision('wiki/new.md', { replaces: ['[[old]]'] }),
     ]);
     assert.equal(result.ok, true);
     assert.deepEqual(result.warnings, []);
@@ -156,47 +156,47 @@ describe('lintDecisions — rule 2: supersedes coherence', () => {
   test('flags a target that is still live', () => {
     const result = lintDecisions([
       cleanDecision('wiki/old.md', { status: 'accepted' }),
-      cleanDecision('wiki/new.md', { supersedes: ['[[old]]'] }),
+      cleanDecision('wiki/new.md', { replaces: ['[[old]]'] }),
     ]);
-    assert.deepEqual(rules(result.errors), ['supersedes-target-not-superseded']);
+    assert.deepEqual(rules(result.errors), ['replaces-target-not-replaced']);
     assert.equal(result.errors[0].target, 'wiki/old.md');
   });
 
-  test('flags a dangling supersedes target', () => {
-    const result = lintDecisions([cleanDecision('wiki/new.md', { supersedes: ['[[ghost]]'] })]);
-    assert.deepEqual(rules(result.errors), ['supersedes-target-missing']);
+  test('flags a dangling replaces target', () => {
+    const result = lintDecisions([cleanDecision('wiki/new.md', { replaces: ['[[ghost]]'] })]);
+    assert.deepEqual(rules(result.errors), ['replaces-target-missing']);
   });
 
-  test('flags superseding a non-decision page', () => {
-    const result = lintDecisions([OTHER_PAGE, cleanDecision('wiki/new.md', { supersedes: ['[[study]]'] })]);
-    assert.deepEqual(rules(result.errors), ['supersedes-target-not-decision']);
+  test('flags replacing a non-decision page', () => {
+    const result = lintDecisions([OTHER_PAGE, cleanDecision('wiki/new.md', { replaces: ['[[study]]'] })]);
+    assert.deepEqual(rules(result.errors), ['replaces-target-not-decision']);
   });
 
   test('flags self-supersession', () => {
-    const result = lintDecisions([cleanDecision('wiki/d.md', { supersedes: ['[[d]]'] })]);
-    assert.deepEqual(rules(result.errors), ['supersedes-self']);
+    const result = lintDecisions([cleanDecision('wiki/d.md', { replaces: ['[[d]]'] })]);
+    assert.deepEqual(rules(result.errors), ['replaces-self']);
   });
 
-  test('flags a two-page supersedes cycle on both sides', () => {
+  test('flags a two-page replaces cycle on both sides', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/a.md', { status: 'superseded', supersedes: ['[[b]]'] }),
-      cleanDecision('wiki/b.md', { status: 'superseded', supersedes: ['[[a]]'] }),
+      cleanDecision('wiki/a.md', { status: 'replaced', replaces: ['[[b]]'] }),
+      cleanDecision('wiki/b.md', { status: 'replaced', replaces: ['[[a]]'] }),
     ]);
-    const cycles = result.errors.filter((f) => f.rule === 'supersedes-cycle');
+    const cycles = result.errors.filter((f) => f.rule === 'replaces-cycle');
     assert.equal(cycles.length, 2);
   });
 
-  test('warns when a superseded page has no successor in the corpus', () => {
-    const result = lintDecisions([cleanDecision('wiki/old.md', { status: 'superseded' })]);
-    assert.deepEqual(rules(result.warnings), ['superseded-without-successor']);
+  test('warns when a replaced page has no successor in the corpus', () => {
+    const result = lintDecisions([cleanDecision('wiki/old.md', { status: 'replaced' })]);
+    assert.deepEqual(rules(result.warnings), ['replaced-without-successor']);
     assert.equal(result.ok, true, 'corpus-scope caveat keeps this a warning');
   });
 
-  test('an out-of-corpus successor named by superseded_by silences the warning', () => {
+  test('an out-of-corpus successor named by replaced_by silences the warning', () => {
     // The real case: a decision retired in favour of one that lives in
-    // ANOTHER vault — `supersedes:` cannot reach across vaults.
+    // ANOTHER vault — `replaces:` cannot reach across vaults.
     const result = lintDecisions([
-      cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['kiviri:wiki/other-vault-decision.md'] }),
+      cleanDecision('wiki/old.md', { status: 'replaced', replaced_by: ['kiviri:wiki/other-vault-decision.md'] }),
     ]);
     assert.deepEqual(result.warnings, []);
     assert.equal(result.ok, true);
@@ -207,54 +207,54 @@ describe('lintDecisions — rule 2: supersedes coherence', () => {
     // vault, whose basename also exists here. Basename resolution would
     // demand a reciprocity that cannot exist across vaults.
     const result = lintDecisions([
-      cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['kiviri:wiki/Projects/new.md'] }),
+      cleanDecision('wiki/old.md', { status: 'replaced', replaced_by: ['kiviri:wiki/Projects/new.md'] }),
       cleanDecision('wiki/new.md'),
     ]);
     assert.deepEqual(result.warnings, [], 'an explicitly cross-vault reference is left alone');
   });
 
-  test('an in-corpus successor named by superseded_by must reciprocate', () => {
+  test('an in-corpus successor named by replaced_by must reciprocate', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['[[new]]'] }),
+      cleanDecision('wiki/old.md', { status: 'replaced', replaced_by: ['[[new]]'] }),
       cleanDecision('wiki/new.md'),
     ]);
-    assert.deepEqual(rules(result.warnings), ['superseded-by-not-reciprocated']);
+    assert.deepEqual(rules(result.warnings), ['replaced-by-not-reciprocated']);
     assert.equal(result.warnings[0].target, 'wiki/new.md');
   });
 
-  test('a reciprocated superseded_by / supersedes pair is clean', () => {
+  test('a reciprocated replaced_by / replaces pair is clean', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/old.md', { status: 'superseded', superseded_by: ['[[new]]'] }),
-      cleanDecision('wiki/new.md', { supersedes: ['[[old]]'] }),
+      cleanDecision('wiki/old.md', { status: 'replaced', replaced_by: ['[[new]]'] }),
+      cleanDecision('wiki/new.md', { replaces: ['[[old]]'] }),
     ]);
     assert.deepEqual(result.warnings, []);
     assert.equal(result.ok, true);
   });
 
-  test('resolves supersedes through paths, aliases and anchors', () => {
+  test('resolves replaces through paths, aliases and anchors', () => {
     for (const reference of ['[[old]]', '[[wiki/decisions/old|the old one]]', 'wiki/decisions/old.md', '[[old#Decision]]']) {
       const result = lintDecisions([
-        cleanDecision('wiki/decisions/old.md', { status: 'superseded' }),
-        cleanDecision('wiki/decisions/new.md', { supersedes: [reference] }),
+        cleanDecision('wiki/decisions/old.md', { status: 'replaced' }),
+        cleanDecision('wiki/decisions/new.md', { replaces: [reference] }),
       ]);
       assert.equal(result.ok, true, `${reference} should resolve`);
     }
   });
 
-  test('resolves an unquoted comma-separated supersedes line despite parser bracket-mangling', () => {
+  test('resolves an unquoted comma-separated replaces line despite parser bracket-mangling', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/o1.md', { status: 'superseded' }),
-      cleanDecision('wiki/o2.md', { status: 'superseded' }),
-      cleanDecision('wiki/new.md', { supersedes: '[[o1]], [[o2]]' }),
+      cleanDecision('wiki/o1.md', { status: 'replaced' }),
+      cleanDecision('wiki/o2.md', { status: 'replaced' }),
+      cleanDecision('wiki/new.md', { replaces: '[[o1]], [[o2]]' }),
     ]);
     assert.equal(result.ok, true);
   });
 
-  test('one successor covers several superseded pages', () => {
+  test('one successor covers several replaced pages', () => {
     const result = lintDecisions([
-      cleanDecision('wiki/o1.md', { status: 'superseded' }),
-      cleanDecision('wiki/o2.md', { status: 'superseded' }),
-      cleanDecision('wiki/new.md', { supersedes: ['[[o1]]', '[[o2]]'] }),
+      cleanDecision('wiki/o1.md', { status: 'replaced' }),
+      cleanDecision('wiki/o2.md', { status: 'replaced' }),
+      cleanDecision('wiki/new.md', { replaces: ['[[o1]]', '[[o2]]'] }),
     ]);
     assert.equal(result.ok, true);
     assert.deepEqual(result.warnings, []);
@@ -441,6 +441,46 @@ describe('findAlternativesSection', () => {
   });
 });
 
+describe('legacy tokens still read (rename of 2026-07-28)', () => {
+  test('a pre-rename supersedes: field is read as replaces, with a rename hint', () => {
+    const result = lintDecisions([
+      cleanDecision('wiki/old.md', { status: 'replaced' }),
+      cleanDecision('wiki/new.md', { supersedes: ['[[old]]'] }),
+    ]);
+    assert.equal(result.ok, true, 'the claim still counts — old.md has its successor');
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.info.some((f) => f.rule === 'legacy-field-name'), true, 'and the rename is hinted');
+  });
+
+  test('both modern and legacy field set → the modern one wins, with a warning', () => {
+    const result = lintDecisions([
+      cleanDecision('wiki/old.md', { status: 'replaced' }),
+      cleanDecision('wiki/new.md', { replaces: ['[[old]]'], supersedes: ['[[ghost]]'] }),
+    ]);
+    assert.equal(rules(result.errors).includes('replaces-target-missing'), false, 'the legacy ghost is ignored');
+    assert.deepEqual(rules(result.warnings), ['legacy-field-duplicate']);
+  });
+
+  test('an unmigrated superseded target still counts as retired', () => {
+    // Its own status gets the legacy error; but the claimer must NOT be told
+    // "both decisions read as live" — canonically the target IS retired.
+    const result = lintDecisions([
+      cleanDecision('wiki/old.md', { status: 'superseded' }),
+      cleanDecision('wiki/new.md', { replaces: ['[[old]]'] }),
+    ]);
+    assert.deepEqual(rules(result.errors), ['status-invalid'], 'only the token itself is flagged');
+    assert.equal(result.errors[0].suggestion, 'replaced');
+  });
+
+  test('a pre-rename superseded_by: still silences the successor warning', () => {
+    const result = lintDecisions([
+      cleanDecision('wiki/old.md', { status: 'replaced', superseded_by: ['kiviri:wiki/x.md'] }),
+    ]);
+    assert.deepEqual(result.warnings, []);
+    assert.equal(result.info.some((f) => f.rule === 'legacy-field-name'), true);
+  });
+});
+
 describe('linkKey / normalizeStatus', () => {
   test('linkKey collapses every reference form to a basename', () => {
     assert.equal(linkKey('[[Foo Bar]]'), 'foo bar');
@@ -451,7 +491,7 @@ describe('linkKey / normalizeStatus', () => {
   });
 
   test('linkKey survives the bracket-mangling of an inline flow sequence', () => {
-    // `supersedes: [[a]], [[b]]` (unquoted) is read by parseFrontmatter as a
+    // `replaces: [[a]], [[b]]` (unquoted) is read by parseFrontmatter as a
     // YAML flow sequence, yielding these two mangled items.
     assert.equal(linkKey('[a]]'), 'a');
     assert.equal(linkKey('[[b]'), 'b');

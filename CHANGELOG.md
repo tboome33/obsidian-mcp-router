@@ -6,6 +6,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-07-27 — the lifecycle tokens are renamed: replaces / replaced / replaced_by
+
+Decided by Roland (vault decision `renommage-jetons-contrat`, accepted 2026-07-28), against the review's recommendation to keep the standard vocabulary — recorded as such. The grief was real: `supersedes` and `superseded` are the active and passive of the same Latin verb, near-identical on the page and opaque to anyone who doesn't already know ADR jargon. The chosen fix is the **complete** rename — one lexical family, three tokens that cannot be misread for each other — rather than the partial one first proposed (`obsolete`+`replaces`), which forgot `superseded_by` and would have produced three lexical families for one notion.
+
+| Before | After |
+|---|---|
+| `supersedes:` | `replaces:` |
+| `status: superseded` | `status: replaced` |
+| `superseded_by:` | `replaced_by:` |
+
+### Changed
+
+- **`decision-lint`** validates the new tokens and renames its rules accordingly (`replaces-self`, `replaces-target-missing`, `replaces-target-not-decision`, `replaces-target-not-replaced`, `replaces-cycle`, `replaced-without-successor`, `replaced-by-not-reciprocated`).
+- **The old tokens remain readable — a vault that never migrates keeps working.** `status: superseded` joins the legacy map (errors with a `replaced` suggestion, like `decided` → `accepted` before it); `supersedes:` / `superseded_by:` are honoured as field aliases with an INFO `legacy-field-name` hint; setting both the modern field and its alias warns (`legacy-field-duplicate`, modern wins). Cross-page rules resolve through `canonicalStatus`, so an unmigrated `superseded` target still counts as retired instead of being reported as a live contradiction.
+- **`heading-hierarchy` convention, `save` skill, `wiki-lint` Check N** updated to write and document the new tokens only.
+- Reference vault migrated in the same pass (the two retired pages now carry `status: replaced` + `replaced_by:`), along with the qualification charter (amended with a dated note — its verdict is unchanged, its token vocabulary is amended by the later accepted decision, like a statute amended by a later law).
+- **Deliberate departure from the standard ADR vocabulary** (Nygard, MADR, adr-tools) — the trade-off is recorded in the decision page's alternatives, including the recommendation it overrode.
+
+### Added
+
+- Legacy-token tests: pre-rename fields still read (with the hint), duplicate modern+alias detection, unmigrated `superseded` target counted as retired, pre-rename `superseded_by` still silencing the successor warning. Full suite **2397**, 0 failures; the reference vault lints at 0 errors / 1 pre-existing warning under the new tokens.
 ## [0.53.0] — 2026-07-27 — `npm run release` publishes the backlog, not just the current version
 
 v0.48.0 ended a drift where 40 versions shipped with pushed commits, no tags and no releases. The tooling it introduced worked — for one rhythm: bump, commit, push, repeat. It had a blind spot for the other one, which is the rhythm actually used here: **let several versions accumulate locally, then push the lot**.

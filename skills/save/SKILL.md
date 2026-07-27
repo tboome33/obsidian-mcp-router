@@ -89,21 +89,23 @@ For pages whose paragraphs mix provenance (common for `session` notes — user v
 For `decision` / `adr` / `decision-input` types, add the decision contract (v0.49.0+ — see "Decision pages — frontmatter contract" in the vault `CLAUDE.md`):
 
 ```yaml
-status: proposed        # proposed | accepted | superseded | rejected — no other value
+status: proposed        # proposed | accepted | replaced | rejected — no other value
 scope: <perimeter this decision applies to>   # required
 context: <1 line>
 consequences: <1 line>
-supersedes: "[[old-decision]]"   # only when replacing one — see below
-affects: ["[[impacted-page]]"]   # directional: re-review these if this is superseded
+replaces: "[[old-decision]]"     # only when replacing one — see below
+affects: ["[[impacted-page]]"]   # directional: re-review these if this is replaced
 evidence: ["[[study-or-session]]"]  # what motivated the verdict
 review_after: YYYY-MM-DD         # only if the decision depends on a changeable state of the world
 ```
 
+> Tokens renamed 2026-07-28 (`renommage-jetons-contrat`): write `replaces` / `replaced` / `replaced_by`, never the pre-rename `supersedes` / `superseded` / `superseded_by` (still read as legacy, flagged by the linter).
+
 Three rules that are NOT negotiable:
 
 1. **Write `proposed`, never `accepted`.** You propose; the human accepts. Say so explicitly in your output: *"filed as `proposed` — tell me when you want it flipped to `accepted`"*. Never self-validate a decision, in any auto-enrichment mode.
-2. **`supersedes:` is a two-file edit.** Adding `supersedes: "[[old]]"` REQUIRES flipping `[[old]]` to `status: superseded` in the same turn (`set_frontmatter`). Skipping that leaves two contradictory decisions both reading as live — the exact failure the discipline prevents.
-3. **Never rewrite an accepted verdict.** If the user changed their mind, create a NEW decision page with `supersedes:` — don't edit the old one beyond its status. Its original context is what explains why it was decided that way.
+2. **`replaces:` is a two-file edit.** Adding `replaces: "[[old]]"` REQUIRES flipping `[[old]]` to `status: replaced` in the same turn (`set_frontmatter`). Skipping that leaves two contradictory decisions both reading as live — the exact failure the discipline prevents.
+3. **Never rewrite an accepted verdict.** If the user changed their mind, create a NEW decision page with `replaces:` — don't edit the old one beyond its status. Its original context is what explains why it was decided that way.
 
 For `session`, add:
 ```yaml
