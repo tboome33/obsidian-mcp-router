@@ -36,6 +36,7 @@ import { fileURLToPath } from 'node:url';
 import { samePath, canonicalPath } from './path-helpers.mjs';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
+import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/targz-extract.mjs';
 import {
   buildProvisionPlan,
   resolveSourceVault,
@@ -2492,21 +2493,26 @@ function syncPluginsMode(vaultPath, opts = {}) {
     fail(msg);
   };
 
-  const cfg = loadConfig();
-  if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
+  // Lot 3: the sync SOURCE can be overridden — `--sync-from-github` extracts
+  // the GitHub skeleton into a temp dir and syncs FROM it, so machines with
+  // no dev repo and no local .template get the exact same guarded pipeline.
+  // Default stays the configured reference vault.
+  const sourceVault = opts.sourceVault ?? loadConfig().referenceVault;
+  const sourceLabel = opts.sourceLabel ?? '.template';
+  if (!sourceVault || !fs.existsSync(sourceVault)) {
     if (opts.quiet) process.exit(0);
-    failOrThrow('No reference vault configured or it no longer exists.');
+    failOrThrow(`Sync source not found: ${sourceVault || '(no reference vault configured)'}`);
   }
 
   const abs = path.resolve(vaultPath);
 
-  // Refuse to sync the reference vault onto itself. With --force this is
+  // Refuse to sync the source vault onto itself. With --force this is
   // a data-loss bug (the loop below would rm -rf each plugin dir in the
   // source before copying from the same path, leaving the source empty).
   // Without --force it's a silent no-op. Either way, surface clearly so
   // a script-aware caller (--sync-all or the meta-sync-template skill)
   // can adjust, but don't crash a --quiet hook run.
-  if (samePath(abs, cfg.referenceVault)) {
+  if (samePath(abs, sourceVault)) {
     if (opts.quiet) process.exit(0);
     failOrThrow(
       `Refusing to sync the reference vault onto itself: ${abs}\n` +
@@ -2521,10 +2527,10 @@ function syncPluginsMode(vaultPath, opts = {}) {
     failOrThrow(`Not an Obsidian vault (no .obsidian/): ${abs}`);
   }
 
-  const refPluginsDir = path.join(cfg.referenceVault, '.obsidian', 'plugins');
+  const refPluginsDir = path.join(sourceVault, '.obsidian', 'plugins');
   if (!fs.existsSync(refPluginsDir)) {
     if (opts.quiet) process.exit(0);
-    failOrThrow(`Reference vault has no plugins dir: ${refPluginsDir}`);
+    failOrThrow(`Sync source has no plugins dir: ${refPluginsDir}`);
   }
 
   const tgtPluginsDir = path.join(targetObsidian, 'plugins');
@@ -2534,6 +2540,40 @@ function syncPluginsMode(vaultPath, opts = {}) {
     try { return fs.statSync(path.join(refPluginsDir, p)).isDirectory(); }
     catch { return false; }
   });
+
+  // Network-sourced skeleton (--sync-from-github): the archive is NOT a
+  // trusted plugin store. Only plugins that the skeleton's own curated
+  // community-plugins.json (∪ REQUIRED_PLUGINS) declares are eligible, and
+  // only under strictly normalized names with a matching manifest id — a
+  // dir like `Obsidian-Local-REST-API` or one with a trailing space exists
+  // to dodge the credential guard on a case-insensitive filesystem
+  // (review finding). Local sources (.template) are untouched by this.
+  let vettedPlugins = refPlugins;
+  const rejectedByVetting = [];
+  if (opts.networkSource) {
+    let enabled = [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(sourceVault, '.obsidian', 'community-plugins.json'), 'utf8'));
+      if (Array.isArray(parsed)) enabled = parsed.filter((x) => typeof x === 'string');
+    } catch { enabled = []; }
+    const allow = new Set([...REQUIRED_PLUGINS, ...enabled]);
+    vettedPlugins = [];
+    for (const p of refPlugins) {
+      // The skeleton legitimately ships two kinds of dirs: full vendored
+      // plugins (manifest + main.js — BRAT, the bridge once downloaded) and
+      // CONFIG PRE-SEEDS (a lone non-secret data.json; the code comes from
+      // the marketplace/BRAT — Lot 2 curation). So: a manifest must match
+      // the folder name; no manifest is fine ONLY without executable code
+      // (Obsidian won't load a manifest-less dir anyway — belt and braces).
+      const hasMain = fs.existsSync(path.join(refPluginsDir, p, 'main.js'));
+      let manifestOk;
+      try {
+        manifestOk = JSON.parse(fs.readFileSync(path.join(refPluginsDir, p, 'manifest.json'), 'utf8')).id === p;
+      } catch { manifestOk = !hasMain; }
+      if (/^[a-z0-9][a-z0-9._-]*$/.test(p) && manifestOk && allow.has(p)) vettedPlugins.push(p);
+      else rejectedByVetting.push(p);
+    }
+  }
 
   const newlySynced = [];
   const refreshed = [];
@@ -2548,7 +2588,7 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // of this file for the full reasoning.
   const deferredForSafety = [];
 
-  for (const p of refPlugins) {
+  for (const p of vettedPlugins) {
     const srcPlugin = path.join(refPluginsDir, p);
     const dstPlugin = path.join(tgtPluginsDir, p);
     const exists = fs.existsSync(dstPlugin);
@@ -2563,7 +2603,11 @@ function syncPluginsMode(vaultPath, opts = {}) {
     // reference's data.json wholesale (codex P1 — folder existed
     // because Obsidian had created it on plugin install but the user
     // never activated it, so no data.json was ever written).
-    if (CREDENTIAL_LEAK_PLUGINS.has(p)) {
+    // Normalized lookup: `.has(p)` was an exact case-sensitive match while
+    // Windows resolves paths case-insensitively — `Obsidian-Local-REST-API`
+    // from a hostile source skipped the guard yet wrote into the real
+    // plugin folder (review finding).
+    if (CREDENTIAL_LEAK_PLUGINS.has(p.trim().toLowerCase())) {
       const tgtDataJson = path.join(dstPlugin, 'data.json');
       if (!fs.existsSync(tgtDataJson)) {
         deferredForSafety.push(p);
@@ -2596,23 +2640,23 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // Sync .smart-env if missing locally
   const tgtSmartEnv = path.join(abs, '.smart-env');
   let smartEnvAdded = false;
-  if (!fs.existsSync(tgtSmartEnv) && fs.existsSync(path.join(cfg.referenceVault, '.smart-env'))) {
-    cloneSmartEnv(cfg.referenceVault, abs, false);
+  if (!fs.existsSync(tgtSmartEnv) && fs.existsSync(path.join(sourceVault, '.smart-env'))) {
+    cloneSmartEnv(sourceVault, abs, false);
     smartEnvAdded = true;
   }
 
   // Lot 2 — themes + appearance ride the same sync: per-theme skip unless
   // --force (target-only themes always preserved), appearance.json only when
   // the target has none (a user's theme choice is never clobbered).
-  cloneThemes(cfg.referenceVault, abs, opts.force);
-  syncAppearanceDefaults(cfg.referenceVault, abs);
+  cloneThemes(sourceVault, abs, opts.force);
+  syncAppearanceDefaults(sourceVault, abs);
 
   // Sync Obsidian CSS snippets (no-task-strikethrough.css + any future ones)
   // and patch appearance.json — idempotent, never blocks existing snippets.
-  cloneSnippets(cfg.referenceVault, abs, opts.force);
+  cloneSnippets(sourceVault, abs, opts.force);
 
   // Sync root docs (README.md) — preserve user customizations unless --force
-  cloneRootDocs(cfg.referenceVault, abs, opts.force);
+  cloneRootDocs(sourceVault, abs, opts.force);
 
   // Update community-plugins.json with newly synced plugins
   if (newlySynced.length > 0) {
@@ -2628,7 +2672,7 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // Output: silent if nothing changed (especially in --quiet mode)
   if (opts.quiet) {
     if (newlySynced.length > 0) {
-      console.log(`[obsidian-mcp-router] Synced ${newlySynced.length} new plugin(s) from .template: ${newlySynced.join(', ')}`);
+      console.log(`[obsidian-mcp-router] Synced ${newlySynced.length} new plugin(s) from ${sourceLabel}: ${newlySynced.join(', ')}`);
     }
     if (deferredForSafety.length > 0) {
       // Even in --quiet (used by hooks), credential-leak avoidance
@@ -2644,6 +2688,12 @@ function syncPluginsMode(vaultPath, opts = {}) {
     process.exit(0);
   }
 
+  if (rejectedByVetting.length > 0) {
+    warn(
+      `Refused ${rejectedByVetting.length} plugin dir(s) from the network source (not in the skeleton's curated ` +
+      `community-plugins.json, or failed name/manifest hygiene): ${rejectedByVetting.join(', ')}`,
+    );
+  }
   if (newlySynced.length > 0) ok(`Synced ${newlySynced.length} new plugin(s): ${newlySynced.join(', ')}`);
   if (refreshed.length > 0) ok(`Refreshed ${refreshed.length} plugin(s) (--force): ${refreshed.join(', ')}`);
   if (keptNewer.length > 0) info(`Kept ${keptNewer.length} plugin(s) at the target's NEWER version (BRAT-updated, never downgraded): ${keptNewer.join(', ')}`);
@@ -2660,7 +2710,7 @@ function syncPluginsMode(vaultPath, opts = {}) {
     );
   }
   if (newlySynced.length === 0 && refreshed.length === 0 && !smartEnvAdded && deferredForSafety.length === 0) {
-    info('Already up to date with reference vault.');
+    info(`Already up to date with ${sourceLabel}.`);
   }
 }
 
@@ -3023,6 +3073,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs <vault-path> --sync-plugins --quiet   Silent unless something changed (for hooks)
   node setup-vault.mjs --sync-all                            Run --sync-plugins on every vault in portRegistry
   node setup-vault.mjs --sync-all --force                    Same, force-overwrite plugins + snippets
+  node setup-vault.mjs --sync-from-github <vault…>|--all     Sync plugins/themes/snippets straight from the GitHub
+      [--ref <branch|tag>] [--force]                          skeleton — no dev repo or local .template needed.
+                                                              Same guards as --sync-plugins (credentials, anti-
+                                                              downgrade) + hardened archive extraction.
   node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
                                                               shipped skeleton + download bridge plugin.
                                                               Follow up with --init-reference once you've
@@ -3443,6 +3497,122 @@ if (args[0] === '--hooks-status') {
     ok('All router hooks active.');
   }
   process.exit(0);
+}
+
+if (args[0] === '--sync-from-github') {
+  // Lot 3 — sync vault config (plugins/themes/snippets/root docs) straight
+  // from the GitHub skeleton, for machines that have neither the dev repo
+  // nor a local .template. Every safety of --sync-plugins applies unchanged
+  // (CREDENTIAL_LEAK_PLUGINS, the anti-downgrade guard, per-theme clones,
+  // appearance fill-if-absent) because the apply step IS syncPluginsMode
+  // with an overridden source. The archive itself goes through the hardened
+  // extractor — path-traversal aborts, links skipped and reported, size and
+  // entry caps — see src/helpers/targz-extract.mjs.
+  // Hardened flag parsing (review findings): a flag-like token is never
+  // accepted as a --ref/--repo value, unknown flags fail instead of being
+  // treated as vault paths, and --all cannot be silently combined with
+  // explicit paths (the paths were dropped and EVERY vault got synced).
+  let force = false;
+  let all = false;
+  let ref = 'main';
+  let repo = 'tboome33/obsidian-mcp-router';
+  const targets = [];
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--force') { force = true; continue; }
+    if (a === '--all') { all = true; continue; }
+    if (a === '--ref' || a === '--repo') {
+      const value = args[i + 1];
+      if (value === undefined || value.startsWith('-')) fail(`${a} requires a value`);
+      if (a === '--ref') ref = value; else repo = value;
+      i++;
+      continue;
+    }
+    if (a.startsWith('-')) fail(`Unknown flag for --sync-from-github: ${a}`);
+    targets.push(a);
+  }
+
+  try { assertSafeRepoRef(repo, ref); } catch (e) { fail(e.message); }
+  if (all && targets.length > 0) {
+    fail('--all cannot be combined with explicit vault paths — pick one or the other.');
+  }
+  if (!all && targets.length === 0) {
+    fail('Usage: --sync-from-github <vault-path…> | --all  [--ref <branch|tag>] [--repo <owner/name>] [--force]');
+  }
+
+  // Resolve the target list BEFORE downloading anything: it fails fast, and
+  // loadConfig() throwing after the temp dir exists leaked the extraction
+  // (review finding — process.exit skips finally, so exits must stay simple).
+  const list = all ? Object.keys(loadConfig().portRegistry || {}) : targets;
+  if (list.length === 0) {
+    info('No vaults in portRegistry. Nothing to do.');
+    process.exit(0);
+  }
+
+  const url = `https://codeload.github.com/${repo}/tar.gz/${ref}`;
+  console.log(c('bold', `Downloading ${repo}@${ref} from GitHub…`));
+  let buffer;
+  try { buffer = await httpsGetBuffer(url); }
+  catch (e) { fail(`Download failed: ${e.message}\n   ${url}`); }
+  info(`Downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
+
+  // NOTE on cleanup: process.exit() skips finally blocks, so every exit path
+  // below calls cleanup() explicitly before failing or exiting.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'omr-github-sync-'));
+  const cleanup = () => { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best effort */ } };
+
+  let extracted;
+  try { extracted = extractTarGz(buffer, tmp); }
+  catch (e) { cleanup(); fail(`Refusing to extract the archive: ${e.message}`); }
+  if (extracted.skippedLinks.length > 0) {
+    warn(`Skipped ${extracted.skippedLinks.length} link entr${extracted.skippedLinks.length > 1 ? 'ies' : 'y'} in the archive (never materialized): ${extracted.skippedLinks.slice(0, 5).join(', ')}${extracted.skippedLinks.length > 5 ? ', …' : ''}`);
+  }
+
+  // Deterministic root selection: pick the extracted directory that actually
+  // contains the skeleton, instead of whatever readdir lists first (review
+  // finding — multi-root archives chose the source by listing order).
+  const skeleton = fs.readdirSync(tmp, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => path.join(tmp, e.name, 'templates', 'reference-vault-skeleton'))
+    .find((p) => fs.existsSync(path.join(p, '.obsidian', 'plugins'))) ?? null;
+  if (!skeleton) {
+    cleanup();
+    fail(`The archive has no templates/reference-vault-skeleton with plugins — wrong repo or ref? (${repo}@${ref})`);
+  }
+  info(`Skeleton extracted (${extracted.files} files) — applying with the standard sync guards…`);
+  console.log('');
+
+  let okCount = 0;
+  let skipCount = 0;
+  let failCount = 0;
+  for (const vaultPath of list) {
+    if (!fs.existsSync(path.join(vaultPath, '.obsidian'))) {
+      console.log(c('yellow', `  - skip (no .obsidian): ${vaultPath}`));
+      skipCount++;
+      continue;
+    }
+    try {
+      console.log(c('cyan', `  → ${vaultPath}`));
+      syncPluginsMode(vaultPath, {
+        force,
+        throwOnError: true,
+        sourceVault: skeleton,
+        sourceLabel: `GitHub ${repo}@${ref}`,
+        // Enables the curated-allowlist + name/manifest hygiene vetting —
+        // a network archive is never a trusted plugin store.
+        networkSource: true,
+      });
+    } catch (err) {
+      console.log(c('red', `    failed: ${err.message || err}`));
+      failCount++;
+      continue;
+    }
+    okCount++;
+  }
+  cleanup();
+  console.log('');
+  console.log(c('bold', `Done. ${okCount} synced, ${skipCount} skipped, ${failCount} failed.`));
+  process.exit(failCount > 0 ? 1 : 0);
 }
 
 if (args[0] === '--sync-all') {

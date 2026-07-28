@@ -177,7 +177,7 @@ If a vault is currently online (Obsidian was running) and a plugin was added, me
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Can't find scripts/setup-vault.mjs` | Router repo not cloned, or `npm link` never run | Run `meta-setup` first |
-| `No reference vault configured` | `config.json` has empty `referenceVault` | Run `node scripts/setup-vault.mjs --init-reference "<path>"` and pick a vault to be the template source |
+| `Sync source not found` (formerly `No reference vault configured`) | `config.json` has empty `referenceVault`, or its path no longer exists on disk | Run `node scripts/setup-vault.mjs --init-reference "<path>"` and pick a vault to be the template source |
 | Per-vault: `skip (path missing)` | The target path in `portRegistry` no longer exists on disk (vault moved/deleted) | Edit the router config (`$HOME/.claude/obsidian-mcp-router/config.json` or `$env:USERPROFILE\.claude\obsidian-mcp-router\config.json` on Windows) to remove the dead entry, OR move the vault back |
 | Per-vault: `skip (no .obsidian)` | The path exists but is not an Obsidian vault | Same as above — clean up the registry |
 | Plugin appears in `community-plugins.json` but not in Obsidian | Obsidian was open during sync, hasn't reloaded | User: Ctrl+R on the target vault, or close + reopen |

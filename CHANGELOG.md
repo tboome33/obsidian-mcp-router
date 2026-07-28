@@ -6,6 +6,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-07-28 — Lot 3: `/sync-from-github` — a machine with no dev repo pulls the template straight from GitHub
+
+Lot 3 of the template-distribution roadmap, plus the first task the `brat-dans-template-vivant` decision ordered: **BRAT 2.0.8 is now installed and ENABLED in the living `.template` vault** (`data.json` wired to the bridge repo + hot-reload, `updateAtStartup`), so the next `meta-sync-template` hands it to every existing vault and the bridge self-updates from GitHub releases from then on.
+
+### Added
+
+- **`--sync-from-github` mode** in `setup-vault.mjs` — downloads the repo tarball from `codeload.github.com` (size-capped, HTTPS-only redirects, wall-guarded), extracts `templates/reference-vault-skeleton` to a temp dir, and applies it to one vault or `--all` through the exact same pipeline as `--sync-plugins`: `syncPluginsMode` gained a `sourceVault`/`sourceLabel` override, so the credential-leak refusal, the BRAT anti-downgrade guard, per-theme clones, appearance fill-if-absent and root-doc sync all apply unchanged. `--ref <branch|tag>` and `--repo <owner/name>` are validated before any URL is built.
+- **`src/helpers/targz-extract.mjs`** — dependency-free hardened extractor: path-traversal aborts the WHOLE extraction (absolute paths, `..` segments, backslash tricks, Windows trailing-dot/space components), links are never materialized (skipped and reported), entry-count and total-byte caps govern the gunzip output too, GNU longnames supported, base-256 numeric fields refused explicitly.
+- **`sync-from-github` skill + slash command** — picker over the configured fleet, faithful reporting of the four outcome categories (synced / refreshed / kept-newer / refused-for-safety), and the standing rule that safety refusals are guarantees to respect, never errors to bypass.
+
+### Security — adversarial review before commit (2 agents, 15 verified findings, all addressed or consciously accepted)
+
+- **Network archives are not a trusted plugin store**: under `--sync-from-github`, source plugin dirs are vetted — curated allowlist (skeleton's own `community-plugins.json` ∪ REQUIRED_PLUGINS), strict lowercase name hygiene, manifest-id-matches-folder when a manifest exists, and manifest-less dirs allowed only without executable code (the Lot 2 config-pre-seed pattern).
+- **Credential guard normalization**: `CREDENTIAL_LEAK_PLUGINS` was an exact case-sensitive match while Windows resolves paths case-insensitively — `Obsidian-Local-REST-API ` (case + trailing space) dodged the guard yet wrote into the real folder. Lookup now normalizes.
+- **Bomb caps actually govern**: every entry's payload (pax/longname/dir metadata included) counts toward `maxTotalBytes`, and the gunzip `maxOutputLength` derives from the caller's limit (a ~575 KB download could previously decompress to half a GB).
+- **Parser desyncs closed**: directory entries declaring a payload advance past it; truncated archives fail strictly; a crafted final entry can no longer extract clamped content silently.
+- **CLI hardening**: `--ref`/`--repo` refuse flag-like or missing values, unknown flags fail instead of becoming vault paths, `--all` + explicit paths is an error instead of silently syncing the whole fleet, and the `--all` config load happens before any download (no leaked temp dir).
+- Consciously accepted (documented): idle-timeout rather than wall-clock download deadline (host is pinned by default), and the pre-existing subcommand-position footgun shared with `--sync-all`.
+
+### Tests
+
+- `tests/targz-extract.test.mjs` — 18 cases: synthesized ustar archives (real checksums) covering happy path, GNU longnames, pax skip, every traversal variant, link smuggling, caps (including metadata payloads), base-256 refusal, dir-desync, truncation, repo/ref validation. E2E verified twice against the real GitHub tarball (2.1 MB → 404 files → 4 curated plugins + Blue Topaz applied to a throwaway vault; hardened flag parsing exercised live). Full suite **2437**, 0 failures.
+
 ## [0.54.1] — 2026-07-28 — the linter now reads « Alternatives considérées »
 
 Found by running the pilot consolidation against the real vault, minutes after v0.54.0: the canonical compact form that `decision-consolidate` prescribes writes its table under `## Alternatives considérées` — the natural French for "alternatives considered" — and `ALTERNATIVES_HEADINGS` knew `envisagées` and `écartées` but not `considérées`. Every consolidated page would have shipped with a false `alternatives-missing` warning: the skill's own canon tripping the skill's own linter.
