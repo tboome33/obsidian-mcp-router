@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.55.1] — 2026-07-29 — review+ pass on Lot 3: the pre-seed `--force` data-loss bug, and a test file that never ran
+
+Formal `/review+` pass on v0.55.0 (Claude Code Reviewer + codex, two rounds each). Codex converged on the gunzip-headroom inconsistency; the Code Reviewer found what the pre-commit adversarial pass had missed — everything AROUND the extractor.
+
+### Fixed
+
+- **BLOCKER — `--force` from a config pre-seed destroyed installed plugins.** The skeleton ships manifest-less `data.json`-only dirs (bridge, icon-folder, quiet-outline); under `--sync-from-github --force` the anti-downgrade guard failed open on the unreadable SOURCE manifest, `rmSync` deleted the real plugin (manifest + main.js) and only the pre-seed's `data.json` came back — fleet-wide with `--all --force`, living `.template` included. Two layers now: `isTargetPluginNewer` protects the target when only the source manifest is missing, and the sync loop never refreshes a manifest-target from a manifest-less source (a manifest-less TARGET still refreshes — it isn't an installed plugin). Verified live: a v9.9.9 bridge with `main.js` survives `--force`.
+- **Circular allowlist.** The network vetting read its "curated" list from the archive itself — a hostile archive enlarged its own allowlist. `NETWORK_PLUGIN_ALLOWLIST` is now pinned in code; the archive's list only selects within it, and a non-default `--repo` requires an explicit `--trust-repo` acknowledgement (it ships executable plugin code under trusted names).
+- **`.claude/` no longer cloned from network sources** — its `settings.json` can carry hooks (shell commands), i.e. network bytes into an executable config while plugins get vetted.
+- **Windows smuggling classes in `safeJoin`**: NTFS Alternate Data Streams (`a.txt:evil` lands under a DIFFERENT name than the one validated — proven on this machine) and reserved device names (`CON`, `COM1`…) are rejected.
+- **Dead test file resurrected.** `tests/setup-vault-themes.test.mjs` imported `setup-vault.mjs`, whose top-level CLI dispatch printed the help and `process.exit(0)`'d DURING import — its 16 assertions (the whole anti-downgrade suite) were a false green since v0.52.0, counted as one passing test. The dispatch is now wrapped in `cliMain()` behind an entrypoint guard (`samePath(import.meta.url, argv[1])`); the suite gained the 16 real tests.
+- Smaller hardening: gunzip headroom derived from `maxEntries` (codex finding — a fixed 16 MB margin rejected valid 20k-entry archives), decompression-bomb errors wrapped readably, old-style `type '0' + trailing slash` directories honored, `quiet` + source-override refused outright, `--repo` documented in the help, SKILL claims aligned (no more « exclusivement » — `--repo` exists, gated, and the skill never passes it unprompted).
+
+### Tests
+
+- +5 targz cases (ADS/devices, wrapped bomb, old-style dirs, 17k-entry structural headroom), +1 anti-downgrade pre-seed case — plus the 16 resurrected ones. Full suite **2456**, 0 failures. E2E re-verified through the wrapped dispatch against the real GitHub tarball.
+
 ## [0.55.0] — 2026-07-28 — Lot 3: `/sync-from-github` — a machine with no dev repo pulls the template straight from GitHub
 
 Lot 3 of the template-distribution roadmap, plus the first task the `brat-dans-template-vivant` decision ordered: **BRAT 2.0.8 is now installed and ENABLED in the living `.template` vault** (`data.json` wired to the bridge repo + hot-reload, `updateAtStartup`), so the next `meta-sync-template` hands it to every existing vault and the bridge self-updates from GitHub releases from then on.

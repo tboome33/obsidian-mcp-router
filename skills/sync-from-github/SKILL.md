@@ -39,7 +39,7 @@ Le troisième canal du tableau de distribution : une machine qui a le router (et
 
 - **Jamais de contournement des refus de sécurité** : un `deferredForSafety` se règle par le bootstrap du vault (port + apiKey propres), jamais en copiant un `data.json` à la main.
 - **La garde anti-downgrade est une feature** : un plugin gardé « NEWER » signifie que BRAT a déjà fait son travail sur ce vault.
-- L'archive vient exclusivement de `https://codeload.github.com/` sur le repo du router ; l'extraction rejette toute traversée de chemin et ne matérialise jamais les liens (comptés et affichés si présents).
+- L'archive vient de `https://codeload.github.com/`, **par défaut sur le repo du router**. Le CLI accepte `--repo <owner/name>` mais exige alors `--trust-repo` : un repo non-défaut peut livrer du code de plugin exécutable. **Ce skill ne passe JAMAIS `--repo` de lui-même** — uniquement sur demande explicite de l'utilisateur, en lui rappelant ce que ça implique. L'extraction rejette toute traversée de chemin (y compris flux NTFS `:` et noms de périphériques Windows) et ne matérialise jamais les liens ; seuls les plugins de l'**allowlist pinnée dans le code** peuvent être copiés depuis le réseau ; `.claude/` n'est jamais cloné depuis une source réseau.
 - Ne PAS utiliser ce mode pour pousser des changements locaux : il tire ce qui est **publié sur GitHub**. Les changements locaux passent par `meta-sync-template` (source = `.template` vivant).
 
 ## On failure

@@ -207,4 +207,17 @@ describe('isTargetPluginNewer (BRAT anti-downgrade guard)', () => {
     const dWeird = addPlugin(dst, 'r', 'not-semver');
     assert.equal(isTargetPluginNewer(s, dWeird), false);
   });
+
+  test('PROTECTS the target when only the SOURCE manifest is missing (config pre-seed)', () => {
+    // review+ BLOCKER: a data.json-only pre-seed from the GitHub skeleton
+    // must never justify replacing an installed plugin's code — the old
+    // fail-open returned false here and --force wiped the bridge.
+    const src = makeVault('src');
+    const dst = makeVault('dst');
+    const sPreSeed = path.join(src, '.obsidian', 'plugins', 'mcp-router-bridge');
+    fs.mkdirSync(sPreSeed, { recursive: true });
+    fs.writeFileSync(path.join(sPreSeed, 'data.json'), '{"foregroundViaProtocol":true}');
+    const d = addPlugin(dst, 'mcp-router-bridge', '0.5.1');
+    assert.equal(isTargetPluginNewer(sPreSeed, d), true);
+  });
 });

@@ -124,6 +124,16 @@ describe('extractTarGz — hostile archives', () => {
     assert.equal(fs.existsSync(path.join(dest, 'repo', 'link-out')), false);
   });
 
+  test('structural headroom scales with maxEntries (codex review+ finding)', () => {
+    // 17k empty files ≈ 17.4 MB of pure tar structure with ~0 payload bytes:
+    // within maxEntries AND maxTotalBytes, yet the former fixed 16 MB gunzip
+    // margin rejected it at decompression.
+    const header = tarHeader('repo/f.txt', 0);
+    const raw = Buffer.concat([...Array.from({ length: 17_000 }, () => header), Buffer.alloc(1024)]);
+    const result = extractTarGz(zlib.gzipSync(raw), dest, { maxEntries: 20_000, maxTotalBytes: 1024 });
+    assert.equal(result.files, 17_000);
+  });
+
   test('entry-count and total-size caps abort with a clear error', () => {
     const many = Array.from({ length: 5 }, (_, i) => tarEntry(`repo/f${i}.txt`, 'x'));
     assert.throws(() => extractTarGz(makeTarGz(many), dest, { maxEntries: 3 }), /entry limit/i);
@@ -174,6 +184,29 @@ describe('extractTarGz — hostile archives', () => {
     const result = extractTarGz(makeTarGz([tarEntry('..foo/ok.txt', 'x')]), dest);
     assert.equal(result.files, 1);
     assert.equal(fs.readFileSync(path.join(dest, '..foo', 'ok.txt'), 'utf8'), 'x');
+  });
+
+  test('NTFS stream separators and Windows device names are rejected (review+ pass)', () => {
+    // `a.txt:x` would write into an Alternate Data Stream OF a.txt — the
+    // file that lands is not the name that was validated.
+    assert.throws(() => extractTarGz(makeTarGz([tarEntry('repo/a.txt:evil', 'x')]), dest), /reserved|stream/i);
+    assert.throws(() => extractTarGz(makeTarGz([tarEntry('repo/CON/x.txt', 'x')]), dest), /reserved/i);
+    assert.throws(() => extractTarGz(makeTarGz([tarEntry('repo/com1.txt', 'x')]), dest), /reserved/i);
+  });
+
+  test('a gzip bomb fails with a readable extraction-limit error (review+ pass)', () => {
+    const bomb = zlib.gzipSync(Buffer.alloc(2 * 1024 * 1024));
+    assert.throws(
+      () => extractTarGz(bomb, dest, { maxEntries: 10, maxTotalBytes: 1024 }),
+      /decompresses past/i,
+    );
+  });
+
+  test('an old-style directory entry (type 0, trailing slash) becomes a directory', () => {
+    const result = extractTarGz(makeTarGz([tarEntry('repo/olddir/', '', '0'), tarEntry('repo/olddir/f.txt', 'x')]), dest);
+    assert.equal(result.files, 1);
+    assert.equal(result.dirs, 1);
+    assert.equal(fs.statSync(path.join(dest, 'repo', 'olddir')).isDirectory(), true);
   });
 });
 

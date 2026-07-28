@@ -74,6 +74,14 @@ function safeJoin(destRoot, entryName) {
   })) {
     throw new Error(`Archive entry escapes the destination (path traversal): ${entryName}`);
   }
+  // Two more Windows-only smuggling classes (review+ finding, proven on
+  // this machine): `a.txt:x` writes into an NTFS Alternate Data Stream of
+  // `a.txt` — the file that lands is NOT the name that was validated — and
+  // reserved device names (CON, COM1…) can block on real devices.
+  const DEVICE_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+  if (parts.some((p) => p.includes(':') || DEVICE_RE.test(p.replace(/[. ]+$/, '')))) {
+    throw new Error(`Archive entry uses a reserved Windows name or stream separator: ${entryName}`);
+  }
   const out = path.join(destRoot, ...parts);
   const rel = path.relative(destRoot, out);
   // Segment-accurate escape test — a plain startsWith('..') also rejected
@@ -121,8 +129,23 @@ export function extractTarGz(gzBuffer, destDir, limits = {}) {
 
   // The caller's limit governs the decompressed size too (review finding:
   // a fixed large floor let a tiny download decompress to half a GB). The
-  // headroom covers headers (≤ 512 B × maxEntries) and per-entry padding.
-  const tar = zlib.gunzipSync(gzBuffer, { maxOutputLength: maxTotalBytes + 16 * 1024 * 1024 });
+  // structural headroom is DERIVED from maxEntries — header (512 B) +
+  // worst-case padding (511 B) per entry, plus the end-of-archive marker —
+  // so an archive that satisfies both advertised limits can never be
+  // rejected at decompression (codex review+ finding: a fixed 16 MB margin
+  // choked on 20k tiny entries whose structure alone is ~20 MB).
+  const structuralHeadroom = maxEntries * 1024 + 2048;
+  let tar;
+  try {
+    tar = zlib.gunzipSync(gzBuffer, { maxOutputLength: maxTotalBytes + structuralHeadroom });
+  } catch (e) {
+    // Wrap zlib's raw errors so a decompression bomb reads like every other
+    // limit violation instead of a bare ERR_BUFFER_TOO_LARGE.
+    if (e && e.code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(`Archive decompresses past the ${Math.round(maxTotalBytes / 1024 / 1024)} MB extraction limit`);
+    }
+    throw new Error(`Not a valid gzip archive: ${e.message}`);
+  }
 
   let offset = 0;
   let entries = 0;
@@ -197,6 +220,15 @@ export function extractTarGz(gzBuffer, destDir, limits = {}) {
     }
 
     if (type === '0' || type === '\0') {
+      // Pre-POSIX tars mark directories as type '0' with a trailing slash;
+      // writing a FILE under the directory's name would collide later with
+      // a confusing error (review finding) — honor the convention.
+      if (name.endsWith('/') || name.endsWith('\\')) {
+        fs.mkdirSync(safeJoin(destDir, name), { recursive: true });
+        dirs += 1;
+        offset += dataBlocks;
+        continue;
+      }
       const dest = safeJoin(destDir, name);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, tar.subarray(offset, offset + size));

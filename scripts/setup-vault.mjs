@@ -113,6 +113,33 @@ const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 // with a freshly-generated port + key via `patchRestApiData()`
 // immediately after the clone.
 const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
+
+// Plugins the --sync-from-github vetting may EVER copy from a network
+// archive. Pinned in code — versioned with this script — so a hostile or
+// compromised archive cannot enlarge its own allowlist through the
+// community-plugins.json it ships (review+ finding: the allowlist was read
+// from the archive itself, a circular trust). Mirrors the curated template
+// set (Lot 2) plus the dev conveniences of the living .template. A plugin
+// outside this set is NEVER copied from the network, whatever the archive
+// claims; note the residual trust boundary stays repo+ref+HTTPS — a hostile
+// archive could still ship its own code UNDER one of these names, which is
+// why --repo away from the default requires --trust-repo.
+const NETWORK_PLUGIN_ALLOWLIST = new Set([
+  'obsidian-local-rest-api',
+  'mcp-router-bridge',
+  'obsidian42-brat',
+  'obsidian-quiet-outline',
+  'obsidian-style-settings',
+  'obsidian-icon-folder',
+  'recent-files-obsidian',
+  'realclaudian',
+  'image-converter',
+  'rich-text-editor',
+  'templater-obsidian',
+  'obsidian-livesync',
+  'smart-connections',
+  'hot-reload',
+]);
 // --- Plugin clone list: DERIVED from the source, not a hardcoded constant ---
 // `resolvePluginsToClone(referenceVault, REQUIRED_PLUGINS)` (plugin-resolver.mjs)
 // reads the reference vault's own `.obsidian/community-plugins.json` — the set
@@ -1596,8 +1623,9 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
 // list is a union across source shapes.
 const ROOT_FILES_TO_CLONE = ['README.md', 'Documentation', '.claude'];
 
-function cloneRootDocs(referenceVault, targetVault, force) {
+function cloneRootDocs(referenceVault, targetVault, force, skipItems = []) {
   for (const item of ROOT_FILES_TO_CLONE) {
+    if (skipItems.includes(item)) continue;
     const src = path.join(referenceVault, item);
     const dst = path.join(targetVault, item);
     if (!fs.existsSync(src)) continue;
@@ -2030,16 +2058,20 @@ export function applyThemeChoice(targetVault, themeChoice) {
 // missing or unparseable, so the guard can only ever SKIP a copy, never
 // break one.
 export function isTargetPluginNewer(srcPluginDir, dstPluginDir) {
-  try {
-    const readVersion = (dir) =>
-      JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version;
-    const srcV = readVersion(srcPluginDir);
-    const dstV = readVersion(dstPluginDir);
-    if (!parseSemver(srcV) || !parseSemver(dstV)) return false;
-    return compareSemver(dstV, srcV) > 0;
-  } catch {
-    return false;
-  }
+  const readVersion = (dir) => {
+    try { return JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8')).version; }
+    catch { return null; }
+  };
+  const srcV = readVersion(srcPluginDir);
+  const dstV = readVersion(dstPluginDir);
+  // A SOURCE with no readable manifest facing a target that has one is a
+  // config pre-seed (data.json only) — it must PROTECT the installed
+  // plugin, never justify replacing its code (review+ BLOCKER: --force
+  // from the GitHub skeleton wiped the bridge's main.js fleet-wide).
+  // A broken TARGET manifest still fails open (refresh repairs it).
+  if (srcV === null && dstV !== null) return true;
+  if (!srcV || !dstV || !parseSemver(srcV) || !parseSemver(dstV)) return false;
+  return compareSemver(dstV, srcV) > 0;
 }
 
 // --claude-workspace: enable the router plugin in the WORKSPACE's
@@ -2493,6 +2525,14 @@ function syncPluginsMode(vaultPath, opts = {}) {
     fail(msg);
   };
 
+  // The quiet-hook path exits early via process.exit(0) in several places —
+  // combined with a source override that would silently kill a fleet loop
+  // and skip its temp-dir cleanup. No current caller combines them; refuse
+  // the combination outright so a future one fails loudly (review+ finding).
+  if (opts.quiet && opts.sourceVault) {
+    failOrThrow('quiet mode is not supported with a source override');
+  }
+
   // Lot 3: the sync SOURCE can be overridden — `--sync-from-github` extracts
   // the GitHub skeleton into a temp dir and syncs FROM it, so machines with
   // no dev repo and no local .template get the exact same guarded pipeline.
@@ -2556,7 +2596,11 @@ function syncPluginsMode(vaultPath, opts = {}) {
       const parsed = JSON.parse(fs.readFileSync(path.join(sourceVault, '.obsidian', 'community-plugins.json'), 'utf8'));
       if (Array.isArray(parsed)) enabled = parsed.filter((x) => typeof x === 'string');
     } catch { enabled = []; }
-    const allow = new Set([...REQUIRED_PLUGINS, ...enabled]);
+    // The archive's own enabled list only SELECTS among the pinned
+    // allowlist — it can never enlarge it (circular-trust review finding).
+    const allow = new Set(
+      [...REQUIRED_PLUGINS, ...enabled].filter((x) => NETWORK_PLUGIN_ALLOWLIST.has(x)),
+    );
     vettedPlugins = [];
     for (const p of refPlugins) {
       // The skeleton legitimately ships two kinds of dirs: full vendored
@@ -2616,6 +2660,14 @@ function syncPluginsMode(vaultPath, opts = {}) {
     }
 
     if (exists) {
+      // A manifest-less source dir is a config PRE-SEED (lone data.json —
+      // the Lot 2 curation pattern): it may seed a first install, never
+      // replace a target that has a REAL installed plugin (manifest
+      // present). Without this, --force replaced the bridge's code with a
+      // bare data.json fleet-wide (review+ BLOCKER). A target that has no
+      // manifest either is not an installed plugin — refresh stays allowed.
+      if (!fs.existsSync(path.join(srcPlugin, 'manifest.json'))
+        && fs.existsSync(path.join(dstPlugin, 'manifest.json'))) continue;
       // Lot 2 anti-downgrade: BRAT auto-updates GitHub plugins in user vaults,
       // so the target can be ahead of the reference — never replace a newer
       // installed version, even under --force.
@@ -2655,8 +2707,12 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // and patch appearance.json — idempotent, never blocks existing snippets.
   cloneSnippets(sourceVault, abs, opts.force);
 
-  // Sync root docs (README.md) — preserve user customizations unless --force
-  cloneRootDocs(sourceVault, abs, opts.force);
+  // Sync root docs (README.md) — preserve user customizations unless --force.
+  // `.claude/` is EXCLUDED from network sources: its settings.json can carry
+  // hooks (shell commands Claude Code runs automatically) — network bytes
+  // must never land in an executable config while plugins get vetted and
+  // this wouldn't (review+ finding: same threat model, two treatments).
+  cloneRootDocs(sourceVault, abs, opts.force, opts.networkSource ? ['.claude'] : []);
 
   // Update community-plugins.json with newly synced plugins
   if (newlySynced.length > 0) {
@@ -3052,6 +3108,25 @@ function printPlanHuman(plan) {
   console.log('');
 }
 
+// ---------------------------------------------------------------------------
+// CLI dispatch — wrapped in cliMain() and guarded by an entrypoint check.
+// Importing this module (tests import its exported helpers) used to RUN the
+// dispatch: empty args printed the help and process.exit(0)'d DURING import,
+// silently killing an entire test file while the runner counted the file as
+// one green test (review+ pass 2 finding — setup-vault-themes.test.mjs was a
+// false green since v0.52.0). samePath() absorbs Windows case/slash drift
+// between import.meta.url and argv[1]. The body is intentionally NOT
+// re-indented — the wrap is two insertions, keeping the diff reviewable.
+const IS_CLI_ENTRYPOINT = (() => {
+  try {
+    return !!process.argv[1] && samePath(fileURLToPath(import.meta.url), process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+async function cliMain() {
+
 const args = process.argv.slice(2);
 if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   console.log(`Usage:
@@ -3075,8 +3150,10 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --sync-all --force                    Same, force-overwrite plugins + snippets
   node setup-vault.mjs --sync-from-github <vault…>|--all     Sync plugins/themes/snippets straight from the GitHub
       [--ref <branch|tag>] [--force]                          skeleton — no dev repo or local .template needed.
-                                                              Same guards as --sync-plugins (credentials, anti-
-                                                              downgrade) + hardened archive extraction.
+      [--repo <owner/name> --trust-repo]                      Same guards as --sync-plugins (credentials, anti-
+                                                              downgrade) + hardened archive extraction + pinned
+                                                              plugin allowlist. A non-default --repo requires the
+                                                              explicit --trust-repo acknowledgement.
   node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
                                                               shipped skeleton + download bridge plugin.
                                                               Follow up with --init-reference once you've
@@ -3512,15 +3589,18 @@ if (args[0] === '--sync-from-github') {
   // accepted as a --ref/--repo value, unknown flags fail instead of being
   // treated as vault paths, and --all cannot be silently combined with
   // explicit paths (the paths were dropped and EVERY vault got synced).
+  const DEFAULT_SYNC_REPO = 'tboome33/obsidian-mcp-router';
   let force = false;
   let all = false;
+  let trustRepo = false;
   let ref = 'main';
-  let repo = 'tboome33/obsidian-mcp-router';
+  let repo = DEFAULT_SYNC_REPO;
   const targets = [];
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '--force') { force = true; continue; }
     if (a === '--all') { all = true; continue; }
+    if (a === '--trust-repo') { trustRepo = true; continue; }
     if (a === '--ref' || a === '--repo') {
       const value = args[i + 1];
       if (value === undefined || value.startsWith('-')) fail(`${a} requires a value`);
@@ -3533,6 +3613,16 @@ if (args[0] === '--sync-from-github') {
   }
 
   try { assertSafeRepoRef(repo, ref); } catch (e) { fail(e.message); }
+  // A non-default repo ships EXECUTABLE plugin code under trusted names —
+  // the pinned allowlist bounds WHICH ids, not WHOSE bytes. Make that trust
+  // decision explicit instead of a silently-accepted flag (review+ finding).
+  if (repo !== DEFAULT_SYNC_REPO && !trustRepo) {
+    fail(
+      `--repo points away from the default (${DEFAULT_SYNC_REPO}).\n` +
+      `   A non-default repo can ship executable plugin code into your vaults.\n` +
+      `   Re-run with --trust-repo if you really mean it.`,
+    );
+  }
   if (all && targets.length > 0) {
     fail('--all cannot be combined with explicit vault paths — pick one or the other.');
   }
@@ -4163,3 +4253,7 @@ if (args.includes('--json') && provisionResult) {
 }
 
 if (probeVerdict && !probeVerdict.ok) process.exit(3);
+
+}
+
+if (IS_CLI_ENTRYPOINT) await cliMain();
