@@ -42,8 +42,9 @@ If ambiguous, ask one short question. Don't save the wrong thing.
 
 ### 2. Infer or accept the slug
 
-- If the user gave a name (`/save my-trading-plan`), slugify it: lowercase, kebab-case, drop non-alphanumeric.
-- Else, derive a slug from the most representative sentence of what you're saving (3-6 words).
+- If the user gave a name (`/save my-trading-plan`), slugify it **OKF-safe** (2026-07-29 policy — new notes are born conformant): ASCII-fold accents (`é` → `e`), lowercase kebab-case, charset `[a-z0-9._-]` only, never spaces — the exact pipeline of `slug()` in `src/helpers/filters/slug.mjs`.
+- Else, derive a slug from the most representative sentence of what you're saving (3-6 words), same OKF-safe pipeline.
+- The server echoes an `okfNameWarning` field on any `write_file`/`move_file`/`execute_template` whose target violates this — treat it as a naming bug to fix immediately (rename to the suggested path), not as noise.
 
 Check if `wiki/<folder>/<slug>.md` already exists. If yes:
 - Add a numeric suffix (`-2`, `-3`) and tell the user.

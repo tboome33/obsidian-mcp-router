@@ -1,5 +1,6 @@
 import { moveFileFromTo } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
+import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
 
 export async function moveFileTool(registry, args = {}) {
   const { vault: name, from, to, overwrite = false } = args;
@@ -24,6 +25,8 @@ export async function moveFileTool(registry, args = {}) {
   const sourceUrl = result.moved === true && result.sourceDeleted === false
     ? buildClickToOpenUrl(vault, from)
     : null;
+  // Non-blocking OKF-name guard (2026-07-29 decision) on the destination.
+  const okfSuggestion = okfSafePathSuggestion(to);
   return {
     vault: vault.name,
     from,
@@ -32,5 +35,8 @@ export async function moveFileTool(registry, args = {}) {
     ...result,
     ...(clickToOpenUrl && { clickToOpenUrl }),
     ...(sourceUrl && { clickToOpenUrlSource: sourceUrl }),
+    ...(okfSuggestion && {
+      okfNameWarning: `Destination is not OKF-safe (2026-07-29 policy: notes use ascii-kebab names). Suggested: ${okfSuggestion}`,
+    }),
   };
 }

@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-07-29 — OKF-safe names at rest: fleet migration tooling + ingestion guard
+
+Roland's 2026-07-29 decision (recorded as the `okf-interop` §4 amendment in the router vault): vault file and folder names become **OKF-safe at rest** — exports turn identity-preserving (the name at rest IS the exported name) and new notes are born conformant. The OKF v0.2 spec itself imposes no filename charset; the constraint comes from Google's reference tooling and is adopted deliberately. Executed same-day on the whole fleet with this release's tooling: **333 files + 60 directories renamed across 15 vaults (24 scanned, 9 already conformant), ~4,000 link/path rewrites, zero broken links, zero residual references** — per-vault full backups + reversible `manifest.json` under `.okf-rename-backup/<ts>/`.
+
+### Added
+
+- **`src/helpers/okf-safe-rename.mjs`** — pure planner/rewriter behind the migration: rename plan for files AND directories via the exporter's `slugifyOkfSegment` (single source of truth), deterministic collision suffixes (`-2`, `-3`), ambiguous-stem detection (basename wikilinks whose copies diverge are never guessed — left untouched and reported), wikilink/embed rewriting with **display-preserving aliases** (`[[Vue d'ensemble]]` → `[[vue-d-ensemble|Vue d'ensemble]]`), markdown-link decode/`..`-resolve/relative rebuild, exact-path pass for `.canvas`/`.base` and raw-text mentions (session journals, CLAUDE.md), and `okfSafePathSuggestion()` for the ingestion guard. 22 dedicated tests.
+- **`scripts/okf-safe-rename-vault.mjs`** — migration CLI: dry-run by default; `--apply` = full backup + manifest → content rewrite → files-then-deepest-dirs renames → built-in verification (segment conformity, residual old-name scan, file-count stability). Exit 1 on any verification failure.
+- **`scripts/okf-safe-rename-textpass.mjs`** — manifest-driven raw-text repair pass (idempotent; exists because plain-text path mentions live outside link syntax).
+- **`okfNameWarning`** on `write_file`, `move_file` and `execute_template` results — non-blocking ingestion guard: any `.md` created or moved to a non-OKF-safe path gets a warning carrying the suggested conformant path. Hidden-dir paths and non-md files are exempt.
+
+### Changed
+
+- **skill `save`** — the slug rule is now the explicit OKF-safe pipeline (ASCII-fold accents, lowercase kebab, charset `[a-z0-9._-]`, never spaces) and documents the server warning as a bug-to-fix signal. `wiki-ingest` was already conformant by construction (its `slug()` filter ASCII-folds since v0.13.2).
+
+Suite: **2519/2519** (22 new tests).
+
+- TODO
 ## [0.56.2] — 2026-07-29 — post-Lot-5 documentation overhaul + one codex finding
 
 Final review pass on the Lot 5 range (`codex review --base v0.55.1`) plus a ground-truth-driven rewrite of every user-facing document across the three components (Claude Code plugin, MCP server, bridge).

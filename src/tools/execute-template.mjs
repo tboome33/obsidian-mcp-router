@@ -1,5 +1,6 @@
 import { executeTemplate } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
+import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
 
 export async function executeTemplateTool(registry, args = {}) {
   const {
@@ -29,11 +30,17 @@ export async function executeTemplateTool(registry, args = {}) {
   const clickToOpenUrl = createFile && targetPath
     ? buildClickToOpenUrl(vault, targetPath)
     : null;
+  // Non-blocking OKF-name guard (2026-07-29 decision) — only when a file
+  // is actually created.
+  const okfSuggestion = createFile && targetPath ? okfSafePathSuggestion(targetPath) : null;
   return {
     vault: vault.name,
     template: templateName,
     targetPath: createFile ? targetPath : null,
     ...result,
     ...(clickToOpenUrl && { clickToOpenUrl }),
+    ...(okfSuggestion && {
+      okfNameWarning: `targetPath is not OKF-safe (2026-07-29 policy: notes use ascii-kebab names). Suggested: ${okfSuggestion}`,
+    }),
   };
 }
