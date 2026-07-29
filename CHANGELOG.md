@@ -23,7 +23,6 @@ Roland's 2026-07-29 decision (recorded as the `okf-interop` §4 amendment in the
 
 Suite: **2519/2519** (22 new tests).
 
-- TODO
 ## [0.56.2] — 2026-07-29 — post-Lot-5 documentation overhaul + one codex finding
 
 Final review pass on the Lot 5 range (`codex review --base v0.55.1`) plus a ground-truth-driven rewrite of every user-facing document across the three components (Claude Code plugin, MCP server, bridge).
