@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "router": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/obsidian-mcp-router.mjs"]
+    }
+  }
+}

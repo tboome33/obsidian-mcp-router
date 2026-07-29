@@ -253,36 +253,59 @@ describe('tool-names — every registration form of the same tool', () => {
 // ---- 3. plugin manifests ------------------------------------------------
 
 describe('plugin manifests', () => {
-  test('the server is declared INLINE in plugin.json, never as a root .mcp.json', () => {
-    // This repo IS the marketplace source, so the plugin root and the repo
-    // root are the same directory. A root-level `.mcp.json` would therefore
-    // also be read as a PROJECT-scope MCP config by anyone who opens this
-    // repo in Claude Code — and ${CLAUDE_PLUGIN_ROOT} does not expand at
-    // project scope, so they would get a broken `router` registration
-    // pointing at a literal "${CLAUDE_PLUGIN_ROOT}/bin/…" path.
-    assert.ok(!fs.existsSync(path.join(REPO_ROOT, '.mcp.json')), 'a root .mcp.json leaks into project scope');
-
-    const plugin = readJson('.claude-plugin/plugin.json');
-    assert.deepEqual(Object.keys(plugin.mcpServers || {}), ['router']);
-    const server = plugin.mcpServers.router;
+  test('the server is declared in a root .mcp.json — the only form Claude Code honours', () => {
+    // The docs present `.mcp.json` and an inline `mcpServers` in plugin.json
+    // as equivalent. They are NOT, as of Claude Code 2.1.220. Measured with
+    // `claude --plugin-dir <dir> plugin details <name>` on two minimal
+    // plugins differing only in where the server was declared:
+    //   inline in plugin.json → "MCP servers (0)"   ← silently ships nothing
+    //   root .mcp.json        → "MCP servers (1) router"
+    // The inline form was tried first (it avoids the project-scope leak the
+    // next test covers) and would have shipped a plugin with no server at all.
+    const mcp = readJson('.mcp.json');
+    assert.deepEqual(Object.keys(mcp.mcpServers || {}), ['router']);
+    const server = mcp.mcpServers.router;
     assert.equal(server.command, 'node');
     assert.ok(
       server.args.some((a) => a.includes('${CLAUDE_PLUGIN_ROOT}')),
       'the entrypoint must be resolved at startup, not pinned to an absolute path',
     );
     assert.ok(server.args.some((a) => a.endsWith('bin/obsidian-mcp-router.mjs')));
+
+    // Never declare it in both places: the merge rule between the two
+    // sources is explicitly undocumented.
+    assert.equal(
+      readJson('.claude-plugin/plugin.json').mcpServers,
+      undefined,
+      'declaring the server twice relies on undocumented merge behaviour',
+    );
+  });
+
+  test('the project-scope leak of that same file is neutralised for this repo', () => {
+    // This repo IS its own marketplace source, so plugin root = repo root:
+    // the very same `.mcp.json` is ALSO read as a PROJECT-scope MCP config
+    // by anyone who opens the checkout in Claude Code. Verified there:
+    // `router: node ${CLAUDE_PLUGIN_ROOT}/bin/… - ⏸ Pending approval` —
+    // the variable does not expand at project scope. Disabling it by name in
+    // the repo's own settings removes the entry entirely (also verified),
+    // while the plugin channel is unaffected.
+    const settings = readJson('.claude/settings.json');
+    assert.ok(
+      (settings.disabledMcpjsonServers || []).includes('router'),
+      'the dev checkout must not offer a broken project-scope `router` server',
+    );
   });
 
   test('the server declaration does NOT set NODE_PATH', () => {
     // NODE_PATH is honoured only by the CommonJS resolver. This package is
     // "type": "module", so the documented NODE_PATH pattern would leave the
     // server unable to resolve anything — a silent, total failure.
-    const server = readJson('.claude-plugin/plugin.json').mcpServers.router;
+    const server = readJson('.mcp.json').mcpServers.router;
     assert.equal(server.env?.NODE_PATH, undefined);
   });
 
   test('the entrypoint the manifest points at exists', () => {
-    const rel = readJson('.claude-plugin/plugin.json').mcpServers.router.args
+    const rel = readJson('.mcp.json').mcpServers.router.args
       .find((a) => a.includes('bin/obsidian-mcp-router.mjs'))
       .replace('${CLAUDE_PLUGIN_ROOT}/', '');
     assert.ok(fs.existsSync(path.join(REPO_ROOT, rel)), `${rel} must exist in the shipped tree`);
@@ -381,9 +404,7 @@ describe('plugin manifests', () => {
 
   test('everything Lot 5 added ships through the npm tarball', () => {
     const files = readJson('package.json').files;
-    // .claude-plugin/ carries the server declaration; hooks/ and src/ carry
-    // the manifest, the matcher helper and the bootstrapper.
-    for (const entry of ['.claude-plugin/', 'hooks/', 'src/', 'bin/']) {
+    for (const entry of ['.mcp.json', '.claude-plugin/', 'hooks/', 'src/', 'bin/']) {
       assert.ok(files.includes(entry), `${entry} must be in package.json files`);
     }
   });

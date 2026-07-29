@@ -1,5 +1,6 @@
 {
   "enabledPlugins": {
     "obsidian-router@obsidian-mcp-router-marketplace": true
-  }
+  },
+  "disabledMcpjsonServers": ["router"]
 }

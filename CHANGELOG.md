@@ -6,13 +6,35 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.56.1] — 2026-07-29 — the plugin's MCP server declaration was in the one place Claude Code does not read
+
+**v0.56.0 shipped Lot 5 with the server declared in the wrong file, so the plugin carried no MCP server at all.** Everything else in that release worked — skills, commands, hooks, the bootstrapper — but the one thing the lot was for did not land. Update to 0.56.1; there is nothing to undo.
+
+### Fixed
+
+- **The server is declared in a root `.mcp.json`, not inline in `.claude-plugin/plugin.json`.** The plugin reference presents the two locations as equivalent ("`.mcp.json` in plugin root, or inline in plugin.json"). As of Claude Code **2.1.220** they are not. Measured on two minimal plugins differing only in where the server was declared, via `claude --plugin-dir <dir> plugin details <name>`:
+
+  | Declaration | Reported |
+  | --- | --- |
+  | inline `mcpServers` in `plugin.json` | `MCP servers (0)` |
+  | root `.mcp.json` | `MCP servers (1) router` |
+
+  v0.56.0 used the inline form deliberately — to dodge the project-scope leak below — and the failure is silent: nothing errors, the plugin simply contributes no server. The same probe now confirms the real checkout reports `MCP servers (1) router`.
+- **The project-scope leak that motivated the inline form is handled directly.** This repo is its own marketplace source, so plugin root = repo root, and the same `.mcp.json` is *also* read as a **project-scope** MCP config by anyone who opens the checkout in Claude Code. `${CLAUDE_PLUGIN_ROOT}` does not expand there: `claude mcp list` shows `router: node ${CLAUDE_PLUGIN_ROOT}/bin/… - ⏸ Pending approval` plus a config warning. The repo's own `.claude/settings.json` now carries `"disabledMcpjsonServers": ["router"]`, which removes the entry entirely — verified before and after — while leaving the plugin channel untouched.
+
+### Tests
+
++1 case pinning the root `.mcp.json` as the declaration site, +1 pinning the project-scope neutralisation, and the old assertion (which required the inline form and forbade the file) inverted. Full suite **2497**, 0 failures.
+
 ## [0.56.0] — 2026-07-29 — Lot 5: the plugin carries the MCP server
+
+> ⚠️ **Superseded by 0.56.1 for the MCP declaration.** The server was declared inline in `plugin.json`, which Claude Code 2.1.220 does not read — this release's plugin contributes no MCP server. Everything else below is accurate and unaffected.
 
 The server had **no distribution channel**. npm publishes nothing, the documented install is `git clone` + `npm link`, and the plugin declared no MCP server at all — so the three copies drifted apart (repo 0.55.1 · GitHub 0.55.1 · installed snapshot 0.50.0 at the start of this work), on the artifact that moves 13× faster than the bridge. Installing the plugin now gets you the server, the skills, the commands and the hooks together; updating it updates all of them.
 
 ### Added
 
-- **The server is declared in `.claude-plugin/plugin.json`** (inline `mcpServers`, key `router`), resolved through `${CLAUDE_PLUGIN_ROOT}` at startup so it follows every update. Tools gain the scoped prefix `mcp__plugin_obsidian-router_router__*`. Deliberately *not* a root-level `.mcp.json`: this repo is its own marketplace source, so plugin root = repo root, and a root `.mcp.json` is additionally read as a **project-scope** MCP config by anyone who opens the repo in Claude Code — where `${CLAUDE_PLUGIN_ROOT}` does not expand, leaving them a broken `router` server pointing at a literal path. The inline form is documented as equivalent and has no such second reading.
+- **The plugin declares the MCP server** as `router`, resolved through `${CLAUDE_PLUGIN_ROOT}` at startup so it follows every update. Tools gain the scoped prefix `mcp__plugin_obsidian-router_router__*`. *(The declaration site shipped here was wrong — see 0.56.1.)*
 - The server key is `router`, not `obsidian-router`, for a measured reason: the scoped prefix is `mcp__plugin_<plugin>_<server>__`, and `obsidian-router` would put the longest tool (`pdf_to_markdown_docling`) at 68 characters — past the 64-character ceiling many MCP clients enforce. `router` caps the worst case at 59.
 - **`src/helpers/ensure-deps.mjs` + a zero-dependency `bin/`** — the entrypoint no longer statically imports the server graph. It probes the three specifiers that are imported statically, installs them once (`npm install --omit=dev --ignore-scripts --no-audit --no-fund`) if they are missing, then loads the server by dynamic import. `--help` and `--version` answer on a tree that has never been installed, diagnostics go to **stderr** (stdout is the MCP framing channel), and a cross-process mkdir lock keeps parallel sessions from installing over each other. Verified cold: 4 s, 180 packages, clean JSON-RPC handshake.
 - **`hooks/hooks.json`** — the two hooks the plugin activates for everyone: `hot-cache-load` and `decisions-recall`. Both read-only, both silent no-ops without a vault, both now with an env opt-out.

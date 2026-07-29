@@ -1,15 +1,7 @@
 {
   "name": "obsidian-router",
   "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 31 commands across four layers: (1) wrappers for the router's 14 MCP primitives (discover/read/write/manage/template); (2) 3 router-state commands (lock / unlock for single-vault isolation, auto-mode for wiki auto-enrichment mode toggle); (3) 4 meta helpers (meta-setup, meta-attach-vault, meta-status, meta-sync-template — the last propagates the reference `.template` vault's plugins to the fleet); (4) a Karpathy-style LLM-wiki workflow (wiki, wiki-ingest, wiki-query, wiki-lint, wiki-fold, save, autoresearch); (5) Obsidian-specific helpers (canvas, defuddle, obsidian-bases, obsidian-markdown). Hooks (cross-platform Node, opt-in) auto-load the hot.md cache on session start, auto-commit wiki changes, and prompt for hot.md refresh after substantive turns. Ships the multi-vault MCP server itself (v0.56.0+): installing the plugin installs the server, and updating it updates the server, the skills, the commands and the hooks together. Two hooks are active on install (hot-cache-load, decisions-recall — read-only, both with env opt-outs); the rest stay opt-in via setup-vault.mjs --install-hooks.",
-  "version": "0.56.0",
-  "mcpServers": {
-    "router": {
-      "command": "node",
-      "args": [
-        "${CLAUDE_PLUGIN_ROOT}/bin/obsidian-mcp-router.mjs"
-      ]
-    }
-  },
+  "version": "0.56.1",
   "author": {
     "name": "tboome33",
     "url": "https://github.com/tboome33"
