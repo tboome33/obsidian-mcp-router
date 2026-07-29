@@ -151,16 +151,22 @@ const contentCap = Math.max(512, INJECTION_CAP_BYTES - Buffer.byteLength(frame, 
 // session's job (`/obsidian-router:hot-compact`).
 const st = hotStatus(hotContent);
 if (st.over) {
-  // Inject up to the absolute-cap worth of bytes (~4 bytes/token), bounded by
-  // the hard injection ceiling — enough context without re-importing the drift.
-  const budget = Math.min(st.absoluteCapTokens * 4, contentCap);
-  const bounded = selectBoundedContent(hotContent, budget);
+  // The banner is composed FIRST so its bytes come out of the budget: the
+  // final output is frame + banner + content, and the ceiling governs that
+  // whole sum. Budgeting only the content — as this branch used to — let
+  // the output overshoot INJECTION_CAP_BYTES by the banner's size (codex
+  // review finding, v0.56.x).
   const banner = buildHotBanner({
     tokens: st.tokens,
     limitTokens: st.limitTokens,
     targetTokens: st.targetTokens,
     vaultLabel: path.basename(ctx.vaultPath),
   });
+  const bannerBytes = Buffer.byteLength(banner + '\n\n', 'utf8');
+  // Inject up to the absolute-cap worth of bytes (~4 bytes/token), bounded by
+  // the hard injection ceiling — enough context without re-importing the drift.
+  const budget = Math.max(512, Math.min(st.absoluteCapTokens * 4, contentCap) - bannerBytes);
+  const bounded = selectBoundedContent(hotContent, budget);
   hotContent = banner + '\n\n' + bounded.content;
 } else if (countHotSize(hotContent).bytes > contentCap) {
   // Defensive: an under-limit hot cannot exceed the cap in practice, but

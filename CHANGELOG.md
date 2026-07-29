@@ -6,6 +6,23 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.56.2] — 2026-07-29 — post-Lot-5 documentation overhaul + one codex finding
+
+Final review pass on the Lot 5 range (`codex review --base v0.55.1`) plus a ground-truth-driven rewrite of every user-facing document across the three components (Claude Code plugin, MCP server, bridge).
+
+### Fixed
+
+- **Codex P2 — the oversized-hot banner rode on top of the injection budget.** In `hot-cache-load.mjs`, when `hot.md` is over its limit, the byte budget reserved space for the provenance frame but not for the warning banner prepended afterwards — output could exceed `INJECTION_CAP_BYTES` by the banner's size, violating the very ceiling the v0.56.0 change claimed to enforce. The banner is now composed first and its bytes come out of the budget; the test tightened from `budget+1000` to `budget+500` (frame only).
+
+### Documentation
+
+All numbers re-derived from the repo (not from older docs) and cross-verified: **47 slash commands · 44 skills · 42 MCP tools at runtime (43 defined, `get_view_link` gated) · 10 hooks (2 plugin-active, 8 opt-in) · 11 write tools under `OBSIDIAN_ROUTER_READONLY`**.
+
+- **README (EN + FR)** — every stale count fixed (was "45 commands / 42 skills / 8 write tools"); the missing `sync-from-github` and `decision-consolidate` command rows added; hooks blurb rewritten for the v0.56.0 2-active/8-opt-in split; install path reframed plugin-first with `meta-setup` requalified as the dev path; FR-only gaps closed (Modes de déploiement section, wizard callout, conversion-tools note). **New section in both languages: "The three pieces and how they depend on each other" / « Les trois briques et leurs dépendances »** — the canonical chain (Obsidian ← Local REST API ← bridge ← HTTP ← MCP server ← stdio ← plugin), what each piece requires, and what breaks without it.
+- **Quick-reference cheat sheets (EN + FR, HTML + regenerated PDFs)** — headers bumped v0.48.0 → v0.56.1; every one of the 47 commands present exactly once with a clear one-sentence description (verified by set-diff against the repo, both languages cover the identical set); new "How the pieces fit" / « Comment les briques s'emboîtent » dependency section; v0.56 facts (plugin ships the server, postinstall removal, opt-out env vars, the three tool-name prefixes). PDFs re-rendered via Chrome headless and pushed to the reference vault's `Documentation/`.
+- **Bridge README** (`obsidian-mcp-router-bridge`) — new "Where this sits in the stack" section; install rewritten BRAT-first (manual build = dev fallback); click-to-open documented with the `?h=` / `&reveal=0` params and the v0.5.1 resolution contract (unique-basename fallback, 409 on ambiguity); requirements corrected to Local REST API ≥ 4.0.0; the `/templates/execute` API reference aligned with the actual response shapes.
+- `.claude-plugin/plugin.json` + `marketplace.json` descriptions corrected (claimed "31 commands").
+
 ## [0.56.1] — 2026-07-29 — the plugin's MCP server declaration was in the one place Claude Code does not read
 
 **v0.56.0 shipped Lot 5 with the server declared in the wrong file, so the plugin carried no MCP server at all.** Everything else in that release worked — skills, commands, hooks, the bootstrapper — but the one thing the lot was for did not land. Update to 0.56.1; there is nothing to undo.

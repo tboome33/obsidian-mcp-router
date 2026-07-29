@@ -249,12 +249,13 @@ describe('hot-cache-load — size discipline (v0.44.0)', () => {
     assert.match(r.stdout, /TOKEN-NEWEST/);
     assert.doesNotMatch(r.stdout, /TOKEN-OLDEST/);
     assert.match(r.stdout, /omis/);
-    // Bounded: ≤ the injection budget (absoluteCapTokens×4 ≈ 7200 B, the max a
-    // legitimate hot could ever be) + banner/marker allowance — regardless of
-    // how big the raw file is. (v0.46.0: budget is token-derived, not the old
-    // 6 KiB byte cap.)
+    // Bounded: banner + excerpt together fit the injection budget
+    // (absoluteCapTokens×4 ≈ 7200 B) — the banner's bytes come OUT of the
+    // budget since the codex review fix, they no longer ride on top of it.
+    // The only bytes outside the budget are the short provenance frame
+    // (≈300 B in cwd-is-vault mode), hence the small allowance.
     const outBytes = Buffer.byteLength(r.stdout, 'utf8');
-    assert.ok(outBytes <= 7200 + 1000, `output ${outBytes} bytes exceeds budget+allowance`);
+    assert.ok(outBytes <= 7200 + 500, `output ${outBytes} bytes exceeds budget+frame allowance`);
   });
 
   test('within-limits hot is injected verbatim without banner (regression)', () => {
