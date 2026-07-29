@@ -118,11 +118,31 @@ const currentHooks = listLocalHookBasenames();
 // is "wired" if any command contains its basename (case-sensitive —
 // settings.json paths are user-controlled and should be exact).
 function wiredHookBasenames() {
+  const found = new Set();
+
+  // A hook declared in the plugin's own hooks/hooks.json is ALREADY
+  // running — Claude Code activates plugin hooks with no opt-in step and
+  // no settings.json entry. Counting it as wired is what stops the tip
+  // below from telling the user to "activate" something already active,
+  // advice that would wire a duplicate and double-fire it every event.
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8'));
+    for (const event of Object.keys(manifest.hooks || {})) {
+      for (const block of (manifest.hooks[event] || [])) {
+        for (const entry of (block.hooks || [])) {
+          const cmd = entry?.command || '';
+          for (const hb of currentHooks) {
+            if (cmd.includes(hb)) found.add(hb);
+          }
+        }
+      }
+    }
+  } catch { /* no plugin manifest — pre-Lot-5 layout, nothing to add */ }
+
   const settingsPath = path.join(homeDir, '.claude', 'settings.json');
   let settings;
   try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
-  catch { return new Set(); }
-  const found = new Set();
+  catch { return found; }
   const hooks = settings.hooks || {};
   for (const event of Object.keys(hooks)) {
     for (const block of (hooks[event] || [])) {
@@ -135,6 +155,21 @@ function wiredHookBasenames() {
     }
   }
   return found;
+}
+
+/**
+ * True when ~/.claude/settings.json still pins a hook command to the given
+ * version's cache directory — i.e. when a failed path rewrite would really
+ * leave the user broken. Any read/parse problem reports false: this only
+ * ever gates a warning, and a spurious warning is worse than a missing one.
+ */
+function settingsMentionsVersionedHookPath(version) {
+  if (!version) return false;
+  let raw;
+  try { raw = fs.readFileSync(path.join(homeDir, '.claude', 'settings.json'), 'utf8'); }
+  catch { return false; }
+  const needle = `obsidian-router`;
+  return raw.includes(needle) && raw.includes(String(version));
 }
 
 const now = Date.now();
@@ -291,8 +326,18 @@ function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, mark
   // relying on the bundled venv (no MARKITDOWN_PATH override), their
   // *_to_markdown tools will ENOENT after /reload-plugins. Warn + give
   // them the one-liner to fix.
+  // `settingsExists && !changed` alone is NOT "the rewrite failed": for a
+  // user whose hooks come from the plugin manifest, settings.json exists
+  // (env vars, permissions, statusline…) and legitimately holds zero pinned
+  // router paths, so nothing needed rewriting. Warning there would tell
+  // them to delete entries that do not exist and to re-run --install-hooks,
+  // which is exactly the action that double-wires plugin-provided hooks.
+  // Only warn when a stale pinned path is genuinely still sitting there.
   const rewriteSkipped =
-    settingsRewrite && settingsRewrite.settingsExists && !settingsRewrite.changed;
+    settingsRewrite &&
+    settingsRewrite.settingsExists &&
+    !settingsRewrite.changed &&
+    settingsMentionsVersionedHookPath(installed);
   const lines = [
     '',
     '<!-- obsidian-mcp-router auto-update success — please relay to the user on your first response -->',

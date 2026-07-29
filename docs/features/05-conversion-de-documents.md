@@ -17,13 +17,13 @@ Le savoir n'arrive pas toujours en markdown : il arrive en PDF, en Word, en Exce
 | `image_to_markdown` | Image | OCR — extrait le texte visible. |
 | `audio_to_markdown` | Audio | Transcription. |
 
-La conversion est déléguée à `markitdown` (l'outil open source de Microsoft), installé automatiquement dans un `.venv` local au postinstall. Chaque outil retourne le **texte markdown seul** — pour le persister dans un vault, on chaîne avec `write_file`, ce que Claude fait naturellement quand on demande « convertis et range dans le vault ».
+La conversion est déléguée à `markitdown` (l'outil open source de Microsoft), installé dans un `.venv` local par `npm run install-markitdown` (opt-in depuis la v0.56.0). Chaque outil retourne le **texte markdown seul** — pour le persister dans un vault, on chaîne avec `write_file`, ce que Claude fait naturellement quand on demande « convertis et range dans le vault ».
 
 **Comment l'utiliser.**
 
 > « convertis ce PDF en markdown », « transcris cet audio et range-le dans le vault recherche » — ou `/obsidian-router:pdf-to-markdown`
 
-**À savoir.** Prérequis : **Python 3.10+** sur le `PATH` au moment du `npm install` (le postinstall crée le `.venv` et installe `markitdown[all]` ; s'il manque, le reste du router fonctionne quand même). Voir les variables d'environnement en fin de fiche pour les overrides.
+**À savoir.** Prérequis : **Python 3.10+** sur le `PATH`, puis `npm run install-markitdown` (crée le `.venv` et installe `markitdown[all]` ; s'il manque, le reste du router fonctionne quand même). Voir les variables d'environnement en fin de fiche pour les overrides.
 
 ## `pdf_to_markdown_docling` — la voie haute fidélité pour les PDF complexes
 
@@ -63,6 +63,6 @@ Le résumé des prérequis et des points de réglage de toute la famille :
 | `MD_SHARE_DIR` | Alias historique mono-répertoire de `MD_ALLOWED_PATHS` (compatibilité markdownify-mcp). |
 | `MARKITDOWN_PATH` / `DOCLING_PATH` / `PDF_IMAGES_PYTHON` | Chemins explicites vers les exécutables quand on n'utilise pas les venvs embarqués. |
 | `OBSIDIAN_ROUTER_ENABLE_DOCLING` | `1` avant install = active le backend Docling. |
-| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | `1` = saute la création du venv au postinstall. |
+| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | `1` = rend `npm run install-markitdown` inopérant (environnements scriptés). |
 
 Les outils orientés **URL** (`webpage_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `git_repo_to_markdown`) appartiennent à la même famille technique mais servent l'ingestion web — ils sont documentés en [fiche 6](06-ingestion-web.md).

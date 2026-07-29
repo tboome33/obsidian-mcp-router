@@ -587,8 +587,12 @@ export function formatRecallBlock(selected, context = {}) {
   const maxItemsChars = context.maxItemsChars ?? LIMITS.maxItemsChars;
   const maxTitleChars = context.maxTitleChars ?? LIMITS.maxTitleChars;
   const maxPathChars = context.maxPathChars ?? LIMITS.maxPathChars;
+  // The prefix depends on how the router was registered — directly
+  // (mcp__obsidian-router__*) or by the Claude Code plugin
+  // (mcp__plugin_obsidian-router_router__*). Name the tool the common way
+  // and say so, rather than pinning a prefix that is wrong half the time.
   const readHint = context.slug
-    ? `mcp__obsidian-router__get_file({ vault: "${context.slug}", path: "<path>" })`
+    ? `mcp__obsidian-router__get_file({ vault: "${context.slug}", path: "<path>" }) — or mcp__plugin_obsidian-router_router__get_file if that is what your tool list shows`
     : 'Read the path directly (cwd is the vault)';
 
   const header = [

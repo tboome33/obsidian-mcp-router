@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Hooks the PLUGIN activates for everyone who installs it (Lot 5).",
+    "",
+    "Plugin hooks have no opt-in step: whatever is listed here runs for every",
+    "user of the plugin. Only hooks that are read-only, that make no network",
+    "call, that never exit 2 (which would block the user's turn), and that are",
+    "verified silent no-ops for someone with no vault configured, belong here.",
+    "",
+    "The other eight router hooks stay OPT-IN via",
+    "`node scripts/setup-vault.mjs --install-hooks`, because they commit to git,",
+    "write session transcripts into a vault, block turns, or phone home. See",
+    "hooks/hooks.example.json for the full opt-in set and docs/hooks.md for the",
+    "split and its rationale.",
+    "",
+    "${CLAUDE_PLUGIN_ROOT} is expanded by Claude Code in plugin component files",
+    "ONLY. It is NOT expanded in ~/.claude/settings.json, which is why",
+    "hooks.example.json keeps using the <router-repo> placeholder instead."
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hot-cache-load.mjs\""
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hot-cache-load.mjs\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/decisions-recall.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

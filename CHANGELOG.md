@@ -6,6 +6,54 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-07-29 — Lot 5: the plugin carries the MCP server
+
+The server had **no distribution channel**. npm publishes nothing, the documented install is `git clone` + `npm link`, and the plugin declared no MCP server at all — so the three copies drifted apart (repo 0.55.1 · GitHub 0.55.1 · installed snapshot 0.50.0 at the start of this work), on the artifact that moves 13× faster than the bridge. Installing the plugin now gets you the server, the skills, the commands and the hooks together; updating it updates all of them.
+
+### Added
+
+- **The server is declared in `.claude-plugin/plugin.json`** (inline `mcpServers`, key `router`), resolved through `${CLAUDE_PLUGIN_ROOT}` at startup so it follows every update. Tools gain the scoped prefix `mcp__plugin_obsidian-router_router__*`. Deliberately *not* a root-level `.mcp.json`: this repo is its own marketplace source, so plugin root = repo root, and a root `.mcp.json` is additionally read as a **project-scope** MCP config by anyone who opens the repo in Claude Code — where `${CLAUDE_PLUGIN_ROOT}` does not expand, leaving them a broken `router` server pointing at a literal path. The inline form is documented as equivalent and has no such second reading.
+- The server key is `router`, not `obsidian-router`, for a measured reason: the scoped prefix is `mcp__plugin_<plugin>_<server>__`, and `obsidian-router` would put the longest tool (`pdf_to_markdown_docling`) at 68 characters — past the 64-character ceiling many MCP clients enforce. `router` caps the worst case at 59.
+- **`src/helpers/ensure-deps.mjs` + a zero-dependency `bin/`** — the entrypoint no longer statically imports the server graph. It probes the three specifiers that are imported statically, installs them once (`npm install --omit=dev --ignore-scripts --no-audit --no-fund`) if they are missing, then loads the server by dynamic import. `--help` and `--version` answer on a tree that has never been installed, diagnostics go to **stderr** (stdout is the MCP framing channel), and a cross-process mkdir lock keeps parallel sessions from installing over each other. Verified cold: 4 s, 180 packages, clean JSON-RPC handshake.
+- **`hooks/hooks.json`** — the two hooks the plugin activates for everyone: `hot-cache-load` and `decisions-recall`. Both read-only, both silent no-ops without a vault, both now with an env opt-out.
+- **`hooks/_helpers/tool-names.mjs`** — one suffix-based rule recognising the router's write tools under all three registration prefixes (direct, plugin-scoped, MCPHub).
+
+### Changed
+
+- **`postinstall` removed.** It ran `install-markitdown` + `install-docling`, i.e. Python virtualenvs and ~100 MB of wheels. Claude Code appears to `npm install` plugins that carry a `package.json`, and nothing documents whether it passes `--ignore-scripts` — so every third-party plugin install risked building a venv nobody asked for, rebuilt on every update since each version lives in its own directory. Both installers stay available as `npm run install-markitdown` / `install-docling`, which is what the "MarkItDown/Docling remain explicitly opt-in" decision said all along.
+- **Hook matchers are prefix-agnostic.** `hooks.example.json` enumerated `mcp__obsidian-router__*` literally; under the plugin those names do not exist, so wiki-autocommit, session-auto-journal and doc-propagation-checker would have stopped firing — silently, since a hook that never fires looks exactly like a hook with nothing to do. `--install-hooks` also **refreshes the frozen matcher** of already-wired blocks (it is idempotent by basename and never revisited them), touching only blocks that contain nothing but router hooks.
+- **Double-wiring guard.** Plugin-provided hooks need no settings.json entry; wiring them there too fires them twice per event. `--install-hooks` skips them when the plugin is installed, `--hooks-status` reports them as `✓ plugin` and warns when a hook is both wired and plugin-provided, and the update hook's "new hook available" tip no longer proposes activating hooks that are already running.
+- The auto-update's *"hook paths were not rewritten"* warning no longer fires for plugin-hooks users, whose `settings.json` legitimately holds no pinned router path — the advice it gave was to re-run `--install-hooks`, which is precisely what double-wires them.
+
+### Fixed
+
+- **`wiki-autocommit` committed into unrelated repositories.** Its only guards were "cwd is a git repo" and "cwd contains one of `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/`" — ordinary directory names — so any repo with a `wiki/` docs folder got silent `wiki: auto-commit …` commits, with `--no-verify` bypassing the user's own pre-commit hooks, and no way to turn it off. It now requires a real vault (`wiki-meta/index.md`, cwd-is-vault only) and honours `OBSIDIAN_ROUTER_NO_WIKI_AUTOCOMMIT`. Reproduced before the fix, verified silent after.
+- **`OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=1` did not disable the session journal** — the check compared against the exact string `true`, unlike every other hook's truthy set. That hook writes user prompts verbatim into the vault, so a half-working opt-out is not acceptable.
+- The `wiki-query-first` nudge no longer names the repo author at strangers in context injected on every prompt.
+
+### Compatibility
+
+Hand-registering the server in `~/.claude.json` still works and keeps the `mcp__obsidian-router__*` names — nothing breaks. But a hand-registered server and the plugin-provided one are different commands, so Claude Code does **not** dedupe them: you get two processes and two copies of every tool. To move onto the plugin, remove the `obsidian-router` entry from `~/.claude.json`.
+
+### Notes on two documented patterns we deliberately did not follow
+
+- **`NODE_PATH=${CLAUDE_PLUGIN_DATA}/node_modules`**, the documented dependency pattern, cannot work here: `NODE_PATH` is honoured only by the CommonJS resolver, and this package is `"type": "module"` throughout (verified on Node 23.11 — the same package resolves under `require` and throws `ERR_MODULE_NOT_FOUND` under `import`).
+- A **`${CLAUDE_PLUGIN_ROOT}/node_modules` junction** into the persistent data directory does work on Windows without elevation, but collides with our own auto-update, which excludes `node_modules` from its cache copy and then installs into the new version directory: the junction is either not recreated (design defeated) or npm writes *through* it and mutates the dependency tree of the still-running previous server process. Per-version `node_modules` in the package root is what both existing provisioning paths already produce.
+
+### Adversarial review before commit (5 reviewers × disjoint axes, every finding sent to a skeptic — 35 raised, 20 refuted, 15 upheld)
+
+Three of the upheld ones were self-inflicted blockers in this very lot, all reproduced on a real machine rather than argued:
+
+- **The double-wiring guard read the wrong manifest.** `pluginProvidedHookBasenames()` read `hooks/hooks.json` from the *checkout*, while `isRouterPluginInstalled()` asked `installed_plugins.json`. Nothing correlated them, and on the normal upgrade path the cached plugin lags the checkout — so a pre-Lot-5 plugin (no `hooks.json` at all) was credited with this version's manifest. `--install-hooks` then skipped wiring both hooks, nothing ran them, and `--hooks-status` reported a double-wiring that did not exist while prescribing a "fix" that deleted them for good. The manifest now comes from the installed plugin's own recorded `installPath`.
+- **Router hooks were invisible in a plugin-cache path.** Identity was a substring match on `obsidian-mcp-router/hooks/`, which a marketplace path never contains (marketplace and plugin are separate segments). Every plugin user was invisible to `--hooks-status`, `--uninstall-hooks` and the new matcher refresh, and `--install-hooks` re-added hooks it could not see. Identity is now "a hook script we ship, sitting in a `hooks/` directory" — true for a dev checkout, a plugin cache, an npm global and a `.mcpb` bundle alike.
+- **The matcher refresh was unreachable.** It ran only from the explicit `--install-hooks` subcommand, not from the auto-wire that tails every normal bootstrap — the path most users actually take.
+
+Also fixed: `hot-cache-load` injected the bytes of a file found on disk with no provenance and no framing, for every plugin installer, on a mode that triggers on the mere existence of `wiki-meta/index.md` (i.e. on a cloned repository) — both modes now carry an envelope stating the content is cited notes, not instructions, and the envelope's own bytes count against the injection ceiling instead of riding on top of it. Both plugin-activated hooks re-check their opt-out *after* loading the workspace `.env`, so a project can disable them from its own `.env` like every other `OBSIDIAN_ROUTER_*` setting. `isRouterPluginInstalled` no longer counts an explicitly disabled plugin as live. On Windows the npm install timeout now kills the whole process tree (Node signals only `cmd.exe`, which has no process group to pass it on, so npm kept mutating `node_modules` after we had reported failure). Nine stale "runs at postinstall" claims swept from the docs, NOTICE, `.gitignore` and code comments; the French half of the README ported.
+
+### Tests
+
++40 cases (`tests/lot5-plugin-server.test.mjs`) covering the bootstrapper, the prefix-agnostic matcher, the plugin manifests, the matcher refresh and the double-wiring guard — including the version-skew case that caused the blocker above, plugin-cache hook recognition, and an assertion that `hooks.example.json` never uses `${CLAUDE_PLUGIN_ROOT}`, which does not expand in `settings.json` and would leave every hook unable to launch. Full suite **2496**, 0 failures. E2E verified twice against a simulated plugin cache with no `node_modules`: cold self-heal, clean JSON-RPC handshake, 42 tools, no Python venv.
+
 ## [0.55.1] — 2026-07-29 — review+ pass on Lot 3: the pre-seed `--force` data-loss bug, and a test file that never ran
 
 Formal `/review+` pass on v0.55.0 (Claude Code Reviewer + codex, two rounds each). Codex converged on the gunzip-headroom inconsistency; the Code Reviewer found what the pre-commit adversarial pass had missed — everything AROUND the extractor.

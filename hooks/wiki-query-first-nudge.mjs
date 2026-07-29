@@ -267,8 +267,9 @@ const chatLinkBlock = urlPrefix ? [
     : `  ❌ WRONG: "Created at \`${cwd}\\\\wiki\\\\Divers\\\\foo.md\`."  (filesystem link, won't open in Obsidian)`,
   `  ✅ RIGHT: "Created [foo](${urlPrefix}wiki%2FDivers%2Ffoo.md)."`,
   '',
-  'Roland has flagged this exact bug 10+ times. Every bare-path citation in a',
-  'chat reply costs him friction. Use the URL — your tool results have it.',
+  'This is the single most repeated correction in vault sessions. Every',
+  'bare-path citation in a chat reply is a dead link the reader has to work',
+  'around. Use the URL — your tool results already carry it.',
   '',
 ] : [
   '',

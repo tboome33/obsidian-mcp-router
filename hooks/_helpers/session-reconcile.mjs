@@ -56,6 +56,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { isRouterWriteTool } from './tool-names.mjs';
+
 // ---------------------------------------------------------------------------
 // Pure helpers (single source of truth — imported by session-auto-journal.mjs
 // so the hook and this module can never drift on sanitize/summary format)
@@ -199,7 +201,10 @@ export function reconstructStateFromContent(content, fm) {
     const tool = m[1];
     if (tool === 'Write' || tool === 'Edit' || tool === 'MultiEdit') writes += 1;
     else if (tool === 'Bash') bash += 1;
-    else if (tool.startsWith('mcp__obsidian-router__')) mcpWrites += 1;
+    // Suffix match, not the old literal `mcp__obsidian-router__` prefix:
+    // an orphaned journal can have been written by a session whose router
+    // was plugin-provided or MCPHub-namespaced. See _helpers/tool-names.mjs.
+    else if (isRouterWriteTool(tool)) mcpWrites += 1;
   }
   const firstPromptMatch = content.match(RE_FIRST_PROMPT);
   const firstUserPrompt = firstPromptMatch ? truncate(firstPromptMatch[1].trim(), 120) : null;

@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.55.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.56.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -43,7 +43,7 @@ What you get:
 | Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
-Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` so the postinstall can install `markitdown[all]` into a local `.venv` — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
+Semantic search (`search_smart`) and Templater execution (`execute_template`) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart` and `/templates/execute` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
 
 ## Deployment modes
 
@@ -242,9 +242,11 @@ You also need:
 
 > 📘 **Reference vault required for `setup-vault.mjs`** — to bootstrap new vaults via the script (which most users will want), you first need a one-time-configured reference vault holding the canonical plugin set. Easiest path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolds the skeleton + downloads bridge plugin in one command, then guides you through installing the marketplace plugins via Obsidian). Full doc with troubleshooting: [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
-Two pieces to install: the **MCP server** (the router itself, exposes the 42 tools to Claude) and the **plugin** (exposes `/obsidian-router:*` slash commands).
+**Since v0.56.0 the plugin carries the MCP server.** Installing the plugin gets you the server, the slash commands, the skills and the hooks together; updating the plugin updates all of them at once. Go to Step 2 and skip Step 1 — it is only for people who want to run the server from a checkout.
 
-### Step 1 — Install the MCP server
+### Step 1 — Install the MCP server *(optional — the plugin already ships it)*
+
+Only needed if you are developing on the router, or if you deliberately want the server registered independently of the plugin.
 
 ```bash
 git clone https://github.com/tboome33/obsidian-mcp-router.git
@@ -267,6 +269,8 @@ Register it in `~/.claude.json` (user scope) as `obsidian-router`:
 ```
 
 The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same file that `setup-vault.mjs` maintains) and exposes every vault automatically.
+
+> ⚠️ **Do not do both without meaning to.** A hand-registered server and the plugin-provided one are two different commands, so Claude Code does not treat them as duplicates: you get **two server processes and two copies of every tool**. Pick one. To move a pre-v0.56.0 install onto the plugin, remove your `obsidian-router` entry from `~/.claude.json`.
 
 ### Step 2 — Install the plugin
 
@@ -311,9 +315,34 @@ Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-r
 
 You can also use the bundled `meta-setup` skill to walk through both steps interactively: just ask Claude *"set up the obsidian-mcp-router on this machine"*.
 
+### Tool names depend on how the server was registered
+
+The server always declares bare tool names (`get_file`, `write_file`, …). The prefix comes from the registration, so the same tool has different full names:
+
+| How the server is registered | Full tool name |
+| --- | --- |
+| Provided by the plugin (v0.56.0+, the default) | `mcp__plugin_obsidian-router_router__get_file` |
+| Registered by hand in `~/.claude.json` | `mcp__obsidian-router__get_file` |
+| Behind MCPHub | `mcp__<id>__obsidian-router-<vault>-get_file` |
+
+Documentation and skills use the short `mcp__obsidian-router__*` form for readability — Claude calls whichever name is actually in its tool list, so this is a naming difference, not a compatibility one. Hooks match these tools **by suffix** (`hooks/_helpers/tool-names.mjs`) precisely so they keep firing under all three forms.
+
+### Which hooks the plugin turns on by itself
+
+Installing the plugin activates exactly two hooks, with no opt-in step, because Claude Code runs whatever a plugin declares in `hooks/hooks.json`:
+
+| Hook | What it does | Turn it off with |
+| --- | --- | --- |
+| `hot-cache-load` | On session start, prints your vault's `wiki-meta/hot.md` into the session context. Read-only. | `OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD=1` |
+| `decisions-recall` | On a prompt that matches a settled decision page, cites it. Read-only. | `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=1` |
+
+Both are silent no-ops if no vault is configured. **The other eight hooks stay opt-in** via `node scripts/setup-vault.mjs --install-hooks`, because they commit to git, write session transcripts into a vault, block the end of a turn, or call the network — none of which is a defensible default for someone who just installed a plugin. `--hooks-status` shows which are wired, which come from the plugin, and warns if any is doing both (which would fire it twice per event).
+
 ### Staying up to date
 
-The plugin ships a SessionStart hook (`hooks/check-router-update.mjs`, since v0.10.3) that checks GitHub once per 24 hours and surfaces a notice if a newer version is available. The notice tells Claude to relay it on its first response of the session, so you find out without having to remember to check.
+The router ships a SessionStart hook (`hooks/check-router-update.mjs`, since v0.10.3) that checks GitHub once per 24 hours and surfaces a notice if a newer version is available. The notice tells Claude to relay it on its first response of the session, so you find out without having to remember to check.
+
+**It is opt-in, not plugin-activated** — wire it with `node scripts/setup-vault.mjs --install-hooks`. It stays out of `hooks/hooks.json` deliberately: it makes a network call, and a plugin should not phone home on install without being asked. If you skip it, `/plugin update` remains the normal way to upgrade.
 
 If `/plugin update obsidian-router@obsidian-mcp-router-marketplace` is available in your Claude Code environment, that's the one-liner upgrade path. If it isn't (some environments don't expose the `/plugin` slash command), see [`docs/how-to-update.md`](./docs/how-to-update.md) for the 5-step manual filesystem equivalent (bash + PowerShell recipes).
 
@@ -635,7 +664,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `plan_vault` | **Read-only.** Plan the creation of a NEW local vault: returns computed defaults + a structured questionnaire (the 5 wiki modes, themes installed in the source, registered vaults to copy config from, plugin profiles) + warnings — without writing anything. Feeds the guided wizard; chain with `provision_vault`. Local-only (absent on gated deployments). |
 | `provision_vault` | Create a NEW local vault in one call from the wizard answers (typically `plan_vault` defaults + adjustments). Returns a step-by-step report + port, insecurePort, openUri and probe result. Refuses paths outside the known vault roots unless `allowOutsideRoots: true`; `--from-vault` copies config only (credentials excluded, port + API key regenerated). Local-only. |
-| `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (installed by default at postinstall). Returns markdown text only — chain with `write_file` to persist. |
+| `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (opt-in: `npm run install-markitdown`). Returns markdown text only — chain with `write_file` to persist. |
 | `pdf_to_markdown_docling` | Convert a local PDF to markdown via **Docling**'s standard pipeline (layout detection + TableFormer table-structure recognition). Higher fidelity than `pdf_to_markdown` on complex tables / multi-column layouts, at ~10× the CPU cost. **Opt-in** — requires the Docling extra (see *Conversion tools — runtime dependencies*). PDF only; for office formats keep `pdf_to_markdown`. |
 | `pdf_to_images` | **Render** a local PDF's pages to PNG images, returned as MCP image blocks so the model can visually **see** a page (not just read its text). Renders with **pypdfium2** (BSD) + Pillow from the same `.venv-docling` as Docling — returns an actionable install hint if absent. Params: `filepath`, `first_page`, `max_pages` (default 8, cap 30), `scale` (≈144 DPI). Hard page/byte caps bound token cost. Does not write to any vault. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convert a remote URL to markdown via `markitdown`. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-heavy SPAs prefer the `defuddle` skill (headless browser). `webpage_to_markdown` additionally accepts an opt-in `relevanceQuery` to BM25-filter the result to on-topic blocks (see `filter_relevant_blocks`) — output stays a string with a one-line stats comment appended. |
@@ -658,14 +687,15 @@ More tools (CLI flags, hot config reload, skills) are on the roadmap — see [RO
 
 The `*_to_markdown` family is a JS/ESM port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT) — see `NOTICE` for the full credit. The actual file → markdown conversion is performed by Microsoft's `markitdown` Python CLI:
 
-- **Python 3.10+** is required. The router's npm postinstall script (`scripts/install-markitdown.mjs`) auto-detects Python on `PATH`, creates a local `.venv` at the repo root, and installs `markitdown[all]>=0.1.5`. If Python is missing, the postinstall prints a warning and exits cleanly — the rest of the router still works.
-- Skip the postinstall with `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` or `npm install --ignore-scripts`. Re-run manually any time with `npm run install-markitdown`.
+- **Python 3.10+** is required, and the install is **explicit** — run `npm run install-markitdown`. The script auto-detects Python on `PATH`, creates a local `.venv` at the repo root, and installs `markitdown[all]>=0.1.5`. If Python is missing it prints a warning and exits cleanly; the rest of the router works either way.
+- It used to run automatically from an npm `postinstall`. That was removed in **v0.56.0**: now that the plugin carries the server, a `postinstall` would mean every third party who installs the plugin silently building a ~100 MB Python virtualenv they never asked for — and it would be rebuilt on every plugin update, since each version lives in its own directory. The conversion tools are opt-in; everything else works without Python.
+- `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` still makes the script a no-op, for scripted environments that call it unconditionally.
 - To use a system-wide install instead of the bundled venv: `pipx install "markitdown[all]"` and set `MARKITDOWN_PATH=/abs/path/to/markitdown`.
 - `git_repo_to_markdown` uses `repomix` (Node, bundled as a normal npm dependency — no extra setup).
 
 **High-fidelity PDF via Docling (opt-in).** `pdf_to_markdown_docling` uses [Docling](https://github.com/docling-project/docling) (IBM / LF AI & Data Foundation, MIT) instead of MarkItDown — its layout + TableFormer models reconstruct table structure and reading order that MarkItDown's `pdfminer.six` backend loses, at ~10× the CPU cost. Docling pulls torch/onnxruntime + model weights, so it is **not** installed by default. Disk footprint depends on the OS's default torch wheel: **~1.3 GB on Windows/macOS** (CPU-only torch) vs **~5.5 GB on Linux** (its default wheel bundles CUDA libraries, unused on a CPU-only box). The models (layout + TableFormer + OCR, a few hundred MB) download on first conversion into the Hugging Face cache (`HF_HOME`).
 
-- Enable it by setting `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` **before** `npm install` — the postinstall then creates a separate `.venv-docling` and runs `pip install docling` (standard pipeline; no VLM/ASR extras). Re-run any time with the env var set: `npm run install-docling`. Needs Python 3.10+.
+- Enable it with `OBSIDIAN_ROUTER_ENABLE_DOCLING=1 npm run install-docling` — that creates a separate `.venv-docling` and runs `pip install docling` (standard pipeline; no VLM/ASR extras). Needs Python 3.10+. (Before v0.56.0 this rode on the npm `postinstall`, which no longer exists.)
 - To use a system-wide install instead: `pipx install docling` and set `DOCLING_PATH=/abs/path/to/docling`.
 - `pdf_to_markdown_docling` stays listed even when Docling isn't installed; calling it then returns an actionable install hint. `pdf_to_markdown` (MarkItDown) is unaffected and remains the default fast path. Docling is PDF-only here — DOCX/PPTX/XLSX keep using MarkItDown.
 - **Figures are not embedded.** The tool runs Docling with `--image-export-mode placeholder`, so each picture becomes a `<!-- image -->` marker instead of an inline base64 data-URI. The output stays text-only and small — an illustrated PDF that comes back as ~3 MB of base64 in Docling's default `embedded` mode is ~15 KB here — at the cost of dropping the figure images (table structure and reading order are still reconstructed).
@@ -680,7 +710,7 @@ Optional sandbox env vars:
 | `OBSIDIAN_ROUTER_VIDEO_SUBLANGS` | yt-dlp `--sub-langs` value for the caption fallback (default `en.*,en`). Widen to fetch other subtitle languages. |
 | `MD_ALLOWED_PATHS` | `:`-separated (POSIX) or `;`-separated (Windows) list of directories the conversion tools are allowed to read. When unset (default), any absolute path is fair game. When set, the file-input conversion tools reject paths outside the listed directories. |
 | `MD_SHARE_DIR` | Legacy single-directory alias for `MD_ALLOWED_PATHS`, kept for backward compatibility with markdownify-mcp setups. Prefer `MD_ALLOWED_PATHS`. |
-| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | Set to `1` to skip the venv creation at postinstall. |
+| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | Set to `1` to make `npm run install-markitdown` a no-op. |
 | `OBSIDIAN_ROUTER_ENABLE_DOCLING` | Set to `1` **before install** to opt into the Docling backend for `pdf_to_markdown_docling` (creates `.venv-docling`, `pip install docling`). Any other value → the tool is listed but errors with an install hint at call time. |
 | `DOCLING_PATH` | Absolute path to the `docling` executable. Override when not using the bundled `.venv-docling`. |
 
@@ -835,7 +865,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.55.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.56.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1030,9 +1060,11 @@ Il te faut aussi :
 
 > 📘 **Vault de référence requis pour `setup-vault.mjs`** — pour bootstrapper de nouveaux vaults via le script (ce que la plupart des utilisateurs voudront), il faut d'abord un vault de référence configuré une seule fois qui contient le set canonique de plugins. Voie la plus rapide : `node scripts/setup-vault.mjs --bootstrap-reference <path>` (scaffolde le skeleton + télécharge le bridge plugin en une commande, puis te guide pour installer les plugins marketplace via Obsidian). Doc complète avec troubleshooting : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
 
-Deux composants à installer : le **MCP server** (le router lui-même, expose les 42 outils à Claude) et le **plugin** (expose les slash commands `/obsidian-router:*`).
+**Depuis la v0.56.0, le plugin embarque le serveur MCP.** Installer le plugin apporte le serveur, les slash commands, les skills et les hooks ensemble ; le mettre à jour les met tous à jour d'un coup. Va directement à l'étape 2 et saute l'étape 1 — elle ne sert qu'à faire tourner le serveur depuis un clone.
 
-#### Étape 1 — Installer le MCP server
+#### Étape 1 — Installer le MCP server *(optionnel — le plugin l'embarque déjà)*
+
+Utile seulement si tu développes sur le router, ou si tu veux délibérément enregistrer le serveur indépendamment du plugin.
 
 ```bash
 git clone https://github.com/tboome33/obsidian-mcp-router.git
@@ -1055,6 +1087,8 @@ Enregistre-le dans `~/.claude.json` (user scope) sous le nom `obsidian-router` :
 ```
 
 Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le même fichier maintenu par `setup-vault.mjs`) et expose tous les vaults automatiquement.
+
+> ⚠️ **Ne fais pas les deux sans le vouloir.** Un serveur enregistré à la main et celui fourni par le plugin sont deux commandes différentes : Claude Code ne les considère donc pas comme des doublons, et tu te retrouves avec **deux processus serveur et deux exemplaires de chaque outil**. Choisis-en un. Pour basculer une installation antérieure à la v0.56.0 vers le plugin, supprime l'entrée `obsidian-router` de `~/.claude.json`.
 
 #### Étape 2 — Installer le plugin
 
@@ -1099,9 +1133,34 @@ Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/ob
 
 Tu peux aussi utiliser le skill `meta-setup` du plugin pour qu'il te guide à travers les deux étapes : demande à Claude *"setup le obsidian-mcp-router sur cette machine"*.
 
+### Les noms d'outils dépendent du mode d'enregistrement
+
+Le serveur ne déclare que des noms nus (`get_file`, `write_file`, …). Le préfixe vient de l'enregistrement, donc un même outil porte des noms différents :
+
+| Mode d'enregistrement | Nom complet de l'outil |
+| --- | --- |
+| Fourni par le plugin (v0.56.0+, le cas par défaut) | `mcp__plugin_obsidian-router_router__get_file` |
+| Enregistré à la main dans `~/.claude.json` | `mcp__obsidian-router__get_file` |
+| Derrière MCPHub | `mcp__<id>__obsidian-router-<vault>-get_file` |
+
+La documentation et les skills utilisent la forme courte `mcp__obsidian-router__*` par lisibilité — Claude appelle le nom qui figure réellement dans sa liste d'outils, c'est donc une différence de nommage, pas de compatibilité. Les hooks, eux, reconnaissent ces outils **par suffixe** (`hooks/_helpers/tool-names.mjs`) précisément pour continuer à se déclencher sous les trois formes.
+
+### Les hooks que le plugin active tout seul
+
+Installer le plugin active exactement deux hooks, sans étape d'activation, parce que Claude Code exécute ce qu'un plugin déclare dans `hooks/hooks.json` :
+
+| Hook | Rôle | Désactivation |
+| --- | --- | --- |
+| `hot-cache-load` | Au démarrage de session, injecte le `wiki-meta/hot.md` du vault dans le contexte. Lecture seule. | `OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD=1` |
+| `decisions-recall` | Sur un prompt qui recoupe une décision actée, la cite. Lecture seule. | `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=1` |
+
+Les deux sont des no-op silencieux sans vault configuré. **Les huit autres hooks restent opt-in** via `node scripts/setup-vault.mjs --install-hooks` : ils commitent dans git, écrivent les transcriptions de session dans un vault, bloquent la fin d'un tour ou appellent le réseau — rien de tout cela n'est un défaut défendable pour quelqu'un qui vient d'installer un plugin. `--hooks-status` montre lesquels sont câblés, lesquels viennent du plugin, et alerte si l'un fait les deux (il se déclencherait deux fois par événement).
+
 ### Rester à jour
 
-Le plugin ship un hook SessionStart (`hooks/check-router-update.mjs`, depuis v0.10.3) qui check GitHub une fois par 24h et émet une notice si une nouvelle version est disponible. La notice demande à Claude de la relayer sur sa première réponse de la session — tu es au courant sans avoir besoin de penser à check.
+Le router ship un hook SessionStart (`hooks/check-router-update.mjs`, depuis v0.10.3) qui check GitHub une fois par 24h et émet une notice si une nouvelle version est disponible. La notice demande à Claude de la relayer sur sa première réponse de la session — tu es au courant sans avoir besoin de penser à check.
+
+**Il est opt-in, pas activé par le plugin** — câble-le avec `node scripts/setup-vault.mjs --install-hooks`. Il reste délibérément hors de `hooks/hooks.json` : il fait un appel réseau, et un plugin ne doit pas téléphoner à la maison dès l'installation sans qu'on le lui demande. Si tu t'en passes, `/plugin update` reste la voie normale de mise à jour.
 
 Si `/plugin update obsidian-router@obsidian-mcp-router-marketplace` est disponible dans ton environnement Claude Code, c'est le path one-liner. Sinon (certains environnements n'exposent pas le slash command `/plugin`), voir [`docs/how-to-update.md`](./docs/how-to-update.md) pour l'équivalent filesystem manuel en 5 étapes (recettes bash + PowerShell).
 
@@ -1399,7 +1458,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
 | `plan_vault` | **Read-only.** Planifie la création d'un NOUVEAU vault local : retourne les défauts calculés + un questionnaire structuré (les 5 modes wiki, les thèmes installés dans la source, les vaults enregistrés dont copier la config, les profils de plugins) + avertissements — sans rien écrire. Alimente le wizard guidé ; enchaîner avec `provision_vault`. Local uniquement (absent des déploiements gated). |
 | `provision_vault` | Crée un NOUVEAU vault local en un appel depuis les réponses du wizard (typiquement les défauts de `plan_vault` + ajustements). Retourne un rapport étape par étape + port, insecurePort, openUri et résultat de probe. Refuse les chemins hors des racines de vaults connues sauf `allowOutsideRoots: true` ; `--from-vault` copie la config seule (credentials exclus, port + clé API régénérés). Local uniquement. |
-| `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (installés par défaut au postinstall). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
+| `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (opt-in : `npm run install-markitdown`). Retourne du texte markdown — chaîne avec `write_file` pour persister. |
 | `pdf_to_markdown_docling` | Convertit un PDF local en markdown via le pipeline standard de **Docling** (détection de mise en page + reconnaissance de structure de tableau TableFormer). Plus haute fidélité que `pdf_to_markdown` sur les tableaux complexes / mises en page multi-colonnes, à ~10× le coût CPU. **Opt-in** — nécessite l'extra Docling (voir la section dépendances de conversion). PDF uniquement ; pour les formats bureautiques, garder `pdf_to_markdown`. |
 | `pdf_to_images` | **Rend** les pages d'un PDF local en images PNG, renvoyées comme blocs image MCP pour que le modèle **voie** une page (pas seulement son texte). Rendu via **pypdfium2** (BSD) + Pillow, du même `.venv-docling` que Docling — renvoie un hint d'install si absent. Paramètres : `filepath`, `first_page`, `max_pages` (défaut 8, plafond 30), `scale` (≈144 DPI). Plafonds durs de pages/octets pour borner le coût en tokens. N'écrit dans aucun coffre. |
 | `youtube_to_markdown` · `bing_search_to_markdown` · `webpage_to_markdown` | Convertit une URL distante en markdown via `markitdown`. URL http(s) uniquement ; hôtes privés/loopback refusés (garde SSRF). Pour les SPA JS-lourdes, préfère le skill `defuddle` (navigateur headless). `webpage_to_markdown` accepte en plus un `relevanceQuery` opt-in pour filtrer le résultat aux blocs pertinents par BM25 (cf. `filter_relevant_blocks`) — la sortie reste une string avec un commentaire de stats d'une ligne en fin. |

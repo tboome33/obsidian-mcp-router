@@ -475,8 +475,12 @@ describe('wiki-query-first-nudge — v0.14.8 CHAT RESPONSE LINK FORMAT', () => {
     assert.match(ctx, /build_open_link/);
     // Mentions clickToOpenUrl field on tool results
     assert.match(ctx, /clickToOpenUrl/);
-    // Mentions the user-frustration framing
-    assert.match(ctx, /Roland.*10\+ times/);
+    // Keeps the "this matters, it keeps happening" framing that makes the
+    // rule stick — but stated impersonally. The plugin is public and
+    // Apache-2.0; naming its author at a stranger, in context injected on
+    // every prompt, is both confusing and a small privacy leak.
+    assert.match(ctx, /most repeated correction/);
+    assert.ok(!/Roland/.test(ctx), 'the injected context must not name the repo author');
   });
 
   test('emits DEGRADED block when data.json is missing', () => {

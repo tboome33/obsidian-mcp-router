@@ -158,10 +158,11 @@ export function tryAutoUpdate({
   // 8. npm install --omit=dev --ignore-scripts in the new cache dir.
   //    --ignore-scripts is critical: without it, every auto-update would
   //    run preinstall/install/postinstall lifecycle scripts from freshly
-  //    pulled upstream code (this repo declares `postinstall:
-  //    node scripts/install-markitdown.mjs`), in a silent SessionStart
-  //    hook, with full user privileges. That's a supply-chain footgun on
-  //    every release.
+  //    pulled upstream code — this package's own, and every dependency's —
+  //    in a silent SessionStart hook, with full user privileges. That's a
+  //    supply-chain footgun on every release. (v0.56.0 also removed this
+  //    package's own `postinstall`, which used to build Python venvs; the
+  //    guard stays because dependencies can still declare theirs.)
   //
   //    Trade-off: skipping postinstall means the new cache dir won't
   //    have a `.venv/` provisioned for markitdown. resolveMarkitdownPath

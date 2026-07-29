@@ -5,7 +5,7 @@ node_modules/
 !.env.example
 
 # Bundled Python venv for the `markitdown` CLI used by the *_to_markdown tools.
-# Created by scripts/install-markitdown.mjs at npm postinstall.
+# Created by scripts/install-markitdown.mjs (`npm run install-markitdown`; opt-in since v0.56.0).
 .venv/
 
 # Opt-in Python venv for the `docling` CLI (pdf_to_markdown_docling).

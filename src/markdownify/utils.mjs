@@ -39,7 +39,7 @@ export function expandHome(filepath) {
  *      did `pipx install "markitdown[all]"` and wants to point us at it).
  *   2. `<projectRoot>/.venv/bin/markitdown` (POSIX) or
  *      `<projectRoot>\.venv\Scripts\markitdown.exe` (Windows) — created by
- *      the router's `scripts/install-markitdown.mjs` at postinstall time.
+ *      the router's `scripts/install-markitdown.mjs` (`npm run install-markitdown`).
  *   3. Bare `markitdown` — let `execFile` look it up on `PATH` (POSIX execvp /
  *      Windows search). Fails with ENOENT at call time if not installed.
  */
@@ -63,7 +63,7 @@ export function resolveMarkitdownPath(projectRoot) {
  *   1. `DOCLING_PATH` env var — explicit override (e.g. `pipx install docling`).
  *   2. `<projectRoot>/.venv-docling/bin/docling` (POSIX) or
  *      `<projectRoot>\.venv-docling\Scripts\docling.exe` (Windows) — created by
- *      `scripts/install-docling.mjs` at postinstall time WHEN opted in.
+ *      `scripts/install-docling.mjs`, run explicitly when opted in.
  *   3. Bare `docling` — `PATH` lookup. ENOENT at call time if not installed.
  */
 export function resolveDoclingPath(projectRoot) {

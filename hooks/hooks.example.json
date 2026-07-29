@@ -55,7 +55,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file|mcp__obsidian-router__execute_template",
+        "matcher": "mcp__.*(?:write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|delete_file|move_file|execute_template)$",
         "hooks": [
           {
             "type": "command",
@@ -73,7 +73,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit|MultiEdit|Bash|mcp__obsidian-router__write_file|mcp__obsidian-router__patch_file|mcp__obsidian-router__append_to_file|mcp__obsidian-router__set_frontmatter|mcp__obsidian-router__merge_frontmatter|mcp__obsidian-router__delete_file|mcp__obsidian-router__move_file|mcp__obsidian-router__execute_template",
+        "matcher": "Write|Edit|MultiEdit|Bash|mcp__.*(?:write_file|patch_file|append_to_file|set_frontmatter|merge_frontmatter|delete_file|move_file|execute_template)$",
         "hooks": [
           {
             "type": "command",

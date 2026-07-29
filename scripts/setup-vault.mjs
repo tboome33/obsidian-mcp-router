@@ -2797,6 +2797,50 @@ function syncPluginsMode(vaultPath, opts = {}) {
 const ROUTER_HOOKS_PATH_FRAGMENT = 'obsidian-mcp-router/hooks/';
 const ROUTER_HOOKS_PATH_FRAGMENT_WIN = 'obsidian-mcp-router\\hooks\\';
 
+/**
+ * Basenames of the hook scripts this router ships. Read once, lazily.
+ * Same in every copy of the router, which is what makes it a usable
+ * identity test regardless of where the copy lives.
+ */
+let _routerHookBasenames = null;
+function routerHookBasenames() {
+  if (_routerHookBasenames) return _routerHookBasenames;
+  try {
+    _routerHookBasenames = new Set(
+      fs.readdirSync(path.join(REPO_ROOT, 'hooks')).filter((f) => f.endsWith('.mjs')),
+    );
+  } catch {
+    _routerHookBasenames = new Set();
+  }
+  return _routerHookBasenames;
+}
+
+/**
+ * Is this settings.json `command` string one of OUR hooks?
+ *
+ * The original test was a substring match on `obsidian-mcp-router/hooks/`,
+ * which only ever matched a checkout whose directory happens to be named
+ * `obsidian-mcp-router`. A marketplace install lives at
+ * `…/.claude/plugins/cache/obsidian-mcp-router-marketplace/obsidian-router/<version>/hooks/…`
+ * — marketplace and plugin are SEPARATE path segments, so the fragment is
+ * absent and every plugin user was invisible to `--hooks-status`,
+ * `--uninstall-hooks` and the matcher refresh. `--install-hooks` then
+ * re-added hooks it could not see, duplicating them.
+ *
+ * Identity is now "a hook script we ship, sitting in a hooks/ directory",
+ * which holds for a dev checkout, a plugin cache, an npm global install and
+ * a .mcpb bundle alike. The legacy fragment stays accepted so a hook we no
+ * longer ship is still recognised for removal.
+ */
+function isRouterHookCommand(cmd) {
+  if (typeof cmd !== 'string' || !cmd) return false;
+  if (cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT) || cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT_WIN)) return true;
+  const bn = commandBasename(cmd);
+  if (!bn || !routerHookBasenames().has(bn)) return false;
+  const normalized = cmd.replace(/["']/g, '').replace(/\\/g, '/');
+  return normalized.includes('/hooks/');
+}
+
 function userSettingsPath() {
   return path.join(os.homedir(), '.claude', 'settings.json');
 }
@@ -2855,7 +2899,7 @@ function activeRouterHookBasenames(settings) {
       const entries = Array.isArray(block.hooks) ? block.hooks : [];
       for (const entry of entries) {
         const cmd = entry.command || '';
-        if (cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT) || cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT_WIN)) {
+        if (isRouterHookCommand(cmd)) {
           const bn = commandBasename(cmd);
           if (bn) found.add(bn);
         }
@@ -2876,6 +2920,11 @@ function activeRouterHookBasenames(settings) {
 function installHooksInto(settings, example, opts = {}) {
   const added = [];
   const skipped = [];
+  // Hooks the plugin already runs by itself — wiring them here too would
+  // double-fire them. Empty unless the caller passes the set explicitly,
+  // so the pure function stays testable without touching $HOME.
+  const pluginProvided = new Set(opts.pluginProvided || []);
+  const skippedAsPluginProvided = [];
   const already = activeRouterHookBasenames(settings);
 
   // Normalize --select input: accept "vault-link-linter" or "vault-link-linter.mjs"
@@ -2903,6 +2952,10 @@ function installHooksInto(settings, example, opts = {}) {
       const toAdd = exampleHooksList.filter((entry) => {
         const bn = commandBasename(entry.command);
         if (!bn) return false;
+        if (pluginProvided.has(bn) && !already.has(bn)) {
+          skippedAsPluginProvided.push(bn);
+          return false;
+        }
         if (selectFilter && !selectFilter.has(bn)) {
           // Selected-out: count as skipped only if not already installed,
           // otherwise it's just a no-op (which is fine).
@@ -2936,7 +2989,164 @@ function installHooksInto(settings, example, opts = {}) {
     }
   }
 
-  return { added, skipped };
+  return { added, skipped, pluginProvided: [...new Set(skippedAsPluginProvided)] };
+}
+
+/**
+ * Basenames of the hooks the PLUGIN activates on its own (hooks/hooks.json).
+ *
+ * Those hooks need no settings.json entry — Claude Code runs them for every
+ * user who installs the plugin. Wiring them a second time here would make
+ * them fire TWICE per event. Returns [] when the manifest is absent or
+ * unreadable (a dev checkout that predates Lot 5, an npm install, …).
+ */
+function pluginProvidedHookBasenames(pluginRoot = REPO_ROOT) {
+  try {
+    const raw = fs.readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8');
+    const manifest = JSON.parse(raw);
+    const found = new Set();
+    for (const event of Object.keys(manifest.hooks || {})) {
+      for (const block of manifest.hooks[event] || []) {
+        for (const entry of block.hooks || []) {
+          const bn = commandBasename(entry.command);
+          if (bn) found.add(bn);
+        }
+      }
+    }
+    return [...found];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Absolute path of the INSTALLED obsidian-router plugin, or null.
+ *
+ * Reads the `installPath` that `installed_plugins.json` records, handling
+ * the v1 (object) and v2 (array of scoped entries) shapes. Returns null
+ * unless the directory actually exists.
+ */
+function installedRouterPluginPath({ homedir = os.homedir() } = {}) {
+  try {
+    const p = path.join(homedir, '.claude', 'plugins', 'installed_plugins.json');
+    const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const plugins = json.plugins || {};
+    const key = Object.keys(plugins).find((k) => k === ROUTER_PLUGIN_KEY || k.startsWith('obsidian-router@'));
+    if (!key) return null;
+    const entry = plugins[key];
+    for (const candidate of Array.isArray(entry) ? entry : [entry]) {
+      const dir = candidate && candidate.installPath;
+      if (typeof dir === 'string' && dir && fs.existsSync(dir)) return dir;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the obsidian-router plugin is installed AND not explicitly
+ * disabled — i.e. when Claude Code will actually run what it declares.
+ *
+ * Deliberately conservative: any doubt (file missing, unparseable, no
+ * matching key, `enabledPlugins[key] === false`) reports false, so
+ * `--install-hooks` keeps its pre-Lot-5 behaviour of wiring everything
+ * rather than silently skipping hooks the user expected to get.
+ */
+function isRouterPluginInstalled({ homedir = os.homedir() } = {}) {
+  if (!installedRouterPluginPath({ homedir })) return false;
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(homedir, '.claude', 'settings.json'), 'utf8'));
+    const enabled = settings.enabledPlugins || {};
+    for (const [k, v] of Object.entries(enabled)) {
+      if ((k === ROUTER_PLUGIN_KEY || k.startsWith('obsidian-router@')) && v === false) return false;
+    }
+  } catch { /* no settings.json, or unreadable — absence means enabled */ }
+  return true;
+}
+
+/**
+ * The hooks the installed plugin is really running right now.
+ *
+ * The two halves MUST come from the same copy of the plugin. Deriving the
+ * manifest from this checkout while deriving "is it installed?" from
+ * `installed_plugins.json` credits the installed plugin with hooks it does
+ * not ship: on the normal upgrade path the cached plugin lags the checkout,
+ * so a 0.55.1 plugin (no hooks.json at all) would be credited with the
+ * 0.56.0 manifest — `--install-hooks` would skip wiring both hooks, nothing
+ * would run them, and `--hooks-status` would report a double-wiring that
+ * does not exist and prescribe a "fix" that deletes them for good.
+ */
+function activePluginProvidedHooks({ homedir = os.homedir() } = {}) {
+  if (!isRouterPluginInstalled({ homedir })) return [];
+  const pluginRoot = installedRouterPluginPath({ homedir });
+  if (!pluginRoot) return [];
+  return pluginProvidedHookBasenames(pluginRoot);
+}
+
+/**
+ * Refresh the matcher string of blocks that hold ONLY router hooks.
+ *
+ * `installHooksInto` is idempotent by hook-script basename and never
+ * revisits a block it has already written (see the "Layout note" above).
+ * That is fine while matchers are stable, and a trap when they change: a
+ * user who ran `--install-hooks` before Lot 5 carries a frozen matcher
+ * enumerating `mcp__obsidian-router__*` literally, which no longer matches
+ * the plugin-provided tool names (`mcp__plugin_obsidian-router_router__*`).
+ * The hooks then stop firing — silently, because a hook with nothing to do
+ * looks exactly like a hook that never ran.
+ *
+ * Only blocks whose every entry is a router hook are touched, so a matcher
+ * a user shares with their own hooks is never rewritten.
+ * Returns { updated: string[] }. Pure.
+ */
+function refreshRouterMatchers(settings, example) {
+  const updated = [];
+
+  // event::basename -> matcher the example wants for it
+  const desired = new Map();
+  for (const event of Object.keys(example.hooks || {})) {
+    for (const block of example.hooks[event] || []) {
+      for (const entry of block.hooks || []) {
+        const bn = commandBasename(entry.command);
+        if (bn) desired.set(`${event}::${bn}`, block.matcher === undefined ? '' : block.matcher);
+      }
+    }
+  }
+
+  const hooks = settings.hooks || {};
+  for (const event of Object.keys(hooks)) {
+    for (const block of Array.isArray(hooks[event]) ? hooks[event] : []) {
+      const entries = Array.isArray(block.hooks) ? block.hooks : [];
+      if (entries.length === 0) continue;
+
+      const basenames = [];
+      let allRouter = true;
+      for (const entry of entries) {
+        const cmd = entry.command || '';
+        if (!isRouterHookCommand(cmd)) {
+          allRouter = false;
+          break;
+        }
+        const bn = commandBasename(cmd);
+        if (bn) basenames.push(bn);
+      }
+      if (!allRouter || basenames.length === 0) continue;
+
+      const wanted = desired.get(`${event}::${basenames[0]}`);
+      if (wanted === undefined) continue;
+      // Every hook in the block must want the same matcher, otherwise we
+      // cannot rewrite it without changing another hook's gate.
+      if (!basenames.every((bn) => desired.get(`${event}::${bn}`) === wanted)) continue;
+
+      const current = block.matcher === undefined ? '' : block.matcher;
+      if (current === wanted) continue;
+      block.matcher = wanted;
+      updated.push(...basenames);
+    }
+  }
+
+  return { updated };
 }
 
 /**
@@ -2955,8 +3165,7 @@ function uninstallHooksFrom(settings) {
       const entries = Array.isArray(block.hooks) ? block.hooks : [];
       const filteredEntries = entries.filter((entry) => {
         const cmd = entry.command || '';
-        const isRouter = cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT) ||
-                         cmd.includes(ROUTER_HOOKS_PATH_FRAGMENT_WIN);
+        const isRouter = isRouterHookCommand(cmd);
         if (isRouter) {
           const bn = commandBasename(cmd);
           if (bn) removed.push(bn);
@@ -2984,10 +3193,16 @@ function uninstallHooksFrom(settings) {
 
 /**
  * Report which hooks from `example` are active in `settings`.
- * Returns [{ basename, status: 'active'|'inactive' }].
+ * Returns [{ basename, status: 'active'|'inactive'|'plugin' }].
+ *
+ * `plugin` means the hook runs because the installed plugin declares it in
+ * hooks/hooks.json — it is active WITHOUT any settings.json entry, and
+ * wiring it here would double-fire it. Reported distinctly so `--hooks-status`
+ * never invites the user to "activate" something already running.
  */
-function reportHooksStatus(settings, example) {
+function reportHooksStatus(settings, example, opts = {}) {
   const active = activeRouterHookBasenames(settings);
+  const fromPlugin = new Set(opts.pluginProvided || []);
   const knownBasenames = new Set();
   for (const event of Object.keys(example.hooks || {})) {
     for (const block of example.hooks[event] || []) {
@@ -2999,7 +3214,10 @@ function reportHooksStatus(settings, example) {
   }
   const rows = [...knownBasenames].sort().map((bn) => ({
     basename: bn,
-    status: active.has(bn) ? 'active' : 'inactive',
+    // settings.json wins the label: if a hook is BOTH wired by hand and
+    // provided by the plugin, it really is firing twice and the user needs
+    // to see it as wired so `--uninstall-hooks` is the obvious next step.
+    status: active.has(bn) ? 'active' : (fromPlugin.has(bn) ? 'plugin' : 'inactive'),
   }));
   return rows;
 }
@@ -3017,6 +3235,12 @@ export {
   installHooksInto,
   uninstallHooksFrom,
   reportHooksStatus,
+  pluginProvidedHookBasenames,
+  isRouterPluginInstalled,
+  installedRouterPluginPath,
+  activePluginProvidedHooks,
+  isRouterHookCommand,
+  refreshRouterMatchers,
 };
 
 // ---------- CLI ----------
@@ -3062,9 +3286,15 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
   }
 
   const settings = loadUserSettings();
-  const result = installHooksInto(settings, example, {});
+  // Same refresh as the explicit --install-hooks path: this is the branch
+  // most users actually take (it runs at the tail of every bootstrap), so
+  // leaving it out would make the matcher migration unreachable in practice.
+  const refreshed = refreshRouterMatchers(settings, example);
+  const result = installHooksInto(settings, example, {
+    pluginProvided: activePluginProvidedHooks(),
+  });
 
-  if (result.added.length === 0) {
+  if (result.added.length === 0 && refreshed.updated.length === 0) {
     if (!quiet) info('Router hooks already wired into settings.json — nothing to add.');
     return;
   }
@@ -3075,7 +3305,10 @@ function maybeAutoInstallHooks({ quiet = false, noHooks = false } = {}) {
     return;
   }
 
-  ok(`Auto-wired ${result.added.length} router hook(s) into ${userSettingsPath()}.`);
+  if (result.added.length > 0) ok(`Auto-wired ${result.added.length} router hook(s) into ${userSettingsPath()}.`);
+  if (refreshed.updated.length > 0) {
+    ok(`Refreshed the tool matcher of ${[...new Set(refreshed.updated)].length} already-wired hook(s) so they also match plugin-provided tool names.`);
+  }
   if (!quiet) {
     console.log(c('gray', '   Deterministic guards now active next session (wiki-query-first-nudge, vault-link-linter, …).'));
     console.log(c('gray', '   Opt out next time with --no-hooks; manage with --hooks-status / --uninstall-hooks.'));
@@ -3267,27 +3500,56 @@ if (args[0] === '--install-hooks') {
   catch (err) { fail(`Could not load hooks/hooks.example.json: ${err.message}`); }
 
   const settings = loadUserSettings();
-  const result = installHooksInto(settings, example, { select });
+
+  // Bring already-wired blocks up to date BEFORE installing. A matcher
+  // frozen by an earlier run can no longer match the plugin-provided tool
+  // names, and installHooksInto would happily skip the hook as "already
+  // present" while it silently never fires. See refreshRouterMatchers.
+  const refreshed = refreshRouterMatchers(settings, example);
+
+  // Hooks the plugin runs by itself are only skipped when the plugin is
+  // actually installed for this user — otherwise nothing would wire them.
+  const pluginProvided = activePluginProvidedHooks();
+  const result = installHooksInto(settings, example, { select, pluginProvided });
+
+  const changed = result.added.length > 0 || refreshed.updated.length > 0;
+  if (changed) {
+    try { saveUserSettings(settings); }
+    catch (err) { fail(`Could not write ${userSettingsPath()}: ${err.message}`); }
+  }
 
   if (result.added.length === 0) {
     info('All requested hooks are already installed. Nothing to do.');
     if (result.skipped.length > 0) {
       console.log(c('gray', `   (already-installed or de-selected: ${[...new Set(result.skipped)].join(', ')})`));
     }
-    process.exit(0);
+  } else {
+    ok(`Installed ${result.added.length} hook(s) into ${userSettingsPath()}:`);
+    for (const bn of result.added) console.log(`    ${c('green', '+')} ${bn}`);
+    if (result.skipped.length > 0) {
+      const uniq = [...new Set(result.skipped)];
+      console.log(c('gray', `   (already-installed or de-selected: ${uniq.join(', ')})`));
+    }
   }
 
-  try { saveUserSettings(settings); }
-  catch (err) { fail(`Could not write ${userSettingsPath()}: ${err.message}`); }
-
-  ok(`Installed ${result.added.length} hook(s) into ${userSettingsPath()}:`);
-  for (const bn of result.added) console.log(`    ${c('green', '+')} ${bn}`);
-  if (result.skipped.length > 0) {
-    const uniq = [...new Set(result.skipped)];
-    console.log(c('gray', `   (already-installed or de-selected: ${uniq.join(', ')})`));
+  if (refreshed.updated.length > 0) {
+    console.log('');
+    ok(`Refreshed the tool matcher of ${[...new Set(refreshed.updated)].length} already-wired hook(s):`);
+    for (const bn of [...new Set(refreshed.updated)]) console.log(`    ${c('cyan', '~')} ${bn}`);
+    console.log(c('gray', '   (they now also match the plugin-provided tool names, e.g. mcp__plugin_obsidian-router_router__write_file)'));
   }
-  console.log('');
-  info('Restart Claude Code to pick up the new hooks.');
+
+  if (result.pluginProvided.length > 0) {
+    console.log('');
+    info(`Skipped ${result.pluginProvided.length} hook(s) already provided by the installed plugin:`);
+    for (const bn of result.pluginProvided) console.log(`    ${c('gray', '·')} ${bn}`);
+    console.log(c('gray', '   Wiring them here too would run them twice per event. They are already active.'));
+  }
+
+  if (changed) {
+    console.log('');
+    info('Restart Claude Code to pick up the changes.');
+  }
   process.exit(0);
 }
 
@@ -3556,15 +3818,37 @@ if (args[0] === '--hooks-status') {
   try { example = loadHooksExample(); }
   catch (err) { fail(`Could not load hooks/hooks.example.json: ${err.message}`); }
   const settings = loadUserSettings();
-  const rows = reportHooksStatus(settings, example);
+  const pluginInstalled = isRouterPluginInstalled();
+  const fromPlugin = activePluginProvidedHooks();
+  const rows = reportHooksStatus(settings, example, { pluginProvided: fromPlugin });
 
   console.log(c('bold', '\nRouter hooks status\n'));
   console.log('Settings file:  ' + c('gray', userSettingsPath()));
   console.log('Router repo:    ' + c('gray', REPO_ROOT));
+  if (pluginInstalled) {
+    const where = installedRouterPluginPath();
+    console.log('Plugin:         ' + c('gray',
+      fromPlugin.length > 0
+        ? `installed — runs ${fromPlugin.length} hook(s) on its own (${where})`
+        : `installed, provides no hooks of its own (${where})`));
+  }
   console.log('');
+  const doubleWired = [];
   for (const row of rows) {
-    const marker = row.status === 'active' ? c('green', '✓ active   ') : c('gray', '○ inactive ');
+    const marker = row.status === 'active'
+      ? c('green', '✓ active   ')
+      : row.status === 'plugin'
+        ? c('cyan', '✓ plugin   ')
+        : c('gray', '○ inactive ');
     console.log(`  ${marker} ${row.basename}`);
+    if (row.status === 'active' && fromPlugin.includes(row.basename)) doubleWired.push(row.basename);
+  }
+  if (doubleWired.length > 0) {
+    console.log('');
+    warn(`${doubleWired.length} hook(s) are wired in settings.json AND provided by the plugin — they fire TWICE per event:\n` +
+      `   ${doubleWired.join(', ')}\n` +
+      `   Fix: \`node scripts/setup-vault.mjs --uninstall-hooks\` then re-run \`--install-hooks\`;\n` +
+      '   the plugin-provided ones will be skipped and keep working.');
   }
   const inactive = rows.filter((r) => r.status === 'inactive').length;
   console.log('');

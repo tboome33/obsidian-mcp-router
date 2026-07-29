@@ -48,7 +48,7 @@ The port lives at:
   - src/markdownify/utils.mjs       (port of utils.ts)
   - src/markdownify/markitdown.mjs  (port of Markdownify.ts)
   - src/tools/convert.mjs           (port of tools.ts + server.ts dispatch)
-  - scripts/install-markitdown.mjs  (postinstall venv setup,
+  - scripts/install-markitdown.mjs  (opt-in venv setup, `npm run install-markitdown`,
                                      equivalent to the upstream preinstall.sh)
 
 Tool naming was adapted from kebab-case to snake_case for consistency with
@@ -58,7 +58,7 @@ intentionally NOT ported (redundant with the router's `get_file`).
 The actual file/URL → markdown conversion is performed by Microsoft's
 `markitdown` Python CLI (https://github.com/microsoft/markitdown, MIT-licensed),
 which the router invokes as a subprocess. Audio transcription, image OCR, and
-some other extras require the `[all]` install (handled by the postinstall).
+some other extras require the `[all]` install (handled by `npm run install-markitdown`).
 
   MIT License
 

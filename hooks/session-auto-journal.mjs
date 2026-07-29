@@ -91,6 +91,10 @@ import {
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
 import { reconcileVaultSessions } from './_helpers/session-reconcile.mjs';
+import { isLoggedTool, isRouterWriteTool } from './_helpers/tool-names.mjs';
+
+// Same truthy vocabulary as check-router-update.mjs and the other hooks.
+const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 
 // ---------------------------------------------------------------------------
 // State directory
@@ -218,17 +222,11 @@ function summarizeToolInput(toolName, input) {
 // materialize a file in the vault). Listing it here so its writes land
 // in the journal. The matcher in hooks.example.json was widened to
 // match.
-const LOGGED_TOOLS = new Set([
-  'Write', 'Edit', 'MultiEdit', 'Bash',
-  'mcp__obsidian-router__write_file',
-  'mcp__obsidian-router__patch_file',
-  'mcp__obsidian-router__append_to_file',
-  'mcp__obsidian-router__set_frontmatter',
-  'mcp__obsidian-router__merge_frontmatter',
-  'mcp__obsidian-router__delete_file',
-  'mcp__obsidian-router__move_file',
-  'mcp__obsidian-router__execute_template',
-]);
+// v0.56.0 (Lot 5): the exact-name Set this used to be only recognised the
+// `mcp__obsidian-router__*` form, so the journal went blind the moment the
+// server was provided by the plugin (`mcp__plugin_obsidian-router_router__*`)
+// or reached through MCPHub. Matching moved to hooks/_helpers/tool-names.mjs,
+// which matches by suffix and therefore covers every registration form.
 
 // ---------------------------------------------------------------------------
 // Journal file creation
@@ -274,8 +272,12 @@ function ensureJournalForSession(payload) {
 
   loadWorkspaceDotenv(cwd);
 
-  // Opt-out check
-  if (String(process.env.OBSIDIAN_ROUTER_NO_SESSION_JOURNAL || '').toLowerCase() === 'true') {
+  // Opt-out check. Accepts the same truthy vocabulary as every other hook
+  // (true / 1 / yes / on) — it used to compare against the exact string
+  // 'true', so OBSIDIAN_ROUTER_NO_SESSION_JOURNAL=1 silently kept journaling
+  // a user who believed they had turned it off. This hook writes prompts
+  // verbatim into the vault, so a half-working opt-out is not acceptable.
+  if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_SESSION_JOURNAL || '').trim().toLowerCase())) {
     return null;
   }
 
@@ -412,7 +414,7 @@ function handlePostToolUse(payload) {
   const state = ensureJournalForSession(payload);
   if (!state) return;
   const toolName = payload.tool_name || '';
-  if (!LOGGED_TOOLS.has(toolName)) return;
+  if (!isLoggedTool(toolName)) return;
 
   const time = hhmmColon();
   const summary = summarizeToolInput(toolName, payload.tool_input);
@@ -434,7 +436,7 @@ function handlePostToolUse(payload) {
       const short = truncate(cmd, 80);
       if (!state.bashHighlights.includes(short)) state.bashHighlights.push(short);
     }
-  } else if (toolName.startsWith('mcp__obsidian-router__')) {
+  } else if (isRouterWriteTool(toolName)) {
     state.counters.mcpWrites = (state.counters.mcpWrites || 0) + 1;
     // v0.12.5 (review+ pass 1 fix — codex P3 #3 + P2 #2): different MCP
     // write tools use different schema keys for the target file path —

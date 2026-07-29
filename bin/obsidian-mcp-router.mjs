@@ -2,7 +2,19 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname, join } from 'node:path';
-import { startServer } from '../src/index.mjs';
+import {
+  ensureDependencies,
+  formatFailure,
+  PACKAGE_ROOT as packageRoot,
+} from '../src/helpers/ensure-deps.mjs';
+
+// NOTE: `../src/index.mjs` is imported DYNAMICALLY at the bottom of this
+// file, after ensureDependencies() has had a chance to repair the install.
+// A static import here would be hoisted above everything — including the
+// dependency check — and the process would die with ERR_MODULE_NOT_FOUND
+// before it could explain itself. Keep this file's static imports limited
+// to node: builtins and dependency-free local helpers. See
+// src/helpers/ensure-deps.mjs for the full rationale (Lot 5).
 
 /**
  * Tiny .env loader — no dependency on `dotenv`.
@@ -152,6 +164,39 @@ loadDotenvSync(process.cwd());
 
 const args = parseArgs(process.argv.slice(2));
 if (process.env.OBSIDIAN_ROUTER_NO_WATCH) args.watch = false;
+
+// ── Dependency self-heal ─────────────────────────────────────────────
+// Everything above this line runs with node: builtins only, so --help and
+// --version answer even on a tree that has never been installed.
+//
+// stderr, never stdout: stdout is the MCP stdio channel and a single stray
+// byte desynchronises the protocol framing.
+const deps = ensureDependencies({
+  packageRoot,
+  log: (msg) => process.stderr.write(`[obsidian-mcp-router] ${msg}\n`),
+});
+
+if (deps.status !== 'ok') {
+  process.stderr.write(`${formatFailure({ packageRoot, ...deps })}\n`);
+  process.exit(1);
+}
+
+let startServer;
+try {
+  ({ startServer } = await import('../src/index.mjs'));
+} catch (err) {
+  // The probe only covers the specifiers we import directly; a torn or
+  // partial tree can still break on a transitive. Say so precisely rather
+  // than surfacing a bare ERR_MODULE_NOT_FOUND.
+  process.stderr.write(
+    `${formatFailure({
+      packageRoot,
+      missing: [String(err?.message || err)],
+      reason: 'the server module graph failed to load even though the direct dependencies resolved',
+    })}\n`,
+  );
+  process.exit(1);
+}
 
 startServer(args).catch((err) => {
   console.error('[obsidian-mcp-router] Fatal:', err);

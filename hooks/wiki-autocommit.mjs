@@ -2,12 +2,24 @@
 /**
  * wiki-autocommit.mjs
  *
- * PostToolUse hook (matcher: only mcp__obsidian-router__* mutators —
- * write_file, patch_file, append_to_file, set_frontmatter,
- * merge_frontmatter, delete_file, move_file). After a vault write,
- * auto-commits wiki/, wiki-meta/, .raw/, .vault-meta/ changes to git so
- * the wiki has a built-in undo history. Skips silently if the cwd is
- * not a git repo, or if there's nothing staged.
+ * PostToolUse hook (matcher: the router's MCP mutators under any
+ * registration prefix — write_file, patch_file, append_to_file,
+ * set_frontmatter, merge_frontmatter, delete_file, move_file,
+ * execute_template). After a vault write, auto-commits wiki/, wiki-meta/,
+ * .raw/, .vault-meta/ changes to git so the wiki has a built-in undo
+ * history.
+ *
+ * GUARDS (all must hold, else silent exit 0):
+ *   - OBSIDIAN_ROUTER_NO_WIKI_AUTOCOMMIT is not truthy;
+ *   - the cwd is a git repo;
+ *   - the cwd IS a wiki vault (wiki-meta/index.md present) — NOT merely a
+ *     repo that happens to contain a directory named `wiki`;
+ *   - something is actually staged.
+ *
+ * This hook is opt-in only (`setup-vault.mjs --install-hooks`). It is
+ * deliberately absent from hooks/hooks.json, which the plugin activates
+ * for every user without asking: writing to somebody's git history is not
+ * a defensible default.
  *
  * v0.12.0: added `wiki-meta/` to trackedDirs so the 4 scaffolds
  * (hot/index/log/overview) that moved out of `wiki/` are still
@@ -31,13 +43,39 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-const gitDir = path.join(cwd, '.git');
+import { detectVaultContext, readRouterConfig, loadWorkspaceDotenv } from './_helpers/workspace-vault.mjs';
 
+const TRUTHY = new Set(['true', '1', 'yes', 'on']);
+
+const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// ── Opt-out ──────────────────────────────────────────────────────────
+// This hook writes to the user's git history. It must be switchable off
+// without editing settings.json.
+if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_WIKI_AUTOCOMMIT || '').trim().toLowerCase())) {
+  process.exit(0);
+}
+
+const gitDir = path.join(cwd, '.git');
 if (!fs.existsSync(gitDir)) process.exit(0);
 
-// Only auto-commit if at least one of these dirs exists in cwd —
-// otherwise we have nothing to track and shouldn't pollute random repos.
+// ── The cwd must BE a wiki vault ─────────────────────────────────────
+// This used to be "cwd contains any of wiki/, wiki-meta/, .raw/,
+// .vault-meta/", which is not a vault test at all: `wiki/` and `.raw/`
+// are ordinary directory names, so the hook silently injected
+// `wiki: auto-commit …` commits — with --no-verify, bypassing the user's
+// own pre-commit hooks — into unrelated repositories that merely had a
+// docs folder called wiki/.
+//
+// `wiki-meta/index.md` is the marker `setup-vault.mjs` scaffolds, so it
+// identifies a real vault. Workspace-bound sessions are deliberately
+// excluded: there the vault lives elsewhere and the cwd's own wiki/ is
+// somebody else's, which is exactly the case this hook must not touch.
+loadWorkspaceDotenv(cwd);
+const ctx = detectVaultContext(cwd, readRouterConfig());
+if (!ctx || ctx.mode !== 'cwd-is-vault') process.exit(0);
+
+// Stage only the vault's own directories that actually exist.
 const trackedDirs = ['wiki', 'wiki-meta', '.raw', '.vault-meta'].filter((d) =>
   fs.existsSync(path.join(cwd, d)),
 );
