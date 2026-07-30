@@ -1,54 +1,47 @@
 ---
 type: index
 title: "Wiki Catalog"
+description: "The map of maps: one entry per area of the wiki, each pointing at that directory's generated index, plus the pages worth reading first."
 ---
 
 # Wiki Catalog
 
-This file is the curated catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.
+> **This is a map of maps, not a list of pages.** One entry per *area* (directory) of `wiki/`, each linking to that directory's **generated `index.md`** — which is exhaustive and updates itself. Alongside it, the few pages worth opening first: the curated part no generator can produce.
+>
+> **Do NOT add a row per page.** That is what turns a catalog into an unreadable monolith — one vault reached 70 KB / 115 rows before this convention, too large to read in a single tool call. A new page in an existing directory needs **no edit here at all**: the generated index picks it up on the next refresh. Only a **new directory** earns a new entry below.
+>
+> ⚠️ **Link the indexes with markdown links, never wikilinks.** Obsidian resolves wikilinks by *basename*, and every directory index is named `index.md` — a wikilink would be ambiguous across all of them and get retargeted silently. Use `[Area](../wiki/<dir>/index.md)`. Links to **pages** stay wikilinks: those survive moves.
 
-## Overview
+## Wiki Core
+
+*The vault's private scaffolds. No generated index covers them — `wiki-meta/` stays outside the OKF bundle.*
 
 - [[overview]] — what this wiki covers
-- [[hot]] — recent-context cache
-- [[journal]] — append-only operation history
+- [[hot]] — recent-context cache, rewritten (not appended) each session
+- [[journal]] — thin session index, one line per milestone
+- [[CLAUDE]] — navigation rules and vault conventions
 
-## Sources
+---
 
-_Sources ingested into the wiki. One row per source._
+<!--
+  One block per area, added when a NEW directory appears under wiki/.
+  Copy this shape:
 
-## Concepts
+## <emoji> <dir>/ — <what lives here, in a few words>
 
-_Domain concepts. One row per concept page._
+*<One italic line: what this area is for.>*
 
-## Entities
+📍 **Generated index**: [<dir>](../wiki/<dir>/index.md) (<N> pages)
 
-_People, projects, places, products. One row per entity page._
+**Read first:**
+- [[<page>]] — why this one before the others
+-->
 
-## Answers
+## How to read this wiki
 
-_Questions with structured answers, filed back from `wiki-query` deep mode._
+1. **[[hot]]** first — the current state, loaded automatically at session start.
+2. **This page** — locate the area.
+3. **That area's generated index** — the exhaustive list, one description per page.
+4. **The page itself** — and only that one. Progressive disclosure: never load the whole wiki.
 
-## Decisions
-
-_ADRs and architectural decisions._
-
-## Techniques
-
-_How-to procedures and runbooks._
-
-## Sessions
-
-_Filed conversations from `save`._
-
-## Programs
-
-_Research programs run by `autoresearch`._
-
-## Folds
-
-_Log rollups produced by `wiki-fold`._
-
-## Canvases
-
-_Visual canvas layouts._
+For a precise question rather than exploration, use `wiki-query`, which walks this same path automatically.

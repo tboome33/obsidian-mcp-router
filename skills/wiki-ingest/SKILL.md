@@ -349,9 +349,21 @@ To glob all digests across nested folders, use a recursive pattern (e.g. `wiki-m
 
 ### 6. Update catalog.md
 
-Use `patch_file` with `operation: append`, `targetType: heading`, `target: "<section-name>"` (e.g., `target: "Sources"` for source pages, `target: "Concepts"` for concept pages) to add rows for any newly created pages. Keep the index alphabetized within each section.
+**Usually there is nothing to do here.** The catalog is a *map of maps*: one entry per directory, each pointing at that directory's **generated `index.md`**, which lists every page and refreshes itself. Pages you just filed into an **existing** directory are therefore already covered — adding a row per page is exactly what grew one vault's catalog to 70 KB / 115 rows, unreadable in a single tool call.
 
-If the section heading doesn't exist in `catalog.md` yet, fall back to `append_to_file` and write `\n## <section>\n\n- [[<page>]]\n`. The `wiki` skill scaffolds the standard sections, so this fallback is rare.
+Touch `catalog.md` **only** when this ingestion created a **new directory** under `wiki/`. In that case add one area block:
+
+```markdown
+## <emoji> <dir>/ — <what lives here>
+
+*<one italic line: what this area is for>*
+
+📍 **Generated index**: [<dir>](../wiki/<dir>/index.md)
+```
+
+Use a **markdown link** for the index, never a wikilink: every directory index shares the `index` basename, so Obsidian would resolve it ambiguously and retarget it silently. Links to individual **pages** stay wikilinks — those survive moves.
+
+Promoting a freshly ingested page into a section's "Read first" list is an editorial judgement, not a mechanical step: do it when the page genuinely supersedes what is already listed, and say so.
 
 ### 7. Append to journal.md
 

@@ -65,7 +65,7 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 
    If you can't read the templates (e.g., the user installed via npm without the templates dir), fall back to inline content — the contract for each file (under `wiki-meta/`) is:
 
-   - `wiki-meta/catalog.md` — catalog of all wiki pages, organized by domain. Initial structure must include sections matching the chosen mode. Include a one-line invariant at the top: "This file is the catalog of the wiki. Add a row for every new page filed under wiki/."
+   - `wiki-meta/catalog.md` — the **map of maps**: one section per *area* (directory) of `wiki/`, each linking to that directory's generated `index.md`, plus the few pages worth reading first. Initial structure must include sections matching the chosen mode. Include the invariant at the top: "A map of maps, not a list of pages. A new page in an existing area needs no edit here — the generated index picks it up. Only a new area earns a new section. Link indexes with markdown links (`[Area](../wiki/<dir>/index.md)`), never wikilinks — every index shares the `index` basename and Obsidian resolves wikilinks by basename." **Never** seed "add a row for every new page": that instruction is what grew one vault's catalog to 70 KB / 115 rows, unreadable in a single tool call.
 
    - `wiki-meta/journal.md` — append-only operation history. Each entry: ISO timestamp + verb + target page(s) + 1-line reason. Initial entry: "scaffolded by wiki skill on YYYY-MM-DD".
 

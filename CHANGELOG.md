@@ -6,6 +6,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.59.4] — 2026-07-31 — the catalog becomes a map of maps
+
+Last piece of volet ② of the catalog/journal decision. The central catalog listed **one row per page** and had reached **70 KB / 115 rows** — too large to read in a single tool call, which is exactly the problem OKF's per-directory indexes solve. Now that `wiki/` carries 34 generated indexes, exhaustiveness has a better home; the catalog keeps the part no generator can produce.
+
+### Changed
+
+- **`wiki-meta/catalog.md` is now a map of maps**: one entry per *area* (directory), each linking to that directory's generated `index.md`, plus a short curated "read first" list. The router vault's catalog went **70 001 → 7 256 bytes (−90 %)**, 115 rows → 13 area links + 27 curated pointers, with the originals kept in `catalog.full-backup-2026-07-31.md` (hash-verified byte-identical before overwrite).
+- **Indexes are linked with markdown links, never wikilinks** — and the convention says so explicitly, in the template, both skills, and the lint. Every directory index shares the `index` basename; a wikilink resolves by basename and Obsidian would retarget it silently. This is the exact failure the `index`→`catalog` rename (v0.58.0) was performed to prevent, so re-introducing it through the catalog would have undone that lot.
+
+### Fixed — the growth engine, not just the symptom
+
+Converting the catalog without changing what writes to it would have regressed within days: the next `/save` would have appended a row. Four sources were still teaching row-per-page:
+
+- **`templates/wiki-meta/catalog.md`** said *"Add a row for every new page filed under `wiki/`"* — rewritten as a map-of-maps seed.
+- **`scripts/setup-vault.mjs`** emitted the same sentence plus `_One row per page._` under every `--wiki-mode` section — both replaced, so new vaults are born with the right contract.
+- **`save` step 8** appended a row per page → now: **usually nothing to do**; touch the catalog only when a page creates a **new directory**.
+- **`wiki-ingest` step 6** did the same → same rule, with the area-block shape spelled out.
+- **`wiki` skill** seeded the offending invariant into fresh vaults → now seeds the map-of-maps contract.
+
+### Fixed — the lint would have failed the new shape
+
+**`wiki-lint` Check C** reported "pages on disk but missing from `catalog.md`". Against a map of maps that is every page in the vault — it would have flagged all 134 and pushed the catalog straight back to a monolith. Check C now checks **areas**, not pages: a directory whose index nothing links to (warning), a link to a nonexistent index or page (error), and an index referenced by wikilink instead of a path link (error). Page-level exhaustiveness belongs to the generated indexes, whose freshness is Check L's job.
+
+Suite 2663/2663 green (the backward-compat scaffold test now asserts the map-of-maps shape, and that the seed does **not** instruct a row per page).
 ## [0.59.3] — 2026-07-31 — `description` becomes part of the page contract
 
 v0.59.1 stopped the at-rest projections from inventing descriptions, and that exposed the real problem: **0 of the router vault's 134 pages carried a `description`**. Every OKF index entry had been a machine-written body sentence, so removing them left the indexes title-only. The synthesis was hiding a metadata gap rather than filling it. Roland's call: close the gap at the source.

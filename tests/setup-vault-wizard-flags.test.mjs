@@ -119,11 +119,14 @@ describe('setup-vault.mjs wizard flags', () => {
     const restData = JSON.parse(fs.readFileSync(
       path.join(target, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'), 'utf8'));
     assert.notEqual(restData.apiKey, 'REF-SECRET-KEY-0000000000', 'fresh API key generated');
-    // Backward compat: no --wiki-mode → index.md uses the generic template
-    // (has "## Sources", NOT a mode frontmatter).
+    // Backward compat: no --wiki-mode → catalog.md is the generic template
+    // (map-of-maps shape since v0.59.4, NOT a mode frontmatter).
     const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
-    assert.match(idx, /## Sources/, 'default index uses the generic template');
+    assert.match(idx, /## Wiki Core/, 'default catalog uses the generic template');
+    assert.match(idx, /map of maps/i, 'generic template carries the map-of-maps contract');
     assert.ok(!/^mode:/m.test(idx), 'no mode frontmatter without --wiki-mode');
+    // The anti-pattern the map-of-maps convention exists to prevent.
+    assert.ok(!/row for every new page/i.test(idx), 'must not instruct a row per page');
   });
 
   test('--wiki-mode research seeds mode-specific index sections + frontmatter', () => {

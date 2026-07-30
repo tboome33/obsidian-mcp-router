@@ -49,9 +49,14 @@ A page is orphan if NO other page wikilinks to it (excluding self-references and
 #### Check B: dead wikilinks
 A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve aliases (`[[Target|Alias]]`) and folder-prefixed forms (`[[concepts/Foo]]`). If a link looks dead, double-check by trying both with and without the `.md` extension and against alias frontmatter.
 
-#### Check C: index drift
-- Pages on disk under `wiki/` but missing from `wiki-meta/catalog.md` → "missing in index"
-- Rows in `wiki-meta/catalog.md` pointing at pages that don't exist → "stale index entry"
+#### Check C: catalog drift (map-of-maps semantics since v0.59.4)
+`wiki-meta/catalog.md` is a **map of maps**: one entry per *directory*, each linking to that directory's generated `index.md`. It is deliberately **not** a page-by-page list, so do **not** report a page as "missing in index" merely because it has no row — page-level exhaustiveness is the generated indexes' job, and their freshness is Check L's. Reporting per-page gaps here would push the catalog straight back to the 70 KB / 115-row monolith the map-of-maps convention exists to undo.
+
+What to check instead:
+- A directory exists under `wiki/` but no catalog entry links to its `index.md`, and no parent-area entry covers it → **"area missing from the catalog"** (warning). Sub-directories of an area covered by that area's entry are fine — the parent index lists them.
+- A catalog link points at an `index.md` that doesn't exist → **"stale area entry"** (error): a directory was renamed or removed.
+- A catalog wikilink points at a page that doesn't exist → **"stale curated entry"** (error).
+- An index is referenced with a **wikilink** rather than a markdown path link → **"ambiguous index link"** (error). Every directory index shares the `index` basename; a wikilink resolves by basename and Obsidian will retarget it silently. This is the exact failure the `index`→`catalog` rename was performed to prevent.
 
 #### Check D: frontmatter gaps
 Every wiki page should have `type:` set. Sources should have `url:` (or `path:`) and `ingested_at:`. Answers should have `question:` and `answered_at:`. Missing fields are warnings, not errors.

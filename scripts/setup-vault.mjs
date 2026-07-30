@@ -1577,20 +1577,26 @@ function buildModeCatalogContent(mode, sections) {
   const list = (mode === 'domain' && sections && sections.length)
     ? sections
     : (WIKI_MODE_SECTIONS[mode] || WIKI_MODE_SECTIONS.personal);
+  // v0.59.4 — map-of-maps seeding. The pre-0.59.4 seed said "add a row for
+  // every new page", which is precisely what grew one vault's catalog to
+  // 70 KB / 115 rows: unreadable in a single tool call, and a guaranteed
+  // maintenance drift. Areas point at their generated `index.md` instead.
   let body =
     '---\n' +
     'type: index\n' +
     'title: "Wiki Catalog"\n' +
+    'description: "The map of maps: one entry per area, each pointing at that directory\'s generated index."\n' +
     `mode: ${mode}\n` +
     '---\n\n' +
     '# Wiki Catalog\n\n' +
-    'This file is the curated catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.\n\n' +
-    '## Overview\n\n' +
+    '> **A map of maps, not a list of pages.** Each section below is an *area*; once it has pages on disk, link its generated index with a markdown link — `[Area](../wiki/<dir>/index.md)` — never a wikilink, since every index shares the `index` basename and Obsidian resolves wikilinks by basename.\n' +
+    '> A new page in an existing area needs **no edit here**: the generated index picks it up. Only a new area earns a new section.\n\n' +
+    '## Wiki Core\n\n' +
     '- [[overview]] — what this wiki covers\n' +
-    '- [[hot]] — recent-context cache\n' +
-    '- [[journal]] — append-only operation history\n';
+    '- [[hot]] — recent-context cache, rewritten (not appended) each session\n' +
+    '- [[journal]] — thin session index, one line per milestone\n';
   for (const header of list) {
-    body += `\n## ${header}\n\n_One row per page._\n`;
+    body += `\n## ${header}\n\n_Area — link its generated index here once it has pages._\n`;
   }
   return body;
 }

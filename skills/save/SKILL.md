@@ -175,7 +175,7 @@ This is the "compounding" property: every saved page becomes more findable from 
 
 ### 8. Update catalog.md, journal.md, hot.md
 
-- `catalog.md` — append a row under the section matching the type
+- `catalog.md` — **usually nothing to do.** The catalog is a *map of maps*: one entry per directory, pointing at that directory's generated `index.md`. A new page in an existing directory is picked up by the generated index automatically — appending a row here is what grew one vault's catalog to 70 KB / 115 rows and made it unreadable in a single tool call. Touch it **only** when the page creates a **new directory** under `wiki/`: then add one area block (italic one-liner + markdown link `[<dir>](../wiki/<dir>/index.md)` — never a wikilink, since every index shares the `index` basename and Obsidian would resolve it ambiguously). Promoting a page into "Read first" is a deliberate editorial call, not a mechanical step.
 - `journal.md` — `- YYYY-MM-DD HH:MM — save — wiki/<folder>/<slug>.md — <type>: <one-line summary>`
 - `hot.md` — replace `## Recent Changes` to mention this save
 
