@@ -64,6 +64,8 @@ Default folders by type:
 
 If the wiki has a different convention (look at `wiki-meta/catalog.md` structure to detect), match that.
 
+**Group by SUBJECT before type** (2026-07-30): when the vault already holds 2-3 related notes on the same subject, create `wiki/<sujet>/` and file (or `move_file`) them together instead of leaving them scattered in flat type folders — wikilinks resolve by basename, so regrouping is safe. Each directory then gets a generated `index.md` landing page (OKF projection, auto-refreshed) — never write one by hand.
+
 ### 4. Compose the frontmatter
 
 ```yaml

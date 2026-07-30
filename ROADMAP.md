@@ -2,6 +2,15 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.59.0 — OKF projections: the wiki carries its own generated navigation (shipped 2026-07-30)
+
+Volet ② of the catalog/journal decision, unlocked by v0.58.0's rename. `wiki/` now holds `index.md` (root, `okf_version` only), one `index.md` per content directory, and a newest-first `log.md` — all **generated** from page frontmatter, marked, never hand-edited, never wikilinked. Conformant by construction (shared §6 builder with the export bundle + a `checkOkfConformance` round-trip test at zero errors/zero warnings; the router vault's 169-file wiki lints clean live).
+
+- **Continuous**: a debounced full refresh (~15 s) after every router write under `wiki/` — pure-function rebuild, so always correct; gated on the vault being initialised. On-demand `refresh_okf_projections` (+ `check` mode wired into wiki-lint) reconciles outside edits.
+- **Fleet initialised same-day**: 19 vaults, 0 conflicts; unmarked homonyms are never overwritten. Scaffolding now creates `wiki-meta/Sessions/` (the ghost `wiki/sessions/` is gone) and births new wikis pre-initialised.
+- **Human browsing**: skills now group notes by SUBJECT into `wiki/<sujet>/` directories (create at 2-3 related pages, regroup with `move_file` — wikilinks survive moves), each directory getting its generated `index.md` landing page.
+- **Deferred**: volet ②'s "carte des cartes" — converting the router vault's 65 KB curated catalog into section pointers at the per-directory indexes — is vault-editorial work, left for a curation session.
+
 ## ✅ v0.58.0 — `index`→`catalog`, `log`→`journal`: the scaffolds vacate the OKF-reserved basenames (shipped 2026-07-30)
 
 Volet ① of Roland's 2026-07-30 three-part decision (vault note `decisions/catalog-journal-et-projections-okf`). OKF reserves `index.md` and `log.md`; our private `wiki-meta/` scaffolds held both names for objects that do a different job. Since Obsidian resolves wikilinks by basename, adding the conformant files first would have retargeted **484 `[[index]]`/`[[log]]` citations across 364 files** at the generated artefacts, silently. So the rename comes first — it is the precondition, not a cleanup.

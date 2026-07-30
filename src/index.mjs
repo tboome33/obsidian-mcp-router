@@ -16,7 +16,13 @@ import path from 'node:path';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { classifyError } from './error-classify.mjs';
 import { registerResourceHandlers } from './resources.mjs';
-import { appendToFile as restAppendToFile } from './rest-client.mjs';
+import {
+  appendToFile as restAppendToFile,
+  listFilesIn as restListFilesIn,
+  getFileContent as restGetFileContent,
+  writeFile as restWriteFile,
+  deleteFile as restDeleteFile,
+} from './rest-client.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
@@ -96,6 +102,12 @@ import {
   TOOL_DEFINITION as FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
   filterRelevantBlocksTool,
 } from './tools/filter-relevant-blocks.mjs';
+import {
+  TOOL_DEFINITION as REFRESH_OKF_PROJECTIONS_TOOL_DEFINITION,
+  refreshOkfProjectionsTool,
+  refreshProjectionsForVault,
+} from './tools/refresh-okf-projections.mjs';
+import { createProjectionsScheduler, DEFAULT_DEBOUNCE_MS } from './helpers/projections-refresh.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -816,6 +828,10 @@ const TOOLS = [
   // (UA-compatible schema). WRITES the graph JSON (canonical wiki-meta/graph/
   // + derived .understand-anything/ copy) → included in WRITE_TOOL_NAMES.
   BUILD_WIKI_GRAPH_TOOL_DEFINITION,
+  // Volet ② (catalog/journal decision, v0.59.0) — regenerates the OKF
+  // navigation projections inside wiki/ (root index.md, per-directory
+  // index.md, newest-first log.md). WRITES those files → WRITE_TOOL_NAMES.
+  REFRESH_OKF_PROJECTIONS_TOOL_DEFINITION,
   // Roadmap item #3 (understand-anything) — deterministic guided-tour skeleton
   // from the knowledge graph. Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
@@ -994,6 +1010,7 @@ const TOOL_HANDLERS = {
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
   // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
+  refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
   // Page-neighbors roadmap W-A — read-only page-neighbourhood query.
@@ -1060,11 +1077,47 @@ const WRITE_TOOL_NAMES = new Set([
   // Roadmap item #1 (understand-anything) — writes the knowledge-graph JSON
   // to wiki-meta/graph/ + .understand-anything/. Read-only must hide it.
   'build_wiki_graph',
+  // v0.59.0 — rewrites the generated OKF projections inside wiki/. Read-only
+  // deployments must hide it.
+  'refresh_okf_projections',
   // v0.35.0 — writes a NEW vault to the local filesystem. A read-only
   // deployment must hide it too (not just the OBSIDIAN_ROUTER_USER_ID gate).
   // plan_vault is read-only and is deliberately NOT in this set. (review+ W2 P1)
   'provision_vault',
 ]);
+
+// ---------------------------------------------------------------------------
+// v0.59.0 — volet ② of the catalog/journal decision: keep the OKF navigation
+// projections inside `wiki/` fed as content is written. Debounced full
+// refresh per vault (see helpers/projections-refresh.mjs for why full-refresh
+// -debounced beats incremental surgery); the core's `requireInitialized` gate
+// means only vaults whose root `wiki/index.md` exists AND carries the
+// generated marker are ever touched — scaffolding or one explicit
+// `refresh_okf_projections` call is the opt-in.
+// ---------------------------------------------------------------------------
+
+const PROJECTIONS_OPTOUT = new Set(['true', '1', 'yes', 'on']);
+const projectionsDebounceMs = (() => {
+  const raw = Number.parseInt(process.env.OBSIDIAN_ROUTER_PROJECTIONS_DEBOUNCE_MS ?? '', 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_DEBOUNCE_MS;
+})();
+const projectionsScheduler = PROJECTIONS_OPTOUT.has(
+  String(process.env.OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS || '').toLowerCase(),
+)
+  ? null
+  : createProjectionsScheduler({
+    refresh: (vault) => refreshProjectionsForVault(
+      vault,
+      {
+        listFilesIn: restListFilesIn,
+        getFileContent: restGetFileContent,
+        writeFile: restWriteFile,
+        deleteFile: restDeleteFile,
+      },
+      { requireInitialized: true },
+    ),
+    delayMs: projectionsDebounceMs,
+  });
 
 /**
  * Subset of WRITE_TOOL_NAMES that writes a NOTE the member may want to read — the
@@ -1129,6 +1182,8 @@ export function pickAuditPath(toolName, args = {}) {
   // build_wiki_graph has no `path` arg — it writes the canonical graph JSON
   // (+ a derived UA copy). Record the canonical path (codex review+ P2).
   if (toolName === 'build_wiki_graph') return BUILD_WIKI_GRAPH_CANONICAL_PATH;
+  // refresh_okf_projections rewrites a SET of files; audit the root index.
+  if (toolName === 'refresh_okf_projections') return 'wiki/index.md (okf projections)';
   return args.path || '(unknown)';
 }
 
@@ -1604,6 +1659,17 @@ export async function startServer({ configPath, watch = true } = {}) {
               `(by ${userId}): ${auditErr.message}`,
           );
         }
+      }
+
+      // v0.59.0 — volet ②: schedule the debounced OKF-projections refresh
+      // after any successful write. Best-effort and self-gating: the
+      // scheduler ignores paths outside wiki/ content, and the refresh core
+      // aborts on vaults whose projections were never initialised. Its own
+      // writes go through rest-client directly, so nothing here recurses.
+      if (projectionsScheduler && WRITE_TOOL_NAMES.has(name)) {
+        try {
+          projectionsScheduler.noteWrite(reg.resolveVault(args.vault), name, args);
+        } catch { /* nav upkeep must never block or fail a user write */ }
       }
 
       // v0.29.0 — DETERMINISTIC ephemeral view-link on note writes (Option B).

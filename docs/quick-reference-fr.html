@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.58.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (47 slash commands · 42 outils MCP · 44 skills)<br>
+  <div class="meta">v0.58.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (48 slash commands · 43 outils MCP · 44 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -271,7 +271,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
-    <td>Les <strong>8 hooks opt-in</strong> (sur 10) vivent ici — les 2 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 47 commandes + 44 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
+    <td>Les <strong>8 hooks opt-in</strong> (sur 10) vivent ici — les 2 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 48 commandes + 44 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
@@ -298,7 +298,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 <div class="page-break"></div>
 
 <div class="header">
-  <h1>47 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · auto-déclenchement en langage naturel (FR + EN)</span></h1>
+  <h1>48 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · auto-déclenchement en langage naturel (FR + EN)</span></h1>
 </div>
 
 <div class="cat-header">🔧 16 wrappers MCP — un par outil de base du vault</div>
@@ -370,6 +370,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr><td class="cmd">wiki-path</td><td class="desc">Plus courte chaîne de liens entre deux pages</td><td class="trigger">« quel rapport entre X et Y » / "how is X connected to Y"</td></tr>
   <tr><td class="cmd">wiki-export</td><td class="desc">Exporte le vault en llms.txt / llms-full.txt ou en bundle OKF</td><td class="trigger">« exporte le wiki » / "export the wiki as llms.txt"</td></tr>
   <tr><td class="cmd">okf-export</td><td class="desc">Exporte un sous-ensemble du wiki en bundle OKF v0.1 partageable (conformité auto-vérifiée)</td><td class="trigger">« publie en bundle OKF » / "export this folder as an OKF bundle"</td></tr>
+  <tr><td class="cmd">okf-projections</td><td class="desc">Régénère la navigation OKF générée dans wiki/ (index racine + par répertoire, log newest-first) ; auto-rafraîchie après écritures ; --check = rapport de dérive</td><td class="trigger">« regénère les index du wiki » / "refresh the OKF projections"</td></tr>
   <tr><td class="cmd">okf-check</td><td class="desc">Valide n'importe quel bundle OKF contre les règles de conformité v0.1</td><td class="trigger">« ce bundle est-il conforme ? » / "validate this OKF bundle"</td></tr>
   <tr><td class="cmd">wiki-refresh-digests</td><td class="desc">Régénère les digests sidecar par page (concepts/claims/keywords)</td><td class="trigger">« rafraîchis les digests » / "refresh the digests"</td></tr>
   <tr><td class="cmd">who-is-speaking</td><td class="desc">Identifie le membre de la famille dans un vault partagé, lock le routage par membre</td><td class="trigger">« c'est Karine » / "who is speaking"</td></tr>
@@ -377,7 +378,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 42 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 43 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>

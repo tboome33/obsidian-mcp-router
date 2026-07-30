@@ -120,7 +120,13 @@ For each entity/concept:
 - Does a wiki page already exist for it? Read `wiki-meta/catalog.md` to check.
   - **Exists** → you'll APPEND a section to that page, not create a new one.
   - **Doesn't exist** → you'll CREATE a new page.
-- What folder should it live in? Match the wiki's existing organization (read `wiki-meta/catalog.md` structure). If unclear, default folders: `concepts/`, `entities/`, `sources/`, `projects/`.
+- What folder should it live in? Match the wiki's existing organization first (read `wiki-meta/catalog.md` structure).
+- What folder should it live in? **Group by SUBJECT first, type second** (2026-07-30, Roland: flat type-buckets make human re-reading hard; directories and sub-directories are what a human browses).
+  - A page joins an existing subject directory when one fits (`wiki/<sujet>/`).
+  - **≥ 2-3 pages about the same subject and no directory yet → CREATE `wiki/<sujet>/` now** and move the strays into it with `move_file` — wikilinks resolve by basename, so moves are safe; plain-text path mentions are the exception, not the rule.
+  - Only when no subject grouping makes sense, fall back to the type folders: `concepts/`, `entities/`, `sources/`, `projects/`.
+  - Never move the OKF projections (`index.md`/`log.md` under `wiki/`) or anything under `wiki-meta/`.
+  - Each directory's `index.md` is GENERATED (OKF projection, auto-refreshed after your writes) — never create or edit one by hand; it materialises on its own and gives every directory a human landing page.
 
 Output a 1-paragraph plan to the user before writing files. They can correct misclassifications cheaply now.
 

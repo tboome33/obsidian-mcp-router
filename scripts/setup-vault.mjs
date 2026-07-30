@@ -45,6 +45,8 @@ import {
   scaffoldWritePath,
   scaffoldMigrationHint,
 } from '../src/helpers/wiki-meta-scaffolds.mjs';
+import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
+import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
 import {
   buildProvisionPlan,
   resolveSourceVault,
@@ -285,6 +287,26 @@ const LEGACY_V0120_SCAFFOLDS = ['hot.md', 'index.md', 'log.md', 'overview.md'];
  * The same four slots, each listing every basename that can legitimately fill
  * it. Used for PRESENCE tests, where a vault may be on either naming.
  */
+/**
+ * Is <vault>/wiki/<basename> a PRE-v0.12.0 legacy scaffold? The v0.59.0 OKF
+ * projections reuse two of the same paths (wiki/index.md, wiki/log.md) — a
+ * marker-carrying file there is OUR generated navigation, not a legacy
+ * scaffold awaiting migration. Without this exemption, bootstrapping a wiki
+ * (which now initialises projections) makes the very next bootstrap refuse
+ * with 'legacy scaffolds present', and --migrate-wiki-meta reads the vault
+ * as 'partial'.
+ */
+function isLegacyWikiScaffoldFile(vaultPath, basename) {
+  const abs = path.join(vaultPath, 'wiki', basename);
+  if (!fs.existsSync(abs)) return false;
+  if (basename !== 'index.md' && basename !== 'log.md') return true;
+  try {
+    return !hasProjectionMarker(fs.readFileSync(abs, 'utf8'));
+  } catch {
+    return true; // unreadable → treat as legacy (fail safe: refuse loudly)
+  }
+}
+
 const SCAFFOLD_SLOTS = [
   ['hot.md'],
   [CATALOG_BASENAME, 'index.md'],
@@ -305,9 +327,10 @@ function detectVaultMigrationState(vaultPath) {
   if (!fs.existsSync(vaultPath) || !fs.statSync(vaultPath).isDirectory()) {
     return 'no-vault';
   }
-  // `wiki/` side: only the pre-v0.12.0 basenames can ever appear there.
+  // `wiki/` side: pre-v0.12.0 basenames — minus the v0.59.0 projections
+  // that legitimately reuse wiki/index.md + wiki/log.md (marker-exempted).
   const wikiPresent = LEGACY_V0120_SCAFFOLDS.filter((f) =>
-    fs.existsSync(path.join(vaultPath, 'wiki', f)));
+    isLegacyWikiScaffoldFile(vaultPath, f));
   // `wiki-meta/` side: a slot counts as filled under EITHER the current name
   // or the pre-0.58.0 one. Counting only one set would read a fully-migrated
   // vault as 'partial' (2 of 4 present) and make --migrate-wiki-meta refuse a
@@ -1574,7 +1597,9 @@ function buildModeCatalogContent(mode, sections) {
 
 function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
   const wikiDir = path.join(vaultPath, 'wiki');
-  const sessionsDir = path.join(wikiDir, 'sessions');
+  // v0.59.0 — the session journals live in wiki-meta/Sessions/ since v0.12.8;
+  // this scaffolder kept creating the pre-v0.12.8 wiki/sessions/ ghost dir.
+  const sessionsDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
   const metaDir = path.join(vaultPath, 'wiki-meta');
   const templatesDir = path.join(REPO_ROOT, 'templates', 'wiki-meta');
 
@@ -1642,8 +1667,16 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
     created++;
   }
 
+  // v0.59.0 — volet ②: a fresh wiki is born with its OKF projections (root
+  // wiki/index.md + wiki/log.md), so the write middleware's requireInitialized
+  // gate opens from day one. Conflict-safe: an unmarked homonym is preserved.
+  const projections = generateProjectionsOnDisk(vaultPath, { apply: true });
+  if (projections.conflicts.length > 0) {
+    warn(`OKF projections: ${projections.conflicts.length} hand-written file(s) squat reserved paths (${projections.conflicts.join(', ')}) — left untouched.`);
+  }
+
   if (created > 0) {
-    ok(`Scaffolded wiki structure: wiki/, wiki/sessions/, wiki-meta/ (${created} file${created > 1 ? 's' : ''} created${preserved > 0 ? `, ${preserved} preserved` : ''})`);
+    ok(`Scaffolded wiki structure: wiki/, wiki-meta/ (+ Sessions/), OKF projections (${created} file${created > 1 ? 's' : ''} created${preserved > 0 ? `, ${preserved} preserved` : ''})`);
   } else if (preserved > 0) {
     info(`Wiki scaffolds already present (${preserved} file${preserved > 1 ? 's' : ''} preserved)`);
   }
@@ -2297,7 +2330,7 @@ function setupVault(vaultPath, opts = {}) {
   // wiki-meta/*.md files (and no legacy files) are repaired idempotently by
   // scaffoldWikiMeta() below — no refusal needed (codex P2 #2).
   const legacyScaffolds = LEGACY_V0120_SCAFFOLDS.filter((f) =>
-    fs.existsSync(path.join(abs, 'wiki', f)));
+    isLegacyWikiScaffoldFile(abs, f));
   if (legacyScaffolds.length > 0) {
     fail(
       `Vault at ${abs} still has legacy scaffold(s): wiki/${legacyScaffolds.join(', wiki/')}.\n` +

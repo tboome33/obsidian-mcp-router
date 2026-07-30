@@ -32,6 +32,7 @@ import { buildWikiGraph } from '../helpers/wiki-graph-builder.mjs';
 import { validateGraph } from '../helpers/wiki-graph-schema.mjs';
 import { createWikiIgnore } from '../helpers/wiki-ignore.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
+import { isProjectionPath, hasProjectionMarker } from '../helpers/okf-projections.mjs';
 // Reuse the project's canonical vault-path-safety guard (single source of
 // truth for path policy) rather than a bespoke, weaker check.
 import { isSafeVaultRelativePath } from './get-wiki-context-pack.mjs';
@@ -121,7 +122,9 @@ function joinPath(dir, name) {
  * even though it's ignored-as-content (the source-référencée invariant).
  * Returns `{ paths, truncated }`.
  */
-async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null) {
+// Exported since v0.59.0: `refresh-okf-projections.mjs` enumerates the same
+// tree with the same bounds — one walker, no drift.
+export async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null) {
   const paths = [];
   let truncated = false;
   let visited = 0; // total entries examined (dirs + files), bounded by MAX_VISITS
@@ -170,7 +173,7 @@ async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null) {
 }
 
 /** Read a set of vault paths in parallel → [{path, content}] (failures dropped). */
-async function readAll(getFileContent, vault, filePaths) {
+export async function readAll(getFileContent, vault, filePaths) {
   const out = [];
   let failures = 0;
   // Bounded concurrency — process in batches of READ_CONCURRENCY rather than
@@ -249,10 +252,16 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
     ignore,
   );
   if (pagesTruncated) warnings.push('page-enumeration-truncated');
-  const { items: pages, failures: pageFailures } = await readAll(
+  const { items: allPages, failures: pageFailures } = await readAll(
     deps.getFileContent,
     vault,
     pagePaths,
+  );
+  // v0.59.0 — the OKF projections (root/per-dir index.md, log.md) are
+  // GENERATED navigation, not content: no article nodes for them. Marker-
+  // checked, so a hand-written page that merely reuses the name stays in.
+  const pages = allPages.filter(
+    (p) => !(isProjectionPath(p.path) && hasProjectionMarker(p.content)),
   );
   if (pageFailures > 0) warnings.push(`page-read-failures:${pageFailures}`);
   if (pages.length === 0) warnings.push('no-content-pages-found');

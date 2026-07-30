@@ -53,6 +53,8 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
 
    If you write `catalog.md`, `journal.md`, etc. at the vault root or under `wiki/`, the wiki workflow breaks: the `wiki-query` skill won't find them (it looks under `wiki-meta/`), the `wiki-lint` skill will mark them as orphans, and `wiki-fold` won't see the log. The whole stack assumes the `wiki-meta/` prefix for these 4 scaffolds (v0.12.0+). User content/pages stay under `wiki/`.
 
+   Also create the session-journal directory `wiki-meta/Sessions/` (capital S — the `session-auto-journal` hook writes there since v0.12.8), then **initialise the OKF projections** (v0.59.0, volet ②): call `mcp__obsidian-router__refresh_okf_projections({ vault: <name> })` once. That writes the generated `wiki/index.md` (root, `okf_version` only) + `wiki/log.md`, and from then on the router keeps one `index.md` per content directory fed automatically (~15 s after each write). NEVER hand-write or wikilink those files — internal links keep targeting `[[catalog]]`/`[[journal]]`.
+
    The `templates/wiki-meta/` folder in this repo (`I:\DEVELOPPEMENT\obsidian-mcp-router\templates\wiki-meta\`) ships the 4 scaffolds. The CLAUDE.md block (vault-root, see step 4) lives in `templates/wiki/CLAUDE.md` (path kept stable for back-compat — only the 4 scaffolds moved to `wiki-meta/`). Read the template via the local filesystem and substitute these placeholders before writing to the target vault:
 
    | Placeholder | Substitute with |
