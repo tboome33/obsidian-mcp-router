@@ -164,6 +164,23 @@ describe('buildProjections', () => {
     assert.match(root.content, new RegExp(`^> ${PROJECTION_MARKER}`, 'm'));
   });
 
+  test('a hostile title cannot hijack the generated link (review F2)', () => {
+    const { files } = build([
+      page('wiki/evil.md', { type: 'note', title: 'Fin](http://evil) - x', created: '2026-07-01' }),
+    ]);
+    const root = files.find((f) => f.path === 'wiki/index.md');
+    assert.doesNotMatch(root.content, /\]\(http:\/\/evil\)/, 'the injected target must not survive');
+    assert.match(root.content, /^\* \[Fin\)\(http:\/\/evil\) - x\]\(evil\.md\)/m, 'brackets neutralised to parens');
+    const log = files.find((f) => f.path === 'wiki/log.md');
+    assert.doesNotMatch(log.content, /\]\(http:\/\/evil\)/);
+    // A multi-line title must not break the one-entry-per-line grammar either.
+    const { files: files2 } = build([
+      page('wiki/nl.md', { type: 'note', title: 'Ligne\nCassée' }),
+    ]);
+    const root2 = files2.find((f) => f.path === 'wiki/index.md');
+    assert.match(root2.content, /^\* \[Ligne Cassée\]\(nl\.md\)/m);
+  });
+
   test('title falls back to basename, description synthesised from the body', () => {
     const { files } = build([page('wiki/sans-titre.md', {}, 'Première phrase utile. Deuxième.')]);
     const root = files.find((f) => f.path === 'wiki/index.md');

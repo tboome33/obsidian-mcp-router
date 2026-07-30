@@ -85,8 +85,13 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
     let rootIndex = null;
     try {
       rootIndex = asText(await deps.getFileContent(vault, 'wiki/index.md'));
-    } catch {
-      return { skipped: 'not-initialized' };
+    } catch (err) {
+      // Only a true 404 means "this vault never opted in". Anything else —
+      // unreachable, unauthorized, timeout — is about the VAULT, and mapping
+      // it onto 'not-initialized' would make the skip perfectly silent; let
+      // it reach the scheduler's logError instead (review v0.59.0 N2).
+      if (err?.kind === 'not_found') return { skipped: 'not-initialized' };
+      throw err;
     }
     if (!hasProjectionMarker(rootIndex)) {
       return { skipped: rootIndex ? 'root-index-unmarked' : 'not-initialized' };
@@ -105,8 +110,18 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
   const contentPaths = paths.filter((p) => isWikiContentPath(p));
   const existingProjectionPaths = paths.filter((p) => isProjectionPath(p));
 
+  // FAIL CLOSED on any read failure — both directions matter (codex review):
+  //   - a content page that failed to read would make every index and the log
+  //     silently DROP its entries until some later refresh;
+  //   - an existing file at a projection path that failed to read would be
+  //     absent from `current`, so the planner would treat the path as free —
+  //     and if that unreadable file was an UNMARKED hand-written page, the
+  //     write would destroy exactly what the conflict rule protects.
+  // A transient REST failure must mean "no refresh", never "wrong refresh".
   const { items: pageItems, failures } = await readAll(deps.getFileContent, vault, contentPaths);
-  if (failures > 0) warnings.push(`page-read-failures: ${failures}`);
+  if (failures > 0) {
+    return { skipped: 'page-reads-failed', warnings: [`page-read-failures: ${failures}`] };
+  }
   const pages = pageItems.map(({ path, content }) => {
     const { frontmatter, body } = parseFrontmatter(content);
     return { path, frontmatter, body };
@@ -114,7 +129,9 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
 
   const { items: currentItems, failures: projFailures } =
     await readAll(deps.getFileContent, vault, existingProjectionPaths);
-  if (projFailures > 0) warnings.push(`projection-read-failures: ${projFailures}`);
+  if (projFailures > 0) {
+    return { skipped: 'projection-reads-failed', warnings: [`projection-read-failures: ${projFailures}`] };
+  }
   const current = new Map(currentItems.map(({ path, content }) => [path, content]));
 
   const { files } = buildProjections({ pages, vaultName: vault.name, now });

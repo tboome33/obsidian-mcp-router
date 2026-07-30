@@ -635,8 +635,19 @@ export function serializeOkfFrontmatter(fm) {
 // ---------------------------------------------------------------------------
 
 function indexEntryLine(title, linkPath, description) {
+  // The title lands inside the `[…]` of a markdown link in a GENERATED file:
+  // a frontmatter title like `Fin](http://evil) - x` would close the bracket
+  // early and hijack the link target (review v0.59.0 F2 — plausible vector,
+  // wiki-ingest derives titles from web pages). Square brackets become parens
+  // (visually close, grammar-inert per §6 — link text only forbids `]`);
+  // whitespace collapses like the description's.
+  const safeTitle = String(title ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/\[/g, '(')
+    .replace(/\]/g, ')')
+    .trim();
   const desc = String(description || '').replace(/\s+/g, ' ').trim();
-  return `* [${title}](${linkPath})${desc ? ` - ${desc}` : ''}`;
+  return `* [${safeTitle}](${linkPath})${desc ? ` - ${desc}` : ''}`;
 }
 
 // Exported since v0.59.0: `okf-projections.mjs` generates the AT-REST

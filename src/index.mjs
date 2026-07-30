@@ -1106,16 +1106,28 @@ const projectionsScheduler = PROJECTIONS_OPTOUT.has(
 )
   ? null
   : createProjectionsScheduler({
-    refresh: (vault) => refreshProjectionsForVault(
-      vault,
-      {
-        listFilesIn: restListFilesIn,
-        getFileContent: restGetFileContent,
-        writeFile: restWriteFile,
-        deleteFile: restDeleteFile,
-      },
-      { requireInitialized: true },
-    ),
+    refresh: async (vault) => {
+      const result = await refreshProjectionsForVault(
+        vault,
+        {
+          listFilesIn: restListFilesIn,
+          getFileContent: restGetFileContent,
+          writeFile: restWriteFile,
+          deleteFile: restDeleteFile,
+        },
+        { requireInitialized: true },
+      );
+      // Middleware writes bypass the tool layer, hence the audit trail — a
+      // one-line stderr trace keeps them observable (review v0.59.0 N4).
+      if (result && !result.skipped && (result.written?.length || result.deleted?.length)) {
+        console.error(
+          `[obsidian-mcp-router] okf-projections refreshed for "${vault.name}": ` +
+            `${result.written.length} written, ${result.deleted.length} deleted` +
+            `${result.conflicts?.length ? `, ${result.conflicts.length} conflict(s) untouched` : ''}`,
+        );
+      }
+      return result;
+    },
     delayMs: projectionsDebounceMs,
   });
 

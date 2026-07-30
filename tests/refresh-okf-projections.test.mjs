@@ -119,13 +119,26 @@ describe('refreshProjectionsForVault', () => {
     assert.equal(store.get('wiki/a/index.md'), handWritten);
   });
 
-  test('requireInitialized: absent root → skipped, untouched', async () => {
+  test('requireInitialized: absent root (true 404) → skipped, untouched', async () => {
     const { deps, writes } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
     const r = await refreshProjectionsForVault(VAULT, deps, {
       requireInitialized: true, now: '2026-07-30',
     });
     assert.equal(r.skipped, 'not-initialized');
     assert.deepEqual(writes, []);
+  });
+
+  test('requireInitialized: an OFFLINE vault throws instead of masquerading as not-initialized', async () => {
+    // review v0.59.0 N2: mapping ECONNREFUSED onto 'not-initialized' made the
+    // skip perfectly silent; it must reach the scheduler's logError instead.
+    const { deps } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
+    deps.getFileContent = async () => {
+      throw Object.assign(new Error('ECONNREFUSED'), { kind: 'unreachable' });
+    };
+    await assert.rejects(
+      () => refreshProjectionsForVault(VAULT, deps, { requireInitialized: true, now: '2026-07-30' }),
+      /ECONNREFUSED/,
+    );
   });
 
   test('requireInitialized: UNMARKED root → skipped (conflict state, no churn)', async () => {
@@ -151,6 +164,41 @@ describe('refreshProjectionsForVault', () => {
     });
     assert.equal(r.skipped, undefined);
     assert.ok(writes.length > before, 'the gated refresh rewrote the changed indexes');
+  });
+
+  test('FAIL CLOSED: a content-page read failure aborts the refresh entirely', async () => {
+    // codex review P2: a partial `pages` array would silently drop entries
+    // from every index and the log. A transient REST failure must mean
+    // "no refresh", never "wrong refresh".
+    const { deps, writes } = makeVaultFs({
+      'wiki/a/ok.md': PAGE('OK'),
+      'wiki/a/cassee.md': PAGE('Cassée'),
+    });
+    const realGet = deps.getFileContent;
+    deps.getFileContent = async (v, p) => {
+      if (p === 'wiki/a/cassee.md') throw new Error('EBUSY');
+      return realGet(v, p);
+    };
+    const r = await refreshProjectionsForVault(VAULT, deps, { now: '2026-07-30' });
+    assert.equal(r.skipped, 'page-reads-failed');
+    assert.deepEqual(writes, [], 'nothing may be written from a partial tree');
+  });
+
+  test('FAIL CLOSED: an unreadable file AT a projection path aborts (conflict shield)', async () => {
+    // codex review P1: unreadable → absent from `current` → planned as a
+    // fresh write → an unreadable UNMARKED homonym would be destroyed.
+    const { deps, writes } = makeVaultFs({
+      'wiki/a/p.md': PAGE('P'),
+      'wiki/a/index.md': '# écrit main, illisible au moment T\n',
+    });
+    const realGet = deps.getFileContent;
+    deps.getFileContent = async (v, p) => {
+      if (p === 'wiki/a/index.md') throw new Error('EBUSY');
+      return realGet(v, p);
+    };
+    const r = await refreshProjectionsForVault(VAULT, deps, { now: '2026-07-30' });
+    assert.equal(r.skipped, 'projection-reads-failed');
+    assert.deepEqual(writes, []);
   });
 
   test('tool wrapper resolves the vault through the registry', async () => {

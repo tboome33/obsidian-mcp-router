@@ -150,12 +150,20 @@ export function buildProjections({ pages, vaultName, now }) {
   }
   const logLines = ['# Update Log', '', projectionMarkerLine(), ''];
   const days = [...dated.keys()].sort().reverse();
+  // Same title sanitation as `indexEntryLine` (review v0.59.0 F2): the title
+  // sits inside a markdown link in a generated file — brackets would hijack
+  // the link target, newlines would break the §7 line grammar.
+  const safeTitle = (t) => String(t ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/\[/g, '(')
+    .replace(/\]/g, ')')
+    .trim();
   const entryLine = (doc) => {
     const created = typeof doc.frontmatter.created === 'string'
       ? doc.frontmatter.created.slice(0, 10) : null;
     const day = (newestDateString(doc.frontmatter) ?? '').slice(0, 10);
     const verb = created && created === day ? 'Created' : 'Updated';
-    return `* **${verb}**: [${doc.okfFrontmatter.title}](${doc.newPath})`;
+    return `* **${verb}**: [${safeTitle(doc.okfFrontmatter.title)}](${doc.newPath})`;
   };
   for (const day of days) {
     logLines.push(`## ${day}`, '');
@@ -166,7 +174,7 @@ export function buildProjections({ pages, vaultName, now }) {
   if (undated.length > 0) {
     logLines.push('## Undated', '');
     for (const doc of undated.slice().sort((a, b) => a.newPath.localeCompare(b.newPath))) {
-      logLines.push(`* [${doc.okfFrontmatter.title}](${doc.newPath})`);
+      logLines.push(`* [${safeTitle(doc.okfFrontmatter.title)}](${doc.newPath})`);
     }
     logLines.push('');
   }
