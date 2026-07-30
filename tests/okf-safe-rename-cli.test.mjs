@@ -240,11 +240,120 @@ describe('okf-safe-rename-vault CLI — table mode', () => {
     assert.equal(exists(vp, 'wiki-meta/index.md'), true);
   });
 
+  test('a cross-directory table entry blocks the apply and touches nothing', () => {
+    // review+ pass 1, convergent BLOCKER (Reviewer A + codex P1).
+    const vp = makeVault({ 'wiki/Divers/old-name.md': '# Old\n', 'wiki/cite.md': 'cf [[old-name]]\n' });
+    fs.mkdirSync(path.join(vp, 'wiki/Archive'), { recursive: true });
+    fs.writeFileSync(path.join(vp, 'wiki/Archive/keep.md'), '# keep\n', 'utf8');
+    const tableFile = path.join(tmpRoot, `cross-${seq}.json`);
+    fs.writeFileSync(tableFile, JSON.stringify({
+      renames: [{ oldPath: 'wiki/Divers/old-name.md', newPath: 'wiki/Archive/new-name.md' }],
+    }), 'utf8');
+
+    const r = run('--table', tableFile, '--vault', vp, '--apply');
+    assert.equal(r.code, 1);
+    assert.match(r.out, /BLOCKED — 1 collision/);
+    assert.match(r.out, /cross-directory move is not supported/);
+    // The file stayed put, the citing note was NOT rewritten to a path that
+    // would never exist, and no backup was opened.
+    assert.equal(exists(vp, 'wiki/Divers/old-name.md'), true);
+    assert.equal(exists(vp, 'wiki/Archive/new-name.md'), false);
+    assert.equal(read(vp, 'wiki/cite.md'), 'cf [[old-name]]\n');
+    assert.equal(exists(vp, '.okf-rename-backup'), false);
+  });
+
+  test('a table entry escaping the vault is refused and writes nothing outside', () => {
+    const vp = makeVault();
+    const outside = path.join(tmpRoot, 'outside-target.md');
+    fs.writeFileSync(outside, '# Wiki Index\nOUTSIDE\n', 'utf8');
+    const tableFile = path.join(tmpRoot, `escape-${seq}.json`);
+    fs.writeFileSync(tableFile, JSON.stringify({
+      renames: [{ oldPath: 'wiki-meta/index.md', newPath: '../outside-target.md' }],
+      retitle: [{ path: '../outside-target.md', words: [['Index', 'PWNED']] }],
+    }), 'utf8');
+
+    const r = run('--table', tableFile, '--vault', vp, '--apply');
+    assert.equal(r.code, 1);
+    assert.match(r.out, /escapes the vault/);
+    assert.equal(fs.readFileSync(outside, 'utf8'), '# Wiki Index\nOUTSIDE\n');
+    assert.equal(exists(vp, 'wiki-meta/index.md'), true);
+  });
+
+  test('a successful apply leaves the manifest marked applied', () => {
+    const vp = makeVault();
+    assert.equal(run(...PRESET, '--vault', vp, '--apply').code, 0);
+    const stamps = fs.readdirSync(path.join(vp, '.okf-rename-backup'));
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(vp, '.okf-rename-backup', stamps[0], 'manifest.json'), 'utf8'),
+    );
+    assert.equal(manifest.status, 'applied');
+    assert.equal(manifest.retitled.length, 2);
+  });
+
+  test('an apply that throws mid-way still leaves a manifest and names the backup', () => {
+    // This is what the manifest-before-mutation ordering buys: a rename can
+    // fail on a vault Obsidian holds open (EBUSY/EPERM), and the operator must
+    // still get a record of what was attempted and where the backup is.
+    //
+    // Forced without mocking: mark one of the files the apply must REWRITE as
+    // read-only, so `writeFileSync` throws after the backup + manifest are on
+    // disk but before any rename runs.
+    const vp = makeVault();
+    const victim = path.join(vp, 'wiki-meta/hot.md');
+    fs.chmodSync(victim, 0o444);
+    let r;
+    try {
+      r = run(...PRESET, '--vault', vp, '--apply');
+    } finally {
+      fs.chmodSync(victim, 0o644);
+    }
+    assert.equal(r.code, 1, 'a failed apply must exit non-zero');
+    assert.match(r.out, /partial apply; backup \+ manifest:/, 'the error must point at the backup');
+    assert.doesNotMatch(r.out, /undefined — partial apply/, 'the error detail must not be undefined');
+
+    const stamps = fs.readdirSync(path.join(vp, '.okf-rename-backup'));
+    assert.equal(stamps.length, 1, 'the backup dir must exist even though the apply failed');
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(vp, '.okf-rename-backup', stamps[0], 'manifest.json'), 'utf8'),
+    );
+    assert.equal(manifest.status, 'failed');
+    assert.ok(manifest.error, 'the manifest must carry the cause');
+    assert.deepEqual(manifest.renames.map((x) => x.newPath).sort(), [
+      'wiki-meta/catalog.md',
+      'wiki-meta/journal.md',
+    ], 'the manifest must record the FULL intended plan, not just what got done');
+    // Nothing was renamed — the failure happened during the content pass.
+    assert.equal(exists(vp, 'wiki-meta/index.md'), true);
+    assert.equal(exists(vp, 'wiki-meta/catalog.md'), false);
+  });
+
+  test('an empty directory squatting the destination is refused, not hit mid-apply', () => {
+    // The planner reasons over a FILE list, so a directory with no files in it
+    // is invisible to it; without the CLI pre-flight this threw EPERM halfway
+    // through the renames.
+    const vp = makeVault();
+    fs.mkdirSync(path.join(vp, 'wiki-meta/journal.md'), { recursive: true });
+    const r = run(...PRESET, '--vault', vp, '--apply');
+    assert.equal(r.code, 1);
+    assert.match(r.out, /BLOCKED/);
+    assert.match(r.out, /not in the scanned file list/);
+    assert.equal(exists(vp, 'wiki-meta/index.md'), true, 'nothing may be renamed');
+    assert.equal(exists(vp, 'wiki-meta/catalog.md'), false);
+    assert.equal(exists(vp, '.okf-rename-backup'), false, 'no backup — we never started');
+  });
+
   test('bad usage exits 1 with the preset list', () => {
     assert.equal(run('--preset', 'nope', '--vault', tmpRoot).code, 1);
     assert.match(run('--preset', 'nope', '--vault', tmpRoot).out, /okf-reserved-scaffolds/);
     assert.equal(run(...PRESET).code, 1); // no vault
     assert.equal(run('--preset', 'okf-reserved-scaffolds', '--table', 'x.json', '--vault', tmpRoot).code, 1);
+    // A value-taking flag in last position must print usage, not a stack trace.
+    for (const flag of ['--vault', '--preset', '--table']) {
+      const r = run(flag);
+      assert.equal(r.code, 1, `${flag} alone should exit 1`);
+      assert.match(r.out, /requires a value/, `${flag} alone should say so`);
+      assert.doesNotMatch(r.out, /at Object\.|node:internal/, `${flag} alone must not print a stack trace`);
+    }
   });
 });
 

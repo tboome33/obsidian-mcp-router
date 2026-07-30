@@ -287,13 +287,97 @@ test('table mode refuses two entries claiming the same target', () => {
   assert.equal(plan.renameOps.length, 1);
 });
 
-test('table mode does not call a target occupied when the table vacates it', () => {
-  // Chained rename a → b while b → c: `b` is not a collision.
+test('table mode refuses a cross-directory move instead of half-applying it', () => {
+  // review+ pass 1, convergent BLOCKER (Reviewer A + codex P1): the apply step
+  // renames by basename inside the entry's own parent (required by charset
+  // mode), so a `newPath` in another directory would land the file next to the
+  // original while links and the manifest recorded the destination — and
+  // verification would still pass. Refuse rather than support the move.
+  const plan = buildRenamePlanFromTable(
+    ['wiki/Divers/old-name.md', 'wiki/Archive/keep.md'],
+    [{ oldPath: 'wiki/Divers/old-name.md', newPath: 'wiki/Archive/new-name.md' }],
+  );
+  assert.equal(plan.renameOps.length, 0);
+  assert.equal(plan.collisions.length, 1);
+  assert.match(plan.collisions[0].reason, /cross-directory move is not supported/);
+  assert.match(plan.collisions[0].reason, /wiki\/Divers.*wiki\/Archive/);
+});
+
+test('table mode allows a root-level rename (both sides have no directory)', () => {
+  const plan = buildRenamePlanFromTable(['note.md'], [{ oldPath: 'note.md', newPath: 'renamed.md' }]);
+  assert.deepEqual(plan.collisions, []);
+  assert.equal(plan.fileMap.get('note.md'), 'renamed.md');
+});
+
+test('table mode refuses a path that escapes the vault', () => {
+  for (const entry of [
+    { oldPath: 'wiki-meta/index.md', newPath: '../outside.md' },
+    { oldPath: '../outside.md', newPath: '../pwned.md' },
+    { oldPath: 'wiki/a/../../escape.md', newPath: 'wiki/x.md' },
+  ]) {
+    const plan = buildRenamePlanFromTable(['wiki-meta/index.md', 'wiki/a/b.md'], [entry]);
+    assert.equal(plan.renameOps.length, 0, `${entry.oldPath} → ${entry.newPath} must not be planned`);
+    assert.equal(plan.collisions.length, 1);
+    assert.match(plan.collisions[0].reason, /escapes the vault/);
+  }
+});
+
+test('a REJECTED entry does not mark its source as vacated for a later entry', () => {
+  // Otherwise `C→A` is planned on top of an `A` that is still on disk, because
+  // the blocked `A→B` had already declared `A` free.
+  const plan = buildRenamePlanFromTable(
+    ['a.md', 'b.md', 'occupied.md'],
+    [
+      { oldPath: 'a.md', newPath: 'occupied.md' }, // blocked: target exists
+      { oldPath: 'b.md', newPath: 'a.md' },        // must NOT be planned
+    ],
+  );
+  assert.deepEqual(plan.renameOps, []);
+  assert.equal(plan.collisions.length, 2);
+  assert.match(plan.collisions[1].reason, /target already exists/);
+});
+
+test('table mode refuses a CHAIN (a→b while b→c) instead of destroying a file', () => {
+  // review+ pass 2 BLOCKER, reproduced by the reviewer: renames apply in table
+  // order with no topological sort, so `a→b` overwrote `b` before `b→c` could
+  // read it — the dry-run printed a clean plan and the vault came out with one
+  // file where it had two. No preset needs chaining; refuse it.
   const plan = buildRenamePlanFromTable(
     ['x/a.md', 'x/b.md'],
     [
       { oldPath: 'x/a.md', newPath: 'x/b.md' },
       { oldPath: 'x/b.md', newPath: 'x/c.md' },
+    ],
+  );
+  // Only the unsafe half is rejected: `a→b` would clobber `b`. `b→c` on its own
+  // is harmless, so it stays planned — and the CLI refuses the whole vault
+  // anyway as soon as `collisions` is non-empty.
+  assert.equal(plan.collisions.length, 1);
+  assert.equal(plan.collisions[0].oldPath, 'x/a.md');
+  assert.match(plan.collisions[0].reason, /chain or swap/);
+  assert.deepEqual(plan.renameOps.map((r) => r.oldPath), ['x/b.md']);
+});
+
+test('table mode refuses a SWAP (a→b, b→a)', () => {
+  const plan = buildRenamePlanFromTable(
+    ['x/a.md', 'x/b.md'],
+    [
+      { oldPath: 'x/a.md', newPath: 'x/b.md' },
+      { oldPath: 'x/b.md', newPath: 'x/a.md' },
+    ],
+  );
+  assert.deepEqual(plan.renameOps, []);
+  assert.equal(plan.collisions.length, 2);
+  for (const c of plan.collisions) assert.match(c.reason, /chain or swap/);
+});
+
+test('a rename whose target merely LOOKS like another source is still allowed', () => {
+  // Only an exact source path blocks: `x/b.md` vs `x/b.md.bak` must not clash.
+  const plan = buildRenamePlanFromTable(
+    ['x/a.md', 'x/b.md.bak'],
+    [
+      { oldPath: 'x/a.md', newPath: 'x/b.md' },
+      { oldPath: 'x/b.md.bak', newPath: 'x/c.md' },
     ],
   );
   assert.deepEqual(plan.collisions, []);
@@ -489,6 +573,25 @@ test('retitle only touches the FIRST h1', () => {
 test('retitle is a whole-word substitution', () => {
   const r = retitleScaffold('# Logbook and Log\n', journalWords);
   assert.equal(r.content, '# Logbook and Journal\n');
+});
+
+test('a # comment in the frontmatter does not consume the first-H1 slot', () => {
+  // review+ pass 1 NIT: scanning the whole file let a YAML comment count as
+  // the first `# ` line, so the real title was silently left alone.
+  const src = '---\n# un commentaire YAML\ntype: wiki-index\ntitle: "Wiki Index"\n---\n\n# Wiki Index\n\nbody\n';
+  const r = retitleScaffold(src, catalogWords);
+  assert.match(r.content, /^# Wiki Catalog$/m);
+  assert.match(r.content, /^title: "Wiki Catalog"$/m);
+  assert.match(r.content, /^# un commentaire YAML$/m, 'the YAML comment itself must be untouched');
+  assert.equal(r.edits, 2);
+});
+
+test('retitle preserves CRLF line endings', () => {
+  const src = '---\r\ntype: wiki-log\r\ntitle: "Wiki Log"\r\n---\r\n\r\n# Wiki Log\r\n\r\nbody\r\n';
+  const r = retitleScaffold(src, journalWords);
+  assert.equal(r.content.includes('\n\n'), false, 'must not introduce bare LF');
+  assert.match(r.content, /^title: "Wiki Journal"\r$/m);
+  assert.match(r.content, /^# Wiki Journal\r$/m);
 });
 
 test('retitle is idempotent and a no-op on an already-renamed scaffold', () => {

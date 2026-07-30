@@ -22,7 +22,7 @@ const MAX_STEPS_CAP = 30;
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Compute a deterministic guided-tour skeleton from a vault\'s knowledge graph (the `wiki-meta/graph/knowledge-graph.json` written by build_wiki_graph). Read-only. Ranks articles by fan-in (backlinks), picks entry points (boosted for index/MOC names), and produces an ordered set of steps (an overview step + one per index.md section/topic, top articles first) — each step carries node names + summaries so the caller can write the pedagogical narrative. Use `scope` to tour one section/topic/path of a multi-project vault. If no graph exists yet, run build_wiki_graph (/wiki-graph) first.',
+    'Compute a deterministic guided-tour skeleton from a vault\'s knowledge graph (the `wiki-meta/graph/knowledge-graph.json` written by build_wiki_graph). Read-only. Ranks articles by fan-in (backlinks), picks entry points (boosted for index/MOC names), and produces an ordered set of steps (an overview step + one per `wiki-meta/catalog.md` section/topic, top articles first) — each step carries node names + summaries so the caller can write the pedagogical narrative. Use `scope` to tour one section/topic/path of a multi-project vault. If no graph exists yet, run build_wiki_graph (/wiki-graph) first.',
   inputSchema: {
     type: 'object',
     properties: {

@@ -25,7 +25,7 @@ const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'session-auto-journal.mjs');
 
 let workDir;
-let vaultDir;          // simulated vault (has wiki-meta/index.md)
+let vaultDir;          // simulated vault (has wiki-meta/catalog.md)
 let codeWorkspace;     // code workspace (no wiki-meta/) — linked to vaultDir via .env
 let plainCwd;          // no-vault cwd
 let configPath;        // router config registering vaultDir
@@ -40,7 +40,7 @@ before(() => {
 
   vaultDir = path.join(workDir, 'my-vault');
   fs.mkdirSync(path.join(vaultDir, 'wiki-meta'), { recursive: true });
-  fs.writeFileSync(path.join(vaultDir, 'wiki-meta', 'index.md'), '# Index\n');
+  fs.writeFileSync(path.join(vaultDir, 'wiki-meta', 'catalog.md'), '# Catalog\n');
 
   codeWorkspace = path.join(workDir, 'code-workspace');
   fs.mkdirSync(codeWorkspace, { recursive: true });
@@ -431,15 +431,17 @@ describe('session-auto-journal — review+ pass 1 regressions', () => {
 // v0.12.8 — log.md auto-append on SessionEnd
 // ---------------------------------------------------------------------------
 
-describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
-  // Small helper: write a minimal wiki-meta/log.md so the hook has a file to append to.
+describe('session-auto-journal — v0.12.8 journal auto-append', () => {
+  // Minimal wiki-meta/journal.md so the hook has a file to append to. The
+  // CURRENT name: the whole fleet is migrated, so this is the branch every real
+  // SessionEnd takes. The legacy fallback gets its own test below.
   function ensureLogMd() {
-    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
-    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Log\n\nAppend-only.\n', 'utf8');
+    const logPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Journal\n\nAppend-only.\n', 'utf8');
     return logPath;
   }
 
-  test('SessionEnd appends one parseable line to wiki-meta/log.md with verb session, wikilink, objective, result', () => {
+  test('SessionEnd appends one parseable line to wiki-meta/journal.md with verb session, wikilink, objective, result', () => {
     const logPath = ensureLogMd();
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'log-test-1' });
     runHook({
@@ -459,7 +461,7 @@ describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
     const logContent = fs.readFileSync(logPath, 'utf8');
     // Verb prefix + wikilink to the journal basename
     assert.match(logContent, /— session — \[\[\d{4}-\d{2}-\d{2}-\d{4}-[^\]]+\]\] — /,
-      'log.md should contain the verb-prefixed line with a wikilink to the session');
+      'the journal should contain the verb-prefixed line with a wikilink to the session');
     // Objective derived from first user prompt
     assert.match(logContent, /add a new MCP tool for fetching weather data/,
       'objective should be the first user prompt');
@@ -472,7 +474,7 @@ describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
     assert.match(logContent, /first bash: npm test/);
   });
 
-  test('SessionEnd log.md append is idempotent (basename grep dedup)', () => {
+  test('SessionEnd journal append is idempotent (basename grep dedup)', () => {
     const logPath = ensureLogMd();
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'idemp-test-1' });
     runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'idemp-test-1', reason: 'logout' });
@@ -494,15 +496,39 @@ describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
     assert.equal(count2, 1, 'still one session line after re-trigger (dedup by basename)');
   });
 
-  test('SessionEnd silent-skips when wiki-meta/log.md absent (no crash, no creation)', () => {
-    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
-    // Ensure log.md does NOT exist
+  test('SessionEnd appends to the pre-0.58.0 wiki-meta/log.md and creates no duplicate', () => {
+    // v0.58.0 compat: a vault not yet renamed must keep working, and the hook
+    // must NOT open a second journal beside the old one.
+    const legacyPath = path.join(vaultDir, 'wiki-meta', 'log.md');
+    const newPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    if (fs.existsSync(newPath)) fs.unlinkSync(newPath);
+    fs.writeFileSync(legacyPath, '---\ntype: wiki-log\n---\n\n# Log\n', 'utf8');
+
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'legacy-log-1' });
+    runHook({
+      event: 'UserPromptSubmit', cwd: vaultDir, sessionId: 'legacy-log-1',
+      prompt: 'objectif sur un vault non migre',
+    });
+    const r = runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'legacy-log-1', reason: 'logout' });
+    assert.equal(r.status, 0, r.stderr);
+    const legacyContent = fs.readFileSync(legacyPath, 'utf8');
+    assert.match(legacyContent, /— session — \[\[/, 'the legacy journal must receive the entry');
+    assert.match(legacyContent, /objectif sur un vault non migre/);
+    assert.equal(fs.existsSync(newPath), false, 'journal.md must NOT be created beside log.md');
+    fs.unlinkSync(legacyPath);
+  });
+
+  test('SessionEnd silent-skips when NO journal exists under either name', () => {
+    const logPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    const legacyPath = path.join(vaultDir, 'wiki-meta', 'log.md');
     if (fs.existsSync(logPath)) fs.unlinkSync(logPath);
+    if (fs.existsSync(legacyPath)) fs.unlinkSync(legacyPath);
 
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'no-log-test-1' });
     const r = runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'no-log-test-1', reason: 'logout' });
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(fs.existsSync(logPath), false, 'log.md should NOT be created by the hook (wiki skill owns scaffolding)');
+    assert.equal(fs.existsSync(logPath), false, 'the journal should NOT be created by the hook (wiki skill owns scaffolding)');
+    assert.equal(fs.existsSync(legacyPath), false, 'nor should the legacy name be created');
     // But the journal file itself should still exist (the recap + frontmatter rewrite happened)
     const journal = readJournal();
     assert.ok(journal, 'journal file should still exist');
@@ -516,8 +542,8 @@ describe('session-auto-journal — v0.12.8 log.md auto-append', () => {
 
 describe('session-auto-journal — v0.12.9 review+ pass 1 regressions', () => {
   function ensureLogMd() {
-    const logPath = path.join(vaultDir, 'wiki-meta', 'log.md');
-    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Log\n', 'utf8');
+    const logPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Journal\n', 'utf8');
     return logPath;
   }
 

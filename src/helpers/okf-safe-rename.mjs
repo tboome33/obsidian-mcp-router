@@ -247,19 +247,27 @@ export function retitleScaffold(content, words) {
   };
 
   const fm = content.match(FRONTMATTER_RE);
-  let out = content;
+  let head = '';
+  let rest = content;
   if (fm) {
-    const body = fm[1].replace(/^(\s*title\s*:\s*)(.+)$/m, (_w, key, val) => `${key}${swap(val)}`);
-    out = content.slice(0, fm.index) + `---\n${body}\n---` + content.slice(fm.index + fm[0].length);
+    // Rewrite only the `title:` line, in place, so the block's original line
+    // endings and every other key survive byte-for-byte.
+    const block = fm[0].replace(/^([ \t]*title[ \t]*:[ \t]*)(.+)$/m, (_w, key, val) => `${key}${swap(val)}`);
+    head = content.slice(0, fm.index) + block;
+    rest = content.slice(fm.index + fm[0].length);
   }
-  // First ATX H1 only — later headings are section titles, not the page name.
+
+  // First ATX H1 of the BODY only. Scanning the whole file would let a `#`
+  // comment inside the frontmatter consume the "first H1" slot, leaving the
+  // real title untouched with no signal.
   let h1Done = false;
-  out = out.replace(/^# .*$/gm, (line) => {
+  rest = rest.replace(/^# .*$/gm, (line) => {
     if (h1Done) return line;
     h1Done = true;
     return swap(line);
   });
 
+  const out = head + rest;
   return { content: out, edits, changed: out !== content };
 }
 
@@ -271,6 +279,38 @@ function normalizeTable(table) {
     const norm = (p) => String(p ?? '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
     return { oldPath: norm(oldPath), newPath: norm(newPath) };
   });
+}
+
+/** `a/b/c.md` → `a/b` · `c.md` → `''` */
+function dirOf(p) {
+  const i = p.lastIndexOf('/');
+  return i === -1 ? '' : p.slice(0, i);
+}
+
+/**
+ * A table entry is only allowed to change the NAME of something, never its
+ * location, and must stay inside the vault.
+ *
+ * Why refuse the move rather than implement it: the apply step renames by
+ * basename within the entry's own parent directory — which is *required* in
+ * charset mode, where ancestors still carry their old names when files are
+ * renamed. A `newPath` in a different directory would silently lose its
+ * directory component: the file would land next to the original while links
+ * and the manifest recorded the intended destination, and verification would
+ * still pass (file count stable, old path gone). Freeing a reserved basename
+ * never needs a move, so the honest answer is to refuse one.
+ *
+ * @returns {string | null} a collision reason, or null when the entry is fine
+ */
+function tableEntryRejection(oldPath, newPath) {
+  const hasDotDot = (p) => p.split('/').includes('..');
+  if (hasDotDot(oldPath) || hasDotDot(newPath)) {
+    return 'path escapes the vault (`..` segment) — refusing';
+  }
+  if (dirOf(oldPath) !== dirOf(newPath)) {
+    return `cross-directory move is not supported (rename in place): "${dirOf(oldPath) || '<root>'}" → "${dirOf(newPath) || '<root>'}"`;
+  }
+  return null;
 }
 
 /**
@@ -309,18 +349,21 @@ export function buildRenamePlanFromTable(filePaths, table) {
   const missing = [];
   const claimedLower = new Map(); // newPath lower → oldPath that claimed it
 
-  // Everything the table renames AWAY, so a target path that is itself
-  // vacated by another entry does not read as an occupied collision.
-  const vacatedLower = new Set(
-    entries.filter((e) => e.oldPath && e.newPath !== e.oldPath).map((e) => e.oldPath.toLowerCase()),
-  );
-
-  for (const { oldPath, newPath } of entries) {
+  // PASS 1 — entry-level validity: shape, escape, in-place, existence.
+  const viable = [];
+  for (const entry of entries) {
+    const { oldPath, newPath } = entry;
     if (!oldPath || !newPath) {
       collisions.push({ oldPath, newPath, reason: 'incomplete table entry (empty oldPath or newPath)' });
       continue;
     }
     if (oldPath === newPath) continue; // no-op — keeps re-runs idempotent
+
+    const rejection = tableEntryRejection(oldPath, newPath);
+    if (rejection) {
+      collisions.push({ oldPath, newPath, reason: rejection });
+      continue;
+    }
 
     const isFile = allLower.has(oldPath.toLowerCase());
     const descendants = all.filter((p) => p.toLowerCase().startsWith(`${oldPath.toLowerCase()}/`));
@@ -329,32 +372,71 @@ export function buildRenamePlanFromTable(filePaths, table) {
       missing.push(oldPath);
       continue;
     }
+    viable.push({ oldPath, newPath, isDir, descendants });
+  }
 
-    const targetLower = newPath.toLowerCase();
+  // PASS 2 — two entries cannot claim the same destination. Independent of
+  // vacancy, so it is settled once, first claimant wins (table order).
+  let survivors = [];
+  for (const e of viable) {
+    const targetLower = e.newPath.toLowerCase();
     const alreadyClaimed = claimedLower.get(targetLower);
     if (alreadyClaimed) {
       collisions.push({
-        oldPath,
-        newPath,
+        oldPath: e.oldPath,
+        newPath: e.newPath,
         reason: `two table entries target the same path (also claimed by "${alreadyClaimed}")`,
       });
       continue;
     }
-    // Occupied by an existing file (or an existing directory's contents) that
-    // the table is not itself moving out of the way.
-    const occupiedByFile = allLower.has(targetLower) && !vacatedLower.has(targetLower);
-    const occupiedByDir =
-      all.some((p) => p.toLowerCase().startsWith(`${targetLower}/`)) && !vacatedLower.has(targetLower);
+    claimedLower.set(targetLower, e.oldPath);
+    survivors.push(e);
+  }
+
+  // PASS 3 — chains and swaps. An entry whose destination is another entry's
+  // SOURCE (`A→B, B→C`, or the swap `A→B, B→A`) is refused outright.
+  //
+  // Treating such a target as "free because the table vacates it" makes the
+  // plan look clean while the apply destroys a file: renames execute in table
+  // order with no topological sort, so `A→B` overwrites B before `B→C` ever
+  // reads it. Verified by review — the dry-run printed a perfect plan and the
+  // run ended with one file where there had been two, caught only after the
+  // fact by the file-count check. Ordering them correctly (and detecting
+  // cycles, which have no correct order at all) is real machinery for a case
+  // no preset needs: freeing a reserved basename never chains. Refuse instead,
+  // consistent with the cross-directory rule.
+  const sourcesLower = new Set(survivors.map((e) => e.oldPath.toLowerCase()));
+  survivors = survivors.filter((e) => {
+    if (!sourcesLower.has(e.newPath.toLowerCase())) return true;
+    collisions.push({
+      oldPath: e.oldPath,
+      newPath: e.newPath,
+      reason:
+        'target is the source of another table entry (chain or swap) — refusing: renames apply in table order, so one of the two files would be overwritten',
+    });
+    return false;
+  });
+
+  // PASS 4 — occupancy. With chains gone, a destination is simply free or not:
+  // no entry can vacate another's target, so this needs no fixpoint.
+  for (const e of survivors) {
+    const targetLower = e.newPath.toLowerCase();
+    const occupiedByFile = allLower.has(targetLower);
+    const occupiedByDir = all.some((p) => p.toLowerCase().startsWith(`${targetLower}/`));
     if (occupiedByFile || occupiedByDir) {
       collisions.push({
-        oldPath,
-        newPath,
+        oldPath: e.oldPath,
+        newPath: e.newPath,
         reason: `target already exists in the vault (${occupiedByFile ? 'file' : 'directory'}) — refusing to overwrite or auto-suffix`,
       });
-      continue;
     }
-    claimedLower.set(targetLower, oldPath);
+  }
+  survivors = survivors.filter(
+    (e) => !collisions.some((c) => c.oldPath === e.oldPath && c.newPath === e.newPath),
+  );
 
+  // PASS 5 — build the plan from what survived.
+  for (const { oldPath, newPath, isDir, descendants } of survivors) {
     renameOps.push({ oldPath, newPath, isDir });
     if (isDir) {
       for (const p of descendants) {

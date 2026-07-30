@@ -47,6 +47,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import {
+  CATALOG_REL,
+  JOURNAL_REL,
+  isLegacyScaffoldPath,
+  resolveScaffold,
+  scaffoldMigrationHint,
+} from '../src/helpers/wiki-meta-scaffolds.mjs';
+
+import {
   loadWorkspaceDotenv,
   readRouterConfig,
   detectVaultContext,
@@ -141,9 +149,29 @@ const modeLine = isWorkspaceBound
   ? `This workspace (cwd) is a code/dev project ASSOCIATED with the Obsidian vault \`${ctx.slug}\` (path: \`${ctx.vaultPath}\`). The vault holds the notes — cwd is just the code.`
   : `This workspace IS an Obsidian vault. Scaffolds live under \`wiki-meta/\`; user pages live under \`wiki/\`.`;
 
+// The compat layer keeps the CODE working on a vault still using the
+// pre-0.58.0 names, but this text is an INSTRUCTION: naming the current file
+// unconditionally would tell Claude to read a path that 404s there. Cite the
+// name each scaffold actually has, and pass the migration hint along.
+//
+// Each slot is probed SEPARATELY. `ctx.legacyScaffold` reports the CATALOG
+// only (that is the file vault detection keys on), and the two slots can
+// legitimately disagree — a half-finished migration, or a vault where one
+// file was renamed by hand. Deriving the journal from the catalog's flag
+// sends the reader to a path that does not exist in either mixed state.
+// (review+ pass 2, codex P2.)
+const resolveRel = (which, fallback) =>
+  resolveScaffold(ctx.vaultPath, which, { fs, path })?.relPath ?? fallback;
+const catalogRel = resolveRel('catalog', CATALOG_REL);
+const journalRel = resolveRel('journal', JOURNAL_REL);
+const legacyPaths = [catalogRel, journalRel].filter(isLegacyScaffoldPath);
+const legacyNote = legacyPaths.length
+  ? `\n\n⚠ ${legacyPaths.map(scaffoldMigrationHint).join('\n⚠ ')}`
+  : '';
+
 const indexReadHint = isWorkspaceBound
-  ? `Read \`wiki-meta/catalog.md\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/catalog.md" })\`.`
-  : `Read \`wiki-meta/catalog.md\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "wiki-meta/catalog.md" })\`.`;
+  ? `Read \`${catalogRel}\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "${catalogRel}" })\`.`
+  : `Read \`${catalogRel}\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "${catalogRel}" })\`.`;
 
 // v0.10.2: PATH RESOLUTION RULES (workspace-bound only)
 // Triggered by Roland 2026-05-23 after Claude generated a filesystem path
@@ -303,12 +331,12 @@ const nudge = [
   '  • `wiki-meta/hot.md`      — recent-context cache (likely already',
   '                               loaded via the hot-cache-load',
   '                               session-start hook).',
-  '  • `wiki-meta/catalog.md`    — full catalog of pages organized by folder',
+  `  • \`${catalogRel}\`    — full catalog of pages organized by folder`,
   '                               (people, concepts, sessions, decisions,',
   '                               refs, projects). Scan this first.',
   '  • `wiki-meta/overview.md` — executive summary of vault scope +',
   '                               conventions.',
-  '  • `wiki-meta/journal.md`      — append-only operation history. Useful',
+  `  • \`${journalRel}\`      — append-only operation history. Useful`,
   '                               when the user asks "what changed',
   '                               recently?".',
   '',
@@ -331,7 +359,7 @@ const nudge = [
   'with this nudge so you decide.',
   '',
   'Opt-out (per-session): set OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true.',
-].join('\n');
+].join('\n') + legacyNote;
 
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: {

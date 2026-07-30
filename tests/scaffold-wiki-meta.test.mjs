@@ -400,6 +400,47 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
     );
   });
 
+  // ----- review+ pass 1 BLOCKER 2 — never shadow a legacy scaffold ---------
+
+  test('REGRESSION (review+ pass 1 BLOCKER 2): an un-migrated vault gets NO shadow catalog/journal', () => {
+    // A vault on the pre-v0.58.0 names fills the catalog/journal slots with
+    // `index.md` / `log.md`. Testing only the CURRENT name would create an
+    // empty template beside the user's real file — and since every reader
+    // tries the current name FIRST, the real catalogue would go silently
+    // invisible. The scaffolder must recognise the legacy file and preserve it.
+    const legacyVault = path.join(workDir, 'legacy-named-scaffolds');
+    fs.mkdirSync(path.join(legacyVault, 'wiki-meta'), { recursive: true });
+    const realCatalog = '---\ntype: wiki-index\n---\n\n# Wiki Index\n\nMON VRAI CATALOGUE (200 pages)\n';
+    const realJournal = '# Wiki Log\n\nmon vrai journal\n';
+    fs.writeFileSync(path.join(legacyVault, 'wiki-meta', 'index.md'), realCatalog);
+    fs.writeFileSync(path.join(legacyVault, 'wiki-meta', 'log.md'), realJournal);
+
+    const result = spawnScript([legacyVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
+    assert.equal(result.status, 0, `must succeed on a legacy-named vault. stderr=${result.stderr}`);
+
+    // No duplicate was created…
+    assert.equal(
+      fs.existsSync(path.join(legacyVault, 'wiki-meta', 'catalog.md')),
+      false,
+      'catalog.md must NOT be created beside an existing index.md — it would shadow it',
+    );
+    assert.equal(
+      fs.existsSync(path.join(legacyVault, 'wiki-meta', 'journal.md')),
+      false,
+      'journal.md must NOT be created beside an existing log.md',
+    );
+    // …the real content is untouched…
+    assert.equal(fs.readFileSync(path.join(legacyVault, 'wiki-meta', 'index.md'), 'utf8'), realCatalog);
+    assert.equal(fs.readFileSync(path.join(legacyVault, 'wiki-meta', 'log.md'), 'utf8'), realJournal);
+    // …the slots the vault genuinely lacks are still filled…
+    assert.ok(fs.existsSync(path.join(legacyVault, 'wiki-meta', 'hot.md')), 'hot.md must still be created');
+    assert.ok(fs.existsSync(path.join(legacyVault, 'wiki-meta', 'overview.md')), 'overview.md must still be created');
+    // …and the operator is told how to migrate.
+    const out = `${result.stdout}${result.stderr}`;
+    assert.match(out, /pre-0\.58\.0 name/, 'must warn that the scaffold uses the old name');
+    assert.match(out, /--preset okf-reserved-scaffolds/, 'must name the migration command');
+  });
+
   // ----- codex P2 #3 — vaultNames lookup for inline link slug -----
 
   test('REGRESSION (codex P2 #3): inline --link-workspace honors cfg.vaultNames for custom-named vault', () => {

@@ -43,6 +43,7 @@ import {
   WIKI_META_SCAFFOLDS,
   resolveScaffold,
   scaffoldWritePath,
+  scaffoldMigrationHint,
 } from '../src/helpers/wiki-meta-scaffolds.mjs';
 import {
   buildProvisionPlan,
@@ -1589,11 +1590,30 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 16);
   let created = 0;
   let preserved = 0;
+  // Which slot each scaffold fills, for the two that were renamed in v0.58.0.
+  const SLOT_OF = { [CATALOG_BASENAME]: 'catalog', [JOURNAL_BASENAME]: 'journal' };
   for (const scaffold of WIKI_META_SCAFFOLDS) {
     const dst = path.join(metaDir, scaffold);
     if (fs.existsSync(dst)) {
       preserved++;
       continue;
+    }
+    // A vault still on the pre-0.58.0 names fills these slots under
+    // `index.md`/`log.md`. Testing only the CURRENT name would create an empty
+    // template beside the user's real file — and since readers try the current
+    // name first, the real catalogue/journal would go silently invisible. Same
+    // duplicate-journal trap the audit trail avoids in `src/index.mjs`.
+    const slot = SLOT_OF[scaffold];
+    if (slot) {
+      const existing = resolveScaffold(vaultPath, slot, { fs, path });
+      if (existing) {
+        preserved++;
+        warn(
+          `${existing.relPath} still uses the pre-0.58.0 name — preserved, and ${scaffold} was NOT created ` +
+          `(a second file would shadow it). ${scaffoldMigrationHint(existing.relPath)}`,
+        );
+        continue;
+      }
     }
     // --wiki-mode: seed catalog.md programmatically from the mode's section
     // list (and stamp overview.md's frontmatter). Without a mode, use the
@@ -3499,7 +3519,7 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               bridge (delegates to --bootstrap-reference).
   ... --bare                                                 Minimal vault: the 2 REQUIRED plugins only.
   ... --plugins recommended|minimal|custom:a,b,c             Plugin profile (default recommended = source set).
-  ... --wiki-mode personal|research|business|code|domain     Seed index.md/overview.md per mode. For 'domain',
+  ... --wiki-mode personal|research|business|code|domain     Seed catalog.md/overview.md per mode. For 'domain',
       [--wiki-sections "A,B,C"]                              pass the sections explicitly (engine stays
                                                               deterministic; the frontend translates the domain).
   ... --claude-workspace                                     Enable the router plugin in the bound workspace's

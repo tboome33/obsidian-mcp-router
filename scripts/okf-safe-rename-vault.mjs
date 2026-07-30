@@ -94,14 +94,21 @@ function parseArgs(argv) {
     tableFile: null,
     preserveDisplay: null, // null = take the preset/table default
   };
+  // A flag that takes a value must actually have one — otherwise `argv[++i]`
+  // is undefined and we crash with a stack trace instead of printing usage.
+  const value = (flag, i) => {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith('--')) usage(`${flag} requires a value.`);
+    return v;
+  };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === '--vault') args.vaults.push(argv[++i]);
+    if (a === '--vault') args.vaults.push(value(a, i++));
     else if (a === '--apply') args.apply = true;
     else if (a === '--list-all') args.listAll = true;
     else if (a === '--all-vaults') args.allVaults = true;
-    else if (a === '--preset') args.preset = argv[++i];
-    else if (a === '--table') args.tableFile = argv[++i];
+    else if (a === '--preset') args.preset = value(a, i++);
+    else if (a === '--table') args.tableFile = value(a, i++);
     else if (a === '--no-alias') args.preserveDisplay = false;
     else if (a === '--preserve-display') args.preserveDisplay = true;
     else usage(`Unknown argument: ${a}`);
@@ -215,9 +222,15 @@ function processVault(vaultAbs, args) {
   const plan = args.table
     ? buildRenamePlanFromTable(files, args.table)
     : buildRenamePlan(files);
-  // Retitle entries only apply to files this run actually renames.
+  // Retitle entries only apply to files this run actually renames — which
+  // also confines them to the vault: every value in `fileMap` came through
+  // the planner's `..`-rejection, so a hand-written `retitle` path pointing
+  // outside (or at a file this run never touched) simply never matches.
   const newPathsLower = new Set([...plan.fileMap.values()].map((p) => p.toLowerCase()));
-  const retitles = (args.retitle ?? []).filter((r) => newPathsLower.has(r.path.toLowerCase()));
+  const retitles = (args.retitle ?? []).filter((r) =>
+    newPathsLower.has(String(r?.path ?? '').replace(/\\/g, '/').toLowerCase()),
+  );
+  const retitled = [];
 
   const fileOps = plan.renameOps.filter((r) => !r.isDir);
   const dirOps = plan.renameOps.filter((r) => r.isDir);
@@ -238,6 +251,23 @@ function processVault(vaultAbs, args) {
     for (const d of plan.ambiguityDetail ?? []) {
       console.log(`   [[${d.stem}]] — ${d.reason}`);
       for (const c of d.conflicting.slice(0, 5)) console.log(`      also: ${c}`);
+    }
+  }
+
+  // Pre-flight against the real filesystem. The planner reasons over a list of
+  // FILES, so anything that isn't a file is invisible to it — notably an EMPTY
+  // directory (or one holding only dot-dirs) sitting at a destination. That
+  // slips through planning and then throws EPERM in the middle of the apply.
+  // Checking the destinations on disk is three lines and turns a partial apply
+  // into a clean refusal.
+  for (const op of plan.renameOps) {
+    const targetAbs = path.join(vaultAbs, ...op.newPath.split('/'));
+    if (fs.existsSync(targetAbs)) {
+      (plan.collisions ??= []).push({
+        oldPath: op.oldPath,
+        newPath: op.newPath,
+        reason: 'target exists on disk but not in the scanned file list (empty directory?) — refusing',
+      });
     }
   }
 
@@ -324,42 +354,23 @@ function processVault(vaultAbs, args) {
     fs.copyFileSync(path.join(vaultAbs, rel), dest);
   }
 
-  for (const e of edits) {
-    fs.writeFileSync(path.join(vaultAbs, e.relPath), e.newContent, 'utf8');
-  }
-
-  for (const op of orderRenameOps(plan.renameOps)) {
-    const oldAbs = path.join(vaultAbs, op.oldPath);
-    const newBasename = op.newPath.split('/').pop();
-    const targetAbs = path.join(path.dirname(oldAbs), newBasename);
-    fs.renameSync(oldAbs, targetAbs);
-  }
-
-  // Post-rename retitle: the scaffold's own H1/`title:` still names the old
-  // object. Runs on the NEW path, so it has to come after the renames. The
-  // original bytes are already in the backup (the file was renamed).
-  const retitled = [];
-  for (const r of retitles) {
-    const abs = path.join(vaultAbs, r.path);
-    if (!fs.existsSync(abs)) continue;
-    const res = retitleScaffold(fs.readFileSync(abs, 'utf8'), r.words);
-    if (res.changed) {
-      fs.writeFileSync(abs, res.content, 'utf8');
-      retitled.push({ relPath: r.path, edits: res.edits });
-    }
-  }
-
+  // The manifest is written BEFORE anything is mutated. A rename can fail
+  // mid-way (EBUSY/EPERM — Obsidian holding a file is entirely plausible
+  // across 24 vaults) or the process can simply be killed, and without the
+  // manifest already on disk the operator is left with a half-migrated vault,
+  // no record of what was attempted, and no pointer to the backup.
+  const manifestPath = path.join(backupDir, 'manifest.json');
   fs.writeFileSync(
-    path.join(backupDir, 'manifest.json'),
+    manifestPath,
     JSON.stringify(
       {
         vault: vaultAbs,
         timestamp: ts,
+        status: 'planned',
         mode: args.table ? 'table' : 'charset',
         preset: args.preset ?? null,
         preserveDisplay: args.preserveDisplay,
         renames: plan.renameOps,
-        retitled,
         editedFiles: edits.map((e) => ({ relPath: e.relPath, linkEdits: e.edits })),
         collisionsResolved: plan.collisionsResolved,
         ambiguousStems: plan.ambiguousStems,
@@ -369,6 +380,59 @@ function processVault(vaultAbs, args) {
     ),
     'utf8',
   );
+
+  // Both outcomes AMEND that record — read, merge, write back. Deliberately
+  // not a fresh write: if the pre-mutation manifest is missing, the ordering
+  // guarantee above has been broken, and silently creating one here would hide
+  // exactly the bug this ordering exists to prevent. It also keeps the two
+  // paths honest — a `status` can only ever describe a run that was recorded
+  // before it started.
+  const amendManifest = (status, extra = {}) => {
+    const base = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...base, status, ...extra }, null, 2), 'utf8');
+  };
+
+  try {
+    for (const e of edits) {
+      fs.writeFileSync(path.join(vaultAbs, e.relPath), e.newContent, 'utf8');
+    }
+
+    // Rename within the entry's OWN parent directory, by basename. This is
+    // required in charset mode: files are renamed while their ancestors still
+    // carry old names, so a full-path join would miss. Table mode can't reach
+    // here with a different parent — `buildRenamePlanFromTable` refuses a
+    // cross-directory entry as a collision (a `newPath` in another directory
+    // would silently land the file next to the original while links and the
+    // manifest recorded the intended destination, and verification would
+    // still pass).
+    for (const op of orderRenameOps(plan.renameOps)) {
+      const oldAbs = path.join(vaultAbs, op.oldPath);
+      const newBasename = op.newPath.split('/').pop();
+      const targetAbs = path.join(path.dirname(oldAbs), newBasename);
+      fs.renameSync(oldAbs, targetAbs);
+    }
+
+    // Post-rename retitle: the scaffold's own H1/`title:` still names the old
+    // object. Runs on the NEW path, so it has to come after the renames. The
+    // original bytes are already in the backup (the file was renamed).
+    for (const r of retitles) {
+      const abs = path.join(vaultAbs, r.path);
+      if (!fs.existsSync(abs)) continue;
+      const res = retitleScaffold(fs.readFileSync(abs, 'utf8'), r.words);
+      if (res.changed) {
+        fs.writeFileSync(abs, res.content, 'utf8');
+        retitled.push({ relPath: r.path, edits: res.edits });
+      }
+    }
+  } catch (err) {
+    // Point at the backup before rethrowing — the driver only prints the
+    // message, and a half-applied vault is exactly when the operator needs
+    // that path.
+    const detail = String(err && err.message ? err.message : err);
+    amendManifest('failed', { retitled, error: detail });
+    throw new Error(`${detail} — partial apply; backup + manifest: ${backupDir}`);
+  }
+  amendManifest('applied', { retitled });
 
   // -------------------------------------------------------------------------
   // Verify

@@ -173,8 +173,14 @@ export function resolveVaultBySlug(cfg, slug) {
  * accepted as a fallback. Unlike v0.12.0 this one is NOT a clean break:
  * the plugin updates independently of the vaults it reads, and a failed
  * probe silently disables every workspace-bound hook — the most expensive
- * possible failure mode for a rename. `context.legacyScaffold` carries the
- * old path so callers can surface `scaffoldMigrationHint()`.
+ * possible failure mode for a rename.
+ *
+ * `context.legacyScaffold` reports which name the CATALOG was found under —
+ * informational, for diagnostics and for callers that only care about vault
+ * detection. It says nothing about the JOURNAL: the two slots can disagree on
+ * a half-migrated vault, so a caller that names the journal must resolve that
+ * slot itself (`resolveScaffold(vaultPath, 'journal', …)`) rather than infer
+ * it from this field.
  */
 export function detectVaultContext(cwd, cfg) {
   // Mode 1: cwd is the vault itself

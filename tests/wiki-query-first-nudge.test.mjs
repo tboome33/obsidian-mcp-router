@@ -153,6 +153,63 @@ describe('wiki-query-first-nudge — silent (no nudge) cases', () => {
 // Inject cases — exit 0 + JSON additionalContext
 // ---------------------------------------------------------------------------
 
+describe('wiki-query-first-nudge — scaffold names cited per slot (v0.58.0)', () => {
+  // The nudge is an INSTRUCTION channel: the read-compat layer keeps the CODE
+  // working on an un-migrated vault, but if the text names the current file
+  // unconditionally it tells Claude to read a path that 404s there.
+  //
+  // Each slot must be probed SEPARATELY. Deriving the journal's name from the
+  // catalog's (which is the only file vault DETECTION looks at) breaks both
+  // mixed states — the case codex caught in review+ pass 2.
+  function vaultWith(basenames) {
+    const vp = fs.mkdtempSync(path.join(workDir, 'slots-'));
+    fs.mkdirSync(path.join(vp, 'wiki-meta'), { recursive: true });
+    for (const b of basenames) fs.writeFileSync(path.join(vp, 'wiki-meta', b), `# ${b}\n`);
+    return vp;
+  }
+  const contextOf = (cwd) => {
+    const r = runHook({ prompt: 'Comment est organisée la persistance des sessions dans ce projet ?', cwd });
+    assert.equal(r.status, 0, r.stderr);
+    return r.parsed?.hookSpecificOutput?.additionalContext || '';
+  };
+
+  test('fully migrated vault cites both current names and no migration hint', () => {
+    const ctx = contextOf(vaultWith(['catalog.md', 'journal.md']));
+    assert.match(ctx, /wiki-meta\/catalog\.md/);
+    assert.match(ctx, /wiki-meta\/journal\.md/);
+    assert.doesNotMatch(ctx, /wiki-meta\/index\.md/);
+    assert.doesNotMatch(ctx, /wiki-meta\/log\.md/);
+    assert.doesNotMatch(ctx, /OKF réserve|uses the pre-0\.58\.0 name/);
+  });
+
+  test('fully un-migrated vault cites both legacy names and warns', () => {
+    const ctx = contextOf(vaultWith(['index.md', 'log.md']));
+    assert.match(ctx, /wiki-meta\/index\.md/);
+    assert.match(ctx, /wiki-meta\/log\.md/);
+    assert.match(ctx, /uses the pre-0\.58\.0 name/);
+    assert.match(ctx, /--preset okf-reserved-scaffolds/);
+  });
+
+  test('MIXED: catalog migrated, journal not → each slot keeps its own name', () => {
+    const ctx = contextOf(vaultWith(['catalog.md', 'log.md']));
+    assert.match(ctx, /wiki-meta\/catalog\.md/, 'the migrated catalog must be cited by its new name');
+    assert.match(ctx, /wiki-meta\/log\.md/, 'the un-migrated journal must be cited by its old name');
+    // `journal.md` may still appear — as the RENAME TARGET inside the hint.
+    // What must not happen is the entry-point list telling the reader to open it.
+    assert.doesNotMatch(ctx, /• `wiki-meta\/journal\.md`/, 'the entry-point list must NOT cite a journal that does not exist');
+    assert.match(ctx, /• `wiki-meta\/log\.md`/, 'the entry-point list must cite the journal the vault actually has');
+    assert.match(ctx, /uses the pre-0\.58\.0 name/, 'the stale slot must still be flagged');
+  });
+
+  test('MIXED the other way: journal migrated, catalog not', () => {
+    const ctx = contextOf(vaultWith(['index.md', 'journal.md']));
+    assert.match(ctx, /wiki-meta\/index\.md/, 'the un-migrated catalog keeps its old name');
+    assert.match(ctx, /wiki-meta\/journal\.md/, 'the migrated journal keeps its new name');
+    assert.doesNotMatch(ctx, /• `wiki-meta\/log\.md`/, 'the entry-point list must NOT cite a log that does not exist');
+    assert.match(ctx, /• `wiki-meta\/journal\.md`/, 'the entry-point list must cite the journal the vault actually has');
+  });
+});
+
 describe('wiki-query-first-nudge — inject (nudge) cases', () => {
   test('vault cwd + substantive question → injects additionalContext', () => {
     const r = runHook({

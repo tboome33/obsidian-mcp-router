@@ -46,7 +46,23 @@ A vault still on the old names keeps working and `scaffoldMigrationHint()` names
 node scripts/okf-safe-rename-vault.mjs --preset okf-reserved-scaffolds --all-vaults --apply
 ```
 
-Suite: **2581/2581** (+62: 21 for the naming/compat layer, 26 for table mode + no-alias + retitle, 15 end-to-end CLI).
+### Hardened in review (`/review+`, 3 passes, 2 reviewers)
+
+Table mode is a new public surface, and the review found real ways to lose a file through it. All reproduced by execution before fixing, and each fix mutation-tested — the guard was deleted to confirm a test actually fails without it.
+
+- **A cross-directory `--table` entry half-applied, and reported `VERIFY ✅`.** *Found independently by both reviewers.* The apply renames by basename inside the entry's own parent — required in charset mode, where ancestors still carry old names — so a `newPath` in another directory landed the file next to the original while links and the manifest recorded the destination. Verification passed because file count was stable and the old path was gone. Now refused at planning time: table entries rename in place or not at all.
+- **A chain or swap (`a→b, b→c`) destroyed a file.** Treating a target as free because the table vacates it makes the plan look clean, but renames execute in table order with no topological sort, so `a→b` overwrote `b` before `b→c` could read it — two files in, one file out, caught only afterwards by the file-count check. Refused, like the cross-directory case: freeing a reserved basename never chains.
+- **`scaffoldWikiMeta` could hide a user's real catalogue.** On a vault still using the old names it tested only the *current* name, created an empty `catalog.md` from the template beside the real `index.md` — and because every reader tries the current name first, the actual catalogue went silently invisible. It now resolves both names before creating, preserves the legacy file, and prints the migration command.
+- **An empty directory squatting a destination** was invisible to a planner that reasons over a file list, and threw EPERM mid-apply. The CLI now pre-flights destinations against the real filesystem.
+- **A `..` in a table entry could write outside the vault** (via the retitle step, which was only validated by membership in the plan). Rejected in the planner; retitle paths are confined to the plan's own outputs.
+- **A rejected entry still counted as vacating its source**, letting a later entry be planned on top of a file that was in fact still there.
+- **The manifest now lands before any mutation** and both outcomes *amend* it rather than writing a fresh one — so a `status` can only ever describe a run that was recorded before it started, and an interrupted apply leaves a `failed` record naming the backup instead of a silent half-migrated vault.
+- **The migration hint was exported but never called.** It is now surfaced by the scaffolder and by `wiki-query-first-nudge` — which matters because the nudge is an *instruction* channel: the read-compat layer keeps the code working on an un-migrated vault, but the text was telling Claude to open a path that 404s there. Each scaffold slot is resolved **separately**: the catalog and journal can disagree on a half-migrated vault, and deriving one from the other broke both mixed states (caught by codex on the fix itself).
+- Also: `retitleScaffold` no longer lets a `#` comment in the frontmatter consume the first-H1 slot, and preserves CRLF; the fixtures for the session journal moved to the current name (the branch every real SessionEnd now takes had zero coverage) with a dedicated legacy test; a value-taking CLI flag in last position prints usage instead of a stack trace.
+
+Left alone deliberately: the `type:` frontmatter of the two scaffolds (`index` / `wiki-index` depending on which template tree bootstrapped the vault). It is pre-existing, inert — no consumer matches on it, they all address the catalogue by path — and picking one value is a separate call.
+
+Suite: **2600/2600** (+81: 21 for the naming/compat layer, 40 for table mode + no-alias + retitle + the review regressions, 20 end-to-end CLI).
 
 ## [0.57.0] — 2026-07-29 — OKF-safe names at rest: fleet migration tooling + ingestion guard
 
