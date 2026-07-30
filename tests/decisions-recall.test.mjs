@@ -293,6 +293,29 @@ describe('robustness of the reader (review+ findings)', () => {
     assert.deepEqual(fm.tags, ['a']);
   });
 
+  test('a backed-up decision copy under a dot-dir is NEVER recalled', () => {
+    // Observed 2026-07-30: the okf-safe-rename fleet pass left
+    // `.okf-rename-backup/<ts>/` folders holding verbatim copies of decision
+    // pages, and the recall surfaced them as DUPLICATES of the live page.
+    // The walker now skips every dot-dir generically (Obsidian semantics,
+    // aligned with resolve-vault-path.mjs) — a nominative list rots.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dec-backup-'));
+    const page = '---\ntype: decision\nstatus: accepted\ntitle: Décision vivante\n---\n\n# X\n';
+    fs.mkdirSync(path.join(dir, 'wiki', 'decisions'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'wiki', 'decisions', 'la-vraie.md'), page);
+    const bk = path.join(dir, '.okf-rename-backup', '2026-07-30-00-09-51', 'wiki', 'decisions');
+    fs.mkdirSync(bk, { recursive: true });
+    fs.writeFileSync(path.join(bk, 'la-vraie.md'), page); // verbatim copy
+    const dot = path.join(dir, '.n-importe-quel-dot-dir');
+    fs.mkdirSync(dot, { recursive: true });
+    fs.writeFileSync(path.join(dot, 'cachee.md'), page); // generic dot rule, not just the named dir
+
+    const found = collectDecisions(dir).decisions;
+    assert.equal(found.length, 1, 'exactly the live page, no backup duplicate');
+    assert.equal(found[0].path, 'wiki/decisions/la-vraie.md');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('a frontmatter larger than headBytes is still found', () => {
     // The real trigger: long evidence/affects/aliases lists.
     const filler = Array.from({ length: 300 }, (_, i) => `  - "[[source-${i}]]"`).join('\n');

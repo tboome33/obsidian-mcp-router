@@ -79,7 +79,15 @@ function rank(entry) {
   return 1;
 }
 
-/** Directories never worth walking, compared case-insensitively. */
+/**
+ * Directories never worth walking, compared case-insensitively. Dot-dirs are
+ * ALSO skipped generically in `walk()` (aligned with resolve-vault-path.mjs
+ * and Obsidian, which ignores dot-folders entirely) — the named dot entries
+ * below are kept as documentation of the known offenders. The generic rule
+ * exists because a nominative list rots: `.okf-rename-backup/` (the
+ * 2026-07-30 catalog/journal migration backups, verbatim copies of decision
+ * pages) was recalled as a DUPLICATE of the live page until this skip.
+ */
 const SKIP_DIRS = new Set([
   '.obsidian', '.git', 'node_modules', '.trash', '.smart-env', '.claudian',
   'sessions', '_migrated',
@@ -333,7 +341,8 @@ export function collectDecisions(vaultPath, options = {}) {
     for (const entry of entries) {
       if (outOfBudget()) return;
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name.toLowerCase())) continue;
+        // Generic dot-dir skip first (Obsidian semantics), then the named set.
+        if (entry.name.startsWith('.') || SKIP_DIRS.has(entry.name.toLowerCase())) continue;
         walk(path.join(dir, entry.name));
         continue;
       }

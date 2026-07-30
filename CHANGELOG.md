@@ -6,6 +6,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.58.1] — 2026-07-30 — migration backups no longer leak into recall, graph, lint or export
+
+The v0.58.0 fleet pass left a `.okf-rename-backup/<timestamp>/` folder in every migrated vault, holding **verbatim copies** of real pages (that is the point — they make the rename reversible). Obsidian and its REST API ignore dot-folders, but everything in this repo that walks a vault on the filesystem saw them: the `decisions-recall` hook surfaced a backed-up decision page as a **duplicate** of the live one (observed same-day on the KIVIRI vault), and the wiki-ignore defaults let the graph/lint/export enumerate every backed-up `.md` as a duplicate article.
+
+### Fixed
+
+- **`decisions-recall` walker skips every dot-directory generically** (Obsidian semantics, aligned with `resolve-vault-path.mjs`), on top of the named `SKIP_DIRS` set — a nominative list rots; `.okf-rename-backup/` proved it. Regression test: a verbatim decision copy under `.okf-rename-backup/<ts>/` AND under an arbitrary dot-dir is never recalled.
+- **`.okf-rename-backup/` added to `DEFAULT_WIKIIGNORE_PATTERNS`** so the graph build, lint and exports stop enumerating backup copies. Covered by a default-patterns test.
+
+Not touched, verified already safe: `resolve-vault-path.mjs` (click-to-open unique-basename resolution) already skips all dot-dirs — no ambiguity/409 risk from backups; the `search`/`search_smart` tools go through Obsidian's REST API, which never sees dot-folders.
+
+Suite: **2583/2583** (+2).
+
 ## [0.58.0] — 2026-07-30 — the private scaffolds vacate the basenames OKF reserves: `index`→`catalog`, `log`→`journal`
 
 Roland's 2026-07-30 decision, volet ① of three (vault note `decisions/catalog-journal-et-projections-okf`). OKF **reserves** two basenames — `index.md` (per-directory table of contents) and `log.md` (newest-first content history) — and the next lot adds conformant files under those exact names inside `wiki/`. Our private `wiki-meta/` scaffolds were sitting on both, doing a different job under the same name:
