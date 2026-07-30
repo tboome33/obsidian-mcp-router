@@ -6,6 +6,17 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.59.1] — 2026-07-30 — projections hardened in review (2 reviewers, convergent)
+
+The `/review+` pass on v0.59.0 — codex + Claude Code Reviewer, run independently — converged on one real fail-open path and surfaced a link-hijack vector. Every fix is pinned by a test.
+
+- **Read failures now fail CLOSED, both directions** (found by both reviewers): a content page that failed to read would have silently dropped its entries from every index and the log; an unreadable file AT a projection path would have been absent from the diff base, so the planner would treat the path as free — and if that unreadable file was an unmarked hand-written page, the write would have destroyed exactly what the conflict rule protects. A transient REST failure now means "no refresh", never "wrong refresh" — same policy as the truncated-enumeration refusal.
+- **Hostile titles can no longer hijack generated links**: a frontmatter `title: "Fin](http://evil) - x"` closed the markdown bracket early inside the §6/§7 entries — plausible vector, `wiki-ingest` derives titles from web pages. Square brackets are neutralised to parens in `indexEntryLine` (shared with the export bundle, which had the same latent hole) and in the log entries; multi-line titles collapse to one line.
+- The middleware's `requireInitialized` gate no longer conflates a true 404 with an offline/unauthorized vault — only `not_found` reads as "never opted in"; anything else surfaces through the scheduler's error log instead of a perfectly silent skip. Middleware refreshes that actually write also leave a one-line stderr trace (they bypass the tool layer, hence the audit trail).
+- The llms.txt exporter's projection exclusion turned out to predate the feature (`index`/`log` basenames never bucketed) — the redundant new filter was removed and the guarantee pinned by test instead.
+
+Suite: **2652/2652** (+52).
+
 ## [0.59.0] — 2026-07-30 — OKF projections: the wiki carries its own generated navigation (volet ②)
 
 Volet ② of Roland's 2026-07-30 decision (volet ① — the `catalog`/`journal` rename that freed the reserved basenames — shipped in v0.58.0). `wiki/` now carries the three files OKF reserves, as **generated projections** of the tree's frontmatter:
@@ -33,14 +44,8 @@ They are **projections**: pure functions of `title`/`description`/`type`/dates, 
 - **Skills file by SUBJECT first, type second** (Roland, 2026-07-30: flat type-buckets make human re-reading hard). `wiki-ingest`, `save` and the batch ingest agent now create `wiki/<sujet>/` as soon as 2-3 pages share a subject and regroup strays with `move_file` — safe, since wikilinks resolve by basename — and every directory gets its generated `index.md` landing page for human browsing. Projections and `wiki-meta/` are never moved.
 - Counts: **43 MCP tools · 48 commands · 12 write tools**.
 
-### Hardened in review (2 reviewers, convergent)
+Suite at feature freeze: **2647/2647** (+47); the review hardening below (v0.59.1) brings it to 2652.
 
-- **Read failures now fail CLOSED, both directions** (found by both reviewers): a content page that failed to read would have silently dropped its entries from every index and the log; an unreadable file AT a projection path would have been absent from the diff base, so the planner would treat the path as free — and if that unreadable file was an unmarked hand-written page, the write would have destroyed exactly what the conflict rule protects. A transient REST failure now means "no refresh", never "wrong refresh" — same policy as the truncated-enumeration refusal.
-- **Hostile titles can no longer hijack generated links**: a frontmatter `title: "Fin](http://evil) - x"` closed the markdown bracket early inside the §6/§7 entries — plausible vector, `wiki-ingest` derives titles from web pages. Square brackets are neutralised to parens in `indexEntryLine` (shared with the export bundle, which had the same latent hole) and in the log entries; multi-line titles collapse to one line.
-- The middleware's `requireInitialized` gate no longer conflates a true 404 with an offline/unauthorized vault — only `not_found` reads as "never opted in"; anything else surfaces through the scheduler's error log instead of a perfectly silent skip. Middleware refreshes that actually write also leave a one-line stderr trace (they bypass the tool layer, hence the audit trail).
-- The llms.txt exporter's projection exclusion turned out to predate the feature (`index`/`log` basenames never bucketed) — the redundant new filter was removed and the guarantee pinned by test instead.
-
-Suite: **2652/2652** (+52).
 
 ## [0.58.0] — 2026-07-30 — the private scaffolds vacate the basenames OKF reserves: `index`→`catalog`, `log`→`journal`
 
