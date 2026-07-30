@@ -185,6 +185,8 @@ source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 
 **Fallback**: if the source is a local file or pasted text (no metadata block), infer title and structural fields from the content as before. The `published` / `lang` / `image` / `site` fields are omitted from the frontmatter when no signal exists (do NOT emit `null` or empty string — just leave the line out).
 
+**`description` is the exception to that omission rule — it is MANDATORY on every page you create**, source pages and spawned entity/concept pages alike (see "One-line summary" in the vault `CLAUDE.md`). When `metadata.description` exists, use it. When it doesn't — pasted text, a local file, or a concept page you spawned — **write one yourself**: one plain sentence, no markdown, no `[[wikilinks]]`, saying what the page says rather than what it is about. This is the line the OKF directory indexes publish, and nothing downstream will fill it in: the at-rest projections leave the entry as a bare title and report the gap, on purpose, so it never gets papered over with a machine-written sentence.
+
 The source page itself is `extracted` — the body is a faithful summary/quote of an external document. For entity/concept pages spawned from this source (step 5), the provenance varies — use `inferred` when Claude derived the page from cues in the source, `claude_synthesized` when the page is pure synthesis with no direct textual basis. When in doubt, prefer the more conservative tag (`claude_synthesized` over `inferred`, `inferred` over `extracted`).
 
 Body structure (heading hierarchy is MANDATORY — see vault `CLAUDE.md` section "Note structure"):

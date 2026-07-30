@@ -56,6 +56,8 @@ A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve 
 #### Check D: frontmatter gaps
 Every wiki page should have `type:` set. Sources should have `url:` (or `path:`) and `ingested_at:`. Answers should have `question:` and `answered_at:`. Missing fields are warnings, not errors.
 
+**`description:` is checked here too (v0.59.2+)** — every page under `wiki/` must carry a one-sentence `description` (see "One-line summary" in the vault `CLAUDE.md`). It matters more than the other gaps because it is *published*: the OKF directory indexes render `* [Title](file.md) - description`, so a page without one appears in the vault's own navigation as a bare filename. Report each offender with its path so it can be fixed at the source — and do NOT offer to auto-fill it from the body, even in `--fix` mode. The at-rest projections deliberately refuse to synthesize descriptions; a lint that quietly does it instead would reintroduce exactly the machine-written sentences that refusal exists to keep out of the vault. `refresh_okf_projections` reports the same set in `missingDescription`, so the two agree.
+
 #### Check E: empty sections
 Pages with section headings followed by no body until the next heading. Surface them — they're usually placeholders that were forgotten.
 

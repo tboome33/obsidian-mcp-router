@@ -6,6 +6,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.59.3] — 2026-07-31 — `description` becomes part of the page contract
+
+v0.59.1 stopped the at-rest projections from inventing descriptions, and that exposed the real problem: **0 of the router vault's 134 pages carried a `description`**. Every OKF index entry had been a machine-written body sentence, so removing them left the indexes title-only. The synthesis was hiding a metadata gap rather than filling it. Roland's call: close the gap at the source.
+
+### Changed
+
+- **`description` is now mandatory on every wiki page**, documented in `templates/wiki/CLAUDE.md` next to `source_type`: what it is, why it lives in frontmatter rather than in a body lead, and how to write one — one plain sentence, no markdown, no wikilinks, ~100-180 chars, quoted, and **no backslashes**. That last rule is not cosmetic: the frontmatter reader is a line parser, not a full YAML engine, and does not unescape them — a Windows path in a double-quoted description read back double-escaped.
+- **`save` and `wiki-ingest` write it on every page they create.** `wiki-ingest` already emitted `description` for URL sources carrying metadata; it must now also write one for pasted text, local files, and spawned entity/concept pages — exactly the cases that were producing description-less pages.
+- **`wiki-lint` Check D reports pages without one**, and explicitly **must not** auto-fill it, even under `--fix`. A lint that quietly synthesized what the projections deliberately refuse to synthesize would reintroduce the machine-written sentences that refusal exists to keep out of the vault. It reports the same set as `refresh_okf_projections`'s `missingDescription`, so the two agree.
+
+### Vault
+
+- **All 134 pages of the router vault backfilled.** Each description was written from the page's own content — the author's lead sentence where one existed, the opening prose otherwise — never composed from a filename. Naive extraction was rejected first: 82 pages open with an `[!info]` callout or a language-switch line rather than a summary, so promoting "the first blockquote" would have published methodology notes and navigation boilerplate as descriptions.
+- Coverage was enforced **before** writing: the backfill refuses to run unless the description map matches the page set exactly, in both directions. A silent gap would have left the indexes half title-only — the very bug being fixed.
+- Originals backed up under `.description-backfill-backup/2026-07-31-descriptions/`. The vault is under git, but carried 462 unrelated uncommitted changes from concurrent sessions, so `git checkout` was not a clean rollback for this change alone.
+- Verified after: **0 conformance errors** across the 169 files of `wiki/`, **0 projection drift**, **0 pages missing a description**. The 103 remaining warnings are all `wikilink-syntax` on content pages — expected at rest, since wikilinks are converted at the export boundary.
 ## [0.59.2] — 2026-07-30 — projections hardened in review (2 reviewers, convergent)
 
 The `/review+` pass on v0.59.0 — codex + Claude Code Reviewer, run independently — converged on one real fail-open path and surfaced a link-hijack vector. Every fix is pinned by a test. (Numbered 0.59.2 because a concurrent session shipped its own 0.59.1 below; the two lines were merged for this release.)

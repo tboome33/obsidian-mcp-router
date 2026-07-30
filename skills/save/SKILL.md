@@ -72,6 +72,7 @@ If the wiki has a different convention (look at `wiki-meta/catalog.md` structure
 ---
 type: <inferred>
 title: "<human-readable title, ≤80 chars>"
+description: "<ONE sentence saying what the page concludes — see below>"
 slug: <slug>
 saved_at: <ISO>
 tags: [<inferred from content, 2-4 tags>]
@@ -80,6 +81,10 @@ related: []         # cross-references to existing wiki pages
 source_type: <see below>   # see "Source provenance" in vault CLAUDE.md
 ---
 ```
+
+**`description` is mandatory** (see "One-line summary" in the vault `CLAUDE.md`). It is the line the OKF directory indexes publish — `* [Title](file.md) - description` — so a page without one shows up in the vault's own navigation as a bare filename. Nothing downstream will invent it for you: the at-rest projections report the gap rather than synthesizing a sentence, precisely so the omission stays visible and fixable here.
+
+Write what the page **concludes**, not what it is about, in one plain sentence with no markdown and no `[[wikilinks]]` (it is a YAML scalar rendered inline): *"Décision : BM25 plutôt qu'un scorer à embeddings pour le filtre de pertinence"* — not *"Note sur le choix du scorer"*.
 
 Choose `source_type` based on what you're filing:
 
