@@ -23,6 +23,8 @@ import {
   planProjectionWrites,
 } from '../src/helpers/okf-projections.mjs';
 import { checkOkfConformance } from '../src/helpers/okf-conformance-checker.mjs';
+import { buildOkfBundle } from '../src/helpers/okf-bundle-exporter.mjs';
+import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
 
 const NOW = '2026-07-30';
 
@@ -164,10 +166,38 @@ describe('buildProjections', () => {
     assert.match(root.content, new RegExp(`^> ${PROJECTION_MARKER}`, 'm'));
   });
 
-  test('title falls back to basename, description synthesised from the body', () => {
-    const { files } = build([page('wiki/sans-titre.md', {}, 'Première phrase utile. Deuxième.')]);
+  test('title falls back to basename; a missing description is NEVER invented', () => {
+    // The exporter synthesizes from the body (Google's tooling refuses
+    // description-less documents). At rest that would write a sentence nobody
+    // authored into the vault — so the entry stays bare and the gap is
+    // reported. Roland's 2026-07-30 brief: « ne rien inventer ».
+    const { files, missingDescription } = build([
+      page('wiki/sans-titre.md', {}, 'Première phrase utile. Deuxième.'),
+    ]);
     const root = files.find((f) => f.path === 'wiki/index.md');
-    assert.match(root.content, /^\* \[sans-titre\]\(sans-titre\.md\) - Première phrase utile\.$/m);
+    assert.match(root.content, /^\* \[sans-titre\]\(sans-titre\.md\)$/m);
+    assert.ok(!root.content.includes('Première phrase utile'));
+    assert.deepEqual(missingDescription, ['wiki/sans-titre.md']);
+  });
+
+  test('an authored description is used verbatim', () => {
+    const { files, missingDescription } = build([
+      page('wiki/avec.md', { title: 'Avec', description: 'Vraie description.' }, 'Body sentence.'),
+    ]);
+    const root = files.find((f) => f.path === 'wiki/index.md');
+    assert.match(root.content, /^\* \[Avec\]\(avec\.md\) - Vraie description\.$/m);
+    assert.deepEqual(missingDescription, []);
+  });
+
+  test('missingDescription is order-independent', () => {
+    const pages = [
+      page('wiki/b.md', { title: 'B' }, 'body'),
+      page('wiki/a.md', { title: 'A' }, 'body'),
+    ];
+    assert.deepEqual(
+      build(pages).missingDescription,
+      build([...pages].reverse()).missingDescription,
+    );
   });
 });
 
@@ -247,5 +277,115 @@ describe('conformance round-trip', () => {
     );
     assert.deepEqual(result.errors ?? [], []);
     assert.deepEqual(result.warnings ?? [], [], JSON.stringify(result.warnings, null, 2));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Export reuse (v0.59.1) — the bundle ships the vault's own projections
+// ---------------------------------------------------------------------------
+
+describe('buildOkfBundle — at-rest projection reuse', () => {
+  const EXPORT_NOW = '2026-07-30T10:00:00+00:00';
+
+  /** Content pages as the exporter takes them: {path, content}. */
+  function contentPages(specs) {
+    return specs.map(({ path: p, fm, body = 'body' }) => ({
+      path: p,
+      content: `---\n${Object.entries(fm).map(([k, v]) => `${k}: ${v}`).join('\n')}\n---\n\n${body}`,
+    }));
+  }
+
+  /** The projections the vault would carry for those pages. */
+  function projectionsFor(pages) {
+    return buildProjections({
+      pages: pages.map((p) => {
+        const { frontmatter, body } = parseFrontmatter(p.content);
+        return { path: p.path, frontmatter, body };
+      }),
+      vaultName: 'Demo',
+      now: EXPORT_NOW,
+    }).files;
+  }
+
+  // All-lowercase paths, so slugification is the identity.
+  const LOWER = contentPages([
+    { path: 'wiki/guides/alpha.md', fm: { type: 'concept', title: 'Alpha', description: 'First.', created: '2026-07-01' } },
+    { path: 'wiki/root-note.md', fm: { type: 'note', title: 'Root', description: 'R.', created: '2026-07-05' } },
+  ]);
+
+  test('a whole-vault export ships the projections byte-for-byte', () => {
+    const proj = projectionsFor(LOWER);
+    const { files, report } = buildOkfBundle({
+      vaultName: 'Demo', pages: [...LOWER, ...proj], now: EXPORT_NOW,
+    });
+    assert.equal(report.projectionsReused, true);
+    assert.equal(report.projectionReuseSkipped, null);
+    for (const p of proj) {
+      const bundlePath = p.path.replace(/^wiki\//, '');
+      assert.equal(
+        files.find((f) => f.path === bundlePath).content, p.content,
+        `${bundlePath} must be the vault's own bytes`,
+      );
+    }
+  });
+
+  test('projections are never mangled into `index-page.md` (§3.1)', () => {
+    const { files, report } = buildOkfBundle({
+      vaultName: 'Demo', pages: [...LOWER, ...projectionsFor(LOWER)], now: EXPORT_NOW,
+    });
+    assert.ok(!files.some((f) => /index-page\.md$|log-page\.md$/.test(f.path)));
+    assert.deepEqual(report.renamed, []);
+  });
+
+  test('a page standing on a reserved basename is STILL renamed', () => {
+    // The projection split must not weaken §3.1 for real content.
+    const { files, report } = buildOkfBundle({
+      vaultName: 'Demo',
+      pages: contentPages([{ path: 'wiki/guides/index.md', fm: { type: 'note', title: 'Hand written' } }]),
+      now: EXPORT_NOW,
+    });
+    assert.ok(files.some((f) => f.path === 'guides/index-page.md'));
+    assert.equal(report.renamed.length, 1);
+  });
+
+  test('a FILTERED export regenerates instead of shipping stale navigation', () => {
+    const proj = projectionsFor(LOWER);
+    const { files, report } = buildOkfBundle({
+      vaultName: 'Demo', pages: [LOWER[0], ...proj], now: EXPORT_NOW,
+    });
+    assert.equal(report.projectionsReused, false);
+    assert.match(report.projectionReuseSkipped, /different page set/);
+    assert.ok(!files.find((f) => f.path === 'index.md').content.includes('root-note.md'));
+  });
+
+  test('an export that slugifies any path regenerates', () => {
+    // report.renamed does NOT record ordinary slugification, so gating on it
+    // would ship projections whose links name files the bundle lacks.
+    const pages = contentPages([
+      { path: 'wiki/Divers/note.md', fm: { type: 'note', title: 'N', description: 'd', created: '2026-07-01' } },
+    ]);
+    const { report } = buildOkfBundle({
+      vaultName: 'Demo', pages: [...pages, ...projectionsFor(pages)], now: EXPORT_NOW,
+    });
+    assert.equal(report.projectionsReused, false);
+    assert.match(report.projectionReuseSkipped, /slugification changed/);
+  });
+
+  test('with no projections supplied the exporter behaves exactly as before', () => {
+    const { files, report } = buildOkfBundle({
+      vaultName: 'Demo', pages: LOWER, now: EXPORT_NOW,
+    });
+    assert.equal(report.projectionsReused, false);
+    assert.equal(report.projectionReuseSkipped, null);
+    assert.match(files.find((f) => f.path === 'log.md').content, /\*\*Creation\*\*/);
+  });
+
+  test('a reused bundle is conformant with zero errors and zero warnings', () => {
+    const { files } = buildOkfBundle({
+      vaultName: 'Demo', pages: [...LOWER, ...projectionsFor(LOWER)], now: EXPORT_NOW,
+    });
+    const result = checkOkfConformance(files);
+    assert.equal(result.errors.length, 0, JSON.stringify(result.errors, null, 1));
+    assert.equal(result.warnings.length, 0, JSON.stringify(result.warnings, null, 1));
   });
 });

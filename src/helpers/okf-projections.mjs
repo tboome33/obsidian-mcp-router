@@ -20,7 +20,16 @@
  * Grammar: identical to the export bundle's, by construction — the §6 index
  * builder IS the exporter's (`buildDirectoryIndexes`), and the frontmatter
  * derivation IS `buildOkfFrontmatter`. What the exporter produces at the
- * boundary and what sits at rest can therefore never disagree.
+ * boundary and what sits at rest therefore agree on SHAPE.
+ *
+ * They diverge on exactly one point, deliberately: `description` synthesis.
+ * The exporter falls back to the body's first sentence when frontmatter has
+ * no `description`, because Google's reference implementation refuses
+ * documents without one. At rest that fallback would write a sentence nobody
+ * authored into the vault, where nothing marks it as machine-invented — so
+ * projections pass `synthesizeDescription: false`, leave the entry bare (§6
+ * allows `* [Title](file.md)`), and REPORT the gap via `missingDescription`
+ * so it can be fixed at the source instead of papered over.
  *
  * Every generated file carries a MARKER line (a blockquote — the one body
  * construct the conformance checker tolerates anywhere, so marked files still
@@ -108,16 +117,25 @@ function withMarker(content) {
  */
 export function buildProjections({ pages, vaultName, now }) {
   const documents = [];
+  const missingDescription = [];
   for (const page of pages ?? []) {
     const rel = String(page.path).replace(/\\/g, '/');
     if (!isWikiContentPath(rel)) continue;
     const inWiki = rel.replace(/^wiki\//, '');
     const basename = inWiki.split('/').pop().replace(/\.md$/i, '');
-    // Same derivation as the export bundle — discard its warnings here (the
-    // exporter surfaces them at export time; a nav refresh must be silent).
+    // Same derivation as the export bundle, with ONE deliberate divergence:
+    // `synthesizeDescription: false`. The exporter falls back to the body's
+    // first sentence because Google's tooling refuses description-less
+    // documents; at rest that would plant a sentence nobody wrote into the
+    // vault, where nothing distinguishes it from an authored one. Missing
+    // descriptions are reported to the caller instead — the entry degrades to
+    // the bare `* [Title](file.md)` form, which §6 allows.
+    const pageWarnings = [];
     const okfFrontmatter = buildOkfFrontmatter(
-      page.frontmatter ?? {}, page.body ?? '', basename, now, [],
+      page.frontmatter ?? {}, page.body ?? '', basename, now, pageWarnings,
+      { synthesizeDescription: false },
     );
+    if (pageWarnings.some((w) => w.includes('no `description`'))) missingDescription.push(rel);
     documents.push({ newPath: inWiki, okfFrontmatter, frontmatter: page.frontmatter ?? {} });
   }
 
@@ -173,7 +191,10 @@ export function buildProjections({ pages, vaultName, now }) {
   const logFile = { path: 'wiki/log.md', content: `${logLines.join('\n').trimEnd()}\n` };
 
   const files = [...indexFiles, logFile].sort((a, b) => a.path.localeCompare(b.path));
-  return { files };
+  // Sorted, not in page order: the whole return value is compared for
+  // byte-determinism, so an input-order-dependent array would make the same
+  // tree produce a different result depending on how the walker enumerated it.
+  return { files, missingDescription: missingDescription.sort() };
 }
 
 /**

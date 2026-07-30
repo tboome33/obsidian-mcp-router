@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.59.1] — 2026-07-30 — the projections stop inventing descriptions, and the export ships them
+
+Two corrections to v0.59.0, both against the written brief for volet ②.
+
+### Fixed
+
+- **At-rest projections no longer synthesize `description`.** v0.59.0 derived index entries with `buildOkfFrontmatter`, whose `description` falls back to the body's first sentence. That fallback is right at an **export** boundary — Google's reference implementation refuses documents without a description — but at rest it wrote sentences nobody authored into the vault, where nothing distinguishes them from real ones. `buildOkfFrontmatter` gains an opt-out (`{ synthesizeDescription: false }`, default unchanged so the exporter is untouched); projections pass it, leave the entry in the bare `* [Title](file.md)` form §6 allows, and **report** the gap through a new `missingDescription` array on `buildProjections` / `generateProjectionsOnDisk`. The brief was explicit: *« ne rien inventer : si `description` manque, le signaler en warning plutôt que de fabriquer une phrase »*. Regenerated on the router vault: **32 of 35 projections rewritten**, invented sentences gone.
+  - Consequence worth knowing: **0 of that vault's 134 content pages define a frontmatter `description`**, so its indexes are now title-only. The synthesis was hiding a metadata gap rather than filling it — the fix surfaces it where it can be repaired at the source.
+  - `missingDescription` is returned **sorted**, not in page order: the whole return value is compared for byte-determinism, so an enumeration-order-dependent array would make the same tree yield different results.
+
+- **`wiki-export --target okf` reuses the vault's projections instead of discarding them.** v0.59.0 filtered marked projections out of the page set and regenerated its own navigation. The bundle now **ships the vault's own bytes** when that is provably correct, so a whole-vault export is the filtered copy the decision aimed at. Two guards, both checked rather than assumed, because wrong reuse ships navigation that lies about the bundle:
+  - **every content path must survive slugification unchanged** — a projection's links are at-rest names. Gating on `report.renamed` would NOT catch this: that array records reserved-name and slug *collisions* only, never ordinary slugification, so `Ma Page.md` → `ma-page.md` would have slipped through and shipped an index pointing at files the bundle lacks under those names.
+  - **the projections must describe exactly this document set** — bidirectional entry match, not a path-set comparison. Whole-vault projections and a two-page filtered export can produce the *same index paths* while the root index still advertises pages the recipient never receives.
+  - When either fails the bundle is still correct, just freshly generated, and `report.projectionReuseSkipped` says why (`report.projectionsReused` carries the verdict).
+  - Note: reuse requires case-identical paths, so a vault with capitalised directories (`Divers/`) still regenerates — the exporter lowercases path segments. Reuse fires today only for all-lowercase trees.
+  - Projections are still never exported as concept documents: they are split out before path mapping, so §3.1 cannot rename them to `index-page.md` and duplicate the navigation. A **hand-written** page on a reserved basename is still renamed, as before.
+
+- 15 new tests (2641 → **2656**, all green), including the four reuse verdicts, the §3.1 non-regression, and an order-independence test for `missingDescription`.
 ## [0.59.0] — 2026-07-30 — OKF projections: the wiki carries its own generated navigation (volet ②)
 
 Volet ② of Roland's 2026-07-30 decision (volet ① — the `catalog`/`journal` rename that freed the reserved basenames — shipped in v0.58.0). `wiki/` now carries the three files OKF reserves, as **generated projections** of the tree's frontmatter:

@@ -69,7 +69,7 @@ export function generateProjectionsOnDisk(vaultPath, opts = {}) {
     }
   }
 
-  const { files } = buildProjections({ pages, vaultName, now });
+  const { files, missingDescription } = buildProjections({ pages, vaultName, now });
   const plan = planProjectionWrites({ generated: files, current });
 
   if (apply) {
@@ -88,6 +88,10 @@ export function generateProjectionsOnDisk(vaultPath, opts = {}) {
     deleted: plan.deletes,
     unchanged: plan.unchanged.length,
     conflicts: plan.conflicts,
+    // Pages whose index entry is a bare title because no `description` was
+    // authored. Surfaced rather than papered over with a synthesized
+    // sentence — fixing the frontmatter is the real remedy.
+    missingDescription,
     pagesScanned: pages.length,
     applied: apply,
   };

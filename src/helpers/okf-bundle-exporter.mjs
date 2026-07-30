@@ -543,7 +543,10 @@ function stripWikilinkBrackets(value) {
  * @param {string[]} warnings Mutated — human-readable warnings
  * @returns {Record<string, any>} Ordered OKF frontmatter object
  */
-export function buildOkfFrontmatter(frontmatter, body, basename, now, warnings = []) {
+export function buildOkfFrontmatter(
+  frontmatter, body, basename, now, warnings = [], opts = {},
+) {
+  const { synthesizeDescription = true } = opts;
   const out = {};
   let type = frontmatter.type;
   if (typeof type !== 'string' || !type.trim()) {
@@ -558,11 +561,25 @@ export function buildOkfFrontmatter(frontmatter, body, basename, now, warnings =
   out.title =
     (typeof frontmatter.title === 'string' && frontmatter.title.trim()) || basename;
 
-  const description =
-    (typeof frontmatter.description === 'string' && frontmatter.description.trim()) ||
-    firstSentenceOfBody(body) ||
-    out.title;
-  out.description = description;
+  // At an EXPORT boundary a missing description is synthesized from the body:
+  // Google's reference implementation refuses documents without one, so a
+  // best-effort sentence beats an unreadable bundle.
+  //
+  // AT REST that same fallback is a lie with a long half-life — a sentence
+  // nobody wrote, sitting in the vault, indistinguishable from an authored
+  // one. The projections therefore pass `synthesizeDescription: false` and
+  // report the gap instead (Roland's 2026-07-30 brief: « ne rien inventer :
+  // si `description` manque, le signaler en warning plutôt que de fabriquer
+  // une phrase »).
+  const authored =
+    (typeof frontmatter.description === 'string' && frontmatter.description.trim()) || '';
+  if (authored) {
+    out.description = authored;
+  } else if (synthesizeDescription) {
+    out.description = firstSentenceOfBody(body) || out.title;
+  } else {
+    warnings.push(`${basename}: no \`description\` in frontmatter — entry left bare, not invented`);
+  }
 
   if (Array.isArray(frontmatter.tags) && frontmatter.tags.length > 0) {
     out.tags = frontmatter.tags.map(String);
@@ -731,6 +748,43 @@ export function buildDirectoryIndexes({ documents, vaultName, summary }) {
 // Agent-facing README (optional, à la Cole Medin)
 // ---------------------------------------------------------------------------
 
+/**
+ * Do the supplied at-rest projections describe EXACTLY this document set?
+ *
+ * Comparing file paths is not enough: a whole-vault projection set and a
+ * two-page filtered export can yield the same index paths (`index.md` +
+ * `guides/index.md`) while the root index still lists pages the recipient
+ * never receives. So this walks the entries and demands a bidirectional
+ * match — every linked document is in the bundle, every bundled document is
+ * linked.
+ *
+ * Comparing regenerated CONTENT would be wrong here: at rest a missing
+ * `description` stays missing while the export synthesizes one, so the two
+ * texts legitimately differ for the same vault.
+ *
+ * @param {Array<{path: string, content: string}>} projections Vault-relative (`wiki/…`)
+ * @param {Array<{newPath: string}>} documents Bundle-relative
+ */
+function projectionsDescribeExactly(projections, documents) {
+  const docPaths = new Set(documents.map((d) => d.newPath));
+  const linked = new Set();
+  for (const proj of projections) {
+    const bundlePath = proj.path.replace(/^wiki\//, '');
+    if (!bundlePath.toLowerCase().endsWith('index.md')) continue;
+    const dir = bundlePath.slice(0, -'index.md'.length).replace(/\/$/, '');
+    const { body } = parseFrontmatter(proj.content);
+    for (const m of body.matchAll(/^\*\s+\[[^\]]*\]\(([^)]+)\)/gm)) {
+      const target = m[1].trim();
+      // A pointer to a child directory's index, not a document.
+      if (target.toLowerCase().endsWith('index.md')) continue;
+      linked.add(dir ? `${dir}/${target}` : target);
+    }
+  }
+  if (linked.size !== docPaths.size) return false;
+  for (const p of docPaths) if (!linked.has(p)) return false;
+  return true;
+}
+
 function buildAgentReadme({ vaultName, summary, documentCount }) {
   return `# ${vaultName} (OKF Bundle)
 
@@ -815,6 +869,9 @@ export function buildOkfBundle({
     embeds: [],
     ambiguousLinks: [],
     warnings: [],
+    // Did the bundle ship the vault's own at-rest projections (v0.59.1)?
+    projectionsReused: false,
+    projectionReuseSkipped: null,
   };
 
   // 1. Filter + deterministic order. Paths are normalized (backslashes,
@@ -828,18 +885,27 @@ export function buildOkfBundle({
     .map((p) => ({ ...p, path: p.path.replace(/\\/g, '/').replace(/^\.?\//, '') }))
     .filter((p) => p.path.endsWith('.md'))
     .filter((p) => !p.path.startsWith('wiki-meta/'))
-    // v0.59.0 — the at-rest OKF projections are the EXPORT's own output
-    // shape; exporting them as documents would collide with the reserved
-    // basenames and duplicate navigation. Marker-checked (imported lazily
-    // below to avoid a cycle: okf-projections imports from this module).
-    .filter((p) => !isAtRestProjection(p.path, p.content))
     .slice()
     .sort((a, b) => a.path.localeCompare(b.path));
+
+  // 1b. Split the at-rest projections out of the content set.
+  //
+  // They must never become concept documents: they stand on reserved
+  // basenames, so §3.1 would rename them to `index-page.md` and the bundle
+  // would ship its navigation twice, once mangled. Since v0.59.1 they are
+  // kept aside rather than discarded — step 4b ships them verbatim when it
+  // can prove they describe exactly this bundle.
+  const suppliedProjections = [];
+  const contentPages = [];
+  for (const p of exportable) {
+    if (isAtRestProjection(p.path, p.content)) suppliedProjections.push(p);
+    else contentPages.push(p);
+  }
 
   // 2. Path mapping: slugify + reserved-name & collision handling.
   const taken = new Set();
   const mappings = [];
-  for (const page of exportable) {
+  for (const page of contentPages) {
     let newPath = slugifyOkfPath(page.path);
     const parts = newPath.split('/');
     let basename = parts.pop();
@@ -891,23 +957,69 @@ export function buildOkfBundle({
 
   const files = documents.map((d) => ({ path: d.newPath, content: d.content }));
 
-  files.push(
-    ...buildDirectoryIndexes({ documents, vaultName, summary: resolvedSummary }),
-  );
-
-  const logDate = now.slice(0, 10);
-  files.push({
-    path: 'log.md',
-    content: [
-      '# Update Log',
-      '',
-      `## ${logDate}`,
-      `* **Creation**: Exported ${documents.length} document${
-        documents.length === 1 ? '' : 's'
-      } from the "${vaultName}" Obsidian vault by obsidian-mcp-router (wiki-export, OKF v${OKF_VERSION} target).`,
-      '',
-    ].join('\n'),
+  // 4b. Navigation: ship the vault's own projections when they provably fit
+  // this bundle, otherwise regenerate. Both conditions are CHECKED, never
+  // assumed, because a wrong reuse ships navigation that lies about the
+  // bundle's contents:
+  //
+  //   - every content page must keep its at-rest path through slugification.
+  //     A projection's links are at-rest names; if `Ma Page.md` became
+  //     `ma-page.md`, or a directory changed case, the index points at files
+  //     the bundle does not contain under those names. (Checking
+  //     `report.renamed` would NOT catch this — that array only records
+  //     reserved-name and slug COLLISIONS, not ordinary slugification.)
+  //   - the projections must describe exactly this document set. An export is
+  //     a FILTERED subset; whole-vault projections would advertise pages the
+  //     recipient never receives.
+  const generatedIndexes = buildDirectoryIndexes({
+    documents, vaultName, summary: resolvedSummary,
   });
+  const expectedPaths = [...generatedIndexes.map((f) => f.path), 'log.md'].sort();
+  // At-rest paths are vault-relative (`wiki/…`); bundle paths drop that
+  // prefix. Compare like with like.
+  const suppliedBundlePaths = suppliedProjections
+    .map((p) => p.path.replace(/^wiki\//, ''))
+    .sort();
+  const pathsPreserved = mappings.every((m) => m.newPath === m.path.replace(/^wiki\//, ''));
+
+  let reuseReason = null;
+  if (suppliedProjections.length === 0) reuseReason = 'none supplied';
+  else if (!pathsPreserved) {
+    reuseReason =
+      'slugification changed at least one page path on export — the projections\' links would point at at-rest names';
+  } else if (
+    expectedPaths.length !== suppliedBundlePaths.length ||
+    !expectedPaths.every((p, i) => p === suppliedBundlePaths[i])
+  ) {
+    reuseReason = 'the projections do not cover the same directories as this export';
+  } else if (!projectionsDescribeExactly(suppliedProjections, documents)) {
+    reuseReason = 'the projections describe a different page set than this export (filtered subset?)';
+  }
+
+  if (reuseReason === null) {
+    files.push(...suppliedProjections.map((p) => ({
+      path: p.path.replace(/^wiki\//, ''), content: p.content,
+    })));
+    report.projectionsReused = true;
+    report.projectionReuseSkipped = null;
+  } else {
+    files.push(...generatedIndexes);
+    const logDate = now.slice(0, 10);
+    files.push({
+      path: 'log.md',
+      content: [
+        '# Update Log',
+        '',
+        `## ${logDate}`,
+        `* **Creation**: Exported ${documents.length} document${
+          documents.length === 1 ? '' : 's'
+        } from the "${vaultName}" Obsidian vault by obsidian-mcp-router (wiki-export, OKF v${OKF_VERSION} target).`,
+        '',
+      ].join('\n'),
+    });
+    report.projectionsReused = false;
+    report.projectionReuseSkipped = suppliedProjections.length > 0 ? reuseReason : null;
+  }
 
   if (includeAgentReadme) {
     files.push({
