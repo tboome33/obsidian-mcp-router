@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.56.1 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (47 slash commands · 42 outils MCP · 44 skills)<br>
+  <div class="meta">v0.58.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (47 slash commands · 42 outils MCP · 44 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -242,7 +242,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
-    <td>Multi-tenant : piste d'audit — chaque écriture réussie ajoute une ligne attribuée au <code>wiki-meta/log.md</code> du vault touché. Masque aussi les outils local-only <code>plan_vault</code> + <code>provision_vault</code> (déploiements gated/multi-tenant).</td>
+    <td>Multi-tenant : piste d'audit — chaque écriture réussie ajoute une ligne attribuée au <code>wiki-meta/journal.md</code> du vault touché. Masque aussi les outils local-only <code>plan_vault</code> + <code>provision_vault</code> (déploiements gated/multi-tenant).</td>
   </tr>
   <tr>
     <td>VAULT_&lt;NOM&gt;</td>
@@ -282,8 +282,8 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
     <td>Consigne wiki du vault — chargée en contexte par Claude Code. Contient la consigne d'auto-enrichissement (4 modes) + les conventions installées.</td>
   </tr>
   <tr>
-    <td>&lt;vault&gt;/wiki-meta/{index,log,hot,overview}.md</td>
-    <td>Scaffolds du LLM-wiki façon Karpathy (catalogue, journal append-only, cache chaud, vue d'ensemble) — sous <code>wiki-meta/</code> depuis v0.12 (les pages utilisateur vivent sous <code>wiki/</code>). Scaffoldés par <code>/obsidian-router:wiki</code>.</td>
+    <td>&lt;vault&gt;/wiki-meta/{catalog,journal,hot,overview}.md</td>
+    <td>Scaffolds du LLM-wiki façon Karpathy (catalogue, journal append-only, cache chaud, vue d'ensemble) — sous <code>wiki-meta/</code> depuis v0.12 (les pages utilisateur vivent sous <code>wiki/</code>). Renommés <code>index→catalog</code> / <code>log→journal</code> en v0.58 car OKF réserve ces deux basenames ; les anciens noms restent lus. Scaffoldés par <code>/obsidian-router:wiki</code>.</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/wiki-meta/Sessions/</td>

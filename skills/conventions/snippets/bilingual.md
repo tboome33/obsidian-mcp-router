@@ -39,12 +39,12 @@ frontmatter (include `language: [fr, en]` and `tags: [..., bilingual]`)
 
 For very short pages (entity stubs, single-fact captures), FR + EN can be inlined as parallel bullet lists or short paragraphs instead of two full sections. Use the two-section layout once content grows past one screen.
 
-### Navigation files (`index.md`, `hot.md`, `log.md`, `overview.md`)
+### Navigation files (`catalog.md`, `hot.md`, `journal.md`, `overview.md`)
 
 These don't need full two-section layout. Instead:
 - Frontmatter and structural section headers stay in English for stability.
 - Each entry's description line is bilingual: `FR description · EN description` or two short lines.
-- `log.md` entries use a bilingual summary: title in English (stable), one-line FR + EN body.
+- `journal.md` entries use a bilingual summary: title in English (stable), one-line FR + EN body.
 
 ### When the user writes only in one language
 

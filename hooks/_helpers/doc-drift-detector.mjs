@@ -8,7 +8,7 @@
  * Detects drift between the **repo's authoritative state**
  * (`package.json` version, `CHANGELOG.md` entries, files under tracked
  * artifact dirs `hooks/scripts/skills/commands/agents/templates/`) and
- * the **vault's wiki documentation pages** (`wiki-meta/index.md`,
+ * the **vault's wiki documentation pages** (`wiki-meta/catalog.md`,
  * `wiki/<project>/router-changelog.md`, `wiki/<project>/project-router.md`,
  * and the per-family catalog pages `router-{hooks,skills,commands,agents,
  * cheatsheet}.md`).
@@ -35,6 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { loadWorkspaceDotenv } from './workspace-vault.mjs';
+import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 
 // ---------------------------------------------------------------------------
 // Vault selection
@@ -281,8 +282,8 @@ export function listCatalogBasenames(repoCwd, dirName) {
  *
  * Early-returns with NO issues when the vault does not host
  * `wiki/<projectSlug>/` — i.e. it doesn't document this project, so it must
- * not be flagged (esp. by the index-version check, which keys on
- * `wiki-meta/index.md`, present in every router-scaffolded vault).
+ * not be flagged (esp. by the catalog-version check, which keys on
+ * `wiki-meta/catalog.md`, present in every router-scaffolded vault).
  *
  * Options:
  *   - cumulativeWindow: number — how many of the most recent CHANGELOG
@@ -307,7 +308,7 @@ export function detectDocDrift(repoCwd, vaultPath, opts = {}) {
   // -----------------------------------------------------------------
   // A vault is a drift target for this project only if it hosts the
   // project's wiki folder (`wiki/<projectSlug>/`). Without this gate the
-  // `index-version` check (#2) keys solely on `wiki-meta/index.md`, which
+  // `index-version` check (#2) keys solely on `wiki-meta/catalog.md`, which
   // EVERY router-scaffolded vault has (TradingView, smile, …) — so once the
   // real project vault is up to date, the SessionStart hook's
   // "first-candidate-with-drift" loop falls through and flags an unrelated
@@ -355,16 +356,19 @@ export function detectDocDrift(repoCwd, vaultPath, opts = {}) {
   }
 
   // -----------------------------------------------------------------
-  // 2) wiki-meta/index.md — does it mention the current version?
+  // 2) wiki-meta/catalog.md — does it mention the current version?
+  //    (`wiki-meta/index.md` on a vault not yet migrated to the 0.58.0
+  //    names — the check follows whichever file the vault actually has.)
   // -----------------------------------------------------------------
-  const indexPath = path.join(vaultPath, 'wiki-meta', 'index.md');
-  const indexContent = readSafe(indexPath);
+  const catalog = resolveScaffold(vaultPath, 'catalog', { fs, path });
+  const indexPath = catalog?.absPath ?? null;
+  const indexContent = indexPath ? readSafe(indexPath) : null;
   if (indexContent !== null) {
     if (!new RegExp(escRe('v' + currentVersion)).test(indexContent)) {
       issues.push({
         kind: 'index-version',
         severity: 'IMPORTANT',
-        message: `wiki-meta/index.md doesn't mention the current version v${currentVersion}.`,
+        message: `${catalog.relPath} doesn't mention the current version v${currentVersion}.`,
         fix: `Bump the "état actuel" and TOC counter lines in ${indexPath} to mention v${currentVersion} + any new artifact counts.`,
         target: indexPath,
       });

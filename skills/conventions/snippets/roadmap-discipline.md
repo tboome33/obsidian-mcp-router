@@ -18,7 +18,7 @@ Procédure obligatoire :
    - Phases en H2, items en checkbox `- [ ]`
    - Phases déjà livrées préfixées `✅ · livré <date> (v<version>)` au H2
    - Section finale "Ordre d'attaque recommandé" pointant la prochaine étape
-6. **Append au `wiki-meta/log.md`** : `## <date> — roadmap <projet> créée`.
+6. **Append au `wiki-meta/journal.md`** : `## <date> — roadmap <projet> créée`.
 
 ### 2. Quand du code/doc est shippé qui ferme un checkbox
 
@@ -28,7 +28,7 @@ Procédure obligatoire :
 2. **Update le header de phase** : ajouter `✅ · livré <YYYY-MM-DD> (v<X.Y.Z>)` au H2 si toute la phase est livrée.
 3. **Refresh `updated:`** dans le frontmatter.
 4. **Update "Ordre d'attaque recommandé"** si la prochaine étape change.
-5. **Append au `wiki-meta/log.md`** une ligne bilingue traçant l'update.
+5. **Append au `wiki-meta/journal.md`** une ligne bilingue traçant l'update.
 
 ### 2bis. Lisibilité — JAMAIS de strikethrough sur les items livrés
 

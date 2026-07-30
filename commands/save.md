@@ -14,6 +14,6 @@ Always:
 - Distill, don't dump the raw transcript.
 - Pick the right folder by type (`sessions/`, `answers/`, `decisions/`, `techniques/`, `ideas/`).
 - Cross-link to existing wiki pages mentioned in the conversation, AND update those pages with backlinks.
-- Update `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/hot.md`.
+- Update `wiki-meta/catalog.md`, `wiki-meta/journal.md`, `wiki-meta/hot.md`.
 
 Push back if the conversation has nothing worth saving — don't make junk pages.

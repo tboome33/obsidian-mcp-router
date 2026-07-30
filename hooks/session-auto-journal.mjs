@@ -6,7 +6,7 @@
  * session under `<vault>/wiki-meta/Sessions/` (v0.12.8+; was `wiki/Sessions/`
  * in v0.12.4–v0.12.7). Complements (does NOT replace) the manual `/save`
  * skill: this hook owns the chronological per-session journal AND the
- * auto-append of a 2-line summary to `wiki-meta/log.md` at SessionEnd;
+ * auto-append of a 2-line summary to `wiki-meta/journal.md` at SessionEnd;
  * `/save` owns polished, type-classified documents in `wiki/Decisions/`,
  * `wiki/Refs/`, `wiki/Answers/`, etc.
  *
@@ -29,7 +29,7 @@
  *                        `status: closed` + `ended-at` + `duration`,
  *                        prepend a heuristic recap section right after
  *                        frontmatter, and append a single 2-line entry
- *                        to `wiki-meta/log.md` with the format:
+ *                        to `wiki-meta/journal.md` with the format:
  *                          - YYYY-MM-DD HH:MM — session — [[<basename>]] — <obj>
  *                            → <result one-line>
  *                        Idempotent via basename grep. Delete state file.
@@ -92,6 +92,7 @@ import {
 } from './_helpers/workspace-vault.mjs';
 import { reconcileVaultSessions } from './_helpers/session-reconcile.mjs';
 import { isLoggedTool, isRouterWriteTool } from './_helpers/tool-names.mjs';
+import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 
 // Same truthy vocabulary as check-router-update.mjs and the other hooks.
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
@@ -591,20 +592,24 @@ function buildLogLineSummary(state, endedAt) {
   return { objective, result };
 }
 
-// v0.12.8: append a 2-line entry to <vault>/wiki-meta/log.md at SessionEnd.
+// v0.12.8: append a 2-line entry to <vault>/wiki-meta/journal.md at SessionEnd
+// (`wiki-meta/log.md` before v0.58.0 — still accepted, see
+// `wiki-meta-scaffolds.mjs`).
 // Format A (Karpathy-strict, validated 2026-05-24):
 //   - YYYY-MM-DD HH:MM — session — [[<basename>]] — <objectif>
 //     → <résultat one-line>
 //
 // Idempotent: if a line containing the journal basename already exists in
-// log.md, do nothing (prevents dup on accidental re-trigger of SessionEnd).
-// Silent skip if log.md is absent — the wiki scaffold (`wiki` skill) is
-// responsible for creating it, not this hook.
+// the journal, do nothing (prevents dup on accidental re-trigger of
+// SessionEnd). Silent skip when the journal is absent — the wiki scaffold
+// (`wiki` skill) is responsible for creating it, not this hook.
 function appendLogMdEntry(state, endedAt) {
-  const logPath = path.join(state.vaultPath, 'wiki-meta', 'log.md');
+  const resolved = resolveScaffold(state.vaultPath, 'journal', { fs, path });
+  if (!resolved) return; /* journal absent — silent skip */
+  const logPath = resolved.absPath;
   let existing;
   try { existing = fs.readFileSync(logPath, 'utf8'); }
-  catch { return; /* log.md absent — silent skip */ }
+  catch { return; /* unreadable — silent skip */ }
 
   // Basename (without .md) used as the wikilink target AND the dedup grep key.
   const basename = path.basename(state.journalPath, '.md');
@@ -655,7 +660,7 @@ function handleSessionEnd(payload) {
   // Frontmatter status: closed + ended-at + duration
   rewriteFrontmatter(state, endedAt);
 
-  // v0.12.8: append a single 2-line entry to wiki-meta/log.md.
+  // v0.12.8: append a single 2-line entry to wiki-meta/journal.md.
   // Idempotent + silent on missing log.md.
   appendLogMdEntry(state, endedAt);
 

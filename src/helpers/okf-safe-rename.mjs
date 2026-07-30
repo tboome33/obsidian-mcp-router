@@ -4,6 +4,15 @@
  * (`[A-Za-z0-9_][A-Za-z0-9_.\-]*` — no spaces, no accents), WITHOUT breaking
  * a single link.
  *
+ * Two planning modes share the whole rewrite/verify machinery downstream:
+ *   - CHARSET mode (`buildRenamePlan`) — every non-conformant name is
+ *     slugified. The original 2026-07-29 fleet migration.
+ *   - TABLE mode (`buildRenamePlanFromTable`) — an EXPLICIT list of
+ *     oldPath→newPath pairs, for renames a charset rule can never derive:
+ *     `wiki-meta/index.md` is perfectly OKF-safe, it just has to move out of
+ *     the way because OKF *reserves* the basename (Roland's 2026-07-30
+ *     `catalog`/`journal` decision). See `RENAME_PRESETS`.
+ *
  * Context (see vault note `wiki/Divers/okf/okf-interop.md` §4): the OKF v0.2
  * spec itself imposes NO filename charset — the constraint comes from
  * Google's tooling, and our exporter already slugifies at the boundary.
@@ -24,7 +33,12 @@
  *   - wikilinks and embeds `[[…]]` / `![[…]]` (basename-form and path-form,
  *     `#anchor` and `|alias` preserved). When a basename changes and the
  *     link had no alias (and is not an embed), the OLD target text becomes
- *     the alias so the rendered text the reader sees does not change.
+ *     the alias so the rendered text the reader sees does not change — unless
+ *     the caller opts out with `buildRewriteContext(plan, {preserveDisplay:
+ *     false})`, which rewrites the visible text too. Opting out is right when
+ *     the old display text is itself the problem: keeping `[[catalog|index]]`
+ *     next to a real OKF `index.md` would preserve exactly the ambiguity the
+ *     rename was meant to remove.
  *   - markdown links `](…)` whose (URL-decoded, `.`/`..`-resolved) target is
  *     a renamed file — rebuilt relative to the citing note's NEW path.
  *   - `.canvas` / `.base` files: exact old-path string occurrences replaced.
@@ -176,13 +190,251 @@ export function buildRenamePlan(filePaths) {
 }
 
 // ---------------------------------------------------------------------------
+// Explicit rename-table mode
+// ---------------------------------------------------------------------------
+
+/**
+ * Named rename tables shipped with the tool, so a fleet-wide rename is a
+ * documented, testable artifact rather than an argument typed at a prompt.
+ *
+ * `preserveDisplay: false` is part of the preset's DEFINITION, not an
+ * operator choice: see the module header.
+ */
+export const RENAME_PRESETS = {
+  'okf-reserved-scaffolds': {
+    description:
+      "free the basenames OKF reserves (`index`, `log`) by renaming our private wiki-meta scaffolds — Roland's 2026-07-30 catalog/journal decision",
+    preserveDisplay: false,
+    renames: [
+      { oldPath: 'wiki-meta/index.md', newPath: 'wiki-meta/catalog.md' },
+      { oldPath: 'wiki-meta/log.md', newPath: 'wiki-meta/journal.md' },
+    ],
+    // A pure rename would leave `catalog.md` announcing itself as `# Index` —
+    // the one word the rename exists to retire, still on screen. Word-level,
+    // H1 and `title:` only, on the RENAMED file. `type:` is deliberately NOT
+    // touched: it is a semantic key the lint/graph/context-pack consumers
+    // match on, not a name.
+    retitle: [
+      { path: 'wiki-meta/catalog.md', words: [['Index', 'Catalog']] },
+      { path: 'wiki-meta/journal.md', words: [['Log', 'Journal']] },
+    ],
+  },
+};
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---/;
+
+/**
+ * Retitle one scaffold: substitute whole words in its `title:` frontmatter
+ * value and its first H1 — nothing else in the file. Idempotent, because the
+ * old word is gone after the first pass.
+ *
+ * @param {string} content
+ * @param {Array<[string, string]>} words `[[from, to], …]`, matched whole-word
+ * @returns {{content: string, edits: number, changed: boolean}}
+ */
+export function retitleScaffold(content, words) {
+  let edits = 0;
+  const swap = (line) => {
+    let out = line;
+    for (const [from, to] of words) {
+      const re = new RegExp(`\\b${from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+      out = out.replace(re, () => {
+        edits += 1;
+        return to;
+      });
+    }
+    return out;
+  };
+
+  const fm = content.match(FRONTMATTER_RE);
+  let out = content;
+  if (fm) {
+    const body = fm[1].replace(/^(\s*title\s*:\s*)(.+)$/m, (_w, key, val) => `${key}${swap(val)}`);
+    out = content.slice(0, fm.index) + `---\n${body}\n---` + content.slice(fm.index + fm[0].length);
+  }
+  // First ATX H1 only — later headings are section titles, not the page name.
+  let h1Done = false;
+  out = out.replace(/^# .*$/gm, (line) => {
+    if (h1Done) return line;
+    h1Done = true;
+    return swap(line);
+  });
+
+  return { content: out, edits, changed: out !== content };
+}
+
+/** Accept `[{oldPath,newPath}]`, `[[old,new]]` or a `Map`. */
+function normalizeTable(table) {
+  const raw = table instanceof Map ? [...table.entries()] : Array.from(table ?? []);
+  return raw.map((e) => {
+    const [oldPath, newPath] = Array.isArray(e) ? e : [e.oldPath, e.newPath];
+    const norm = (p) => String(p ?? '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
+    return { oldPath: norm(oldPath), newPath: norm(newPath) };
+  });
+}
+
+/**
+ * Build a rename plan from an EXPLICIT oldPath→newPath table.
+ *
+ * Same output shape as `buildRenamePlan` (so every downstream helper —
+ * `buildRewriteContext`, `rewriteNoteContent`, `buildExactPathMap`,
+ * `rewriteExactPaths`, `orderRenameOps` — works unchanged), plus two fields
+ * that only make sense when a human dictated the names:
+ *
+ *   - `collisions` — BLOCKING. Unlike charset mode, we never invent a `-2`
+ *     suffix: the operator asked for `catalog.md`, so silently producing
+ *     `catalog-2.md` would be a worse outcome than refusing.
+ *   - `missing` — table entries with no match in this vault. Not an error:
+ *     the same table runs against 24 vaults and not all carry every file.
+ *
+ * `ambiguousStems` is stricter here than in charset mode. Charset mode only
+ * has to worry about two RENAMED files whose old stem collides; a table also
+ * has to worry about a renamed file whose old stem is shared by a file it is
+ * NOT renaming — `[[index]]` cannot be retargeted to `catalog` if some other
+ * `Index.md` in the vault might be what the author meant. Those links are
+ * left untouched and reported (`ambiguityDetail` says which files clashed).
+ *
+ * @param {string[]} filePaths ALL file paths, vault-relative, posix.
+ * @param {Array<{oldPath: string, newPath: string}>|Map<string,string>} table
+ */
+export function buildRenamePlanFromTable(filePaths, table) {
+  const all = filePaths.map((p) => String(p).replace(/\\/g, '/'));
+  const allLower = new Set(all.map((p) => p.toLowerCase()));
+  const entries = normalizeTable(table);
+
+  const renameOps = [];
+  const fileMap = new Map();
+  const stemRenames = [];
+  const collisions = [];
+  const missing = [];
+  const claimedLower = new Map(); // newPath lower → oldPath that claimed it
+
+  // Everything the table renames AWAY, so a target path that is itself
+  // vacated by another entry does not read as an occupied collision.
+  const vacatedLower = new Set(
+    entries.filter((e) => e.oldPath && e.newPath !== e.oldPath).map((e) => e.oldPath.toLowerCase()),
+  );
+
+  for (const { oldPath, newPath } of entries) {
+    if (!oldPath || !newPath) {
+      collisions.push({ oldPath, newPath, reason: 'incomplete table entry (empty oldPath or newPath)' });
+      continue;
+    }
+    if (oldPath === newPath) continue; // no-op — keeps re-runs idempotent
+
+    const isFile = allLower.has(oldPath.toLowerCase());
+    const descendants = all.filter((p) => p.toLowerCase().startsWith(`${oldPath.toLowerCase()}/`));
+    const isDir = !isFile && descendants.length > 0;
+    if (!isFile && !isDir) {
+      missing.push(oldPath);
+      continue;
+    }
+
+    const targetLower = newPath.toLowerCase();
+    const alreadyClaimed = claimedLower.get(targetLower);
+    if (alreadyClaimed) {
+      collisions.push({
+        oldPath,
+        newPath,
+        reason: `two table entries target the same path (also claimed by "${alreadyClaimed}")`,
+      });
+      continue;
+    }
+    // Occupied by an existing file (or an existing directory's contents) that
+    // the table is not itself moving out of the way.
+    const occupiedByFile = allLower.has(targetLower) && !vacatedLower.has(targetLower);
+    const occupiedByDir =
+      all.some((p) => p.toLowerCase().startsWith(`${targetLower}/`)) && !vacatedLower.has(targetLower);
+    if (occupiedByFile || occupiedByDir) {
+      collisions.push({
+        oldPath,
+        newPath,
+        reason: `target already exists in the vault (${occupiedByFile ? 'file' : 'directory'}) — refusing to overwrite or auto-suffix`,
+      });
+      continue;
+    }
+    claimedLower.set(targetLower, oldPath);
+
+    renameOps.push({ oldPath, newPath, isDir });
+    if (isDir) {
+      for (const p of descendants) {
+        fileMap.set(p, newPath + p.slice(oldPath.length));
+      }
+    } else {
+      fileMap.set(oldPath, newPath);
+      const oldName = oldPath.split('/').pop();
+      const newName = newPath.split('/').pop();
+      if (isMd(oldName) && stemOf(oldName) !== stemOf(newName)) {
+        stemRenames.push({ oldStem: stemOf(oldName), newStem: stemOf(newName), oldPath, newPath });
+      }
+    }
+  }
+
+  // --- Ambiguity: which basename-form wikilinks cannot be retargeted safely.
+  const byOldStem = new Map();
+  for (const r of stemRenames) {
+    const key = r.oldStem.toLowerCase();
+    if (!byOldStem.has(key)) byOldStem.set(key, { newStems: new Set(), renamed: [] });
+    const slot = byOldStem.get(key);
+    slot.newStems.add(r.newStem);
+    slot.renamed.push(r.oldPath);
+  }
+  const renamedLower = new Set(stemRenames.map((r) => r.oldPath.toLowerCase()));
+  const ambiguityDetail = [];
+  for (const [stemKey, slot] of byOldStem) {
+    // (a) the charset-mode rule: one old stem, several destinations.
+    if (slot.newStems.size > 1) {
+      ambiguityDetail.push({
+        stem: stemKey,
+        reason: 'the same old stem is renamed to several different new stems',
+        renamed: slot.renamed,
+        conflicting: [],
+      });
+      continue;
+    }
+    // (b) table-only rule: a same-stem file the table leaves in place.
+    const conflicting = all.filter(
+      (p) =>
+        isMd(p) &&
+        !renamedLower.has(p.toLowerCase()) &&
+        stemOf(p.split('/').pop()).toLowerCase() === stemKey,
+    );
+    if (conflicting.length > 0) {
+      ambiguityDetail.push({
+        stem: stemKey,
+        reason: 'another file in the vault shares this basename and is not renamed',
+        renamed: slot.renamed,
+        conflicting,
+      });
+    }
+  }
+  const ambiguousStems = ambiguityDetail.map((d) => d.stem);
+
+  return {
+    renameOps,
+    fileMap,
+    stemRenames,
+    ambiguousStems,
+    ambiguityDetail,
+    collisionsResolved: [], // table mode never auto-suffixes
+    collisions,
+    missing,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Content rewriting
 // ---------------------------------------------------------------------------
 
 /**
  * Build the lookup context `rewriteNoteContent` needs, from a plan.
+ *
+ * @param {object} plan From `buildRenamePlan` or `buildRenamePlanFromTable`
+ * @param {{preserveDisplay?: boolean}} [opts] `preserveDisplay: false` stops
+ *   un-aliased wikilinks from gaining the old target as an alias — the
+ *   rendered text changes with the target. Defaults to true (display-safe).
  */
-export function buildRewriteContext(plan) {
+export function buildRewriteContext(plan, opts = {}) {
   const ambiguous = new Set(plan.ambiguousStems.map((s) => s.toLowerCase()));
   const stemByOldLower = new Map();
   for (const r of plan.stemRenames) {
@@ -193,7 +445,12 @@ export function buildRewriteContext(plan) {
   for (const [oldPath, newPath] of plan.fileMap) {
     pathByOldLower.set(oldPath.toLowerCase(), newPath);
   }
-  return { stemByOldLower, pathByOldLower, ambiguous };
+  return {
+    stemByOldLower,
+    pathByOldLower,
+    ambiguous,
+    preserveDisplay: opts.preserveDisplay !== false,
+  };
 }
 
 const WIKILINK_TOKEN_RE = /(!?)\[\[([^\]]+)\]\]/g;
@@ -260,8 +517,13 @@ export function rewriteNoteContent(content, notePath, ctx) {
     if (newTarget === null || newTarget === trimmed) return whole;
     edits += 1;
     // Preserve what the reader sees: aliased links keep their alias; an
-    // un-aliased non-embed link gets the OLD target text as its alias.
-    const keptAlias = alias !== null ? `|${alias}` : bang ? '' : `|${trimmed}`;
+    // un-aliased non-embed link gets the OLD target text as its alias —
+    // unless the caller asked for the display text to follow the target
+    // (`preserveDisplay: false`), in which case nothing is injected. An
+    // alias the AUTHOR wrote is kept either way: it is a deliberate
+    // display choice, not a migration artefact.
+    const addAlias = ctx.preserveDisplay !== false && !bang;
+    const keptAlias = alias !== null ? `|${alias}` : addAlias ? `|${trimmed}` : '';
     return `${bang}[[${newTarget}${anchor}${keptAlias}]]`;
   });
 

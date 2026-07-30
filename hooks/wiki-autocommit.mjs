@@ -12,7 +12,7 @@
  * GUARDS (all must hold, else silent exit 0):
  *   - OBSIDIAN_ROUTER_NO_WIKI_AUTOCOMMIT is not truthy;
  *   - the cwd is a git repo;
- *   - the cwd IS a wiki vault (wiki-meta/index.md present) — NOT merely a
+ *   - the cwd IS a wiki vault (wiki-meta/catalog.md present) — NOT merely a
  *     repo that happens to contain a directory named `wiki`;
  *   - something is actually staged.
  *
@@ -22,7 +22,7 @@
  * a defensible default.
  *
  * v0.12.0: added `wiki-meta/` to trackedDirs so the 4 scaffolds
- * (hot/index/log/overview) that moved out of `wiki/` are still
+ * (hot/catalog/journal/overview) that moved out of `wiki/` are still
  * auto-committed. Without this, scaffold changes (notably the
  * hot.md refresh triggered by hot-cache-update-prompt) would silently
  * fall out of the autocommit safety net.
@@ -67,7 +67,7 @@ if (!fs.existsSync(gitDir)) process.exit(0);
 // own pre-commit hooks — into unrelated repositories that merely had a
 // docs folder called wiki/.
 //
-// `wiki-meta/index.md` is the marker `setup-vault.mjs` scaffolds, so it
+// `wiki-meta/catalog.md` is the marker `setup-vault.mjs` scaffolds, so it
 // identifies a real vault. Workspace-bound sessions are deliberately
 // excluded: there the vault lives elsewhere and the cwd's own wiki/ is
 // somebody else's, which is exactly the case this hook must not touch.

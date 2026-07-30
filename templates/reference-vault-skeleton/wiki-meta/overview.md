@@ -24,4 +24,4 @@ Capture life as it happens. Not a project tracker, not a research vault — a pl
 - Drop sources in via `wiki-ingest`.
 - File the current conversation via `save`.
 - Health-check periodically via `wiki-lint`.
-- Read [[hot]] first when starting a session, [[index]] when navigating, [[log]] to see what changed.
+- Read [[hot]] first when starting a session, [[catalog]] when navigating, [[journal]] to see what changed.

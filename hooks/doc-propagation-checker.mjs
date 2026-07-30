@@ -15,7 +15,7 @@
  *     detector.mjs`. Now checks:
  *       (a) ALL vaults whose CHANGELOG.md is missing the version
  *       (b) cumulative window of last 5 versions (not just current)
- *       (c) wiki-meta/index.md mentions current version
+ *       (c) wiki-meta/catalog.md mentions current version
  *       (d) project-router.md frontmatter `current-version` matches
  *       (e) artifact catalog pages cover the basenames in tracked dirs
  *     Vault selection order: workspace-bound → defaultVault → cwd-

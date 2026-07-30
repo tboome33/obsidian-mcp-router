@@ -24,7 +24,7 @@
  *     `createFile:true`, via its `targetPath`). `move_file`, `delete_file`,
  *     `set_frontmatter`, `merge_frontmatter` are deliberately NOT tracked (a
  *     rename/delete/metadata toggle adds no recent fact worth a hot entry).
- *     Pure scaffold writes (`wiki-meta/index.md`, `log.md`, `overview.md`) do
+ *     Pure scaffold writes (`wiki-meta/catalog.md`, `journal.md`, `overview.md`) do
  *     NOT trigger either. A write to `wiki-meta/hot.md` is the satisfying
  *     action.
  *   - PER-VAULT: each vault judged independently (a session can touch

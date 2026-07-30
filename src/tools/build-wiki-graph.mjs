@@ -8,7 +8,7 @@
  *   1. read `.wikiignore` (vault root, optional)            → content filter
  *   2. enumerate `<pagesDir>/**​/*.md` (recursive)            → article pages
  *   3. enumerate `wiki-meta/digests/**​/*.md` (recursive)     → entity/claim source
- *   4. read `wiki-meta/index.md` (optional)                  → topics/layers
+ *   4. read `wiki-meta/catalog.md` (optional)                → topics/layers
  *   5. buildWikiGraph(...) — deterministic, no LLM
  *   6. validateGraph(...) — refuse to write an invalid graph
  *   7. write canonical `wiki-meta/graph/knowledge-graph.json`
@@ -31,6 +31,7 @@ import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { buildWikiGraph } from '../helpers/wiki-graph-builder.mjs';
 import { validateGraph } from '../helpers/wiki-graph-schema.mjs';
 import { createWikiIgnore } from '../helpers/wiki-ignore.mjs';
+import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
 // Reuse the project's canonical vault-path-safety guard (single source of
 // truth for path policy) rather than a bespoke, weaker check.
 import { isSafeVaultRelativePath } from './get-wiki-context-pack.mjs';
@@ -265,13 +266,22 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   if (digestsTruncated) warnings.push('digest-enumeration-truncated');
   const { items: digests } = await readAll(deps.getFileContent, vault, digestPaths);
 
-  // 4. index.md (optional)
+  // 4. the curated catalogue (optional) — `wiki-meta/catalog.md`, or the
+  //    pre-0.58.0 `wiki-meta/index.md` on an un-migrated vault.
   let indexMd = '';
-  try {
-    indexMd = asText(await deps.getFileContent(vault, 'wiki-meta/index.md'));
-  } catch {
-    warnings.push('index-not-found');
+  let catalogFound = false;
+  for (const rel of scaffoldCandidates('catalog')) {
+    try {
+      indexMd = asText(await deps.getFileContent(vault, rel));
+      catalogFound = true;
+      break;
+    } catch (e) {
+      // Only a 404 justifies trying the legacy name (see
+      // `shouldTryLegacyScaffold`); the catalogue is optional here either way.
+      if (!shouldTryLegacyScaffold(e)) break;
+    }
   }
+  if (!catalogFound) warnings.push('index-not-found');
 
   // 5. build (deterministic; timestamp injected here, builder stays pure)
   const graph = buildWikiGraph({

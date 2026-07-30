@@ -31,7 +31,7 @@ mcp__obsidian-router__get_page_neighbors({ vault, page, direction, depth, nodeTy
 
 - **Graph missing** (error mentions `build_wiki_graph`) → offer to run `/wiki-graph`, then retry the lookup.
 - **Ambiguous page** (error says "is ambiguous" + lists candidate paths) → show the candidates to the user and ask them to pick one (or re-run with the exact path).
-- **Page not found** → say so plainly; suggest checking `wiki-meta/index.md` for the right name, or offer a `search`/`search_smart` to locate it.
+- **Page not found** → say so plainly; suggest checking `wiki-meta/catalog.md` for the right name, or offer a `search`/`search_smart` to locate it.
 
 ### 4. Present the result
 

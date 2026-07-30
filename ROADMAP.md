@@ -2,6 +2,21 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.58.0 — `index`→`catalog`, `log`→`journal`: the scaffolds vacate the OKF-reserved basenames (shipped 2026-07-30)
+
+Volet ① of Roland's 2026-07-30 three-part decision (vault note `decisions/catalog-journal-et-projections-okf`). OKF reserves `index.md` and `log.md`; our private `wiki-meta/` scaffolds held both names for objects that do a different job. Since Obsidian resolves wikilinks by basename, adding the conformant files first would have retargeted **484 `[[index]]`/`[[log]]` citations across 364 files** at the generated artefacts, silently. So the rename comes first — it is the precondition, not a cleanup.
+
+- **Fleet result:** 48 files renamed across **24 vaults**, 678 files re-linked, 0 collisions, 0 residual references, per-vault reversible backups. `hot.md` / `overview.md` untouched (no collision with the norm).
+- **Tooling:** `okf-safe-rename` gained a **table mode** (explicit `oldPath→newPath` pairs — a charset rule can't derive a rename whose motive is a reserved *name*), reusing plan/collision/link-rewrite/manifest/verify verbatim. Two table-specific guards: collisions **block** instead of auto-suffixing, and a stem shared with a file the table does *not* rename is reported instead of guessed (real hit: the SCI vault's two `Index.md`).
+- **No display-preserving aliases**, deliberately: `⟵ [[index]] · [[log]]` became `⟵ [[catalog]] · [[journal]]`, not `[[catalog|index]]`. Keeping the old visible text beside a real OKF `index.md` would preserve the very ambiguity the rename removes. The aliasing default stands for every other migration.
+- **Re-wiring was the bulk of the work** — hooks, 20 skills, 8 commands, 2 agents, templates, conventions snippets, feature docs, both READMEs, EN+FR cheat sheets (HTML + PDFs), and the tests. Centralised in `src/helpers/wiki-meta-scaffolds.mjs`.
+- **Legacy names still read** (unlike the v0.12.0 clean break) because the plugin updates independently of vaults, and a failed scaffold probe silently kills every workspace-bound hook. The fallback fires only on a real 404, so an offline vault still reports *offline*; and the audit trail never opens a second journal beside an existing `log.md`.
+
+### Deferred to the next lots
+
+- **Volet ②** — generated OKF projections inside `wiki/`: a root `index.md` (frontmatter `okf_version` only), one `index.md` per content directory, and a newest-first `log.md`. Deterministic from existing frontmatter, never hand-edited, never wikilinked, verified by `wiki-lint`. The central catalogue becomes a map-of-maps (ends the 65 KB monolith).
+- **Volet ③** — a bridge-plugin setting to hide folders in the Obsidian explorer (default `wiki-meta`), per vault, by CSS injection. Purely cosmetic; the REST API keeps seeing everything.
+
 ## ✅ v0.39.0 — `pdf_to_images`: render PDF pages for the model to SEE (shipped 2026-07-09)
 
 New tool `pdf_to_images` renders a local PDF's pages to PNG images and returns them as **MCP image content blocks**, so the model can visually SEE a page — complementing the text-extracting `pdf_to_markdown` / `pdf_to_markdown_docling`. Rendering via **pypdfium2** (PDFium/Google, BSD) + Pillow, both already in `.venv-docling` (the Docling extra) — NOT poppler (GPL) or MuPDF (AGPL). Delivers the borrowings-roadmap §2.14 idea.

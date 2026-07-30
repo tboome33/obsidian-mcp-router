@@ -48,8 +48,8 @@ beforeEach(() => {
   vaultDir = fs.mkdtempSync(path.join(workDir, 'vault-'));
   fs.mkdirSync(path.join(vaultDir, 'wiki-meta', 'Sessions'), { recursive: true });
   fs.writeFileSync(
-    path.join(vaultDir, 'wiki-meta', 'log.md'),
-    '---\ntype: wiki-log\n---\n\n# Log\n\nAppend-only.\n',
+    path.join(vaultDir, 'wiki-meta', 'journal.md'),
+    '---\ntype: wiki-log\n---\n\n# Journal\n\nAppend-only.\n',
     'utf8',
   );
   configPath = path.join(workDir, `config-${path.basename(vaultDir)}.json`);
@@ -97,7 +97,7 @@ function runScript(...scriptArgs) {
 }
 
 function readLog() {
-  return fs.readFileSync(path.join(vaultDir, 'wiki-meta', 'log.md'), 'utf8');
+  return fs.readFileSync(path.join(vaultDir, 'wiki-meta', 'journal.md'), 'utf8');
 }
 
 // ---------------------------------------------------------------------------
@@ -271,13 +271,33 @@ describe('backfill-log-from-sessions — error paths', () => {
     assert.match(out, /No vault matched/);
   });
 
-  test('vault without wiki-meta/log.md → silent skip with info message', () => {
-    // Remove the log.md to simulate the case
-    fs.unlinkSync(path.join(vaultDir, 'wiki-meta', 'log.md'));
+  test('un-migrated vault: backfills into the legacy wiki-meta/log.md, creates no duplicate', () => {
+    // v0.58.0 compat: a vault still on the pre-rename name must keep working,
+    // and the backfill must NOT open a second journal beside the old one.
+    fs.renameSync(
+      path.join(vaultDir, 'wiki-meta', 'journal.md'),
+      path.join(vaultDir, 'wiki-meta', 'log.md'),
+    );
+    writeSession('2026-05-23-1000-legacy.md', { firstUserPrompt: 'Objectif legacy', recap: { label: '2 user prompts' } });
+    const r = runScript('--vault', vaultDir);
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const legacy = fs.readFileSync(path.join(vaultDir, 'wiki-meta', 'log.md'), 'utf8');
+    assert.match(legacy, /\[\[2026-05-23-1000-legacy\]\]/);
+    assert.match(legacy, /Objectif legacy/);
+    assert.equal(
+      fs.existsSync(path.join(vaultDir, 'wiki-meta', 'journal.md')),
+      false,
+      'must not create journal.md next to the legacy log.md',
+    );
+  });
+
+  test('vault without wiki-meta/journal.md → silent skip with info message', () => {
+    // Remove the journal to simulate the case
+    fs.unlinkSync(path.join(vaultDir, 'wiki-meta', 'journal.md'));
     writeSession('2026-05-23-1000-test-nolog.md', { firstUserPrompt: 'X', recap: { label: '1 user prompts' } });
     const r = runScript('--vault', vaultDir);
     assert.equal(r.status, 0, r.stderr || r.stdout);
-    assert.match(r.stdout, /no wiki-meta\/log\.md/);
-    assert.equal(fs.existsSync(path.join(vaultDir, 'wiki-meta', 'log.md')), false, 'log.md must NOT be created');
+    assert.match(r.stdout, /no wiki-meta\/journal\.md/);
+    assert.equal(fs.existsSync(path.join(vaultDir, 'wiki-meta', 'journal.md')), false, 'journal.md must NOT be created');
   });
 });

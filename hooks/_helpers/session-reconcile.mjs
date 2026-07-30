@@ -1,6 +1,6 @@
 /**
  * session-reconcile.mjs — shared self-healing reconciliation for the
- * per-session journal (`wiki-meta/Sessions/*.md`) ↔ `wiki-meta/log.md`.
+ * per-session journal (`wiki-meta/Sessions/*.md`) ↔ `wiki-meta/journal.md`.
  *
  * WHY THIS EXISTS
  * ---------------
@@ -8,7 +8,7 @@
  * (SessionStart → create, UserPromptSubmit/PostToolUse → append) but only
  * *finishes* a session in the `SessionEnd` handler: that's where the
  * frontmatter flips `status: open → closed`, the recap is inserted, and a
- * one-line summary is appended to `wiki-meta/log.md`.
+ * one-line summary is appended to `wiki-meta/journal.md`.
  *
  * The problem: Claude Code's `SessionEnd` hook is NOT guaranteed to fire.
  * It is skipped when the terminal window is closed abruptly, the process
@@ -57,6 +57,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { isRouterWriteTool } from './tool-names.mjs';
+import { resolveScaffold, scaffoldWritePath } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (single source of truth — imported by session-auto-journal.mjs
@@ -391,14 +392,18 @@ export function reconcileVaultSessions(opts) {
   };
 
   const sessionsDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
-  const logPath = path.join(vaultPath, 'wiki-meta', 'log.md');
+  // `wiki-meta/journal.md`, or the pre-0.58.0 `wiki-meta/log.md`.
+  const logPath =
+    resolveScaffold(vaultPath, 'journal', { fs, path })?.absPath ??
+    scaffoldWritePath(vaultPath, 'journal', { path });
 
   let files;
   try { files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.md')); }
   catch { result.missingSessions = true; return result; }
 
-  // log.md is optional: we can still close orphaned journals (flip status +
-  // recap) even if no log scaffold exists; we just can't append a summary.
+  // The journal is optional: we can still close orphaned journals (flip
+  // status + recap) even if no journal scaffold exists; we just can't append
+  // a summary.
   let logContent = '';
   let logExists = false;
   try { logContent = fs.readFileSync(logPath, 'utf8'); logExists = true; }

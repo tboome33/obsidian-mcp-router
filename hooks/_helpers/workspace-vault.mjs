@@ -8,9 +8,12 @@
  *   - slug → vault path resolver (matches the router's own logic)
  *   - vault context detector (cwd-is-vault OR workspace-bound)
  *
- * Zero runtime deps on src/ (so hooks work even pre-`npm install` in
- * fresh checkouts). Pure functions where possible — I/O isolated to
- * the `loadWorkspaceDotenv` / `readRouterConfig` boundaries.
+ * Zero *installed* deps (so hooks work even pre-`npm install` in fresh
+ * checkouts): the one src/ import below, `wiki-meta-scaffolds.mjs`, is a
+ * constants module that itself imports nothing — not even a node builtin —
+ * so it loads on a tree with no `node_modules`. Pure functions where
+ * possible — I/O isolated to the `loadWorkspaceDotenv` / `readRouterConfig`
+ * boundaries.
  *
  * Used by:
  *   - hooks/wiki-query-first-nudge.mjs (v0.11.5+)
@@ -23,6 +26,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -142,10 +147,10 @@ export function resolveVaultBySlug(cfg, slug) {
 /**
  * Detect the vault context for a given cwd. Returns one of:
  *   - { mode: 'cwd-is-vault', vaultPath: <cwd> }
- *     when `cwd/wiki-meta/index.md` exists (the workspace IS the vault)
+ *     when `cwd/wiki-meta/catalog.md` exists (the workspace IS the vault)
  *   - { mode: 'workspace-bound', vaultPath, slug }
- *     when cwd has no wiki-meta/index.md BUT `OBSIDIAN_ROUTER_DEFAULT_VAULT`
- *     resolves to a configured vault whose `wiki-meta/index.md` exists
+ *     when cwd has no catalog BUT `OBSIDIAN_ROUTER_DEFAULT_VAULT`
+ *     resolves to a configured vault whose catalog exists
  *   - null
  *     when neither condition holds
  *
@@ -163,17 +168,36 @@ export function resolveVaultBySlug(cfg, slug) {
  * `wiki/`. Clean break — no fallback to the old layout. Vaults still
  * on `wiki/<scaffold>.md` need migration via `setup-vault.mjs
  * --migrate-wiki-meta` (shipped in v0.12.1).
+ *
+ * v0.58.0: the probe is `wiki-meta/catalog.md`, with `wiki-meta/index.md`
+ * accepted as a fallback. Unlike v0.12.0 this one is NOT a clean break:
+ * the plugin updates independently of the vaults it reads, and a failed
+ * probe silently disables every workspace-bound hook — the most expensive
+ * possible failure mode for a rename. `context.legacyScaffold` carries the
+ * old path so callers can surface `scaffoldMigrationHint()`.
  */
 export function detectVaultContext(cwd, cfg) {
   // Mode 1: cwd is the vault itself
-  if (fs.existsSync(path.join(cwd, 'wiki-meta', 'index.md'))) {
-    return { mode: 'cwd-is-vault', vaultPath: cwd, slug: null };
+  const local = resolveScaffold(cwd, 'catalog', { fs, path });
+  if (local) {
+    return {
+      mode: 'cwd-is-vault',
+      vaultPath: cwd,
+      slug: null,
+      legacyScaffold: local.legacy ? local.relPath : null,
+    };
   }
   // Mode 2: workspace-bound via env var
   const slug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim();
   if (!slug || !cfg) return null;
   const vp = resolveVaultBySlug(cfg, slug);
   if (!vp) return null;
-  if (!fs.existsSync(path.join(vp, 'wiki-meta', 'index.md'))) return null;
-  return { mode: 'workspace-bound', vaultPath: vp, slug };
+  const bound = resolveScaffold(vp, 'catalog', { fs, path });
+  if (!bound) return null;
+  return {
+    mode: 'workspace-bound',
+    vaultPath: vp,
+    slug,
+    legacyScaffold: bound.legacy ? bound.relPath : null,
+  };
 }

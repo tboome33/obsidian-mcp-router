@@ -30,7 +30,7 @@ Both files are byte-identical. The derived copy is regenerated each run.
 | digest `claims` | `claim` nodes (page-namespaced) + `related` edges |
 | `[[wikilinks]]` between pages | `related` edges |
 | **referenced sources** — frontmatter `sources:`, `^[file:42-58]` citations, `![[x.pdf]]` embeds | `source` nodes (lightweight, unparsed) + `cites` edges |
-| `wiki-meta/index.md` sections | `topic` nodes + `categorized_under` edges + `layers[]` |
+| `wiki-meta/catalog.md` sections | `topic` nodes + `categorized_under` edges + `layers[]` |
 
 **Key invariant (the binaries rule):** a file a page *references* becomes a `source` node **even if it matches `.wikiignore`**. `.wikiignore` excludes files from becoming *content* (`article` nodes / lint / export), NOT from being *referenceable* as sources. So you can always trace a page back to its PDF/image and click through to it.
 
@@ -63,7 +63,7 @@ Report the counts (nodes/edges by type) so the user can sanity-check before writ
 mcp__obsidian-router__build_wiki_graph({ vault })
 ```
 
-The tool enumerates `wiki/**` + `wiki-meta/digests/**`, reads `.wikiignore` + `wiki-meta/index.md`, builds the graph, **validates it against the schema** (refuses to write an invalid graph), and writes the two files.
+The tool enumerates `wiki/**` + `wiki-meta/digests/**`, reads `.wikiignore` + `wiki-meta/catalog.md`, builds the graph, **validates it against the schema** (refuses to write an invalid graph), and writes the two files.
 
 ### 4. Report
 
@@ -74,7 +74,7 @@ Surface the returned summary:
 
 ### 5. Log
 
-Append to `wiki-meta/log.md`:
+Append to `wiki-meta/journal.md`:
 
 ```
 - YYYY-MM-DD HH:MM — wiki-graph — <vault> · <nodes> nodes / <edges> edges / <layers> layers
@@ -105,4 +105,4 @@ A native in-Obsidian viewer (`obsidian-mcp-router-graph`) is the roadmap #2b del
 
 - Deterministic given fixed input: same vault state ⇒ same graph (only `project.analyzedAt` varies by run).
 - Enumeration is bounded (5000 files / depth 12); a `*-enumeration-truncated` warning means the vault exceeded a bound.
-- `layers[]` currently come from `index.md` sections. Louvain community detection (roadmap #4, folded into #1) will enrich them later.
+- `layers[]` currently come from `catalog.md` sections. Louvain community detection (roadmap #4, folded into #1) will enrich them later.

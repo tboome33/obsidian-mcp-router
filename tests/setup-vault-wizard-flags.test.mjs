@@ -114,14 +114,14 @@ describe('setup-vault.mjs wizard flags', () => {
     // Core artifacts the pre-wizard path always produced:
     assert.ok(fs.existsSync(path.join(target, '.env')), '.env written');
     assert.ok(fs.existsSync(path.join(target, '.obsidian', 'plugins', 'smart-connections')), 'source plugin cloned');
-    assert.ok(fs.existsSync(path.join(target, 'wiki-meta', 'index.md')), 'wiki-meta scaffolded');
+    assert.ok(fs.existsSync(path.join(target, 'wiki-meta', 'catalog.md')), 'wiki-meta scaffolded');
     // Secret regenerated (NOT the reference's key).
     const restData = JSON.parse(fs.readFileSync(
       path.join(target, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'), 'utf8'));
     assert.notEqual(restData.apiKey, 'REF-SECRET-KEY-0000000000', 'fresh API key generated');
     // Backward compat: no --wiki-mode → index.md uses the generic template
     // (has "## Sources", NOT a mode frontmatter).
-    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'index.md'), 'utf8');
+    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
     assert.match(idx, /## Sources/, 'default index uses the generic template');
     assert.ok(!/^mode:/m.test(idx), 'no mode frontmatter without --wiki-mode');
   });
@@ -130,7 +130,7 @@ describe('setup-vault.mjs wizard flags', () => {
     const target = path.join(workDir, 'ResearchVault');
     const r = run([target, '--wiki-mode', 'research']);
     assert.equal(r.status, 0, r.stderr);
-    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'index.md'), 'utf8');
+    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
     assert.match(idx, /^mode: research$/m, 'index frontmatter carries the mode');
     assert.match(idx, /## Papers/, 'research section present');
     assert.match(idx, /## Hypotheses/);
@@ -143,7 +143,7 @@ describe('setup-vault.mjs wizard flags', () => {
     const target = path.join(workDir, 'DomainVault');
     const r = run([target, '--wiki-mode', 'domain', '--wiki-sections', 'Reptiles,Habitats,Diets']);
     assert.equal(r.status, 0, r.stderr);
-    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'index.md'), 'utf8');
+    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
     for (const s of ['Reptiles', 'Habitats', 'Diets']) assert.match(idx, new RegExp(`## ${s}`));
   });
 
@@ -303,7 +303,7 @@ describe('setup-vault.mjs --from-vault (config-only copy + security)', () => {
     assert.ok(!fs.existsSync(path.join(target, 'wiki', 'People', 'note.md')), 'no note content copied');
 
     // Fresh empty scaffolds.
-    assert.ok(fs.existsSync(path.join(target, 'wiki-meta', 'index.md')), 'fresh wiki-meta scaffolded');
+    assert.ok(fs.existsSync(path.join(target, 'wiki-meta', 'catalog.md')), 'fresh wiki-meta scaffolded');
   });
 
   test('--from-vault without --with-folder-tree does NOT recreate the wiki tree', () => {

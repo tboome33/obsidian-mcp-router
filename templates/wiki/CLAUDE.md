@@ -5,12 +5,12 @@ Path: {{VAULT_PATH}}
 When you need context not already in this conversation:
 
 1. Read `wiki-meta/hot.md` first (cheap, recent context).
-2. If hot.md doesn't cover it, read `wiki-meta/index.md` to find the relevant page.
+2. If hot.md doesn't cover it, read `wiki-meta/catalog.md` to find the relevant page.
 3. Drill into specific wiki pages (user content lives under `wiki/...`).
-4. After substantive work, append a 1-line entry to `wiki-meta/log.md`.
+4. After substantive work, append a 1-line entry to `wiki-meta/journal.md`.
 5. After substantive work, refresh `wiki-meta/hot.md` with the latest state.
 
-**Vault layout (v0.12.0+)**: scaffolding lives in `wiki-meta/` (the 4 files `hot.md`, `index.md`, `log.md`, `overview.md`), separate from user notes under `wiki/` (people, concepts, sessions, decisions, references, projects, …). This split makes the scaffolds (catalog + recent-context cache + operation log + executive summary) easier to spot in Obsidian and keeps the visible `wiki/` tree focused on real content.
+**Vault layout (v0.12.0+)**: scaffolding lives in `wiki-meta/` (the 4 files `hot.md`, `catalog.md`, `journal.md`, `overview.md`), separate from user notes under `wiki/` (people, concepts, sessions, decisions, references, projects, …). This split makes the scaffolds (catalog + recent-context cache + operation log + executive summary) easier to spot in Obsidian and keeps the visible `wiki/` tree focused on real content.
 
 **Always use the `obsidian-router` MCP tools for vault reads/writes** (`mcp__obsidian-router__get_file`, `mcp__obsidian-router__write_file`, `mcp__obsidian-router__patch_file`, etc.) — they're the multi-vault aware path and work cross-project. Do NOT use Claude's native `Read`/`Write` for vault content; those work only when the project IS the vault.
 
@@ -198,7 +198,7 @@ Auto-save policy in `Hybrid`:
 >
 > [Your usual transition question]
 
-Wait for nothing on the auto-saved items — just inform. Wait for the user's decision on the 🔒 flagged items if any. If the user disagrees with an auto-save retrospectively, they can edit / delete after the fact via `wiki-meta/log.md` audit trail.
+Wait for nothing on the auto-saved items — just inform. Wait for the user's decision on the 🔒 flagged items if any. If the user disagrees with an auto-save retrospectively, they can edit / delete after the fact via `wiki-meta/journal.md` audit trail.
 
 `off` — never propose, never auto-save. Skip this trigger entirely.
 
@@ -211,7 +211,7 @@ When a save fires (whether by user confirmation or auto-execute):
 - `preference` → append to `wiki/preferences.md`
 - `url` → invoke `/obsidian-router:wiki-ingest <url>`
 
-After every save (auto or confirmed), append a 1-line entry to `wiki-meta/log.md`. For auto-saves, prefix the entry with `[auto-save]` so the user can filter.
+After every save (auto or confirmed), append a 1-line entry to `wiki-meta/journal.md`. For auto-saves, prefix the entry with `[auto-save]` so the user can filter.
 
 Example log entry for an auto-save in FullAuto:
 ```

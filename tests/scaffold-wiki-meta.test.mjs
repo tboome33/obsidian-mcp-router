@@ -102,7 +102,7 @@ describe('scaffoldWikiMeta — end-to-end via setup-vault.mjs <path>', () => {
     assert.ok(fs.statSync(path.join(targetVault, 'wiki', 'sessions')).isDirectory(), 'wiki/sessions/ should be a directory');
 
     // 4 wiki-meta scaffolds
-    for (const scaffold of ['index.md', 'hot.md', 'log.md', 'overview.md']) {
+    for (const scaffold of ['catalog.md', 'hot.md', 'journal.md', 'overview.md']) {
       const p = path.join(targetVault, 'wiki-meta', scaffold);
       assert.ok(fs.existsSync(p), `wiki-meta/${scaffold} should exist`);
       const content = fs.readFileSync(p, 'utf8');
@@ -117,14 +117,14 @@ describe('scaffoldWikiMeta — end-to-end via setup-vault.mjs <path>', () => {
     assert.match(hotContent, /\d{4}-\d{2}-\d{2}/, 'hot.md should have an ISO date inserted');
 
     // log.md should have the initial bootstrap entry
-    const logContent = fs.readFileSync(path.join(targetVault, 'wiki-meta', 'log.md'), 'utf8');
+    const logContent = fs.readFileSync(path.join(targetVault, 'wiki-meta', 'journal.md'), 'utf8');
     assert.match(logContent, /scaffold/);
     assert.match(logContent, /\d{4}-\d{2}-\d{2}/, 'log.md should have an ISO date inserted');
   });
 
   test('re-bootstrapping preserves existing scaffolds (idempotent)', () => {
     // Modify an existing scaffold to confirm it's NOT overwritten on re-run
-    const indexPath = path.join(targetVault, 'wiki-meta', 'index.md');
+    const indexPath = path.join(targetVault, 'wiki-meta', 'catalog.md');
     const userMarker = '<!-- USER-EDITED-CONTENT-DO-NOT-OVERWRITE -->\n';
     fs.writeFileSync(indexPath, userMarker + fs.readFileSync(indexPath, 'utf8'));
 
@@ -176,8 +176,8 @@ describe('setup-vault.mjs <vault> --link-workspace <ws> (v0.12.7+)', () => {
 
     // Vault should be bootstrapped (scaffolds present — pre-req for link)
     assert.ok(
-      fs.existsSync(path.join(targetVault, 'wiki-meta', 'index.md')),
-      'vault should have wiki-meta/index.md (required by link step)',
+      fs.existsSync(path.join(targetVault, 'wiki-meta', 'catalog.md')),
+      'vault should have wiki-meta/catalog.md (required by link step)',
     );
 
     // Workspace .env should contain the binding line
@@ -296,7 +296,7 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
     const legacyVault = path.join(workDir, 'codex-p2-1-legacy');
     fs.mkdirSync(path.join(legacyVault, 'wiki'), { recursive: true });
     // Plant legacy scaffolds
-    for (const f of ['hot.md', 'index.md', 'log.md', 'overview.md']) {
+    for (const f of ['hot.md', 'catalog.md', 'journal.md', 'overview.md']) {
       fs.writeFileSync(path.join(legacyVault, 'wiki', f), `# legacy ${f}\n`);
     }
 
@@ -324,7 +324,7 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
     // NOT created, (c) the portRegistry is NOT mutated.
     const legacyVault = path.join(workDir, 'codex-pass2-no-side-effects');
     fs.mkdirSync(path.join(legacyVault, 'wiki'), { recursive: true });
-    for (const f of ['hot.md', 'index.md', 'log.md', 'overview.md']) {
+    for (const f of ['hot.md', 'catalog.md', 'journal.md', 'overview.md']) {
       fs.writeFileSync(path.join(legacyVault, 'wiki', f), `# legacy ${f}\n`);
     }
 
@@ -373,7 +373,7 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
     // Plant 2 of the 4 scaffolds with a user marker so we can verify they're
     // preserved (not overwritten by scaffoldWikiMeta).
     const userMarker = '<!-- USER-CREATED-DO-NOT-OVERWRITE -->\n';
-    fs.writeFileSync(path.join(partialVault, 'wiki-meta', 'index.md'), userMarker + '# my custom index\n');
+    fs.writeFileSync(path.join(partialVault, 'wiki-meta', 'catalog.md'), userMarker + '# my custom catalog\n');
     fs.writeFileSync(path.join(partialVault, 'wiki-meta', 'overview.md'), userMarker + '# my custom overview\n');
 
     const result = spawnScript([partialVault], { OBSIDIAN_ROUTER_CONFIG: configPath });
@@ -381,7 +381,7 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
 
     // The 2 user-created files must be preserved verbatim
     assert.ok(
-      fs.readFileSync(path.join(partialVault, 'wiki-meta', 'index.md'), 'utf8').includes(userMarker),
+      fs.readFileSync(path.join(partialVault, 'wiki-meta', 'catalog.md'), 'utf8').includes(userMarker),
       'user-created index.md must be preserved',
     );
     assert.ok(
@@ -395,7 +395,7 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
       'missing hot.md must be created from template',
     );
     assert.ok(
-      fs.existsSync(path.join(partialVault, 'wiki-meta', 'log.md')),
+      fs.existsSync(path.join(partialVault, 'wiki-meta', 'journal.md')),
       'missing log.md must be created from template',
     );
   });

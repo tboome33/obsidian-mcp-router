@@ -27,7 +27,7 @@
  *   - no git dependency → also works in non-git vaults.
  *
  * Trigger = a write to `wiki/<...>` (a NOTE). Pure scaffold edits
- * (`wiki-meta/index.md`, `log.md`, `overview.md`) do NOT trigger — they are
+ * (`wiki-meta/catalog.md`, `journal.md`, `overview.md`) do NOT trigger — they are
  * bookkeeping, not notes. A write to `wiki-meta/hot.md` is the satisfying
  * action. PER-VAULT: a session can touch several vaults; each is judged
  * independently. A vault whose root cannot be resolved is SKIPPED — the
@@ -203,7 +203,7 @@ if (oversized.length > 0) {
     );
     lines.push(
       `   COMPACTION REQUISE avant de terminer : lance \`/obsidian-router:hot-compact\` ` +
-        `(backup intégral vérifié → réécriture ≤ ~${o.targetTokens} tokens (~${w(o.targetTokens)} mots) → trace dans log.md).`,
+        `(backup intégral vérifié → réécriture ≤ ~${o.targetTokens} tokens (~${w(o.targetTokens)} mots) → trace dans journal.md).`,
     );
     lines.push(
       `EN — "${name}" hot.md is OVER LIMIT (~${o.tokens} tokens / ~${w(o.tokens)} words). ` +

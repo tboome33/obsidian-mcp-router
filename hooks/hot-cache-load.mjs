@@ -104,7 +104,7 @@ let hotContent;
 try {
   hotContent = fs.readFileSync(hotPath, 'utf8');
 } catch {
-  // The vault has wiki-meta/index.md (detection passed) but no hot.md yet
+  // The vault has wiki-meta/catalog.md (detection passed) but no hot.md yet
   // — common before the user runs `/save` for the first time. Silent
   // exit so the absence isn't surfaced as an error.
   process.exit(0);
@@ -118,7 +118,7 @@ try {
 // This hook is plugin-activated for everyone, and it injects the bytes of a
 // file it found on disk straight into the session context — a file that can
 // perfectly well have arrived by cloning someone else's repository, since
-// cwd-is-vault mode triggers on the mere existence of `wiki-meta/index.md`.
+// cwd-is-vault mode triggers on the mere existence of `wiki-meta/catalog.md`.
 // Unframed, those bytes read as if the system had said them. Both modes are
 // wrapped, and the frame states what the content IS: notes, not instructions.
 const frame = [

@@ -8,7 +8,7 @@ La philosophie, apprise à l'usage : **une convention seule ne règle pas un pro
 
 **Le besoin.** Les sessions Claude qui ne sont pas archivées sont perdues : trois semaines plus tard, impossible de savoir ce qui a été décidé et pourquoi.
 
-**Ce que ça fait.** À la fin de chaque session, écrit automatiquement un journal détaillé sous `wiki-meta/Sessions/` et une récap de deux lignes dans `wiki-meta/log.md`. Une réconciliation **auto-réparante** rattrape les sessions qui se seraient terminées sans journal.
+**Ce que ça fait.** À la fin de chaque session, écrit automatiquement un journal détaillé sous `wiki-meta/Sessions/` et une récap de deux lignes dans `wiki-meta/journal.md`. Une réconciliation **auto-réparante** rattrape les sessions qui se seraient terminées sans journal.
 
 ## `hot-cache-load` — le contexte récent, chargé d'office
 

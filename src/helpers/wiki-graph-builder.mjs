@@ -17,7 +17,7 @@
  *       (frontmatter `sources:`, `^[file:lines]` citations, `![[x.pdf]]`
  *        embeds) — created EVEN IF the referenced file matches `.wikiignore`
  *        (the "source référencée" invariant, Roland 2026-05-29)
- *   - `wiki-meta/index.md` sections        → `topic` nodes + `categorized_under`
+ *   - `wiki-meta/catalog.md` sections        → `topic` nodes + `categorized_under`
  *                                            edges (the human-curated taxonomy)
  *   - graph link topology                  → `layers[]` via Louvain community
  *                                            detection (#1 step 2.5) — every
@@ -247,7 +247,7 @@ function buildLayers(nodeIds, edges, nodesById, resolution) {
  *
  * @param {object} input
  * @param {string} input.vaultName Vault/project name (→ project.name)
- * @param {string} [input.indexMd=''] Content of wiki-meta/index.md (topics/layers)
+ * @param {string} [input.indexMd=''] Content of wiki-meta/catalog.md (topics/layers)
  * @param {Array<{path:string, content:string}>} [input.pages=[]] Wiki content
  *   pages (vault-relative path + raw markdown). The CALLER should pass only
  *   non-ignored content pages; the builder also defensively re-filters when

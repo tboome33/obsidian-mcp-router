@@ -19,7 +19,7 @@ Other targets listed in the roadmap (json, json-ld, graphml, marp) are **deferre
 
 ## Pre-conditions
 
-1. Target vault has `wiki-meta/index.md` (the catalog the export structure is derived from). If absent, suggest the `wiki` skill to bootstrap first.
+1. Target vault has `wiki-meta/catalog.md` (the catalog the export structure is derived from). If absent, suggest the `wiki` skill to bootstrap first.
 2. Vault is online (call `list_vaults`).
 
 ## When to use
@@ -49,7 +49,7 @@ If the user asks for one of the deferred targets (`json`, `json-ld`, `graphml`, 
 ### 2. Load index + pages
 
 ```
-indexMd = mcp__obsidian-router__get_file({ vault, path: "wiki-meta/index.md" })
+indexMd = mcp__obsidian-router__get_file({ vault, path: "wiki-meta/catalog.md" })
 ```
 
 Then list all files under `wiki/` (and `wiki-meta/` for overview-style files), filtering to `.md` only:
@@ -76,7 +76,7 @@ import { buildLlmsTxt } from 'src/helpers/llms-txt-exporter.mjs';
 
 const output = buildLlmsTxt({
   vaultName,       // string — vault display name
-  indexMd,         // string — content of wiki-meta/index.md
+  indexMd,         // string — content of wiki-meta/catalog.md
   pages,           // [{ path, content }]
   mode: 'index' | 'full',
   summary,         // optional override; otherwise derived from overview.md
@@ -99,7 +99,7 @@ If stdout requested, return the `output` string directly in the chat reply for t
 
 ### 5. Append a log entry
 
-Log the export in `wiki-meta/log.md`:
+Log the export in `wiki-meta/journal.md`:
 
 ```
 - YYYY-MM-DD HH:MM — wiki-export — <vault> · <target> · <line count> lines · <output path>
@@ -164,7 +164,7 @@ Append the standard log entry (step 5) with target `okf` + document count. Final
 ### OKF anti-patterns
 
 - Don't export `wiki-meta/` content — ever. Private working data.
-- Don't copy the vault's `wiki-meta/index.md` or `log.md` into the bundle — the bundle's `index.md`/`log.md` are REGENERATED in OKF shape (no frontmatter except root `okf_version`, `# Section` headings, `* [Title](file.md) - desc` bullets, newest-first log). The vault scaffolds use a different grammar and would not conform.
+- Don't copy the vault's `wiki-meta/catalog.md` or `wiki-meta/journal.md` into the bundle — the bundle's `index.md`/`log.md` are REGENERATED in OKF shape (no frontmatter except root `okf_version`, `# Section` headings, `* [Title](file.md) - desc` bullets, newest-first log). The vault scaffolds use a different grammar and would not conform.
 - Don't map `source_type` onto `type` (or vice-versa) — orthogonal dimensions : `type` says what the page IS, `source_type` says where its content came from. Both travel side by side (`source_type` is a legal OKF extension key).
 - Don't "fix" dangling links by dropping them — a link to a not-exported page is legal OKF ("not-yet-written knowledge", §5.3) and preserves the knowledge graph's shape.
 
@@ -177,9 +177,9 @@ The pure function `buildLlmsTxt` in `src/helpers/llms-txt-exporter.mjs` does all
 - **Frontmatter stripping** — removes `---\n...\n---\n` blocks from inlined page bodies (full mode)
 - **`[[wikilinks]]` normalisation** — converts to `[label](path.md)` form so external LLMs that don't know Obsidian syntax can still navigate
 - **H1 stripping** — when inlining bodies, removes the page's own H1 since the bullet link already provides the title
-- **Section ordering** — preserves the order of H2 sections in `index.md`
-- **Unindexed bucket** — pages on disk but missing from `index.md` go to a final `## Unindexed` section (sorted alphabetically)
-- **Wiki-meta filtering** — `hot.md`, `log.md`, `index.md`, `overview.md` excluded from the Unindexed bucket (those are scaffolding, not content)
+- **Section ordering** — preserves the order of H2 sections in `catalog.md`
+- **Unindexed bucket** — pages on disk but missing from `catalog.md` go to a final `## Unindexed` section (sorted alphabetically)
+- **Wiki-meta filtering** — `hot.md`, `journal.md`, `catalog.md`, `overview.md` excluded from the Unindexed bucket (those are scaffolding, not content)
 - **Summary resolution** — explicit `summary` arg > `wiki-meta/overview.md` first paragraph > generic fallback "Knowledge base for <vault>"
 - **Whitespace normalisation** — collapses runs of empty lines, single trailing newline
 

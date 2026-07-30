@@ -30,9 +30,9 @@ describe('buildResourceUri / parseResourceUri — round trip', () => {
   });
 
   test('vault/id round-trips', () => {
-    const uri = buildResourceUri('dedibox', 'wiki-index');
-    assert.equal(uri, `${RESOURCE_SCHEME}://dedibox/wiki-index`);
-    assert.deepEqual(parseResourceUri(uri), { vault: 'dedibox', id: 'wiki-index' });
+    const uri = buildResourceUri('dedibox', 'wiki-catalog');
+    assert.equal(uri, `${RESOURCE_SCHEME}://dedibox/wiki-catalog`);
+    assert.deepEqual(parseResourceUri(uri), { vault: 'dedibox', id: 'wiki-catalog' });
   });
 
   test('vault names with spaces are percent-encoded and decode back', () => {
@@ -47,7 +47,7 @@ describe('buildResourceUri / parseResourceUri — round trip', () => {
   test('non-matching / malformed URIs return null', () => {
     assert.equal(parseResourceUri('https://example.com/x'), null);
     assert.equal(parseResourceUri('obsidian-router://novault'), null); // no slash → no id
-    assert.equal(parseResourceUri('obsidian-router:///wiki-index'), null); // empty vault
+    assert.equal(parseResourceUri('obsidian-router:///wiki-catalog'), null); // empty vault
     assert.equal(parseResourceUri(null), null);
     assert.equal(parseResourceUri(42), null);
   });
@@ -109,16 +109,16 @@ describe('readResource', () => {
   test('vault page calls readFile(vault, path) and returns its string content', async () => {
     const calls = [];
     const res = await readResource(
-      buildResourceUri('dedibox', 'wiki-index'),
+      buildResourceUri('dedibox', 'wiki-catalog'),
       registry,
       async (vault, path) => {
         calls.push([vault.name, path]);
-        return '# Index of dedibox';
+        return '# Catalog of dedibox';
       },
     );
-    assert.deepEqual(calls, [['dedibox', 'wiki-meta/index.md']]);
+    assert.deepEqual(calls, [['dedibox', 'wiki-meta/catalog.md']]);
     assert.equal(res.contents[0].mimeType, 'text/markdown');
-    assert.equal(res.contents[0].text, '# Index of dedibox');
+    assert.equal(res.contents[0].text, '# Catalog of dedibox');
   });
 
   test('strips control characters / ANSI escapes from vault content (codex P1)', async () => {
@@ -128,7 +128,7 @@ describe('readResource', () => {
     // that would make git treat the file as binary).
     const dirty = 'clean\x07text\x1b[31m more'; // BEL + ESC[31m (ANSI colour)
     const res = await readResource(
-      buildResourceUri('dedibox', 'wiki-index'),
+      buildResourceUri('dedibox', 'wiki-catalog'),
       registry,
       async () => dirty,
     );
@@ -167,7 +167,7 @@ describe('readResource', () => {
 
   test('unknown vault propagates resolveVault error', async () => {
     await assert.rejects(
-      () => readResource(buildResourceUri('ghost', 'wiki-index'), registry, async () => ''),
+      () => readResource(buildResourceUri('ghost', 'wiki-catalog'), registry, async () => ''),
       /Unknown vault/,
     );
   });

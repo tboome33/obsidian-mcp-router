@@ -1,9 +1,24 @@
 #!/usr/bin/env node
 /**
- * okf-safe-rename-vault — apply the OKF-safe AT-REST rename plan to one vault.
+ * okf-safe-rename-vault — apply an OKF-safe AT-REST rename to one vault or
+ * the whole fleet. Two planning modes, one machinery.
+ *
+ * CHARSET mode (default) — slugify every name Google's OKF tooling would
+ * reject (the 2026-07-29 migration):
  *
  *   node scripts/okf-safe-rename-vault.mjs --vault "C:\VAULTS\Coursera"           # dry-run
  *   node scripts/okf-safe-rename-vault.mjs --vault "C:\VAULTS\Coursera" --apply   # do it
+ *
+ * TABLE mode — rename an EXPLICIT list of paths, for moves no charset rule
+ * can derive (`wiki-meta/index.md` is already conformant; it just has to
+ * vacate a basename OKF reserves — the 2026-07-30 catalog/journal decision):
+ *
+ *   node scripts/okf-safe-rename-vault.mjs --preset okf-reserved-scaffolds --all-vaults
+ *   node scripts/okf-safe-rename-vault.mjs --preset okf-reserved-scaffolds --all-vaults --apply
+ *   node scripts/okf-safe-rename-vault.mjs --vault <dir> --table my-renames.json --apply
+ *
+ * `--all-vaults` walks every path in the router config's `portRegistry`;
+ * `--vault` is repeatable and adds to that set (unregistered vaults).
  *
  * Dry-run prints the full plan and touches nothing. `--apply`:
  *   1. copies every file that will be renamed or content-edited into
@@ -12,42 +27,149 @@
  *   2. rewrites links in .md (wikilinks, embeds, markdown links) and exact
  *      paths in .canvas/.base;
  *   3. renames files, then directories deepest-first;
- *   4. re-scans and verifies: zero non-conformant .md paths left, zero
- *      residual references to old names, file count unchanged.
+ *   4. re-scans and verifies: zero residual references to old names, file
+ *      count unchanged, and — charset mode only — zero non-conformant paths.
  *
- * Exit codes: 0 OK (or nothing to do) · 1 bad usage / verification failure.
+ * Exit codes: 0 OK (or nothing to do) · 1 bad usage / blocked plan /
+ * verification failure. In fleet mode the worst per-vault outcome wins.
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
   isOkfSafeSegment,
   buildRenamePlan,
+  buildRenamePlanFromTable,
   buildRewriteContext,
   rewriteNoteContent,
   rewriteExactPaths,
   buildExactPathMap,
   orderRenameOps,
+  retitleScaffold,
+  RENAME_PRESETS,
 } from '../src/helpers/okf-safe-rename.mjs';
 
 const SKIP_DIR_RE = /^(\.|node_modules$)/;
 
+// Same resolution order as setup-vault.mjs / the router binary.
+const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
+  ? path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG)
+  : path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
+
+function usage(msg) {
+  if (msg) console.error(`✗ ${msg}`);
+  console.error(
+    'Usage:\n' +
+      '  okf-safe-rename-vault.mjs --vault <dir> [--vault <dir>…] [--apply] [--list-all]\n' +
+      '  okf-safe-rename-vault.mjs --preset <name> (--all-vaults | --vault <dir>…) [--apply]\n' +
+      '  okf-safe-rename-vault.mjs --table <file.json> (--all-vaults | --vault <dir>…) [--apply]\n' +
+      '\n' +
+      'Options:\n' +
+      '  --all-vaults          every vault in the router config portRegistry\n' +
+      '  --preset <name>       a shipped rename table (see below)\n' +
+      '  --table <file.json>   [{oldPath,newPath}…] or {renames:[…],preserveDisplay:bool}\n' +
+      '  --no-alias            rewritten wikilinks do NOT keep the old text as alias\n' +
+      '  --preserve-display    force the display-preserving alias back on\n' +
+      '  --apply               execute (default is dry-run)\n' +
+      '  --list-all            print every rename instead of the first 25\n' +
+      '\n' +
+      'Presets:\n' +
+      Object.entries(RENAME_PRESETS)
+        .map(([name, p]) => `  ${name}\n      ${p.description}`)
+        .join('\n') +
+      '\n',
+  );
+  process.exit(1);
+}
+
 function parseArgs(argv) {
-  const args = { vault: null, apply: false, listAll: false };
+  const args = {
+    vaults: [],
+    apply: false,
+    listAll: false,
+    allVaults: false,
+    preset: null,
+    tableFile: null,
+    preserveDisplay: null, // null = take the preset/table default
+  };
   for (let i = 2; i < argv.length; i += 1) {
     const a = argv[i];
-    if (a === '--vault') args.vault = argv[++i];
+    if (a === '--vault') args.vaults.push(argv[++i]);
     else if (a === '--apply') args.apply = true;
     else if (a === '--list-all') args.listAll = true;
-    else {
-      console.error(`Unknown argument: ${a}`);
-      process.exit(1);
+    else if (a === '--all-vaults') args.allVaults = true;
+    else if (a === '--preset') args.preset = argv[++i];
+    else if (a === '--table') args.tableFile = argv[++i];
+    else if (a === '--no-alias') args.preserveDisplay = false;
+    else if (a === '--preserve-display') args.preserveDisplay = true;
+    else usage(`Unknown argument: ${a}`);
+  }
+
+  if (args.preset && args.tableFile) usage('--preset and --table are mutually exclusive.');
+  if (args.preset && !RENAME_PRESETS[args.preset]) {
+    usage(`Unknown preset "${args.preset}". Known: ${Object.keys(RENAME_PRESETS).join(', ')}`);
+  }
+
+  // Resolve the rename table (null → charset mode).
+  let table = null;
+  let presetPreserveDisplay = true;
+  args.retitle = [];
+  if (args.preset) {
+    const p = RENAME_PRESETS[args.preset];
+    table = p.renames;
+    presetPreserveDisplay = p.preserveDisplay !== false;
+    args.retitle = p.retitle ?? [];
+  } else if (args.tableFile) {
+    if (!fs.existsSync(args.tableFile)) usage(`--table file not found: ${args.tableFile}`);
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(args.tableFile, 'utf8'));
+    } catch (e) {
+      usage(`--table file is not valid JSON: ${e.message}`);
+    }
+    table = Array.isArray(parsed) ? parsed : parsed?.renames;
+    if (!Array.isArray(table) || table.length === 0) {
+      usage('--table file must be a non-empty array, or {"renames":[…]}.');
+    }
+    if (!Array.isArray(parsed)) {
+      presetPreserveDisplay = parsed.preserveDisplay !== false;
+      args.retitle = Array.isArray(parsed.retitle) ? parsed.retitle : [];
     }
   }
-  if (!args.vault || !fs.existsSync(args.vault) || !fs.statSync(args.vault).isDirectory()) {
-    console.error('Usage: node scripts/okf-safe-rename-vault.mjs --vault <dir> [--apply] [--list-all]');
-    process.exit(1);
+  args.table = table;
+  args.preserveDisplay = args.preserveDisplay ?? presetPreserveDisplay;
+
+  // Resolve the vault set.
+  const paths = [];
+  if (args.allVaults) {
+    let cfg = {};
+    try {
+      cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    } catch {
+      usage(`--all-vaults needs a readable router config at ${CONFIG_PATH}`);
+    }
+    const registered = Object.keys(cfg.portRegistry || {});
+    if (registered.length === 0) usage(`Router config has no vaults in portRegistry (${CONFIG_PATH}).`);
+    paths.push(...registered);
+  }
+  paths.push(...args.vaults);
+  if (paths.length === 0) usage('Nothing to do — pass --vault <dir> and/or --all-vaults.');
+
+  // De-duplicate (a registered vault also passed explicitly) and validate.
+  const seen = new Set();
+  args.resolved = [];
+  for (const p of paths) {
+    const abs = path.resolve(p);
+    const key = abs.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
+      args.resolved.push({ abs, unreachable: true });
+    } else {
+      args.resolved.push({ abs, unreachable: false });
+    }
   }
   return args;
 }
@@ -83,166 +205,271 @@ function nonConformantMdPaths(files) {
   });
 }
 
-const args = parseArgs(process.argv);
-const vaultAbs = path.resolve(args.vault);
-const files = walkFiles(vaultAbs);
-const plan = buildRenamePlan(files);
+/**
+ * Plan + optionally apply the rename for ONE vault.
+ * @returns {{status: 'ok'|'nothing'|'planned'|'blocked'|'failed', ...}}
+ */
+function processVault(vaultAbs, args) {
+  const label = `\n=== okf-safe-rename — ${vaultAbs} ${args.apply ? '(APPLY)' : '(dry-run)'} ===`;
+  const files = walkFiles(vaultAbs);
+  const plan = args.table
+    ? buildRenamePlanFromTable(files, args.table)
+    : buildRenamePlan(files);
+  // Retitle entries only apply to files this run actually renames.
+  const newPathsLower = new Set([...plan.fileMap.values()].map((p) => p.toLowerCase()));
+  const retitles = (args.retitle ?? []).filter((r) => newPathsLower.has(r.path.toLowerCase()));
 
-const fileOps = plan.renameOps.filter((r) => !r.isDir);
-const dirOps = plan.renameOps.filter((r) => r.isDir);
+  const fileOps = plan.renameOps.filter((r) => !r.isDir);
+  const dirOps = plan.renameOps.filter((r) => r.isDir);
 
-console.log(`\n=== okf-safe-rename — ${vaultAbs} ${args.apply ? '(APPLY)' : '(dry-run)'} ===`);
-console.log(`files scanned:        ${files.length}`);
-console.log(`md files to rename:   ${fileOps.length}`);
-console.log(`directories to rename:${dirOps.length}`);
-console.log(`collision suffixes:   ${plan.collisionsResolved.length}`);
-console.log(`ambiguous old stems:  ${plan.ambiguousStems.length}${plan.ambiguousStems.length ? ' → ' + plan.ambiguousStems.join(', ') : ''}`);
-
-if (plan.renameOps.length === 0) {
-  console.log('\nVault is already OKF-safe — nothing to do.');
-  process.exit(0);
-}
-
-// ---------------------------------------------------------------------------
-// Content rewriting pass (computed in memory for both modes)
-// ---------------------------------------------------------------------------
-
-const ctx = buildRewriteContext(plan);
-const exactMap = buildExactPathMap(plan);
-const mdFiles = files.filter((f) => /\.md$/i.test(f));
-const structuredFiles = files.filter((f) => /\.(canvas|base)$/i.test(f));
-
-const edits = []; // {relPath, newContent, edits}
-let totalLinkEdits = 0;
-let totalSkippedAmbiguous = 0;
-
-for (const rel of mdFiles) {
-  const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
-  const linkPass = rewriteNoteContent(raw, rel, ctx);
-  totalSkippedAmbiguous += linkPass.skippedAmbiguous;
-  // Raw-text pass: session journals, CLAUDE.md and friends cite old paths
-  // as plain text (no link syntax) — exact strings, safe to substitute.
-  const rawPass = rewriteExactPaths(linkPass.content, exactMap);
-  if (rawPass.content !== raw) {
-    edits.push({ relPath: rel, newContent: rawPass.content, edits: linkPass.edits + rawPass.edits });
-    totalLinkEdits += linkPass.edits + rawPass.edits;
+  console.log(label);
+  console.log(`mode:                 ${args.table ? `table${args.preset ? ` (preset ${args.preset})` : ''}` : 'charset'}`);
+  console.log(`files scanned:        ${files.length}`);
+  console.log(`files to rename:      ${fileOps.length}`);
+  console.log(`directories to rename:${dirOps.length}`);
+  if (args.table) {
+    console.log(`display preserved:    ${args.preserveDisplay ? 'yes (old text kept as alias)' : 'no (visible text follows the target)'}`);
+    if (plan.missing.length) console.log(`not present here:     ${plan.missing.join(', ')}`);
+  } else {
+    console.log(`collision suffixes:   ${plan.collisionsResolved.length}`);
   }
-}
-for (const rel of structuredFiles) {
-  const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
-  const r = rewriteExactPaths(raw, exactMap);
-  if (r.changed) {
-    edits.push({ relPath: rel, newContent: r.content, edits: r.edits });
-    totalLinkEdits += r.edits;
-  }
-}
-
-console.log(`notes/canvas edited:  ${edits.length} (${totalLinkEdits} link edits)`);
-if (totalSkippedAmbiguous > 0) {
-  console.log(`⚠ links left untouched because their old stem is ambiguous: ${totalSkippedAmbiguous}`);
-}
-
-const shown = args.listAll ? plan.renameOps : plan.renameOps.slice(0, 25);
-console.log('\nRenames:');
-for (const r of shown) console.log(`  ${r.isDir ? 'DIR ' : 'file'}  ${r.oldPath}  →  ${r.newPath}`);
-if (shown.length < plan.renameOps.length) {
-  console.log(`  … ${plan.renameOps.length - shown.length} more (use --list-all)`);
-}
-
-if (!args.apply) {
-  console.log('\nDry-run only — re-run with --apply to execute.');
-  process.exit(0);
-}
-
-// ---------------------------------------------------------------------------
-// APPLY: backup → content edits → renames → manifest → verify
-// ---------------------------------------------------------------------------
-
-const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
-const backupDir = path.join(vaultAbs, '.okf-rename-backup', ts);
-
-fs.mkdirSync(backupDir, { recursive: true });
-const touchedFiles = new Set(edits.map((e) => e.relPath));
-for (const op of fileOps) touchedFiles.add(op.oldPath);
-for (const rel of touchedFiles) {
-  const dest = path.join(backupDir, rel);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(path.join(vaultAbs, rel), dest);
-}
-
-for (const e of edits) {
-  fs.writeFileSync(path.join(vaultAbs, e.relPath), e.newContent, 'utf8');
-}
-
-for (const op of orderRenameOps(plan.renameOps)) {
-  const oldAbs = path.join(vaultAbs, op.oldPath);
-  const newBasename = op.newPath.split('/').pop();
-  const targetAbs = path.join(path.dirname(oldAbs), newBasename);
-  fs.renameSync(oldAbs, targetAbs);
-}
-
-fs.writeFileSync(
-  path.join(backupDir, 'manifest.json'),
-  JSON.stringify(
-    {
-      vault: vaultAbs,
-      timestamp: ts,
-      renames: plan.renameOps,
-      editedFiles: edits.map((e) => ({ relPath: e.relPath, linkEdits: e.edits })),
-      collisionsResolved: plan.collisionsResolved,
-      ambiguousStems: plan.ambiguousStems,
-    },
-    null,
-    2,
-  ),
-  'utf8',
-);
-
-// ---------------------------------------------------------------------------
-// Verify
-// ---------------------------------------------------------------------------
-
-const after = walkFiles(vaultAbs);
-const problems = [];
-
-if (after.length !== files.length) {
-  problems.push(`file count changed: ${files.length} → ${after.length}`);
-}
-const stillBad = nonConformantMdPaths(after);
-if (stillBad.length > 0) {
-  problems.push(`non-conformant md paths remain: ${stillBad.length}`);
-  for (const p of stillBad.slice(0, 10)) problems.push(`   ${p}`);
-}
-
-const oldStemPatterns = plan.stemRenames
-  .filter((r) => !plan.ambiguousStems.includes(r.oldStem.toLowerCase()))
-  .map((r) => new RegExp(`\\[\\[${escapeRegExp(r.oldStem)}(\\]\\]|#|\\|)`, 'i'));
-const oldPaths = [...exactMap.keys()];
-let residualRefs = 0;
-for (const rel of after.filter((f) => /\.(md|canvas|base)$/i.test(f))) {
-  const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
-  for (const re of oldStemPatterns) {
-    if (re.test(raw)) {
-      residualRefs += 1;
-      problems.push(`residual wikilink in ${rel}: ${re.source}`);
-      break;
+  if (plan.ambiguousStems.length) {
+    console.log(`ambiguous old stems:  ${plan.ambiguousStems.length} → ${plan.ambiguousStems.join(', ')}`);
+    for (const d of plan.ambiguityDetail ?? []) {
+      console.log(`   [[${d.stem}]] — ${d.reason}`);
+      for (const c of d.conflicting.slice(0, 5)) console.log(`      also: ${c}`);
     }
   }
-  for (const op of oldPaths) {
-    if (raw.includes(op)) {
-      residualRefs += 1;
-      problems.push(`residual old path in ${rel}: ${op}`);
-      break;
+
+  // Blocking collisions: an explicit table gets refused, never auto-suffixed.
+  if (plan.collisions?.length) {
+    console.log(`\nBLOCKED — ${plan.collisions.length} collision(s):`);
+    for (const c of plan.collisions) console.log(`  ${c.oldPath} → ${c.newPath}: ${c.reason}`);
+    console.log('  Resolve these by hand (or amend the table); nothing was touched.');
+    return { status: 'blocked', collisions: plan.collisions.length };
+  }
+
+  if (plan.renameOps.length === 0) {
+    console.log(args.table ? '\nNothing from the table is present — skipped.' : '\nVault is already OKF-safe — nothing to do.');
+    return { status: 'nothing' };
+  }
+
+  // -------------------------------------------------------------------------
+  // Content rewriting pass (computed in memory for both modes)
+  // -------------------------------------------------------------------------
+
+  const ctx = buildRewriteContext(plan, { preserveDisplay: args.preserveDisplay });
+  const exactMap = buildExactPathMap(plan);
+  const mdFiles = files.filter((f) => /\.md$/i.test(f));
+  const structuredFiles = files.filter((f) => /\.(canvas|base)$/i.test(f));
+
+  const edits = []; // {relPath, newContent, edits}
+  let totalLinkEdits = 0;
+  let totalSkippedAmbiguous = 0;
+
+  for (const rel of mdFiles) {
+    const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
+    const linkPass = rewriteNoteContent(raw, rel, ctx);
+    totalSkippedAmbiguous += linkPass.skippedAmbiguous;
+    // Raw-text pass: session journals, CLAUDE.md and friends cite old paths
+    // as plain text (no link syntax) — exact strings, safe to substitute.
+    const rawPass = rewriteExactPaths(linkPass.content, exactMap);
+    if (rawPass.content !== raw) {
+      edits.push({ relPath: rel, newContent: rawPass.content, edits: linkPass.edits + rawPass.edits });
+      totalLinkEdits += linkPass.edits + rawPass.edits;
     }
   }
-}
+  for (const rel of structuredFiles) {
+    const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
+    const r = rewriteExactPaths(raw, exactMap);
+    if (r.changed) {
+      edits.push({ relPath: rel, newContent: r.content, edits: r.edits });
+      totalLinkEdits += r.edits;
+    }
+  }
 
-console.log(`\nBackup + manifest: ${backupDir}`);
-if (problems.length === 0) {
-  console.log(`VERIFY ✅  ${fileOps.length} files + ${dirOps.length} dirs renamed, ${edits.length} files re-linked, 0 residual references, file count stable.`);
-  process.exit(0);
-} else {
+  console.log(`notes/canvas edited:  ${edits.length} (${totalLinkEdits} link edits)`);
+  if (retitles.length) {
+    console.log(`scaffolds retitled:   ${retitles.length} (${retitles.map((r) => r.path.split('/').pop()).join(', ')})`);
+  }
+  if (totalSkippedAmbiguous > 0) {
+    console.log(`⚠ links left untouched because their old stem is ambiguous: ${totalSkippedAmbiguous}`);
+  }
+
+  const shown = args.listAll ? plan.renameOps : plan.renameOps.slice(0, 25);
+  console.log('Renames:');
+  for (const r of shown) console.log(`  ${r.isDir ? 'DIR ' : 'file'}  ${r.oldPath}  →  ${r.newPath}`);
+  if (shown.length < plan.renameOps.length) {
+    console.log(`  … ${plan.renameOps.length - shown.length} more (use --list-all)`);
+  }
+
+  if (!args.apply) {
+    console.log('Dry-run only — re-run with --apply to execute.');
+    return { status: 'planned', fileOps: fileOps.length, dirOps: dirOps.length, edits: edits.length };
+  }
+
+  // -------------------------------------------------------------------------
+  // APPLY: backup → content edits → renames → manifest → verify
+  // -------------------------------------------------------------------------
+
+  const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+  const backupDir = path.join(vaultAbs, '.okf-rename-backup', ts);
+
+  fs.mkdirSync(backupDir, { recursive: true });
+  const touchedFiles = new Set(edits.map((e) => e.relPath));
+  for (const op of fileOps) touchedFiles.add(op.oldPath);
+  for (const rel of touchedFiles) {
+    const dest = path.join(backupDir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(path.join(vaultAbs, rel), dest);
+  }
+
+  for (const e of edits) {
+    fs.writeFileSync(path.join(vaultAbs, e.relPath), e.newContent, 'utf8');
+  }
+
+  for (const op of orderRenameOps(plan.renameOps)) {
+    const oldAbs = path.join(vaultAbs, op.oldPath);
+    const newBasename = op.newPath.split('/').pop();
+    const targetAbs = path.join(path.dirname(oldAbs), newBasename);
+    fs.renameSync(oldAbs, targetAbs);
+  }
+
+  // Post-rename retitle: the scaffold's own H1/`title:` still names the old
+  // object. Runs on the NEW path, so it has to come after the renames. The
+  // original bytes are already in the backup (the file was renamed).
+  const retitled = [];
+  for (const r of retitles) {
+    const abs = path.join(vaultAbs, r.path);
+    if (!fs.existsSync(abs)) continue;
+    const res = retitleScaffold(fs.readFileSync(abs, 'utf8'), r.words);
+    if (res.changed) {
+      fs.writeFileSync(abs, res.content, 'utf8');
+      retitled.push({ relPath: r.path, edits: res.edits });
+    }
+  }
+
+  fs.writeFileSync(
+    path.join(backupDir, 'manifest.json'),
+    JSON.stringify(
+      {
+        vault: vaultAbs,
+        timestamp: ts,
+        mode: args.table ? 'table' : 'charset',
+        preset: args.preset ?? null,
+        preserveDisplay: args.preserveDisplay,
+        renames: plan.renameOps,
+        retitled,
+        editedFiles: edits.map((e) => ({ relPath: e.relPath, linkEdits: e.edits })),
+        collisionsResolved: plan.collisionsResolved,
+        ambiguousStems: plan.ambiguousStems,
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  // -------------------------------------------------------------------------
+  // Verify
+  // -------------------------------------------------------------------------
+
+  const after = walkFiles(vaultAbs);
+  const problems = [];
+
+  if (after.length !== files.length) {
+    problems.push(`file count changed: ${files.length} → ${after.length}`);
+  }
+  // Charset conformity is what charset mode promised. A table promises only
+  // the listed renames, so pre-existing non-conformant names elsewhere are
+  // not this run's failure.
+  if (!args.table) {
+    const stillBad = nonConformantMdPaths(after);
+    if (stillBad.length > 0) {
+      problems.push(`non-conformant md paths remain: ${stillBad.length}`);
+      for (const p of stillBad.slice(0, 10)) problems.push(`   ${p}`);
+    }
+  }
+
+  const oldStemPatterns = plan.stemRenames
+    .filter((r) => !plan.ambiguousStems.includes(r.oldStem.toLowerCase()))
+    .map((r) => new RegExp(`\\[\\[${escapeRegExp(r.oldStem)}(\\]\\]|#|\\|)`, 'i'));
+  const oldPaths = [...exactMap.keys()];
+  let residualRefs = 0;
+  for (const rel of after.filter((f) => /\.(md|canvas|base)$/i.test(f))) {
+    const raw = fs.readFileSync(path.join(vaultAbs, rel), 'utf8');
+    for (const re of oldStemPatterns) {
+      if (re.test(raw)) {
+        residualRefs += 1;
+        problems.push(`residual wikilink in ${rel}: ${re.source}`);
+        break;
+      }
+    }
+    for (const op of oldPaths) {
+      if (raw.includes(op)) {
+        residualRefs += 1;
+        problems.push(`residual old path in ${rel}: ${op}`);
+        break;
+      }
+    }
+  }
+
+  console.log(`Backup + manifest: ${backupDir}`);
+  if (problems.length === 0) {
+    console.log(`VERIFY ✅  ${fileOps.length} files + ${dirOps.length} dirs renamed, ${edits.length} files re-linked, 0 residual references, file count stable.`);
+    return { status: 'ok', fileOps: fileOps.length, dirOps: dirOps.length, edits: edits.length, linkEdits: totalLinkEdits, backupDir };
+  }
   console.log('VERIFY ❌');
   for (const p of problems) console.log(`  ${p}`);
-  process.exit(1);
+  return { status: 'failed', problems: problems.length, residualRefs, backupDir };
 }
+
+// ---------------------------------------------------------------------------
+// Driver
+// ---------------------------------------------------------------------------
+
+const args = parseArgs(process.argv);
+const results = [];
+
+for (const { abs, unreachable } of args.resolved) {
+  if (unreachable) {
+    console.log(`\n=== okf-safe-rename — ${abs}`);
+    console.log('SKIPPED — not an existing directory (stale config entry?).');
+    results.push({ vault: abs, status: 'unreachable' });
+    continue;
+  }
+  try {
+    results.push({ vault: abs, ...processVault(abs, args) });
+  } catch (e) {
+    console.log(`FAILED — ${e.message}`);
+    results.push({ vault: abs, status: 'failed', problems: 1, error: e.message });
+  }
+}
+
+if (args.resolved.length > 1) {
+  const tally = results.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
+  console.log(`\n=== fleet summary — ${results.length} vault(s) ===`);
+  for (const r of results) {
+    const detail =
+      r.status === 'ok' || r.status === 'planned'
+        ? ` (${r.fileOps} files, ${r.dirOps} dirs, ${r.edits} re-linked)`
+        : '';
+    console.log(`  ${r.status.padEnd(11)} ${r.vault}${detail}`);
+  }
+  console.log(
+    '  ' +
+      Object.entries(tally)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(' · '),
+  );
+  const touched = results.filter((r) => r.status === 'ok' || r.status === 'planned');
+  console.log(
+    `  totals: ${touched.reduce((n, r) => n + (r.fileOps ?? 0), 0)} files + ` +
+      `${touched.reduce((n, r) => n + (r.dirOps ?? 0), 0)} dirs renamed, ` +
+      `${touched.reduce((n, r) => n + (r.edits ?? 0), 0)} files re-linked` +
+      `${args.apply ? '' : ' (dry-run)'}`,
+  );
+}
+
+const bad = results.filter((r) => r.status === 'failed' || r.status === 'blocked');
+process.exit(bad.length > 0 ? 1 : 0);

@@ -1,6 +1,6 @@
 ---
 name: wiki-lint
-description: Health-check a wiki vault. Finds orphan pages (no inbound links), dead wikilinks (point to non-existent pages), missing frontmatter fields, stale claims, empty sections, and pages absent from index.md. Produces a structured report with severity tiers and proposes concrete fixes — but does not auto-apply them unless the user confirms. Use when the user says "lint the wiki", "health check", "audit my wiki", "find orphans", "what's broken in the wiki", "/wiki-lint", or after a long ingestion session to catch drift.
+description: Health-check a wiki vault. Finds orphan pages (no inbound links), dead wikilinks (point to non-existent pages), missing frontmatter fields, stale claims, empty sections, and pages absent from catalog.md. Produces a structured report with severity tiers and proposes concrete fixes — but does not auto-apply them unless the user confirms. Use when the user says "lint the wiki", "health check", "audit my wiki", "find orphans", "what's broken in the wiki", "/wiki-lint", or after a long ingestion session to catch drift.
 ---
 
 # wiki-lint
@@ -37,7 +37,7 @@ A related skill, `wiki-refresh-digests`, regenerates stale digests detected by C
 mcp__obsidian-router__list_files({ vault, directory: "wiki" })
 ```
 
-Build a flat set of every page path under `wiki/`. Read `wiki-meta/index.md` and parse the catalog into a separate set.
+Build a flat set of every page path under `wiki/`. Read `wiki-meta/catalog.md` and parse the catalog into a separate set.
 
 ### 2. Run checks in parallel
 
@@ -50,8 +50,8 @@ A page is orphan if NO other page wikilinks to it (excluding self-references and
 A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve aliases (`[[Target|Alias]]`) and folder-prefixed forms (`[[concepts/Foo]]`). If a link looks dead, double-check by trying both with and without the `.md` extension and against alias frontmatter.
 
 #### Check C: index drift
-- Pages on disk under `wiki/` but missing from `wiki-meta/index.md` → "missing in index"
-- Rows in `wiki-meta/index.md` pointing at pages that don't exist → "stale index entry"
+- Pages on disk under `wiki/` but missing from `wiki-meta/catalog.md` → "missing in index"
+- Rows in `wiki-meta/catalog.md` pointing at pages that don't exist → "stale index entry"
 
 #### Check D: frontmatter gaps
 Every wiki page should have `type:` set. Sources should have `url:` (or `path:`) and `ingested_at:`. Answers should have `question:` and `answered_at:`. Missing fields are warnings, not errors.
@@ -60,7 +60,7 @@ Every wiki page should have `type:` set. Sources should have `url:` (or `path:`)
 Pages with section headings followed by no body until the next heading. Surface them — they're usually placeholders that were forgotten.
 
 #### Check F: log consistency
-`wiki-meta/log.md` should be append-only, monotonically increasing timestamps. Out-of-order or duplicate timestamps are a smell (manual edit?). Surface them as info-level.
+`wiki-meta/journal.md` should be append-only, monotonically increasing timestamps. Out-of-order or duplicate timestamps are a smell (manual edit?). Surface them as info-level.
 
 #### Check G: hot.md staleness
 If `hot.md` `## Last Updated` is more than 7 days old, flag it. Real-world: hot caches go stale fast and become misleading.
@@ -192,9 +192,9 @@ For WARNING-level findings, do NOT offer auto-fix. The orphan might be intention
 
 The user must explicitly say "fix the errors" or "yes fix dead links" before any mutation.
 
-### 5. Append to log.md (only when mutations happened)
+### 5. Append to journal.md (only when mutations happened)
 
-This skill is **read-only by default**. A pure dry-run does NOT touch `log.md` — that would be a hidden mutation contradicting the read-only contract.
+This skill is **read-only by default**. A pure dry-run does NOT touch `journal.md` — that would be a hidden mutation contradicting the read-only contract.
 
 Append a log entry **only** if the user accepted at least one ERROR-level auto-fix in step 4:
 

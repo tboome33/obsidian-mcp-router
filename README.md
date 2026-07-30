@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.57.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.58.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -62,7 +62,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
 | `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
 | `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 11 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
-| `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/log.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
+| `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/journal.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
 
 The three vars compose freely: an instance can be scoped to one vault (`ALLOWED_VAULTS=karine`) AND read-only (`READONLY=true`) AND attribute writes (`USER_ID=karine-guest`). Setting none = v0.8.x behavior exactly.
 
@@ -166,7 +166,7 @@ A small workflow on top of the router for an LLM-maintained, structured markdown
 |---|---|---|
 | `/obsidian-router:wiki` | Scaffold `wiki/` inside a vault (index, log, hot, overview + CLAUDE.md update) | *"set up a wiki"*, *"scaffold a knowledge base"* / *"scaffold un wiki"*, *"crée une base de connaissances"* |
 | `/obsidian-router:wiki-ingest` | Ingest a source (URL/file/text) → entity & concept pages + cross-refs | *"ingest this URL"*, *"absorb this article"* / *"ingère cette URL"*, *"absorbe cet article"* |
-| `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → index.md → drill into pages), wiki-only (no web) | *"based on my notes, ..."*, *"what does my wiki say about X"* / *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* |
+| `/obsidian-router:wiki-query` | Three-tier RAG (hot.md → catalog.md → drill into pages), wiki-only (no web) | *"based on my notes, ..."*, *"what does my wiki say about X"* / *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* |
 | `/obsidian-router:wiki-lint` | Health check (orphans, dead wikilinks, index drift, frontmatter gaps) | *"lint the wiki"*, *"audit my wiki"* / *"lint le wiki"*, *"audit mon wiki"* |
 | `/obsidian-router:wiki-fold` | Idempotent rollup of log entries under `wiki/folds/` | *"fold the log"*, *"roll up recent activity"* / *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* |
 | `/obsidian-router:hot-compact` | Compact an oversized `wiki-meta/hot.md` back to its cache contract (verified full backup → thin state-first rewrite → log trace) | *"compact the hot cache"*, *"hot.md is over limit"* / *"compacte le hot"*, *"hot.md dépasse la limite"* |
@@ -193,7 +193,7 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `wiki-lint` agent — read-only diagnostic in a separate context
 
 **Hooks** — **10 cross-platform Node hooks**. Since v0.56.0 the split is: installing the plugin activates exactly two of them (`hot-cache-load` + `decisions-recall`, declared in `hooks/hooks.json`); the other eight fire only when wired via `setup-vault.mjs` — vault bootstrap auto-wires them into `~/.claude/settings.json` (since v0.18.2, opt out with `--no-hooks`), or run `node scripts/setup-vault.mjs --install-hooks` standalone. See [Which hooks the plugin turns on by itself](#which-hooks-the-plugin-turns-on-by-itself):
-- `session-auto-journal` — auto-journals each Claude session under `wiki-meta/Sessions/` + a 2-line recap to `wiki-meta/log.md` (self-healing reconciliation)
+- `session-auto-journal` — auto-journals each Claude session under `wiki-meta/Sessions/` + a 2-line recap to `wiki-meta/journal.md` (self-healing reconciliation)
 - `hot-cache-load` — loads `wiki-meta/hot.md` into context at SessionStart / PostCompact
 - `hot-cache-update-prompt` — deterministic guard: **blocks the turn** (exit 2) until `wiki-meta/hot.md` is refreshed when this session wrote a `wiki/` note (per-vault, transcript-scoped; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
 - `wiki-autocommit` — auto-commits `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` to git after writes
@@ -214,7 +214,7 @@ The hooks ship in [`hooks/`](./hooks/); `setup-vault.mjs` wires them automatical
 |---|---|---|
 | `ClaudeAsk` (default) | Propose, always confirm | Discovering the feature · long mixed-importance sessions · vaults where false positives would hurt · the calibration period (1-2 weeks) before trusting auto-save |
 | `Hybrid` | Auto-save type-safe items (facts, URLs, preferences); ask on high-stakes (decisions, ADRs, rules, techniques) | Power-user sweet spot after calibration · active dev with frequent URL ingestion · research where citations pile up but conclusions need vetting |
-| `FullAuto` | Auto-save everything; audit log in `wiki-meta/log.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
+| `FullAuto` | Auto-save everything; audit log in `wiki-meta/journal.md` + sensitivity filter (never auto-save credentials/medical/financial) + hard cap (degrades to `ClaudeAsk` after 5 saves/session) | High-trust sessions · personal journal / family chronicle · long unsupervised flows (autoresearch, batch ingestion) · solo brain-dumps where the wiki IS the conversation log |
 | `off` | No auto-suggestions; manual `/save` only | Debugging sessions you don't want polluting the wiki · sensitive conversations · default for legal/medical/financial vaults · control-freak preference |
 
 **Placement** — the consigne ships in the vault `CLAUDE.md` template, but is also configurable as Claude Desktop **Project instructions** (elegant pattern: a "Trading Journal" project always saves to `tradingview`, a "Personal" project to `personal`). See [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) for the four placement channels (vault CLAUDE.md, Project instructions, Memory, global CLAUDE.md), the activation rules, and concrete copy-paste boilerplates per channel.
@@ -884,7 +884,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.57.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.58.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -928,7 +928,7 @@ Le router tourne en deux modes, pilotés uniquement par variables d'environnemen
   - `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` — whitelist des vaults que cette instance voit ;
   - `VAULT_<NOM>=<JSON>` — un vault défini entièrement en variable d'env (voir la section [Config `VAULT_*`](#config-vault_-en-variable-denvironnement-éditable-depuis-le-dashboard)) ;
   - `OBSIDIAN_ROUTER_READONLY=true` — masque de `ListTools` **et** refuse au `CallTool` les **11 outils d'écriture** (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`) ;
-  - `OBSIDIAN_ROUTER_USER_ID=<slug>` — journal d'audit de chaque écriture réussie dans le `wiki-meta/log.md` du vault touché (masque aussi les outils local-only `plan_vault` / `provision_vault`).
+  - `OBSIDIAN_ROUTER_USER_ID=<slug>` — journal d'audit de chaque écriture réussie dans le `wiki-meta/journal.md` du vault touché (masque aussi les outils local-only `plan_vault` / `provision_vault`).
 
 Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complète : voir la section anglaise « [Deployment modes](#deployment-modes) ».
 
@@ -1018,7 +1018,7 @@ Un petit workflow par-dessus le router pour une base de connaissances en markdow
 |---|---|---|
 | `/obsidian-router:wiki` | Scaffold `wiki/` dans un vault (index, log, hot, overview + update CLAUDE.md) | *"scaffold un wiki"*, *"crée une base de connaissances"* / *"set up a wiki"*, *"scaffold a knowledge base"* |
 | `/obsidian-router:wiki-ingest` | Ingestion d'une source (URL/fichier/texte) → pages entité & concept + cross-refs | *"ingère cette URL"*, *"absorbe cet article"* / *"ingest this URL"*, *"absorb this article"* |
-| `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → index.md → drill), wiki-only (sans web) | *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* / *"based on my notes, ..."*, *"what does my wiki say about X"* |
+| `/obsidian-router:wiki-query` | RAG en 3 tiers (hot.md → catalog.md → drill), wiki-only (sans web) | *"d'après mes notes, ..."*, *"que dit mon wiki sur X"* / *"based on my notes, ..."*, *"what does my wiki say about X"* |
 | `/obsidian-router:wiki-lint` | Health check (orphelins, wikilinks morts, dérive d'index, frontmatter manquant) | *"lint le wiki"*, *"audit mon wiki"* / *"lint the wiki"*, *"audit my wiki"* |
 | `/obsidian-router:wiki-fold` | Rollup idempotent des entrées du log dans `wiki/folds/` | *"compacte le journal"*, *"résume l'activité wiki de cette semaine"* / *"fold the log"*, *"roll up recent activity"* |
 | `/obsidian-router:hot-compact` | Recompacte un `wiki-meta/hot.md` hors limite vers son contrat de cache (backup complet vérifié → réécriture mince state-first → trace au log) | *"compacte le hot"*, *"hot.md dépasse la limite"* / *"compact the hot cache"*, *"hot.md is over limit"* |
@@ -1045,7 +1045,7 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - agent `wiki-lint` — diagnostic read-only dans un contexte isolé
 
 **Hooks** — **10 hooks Node cross-platform**. Depuis la v0.56.0 la répartition est : installer le plugin active exactement deux d'entre eux (`hot-cache-load` + `decisions-recall`, déclarés dans `hooks/hooks.json`) ; les huit autres ne se déclenchent que s'ils sont câblés via `setup-vault.mjs` — le bootstrap de vault les auto-câble dans `~/.claude/settings.json` (depuis v0.18.2, opt-out via `--no-hooks`), ou lance `node scripts/setup-vault.mjs --install-hooks` seul. Voir [Les hooks que le plugin active tout seul](#les-hooks-que-le-plugin-active-tout-seul) :
-- `session-auto-journal` — journalise automatiquement chaque session Claude sous `wiki-meta/Sessions/` + un récap 2 lignes dans `wiki-meta/log.md` (réconciliation auto-réparatrice)
+- `session-auto-journal` — journalise automatiquement chaque session Claude sous `wiki-meta/Sessions/` + un récap 2 lignes dans `wiki-meta/journal.md` (réconciliation auto-réparatrice)
 - `hot-cache-load` — charge `wiki-meta/hot.md` dans le contexte au SessionStart / PostCompact
 - `hot-cache-update-prompt` — garde déterministe : **bloque le tour** (exit 2) tant que `wiki-meta/hot.md` n'est pas rafraîchi quand la session a écrit une note `wiki/` (par vault, scopé au transcript ; opt-out `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`)
 - `wiki-autocommit` — auto-commit `wiki/`, `wiki-meta/`, `.raw/`, `.vault-meta/` sur git après les écritures
@@ -1066,7 +1066,7 @@ Les hooks vivent dans [`hooks/`](./hooks/) ; `setup-vault.mjs` les câble automa
 |---|---|---|
 | `ClaudeAsk` (défaut) | Propose, confirme toujours | Découverte de la feature · sessions longues à importance mixte · vaults où les faux positifs coûtent cher à nettoyer · période de calibration (1-2 semaines) avant de faire confiance à l'auto-save |
 | `Hybrid` | Auto-save les items type-safe (facts, URLs, préférences) ; ask sur les high-stakes (décisions, ADRs, règles, techniques) | Sweet spot power-user après calibration · dev actif avec ingestion d'URLs fréquente · recherche où les citations s'empilent mais les conclusions doivent être vettées |
-| `FullAuto` | Auto-save tout ; audit log dans `wiki-meta/log.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
+| `FullAuto` | Auto-save tout ; audit log dans `wiki-meta/journal.md` + filtre de sensibilité (jamais d'auto-save sur credentials/médical/financier) + hard cap (dégrade en `ClaudeAsk` après 5 saves/session) | Sessions à haute confiance en Claude · journal perso / chronique familiale · flows longs non supervisés (autoresearch, ingestion en batch) · brain-dumps solo où le wiki EST le log de conversation |
 | `off` | Pas de suggestions auto ; seul `/save` manuel | Sessions de debug que tu ne veux pas polluer dans le wiki · conversations sensibles · défaut pour les vaults légal/médical/financier · préférence control-freak |
 
 **Placement** — la consigne est shipped dans le `CLAUDE.md` template du vault, mais aussi configurable en **instructions de Project Claude Desktop** (pattern élégant : un Project "Journal Trading" sauve toujours dans `tradingview`, un Project "Personnel" dans `personal`). Voir [`docs/auto-enrichment.md`](./docs/auto-enrichment.md) pour les quatre canaux de placement (CLAUDE.md du vault, instructions de Project, Memory, CLAUDE.md global), les règles d'activation, et des boilerplates copy-paste par canal.

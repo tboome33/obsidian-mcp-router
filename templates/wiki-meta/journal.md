@@ -1,9 +1,9 @@
 ---
 type: log
-title: "Wiki Log"
+title: "Wiki Journal"
 ---
 
-# Wiki Log
+# Wiki Journal
 
 Append-only history of operations. Newest at the bottom. Every entry is a single line:
 
@@ -28,4 +28,4 @@ JAMAIS de détail multi-paragraphe directement sous un `## H2` du log. Le détai
 
 ---
 
-- {{TIMESTAMP}} — scaffold — index.md, log.md, hot.md, overview.md, CLAUDE.md — initial wiki bootstrap
+- {{TIMESTAMP}} — scaffold — catalog.md, journal.md, hot.md, overview.md, CLAUDE.md — initial wiki bootstrap

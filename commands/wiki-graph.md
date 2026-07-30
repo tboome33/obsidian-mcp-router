@@ -5,10 +5,10 @@ description: Build a typed knowledge graph (Understand-Anything-compatible knowl
 Invoke the `wiki-graph` skill on the target vault.
 
 Default behaviour:
-- Calls the `build_wiki_graph` MCP tool: enumerates `wiki/**` content pages + `wiki-meta/digests/**`, reads `.wikiignore` + `wiki-meta/index.md`, assembles a typed graph (UA schema verbatim), validates it, and writes **two** files:
+- Calls the `build_wiki_graph` MCP tool: enumerates `wiki/**` content pages + `wiki-meta/digests/**`, reads `.wikiignore` + `wiki-meta/catalog.md`, assembles a typed graph (UA schema verbatim), validates it, and writes **two** files:
   - `wiki-meta/graph/knowledge-graph.json` (canonical source of truth)
   - `.understand-anything/knowledge-graph.json` (derived copy read by Understand-Anything's `/understand-dashboard`)
-- **Deterministic — no LLM.** Maps digest concepts/claims → entity/claim nodes, wikilinks → related edges, referenced sources (frontmatter `sources:`/`^[citations]`/`![[embeds]]`) → source nodes + cites edges, index.md sections → topics + layers.
+- **Deterministic — no LLM.** Maps digest concepts/claims → entity/claim nodes, wikilinks → related edges, referenced sources (frontmatter `sources:`/`^[citations]`/`![[embeds]]`) → source nodes + cites edges, catalog.md sections → topics + layers.
 
 Options:
 - `--dry-run` → build + validate + report counts WITHOUT writing.

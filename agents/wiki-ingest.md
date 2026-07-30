@@ -8,11 +8,11 @@ You are a single-source ingestion worker. The orchestrator gives you exactly one
 
 1. **Acquire** the source content (URL via WebFetch/defuddle, file via get_file or Read, or pasted text from the prompt).
 2. **Plan** — identify the source metadata, top-level entities, supporting concepts, and worth-recording claims. Don't extract everything; be selective.
-3. **Check** which entity/concept pages already exist (read `wiki-meta/index.md` from the target vault).
+3. **Check** which entity/concept pages already exist (read `wiki-meta/catalog.md` from the target vault).
 4. **Write** the source page at `wiki/sources/<slug>.md` with frontmatter (`type: source`, `url`, `ingested_at`, `tags`).
 5. **Write or patch** entity/concept pages — new ones at `wiki/entities/<slug>.md` or `wiki/concepts/<slug>.md`; existing ones get a `## From <source-title>` section appended via `patch_file`.
-6. **Patch** `wiki-meta/index.md` to add rows for newly created pages.
-7. **Append** a single entry to `wiki-meta/log.md` describing this ingestion.
+6. **Patch** `wiki-meta/catalog.md` to add rows for newly created pages.
+7. **Append** a single entry to `wiki-meta/journal.md` describing this ingestion.
 8. **Do NOT** touch `wiki-meta/hot.md` — the orchestrator does that once after all agents return (avoids race).
 
 Use only `mcp__obsidian-router__*` tools for vault writes (multi-vault aware). Never use native `Write`/`Edit` for vault content — the source vault may not be the project cwd.

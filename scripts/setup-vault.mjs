@@ -38,6 +38,13 @@ import { resolvePluginsToClone } from './plugin-resolver.mjs';
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
 import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/targz-extract.mjs';
 import {
+  CATALOG_BASENAME,
+  JOURNAL_BASENAME,
+  WIKI_META_SCAFFOLDS,
+  resolveScaffold,
+  scaffoldWritePath,
+} from '../src/helpers/wiki-meta-scaffolds.mjs';
+import {
   buildProvisionPlan,
   resolveSourceVault,
   resolvePluginProfile,
@@ -259,8 +266,30 @@ function defaultNameFromPath(p) {
 
 /**
  * The 4 canonical scaffolds that move from `wiki/` to `wiki-meta/` in v0.12.0.
+ *
+ * These are the v0.12.0-era BASENAMES and must stay that way: this list drives
+ * the `--migrate-wiki-meta` path, whose input is a pre-v0.12.0 vault carrying
+ * `wiki/index.md` + `wiki/log.md`. It lands them on `wiki-meta/index.md` +
+ * `wiki-meta/log.md`, which v0.58.0 renamed again (see
+ * `src/helpers/wiki-meta-scaffolds.mjs`) — so such a vault needs the second
+ * hop afterwards:
+ *
+ *   node scripts/okf-safe-rename-vault.mjs --preset okf-reserved-scaffolds --vault <v> --apply
+ *
+ * Live scaffolding uses `WIKI_META_SCAFFOLDS` from that helper instead.
  */
-const WIKI_META_SCAFFOLDS = ['hot.md', 'index.md', 'log.md', 'overview.md'];
+const LEGACY_V0120_SCAFFOLDS = ['hot.md', 'index.md', 'log.md', 'overview.md'];
+
+/**
+ * The same four slots, each listing every basename that can legitimately fill
+ * it. Used for PRESENCE tests, where a vault may be on either naming.
+ */
+const SCAFFOLD_SLOTS = [
+  ['hot.md'],
+  [CATALOG_BASENAME, 'index.md'],
+  [JOURNAL_BASENAME, 'log.md'],
+  ['overview.md'],
+];
 
 /**
  * Detect the migration state of a single vault.
@@ -275,14 +304,19 @@ function detectVaultMigrationState(vaultPath) {
   if (!fs.existsSync(vaultPath) || !fs.statSync(vaultPath).isDirectory()) {
     return 'no-vault';
   }
-  const wikiPresent = WIKI_META_SCAFFOLDS.filter((f) =>
+  // `wiki/` side: only the pre-v0.12.0 basenames can ever appear there.
+  const wikiPresent = LEGACY_V0120_SCAFFOLDS.filter((f) =>
     fs.existsSync(path.join(vaultPath, 'wiki', f)));
-  const metaPresent = WIKI_META_SCAFFOLDS.filter((f) =>
-    fs.existsSync(path.join(vaultPath, 'wiki-meta', f)));
+  // `wiki-meta/` side: a slot counts as filled under EITHER the current name
+  // or the pre-0.58.0 one. Counting only one set would read a fully-migrated
+  // vault as 'partial' (2 of 4 present) and make --migrate-wiki-meta refuse a
+  // vault that has nothing left to migrate.
+  const metaPresent = SCAFFOLD_SLOTS.filter((names) =>
+    names.some((f) => fs.existsSync(path.join(vaultPath, 'wiki-meta', f))));
 
   if (wikiPresent.length === 0 && metaPresent.length === 0) return 'empty';
-  if (wikiPresent.length === 0 && metaPresent.length === WIKI_META_SCAFFOLDS.length) return 'fresh';
-  if (wikiPresent.length === WIKI_META_SCAFFOLDS.length && metaPresent.length === 0) return 'legacy';
+  if (wikiPresent.length === 0 && metaPresent.length === SCAFFOLD_SLOTS.length) return 'fresh';
+  if (wikiPresent.length === LEGACY_V0120_SCAFFOLDS.length && metaPresent.length === 0) return 'legacy';
   return 'partial';
 }
 
@@ -373,7 +407,7 @@ function rewriteClaudeMdScaffoldPaths(vaultPath) {
  *   3. Move the 4 scaffolds (via `git mv` if git repo, else `fs.rename`).
  *      Abort early if any move fails — partial state would require manual fix.
  *   4. Rewrite scaffold paths in `<vault>/CLAUDE.md`.
- *   5. Append a migration line to the (now-moved) `wiki-meta/log.md`.
+ *   5. Append a migration line to the (now-moved) `wiki-meta/journal.md`.
  *
  * Returns { status, scaffoldsMoved, mode, claudeMdReplacements, error? }.
  * `status` is one of: 'migrated', 'already-migrated', 'skipped', 'failed'.
@@ -433,7 +467,7 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
 
   // State is 'legacy' (or 'fresh' with force). Perform the move.
   if (result.state === 'legacy') {
-    for (const scaffold of WIKI_META_SCAFFOLDS) {
+    for (const scaffold of LEGACY_V0120_SCAFFOLDS) {
       const src = path.join(vaultPath, 'wiki', scaffold);
       const dst = path.join(vaultPath, 'wiki-meta', scaffold);
       if (!fs.existsSync(src)) {
@@ -474,11 +508,13 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
     result.claudeMdReplacements = rewriteClaudeMdScaffoldPaths(vaultPath);
   }
 
-  // Append a migration line to wiki-meta/log.md (only if not dry-run AND log.md
-  // actually ended up under wiki-meta/ — defensive against state weirdness).
+  // Append a migration line to the journal the move just produced. This is
+  // the v0.12.1 path, so that file is `wiki-meta/log.md` under the pre-0.58.0
+  // name; `resolveScaffold` accepts either, which also covers a vault that
+  // has since been through the catalog/journal rename.
   if (!dryRun) {
-    const logMd = path.join(vaultPath, 'wiki-meta', 'log.md');
-    if (fs.existsSync(logMd)) {
+    const logMd = resolveScaffold(vaultPath, 'journal', { fs, path })?.absPath ?? null;
+    if (logMd) {
       const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
       const line = (
         `\n- ${ts} — **wiki-meta migration** (v0.12.1) — moved the 4 scaffolds from ` +
@@ -664,13 +700,13 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
     result.status = result.sessionsSkipped.length > 0 ? 'merged' : 'migrated';
   }
 
-  // Append a migration line to wiki-meta/log.md (if present AND something
+  // Append a migration line to the vault journal (if present AND something
   // actually moved). v0.12.9 (review+ pass 1 — B1): skip the append when
   // 0 sessions were moved (`merged` status with only conflicts) so a user
-  // who re-runs the script doesn't spam log.md with empty-action lines.
+  // who re-runs the script doesn't spam the journal with empty-action lines.
   if (!dryRun && result.sessionsMoved.length > 0) {
-    const logMd = path.join(vaultPath, 'wiki-meta', 'log.md');
-    if (fs.existsSync(logMd)) {
+    const logMd = resolveScaffold(vaultPath, 'journal', { fs, path })?.absPath ?? null;
+    if (logMd) {
       const ts = new Date().toISOString().replace('T', ' ').slice(0, 16);
       const line = (
         `\n- ${ts} — migrate — wiki/Sessions/ → wiki-meta/Sessions/ — ` +
@@ -1392,7 +1428,7 @@ function removeEnvVarSync(file, key) {
  *
  * Validates:
  *   - workspacePath exists and is a directory
- *   - vaultPath has `wiki-meta/index.md` (otherwise the workspace-bound hooks
+ *   - vaultPath has `wiki-meta/catalog.md` (otherwise the workspace-bound hooks
  *     would skip silently, making the link pointless)
  *
  * On `opts.quiet`, suppresses the success log lines (used by setupVault inline
@@ -1402,10 +1438,11 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
   if (!fs.existsSync(workspacePath)) fail(`Workspace path does not exist: ${workspacePath}`);
   if (!fs.statSync(workspacePath).isDirectory()) fail(`Workspace path is not a directory: ${workspacePath}`);
 
-  const indexMd = path.join(vaultPath, 'wiki-meta', 'index.md');
-  if (!fs.existsSync(indexMd)) {
+  const catalog = resolveScaffold(vaultPath, 'catalog', { fs, path });
+  if (!catalog) {
+    const indexMd = scaffoldWritePath(vaultPath, 'catalog', { path });
     fail(
-      `Vault at ${vaultPath} has no wiki-meta/index.md (expected: ${indexMd}).\n` +
+      `Vault at ${vaultPath} has no wiki-meta/catalog.md (expected: ${indexMd}).\n` +
       `   Bootstrap its wiki first with the \`/obsidian-router:wiki\` skill, or if the vault is\n` +
       `   on the legacy \`wiki/{hot,index,log,overview}.md\` layout (pre-v0.12.0), migrate it\n` +
       `   with \`setup-vault.mjs --migrate-wiki-meta <vault-path>\` (shipped in v0.12.1).`,
@@ -1473,12 +1510,12 @@ function appendGitignore(vaultPath) {
 // v0.12.7 — Wiki scaffolding at vault bootstrap time
 // ---------------------------------------------------------------------------
 //
-// Pre-v0.12.7, the 4 wiki-meta scaffolds (index/hot/overview/log.md) were
+// Pre-v0.12.7, the 4 wiki-meta scaffolds (catalog/hot/overview/journal.md) were
 // created only by the `/obsidian-router:wiki` skill — a separate manual step
 // after vault bootstrap. The `meta-attach-vault` wizard now bundles it into
 // the provisioning step so a freshly-bootstrapped vault is immediately ready
 // for workspace-bound mode (hot-cache-load + wiki-query-first-nudge hooks
-// depend on `wiki-meta/index.md` existing; without it, --link-workspace
+// depend on `wiki-meta/catalog.md` existing; without it, --link-workspace
 // refuses to bind — see `linkWorkspaceToVault()` above).
 //
 // Behavior:
@@ -1512,22 +1549,22 @@ const WIKI_MODE_SECTIONS = {
   code: ['Codebases', 'Architecture Decisions (ADR)', 'Runbooks', 'Concepts', 'Sessions'],
 };
 
-function buildModeIndexContent(mode, sections) {
+function buildModeCatalogContent(mode, sections) {
   const list = (mode === 'domain' && sections && sections.length)
     ? sections
     : (WIKI_MODE_SECTIONS[mode] || WIKI_MODE_SECTIONS.personal);
   let body =
     '---\n' +
     'type: index\n' +
-    'title: "Wiki Index"\n' +
+    'title: "Wiki Catalog"\n' +
     `mode: ${mode}\n` +
     '---\n\n' +
-    '# Wiki Index\n\n' +
-    'This file is the catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.\n\n' +
+    '# Wiki Catalog\n\n' +
+    'This file is the curated catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.\n\n' +
     '## Overview\n\n' +
     '- [[overview]] — what this wiki covers\n' +
     '- [[hot]] — recent-context cache\n' +
-    '- [[log]] — append-only operation history\n';
+    '- [[journal]] — append-only operation history\n';
   for (const header of list) {
     body += `\n## ${header}\n\n_One row per page._\n`;
   }
@@ -1558,12 +1595,12 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
       preserved++;
       continue;
     }
-    // --wiki-mode: seed index.md programmatically from the mode's section list
-    // (and stamp overview.md's frontmatter). Without a mode, use the shipped
-    // template verbatim — the pre-wizard default.
+    // --wiki-mode: seed catalog.md programmatically from the mode's section
+    // list (and stamp overview.md's frontmatter). Without a mode, use the
+    // shipped template verbatim — the pre-wizard default.
     let content;
-    if (scaffold === 'index.md' && wikiOpts.mode) {
-      content = buildModeIndexContent(wikiOpts.mode, wikiOpts.sections);
+    if (scaffold === CATALOG_BASENAME && wikiOpts.mode) {
+      content = buildModeCatalogContent(wikiOpts.mode, wikiOpts.sections);
     } else {
       const src = path.join(templatesDir, scaffold);
       if (!fs.existsSync(src)) {
@@ -2239,7 +2276,7 @@ function setupVault(vaultPath, opts = {}) {
   // state that --migrate-wiki-meta then refuses). Vaults with ONLY some
   // wiki-meta/*.md files (and no legacy files) are repaired idempotently by
   // scaffoldWikiMeta() below — no refusal needed (codex P2 #2).
-  const legacyScaffolds = WIKI_META_SCAFFOLDS.filter((f) =>
+  const legacyScaffolds = LEGACY_V0120_SCAFFOLDS.filter((f) =>
     fs.existsSync(path.join(abs, 'wiki', f)));
   if (legacyScaffolds.length > 0) {
     fail(

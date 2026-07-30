@@ -4,7 +4,7 @@
  *
  * One-shot opt-in script that walks a vault's `wiki-meta/Sessions/*.md`
  * files (closed sessions only) and appends a missing line for each one
- * to `wiki-meta/log.md` — backfilling the cross-link that the
+ * to `wiki-meta/journal.md` — backfilling the cross-link that the
  * `session-auto-journal.mjs` hook now writes automatically at SessionEnd
  * (router v0.12.8+).
  *
@@ -49,6 +49,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs';
+import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 
 // State dir where session-auto-journal.mjs persists per-session JSON (used by
 // --include-open for recap enrichment + liveness). Mirrors the hook's path.
@@ -213,14 +214,15 @@ function reconstructEntry(sessionPath) {
 
 function backfillVault(vaultPath, { dryRun }) {
   const sessionsDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
-  const logPath = path.join(vaultPath, 'wiki-meta', 'log.md');
+  // `wiki-meta/journal.md`, or the pre-0.58.0 `wiki-meta/log.md`.
+  const logPath = resolveScaffold(vaultPath, 'journal', { fs, path })?.absPath ?? null;
   const result = { vaultPath, considered: 0, backfilled: 0, skipped: 0, openSkipped: 0, missingLog: false, missingSessions: false };
 
   if (!fs.existsSync(sessionsDir)) {
     result.missingSessions = true;
     return result;
   }
-  if (!fs.existsSync(logPath)) {
+  if (!logPath) {
     result.missingLog = true;
     return result;
   }
@@ -269,11 +271,12 @@ function backfillVault(vaultPath, { dryRun }) {
 // shape compatible with the summary loop.
 function reconcileVaultIncludingOpen(vaultPath, { dryRun, liveWindowMs }) {
   const sessionsDir = path.join(vaultPath, 'wiki-meta', 'Sessions');
-  const logPath = path.join(vaultPath, 'wiki-meta', 'log.md');
+  // `wiki-meta/journal.md`, or the pre-0.58.0 `wiki-meta/log.md`.
+  const logPath = resolveScaffold(vaultPath, 'journal', { fs, path })?.absPath ?? null;
   const result = { vaultPath, considered: 0, backfilled: 0, skipped: 0, openSkipped: 0, reconciledOpen: 0, missingLog: false, missingSessions: false };
 
   if (!fs.existsSync(sessionsDir)) { result.missingSessions = true; return result; }
-  if (!fs.existsSync(logPath)) { result.missingLog = true; return result; }
+  if (!logPath) { result.missingLog = true; return result; }
 
   const backfillDate = new Date().toISOString().slice(0, 10);
   const r = reconcileVaultSessions({
@@ -336,7 +339,7 @@ function main() {
 
   const mode = includeOpen ? 'Reconciling (open + closed)' : 'Backfilling';
   console.log(c('bold',
-    `\n${dryRun ? '[DRY-RUN] ' : ''}${mode} log.md from Sessions/ for ${vaults.length} vault(s)...\n`));
+    `\n${dryRun ? '[DRY-RUN] ' : ''}${mode} journal.md from Sessions/ for ${vaults.length} vault(s)...\n`));
 
   const totals = { backfilled: 0, skipped: 0, openSkipped: 0, reconciledOpen: 0, missingLog: 0, missingSessions: 0 };
   for (const vp of vaults) {
@@ -352,7 +355,7 @@ function main() {
     if (r.missingSessions) {
       info(`${vp} — no wiki-meta/Sessions/ (skipping)`);
     } else if (r.missingLog) {
-      info(`${vp} — no wiki-meta/log.md (run the wiki scaffold first)`);
+      info(`${vp} — no wiki-meta/journal.md (run the wiki scaffold first)`);
     } else if (!dryRun && r.backfilled > 0) {
       const openNote = includeOpen ? `, ${r.reconciledOpen} open→closed` : '';
       const skipLabel = includeOpen ? 'live skipped' : 'open skipped';
@@ -369,7 +372,7 @@ function main() {
   console.log(`  ${c('gray',   'already-logged:    ' + totals.skipped)}`);
   console.log(`  ${c('gray',   (includeOpen ? 'live (skipped):    ' : 'open (skipped):    ') + totals.openSkipped)}`);
   if (totals.missingSessions > 0) console.log(`  ${c('yellow', 'no Sessions/:      ' + totals.missingSessions)}`);
-  if (totals.missingLog > 0)      console.log(`  ${c('yellow', 'no log.md:         ' + totals.missingLog)}`);
+  if (totals.missingLog > 0)      console.log(`  ${c('yellow', 'no journal.md:     ' + totals.missingLog)}`);
 
   if (dryRun) {
     console.log('');

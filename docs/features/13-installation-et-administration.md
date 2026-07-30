@@ -85,7 +85,7 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 | `heading-hierarchy` | Hiérarchie de titres propre (pas de sauts de niveaux). |
 | `claim-citations` | Les affirmations citent leurs sources. |
 | `roadmap-discipline` | Roadmaps dans le vault, checkboxes cochées au ship, jamais de texte barré sur les items livrés. |
-| `log-discipline` | `log.md` = index mince ; le détail va dans `Sessions/`. |
+| `log-discipline` | `journal.md` = index mince ; le détail va dans `Sessions/`. |
 | `wiki-query-first` | Consulter le wiki avant de répondre. |
 | `path-disambiguation` | Ne jamais mélanger chemin du workspace et chemin du vault. |
 | `default-vault-health-check` | Vérifier que le vault par défaut est joignable en début de session. |

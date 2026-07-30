@@ -16,7 +16,7 @@
  *     deliberately conservative.
  *
  * Implementation reuses existing primitives rather than duplicating them:
- *   - `idf-score.mjs` for primary-page ranking against `wiki-meta/index.md`
+ *   - `idf-score.mjs` for primary-page ranking against `wiki-meta/catalog.md`
  *   - `searchSmart` REST helper for `semanticChunks` (degrades gracefully
  *     when Smart Connections isn't installed → warning emitted)
  *   - `getFileContent` + `getNote` for graph neighbours and citations
@@ -33,13 +33,14 @@
 import * as defaultRestClient from '../rest-client.mjs';
 import { sanitizeResponse, sanitizeLabel } from '../helpers/sanitize.mjs';
 import { rankAndPick, scoreCandidates } from '../helpers/idf-score.mjs';
+import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Return a structured JSON context pack for a natural-language query — the machine-readable counterpart of the `wiki-query` skill. Reads `wiki-meta/index.md` to rank primary pages via IDF scoring, runs `search_smart` for semantic chunks (silently degrades when Smart Connections is missing), extracts wikilink graph neighbours, and collects per-page `sources:` frontmatter as citations. Returns a versioned envelope (`version: "v1"`) — additive-only schema for stable consumption by non-Claude agents (Cursor, MCPHub multi-agent flows, custom scripts).',
+    'Return a structured JSON context pack for a natural-language query — the machine-readable counterpart of the `wiki-query` skill. Reads `wiki-meta/catalog.md` to rank primary pages via IDF scoring, runs `search_smart` for semantic chunks (silently degrades when Smart Connections is missing), extracts wikilink graph neighbours, and collects per-page `sources:` frontmatter as citations. Returns a versioned envelope (`version: "v1"`) — additive-only schema for stable consumption by non-Claude agents (Cursor, MCPHub multi-agent flows, custom scripts).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -102,7 +103,7 @@ function extractWikilinks(text) {
   return [...out];
 }
 
-// Parse the wiki-meta/index.md catalog and return one candidate object
+// Parse the wiki-meta/catalog.md catalogue and return one candidate object
 // per `- [[link]]` (or `- [[link]] — description`) bullet. The optional
 // `descriptionAfterDash` becomes the candidate's secondary label so it
 // boosts but doesn't dominate the primary title match.
@@ -224,7 +225,7 @@ function candidateToVaultPath(label) {
 }
 
 /**
- * Defence against a poisoned `wiki-meta/index.md` containing wikilinks
+ * Defence against a poisoned `wiki-meta/catalog.md` containing wikilinks
  * like `[[../../etc/passwd]]`, `[[/etc/passwd]]`, `[[C:\\Windows\\...]]`,
  * `[[\\\\server\\share]]`, or URL-like `[[file://etc/passwd]]`.
  * `getNote(vault, path)` ships the path verbatim to the Obsidian REST
@@ -326,12 +327,27 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   const suggestedActions = [];
 
   // -------------------------------------------------------------------------
-  // 1. Read index.md → parse candidates → score → pick top-N
+  // 1. Read the catalogue → parse candidates → score → pick top-N
   // -------------------------------------------------------------------------
   let candidates = [];
   let indexAvailable = true;
   try {
-    const indexText = await deps.getFileContent(vault, 'wiki-meta/index.md');
+    // `wiki-meta/catalog.md`, or the pre-0.58.0 `wiki-meta/index.md`.
+    let indexText;
+    let lastErr;
+    for (const rel of scaffoldCandidates('catalog')) {
+      try {
+        indexText = await deps.getFileContent(vault, rel);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        // A 404 means "not under this name" → try the legacy one. Anything
+        // else is about the vault, so keep that error: it is the diagnosis.
+        if (!shouldTryLegacyScaffold(e)) break;
+      }
+    }
+    if (lastErr) throw lastErr;
     candidates = parseIndexEntries(
       typeof indexText === 'string' ? indexText : indexText?.content || '',
     );
@@ -385,7 +401,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
       const basePath = candidateToVaultPath(candidate.label);
       // Path-traversal defence (review+ pass 2 hardening) : refuse to
       // pass anything that looks unsafe to `getNote`. A poisoned
-      // wiki-meta/index.md with `[[../../etc/passwd]]` or `[[/etc/x]]`
+      // wiki-meta/catalog.md with `[[../../etc/passwd]]` or `[[/etc/x]]`
       // would otherwise be forwarded verbatim to the REST API.
       if (!isSafeVaultRelativePath(basePath)) {
         return {

@@ -36,7 +36,7 @@ Déverrouiller : *« déverrouille les vaults »* — `/obsidian-router:unlock` 
 |---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | **Whitelist** : l'instance ne voit que ces vaults. Appliquée avant la résolution du vault par défaut, donc le défaut tombe dans le sous-ensemble autorisé. |
 | `OBSIDIAN_ROUTER_READONLY=true` | **Lecture seule** : les 8 outils d'écriture sont retirés de la liste des outils **et** refusés à l'appel — même un client qui connaît le nom de l'outil et l'appelle directement est bloqué. |
-| `OBSIDIAN_ROUTER_USER_ID=<slug>` | **Audit** : chaque écriture réussie ajoute une ligne horodatée `[claude-write by <slug>] … <outil> path="…"` au `wiki-meta/log.md` du vault touché. Best-effort : un échec d'audit ne bloque jamais l'écriture. |
+| `OBSIDIAN_ROUTER_USER_ID=<slug>` | **Audit** : chaque écriture réussie ajoute une ligne horodatée `[claude-write by <slug>] … <outil> path="…"` au `wiki-meta/journal.md` du vault touché. Best-effort : un échec d'audit ne bloque jamais l'écriture. |
 
 **Comment l'utiliser.** Un exemple d'instance scoped dans la config d'un hub :
 

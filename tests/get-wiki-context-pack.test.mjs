@@ -139,7 +139,7 @@ function makeDeps({
 } = {}) {
   return {
     getFileContent: async (_vault, filePath) => {
-      if (filePath === 'wiki-meta/index.md') {
+      if (filePath === 'wiki-meta/catalog.md') {
         if (indexError) throw indexError;
         return indexText;
       }
@@ -615,7 +615,7 @@ describe('drill loop surfaces real fetch errors as page-read-failed', () => {
     const indexMd = `## Refs\n\n- [[unstable-page]] - real failure case\n`;
     const deps = {
       getFileContent: async (_vault, path) => {
-        if (path === 'wiki-meta/index.md') return indexMd;
+        if (path === 'wiki-meta/catalog.md') return indexMd;
         return null;
       },
       getNote: async (_vault, _path) => {
@@ -647,7 +647,7 @@ describe('drill loop surfaces real fetch errors as page-read-failed', () => {
     const indexMd = `## Refs\n\n- [[deleted-page]] - was deleted\n`;
     const deps = {
       getFileContent: async (_vault, path) => {
-        if (path === 'wiki-meta/index.md') return indexMd;
+        if (path === 'wiki-meta/catalog.md') return indexMd;
         return null;
       },
       getNote: async (_vault, _path) => {
@@ -682,7 +682,7 @@ describe('drill loop refuses unsafe index targets (integration)', () => {
     let getNoteCalls = [];
     const deps = {
       getFileContent: async (_vault, path) => {
-        if (path === 'wiki-meta/index.md') return poisonedIndex;
+        if (path === 'wiki-meta/catalog.md') return poisonedIndex;
         return null;
       },
       getNote: async (_vault, path) => {

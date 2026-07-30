@@ -157,11 +157,11 @@ export function normaliseWikilinks(text) {
 }
 
 // ---------------------------------------------------------------------------
-// Index parser — extract sections + bullets from wiki-meta/index.md
+// Index parser — extract sections + bullets from wiki-meta/catalog.md
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a wiki-meta/index.md content string into a sectioned structure.
+ * Parse a wiki-meta/catalog.md content string into a sectioned structure.
  *
  * Expected input shape (the convention this project uses):
  *
@@ -178,7 +178,7 @@ export function normaliseWikilinks(text) {
  *
  * The function strips frontmatter and skips the H1 of the index itself.
  *
- * @param {string} indexMd Content of wiki-meta/index.md
+ * @param {string} indexMd Content of wiki-meta/catalog.md
  * @returns {Array<{ title: string, bullets: Array<{ pageSlug: string, description: string }> }>}
  */
 export function parseIndex(indexMd) {
@@ -251,7 +251,7 @@ function stripLeadingH1(body) {
  *
  * @param {object} input
  * @param {string} input.vaultName Vault title (becomes the H1)
- * @param {string} input.indexMd Content of wiki-meta/index.md
+ * @param {string} input.indexMd Content of wiki-meta/catalog.md
  * @param {Array<{ path: string, content: string }>} input.pages
  *   All wiki pages, each with vault-relative path + raw content (with
  *   frontmatter intact). The exporter handles frontmatter parsing +

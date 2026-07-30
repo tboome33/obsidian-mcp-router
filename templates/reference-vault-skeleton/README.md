@@ -17,8 +17,8 @@ node scripts/setup-vault.mjs --bootstrap-reference <path>
 | `.smart-env/smart_env.json` | Smart Connections config (transformers embedding model, English language, etc.). **No API keys** — the chat API key field is empty by design; the user pastes their own after install. |
 | `.claude/settings.json` | Minimal Claude Code project settings — enables the `obsidian-router` plugin scoped to this vault. |
 | `CLAUDE.md` | Navigation rules for Claude. Treats the vault as a Karpathy-style LLM wiki — scaffolds under `wiki-meta/`, user content under `wiki/`. |
-| `wiki-meta/index.md` | Catalog of all pages. Empty sections per type. |
-| `wiki-meta/log.md` | Append-only operation log. |
+| `wiki-meta/catalog.md` | Catalog of all pages. Empty sections per type. |
+| `wiki-meta/journal.md` | Append-only operation log. |
 | `wiki-meta/hot.md` | Recent-context cache. |
 | `wiki-meta/overview.md` | Executive summary of the vault's purpose. |
 

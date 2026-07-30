@@ -17,6 +17,7 @@ import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { classifyError } from './error-classify.mjs';
 import { registerResourceHandlers } from './resources.mjs';
 import { appendToFile as restAppendToFile } from './rest-client.mjs';
+import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
 import { getFile } from './tools/get-file.mjs';
@@ -1133,9 +1134,9 @@ export function pickAuditPath(toolName, args = {}) {
 
 /**
  * Format a single audit-log line. Stable shape so we can grep it later
- * (e.g. `git log -p wiki-meta/log.md | grep "by roland"`). The leading
+ * (e.g. `git log -p wiki-meta/journal.md | grep "by roland"`). The leading
  * and trailing newlines isolate the entry from whatever sits in
- * `wiki-meta/log.md` already — the file is append-only so we always end
+ * `wiki-meta/journal.md` already — the file is append-only so we always end
  * up between existing entries.
  *
  * Exported for testing.
@@ -1489,14 +1490,15 @@ export async function startServer({ configPath, watch = true } = {}) {
 
   // v0.9.0 — audit log (USER_ID). When OBSIDIAN_ROUTER_USER_ID is set,
   // every SUCCESSFUL write tool call gets a line appended to the touched
-  // vault's `wiki-meta/log.md` so we can trace "who wrote what" later.
+  // vault's `wiki-meta/journal.md` so we can trace "who wrote what" later.
   // Each MCPHub instance gets its own USER_ID env, so a 6-instance
   // multi-tenant setup gives us free user-level attribution without
   // modifying any downstream tool.
   //
   // v0.12.0: target path moved from `wiki/log.md` to `wiki-meta/log.md`
   // along with the other 3 scaffolds (hot/index/overview). User content
-  // stays under `wiki/`.
+  // stays under `wiki/`. v0.58.0 renamed it again to `wiki-meta/journal.md`
+  // (OKF reserves the `log` basename) — see `wiki-meta-scaffolds.mjs`.
   //
   // CRITICAL: the audit append uses `restAppendToFile` directly (REST
   // helper) — NOT the `append_to_file` tool handler. Going through the
@@ -1504,7 +1506,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   // The direct REST call bypasses the dispatcher and the audit middleware.
   //
   // Failure policy: best-effort. If the audit write fails (disk full,
-  // log.md not writable, etc.), we log the cause to stderr and return
+  // journal not writable, etc.), we log the cause to stderr and return
   // the original write's success — better to lose an audit line than to
   // fail the user-facing operation. Cf. risk R5 in 2026-05-21-codex-audit.
   const rawUserId = process.env.OBSIDIAN_ROUTER_USER_ID;
@@ -1512,7 +1514,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   if (userId) {
     console.error(
       `[obsidian-mcp-router] OBSIDIAN_ROUTER_USER_ID="${userId}" — audit logging enabled. ` +
-        `Every successful write appends to <vault>/wiki-meta/log.md.`,
+        `Every successful write appends to <vault>/wiki-meta/journal.md.`,
     );
   }
 
@@ -1565,9 +1567,34 @@ export async function startServer({ configPath, watch = true } = {}) {
           // Direct REST call → break the recursion that would happen if we
           // routed through `appendToFileTool` (which is itself a write tool
           // that would trigger another audit, ad infinitum).
-          await restAppendToFile(auditVault, 'wiki-meta/log.md', auditLine, {
-            createTargetIfMissing: true,
-          });
+          //
+          // v0.58.0: `journal.md`, with `log.md` as a fallback for vaults
+          // not yet migrated. Order matters — appending with
+          // `createTargetIfMissing` on the FIRST try would silently create a
+          // second journal next to the existing `log.md` and split the audit
+          // trail in two. So: try each name without creating, and only
+          // create the current name when neither exists. The migrated case
+          // (the common one) still costs exactly one round-trip.
+          const [journalRel, legacyJournalRel] = scaffoldCandidates('journal');
+          let appended = false;
+          for (const rel of [journalRel, legacyJournalRel]) {
+            try {
+              await restAppendToFile(auditVault, rel, auditLine, {
+                createTargetIfMissing: false,
+              });
+              appended = true;
+              break;
+            } catch (e) {
+              // Only a 404 means "not under this name"; an offline or
+              // unauthorized vault must not fall through to a create.
+              if (!shouldTryLegacyScaffold(e)) throw e;
+            }
+          }
+          if (!appended) {
+            await restAppendToFile(auditVault, journalRel, auditLine, {
+              createTargetIfMissing: true,
+            });
+          }
         } catch (auditErr) {
           // Best-effort: don't fail the original write. Log the cause so
           // the operator can diagnose (typical: missing wiki-meta/ folder,

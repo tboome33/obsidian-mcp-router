@@ -42,7 +42,7 @@
  *      resolved with the PORT as the primary disambiguation signal: a URL
  *      is valid if ANY active vault containing the file serves the actual
  *      port for the scheme. (Path-only first-match resolution false-
- *      flagged correct URLs whose path — e.g. `wiki-meta/index.md` —
+ *      flagged correct URLs whose path — e.g. `wiki-meta/catalog.md` —
  *      exists in every bootstrapped vault, proposing the port of
  *      whichever vault sorted first, `.template` in the 2026-07-06
  *      incident.)
@@ -69,15 +69,15 @@
  *      absolute path to some other vault, never matches all four.
  *
  *   4. **`bare-vault-path`** (v0.21.1 — added after Roland incident
- *      2026-06-01 where Claude wrote `` `wiki-meta/index.md` `` and
- *      `` `wiki-meta/log.md` `` as backtick-wrapped relative paths in a
+ *      2026-06-01 where Claude wrote `` `wiki-meta/catalog.md` `` and
+ *      `` `wiki-meta/journal.md` `` as backtick-wrapped relative paths in a
  *      chat recap) — a BARE RELATIVE path token (no scheme, not absolute)
  *      whose first segment is `wiki/` or `wiki-meta/` and which resolves
  *      to a real file in a vault OTHER than the cwd. The Claude Code
  *      renderer clickifies any file-like token — including text inside
  *      inline-code backticks — by rooting it at the workspace cwd, so in
- *      workspace-bound mode (cwd ≠ vault) a bare `wiki-meta/index.md`
- *      becomes a clickable `<cwd>/wiki-meta/index.md` that is a phantom
+ *      workspace-bound mode (cwd ≠ vault) a bare `wiki-meta/catalog.md`
+ *      becomes a clickable `<cwd>/wiki-meta/catalog.md` that is a phantom
  *      (the code repo has no `wiki-meta/` dir). This slipped past every
  *      earlier pass TWICE over: (a) `stripCode()` deletes inline-code
  *      spans BEFORE detection, so the most common form (backtick-wrapped)
@@ -115,8 +115,8 @@
  *     `bare-vault-path` kind DOES scan bare prose AND inline-code spans
  *     for relative paths whose first segment is `wiki/` or `wiki-meta/`
  *     and that resolve to a real file in a non-cwd vault (e.g. a token
- *     like `wiki-meta/log.md`, backtick-wrapped or not — the old example
- *     here, a `| wiki-meta/log.md |` table cell, is now correctly caught).
+ *     like `wiki-meta/journal.md`, backtick-wrapped or not — the old example
+ *     here, a `| wiki-meta/journal.md |` table cell, is now correctly caught).
  *     Three gates keep it zero-false-positive: resolves-to-real-vault-file
  *     + vault-is-not-cwd + not-a-real-local-file. The `cwd-vault-mix` kind
  *     (v0.18.1) similarly scans bare prose for ABSOLUTE phantom paths. So
@@ -353,9 +353,9 @@ for (const m of stripped.matchAll(TRAP_BARE_PATTERN)) {
 // common form lives inside inline-code backticks that `stripCode()`
 // already deleted from `stripped`. The vault-membership CHECK runs later
 // in Pass 4 proper (needs the resolved config). Two forms collected:
-//   4a — backtick-delimited inline code: `wiki-meta/index.md` (spaces OK,
+//   4a — backtick-delimited inline code: `wiki-meta/catalog.md` (spaces OK,
 //        the backticks delimit the token). The dominant real-world form.
-//   4b — un-backticked bare prose token: wiki-meta/index.md (no spaces).
+//   4b — un-backticked bare prose token: wiki-meta/catalog.md (no spaces).
 const VAULT_REL_PATH_RE = /^(?:wiki-meta|wiki)[\\/].+\.md$/;
 const barePassCandidates = [];
 // 4a — scan a variant with fenced/indented code stripped but INLINE CODE
@@ -496,7 +496,7 @@ if (lockedSlug) {
  * Returns null if no tier matches the active vault set.
  *
  * Used to bias `findOwningVault` toward the current vault when multiple
- * vaults could own the same relative file (e.g. `wiki-meta/log.md` exists in
+ * vaults could own the same relative file (e.g. `wiki-meta/journal.md` exists in
  * every router-bootstrapped vault). Codex P2 review finding 2026-05-23.
  */
 function resolveDefaultVaultPath() {
@@ -553,7 +553,7 @@ function safeDecodeURI(s) {
  *
  * Vault preference order:
  *   1. The `defaultVault` (per router config) — most likely correct in
- *      multi-vault setups where common files like `wiki-meta/log.md` exist
+ *      multi-vault setups where common files like `wiki-meta/journal.md` exist
  *      in every vault.
  *   2. Otherwise, first matching vault in `portRegistry` insertion order.
  *
@@ -577,7 +577,7 @@ function findOwningVault(href) {
  * All-owners variant of `findOwningVault` (v0.36.1): returns EVERY active
  * vault containing the file, in the same preference order (default vault
  * first, then portRegistry insertion order). Scaffold paths like
- * `wiki-meta/index.md` exist in every bootstrapped vault, so callers that
+ * `wiki-meta/catalog.md` exist in every bootstrapped vault, so callers that
  * have an extra disambiguation signal (Pass 2's URL port) need the full
  * owner set — first-match resolution picks the wrong vault for them.
  */
@@ -715,7 +715,7 @@ for (const c of bareCandidates) {
 //   - https:// with a port that matches `insecurePort` but not `port`
 //     → flag (user clearly intended HTTPS, port is wrong for HTTPS).
 //   - Path exists in SEVERAL vaults (scaffold files like
-//     `wiki-meta/index.md` exist in every bootstrapped vault) and the
+//     `wiki-meta/catalog.md` exist in every bootstrapped vault) and the
 //     port belongs to one of them → correct URL, no violation. Pre-
 //     v0.36.1 first-match resolution flagged these as wrong-port with a
 //     "fix" pointing at whichever vault sorted first (the 2026-07-06
@@ -743,7 +743,7 @@ for (const c of clickToOpenCandidates) {
   const queryStr = qIdx === -1 ? '' : c.encodedPath.slice(qIdx); // includes leading '?'
 
   // Resolve ALL vaults owning the path, not just the first (v0.36.1).
-  // Scaffold paths (`wiki-meta/index.md`, `wiki-meta/log.md`, …) exist in
+  // Scaffold paths (`wiki-meta/catalog.md`, `wiki-meta/journal.md`, …) exist in
   // every bootstrapped vault, and the URL's PORT already identifies which
   // vault the author targeted. First-match resolution ignored that signal
   // and compared against whichever vault happened to sort first (default
@@ -883,13 +883,13 @@ lines.push(`FR — ${violations.length} violation(s) du format click-to-open dan
 if (barePathCount) lines.push(`  • ${barePathCount} lien(s) vault sans le format http://127.0.0.1:<port>/open/...`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} URL(s) click-to-open avec un mauvais port`);
 if (trapCount) lines.push(`  • ${trapCount} chemin(s) absolu(s) mêlant le cwd et un sous-chemin vault (fichier fantôme, n'existe pas sur le disque)`);
-if (bareVaultCount) lines.push(`  • ${bareVaultCount} chemin(s) vault relatif(s) nu(s) (ex. \`wiki-meta/index.md\`) — le renderer les rattache au cwd, pas au vault, donc le lien est cassé`);
+if (bareVaultCount) lines.push(`  • ${bareVaultCount} chemin(s) vault relatif(s) nu(s) (ex. \`wiki-meta/catalog.md\`) — le renderer les rattache au cwd, pas au vault, donc le lien est cassé`);
 lines.push('');
 lines.push(`EN — ${violations.length} click-to-open convention violation(s) in your last response:`);
 if (barePathCount) lines.push(`  • ${barePathCount} vault link(s) missing the http://127.0.0.1:<port>/open/... format`);
 if (wrongPortCount) lines.push(`  • ${wrongPortCount} click-to-open URL(s) with the wrong port`);
 if (trapCount) lines.push(`  • ${trapCount} absolute path(s) mixing the cwd with a vault subpath (phantom file, does not exist on disk)`);
-if (bareVaultCount) lines.push(`  • ${bareVaultCount} bare relative vault path(s) (e.g. \`wiki-meta/index.md\`) — the renderer roots them at the cwd, not the vault, so the link breaks`);
+if (bareVaultCount) lines.push(`  • ${bareVaultCount} bare relative vault path(s) (e.g. \`wiki-meta/catalog.md\`) — the renderer roots them at the cwd, not the vault, so the link breaks`);
 lines.push('');
 lines.push('Violations + corrections :');
 for (const v of violations) {

@@ -273,7 +273,7 @@ After everything is done, the following should be true. If any of them isn't, su
 
 - [ ] `<vault>/.obsidian/plugins/obsidian-local-rest-api/data.json` exists
 - [ ] `<vault>/.mcp.json` exists and references the router binary
-- [ ] `<vault>/wiki-meta/index.md` exists (otherwise `--link-workspace` would have refused)
+- [ ] `<vault>/wiki-meta/catalog.md` exists (otherwise `--link-workspace` would have refused)
 - [ ] `<cwd>/.env` contains `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"`
 - [ ] `<cwd>/.gitignore` contains `.env` and `.mcp.json`
 - [ ] `~/.claude/obsidian-mcp-router/config.json` has `<vault-path>` in `portRegistry`

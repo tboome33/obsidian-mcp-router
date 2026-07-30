@@ -2,7 +2,7 @@
  * Tests for v0.9.0 OBSIDIAN_ROUTER_USER_ID audit-log behavior.
  *
  * When the env var is set, every SUCCESSFUL write tool gets a line
- * appended to `<vault>/wiki-meta/log.md` (v0.12.0+) with `[claude-write by <user>]` and
+ * appended to `<vault>/wiki-meta/journal.md` (v0.58.0+; `log.md` before that) with `[claude-write by <user>]` and
  * a timestamp. Used by the multi-tenant MCPHub deployment to track
  * "who wrote what" without modifying any downstream tool.
  *
@@ -177,8 +177,8 @@ describe('audit middleware wire-up sanity', () => {
       'audit append must call the REST helper directly (NOT the tool handler) to avoid recursion',
     );
     assert.ok(
-      handlerRegion.includes('wiki-meta/log.md'),
-      'audit writes target the conventional wiki-meta/log.md path (v0.12.0+)',
+      handlerRegion.includes("scaffoldCandidates('journal')"),
+      'audit writes resolve the journal through scaffoldCandidates (v0.58.0+)',
     );
   });
 });

@@ -1,6 +1,6 @@
 ---
 name: wiki-ingest
-description: Read a source (file, URL, or pasted text), extract the entities and concepts that matter, and file them as wiki pages with cross-references. Updates the wiki's index.md, log.md, and hot.md so future sessions can find what was ingested. Use this skill whenever the user says "ingest this", "add this to the wiki", "process this source", "file this article", "absorb this", "ingest <url>", "/wiki-ingest", or drops a file/URL with the implicit intent to incorporate it into their knowledge base.
+description: Read a source (file, URL, or pasted text), extract the entities and concepts that matter, and file them as wiki pages with cross-references. Updates the wiki's catalog.md, journal.md, and hot.md so future sessions can find what was ingested. Use this skill whenever the user says "ingest this", "add this to the wiki", "process this source", "file this article", "absorb this", "ingest <url>", "/wiki-ingest", or drops a file/URL with the implicit intent to incorporate it into their knowledge base.
 ---
 
 # wiki-ingest
@@ -9,7 +9,7 @@ Take a source (URL, local file path, or pasted text) and do the structured work 
 
 ## Pre-conditions
 
-1. The target vault has a `wiki/` folder with `index.md`, `log.md`, `hot.md`. If not, run the `wiki` skill first.
+1. The target vault has a `wiki/` folder with `catalog.md`, `journal.md`, `hot.md`. If not, run the `wiki` skill first.
 2. The vault is online (call `list_vaults`).
 3. You have one of: a URL, a file path on disk, or text the user pasted.
 
@@ -22,7 +22,7 @@ Take a source (URL, local file path, or pasted text) and do the structured work 
 ## When NOT to use
 
 - The user wants a quick answer without filing → just answer, don't ingest.
-- The source is already filed (check `wiki-meta/index.md` for the title or URL) → tell them; offer to refresh instead.
+- The source is already filed (check `wiki-meta/catalog.md` for the title or URL) → tell them; offer to refresh instead.
 - The "source" is the current conversation → use the `save` skill instead.
 
 ## Steps
@@ -117,10 +117,10 @@ Don't extract everything. The wiki gets cluttered when ingestion is too eager. I
 
 For each entity/concept:
 
-- Does a wiki page already exist for it? Read `wiki-meta/index.md` to check.
+- Does a wiki page already exist for it? Read `wiki-meta/catalog.md` to check.
   - **Exists** → you'll APPEND a section to that page, not create a new one.
   - **Doesn't exist** → you'll CREATE a new page.
-- What folder should it live in? Match the wiki's existing organization (read `wiki-meta/index.md` structure). If unclear, default folders: `concepts/`, `entities/`, `sources/`, `projects/`.
+- What folder should it live in? Match the wiki's existing organization (read `wiki-meta/catalog.md` structure). If unclear, default folders: `concepts/`, `entities/`, `sources/`, `projects/`.
 
 Output a 1-paragraph plan to the user before writing files. They can correct misclassifications cheaply now.
 
@@ -241,7 +241,7 @@ For URL sources, after the source page is filed but BEFORE you start the entity/
    ```
    Use `mcp__obsidian-router__patch_file` with `operation: append`, `targetType: heading`, `target: "Linked sources"` (or `append_to_file` to create the heading if it doesn't exist).
 
-8. **Log a consolidated entry** in `wiki-meta/log.md`: `- YYYY-MM-DD HH:MM — ingest+links — <parent-title> + N linked sources`.
+8. **Log a consolidated entry** in `wiki-meta/journal.md`: `- YYYY-MM-DD HH:MM — ingest+links — <parent-title> + N linked sources`.
 
 **Anti-patterns** :
 - Do NOT auto-follow links without user confirmation. Level 2 ("auto-follow with cap") is explicitly deferred to a future phase — Level 1 is **ask mode only**.
@@ -315,7 +315,7 @@ For each wiki page **created or updated** in step 5 (NOT the source page from st
 
 3. **Don't generate digests for** :
    - Source pages (`wiki/sources/*.md`) — their frontmatter already serves as the digest.
-   - Wiki-meta scaffolds (`wiki-meta/hot.md`, `wiki-meta/log.md`, etc.) — those aren't content pages.
+   - Wiki-meta scaffolds (`wiki-meta/hot.md`, `wiki-meta/journal.md`, etc.) — those aren't content pages.
    - Pages that you only ADDED a section to (existing page + new section) — the digest of the page already exists ; UPDATE it instead (re-read the now-modified page, regenerate the digest skeleton with the fresh hash, merge concepts/claims with the previous ones, re-write).
 
 4. **If digest generation fails** (network error, write error), **don't abort the ingest** — surface a warning to the user and continue. Digests are best-effort additive ; the wiki page is still valid without one. The next `/wiki-lint --refresh-digests` run will catch up.
@@ -330,8 +330,8 @@ wiki-meta/
 │           ├── oauth-howto.md      # digest for wiki/Refs/oauth-howto.md
 │           └── pkce-explained.md   # digest for wiki/Refs/pkce-explained.md
 ├── hot.md
-├── index.md
-├── log.md
+├── catalog.md
+├── journal.md
 └── overview.md
 ```
 
@@ -339,13 +339,13 @@ To glob all digests across nested folders, use a recursive pattern (e.g. `wiki-m
 
 **Reference** : helper `src/helpers/digest-generator.mjs`, tests `tests/digest-generator.test.mjs`, deep-lint mode `skills/wiki-lint/SKILL.md` --deep.
 
-### 6. Update index.md
+### 6. Update catalog.md
 
 Use `patch_file` with `operation: append`, `targetType: heading`, `target: "<section-name>"` (e.g., `target: "Sources"` for source pages, `target: "Concepts"` for concept pages) to add rows for any newly created pages. Keep the index alphabetized within each section.
 
-If the section heading doesn't exist in `index.md` yet, fall back to `append_to_file` and write `\n## <section>\n\n- [[<page>]]\n`. The `wiki` skill scaffolds the standard sections, so this fallback is rare.
+If the section heading doesn't exist in `catalog.md` yet, fall back to `append_to_file` and write `\n## <section>\n\n- [[<page>]]\n`. The `wiki` skill scaffolds the standard sections, so this fallback is rare.
 
-### 7. Append to log.md
+### 7. Append to journal.md
 
 ```
 - YYYY-MM-DD HH:MM — ingest — <source-title> — created N pages, updated M pages

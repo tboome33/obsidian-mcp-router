@@ -1,21 +1,21 @@
 ---
 name: wiki-fold
-description: Roll up the wiki's log.md entries into structured fold pages — like 2^k log compaction. Reads the last 2, 4, 8, 16... entries and writes a fold page that summarizes them by extractive summarization (no invention), with backlinks to children. Idempotent at the structural level — re-running with the same window produces a byte-equivalent fold. Use when the user says "fold the log", "rollup recent activity", "compact the log", "/wiki-fold", or after many ingestions when log.md is becoming too long to read directly.
+description: Roll up the wiki's journal.md entries into structured fold pages — like 2^k log compaction. Reads the last 2, 4, 8, 16... entries and writes a fold page that summarizes them by extractive summarization (no invention), with backlinks to children. Idempotent at the structural level — re-running with the same window produces a byte-equivalent fold. Use when the user says "fold the log", "rollup recent activity", "compact the log", "/wiki-fold", or after many ingestions when journal.md is becoming too long to read directly.
 ---
 
 # wiki-fold
 
-Append-only rollup of `log.md` into hierarchical summary pages stored under `wiki/folds/`. Inspired by log-structured systems: small windows fold into bigger ones over time, and the log itself stays linear forever.
+Append-only rollup of `journal.md` into hierarchical summary pages stored under `wiki/folds/`. Inspired by log-structured systems: small windows fold into bigger ones over time, and the log itself stays linear forever.
 
 ## When to use
 
-- `log.md` has grown past ~100 entries and needs structural summarization.
+- `journal.md` has grown past ~100 entries and needs structural summarization.
 - The user wants a "what happened in the last week / month" report.
 - After a multi-source ingestion session: roll up the new entries into one fold page.
 
 ## Pre-conditions
 
-1. Target vault has `wiki-meta/log.md`.
+1. Target vault has `wiki-meta/journal.md`.
 2. Vault is online.
 
 ## Steps
@@ -23,7 +23,7 @@ Append-only rollup of `log.md` into hierarchical summary pages stored under `wik
 ### 1. Read the log
 
 ```
-mcp__obsidian-router__get_file({ vault, path: "wiki-meta/log.md" })
+mcp__obsidian-router__get_file({ vault, path: "wiki-meta/journal.md" })
 ```
 
 Parse it into structured entries. The format from the `wiki` and `wiki-ingest` skills is:
@@ -75,8 +75,8 @@ mcp__obsidian-router__get_file({ vault, path: "wiki/folds/<window-id>.md" })
 If the existing file content is **byte-equivalent to the new body** (after canonicalisation — normalize CRLF to LF, strip trailing whitespace per line, collapse trailing blank lines), then skip the write entirely:
 
 - **DO NOT** call `write_file`
-- **DO NOT** update `index.md` (the fold is already there)
-- **DO NOT** append to `log.md` (no operation actually happened)
+- **DO NOT** update `catalog.md` (the fold is already there)
+- **DO NOT** append to `journal.md` (no operation actually happened)
 - **DO** tell the user: *"Fold for `<window-id>` is already up to date — no changes written."*
 
 Why: the idempotency contract is structural (deterministic naming + sorted output + ISO timestamps), but auto-commit hooks (`PostToolUse`) don't know that — they'll commit a no-op write as a real commit and pollute `git log` with empty fold churn over time. The short-circuit enforces the contract operationally.
@@ -100,7 +100,7 @@ last_entry: <ISO>
 ---
 ```
 
-**No `generated_at` field** — that's a wall-clock value and would break the byte-equivalence guarantee. The window is fully described by the deterministic fields above; you can always reconstruct *when* the fold was emitted by looking at the `wiki-meta/log.md` entry written in step 7.
+**No `generated_at` field** — that's a wall-clock value and would break the byte-equivalence guarantee. The window is fully described by the deterministic fields above; you can always reconstruct *when* the fold was emitted by looking at the `wiki-meta/journal.md` entry written in step 7.
 
 Body sections:
 
@@ -109,11 +109,11 @@ Body sections:
 - **By page** — for each target page touched, a bulleted list of operations.
 - **Linked children** — wikilinks back to all source/answer/entity pages mentioned in the entries. So the fold is a navigation hub.
 
-### 6. Update index.md
+### 6. Update catalog.md
 
 Under a `## Folds` section (create it if missing), add a row pointing at the new fold page.
 
-### 7. Append to log.md
+### 7. Append to journal.md
 
 ```
 - YYYY-MM-DD HH:MM — fold — folds/<window-id>.md — rolled up <N> entries from <first> to <last>
@@ -133,7 +133,7 @@ Re-running the same fold (same window definition) produces a byte-equivalent fil
 - Deterministic window-id from window definition
 - Sorted output sections (sort by count desc, then alphabetically)
 - ISO timestamps in `first_entry` / `last_entry` are pulled from the source log entries (not wall-clock)
-- No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki-meta/log.md`, not in the fold itself)
+- No wall-clock fields anywhere in the fold body (the "when was this fold emitted" answer lives in `wiki-meta/journal.md`, not in the fold itself)
 
 **Operational enforcement (v0.8.10, T1.C)**: step 4.5 reads the existing file and skips the write+index+log triplet if the body is byte-equivalent after canonicalisation. The structural design + the operational check together mean: re-running `/wiki-fold` with the same window costs one read and zero writes.
 

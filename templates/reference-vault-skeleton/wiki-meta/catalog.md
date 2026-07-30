@@ -5,14 +5,14 @@ created: 2026-05-17
 updated: 2026-05-17
 ---
 
-# Index
+# Catalog
 
 Catalog of every page in this wiki. Update whenever a page is added, renamed, or removed.
 
 ## Wiki Core
 - [[overview]] — executive summary of this vault
 - [[hot]] — recent-context cache (last ~10 touched pages)
-- [[log]] — append-only operation log
+- [[journal]] — append-only operation journal
 - [[CLAUDE]] — navigation rules for Claude
 
 ## People

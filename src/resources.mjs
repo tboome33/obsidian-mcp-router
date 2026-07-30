@@ -7,14 +7,20 @@
  * nature, so this is safe on `OBSIDIAN_ROUTER_READONLY=true` instances.
  *
  * Per active vault we expose its two scaffold pages:
- *   - wiki-meta/index.md     → the page catalogue
+ *   - wiki-meta/catalog.md   → the page catalogue
  *   - wiki-meta/overview.md  → the executive summary
  * Plus one synthetic, router-wide catalogue:
  *   - obsidian-router://_catalog  → the list of vaults + type/baseUrl (no secrets)
  *
  * URI scheme: obsidian-router://<vault>/<resource-id>
- *   e.g. obsidian-router://dedibox/wiki-index
+ *   e.g. obsidian-router://dedibox/wiki-catalog
  * The synthetic catalogue uses the reserved URI obsidian-router://_catalog.
+ *
+ * v0.58.0 renamed the catalogue's file (`wiki-meta/index.md` →
+ * `wiki-meta/catalog.md`, because OKF reserves the `index` basename) and its
+ * resource id (`wiki-index` → `wiki-catalog`). Both the old id and the old
+ * file path keep working — a published URI is a contract, and a vault can be
+ * un-migrated.
  *
  * Self-contained (imports the SDK schemas + the REST read helper directly) so
  * wiring it into index.mjs is a single registerResourceHandlers() call.
@@ -25,28 +31,44 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { getFileContent } from './rest-client.mjs';
 import { sanitizeContent } from './helpers/sanitize.mjs';
+import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 
 export const RESOURCE_SCHEME = 'obsidian-router';
 export const CATALOG_URI = `${RESOURCE_SCHEME}://_catalog`;
 
 /**
  * The per-vault scaffold pages exposed as resources. `id` is the URI suffix,
- * `path` is the vault-relative file read over REST.
+ * `path` is the vault-relative file read over REST, `fallbackPaths` are older
+ * names accepted on read, and `aliasIds` are older URI suffixes still
+ * resolved.
  */
 export const VAULT_RESOURCE_FILES = [
   {
-    id: 'wiki-index',
-    path: 'wiki-meta/index.md',
-    title: 'Wiki index',
-    description: 'Catalogue of pages in this vault (wiki-meta/index.md).',
+    id: 'wiki-catalog',
+    aliasIds: ['wiki-index'],
+    path: scaffoldCandidates('catalog')[0],
+    fallbackPaths: scaffoldCandidates('catalog').slice(1),
+    title: 'Wiki catalog',
+    description: 'Curated catalogue of pages in this vault (wiki-meta/catalog.md).',
   },
   {
     id: 'wiki-overview',
+    aliasIds: [],
     path: 'wiki-meta/overview.md',
+    fallbackPaths: [],
     title: 'Wiki overview',
     description: 'Executive summary of this vault (wiki-meta/overview.md).',
   },
 ];
+
+/** Look a resource id up, accepting the pre-0.58.0 aliases. */
+export function findResourceDef(id) {
+  return (
+    VAULT_RESOURCE_FILES.find((f) => f.id === id) ??
+    VAULT_RESOURCE_FILES.find((f) => (f.aliasIds ?? []).includes(id)) ??
+    null
+  );
+}
 
 /** Build the canonical resource URI for a vault page. */
 export function buildResourceUri(vaultName, id) {
@@ -128,7 +150,7 @@ export async function readResource(uri, registry, readFile) {
   if (!parsed) {
     throw new Error(
       `Unknown resource URI "${uri}". Expected ${CATALOG_URI} or ` +
-        `${RESOURCE_SCHEME}://<vault>/<wiki-index|wiki-overview>.`,
+        `${RESOURCE_SCHEME}://<vault>/<wiki-catalog|wiki-overview>.`,
     );
   }
 
@@ -144,7 +166,7 @@ export async function readResource(uri, registry, readFile) {
     };
   }
 
-  const def = VAULT_RESOURCE_FILES.find((f) => f.id === parsed.id);
+  const def = findResourceDef(parsed.id);
   if (!def) {
     throw new Error(
       `Unknown resource id "${parsed.id}" for vault "${parsed.vault}". ` +
@@ -159,7 +181,25 @@ export async function readResource(uri, registry, readFile) {
   // chars / ANSI escapes that would corrupt the MCP stdio JSON stream or smuggle
   // escapes into the agent context. (The catalogue branch above is router-built
   // JSON, so it needs no sanitizing.)
-  const text = sanitizeContent(await readFile(vault, def.path));
+  // Try the current name, then any legacy one. The last error propagates so
+  // a genuinely missing file still surfaces the REST failure to the client.
+  const candidates = [def.path, ...(def.fallbackPaths ?? [])];
+  let raw;
+  let lastErr;
+  for (const candidate of candidates) {
+    try {
+      raw = await readFile(vault, candidate);
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      // Only a 404 justifies trying the legacy name — see
+      // `shouldTryLegacyScaffold`.
+      if (!shouldTryLegacyScaffold(err)) break;
+    }
+  }
+  if (lastErr) throw lastErr;
+  const text = sanitizeContent(raw);
   return {
     contents: [
       {

@@ -11,7 +11,7 @@ This vault is a Karpathy-style **LLM wiki** in **personal mode**. Treat it as a 
 
 The wiki is split into TWO sibling directories (v0.12.0+):
 
-- **`wiki-meta/`** holds the 4 scaffolding files — `wiki-meta/index.md`, `wiki-meta/log.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`. These are catalog + recent-context cache + operation log + executive summary.
+- **`wiki-meta/`** holds the 4 scaffolding files — `wiki-meta/catalog.md`, `wiki-meta/journal.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`. These are catalog + recent-context cache + operation log + executive summary.
 - **`wiki/`** holds user content — one folder per type (`wiki/People/`, `wiki/Concepts/`, `wiki-meta/Sessions/`, etc., described below).
 
 Keeping scaffolds separate from notes makes both easier to spot in Obsidian and keeps the visible `wiki/` tree focused on real content.
@@ -19,9 +19,9 @@ Keeping scaffolds separate from notes makes both easier to spot in Obsidian and 
 ## Read order at session start
 
 1. `wiki-meta/hot.md` — recent-context cache, fastest recovery.
-2. `wiki-meta/index.md` — full catalog when you need to navigate.
+2. `wiki-meta/catalog.md` — full catalog when you need to navigate.
 3. Specific pages under `wiki/<folder>/<slug>.md` — drill into whatever the user is asking about.
-4. `wiki-meta/log.md` — only when the user asks "what changed recently".
+4. `wiki-meta/journal.md` — only when the user asks "what changed recently".
 
 Use the `obsidian-router` MCP for all reads/writes (`mcp__obsidian-router__get_file`, `mcp__obsidian-router__write_file`, etc.). Native `Read`/`Write` only work when the project IS the vault — the router-prefixed tools are multi-vault and cross-project safe.
 
@@ -41,8 +41,8 @@ User content lives under `wiki/<folder>/`. Auto-generated scaffolds (including t
 - Path always starts with `wiki/`.
 - Always include frontmatter (`type`, `created`, `updated`, plus type-specific fields).
 - Cross-link liberally with `[[wikilinks]]`. Resolution is from the vault root, so `[[hot]]` from a page under `wiki/Concepts/` will NOT find `wiki-meta/hot.md` automatically — use `[[wiki-meta/hot]]` or rely on Obsidian's name resolution which handles unique filenames.
-- Add the page to `wiki-meta/index.md` under the right section.
-- Append a one-line entry to `wiki-meta/log.md`.
+- Add the page to `wiki-meta/catalog.md` under the right section.
+- Append a one-line entry to `wiki-meta/journal.md`.
 - Refresh `wiki-meta/hot.md` if the page is significant.
 
 ## Note structure — headings hierarchy (mandatory)
@@ -76,12 +76,12 @@ If the content is too thin for 2 H2 sections, file it as a one-liner in `wiki/fa
 - `wiki-query` — answer questions grounded in this vault only (no web).
 - `autoresearch` — web-fed research loop (asks confirmation, costs tokens).
 - `wiki-lint` — health-check (orphans, dead links, drift).
-- `wiki-fold` — roll up `wiki-meta/log.md` entries into a fold page.
+- `wiki-fold` — roll up `wiki-meta/journal.md` entries into a fold page.
 
 ## Don't
 
 - Don't write pages outside the `wiki/` (user content) or `wiki-meta/` (scaffolds) subdirectories. The whole stack assumes these two prefixes.
 - Don't invent facts. If something isn't in the wiki, say so.
-- Don't write pages without updating `wiki-meta/index.md` and `wiki-meta/log.md`.
+- Don't write pages without updating `wiki-meta/catalog.md` and `wiki-meta/journal.md`.
 - Don't bypass the type frontmatter — it's how queries find things.
 - Don't put user notes under `wiki-meta/` — that directory is reserved for the 4 scaffolds. Pages go under `wiki/<folder>/...`.

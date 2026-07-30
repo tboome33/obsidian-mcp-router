@@ -1,17 +1,17 @@
 ---
 type: index
-title: "Wiki Index"
+title: "Wiki Catalog"
 ---
 
-# Wiki Index
+# Wiki Catalog
 
-This file is the catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.
+This file is the curated catalog of the wiki. Add a row for every new page filed under `wiki/`. Organize by section.
 
 ## Overview
 
 - [[overview]] — what this wiki covers
 - [[hot]] — recent-context cache
-- [[log]] — append-only operation history
+- [[journal]] — append-only operation history
 
 ## Sources
 

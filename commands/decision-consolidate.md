@@ -10,4 +10,4 @@ The skill handles:
 - Eligibility gate: `accepted` / `superseded` / `rejected` only — a `proposed` page is refused (its deliberation is the working material)
 - Archive-first transaction: `<folder>/archives/<slug>-deliberation.md` (`type: decision-archive`) written and VERIFIED before the page is touched
 - Canonical compact rewrite: verdict byte-intact, minimal why, alternatives table, `consolidated:` marker, mandatory `## Historique` wikilink to the archive
-- Post-check: decision lint green (no `consolidated-*` findings) + thin `log.md` trace
+- Post-check: decision lint green (no `consolidated-*` findings) + thin `journal.md` trace

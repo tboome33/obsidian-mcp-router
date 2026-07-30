@@ -132,7 +132,7 @@ Errors : M
 - <page-slug-X> : <reason>
 ```
 
-### 6. Append to log.md
+### 6. Append to journal.md
 
 ```
 - YYYY-MM-DD HH:MM — wiki-refresh-digests — <vault> · N refreshed · M errors

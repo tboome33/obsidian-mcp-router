@@ -6,7 +6,7 @@ Un wiki, ce sont des pages **et** les liens entre elles. Ces outils matérialise
 
 **Le besoin.** Le graphe natif d'Obsidian montre des liens, mais sans sémantique : impossible d'y distinguer une page d'un concept, une source d'une décision, ni de voir les regroupements réels du vault.
 
-**Ce que ça fait.** Assemble tout le vault en un graphe de connaissances **typé** (schéma Understand-Anything : 21 types de nœuds, 35 types d'arêtes) et l'écrit dans `wiki-meta/graph/knowledge-graph.json`. Les regroupements (`layers[]`) sont calculés par détection de communautés **Louvain** — la structure réelle des liens, pas la table des matières de l'index — de façon totalement déterministe : même vault, même fichier octet pour octet. La taxonomie manuelle d'`index.md` n'est pas perdue : elle coexiste sous forme de nœuds `topic` (curatée) à côté des communautés (découvertes).
+**Ce que ça fait.** Assemble tout le vault en un graphe de connaissances **typé** (schéma Understand-Anything : 21 types de nœuds, 35 types d'arêtes) et l'écrit dans `wiki-meta/graph/knowledge-graph.json`. Les regroupements (`layers[]`) sont calculés par détection de communautés **Louvain** — la structure réelle des liens, pas la table des matières de l'index — de façon totalement déterministe : même vault, même fichier octet pour octet. La taxonomie manuelle du `catalog.md` n'est pas perdue : elle coexiste sous forme de nœuds `topic` (curatée) à côté des communautés (découvertes).
 
 **Comment l'utiliser.**
 

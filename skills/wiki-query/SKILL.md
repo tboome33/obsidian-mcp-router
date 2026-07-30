@@ -1,6 +1,6 @@
 ---
 name: wiki-query
-description: Answer a question using ONLY the existing wiki vault as the knowledge base — no web search, no general LLM knowledge. Reads hot.md first (cheap recent context), then index.md to navigate, then drills into specific pages, then optionally semantic-searches the wiki, and synthesizes an answer with citations. Use when the user asks "what do you know about X", "based on my wiki, ...", "explain X using my notes", "search the wiki for X", "from my notes, ...", "/wiki-query". Do NOT use when the user wants new information from the web — that's `autoresearch`.
+description: Answer a question using ONLY the existing wiki vault as the knowledge base — no web search, no general LLM knowledge. Reads hot.md first (cheap recent context), then catalog.md to navigate, then drills into specific pages, then optionally semantic-searches the wiki, and synthesizes an answer with citations. Use when the user asks "what do you know about X", "based on my wiki, ...", "explain X using my notes", "search the wiki for X", "from my notes, ...", "/wiki-query". Do NOT use when the user wants new information from the web — that's `autoresearch`.
 ---
 
 # wiki-query
@@ -9,7 +9,7 @@ Three-tier retrieval: cheap (hot cache) → cheap (index) → expensive (full pa
 
 ## Pre-conditions
 
-1. Target vault has `wiki/` scaffolding (`hot.md`, `index.md` minimum). If not, tell the user the wiki isn't set up; offer the `wiki` skill.
+1. Target vault has `wiki/` scaffolding (`hot.md`, `catalog.md` minimum). If not, tell the user the wiki isn't set up; offer the `wiki` skill.
 2. Vault is online (`list_vaults`).
 
 ## Modes
@@ -36,10 +36,10 @@ Read it. If the cache contains the answer (the question is covered by the recent
 
 If hot doesn't cover it: don't try to extract anything tangential. Move to tier 2.
 
-### Tier 2: index.md — IDF-weighted candidate ranking
+### Tier 2: catalog.md — IDF-weighted candidate ranking
 
 ```
-mcp__obsidian-router__get_file({ vault, path: "wiki-meta/index.md" })
+mcp__obsidian-router__get_file({ vault, path: "wiki-meta/catalog.md" })
 ```
 
 Score and rank index entries against the question using the algorithm below (the same one the router's `src/helpers/idf-score.mjs` module exposes for tools that need to score programmatically — keep the algorithm in sync so machine and skill agree).
@@ -119,7 +119,7 @@ If the user is in deep mode AND the synthesized answer is non-trivial:
    ---
    ```
 2. Body: the synthesized answer.
-3. Append to `wiki-meta/index.md` and `wiki-meta/log.md`.
+3. Append to `wiki-meta/catalog.md` and `wiki-meta/journal.md`.
 4. Tell the user: "Filed this answer at `wiki/answers/<slug>.md` — future queries on this topic will hit it first."
 
 ## Anti-patterns

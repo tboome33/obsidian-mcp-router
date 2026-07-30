@@ -8,8 +8,8 @@ Le savoir vit dans deux arborescences séparées :
 
 - **`wiki/`** — vos pages : personnes, concepts, décisions, références, sessions, projets. C'est le contenu.
 - **`wiki-meta/`** — les quatre échafaudages qui rendent le wiki navigable par un LLM :
-  - `index.md` — le **catalogue** de toutes les pages, organisé par dossier. Le point d'entrée de toute recherche.
-  - `log.md` — l'**historique** append-only : une ligne par opération/session, chacune renvoyant vers le détail.
+  - `catalog.md` — le **catalogue** de toutes les pages, organisé par dossier. Le point d'entrée de toute recherche.
+  - `journal.md` — l'**historique** append-only : une ligne par opération/session, chacune renvoyant vers le détail.
   - `hot.md` — le **cache de contexte récent** : les ~10 derniers sujets touchés, rechargé automatiquement à chaque début de session (via hook, [fiche 12](12-hooks-et-automatisations.md)).
   - `overview.md` — le **résumé exécutif** du vault : périmètre et conventions.
 
@@ -29,7 +29,7 @@ Cette séparation garantit que les fichiers de machinerie ne se mélangent jamai
 
 **Le besoin.** Vous tombez sur un article, un PDF, une vidéo qui mérite d'entrer dans votre base de connaissances — pas comme un copier-coller mort, mais comme des pages **structurées et reliées**.
 
-**Ce que ça fait.** Lit la source (URL, fichier ou texte collé), en extrait les entités et concepts qui comptent, les classe en pages wiki croisées de `[[wikilinks]]`, écrit la page source avec un frontmatter fiable (via `extract_page_metadata`, [fiche 6](06-ingestion-web.md)), puis met à jour `index.md`, `log.md` et `hot.md` pour que les sessions futures retrouvent tout.
+**Ce que ça fait.** Lit la source (URL, fichier ou texte collé), en extrait les entités et concepts qui comptent, les classe en pages wiki croisées de `[[wikilinks]]`, écrit la page source avec un frontmatter fiable (via `extract_page_metadata`, [fiche 6](06-ingestion-web.md)), puis met à jour `catalog.md`, `journal.md` et `hot.md` pour que les sessions futures retrouvent tout.
 
 **Comment l'utiliser.**
 
@@ -41,7 +41,7 @@ Cette séparation garantit que les fichiers de machinerie ne se mélangent jamai
 
 **Le besoin.** « Qu'est-ce que **mes notes** disent sur X ? » — une réponse ancrée dans ce que vous avez réellement archivé, sans que le modèle aille inventer ou chercher sur le web.
 
-**Ce que ça fait.** Un RAG à trois étages sur le vault : d'abord `hot.md` (contexte récent), puis `index.md` (catalogue), puis lecture des pages pertinentes — avec `search_smart` en renfort pour les sujets qui se cherchent par le sens. La réponse cite les pages utilisées. Aucune requête web.
+**Ce que ça fait.** Un RAG à trois étages sur le vault : d'abord `hot.md` (contexte récent), puis `catalog.md` (catalogue), puis lecture des pages pertinentes — avec `search_smart` en renfort pour les sujets qui se cherchent par le sens. La réponse cite les pages utilisées. Aucune requête web.
 
 **Comment l'utiliser.**
 
@@ -79,7 +79,7 @@ Cette séparation garantit que les fichiers de machinerie ne se mélangent jamai
 |---|---|---|
 | `ClaudeAsk` (défaut) | Propose, demande toujours confirmation | Découverte de la feature ; période de calibration ; vaults où un faux positif coûte cher. |
 | `Hybrid` | Sauve seul les éléments sûrs (faits, URLs, préférences) ; demande pour les décisions/ADR/règles | Le sweet spot après calibration. |
-| `FullAuto` | Sauve tout seul — avec journal d'audit dans `log.md`, filtre de sensibilité (jamais de credentials/médical/financier) et plafond de sécurité (redevient `ClaudeAsk` après 5 sauvegardes/session) | Journal personnel, chroniques familiales, longues sessions non supervisées. |
+| `FullAuto` | Sauve tout seul — avec journal d'audit dans `journal.md`, filtre de sensibilité (jamais de credentials/médical/financier) et plafond de sécurité (redevient `ClaudeAsk` après 5 sauvegardes/session) | Journal personnel, chroniques familiales, longues sessions non supervisées. |
 | `off` | Aucune suggestion ; `/save` manuel uniquement | Sessions de debug, conversations sensibles, vaults juridiques/médicaux. |
 
 **Comment l'utiliser.**
@@ -112,7 +112,7 @@ Cette séparation garantit que les fichiers de machinerie ne se mélangent jamai
 
 ## `/wiki-fold` — compacter l'historique
 
-**Le besoin.** `log.md` s'allonge indéfiniment ; au bout de quelques mois, « qu'est-ce qui s'est passé récemment ? » devient illisible.
+**Le besoin.** `journal.md` s'allonge indéfiniment ; au bout de quelques mois, « qu'est-ce qui s'est passé récemment ? » devient illisible.
 
 **Ce que ça fait.** Roule les entrées du log en pages de synthèse sous `wiki/folds/` — résumé extractif avec backlinks vers les entrées d'origine. L'opération est **structurellement idempotente** : relancer le fold ne duplique rien.
 

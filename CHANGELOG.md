@@ -6,6 +6,48 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-07-30 — the private scaffolds vacate the basenames OKF reserves: `index`→`catalog`, `log`→`journal`
+
+Roland's 2026-07-30 decision, volet ① of three (vault note `decisions/catalog-journal-et-projections-okf`). OKF **reserves** two basenames — `index.md` (per-directory table of contents) and `log.md` (newest-first content history) — and the next lot adds conformant files under those exact names inside `wiki/`. Our private `wiki-meta/` scaffolds were sitting on both, doing a different job under the same name:
+
+| | ours, in `wiki-meta/` | OKF's, at the bundle root (= our `wiki/`) |
+| --- | --- | --- |
+| index | curated catalogue: sections, one descriptive line per page, wikilinks | navigation TOC: `* [Title](file.md) - description`, no frontmatter |
+| log | append-only operation history, newest at the **bottom** | content history, newest at the **top** |
+
+Obsidian resolves wikilinks by basename, so adding the conformant files while `[[index]]`/`[[log]]` were cited **484 times across 364 files** would have retargeted every one of them, silently, at the generated artefacts. The rename is therefore the technical precondition for volet ② (generated OKF projections), not a cosmetic pass. Executed same-day on the whole fleet: **48 files renamed across 24 vaults, 678 files re-linked, 0 collisions, 0 residual references** — per-vault backups + reversible `manifest.json` under `.okf-rename-backup/<ts>/`. `hot.md` and `overview.md` collide with nothing and keep their names.
+
+### Added
+
+- **`src/helpers/wiki-meta-scaffolds.mjs`** — one place that owns the scaffold names, imported by hooks, the server, the scaffolder and the tools. Exports the current + legacy basenames, `scaffoldCandidates()` (current-first read order), `resolveScaffold()` / `scaffoldWritePath()` (read either, write current), `shouldTryLegacyScaffold()` and `scaffoldMigrationHint()`. Imports nothing — not even a node builtin — so `hooks/_helpers/workspace-vault.mjs` can use it while keeping its pre-`npm install` guarantee.
+- **`okf-safe-rename` gains TABLE mode** — `buildRenamePlanFromTable(filePaths, table)` plans from an EXPLICIT list of `oldPath→newPath` pairs, for renames no charset rule can derive (`wiki-meta/index.md` was already perfectly OKF-safe; it just had to move). Same plan shape as charset mode, so the whole downstream machinery — link rewriting, markdown-link rebuild, `.canvas`/`.base` pass, raw-text pass, manifest, verification — is reused verbatim. Two fields are table-specific:
+  - `collisions` **blocks the apply**. Charset mode invents a `-2` suffix on conflict; a table must not, because the operator asked for `catalog.md` and silently producing `catalog-2.md` is worse than refusing.
+  - `ambiguousStems` is stricter. Charset mode only worries about two *renamed* files sharing an old stem; a table also has to worry about a same-stem file it is **not** renaming. Real case caught in the fleet: the SCI vault has `dev-dashboard/Index.md` and `.../COMPTABILITE/Index.md`, so `[[index]]` there could have meant either. The tool reported both and left basename links untouched (that vault had none, so it migrated clean) instead of guessing.
+- **`preserveDisplay: false`** on `buildRewriteContext` — un-aliased wikilinks no longer gain the old target as an alias, so the rendered text follows the target. This is the point of the decision, not a detail: keeping `[[catalog|index]]` next to a real OKF `index.md` would have preserved exactly the ambiguity the rename removes. The display-preserving default (v0.57.0 behaviour) is unchanged for every other migration; a preset declares its own choice, and `--preserve-display` overrides.
+- **`RENAME_PRESETS` + `retitleScaffold()`** — the fleet rename ships as a named, tested artifact (`okf-reserved-scaffolds`) rather than an argument typed at a prompt. Its `retitle` step stops the renamed file from announcing itself as `# Index`: whole-word substitution on the **H1 and `title:` only**. `type:` is deliberately untouched — it is a semantic key the lint/graph/context-pack consumers match on, not a name.
+- **CLI fleet mode** — `okf-safe-rename-vault.mjs` takes `--preset` / `--table <json>`, `--all-vaults` (the router config's `portRegistry`), a repeatable `--vault` that adds to it, and `--no-alias` / `--preserve-display`. Per-vault section + fleet summary; one bad vault doesn't stop the healthy ones; exit 1 if any vault is blocked or fails verification.
+
+### Changed
+
+- **`wiki-meta/index.md` → `wiki-meta/catalog.md`, `wiki-meta/log.md` → `wiki-meta/journal.md`** everywhere: the 4-scaffold set, `setup-vault.mjs`'s scaffolder and `--link-workspace` precondition, hooks (`session-auto-journal`, `session-reconcile`, `hot-cache-load`, `wiki-query-first-nudge`, `hot-cache-update-prompt`, `wiki-autocommit`, `vault-link-linter`, `doc-drift-detector`), `src/` (audit trail, MCP resources, `build_wiki_graph`, `get_wiki_context_pack`, llms.txt exporter), 20 skills, 8 commands, 2 agents, the scaffold templates, the vault CLAUDE.md templates, the conventions snippets, the feature docs, both READMEs, and the EN+FR quick-reference cheat sheets (HTML + re-rendered PDFs, also pushed to the reference vault's `Documentation/`).
+- **The MCP catalogue resource id is `wiki-catalog`** (was `wiki-index`). The old id still resolves — a published URI is a contract.
+- **`setup-vault.mjs`'s v0.12.1 migration keeps the v0.12.0 basenames**, split out as `LEGACY_V0120_SCAFFOLDS`: its *input* is a pre-v0.12.0 vault carrying `wiki/index.md`, so it must still look for that. Presence tests use a per-slot list that accepts either naming — counting only one set would have read a fully-migrated vault as `'partial'` and made `--migrate-wiki-meta` refuse a vault with nothing left to migrate.
+
+### Compatibility
+
+**Every read path accepts the legacy name**, unlike the v0.12.0 clean break — the plugin updates independently of the vaults it reads, so a user can be on a new plugin with an un-migrated vault, and a failed scaffold probe silently disables *every* workspace-bound hook. Writes always target the new name. Two details that matter:
+
+- **The fallback only fires on a genuine 404.** `unreachable` / `unauthorized` / `timeout` / `server_error` say something about the vault, not about which name the scaffold has — retrying under the old name cannot succeed and replaces a precise diagnosis with a misleading one. Caught by an existing test: an offline vault was reporting "index not found" instead of "vault offline".
+- **The audit trail never creates a second journal.** It tries each name *without* `createTargetIfMissing` and only creates the current one when neither exists — appending with create on the first try would have opened `journal.md` beside an existing `log.md` and split the trail in two. The migrated case still costs exactly one round-trip.
+
+A vault still on the old names keeps working and `scaffoldMigrationHint()` names the fix:
+
+```bash
+node scripts/okf-safe-rename-vault.mjs --preset okf-reserved-scaffolds --all-vaults --apply
+```
+
+Suite: **2581/2581** (+62: 21 for the naming/compat layer, 26 for table mode + no-alias + retitle, 15 end-to-end CLI).
+
 ## [0.57.0] — 2026-07-29 — OKF-safe names at rest: fleet migration tooling + ingestion guard
 
 Roland's 2026-07-29 decision (recorded as the `okf-interop` §4 amendment in the router vault): vault file and folder names become **OKF-safe at rest** — exports turn identity-preserving (the name at rest IS the exported name) and new notes are born conformant. The OKF v0.2 spec itself imposes no filename charset; the constraint comes from Google's reference tooling and is adopted deliberately. Executed same-day on the whole fleet with this release's tooling: **333 files + 60 directories renamed across 15 vaults (24 scanned, 9 already conformant), ~4,000 link/path rewrites, zero broken links, zero residual references** — per-vault full backups + reversible `manifest.json` under `.okf-rename-backup/<ts>/`.

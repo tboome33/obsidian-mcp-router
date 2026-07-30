@@ -35,7 +35,7 @@ Compression transactionnelle d'une page de décision **réglée**. Le contrat vi
 4. **Vérifier l'archive** (`get_file`) : les sections déplacées y sont intégralement. Échec ou doute → **STOP**, la page originale n'est pas touchée.
 5. **Réécrire la page compacte** (`write_file`) : cible ≈ un écran (~≤ 4 Kio hors frontmatter). Frontmatter d'origine + `consolidated: <YYYY-MM-DD>` + `updated:` rafraîchi. Corps : verdict **byte-intact** (le champ `decision:` et les phrases/bandeaux de verdict se recopient à l'octet près — une consolidation ne reformule JAMAIS un verdict), pourquoi minimal (2-5 lignes), `## Alternatives considérées` en table (1 ligne par option), conséquences courtes, puis `## Historique` d'une ligne : `Chronique complète : [[<slug>-deliberation]] · consolidée le <date>`.
 6. **Lint** : repasser la passe décision (skill `wiki-lint` ou le script du repo) — 0 nouvelle erreur, et ni `consolidated-without-history-link` ni `consolidated-invalid`.
-7. **Tracer** : entrée mince dans `wiki-meta/log.md` ; rafraîchir `wiki-meta/hot.md` si le garde le demande. L'index ne change PAS (la consolidation n'est pas un événement de cycle de vie — le statut de la page est inchangé).
+7. **Tracer** : entrée mince dans `wiki-meta/journal.md` ; rafraîchir `wiki-meta/hot.md` si le garde le demande. L'index ne change PAS (la consolidation n'est pas un événement de cycle de vie — le statut de la page est inchangé).
 
 ## Gardes-fous
 

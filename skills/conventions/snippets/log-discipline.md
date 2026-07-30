@@ -1,6 +1,6 @@
 ## Log discipline — index mince + détail dans wiki-meta/Sessions/
 
-`wiki-meta/log.md` est un **INDEX**, pas l'archive. Son rôle : une entrée scannable par milestone, chacune liée à un journal détaillé. Le détail (paragraphes, SHA de commits, listes de fichiers, gotchas) vit dans `wiki-meta/Sessions/`, **jamais** empilé dans le log.
+`wiki-meta/journal.md` est un **INDEX**, pas l'archive. Son rôle : une entrée scannable par milestone, chacune liée à un journal détaillé. Le détail (paragraphes, SHA de commits, listes de fichiers, gotchas) vit dans `wiki-meta/Sessions/`, **jamais** empilé dans le log.
 
 Cette règle existe parce que le log dérive vite : des entrées `## date — sujet` de plusieurs paragraphes bilingues s'y accumulent et le rendent illisible (sur le vault router : 277 KB / 118 entrées grasses avant nettoyage le 2026-06-02 → 60 KB d'index + 117 fichiers détail).
 
@@ -32,7 +32,7 @@ related: ["[[page-a]]", "[[page-b]]"]
 ---
 ~~~
 
-Corps : `# YYYY-MM-DD — <sujet>` puis le détail complet (FR/EN, commits, fichiers, décisions, gotchas), terminé par une section `## Voir aussi / See also` listant les wikilinks + `⟵ [[log]]`.
+Corps : `# YYYY-MM-DD — <sujet>` puis le détail complet (FR/EN, commits, fichiers, décisions, gotchas), terminé par une section `## Voir aussi / See also` listant les wikilinks + `⟵ [[journal]]`.
 
 ### Ce qui écrit DÉJÀ correctement (ne pas dupliquer)
 

@@ -6,7 +6,7 @@
  * Detects whether the current session is bound to an Obsidian vault in
  * one of two modes:
  *   - **cwd-is-vault**: the workspace itself is the vault (cwd contains
- *     `wiki-meta/index.md`).
+ *     `wiki-meta/catalog.md`).
  *   - **workspace-bound** (v0.11.6+): the workspace is a code/dev
  *     project ASSOCIATED with a vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT`
  *     (set in the workspace `.env` by `setup-vault.mjs --link-workspace`).
@@ -14,7 +14,7 @@
  * If either mode applies AND the prompt looks substantive (not trivial
  * follow-up like "oui"/"B"), injects a reminder into Claude's context
  * via `additionalContext` field (UserPromptSubmit spec) listing the 4
- * canonical wiki entry points (hot/index/log/overview) and the
+ * canonical wiki entry points (hot/catalog/journal/overview) and the
  * appropriate read mechanism for the detected mode (filesystem `Read`
  * for cwd-is-vault, `mcp__obsidian-router__get_file({vault, path})` for
  * workspace-bound).
@@ -121,10 +121,11 @@ if (TRIVIAL.test(trimmed)) process.exit(0);
 // MCP tools. In workspace-bound mode, cwd has no `wiki-meta/` so Claude
 // MUST use `mcp__obsidian-router__get_file({vault: "<slug>", path: ...})`.
 // We make this explicit in the nudge to prevent Claude from trying a
-// `Read("wiki-meta/index.md")` that would fail with ENOENT in
+// `Read("wiki-meta/catalog.md")` that would fail with ENOENT in
 // workspace-bound mode.
 //
-// v0.12.0: scaffold paths are `wiki-meta/{hot,index,log,overview}.md`,
+// Scaffold paths are `wiki-meta/{hot,catalog,journal,overview}.md` (v0.58.0;
+// `{hot,index,log,overview}.md` before that),
 // user content (notes/pages) stays under `wiki/...`.
 
 const isWorkspaceBound = ctx.mode === 'workspace-bound';
@@ -141,8 +142,8 @@ const modeLine = isWorkspaceBound
   : `This workspace IS an Obsidian vault. Scaffolds live under \`wiki-meta/\`; user pages live under \`wiki/\`.`;
 
 const indexReadHint = isWorkspaceBound
-  ? `Read \`wiki-meta/index.md\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/index.md" })\`.`
-  : `Read \`wiki-meta/index.md\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "wiki-meta/index.md" })\`.`;
+  ? `Read \`wiki-meta/catalog.md\` first — via \`mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki-meta/catalog.md" })\`.`
+  : `Read \`wiki-meta/catalog.md\` first — via \`Read\` (filesystem) or \`mcp__obsidian-router__get_file({ path: "wiki-meta/catalog.md" })\`.`;
 
 // v0.10.2: PATH RESOLUTION RULES (workspace-bound only)
 // Triggered by Roland 2026-05-23 after Claude generated a filesystem path
@@ -227,7 +228,7 @@ const chatLinkBlock = urlPrefix ? [
   'CHAT RESPONSE LINK FORMAT (applies to YOUR REPLIES, not to tool calls)',
   '',
   'When citing a vault file in your reply to the user, NEVER write the path',
-  'as bare text like `wiki/Divers/foo.md` or `wiki-meta/index.md`. The',
+  'as bare text like `wiki/Divers/foo.md` or `wiki-meta/catalog.md`. The',
   'Claude Code renderer turns those into clickable links by prepending the',
   isWorkspaceBound
     ? 'cwd path → produces `<cwd>/wiki/Divers/foo.md` which does NOT exist in this workspace (the vault is at a different absolute path). User clicks → broken link.'
@@ -302,12 +303,12 @@ const nudge = [
   '  • `wiki-meta/hot.md`      — recent-context cache (likely already',
   '                               loaded via the hot-cache-load',
   '                               session-start hook).',
-  '  • `wiki-meta/index.md`    — full catalog of pages organized by folder',
+  '  • `wiki-meta/catalog.md`    — full catalog of pages organized by folder',
   '                               (people, concepts, sessions, decisions,',
   '                               refs, projects). Scan this first.',
   '  • `wiki-meta/overview.md` — executive summary of vault scope +',
   '                               conventions.',
-  '  • `wiki-meta/log.md`      — append-only operation history. Useful',
+  '  • `wiki-meta/journal.md`      — append-only operation history. Useful',
   '                               when the user asks "what changed',
   '                               recently?".',
   '',

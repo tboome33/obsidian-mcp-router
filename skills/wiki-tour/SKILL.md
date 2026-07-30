@@ -6,7 +6,7 @@ argument-hint: "[scope] (section/topic/path — omit for whole-vault)"
 
 # wiki-tour
 
-Build a **guided tour** through a vault: an ordered sequence of steps that teaches the vault's structure in a sensible reading order, derived from the **knowledge graph's link topology** (fan-in/backlinks, entry points, index.md sections). Reference: [[understand-anything-roadmap]] item #3.
+Build a **guided tour** through a vault: an ordered sequence of steps that teaches the vault's structure in a sensible reading order, derived from the **knowledge graph's link topology** (fan-in/backlinks, entry points, catalog.md sections). Reference: [[understand-anything-roadmap]] item #3.
 
 Same split as `/wiki-graph`: the **topology + step ordering is deterministic** (the `build_wiki_tour` tool); **you (Claude) write the pedagogical narrative** — the *why* of each step.
 
@@ -19,7 +19,7 @@ The knowledge graph must exist: `wiki-meta/graph/knowledge-graph.json`. If it do
 ### 1. Resolve scope
 
 - No arg → whole-vault tour.
-- `scope` arg → one section/topic (by index.md heading) or a path substring. For a multi-project vault, tour one project at a time (e.g. `/wiki-tour Dedibox`). If unsure which scopes exist, read `wiki-meta/index.md` section headings and offer a menu.
+- `scope` arg → one section/topic (by catalog.md heading) or a path substring. For a multi-project vault, tour one project at a time (e.g. `/wiki-tour Dedibox`). If unsure which scopes exist, read `wiki-meta/catalog.md` section headings and offer a menu.
 
 ### 2. Compute the deterministic skeleton
 
@@ -27,7 +27,7 @@ The knowledge graph must exist: `wiki-meta/graph/knowledge-graph.json`. If it do
 mcp__obsidian-router__build_wiki_tour({ vault, scope?, maxSteps? })
 ```
 
-Returns: ordered `steps[]` — each with `order`, a default `title`, and `nodes[]` (`{id, name, summary}`) — plus `entryPoints[]` and `totalArticles`. The skeleton is: an **overview step** (the entry points — highest fan-in, boosted for index/MOC names) then **one step per index.md section** (its top articles by backlink count), then a trailing "other notable pages" step for unindexed hubs.
+Returns: ordered `steps[]` — each with `order`, a default `title`, and `nodes[]` (`{id, name, summary}`) — plus `entryPoints[]` and `totalArticles`. The skeleton is: an **overview step** (the entry points — highest fan-in, boosted for index/MOC names) then **one step per catalog.md section** (its top articles by backlink count), then a trailing "other notable pages" step for unindexed hubs.
 
 If it warns `no-articles-in-scope` / `no-tour-steps`, tell the user the scope is empty and offer alternatives.
 
@@ -61,10 +61,10 @@ Report: scope, step count, output path, and a one-line preview of the arc (step 
 - Don't invent step content — narrate from the `nodes[].summary` the tool returns.
 - Don't reorder the deterministic skeleton arbitrarily — its order (overview → topics by importance) is the pedagogical spine; refine titles/descriptions, not the sequence, unless you have a clear pedagogical reason (then say why).
 - Don't overwrite the whole-graph `tour[]` from a *scoped* tour.
-- Don't exceed ~15 steps — a tour is a curated path, not a table of contents (that's `index.md`).
+- Don't exceed ~15 steps — a tour is a curated path, not a table of contents (that's `catalog.md`).
 
 ## Quirks
 
 - Deterministic skeleton: same graph ⇒ same step order (only your narrative varies).
-- `scope` matches an index.md section name, a layer id, or a path substring — first match wins.
+- `scope` matches a catalog.md section name, a layer id, or a path substring — first match wins.
 - Entry points are boosted for names like `index`/`overview`/`MOC`/`sommaire`; otherwise highest backlink count wins.

@@ -74,7 +74,7 @@ When a save fires (whether by user confirmation or auto-execute):
 - `preference` → append to `wiki/preferences.md`
 - `url` → invoke `/obsidian-router:wiki-ingest <url>`
 
-After every save (auto or confirmed), append a 1-line entry to `wiki-meta/log.md`. For auto-saves, prefix the entry with `[auto-save]` so the user can filter.
+After every save (auto or confirmed), append a 1-line entry to `wiki-meta/journal.md`. For auto-saves, prefix the entry with `[auto-save]` so the user can filter.
 
 #### Trigger 3 — Topic switch (mandatory checkpoint)
 

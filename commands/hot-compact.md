@@ -11,4 +11,4 @@ The skill handles:
 - Byte-identical, VERIFIED backup `wiki-meta/hot.full-backup-<date-hhmm>.md` before any overwrite
 - Thin state-first rewrite (≤ 350 words / 4 KiB): Key Recent Facts · Recent Changes · Active Threads, pinned (📌) blocks always preserved
 - Human preview when it's the vault's first compaction at > 5× the limit
-- Concurrency re-check before the final write + traceability line in `wiki-meta/log.md`
+- Concurrency re-check before the final write + traceability line in `wiki-meta/journal.md`
