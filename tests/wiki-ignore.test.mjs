@@ -46,6 +46,18 @@ describe('default patterns', () => {
     assert.equal(ig.isIgnored('.obsidian/app.json'), true);
     assert.equal(ig.isIgnored('.trash/old.md'), true);
   });
+  test('excludes okf-safe-rename migration backups (verbatim page copies)', () => {
+    // Observed 2026-07-30: without this default, every backed-up page was
+    // enumerated as a duplicate article by the graph/lint/export.
+    assert.equal(
+      ig.isIgnored('.okf-rename-backup/2026-07-30-00-09-51/wiki-meta/catalog.md'),
+      true,
+    );
+    assert.equal(
+      ig.isIgnored('.okf-rename-backup/2026-07-30-00-09-51/wiki/Projects/decision.md'),
+      true,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

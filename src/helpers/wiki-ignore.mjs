@@ -56,6 +56,11 @@ export const DEFAULT_WIKIIGNORE_PATTERNS = Object.freeze([
   '.obsidian/',
   '.trash/',
   '.understand-anything/',
+  // Migration backups (okf-safe-rename --apply): verbatim .md copies of real
+  // pages. Without this, the graph/lint/export enumerated every backed-up
+  // page as a duplicate article (observed 2026-07-30 after the
+  // catalog/journal fleet pass).
+  '.okf-rename-backup/',
   'wiki-meta/digests/',
   'wiki-meta/graph/',
   'wiki-meta/exports/',
