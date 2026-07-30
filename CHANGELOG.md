@@ -6,17 +6,35 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-## [0.59.1] — 2026-07-30 — projections hardened in review (2 reviewers, convergent)
+## [0.59.2] — 2026-07-30 — projections hardened in review (2 reviewers, convergent)
 
-The `/review+` pass on v0.59.0 — codex + Claude Code Reviewer, run independently — converged on one real fail-open path and surfaced a link-hijack vector. Every fix is pinned by a test.
+The `/review+` pass on v0.59.0 — codex + Claude Code Reviewer, run independently — converged on one real fail-open path and surfaced a link-hijack vector. Every fix is pinned by a test. (Numbered 0.59.2 because a concurrent session shipped its own 0.59.1 below; the two lines were merged for this release.)
 
 - **Read failures now fail CLOSED, both directions** (found by both reviewers): a content page that failed to read would have silently dropped its entries from every index and the log; an unreadable file AT a projection path would have been absent from the diff base, so the planner would treat the path as free — and if that unreadable file was an unmarked hand-written page, the write would have destroyed exactly what the conflict rule protects. A transient REST failure now means "no refresh", never "wrong refresh" — same policy as the truncated-enumeration refusal.
 - **Hostile titles can no longer hijack generated links**: a frontmatter `title: "Fin](http://evil) - x"` closed the markdown bracket early inside the §6/§7 entries — plausible vector, `wiki-ingest` derives titles from web pages. Square brackets are neutralised to parens in `indexEntryLine` (shared with the export bundle, which had the same latent hole) and in the log entries; multi-line titles collapse to one line.
 - The middleware's `requireInitialized` gate no longer conflates a true 404 with an offline/unauthorized vault — only `not_found` reads as "never opted in"; anything else surfaces through the scheduler's error log instead of a perfectly silent skip. Middleware refreshes that actually write also leave a one-line stderr trace (they bypass the tool layer, hence the audit trail).
 - The llms.txt exporter's projection exclusion turned out to predate the feature (`index`/`log` basenames never bucketed) — the redundant new filter was removed and the guarantee pinned by test instead.
 
-Suite: **2652/2652** (+52).
+Suite: **2652/2652** (+52) on this line before the merge with 0.59.1 below.
 
+## [0.59.1] — 2026-07-30 — the projections stop inventing descriptions, and the export ships them
+
+Two corrections to v0.59.0, both against the written brief for volet ②.
+
+### Fixed
+
+- **At-rest projections no longer synthesize `description`.** v0.59.0 derived index entries with `buildOkfFrontmatter`, whose `description` falls back to the body's first sentence. That fallback is right at an **export** boundary — Google's reference implementation refuses documents without a description — but at rest it wrote sentences nobody authored into the vault, where nothing distinguishes them from real ones. `buildOkfFrontmatter` gains an opt-out (`{ synthesizeDescription: false }`, default unchanged so the exporter is untouched); projections pass it, leave the entry in the bare `* [Title](file.md)` form §6 allows, and **report** the gap through a new `missingDescription` array on `buildProjections` / `generateProjectionsOnDisk`. The brief was explicit: *« ne rien inventer : si `description` manque, le signaler en warning plutôt que de fabriquer une phrase »*. Regenerated on the router vault: **32 of 35 projections rewritten**, invented sentences gone.
+  - Consequence worth knowing: **0 of that vault's 134 content pages define a frontmatter `description`**, so its indexes are now title-only. The synthesis was hiding a metadata gap rather than filling it — the fix surfaces it where it can be repaired at the source.
+  - `missingDescription` is returned **sorted**, not in page order: the whole return value is compared for byte-determinism, so an enumeration-order-dependent array would make the same tree yield different results.
+
+- **`wiki-export --target okf` reuses the vault's projections instead of discarding them.** v0.59.0 filtered marked projections out of the page set and regenerated its own navigation. The bundle now **ships the vault's own bytes** when that is provably correct, so a whole-vault export is the filtered copy the decision aimed at. Two guards, both checked rather than assumed, because wrong reuse ships navigation that lies about the bundle:
+  - **every content path must survive slugification unchanged** — a projection's links are at-rest names. Gating on `report.renamed` would NOT catch this: that array records reserved-name and slug *collisions* only, never ordinary slugification, so `Ma Page.md` → `ma-page.md` would have slipped through and shipped an index pointing at files the bundle lacks under those names.
+  - **the projections must describe exactly this document set** — bidirectional entry match, not a path-set comparison. Whole-vault projections and a two-page filtered export can produce the *same index paths* while the root index still advertises pages the recipient never receives.
+  - When either fails the bundle is still correct, just freshly generated, and `report.projectionReuseSkipped` says why (`report.projectionsReused` carries the verdict).
+  - Note: reuse requires case-identical paths, so a vault with capitalised directories (`Divers/`) still regenerates — the exporter lowercases path segments. Reuse fires today only for all-lowercase trees.
+  - Projections are still never exported as concept documents: they are split out before path mapping, so §3.1 cannot rename them to `index-page.md` and duplicate the navigation. A **hand-written** page on a reserved basename is still renamed, as before.
+
+- 15 new tests (2641 → **2656**, all green), including the four reuse verdicts, the §3.1 non-regression, and an order-independence test for `missingDescription`.
 ## [0.59.0] — 2026-07-30 — OKF projections: the wiki carries its own generated navigation (volet ②)
 
 Volet ② of Roland's 2026-07-30 decision (volet ① — the `catalog`/`journal` rename that freed the reserved basenames — shipped in v0.58.0). `wiki/` now carries the three files OKF reserves, as **generated projections** of the tree's frontmatter:
@@ -44,7 +62,7 @@ They are **projections**: pure functions of `title`/`description`/`type`/dates, 
 - **Skills file by SUBJECT first, type second** (Roland, 2026-07-30: flat type-buckets make human re-reading hard). `wiki-ingest`, `save` and the batch ingest agent now create `wiki/<sujet>/` as soon as 2-3 pages share a subject and regroup strays with `move_file` — safe, since wikilinks resolve by basename — and every directory gets its generated `index.md` landing page for human browsing. Projections and `wiki-meta/` are never moved.
 - Counts: **43 MCP tools · 48 commands · 12 write tools**.
 
-Suite at feature freeze: **2647/2647** (+47); the review hardening below (v0.59.1) brings it to 2652.
+Suite at feature freeze: **2647/2647** (+47); the 0.59.1 + 0.59.2 follow-ups above bring it further.
 
 
 ## [0.58.1] — 2026-07-30 — migration backups no longer leak into recall, graph, lint or export
