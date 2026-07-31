@@ -35,3 +35,7 @@ If `path` is missing, refuse to call the tool and ask the user for it.
 ## Output format
 
 After fetching, render the markdown content. If the file has frontmatter, format it as a YAML code block at the top followed by the body. Don't truncate unless the file is huge (>2000 lines), in which case show the first 200 lines and offer to fetch more on request.
+
+## contentSha256 (for conditional writes)
+
+The result also carries `contentSha256` — a fingerprint of the file's current content. If you intend to modify the file after reading it, keep this value: pass it back as `ifMatch` on the subsequent `write_file` / `patch_file` / `merge_frontmatter` / `move_file` / `delete_file` so the change is refused if the file was modified in between. This is how you avoid overwriting a concurrent edit. Don't surface the hash to the user unless asked — it's plumbing.

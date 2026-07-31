@@ -149,7 +149,7 @@ const TOOLS = [
   {
     name: 'get_file',
     description:
-      'Read the full content of a file from a vault. Returns markdown text, metadata, and frontmatter.',
+      'Read the full content of a file from a vault. Returns markdown text, metadata, and frontmatter. The result includes contentSha256 — pass it back as ifMatch on a later write/patch/delete/move to refuse the change if the file was modified in between (optimistic concurrency).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -193,7 +193,7 @@ const TOOLS = [
   {
     name: 'write_file',
     description:
-      'Create a new file or replace the entire content of an existing file. Pass ifNew: true to refuse to overwrite an existing file (server returns 409 in that case).',
+      'Create a new file or replace the entire content of an existing file. Pass ifNew: true to refuse to overwrite an existing file (server returns 409). Pass ifMatch (a contentSha256 from get_file) for an atomic compare-and-swap: the write is refused with a 409 conflict if the file changed since you read it — use it whenever another session (or an Obsidian edit) could have touched the file. The result echoes the new contentSha256 so you can chain edits without re-reading.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -202,7 +202,11 @@ const TOOLS = [
         content: { type: 'string', description: 'Full file content (markdown).' },
         ifNew: {
           type: 'boolean',
-          description: 'If true, fail with 409 if the file already exists. Default: false (overwrite).',
+          description: 'If true, fail with 409 if the file already exists. Default: false (overwrite). Mutually exclusive with ifMatch.',
+        },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Writes only if the file still hashes to this; otherwise 409. Atomic when the target vault runs obsidian-mcp-router-bridge >= 0.7.0, else a GET-compare fallback.',
         },
       },
       required: ['path', 'content'],
@@ -241,6 +245,10 @@ const TOOLS = [
         overwrite: {
           type: 'boolean',
           description: 'If true, overwrite destination if it exists. Default: false (fails on conflict).',
+        },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard on the SOURCE: the 64-hex contentSha256 from a prior get_file of the source. Refuses the move with 409 if the source changed since then.',
         },
       },
       required: ['from', 'to'],
@@ -304,6 +312,10 @@ const TOOLS = [
           type: 'boolean',
           description: 'Create absent keys. Default: true.',
         },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Checked once before any key is written; a mismatch throws 409 before the first mutation. Does not make the multi-key update atomic.',
+        },
       },
       required: ['path', 'values'],
       additionalProperties: false,
@@ -321,6 +333,10 @@ const TOOLS = [
         confirm: {
           type: 'boolean',
           description: 'Must be exactly true. Any other value blocks the operation.',
+        },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Refuses the delete with 409 if the file changed since then — avoids deleting a file another session just edited.',
         },
       },
       required: ['path', 'confirm'],
@@ -373,6 +389,10 @@ const TOOLS = [
         trimTargetWhitespace: {
           type: 'boolean',
           description: 'Trim whitespace around the target before applying the operation.',
+        },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. The whole-file precondition is checked before patching; a mismatch throws 409. Guards against patching content that changed since you read it (the patch itself is not hash-locked).',
         },
       },
       required: ['path', 'operation', 'targetType', 'target', 'content'],

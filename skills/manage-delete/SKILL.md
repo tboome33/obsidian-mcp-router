@@ -27,6 +27,7 @@ Call the obsidian-router `delete_file` MCP tool with arguments parsed from $ARGU
 
 **Optional**:
 - `vault` — omit for default.
+- `ifMatch` — a `contentSha256` from a prior `get_file`. Refuses the delete with a 409 conflict if the file changed since you read it. Use it when deleting a file you inspected earlier and another session could have edited in between — it stops you from deleting someone's just-made changes.
 
 ## Argument parsing from $ARGUMENTS
 

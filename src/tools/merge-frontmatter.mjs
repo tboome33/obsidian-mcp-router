@@ -1,5 +1,7 @@
 import { setFrontmatterTool } from './set-frontmatter.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
+import { assertContentMatches } from '../rest-client.mjs';
+import { isContentSha256 } from '../helpers/content-hash.mjs';
 
 /**
  * Apply multiple frontmatter key/value updates in sequence.
@@ -11,10 +13,15 @@ import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
  * the whole file via write_file — but that rewrites the entire file content.
  */
 export async function mergeFrontmatterTool(registry, args = {}) {
-  const { vault: name, path: filePath, values, createIfMissing = true } = args;
+  const { vault: name, path: filePath, values, createIfMissing = true, ifMatch } = args;
   if (!filePath) throw new Error('Missing required argument: path');
   if (!values || typeof values !== 'object' || Array.isArray(values)) {
     throw new Error('Missing or invalid argument: values (must be a key/value object)');
+  }
+  if (ifMatch !== undefined && !isContentSha256(ifMatch)) {
+    throw new Error(
+      'Invalid ifMatch: expected a 64-char lowercase hex content hash (the contentSha256 field from get_file).',
+    );
   }
 
   // Resolve the vault ONCE up front so the result carries the CANONICAL vault name
@@ -26,6 +33,15 @@ export async function mergeFrontmatterTool(registry, args = {}) {
   let resolvedVault = null;
   try { resolvedVault = registry.resolveVault(name); } catch { /* best-effort */ }
   const resolvedVaultName = resolvedVault ? resolvedVault.name : name || registry.defaultVault;
+
+  // ifMatch (C1): check the whole-file precondition ONCE before any key is
+  // written. Because the per-key writes are already sequential/non-atomic, this
+  // guards against operating on a file that changed since the caller read it —
+  // it does not make the multi-key update itself atomic. A mismatch throws
+  // before the first mutation. Needs a resolved vault to read from.
+  if (ifMatch !== undefined && resolvedVault) {
+    await assertContentMatches(resolvedVault, filePath, ifMatch);
+  }
 
   const results = [];
   let firstError = null;
