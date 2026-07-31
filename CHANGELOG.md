@@ -651,6 +651,10 @@ Full suite: 2171 tests green (2142 + 29 new).
 
 - **`pdf_to_markdown_docling` — opt-in high-fidelity PDF → markdown via Docling.** A new conversion tool (and `/pdf-to-markdown-docling` slash command) that runs [Docling](https://github.com/docling-project/docling)'s standard pipeline (layout detection + TableFormer table-structure recognition) instead of MarkItDown's `pdfminer.six` backend — reconstructing tables and reading order that MarkItDown loses (benchmarks: 88% vs 82% F1), at ~10× the CPU cost. **Opt-in and in-process**, mirroring the MarkItDown pattern: a *separate* `.venv-docling` is created at postinstall ONLY when `OBSIDIAN_ROUTER_ENABLE_DOCLING=1` is set before install (or via `npm run install-docling`); `pip install docling` pulls ~1-2 GB of torch/onnxruntime + models. The tool is always listed — an uninstalled Docling yields an actionable call-time hint, never a startup failure. Scope is **PDF only** (DOCX/PPTX/XLSX/web keep MarkItDown, where Docling shows no advantage). New: `scripts/install-docling.mjs`, `src/markdownify/docling.mjs`, `resolveDoclingPath` in `src/markdownify/utils.mjs`, `pdfToMarkdownDocling` in `src/tools/convert.mjs`, `commands/pdf-to-markdown.md` + `commands/pdf-to-markdown-docling.md`, env vars `OBSIDIAN_ROUTER_ENABLE_DOCLING` / `DOCLING_PATH`. Tests: `tests/docling-markdownify.test.mjs` + `tests/install-docling.test.mjs`. Design spec: `docs/superpowers/specs/2026-07-07-docling-pdf-integration-design.md`.
 
+## [0.36.1] — 2026-07-06 — the link linter stops "correcting" valid URLs to another vault's port
+
+A patch release whose CHANGELOG entry was written into `[Unreleased]` and never promoted: the v0.37.0 bump renamed that heading, so this version's work was filed under Docling for a month. Restored here, unchanged, from commits `6ca915c`, `2efc5c5`, `ef5cd40` and `b29f6eb` — all of which landed before the 0.36.1 bump. Suite at the time: **2003/2003**.
+
 ### Fixed
 
 - **`vault-link-linter` — wrong-port false positive on multi-vault path collision.** Pass 2 resolved the vault owning a click-to-open URL by **path only** (default vault first, then `portRegistry` insertion order). Scaffold paths (`wiki-meta/index.md`, `wiki-meta/log.md`, …) exist in **every** bootstrapped vault, so a perfectly correct URL was flagged `[wrong-port]` against whichever vault sorted first — with a suggested "fix" pointing at the **wrong vault's** port (incident 2026-07-06: a valid `http://127.0.0.1:27134/open/wiki-meta%2Findex.md` link to vault `RECHERCHES ETUDES SUP` was "corrected" to `27161`, the `.template` reference vault's port). The URL's port is now the primary disambiguation signal: new `findOwningVaults()` returns **all** owner vaults, and the URL is accepted if **any** of them actually serves the actual port for the scheme (`http` → `insecurePort` + `enableInsecureServer`; `https` → `port`). Only when no owner serves the port is the violation raised, with the suggestion built against the **first owner with a readable `data.json`** (not blindly the first owner — a registry-first vault like `.template` may have no Local REST API plugin configured at all). 5 new regression tests (`wrong-port multi-vault collision`), including the still-blocks guards (port matching no vault; port matching a vault whose insecure server is disabled; first owner missing `data.json` entirely). Adversarial multi-agent review of the fix confirmed one accepted tradeoff (documented in the hook's header): when a colliding path's URL port matches a *non-intended* owner vault, the link is now accepted rather than flagged — unavoidable without more context, and strictly better than resurrecting the original false-positive.
@@ -2644,6 +2648,60 @@ Adds `/obsidian-router:meta-sync-template` (template propagation skill) and clos
 ### Tests
 
 - **`tests/setup-vault-safety.test.mjs`** — 16 new tests (7 unit tests for `samePath()` + 9 integration tests spawning `setup-vault.mjs` with temp fixtures via `OBSIDIAN_ROUTER_CONFIG`). Coverage: case-insensitive same-path matches, non-existent path handling, refusal to target reference (same and mis-cased), credentialed-plugin skip on first-time AND on `--force` with missing target `data.json` (codex P1 regression), `data.json` preservation across normal `--force` re-clone, `--quiet` warning visibility, `--sync-all` self-skip on same-casing AND mis-cased reference entries, `--sync-all` loop survives a single failing vault (Reviewer A I1 regression). Total test count: **308/308 passing** (was 271).
+
+## [0.11.1] — 2026-05-22 — `/ultrareview` follow-up: 7 security + correctness fixes
+
+Cloud `/ultrareview` ran ~17 minutes after the v0.11.0 commit landed and surfaced **7 valid findings the local `/review+` had missed** (Reviewer A subagent + codex CLI, 3 passes). All addressed here.
+
+The distribution of findings is the argument for a three-tier review stack, and worth recording: the **local** pass caught the foundational bugs — the textual-only SSRF check, argv injection, the TOCTOU tempfile, a credential leak in `.claude/settings.local.json`, a missing lockfile regeneration. The **cloud** pass reasoned one level up, about *composition* with the threat model: that validate-then-fetch is TOCTOU **without IP pinning**, that `OBSIDIAN_ROUTER_READONLY`'s semantics shifted silently the day file-input tools shipped, and that Node 20.12's CVE-2024-27980 had quietly turned `.cmd` execFile into dead code on Windows.
+
+### Fixed
+
+- **DNS rebinding TOCTOU (SSRF).** v0.11.0 did `dns.lookup` → `isPrivateIp` → `fetch`, with nothing pinning the address between validation and connection: an attacker-controlled DNS server with `TTL=0` returns a public IP at validation time and a private one (loopback, RFC1918, or the `169.254.169.254` cloud metadata endpoint) at connect time. New `resolveAndAssertPublic()` returns `{ address, family }`, and `safeFetch` builds a custom undici `Agent` whose `connect.lookup` calls back with the **pre-resolved** address, pinning the connection. Per-redirect-hop pinning is preserved.
+- **`OBSIDIAN_ROUTER_READONLY` bypass on file-input conversion tools.** The six file-input `*_to_markdown` tools were deliberately excluded from `WRITE_TOOL_NAMES` (they write nothing), but that left them exposed in multi-tenant setups where `READONLY` + `ALLOWED_VAULTS` are the isolation boundary — so `pdf_to_markdown({ filepath: "/etc/passwd" })` exfiltrated arbitrary server files. New `assertSandboxConsistent()` runs at `startServer` boot and **refuses to start** when any multi-tenant signal is set without `MD_ALLOWED_PATHS`. Single-user setups are unaffected.
+- **No HTTP status check, and no body size cap.** Two independent holes in the same function: `safeFetch` returned 4xx/5xx responses unchanged, so a 404 HTML error page was converted to `# Page Not Found` markdown and shipped to MCP clients as if it were the requested content; and `response.arrayBuffer()` buffered the whole body before any size check, so an attacker URL could OOM the router. `safeFetch` now throws on `!response.ok` with the status code, and a new `readBodyWithCap()` streams with a 50 MB budget (matching the existing `maxBuffer` ceiling on the markitdown/repomix subprocesses), plus an upfront `Content-Length` check when the header is present.
+- **Windows `.cmd` execFile broken on Node ≥ 20.12.** CVE-2024-27980 banned `execFile` of `.cmd` / `.bat` without `{ shell: true }`, and v0.11.0's resolver preferred `repomix.cmd` on Windows — so `git_repo_to_markdown` failed with a cryptic `EINVAL` on **every** Windows install. New `resolveRepomixCommand()` skips the `.cmd` shim and invokes `node node_modules/repomix/bin/repomix.cjs` directly on Windows; the POSIX path is unchanged and the `REPOMIX_PATH` override still wins.
+- **`inferExtensionFromUrl` misclassified PDFs.** `url.endsWith('.pdf')` fails for signed S3 URLs (`?X-Amz-Signature=…`), Google Drive downloads (`?export=download`) and `.pdf#page=5` bookmarks — those PDFs were saved as `.html` and run through markitdown's HTML converter, producing garbage. Now tested against `new URL(url).pathname`.
+- **Bracketed IPv6 broke `dns.lookup` in the SSRF guard.** `new URL('http://[2001:db8::1]/').hostname` keeps the brackets, and `getaddrinfo` rejects that form with `ENOTFOUND` — so public IPv6-literal URLs failed with a misleading DNS error. Brackets are now stripped at the top of `assertHostnameNotPrivate`, and IP literals short-circuit via `net.isIP` (which also saves a DNS round-trip).
+- **`isUnconvertedHtml` missed uppercase `<HTML>`.** The DOCTYPE branch was case-conscious but the bare-`<html` check was lowercase-only, so legacy CMS pages, Office HTML exports and hand-written HTML slipped past the SPA-detection safety net.
+
+### Tests
+
+- **292/292 passing** (was 289 at v0.11.0). New coverage for `resolveAndAssertPublic` (short-circuit + bracket-strip), `resolveRepomixCommand` (env override honoured, structured shape contract), and `assertSandboxConsistent` across all six combinations of `{READONLY, ALLOWED_VAULTS, USER_ID}` × `{with, without MD_ALLOWED_PATHS}`, plus the legacy `MD_SHARE_DIR` alias.
+
+## [0.11.0] — 2026-05-22 — markdownify-mcp vendor port: 10 conversion tools
+
+Ports [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT, TypeScript) to pure ESM JavaScript inside this router: 10 MCP tools that turn PDF, DOCX, XLSX, PPTX, image, audio, YouTube, Bing results, generic web pages and git repositories into clean markdown, via the bundled `markitdown[all]` Python CLI (or `repomix` for git repos).
+
+**Why bundle this into the router** rather than register markdownify-mcp as a sibling MCP server: the vault is the artifact destination, and other MCP clients (Cursor, Cline, Continue, Goose, custom ones) have no native file conversion — bundling makes the router useful beyond Claude. The tools return the markdown **string only**; composition (writing it into a vault) stays explicit on the caller's side, which is also why they take no `vault` argument.
+
+### Added
+
+- **10 MCP tools**, snake_case per router convention. File inputs: `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`. URL inputs: `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`. Git repositories: `git_repo_to_markdown` via [`repomix`](https://github.com/yamadashy/repomix).
+- **A JS/ESM port of the upstream TypeScript**, with no Bun and no build step, fitting the router's `*.mjs` architecture: `src/markdownify/utils.mjs`, `src/markdownify/markitdown.mjs`, `src/tools/convert.mjs`.
+- **`scripts/install-markitdown.mjs`** — postinstall bootstrap that detects `python3` / `python` (3.10+), creates a repo-local `.venv`, and pip-installs `markitdown[all]`.
+- **An inline replacement for the `private-ip` dependency** — the upstream pulls that npm package for its SSRF guard; the port reimplements it in ~25 lines covering loopback, RFC1918, link-local and CGNAT.
+- **`MD_ALLOWED_PATHS`** — opt-in sandbox listing which directories the file-input tools may read (`:`-separated on POSIX, `;`-separated on Windows), plus **`MARKITDOWN_PATH`** / **`REPOMIX_PATH`** overrides for system-wide installs.
+- **NOTICE** — full MIT vendor credit for markdownify-mcp (Zach Caceres) and attribution for Microsoft's `markitdown` Python CLI.
+
+### Deliberate scoping
+
+- The 10 tools are **not** in `WRITE_TOOL_NAMES`, so `OBSIDIAN_ROUTER_READONLY=true` deployments keep them exposed — they are read-only by nature. *(This turned out to be exactly half right: see the `READONLY` bypass fixed in v0.11.1 below, where read-only-by-nature still meant arbitrary server file reads once a sandbox was absent.)*
+- `get-markdown-file` was excluded from the upstream tool list as redundant with the router's own `get_file`.
+
+### Fixed (review findings addressed before ship, 3 passes)
+
+- **SSRF — `isPrivateIp` was bypassable** via IPv4-mapped IPv6 (`::ffff:127.0.0.1`), encoded IPv4 (decimal, hex, octal), bracketed IPv6 hostnames, trailing-dot FQDNs (`localhost.`), IPv6 site-local (`fec0::/10`) and IPv6 multicast (`ff00::/8`). Rewritten around `net.isIP()` with per-family range checks, refusing `::ffff:` and `64:ff9b:` unconditionally and normalising brackets and trailing dots first.
+- **SSRF — argv injection.** A `filepath` starting with `-` was interpreted as a flag by the markitdown CLI; fixed with a `--` separator in the `execFile` args, and `--key=value` form for repomix.
+- **SSRF — DNS rebinding, and `validateRepoUrl`.** A public hostname resolving to a private IP defeated the textual guard, so an async `assertHostnameNotPrivate()` now runs before every fetch and on **each redirect hop**; and `http://127.0.0.1/repo.git`, `http://[::1]/` and `http://169.254.169.254/` (AWS metadata) were all accepted as repo URLs until `isPrivateIp` was applied to the full-URL form.
+- **TOCTOU tempfile.** The predictable `markdown_<pid>_<ms>.html` name enabled a symlink attack on POSIX; replaced with `fs.mkdtempSync()` (atomic, mode 0700) plus cleanup on write failure so no orphan directory is left behind.
+- **Symlink sandbox escape.** `MD_ALLOWED_PATHS` used lexical `path.resolve` only, but markitdown follows symlinks — a sandbox-internal symlink to `~/.ssh/id_rsa` escaped. Both the candidate and the allowed roots now go through `fs.realpathSync`.
+- **Wrong return shape.** The convert handlers returned the wrapper `{ text }` object instead of the markdown string, and `wrapResult` JSON-stringifies non-strings — so MCP clients received `{"text":"..."}` rather than the markdown.
+- Smaller: a Python version check that would have rejected a hypothetical 4.0, a missing fetch timeout (slowloris), an unvalidated `branch` argument passed to `repomix --remote-branch`, and a `package-lock.json` missing the repomix entries (which would have broken `npm ci`).
+
+### Tests
+
+- **289/289 passing.** `tests/markdownify.test.mjs` covers the pure helpers — the SSRF guard across loopback / RFC1918 / link-local / CGNAT, and the `MD_ALLOWED_PATHS` sandbox with path-segment checks. The SSRF guards were additionally smoke-tested directly: `localhost.`, `fec0::1`, `ff02::1`, `2130706433` and `::ffff:127.0.0.1` all blocked, `github.com` still allowed.
 
 ## [0.10.3] — 2026-05-22
 
