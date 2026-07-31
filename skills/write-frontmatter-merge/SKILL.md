@@ -24,6 +24,7 @@ Call the obsidian-router `merge_frontmatter` MCP tool with arguments parsed from
 **Optional**:
 - `vault` — omit for default.
 - `createIfMissing` — create absent keys. Default true.
+- `ifMatch` — a `contentSha256` from a prior `get_file`. Checked ONCE before any key is written; a mismatch throws a 409 before the first mutation. Guards against merging into a file that changed since you read it (it does not make the multi-key update atomic — see the warning below).
 
 ## Argument parsing from $ARGUMENTS
 

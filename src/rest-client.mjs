@@ -9,6 +9,7 @@
  */
 import { fetch, Agent } from 'undici';
 import { encodeVaultPath, normalizeAnchor } from './helpers/click-to-open.mjs';
+import { contentSha256 } from './helpers/content-hash.mjs';
 
 const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
 const secureAgent = new Agent();
@@ -406,6 +407,16 @@ export async function moveFileFromTo(vault, fromPath, toPath, opts = {}) {
   // 1. Read source (errors propagate — typically not_found if source missing)
   const content = await getFileContent(vault, fromPath);
 
+  // 1b. ifMatch precondition on the SOURCE (C1): refuse to move if the source
+  // changed since the caller read it. Non-atomic (a writer could slip in
+  // before the DELETE), but catches the stale-source case.
+  if (opts.ifMatch) {
+    const srcStr = typeof content === 'string' ? content : String(content);
+    if (contentSha256(srcStr) !== opts.ifMatch) {
+      throw makeIfMatchConflict(vault, fromPath, 'content-changed');
+    }
+  }
+
   // 2. Refuse to overwrite if the user did not opt in
   if (!opts.overwrite) {
     try {
@@ -458,6 +469,164 @@ export function writeFile(vault, filePath, content, opts = {}) {
     body: content,
     json: false,
   });
+}
+
+/**
+ * Build the actionable conflict error thrown when an ifMatch precondition
+ * fails — the C1 "someone changed this since you read it" signal. Kept as one
+ * helper so the atomic-route path and the fallback path phrase it identically.
+ *
+ * @param {object} vault
+ * @param {string} filePath
+ * @param {'content-changed'|'target-missing'} reason
+ * @param {string|null} [currentSha]
+ */
+function makeIfMatchConflict(vault, filePath, reason, currentSha = null) {
+  const why =
+    reason === 'target-missing'
+      ? `the file no longer exists (it was deleted or moved since you read it)`
+      : `its content changed since you read it`;
+  return new RestApiError(
+    `[${vault.name}] ifMatch precondition failed for "${filePath}": ${why}.`,
+    {
+      kind: 'conflict',
+      vaultName: vault.name,
+      status: 409,
+      urlPath: `/vault/${encodePath(filePath)}`,
+      hint:
+        'Re-read the file with get_file, rebuild your change on the CURRENT content, and retry with the fresh contentSha256. This guard prevents silently overwriting another session\'s (or your own concurrent) edit.',
+    },
+  );
+}
+
+/**
+ * Conditional ("compare-and-swap") full-file write — C1 optimistic
+ * concurrency. Writes `content` ONLY if the file's current content still
+ * hashes to `expectedSha` (the value the caller got from get_file's
+ * contentSha256). Otherwise throws a 409 conflict and writes nothing.
+ *
+ * Two tiers, chosen at runtime by feature-detection:
+ *   1. ATOMIC (preferred): PUT /vault-cas/<path> on the obsidian-mcp-router-
+ *      bridge plugin (>= 0.7.0). The bridge reads-compares-writes inside the
+ *      Obsidian process under a mutex. HONEST SCOPE: this makes the check and
+ *      the write indivisible against OTHER /vault-cas writes — but NOT against
+ *      a writer that bypasses the route: a plain core PUT /vault (the router's
+ *      own DEFAULT non-ifMatch write), a save from the open Obsidian editor, or
+ *      an Obsidian Sync/LiveSync apply can still interleave. C1 prevents
+ *      CAS-vs-CAS clobbering; total clobber-prevention needs every writer to
+ *      opt in. Content travels as text/plain, which does not change the bytes
+ *      stored on disk.
+ *   2. FALLBACK: if the atomic route is unusable — a 404 (older/absent bridge)
+ *      OR a 400/413/415 (route present but it can't service this request shape:
+ *      body-parser refusal, size limit, a proxy) — the router does
+ *      GET-compare-then-core-PUT. Correct for the common case but NOT atomic: a
+ *      writer could slip in between the GET and the PUT. Strictly better than
+ *      the unconditional write it replaces. A genuine 409 conflict is NEVER a
+ *      fallback trigger — that is the precondition actually failing, and it must
+ *      surface, not be retried through a weaker path.
+ *
+ * The atomic path relies on the bridge's adapter.read() returning the same
+ * bytes that get_file (core GET /vault) returned, so `expectedSha` is
+ * comparable on both sides. Both hash cores strip a leading BOM to keep those
+ * two read paths in agreement (see helpers/content-hash.mjs). The fallback path
+ * is inherently consistent because it re-reads through the very same GET the
+ * caller used.
+ *
+ * @param {object} vault
+ * @param {string} filePath
+ * @param {string} content     — the full new file content
+ * @param {string} expectedSha — 64-hex content hash the edit is based on
+ * @returns {Promise<{ casMode: 'atomic'|'fallback', response?: object }>}
+ */
+export async function writeFileIfMatch(vault, filePath, content, expectedSha) {
+  // Tier 1 — atomic bridge route.
+  try {
+    const response = await request(vault, 'PUT', `/vault-cas/${encodePath(filePath)}`, {
+      headers: {
+        'If-Match-Content-Sha256': expectedSha,
+        'Content-Type': 'text/plain',
+      },
+      body: content,
+      json: true,
+    });
+    return { casMode: 'atomic', response };
+  } catch (err) {
+    if (err instanceof RestApiError && err.kind === 'conflict') {
+      // The bridge rejected the precondition (a real 409). Its body carries
+      // reason=content-changed|target-missing; the message includes it, but
+      // we normalize to our actionable phrasing. We can't always tell the two
+      // reasons apart from the truncated message, so infer from the body text.
+      // A conflict is NEVER a fallback trigger — it is the guard doing its job.
+      const isMissing = /target-missing/.test(err.message);
+      throw makeIfMatchConflict(vault, filePath, isMissing ? 'target-missing' : 'content-changed');
+    }
+    // Fall back when the atomic route is UNUSABLE, not when it worked and said
+    // "no". Unusable = 404 (route absent: the bridge handler itself never 404s,
+    // so a 404 here unambiguously means an older/disabled bridge) OR a
+    // 400/413/415 (route present but it can't service this request shape — an
+    // empty body the parser turned into {}, a body over the size limit, a proxy
+    // rejecting text/plain). In every such case the always-present core PUT
+    // /vault path CAN service the write, and the fallback re-verifies the
+    // precondition itself. Auth (401/403), 5xx, timeout, and network errors are
+    // NOT recoverable this way → surface unchanged.
+    const routeUnusable =
+      err instanceof RestApiError &&
+      (err.kind === 'not_found' ||
+        err.status === 400 ||
+        err.status === 413 ||
+        err.status === 415);
+    if (!routeUnusable) {
+      throw err;
+    }
+    // Fall through to the GET-compare fallback below.
+  }
+
+  // Tier 2 — GET-compare-then-PUT fallback.
+  let current;
+  try {
+    current = await getFileContent(vault, filePath);
+  } catch (err) {
+    if (err instanceof RestApiError && err.kind === 'not_found') {
+      throw makeIfMatchConflict(vault, filePath, 'target-missing');
+    }
+    throw err;
+  }
+  const currentStr = typeof current === 'string' ? current : String(current);
+  const currentSha = contentSha256(currentStr);
+  if (currentSha !== expectedSha) {
+    throw makeIfMatchConflict(vault, filePath, 'content-changed', currentSha);
+  }
+  await writeFile(vault, filePath, content);
+  return { casMode: 'fallback' };
+}
+
+/**
+ * Router-side precondition guard for the surgical / non-full-file write tools
+ * (patch, delete, move-source, frontmatter-merge). GETs the file, hashes it,
+ * and throws a 409 conflict unless it still matches `expectedSha`. This is the
+ * fallback TIER only — it is NOT atomic (a writer can slip in between this
+ * check and the subsequent mutation), but it reliably catches the common
+ * "I read it, someone changed it, I'm about to act on stale content" case.
+ * The atomic tier exists only for full-file writes (writeFileIfMatch).
+ *
+ * @param {object} vault
+ * @param {string} filePath
+ * @param {string} expectedSha
+ */
+export async function assertContentMatches(vault, filePath, expectedSha) {
+  let current;
+  try {
+    current = await getFileContent(vault, filePath);
+  } catch (err) {
+    if (err instanceof RestApiError && err.kind === 'not_found') {
+      throw makeIfMatchConflict(vault, filePath, 'target-missing');
+    }
+    throw err;
+  }
+  const currentStr = typeof current === 'string' ? current : String(current);
+  if (contentSha256(currentStr) !== expectedSha) {
+    throw makeIfMatchConflict(vault, filePath, 'content-changed');
+  }
 }
 
 /**

@@ -24,12 +24,14 @@ Call the obsidian-router `move_file` MCP tool with arguments parsed from $ARGUME
 **Optional**:
 - `vault` — omit for default.
 - `overwrite` — if true, replace an existing destination. Default false (refuses).
+- `ifMatch` — a `contentSha256` from a prior `get_file` of the SOURCE. Refuses the move with a 409 conflict if the source changed since you read it.
 
 ## Argument parsing from $ARGUMENTS
 
 - `<from> <to>` — most natural form, two paths separated by space
 - `from=X to=Y`
 - `--overwrite` or `overwrite=true` → set the flag
+- `ifMatch=<hash>` → set `ifMatch` (checked against the source)
 
 ## Implementation note — partial-failure mode
 

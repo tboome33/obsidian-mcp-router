@@ -33,6 +33,7 @@ Call the obsidian-router `patch_file` MCP tool with arguments parsed from $ARGUM
 - `createTargetIfMissing` — create the target if absent (heading/frontmatter only).
 - `applyIfContentPreexists` — skip if target already contains the content (idempotency).
 - `trimTargetWhitespace` — trim whitespace around the target before applying.
+- `ifMatch` — a `contentSha256` from a prior `get_file`. Whole-file precondition: the patch is refused with a 409 conflict if the file changed since you read it. (The precondition is checked before patching; the patch itself is not hash-locked — this catches patching stale content, it does not make the patch atomic.)
 
 ## Argument parsing from $ARGUMENTS
 

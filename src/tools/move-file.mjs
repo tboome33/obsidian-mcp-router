@@ -1,14 +1,22 @@
 import { moveFileFromTo } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
+import { isContentSha256 } from '../helpers/content-hash.mjs';
 
 export async function moveFileTool(registry, args = {}) {
-  const { vault: name, from, to, overwrite = false } = args;
+  const { vault: name, from, to, overwrite = false, ifMatch } = args;
   if (!from) throw new Error('Missing required argument: from');
   if (!to) throw new Error('Missing required argument: to');
+  if (ifMatch !== undefined && !isContentSha256(ifMatch)) {
+    throw new Error(
+      'Invalid ifMatch: expected a 64-char lowercase hex content hash (the contentSha256 field from get_file). It is checked against the SOURCE file.',
+    );
+  }
 
   const vault = registry.resolveVault(name);
-  const result = await moveFileFromTo(vault, from, to, { overwrite });
+  // ifMatch (C1) guards the SOURCE: refuse to move if the source changed since
+  // the caller read it.
+  const result = await moveFileFromTo(vault, from, to, { overwrite, ifMatch });
   // Happy path: URL targets the destination — source is gone.
   const clickToOpenUrl = buildClickToOpenUrl(vault, to);
   // Partial-failure path (PUT OK / DELETE source KO): the source FILE is

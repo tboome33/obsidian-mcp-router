@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### Added — C1: optimistic-concurrency writes (`ifMatch`)
+
+First borrowing from the [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) study (§2.17), and the answer to a real recurring incident: two parallel sessions on the same vault silently clobbering each other's full-file writes (it happened to this vault's own `hot.md`).
+
+- **`get_file` now returns `contentSha256`** — the SHA-256 of the file's raw bytes (computed *before* sanitization, so it matches what is on disk). Replay it as `ifMatch` on a later write to make the change conditional.
+- **`write_file` gains compare-and-swap via `ifMatch`.** When the target vault runs `obsidian-mcp-router-bridge >= 0.7.0`, the write goes through the new `PUT /vault-cas/<path>` route, which reads-compares-writes **inside the Obsidian process under a mutex**. Honest scope: that makes the check-and-write indivisible against *other* conditional writes — not against a writer that bypasses it (a plain non-`ifMatch` write, a save in the open Obsidian editor, an Obsidian Sync apply). C1 prevents two cooperating sessions from clobbering each other; it is optimistic, not a lock. The result echoes the new `contentSha256` so edits can be chained without a re-read. `ifNew` and `ifMatch` are mutually exclusive (one requires absence, the other a specific existing content).
+- **Graceful fallback.** If the atomic route is unusable — a 404 (older/absent plugin) or a 400/413/415 (route present but it can't service the request shape: an empty body the parser dropped, a size limit, a proxy) — the router degrades to a GET-compare-then-PUT. Correct for the common case, non-atomic (a small window between the read and the write), and strictly better than the unconditional write it replaces. A genuine 409 conflict is never a fallback trigger — that is the guard doing its job. C1 therefore delivers value on every vault today, and hardens once the bridge is deployed.
+- **`patch_file`, `merge_frontmatter`, `move_file` (source), and `delete_file` gain `ifMatch`** as a whole-file precondition guard (router-side GET-compare): they refuse to act on content that changed since it was read. Honestly non-atomic — only full-file `write_file` gets the atomic tier in this first landing — but it closes the stale-read case for the surgical operations too. `delete_file` with `ifMatch` won't delete a file another session just edited.
+- Malformed `ifMatch` (not 64 hex chars) fails loudly at the tool layer instead of behaving like "no precondition".
+
+Companion bridge change: **`obsidian-mcp-router-bridge` 0.7.0** registers `PUT /vault-cas/*` (authenticated, same trust surface as core `PUT /vault`). The bridge hashes with Web Crypto; the router with `node:crypto`; both over UTF-8 bytes, and both strip a single leading BOM so the two read paths (core `GET /vault` decodes via `res.text()`, which drops a BOM; the bridge's `adapter.read()` keeps it) agree — without that, a BOM-prefixed file would 409 forever on the atomic tier. A shared known vector (including a BOM case) is pinned in both suites so the implementations cannot drift. Deploying the new bridge to each vault is a separate manual step — until then, the fallback tier is used.
+
+This landing was hardened by a 5-lens adversarial review (hash-consistency, concurrency/TOCTOU, feature-detection, security/wire, test-adequacy) before commit; the BOM bug, the too-narrow (404-only) fallback, and an `exists→read` TOCTOU that returned 500 instead of a clean 409 were all found and fixed there, and the bridge handler was refactored into a pure, unit-tested core.
+
+Tests: router **+36** (`content-hash` incl. BOM vectors + end-to-end `if-match-writes` covering the atomic tier, the 404/400/413/415 fallback, non-ASCII paths, empty-content writes, and the guard→operation suppression for patch/delete/move/merge against a live local server). Bridge **+27** (`vault-cas-core`: `decideCasWrite`, `normalizeVaultPath`, `withCasLock` serialization, and `performCasWrite` orchestration incl. the BOM and vanished-file cases). Both suites green (router 2699, bridge 121).
+
+`ifMatch` is opt-in per call: the clobber-prevention holds only when the writers that could collide all pass it. A per-vault "require ifMatch" strict mode is a possible follow-up, not part of this landing.
+
 ## [0.59.4] — 2026-07-31 — the catalog becomes a map of maps
 
 Last piece of volet ② of the catalog/journal decision. The central catalog listed **one row per page** and had reached **70 KB / 115 rows** — too large to read in a single tool call, which is exactly the problem OKF's per-directory indexes solve. Now that `wiki/` carries 34 generated indexes, exhaustiveness has a better home; the catalog keeps the part no generator can produce.
@@ -30,6 +48,7 @@ Converting the catalog without changing what writes to it would have regressed w
 **`wiki-lint` Check C** reported "pages on disk but missing from `catalog.md`". Against a map of maps that is every page in the vault — it would have flagged all 134 and pushed the catalog straight back to a monolith. Check C now checks **areas**, not pages: a directory whose index nothing links to (warning), a link to a nonexistent index or page (error), and an index referenced by wikilink instead of a path link (error). Page-level exhaustiveness belongs to the generated indexes, whose freshness is Check L's job.
 
 Suite 2663/2663 green (the backward-compat scaffold test now asserts the map-of-maps shape, and that the seed does **not** instruct a row per page).
+
 ## [0.59.3] — 2026-07-31 — `description` becomes part of the page contract
 
 v0.59.1 stopped the at-rest projections from inventing descriptions, and that exposed the real problem: **0 of the router vault's 134 pages carried a `description`**. Every OKF index entry had been a machine-written body sentence, so removing them left the indexes title-only. The synthesis was hiding a metadata gap rather than filling it. Roland's call: close the gap at the source.
