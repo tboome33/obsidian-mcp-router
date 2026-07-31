@@ -6,7 +6,9 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
-### Added — C1: optimistic-concurrency writes (`ifMatch`)
+## [0.60.0] — 2026-08-01 — optimistic-concurrency writes (`ifMatch`, borrowing C1)
+
+### Added
 
 First borrowing from the [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) study (§2.17), and the answer to a real recurring incident: two parallel sessions on the same vault silently clobbering each other's full-file writes (it happened to this vault's own `hot.md`).
 
