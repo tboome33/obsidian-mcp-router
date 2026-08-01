@@ -10,7 +10,8 @@
 // the registered vaults you can copy config from, the plugin profiles) is
 // emitted here so all frontends present the same choices (spec §4.2, §7.1).
 
-import { runDryRunPlan } from '../helpers/vault-wizard-engine.mjs';
+import { runDryRunPlan as defaultRunDryRunPlan, provisionPlanCore, provisionExecOptions } from '../helpers/vault-wizard-engine.mjs';
+import { computePlanSeal } from '../helpers/plan-seal.mjs';
 import { WIKI_MODES } from '../../scripts/vault-plan.mjs';
 
 function buildQuestions(plan) {
@@ -58,7 +59,8 @@ function buildQuestions(plan) {
   return questions;
 }
 
-export async function planVaultTool(registry, args = {}) {
+export async function planVaultTool(registry, args = {}, _deps = {}) {
+  const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
   const input = { ...args, path: args.path || args.vaultPath };
   if (!input.path) {
     throw new Error('plan_vault requires `path` — the intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default; pass it here.');
@@ -66,8 +68,20 @@ export async function planVaultTool(registry, args = {}) {
   // Plan against the server's active config (review+ W2 P2).
   const configPath = registry && registry.configPath;
   const plan = await runDryRunPlan(input, { configPath });
+  // C3 sealed preview: bind the plan to its resolved target so provision_vault
+  // refuses to apply it if the environment drifted (a slug collision appeared,
+  // the source vault changed, a root vanished) between this call and the apply.
+  // The identity is the resolved target path — the vault does not exist yet, so
+  // the target IS "the resolved vault". Pass this back to provision_vault
+  // together with the SAME args you passed here.
+  const approvedPlanSha256 = computePlanSeal({
+    op: 'provision',
+    identity: { target: plan.path ?? null },
+    plan: { core: provisionPlanCore(plan), exec: provisionExecOptions(input) },
+  });
   return {
     context: plan.context,
+    approvedPlanSha256,
     defaults: {
       name: plan.name,
       slug: plan.slug,

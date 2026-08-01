@@ -15,12 +15,27 @@
 //     never copied, port + key regenerated) are applied by the engine
 //     regardless of the calling layer.
 
-import { runDryRunPlan, runProvision } from '../helpers/vault-wizard-engine.mjs';
+import {
+  runDryRunPlan as defaultRunDryRunPlan,
+  runProvision as defaultRunProvision,
+  provisionPlanCore,
+  provisionExecOptions,
+} from '../helpers/vault-wizard-engine.mjs';
+import { verifyPlanSeal, isPlanSeal } from '../helpers/plan-seal.mjs';
 
-export async function provisionVaultTool(registry, args = {}) {
+export async function provisionVaultTool(registry, args = {}, _deps = {}) {
+  const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
+  const runProvision = _deps.runProvision || defaultRunProvision;
   const input = { ...args, path: args.path || args.vaultPath };
   if (!input.path) {
     throw new Error('provision_vault requires `path` — the target vault location.');
+  }
+  // Validate the seal SHAPE before spawning the planner — a typo must surface
+  // as a validation error, not silently behave like "no seal".
+  if (args.approvedPlanSha256 !== undefined && !isPlanSeal(args.approvedPlanSha256)) {
+    throw new Error(
+      'Invalid approvedPlanSha256: expected a 64-char lowercase hex plan seal (the value plan_vault returned).',
+    );
   }
   // Drive the child against the SERVER'S active config, not setup-vault's
   // default (which may point elsewhere when the router was launched with
@@ -51,6 +66,24 @@ export async function provisionVaultTool(registry, args = {}) {
   if (srcErr) throw new Error(`Refused: ${srcErr.message}`);
   const collision = warn('slug-collision');
   if (collision) throw new Error(`Refused: ${collision.message}`);
+
+  // C3 sealed preview: if the caller approved a plan_vault preview, refuse to
+  // provision when the freshly-recomputed plan no longer matches — BEFORE the
+  // real (filesystem-mutating) run. The gate checks above already surface the
+  // blocking drifts (collision / source-error / outside-roots) with specific
+  // messages; the seal is the final catch-all for subtler environmental drift
+  // (a changed source plugin set, a flipped non-blocking warning) and for
+  // cross-target replay. Verified against the SAME curated core plan_vault
+  // sealed, so an identical environment passes.
+  if (args.approvedPlanSha256 !== undefined) {
+    verifyPlanSeal({
+      op: 'provision',
+      identity: { target: plan.path ?? null },
+      plan: { core: provisionPlanCore(plan), exec: provisionExecOptions(input) },
+      approvedPlanSha256: args.approvedPlanSha256,
+      previewHint: 'call plan_vault with the same arguments',
+    });
+  }
 
   // 2) Real run (nonce'd --json → the engine emits a spoof-proof result line).
   const { code, stdout, stderr, result } = await runProvision(input, { configPath });

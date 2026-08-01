@@ -324,22 +324,30 @@ const TOOLS = [
   {
     name: 'delete_file',
     description:
-      'Permanently delete a file from the vault. Requires confirm: true to proceed — this guard prevents accidental deletes.',
+      'Permanently delete a file from the vault. Two-phase: call with preview:true to get a sealed plan (approvedPlanSha256), then call with confirm:true (echoing that seal) to proceed. The confirm:true guard prevents accidental deletes; the seal refuses the delete if the file drifted (changed/created/removed) since the preview.',
     inputSchema: {
       type: 'object',
       properties: {
         vault: { type: 'string' },
         path: { type: 'string' },
+        preview: {
+          type: 'boolean',
+          description: 'C3 phase 1: when true, do NOT delete — return the delete plan (existence + contentSha256) sealed as approvedPlanSha256. Echo that seal on the confirm:true call.',
+        },
         confirm: {
           type: 'boolean',
-          description: 'Must be exactly true. Any other value blocks the operation.',
+          description: 'Must be exactly true to delete. Any other value blocks the operation (unless preview:true).',
+        },
+        approvedPlanSha256: {
+          type: 'string',
+          description: 'C3 sealed preview: the 64-hex seal a prior preview:true call returned. When supplied, the delete is refused (before the DELETE) if the file drifted since the preview, or if the seal came from a different vault.',
         },
         ifMatch: {
           type: 'string',
           description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Refuses the delete with 409 if the file changed since then — avoids deleting a file another session just edited.',
         },
       },
-      required: ['path', 'confirm'],
+      required: ['path'],
       additionalProperties: false,
     },
   },
@@ -873,7 +881,7 @@ const TOOLS = [
   {
     name: 'plan_vault',
     description:
-      'READ-ONLY. Plan the creation of a NEW local Obsidian vault: returns the computed defaults + a structured questionnaire (the 5 wiki modes with explanations, the themes installed in the source, the registered vaults you can copy config from, the plugin profiles) + warnings, WITHOUT writing anything. The harness LLM drives the conversation from this data, then calls provision_vault. LOCAL-ONLY: absent on gated deployments.',
+      'READ-ONLY. Plan the creation of a NEW local Obsidian vault: returns the computed defaults + a structured questionnaire (the 5 wiki modes with explanations, the themes installed in the source, the registered vaults you can copy config from, the plugin profiles) + warnings + an approvedPlanSha256 (C3 sealed preview), WITHOUT writing anything. The harness LLM drives the conversation from this data, then calls provision_vault with the SAME arguments plus that seal. LOCAL-ONLY: absent on gated deployments.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -955,6 +963,10 @@ const TOOLS = [
         probeTimeout: { type: 'number', description: 'Probe timeout in seconds.' },
         gitInit: { type: 'boolean', description: 'git init + initial commit inside the vault.' },
         allowOutsideRoots: { type: 'boolean', description: 'Override the path gate to allow a target outside known vault roots.' },
+        approvedPlanSha256: {
+          type: 'string',
+          description: 'C3 sealed preview: the 64-hex seal plan_vault returned. When supplied, provisioning is refused (before the filesystem-mutating run) if the plan drifted since the preview — a slug collision appeared, the source vault changed, a root vanished. Call plan_vault with the SAME arguments to obtain it.',
+        },
       },
       required: ['path'],
       additionalProperties: true,

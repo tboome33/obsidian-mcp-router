@@ -36,6 +36,10 @@ export const KIND_TO_CATEGORY = {
   // validation — the request itself is wrong
   not_found: { errorCategory: 'validation', isRetryable: false },
   conflict: { errorCategory: 'validation', isRetryable: false },
+  // C3 sealed-preview drift (or a malformed approvedPlanSha256): the approved
+  // plan no longer matches current state/vault. A retry with the SAME stale seal
+  // can never succeed — the caller must re-run the preview. Non-retryable.
+  plan_drift: { errorCategory: 'validation', isRetryable: false },
   // fallback
   unknown: { errorCategory: 'unknown', isRetryable: false },
 };

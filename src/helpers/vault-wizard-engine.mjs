@@ -105,6 +105,76 @@ export function runSetupVault(args, { extraEnv = {}, configPath } = {}) {
   });
 }
 
+/**
+ * The drift-sensitive core of a dry-run plan, for the C3 sealed preview. Both
+ * plan_vault (which emits the seal) and provision_vault (which verifies it)
+ * derive it from `runDryRunPlan(input)` with the SAME input, so the seal matches
+ * unless the ENVIRONMENT moved between the two calls — a slug collision that
+ * appeared, a source vault that changed its plugin set, a vault root that
+ * vanished, an outside-roots verdict that flipped. Those are exactly the
+ * conditions under which applying the previewed plan would do something other
+ * than what the caller approved.
+ *
+ * A curated subset (not the raw plan) on purpose: it captures WHAT will be
+ * created (resolved path/slug/source/plugins/theme/wikiMode/conventions) plus
+ * the blocking/adjusting signals (warning CODES, order-independent), while
+ * excluding presentational context (copyable-vault lists, available-theme lists,
+ * probe latencies) that can jitter without changing the outcome.
+ *
+ * @param {object} plan a `runDryRunPlan` result
+ * @returns {object} stable plan core
+ */
+export function provisionPlanCore(plan) {
+  const p = plan || {};
+  const pl = p.plugins || {};
+  return {
+    path: p.path ?? null,
+    slug: p.slug ?? null,
+    name: p.name ?? null,
+    source: p.source ?? null,
+    plugins: {
+      profile: pl.profile ?? null,
+      resolved: Array.isArray(pl.resolved) ? [...pl.resolved].sort() : [],
+    },
+    theme: p.theme && typeof p.theme === 'object' ? p.theme.name ?? null : p.theme ?? null,
+    wikiMode: p.wikiMode && typeof p.wikiMode === 'object' ? p.wikiMode.mode ?? null : p.wikiMode ?? null,
+    conventions: p.conventions ?? null,
+    claudeWorkspace: p.claudeWorkspace ?? null,
+    // Warning CODES only, sorted — order-independent set of blocking/adjusting
+    // conditions. The human-readable `message` is excluded (it may embed a path
+    // or count that jitters without changing the verdict).
+    warnings: Array.isArray(p.warnings)
+      ? p.warnings.map((w) => (w && w.code != null ? String(w.code) : null)).filter(Boolean).sort()
+      : [],
+  };
+}
+
+/**
+ * The executable OPTIONS a provision run will act on that are NOT reflected in
+ * the dry-run plan core — the side-effect knobs `composeSetupVaultArgs` forwards
+ * to the mutating child (`--link-workspace`, `--open`, `--probe`, `--git-init`,
+ * `--claude-workspace`) plus the `allowOutsideRoots` gate override. The C3 seal
+ * must cover EXACTLY what will be executed (spec §2.17); without these, a preview
+ * approved with `gitInit:false, open:false` could be applied with
+ * `gitInit:true, open:true` — different side effects, same seal. Derived from the
+ * SAME `input` in plan_vault and provision_vault, so identical args pass and any
+ * divergence in these knobs is a drift refusal.
+ *
+ * @param {object} input the tool input (already `{...args, path}`)
+ * @returns {object} normalized executable options
+ */
+export function provisionExecOptions(input = {}) {
+  return {
+    linkWorkspace: input.linkWorkspace ?? null,
+    claudeWorkspace: input.claudeWorkspace ?? null,
+    open: input.open ?? null,
+    probe: input.probe ?? null,
+    probeTimeout: input.probeTimeout ?? null,
+    gitInit: input.gitInit ?? null,
+    allowOutsideRoots: input.allowOutsideRoots ?? null,
+  };
+}
+
 /** Run the engine in dry-run mode and return the parsed plan (read-only). */
 export async function runDryRunPlan(input, { configPath } = {}) {
   const args = [...composeSetupVaultArgs(input), '--dry-run', '--json'];
