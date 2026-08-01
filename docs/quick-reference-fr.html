@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.58.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (48 slash commands · 43 outils MCP · 44 skills)<br>
+  <div class="meta">v0.60.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (48 slash commands · 43 outils MCP · 44 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -194,7 +194,7 @@ SERVEUR MCP (obsidian-mcp-router) — process Node sur le PC
     ↑ MCP sur stdio, spawné par Claude Code
 PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre>
 
-<p><strong>Bridge</strong> (v0.5.1) — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater et les liens click-to-open — sans lui, le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
+<p><strong>Bridge</strong> (v0.7.0) — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>PUT /vault-cas/*</code> depuis 0.7.0 — écritures <code>ifMatch</code> atomiques) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater, les liens click-to-open et les écritures conditionnelles atomiques (sans lui, <code>ifMatch</code> retombe sur un repli vérifié non atomique) — le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
 
 <p><strong>Serveur MCP</strong> — process Node ≥ 20.18.1 sur le PC, spawné par Claude Code (via le plugin depuis v0.56.1, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
 
@@ -387,11 +387,11 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>get_file · search · search_smart · get_frontmatter</td>
-    <td><strong>Lectures.</strong> Fichier complet ; recherche substring ; recherche sémantique (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = fan-out cross-vault.</td>
+    <td><strong>Lectures.</strong> Fichier complet (renvoie <code>contentSha256</code> — le jeton <code>ifMatch</code>) ; recherche substring ; recherche sémantique (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = fan-out cross-vault.</td>
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
-    <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer.</td>
+    <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer. <strong><code>ifMatch</code> (v0.60)</strong> : rejouez le <code>contentSha256</code> de <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé depuis votre lecture — atomique avec bridge ≥ 0.7.0, repli vérifié sinon.</td>
   </tr>
   <tr>
     <td>execute_template</td>

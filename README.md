@@ -33,8 +33,8 @@ What you get:
 |---|---|
 | Vault discovery | `list_vaults`, `list_files` |
 | Reads | `get_file`, `search`, `search_smart`, `get_frontmatter` |
-| Writes | `write_file`, `append_to_file`, `patch_file`, `delete_file`, `set_frontmatter`, `merge_frontmatter` |
-| File management | `move_file` |
+| Writes | `write_file`, `append_to_file`, `patch_file`, `delete_file`, `set_frontmatter`, `merge_frontmatter` — `write_file`/`patch_file`/`delete_file`/`merge_frontmatter` accept **`ifMatch`** (v0.60.0): replay `get_file`'s `contentSha256` and the write is refused with a 409 if the file changed since you read it (optimistic concurrency — stops parallel sessions from silently clobbering each other) |
+| File management | `move_file` (also accepts `ifMatch`, checked against the source) |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
 | Vault provisioning (v0.35+) | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine |
@@ -43,7 +43,7 @@ What you get:
 | Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
-Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
+Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. Bridge **≥ 0.7.0** also registers `PUT /vault-cas/*`, which makes `ifMatch` writes **atomic** (read-compare-write inside the Obsidian process); without it, `ifMatch` still works everywhere through a checked — but non-atomic — GET-compare fallback. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
 
 ## Deployment modes
 
@@ -101,7 +101,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **48 slash
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
-| `/obsidian-router:read-get` | Read a file in full (markdown + frontmatter + meta) | *"show me X"*, *"open the file X"* / *"montre-moi X"*, *"ouvre le fichier X"* |
+| `/obsidian-router:read-get` | Read a file in full (markdown + frontmatter + meta); returns `contentSha256`, the `ifMatch` token for conditional writes | *"show me X"*, *"open the file X"* / *"montre-moi X"*, *"ouvre le fichier X"* |
 | `/obsidian-router:read-search` | Plain-text (substring) search with surrounding context | *"find <text> in my vault"*, *"grep for X"* / *"trouve <texte> dans mon vault"*, *"grep <X>"* |
 | `/obsidian-router:read-search-smart` | Semantic search via Smart Connections (cosine scores + breadcrumbs) | *"find notes about X"*, *"semantic search for X"* / *"trouve mes notes sur X"*, *"recherche sémantique sur X"* |
 | `/obsidian-router:read-frontmatter` | Read frontmatter (whole object or one key, types preserved) | *"what's the status of X"*, *"show me the metadata of X"* / *"quel est le statut de X"*, *"montre les méta de X"* |
@@ -110,7 +110,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **48 slash
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
-| `/obsidian-router:write-create-or-replace` | PUT — create a new file or replace an existing one | *"create a note X"*, *"save this as X.md"* / *"crée une note X"*, *"enregistre ça comme X.md"* |
+| `/obsidian-router:write-create-or-replace` | PUT — create a new file or replace an existing one; optional `ifMatch` = atomic compare-and-swap (refused if the file changed since you read it) | *"create a note X"*, *"save this as X.md"* / *"crée une note X"*, *"enregistre ça comme X.md"* |
 | `/obsidian-router:write-append` | POST — append to an existing file (auto-creates if missing) | *"append to my journal"*, *"add a line to X"* / *"ajoute à X"*, *"rajoute à la fin de X"* |
 | `/obsidian-router:write-patch` | Surgical PATCH on heading / block / frontmatter | *"edit the X section in Y"*, *"replace the content under X"* / *"édite la section X dans Y"*, *"remplace le contenu sous X"* |
 | `/obsidian-router:write-frontmatter-set` | Set/replace a single frontmatter key | *"set status to closed on X"*, *"tag this with X"* / *"passe le statut de X à closed"*, *"tag ça avec X"* |
@@ -120,8 +120,8 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **48 slash
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
-| `/obsidian-router:manage-move` | Move or rename a file (GET → PUT → DELETE) | *"rename X to Y"*, *"move X into <folder>"* / *"renomme X en Y"*, *"déplace X dans <dossier>"* |
-| `/obsidian-router:manage-delete` | Delete a file (with two-step confirm guard) | *"delete X"* (preview), *"yes confirm=true"* (proceed) / *"supprime X"* puis *"oui confirm=true"* |
+| `/obsidian-router:manage-move` | Move or rename a file (GET → PUT → DELETE); optional `ifMatch` guards the source | *"rename X to Y"*, *"move X into <folder>"* / *"renomme X en Y"*, *"déplace X dans <dossier>"* |
+| `/obsidian-router:manage-delete` | Delete a file (two-step confirm guard; optional `ifMatch` refuses if it changed since read) | *"delete X"* (preview), *"yes confirm=true"* (proceed) / *"supprime X"* puis *"oui confirm=true"* |
 
 #### `template/` (1)
 

@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.58.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (48 slash commands · 43 MCP tools · 44 skills)<br>
+  <div class="meta">v0.60.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (48 slash commands · 43 MCP tools · 44 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -188,7 +188,7 @@
 
 <h2>How the pieces fit <span class="count">— the dependency chain</span></h2>
 
-<pre>Obsidian  ←  Local REST API (community plugin)  ←  BRIDGE (mcp-router-bridge, v0.5.1)
+<pre>Obsidian  ←  Local REST API (community plugin)  ←  BRIDGE (mcp-router-bridge, v0.7.0)
     ↑ HTTP per vault (port + apiKey from the Local REST API plugin)
 MCP SERVER (obsidian-mcp-router) — Node ≥ 20.18.1 process on the PC
     ↑ MCP over stdio, spawned by Claude Code
@@ -196,7 +196,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
     · since v0.56.1 the plugin SHIPS and LAUNCHES the server itself</pre>
 
 <ul>
-  <li><strong>Bridge</strong> — runs <em>inside</em> Obsidian; registers extra routes on Local REST API's HTTP server (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, presence heartbeat). <strong>Optional per vault</strong>: without it, core file CRUD still works (plain Local REST API routes), but smart search, Templater execution and click-to-open links don't. Updates itself via BRAT from GitHub releases.</li>
+  <li><strong>Bridge</strong> — runs <em>inside</em> Obsidian; registers extra routes on Local REST API's HTTP server (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>PUT /vault-cas/*</code> since 0.7.0 — atomic <code>ifMatch</code> writes —, presence heartbeat). <strong>Optional per vault</strong>: without it, core file CRUD still works (plain Local REST API routes), but smart search, Templater execution, click-to-open links and atomic conditional writes don't (<code>ifMatch</code> then degrades to a checked non-atomic fallback). Updates itself via BRAT from GitHub releases.</li>
   <li><strong>MCP server</strong> — Node process spawned by Claude Code. Requires the <strong>Local REST API</strong> plugin in every vault (mandatory) and its registry at <code>~/.claude/obsidian-mcp-router/config.json</code> (maintained by <code>setup-vault.mjs</code>); the bridge is optional per vault (see above).</li>
   <li><strong>Claude Code plugin</strong> — its commands and skills orchestrate the server's MCP tools; two hooks (hot-cache load, decisions recall) read vault files directly from disk.</li>
 </ul>
@@ -389,11 +389,11 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>get_file · search · search_smart · get_frontmatter</td>
-    <td><strong>Reads.</strong> Full file; substring search; semantic search (Smart Connections embeddings, cosine scores); typed frontmatter. <code>vault: "*"</code> = cross-vault fan-out.</td>
+    <td><strong>Reads.</strong> Full file (returns <code>contentSha256</code> — the <code>ifMatch</code> token); substring search; semantic search (Smart Connections embeddings, cosine scores); typed frontmatter. <code>vault: "*"</code> = cross-vault fan-out.</td>
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
-    <td><strong>Writes &amp; file management.</strong> Create/replace; append; surgical patch by heading/block/frontmatter; guarded delete (<code>confirm: true</code>); one or many frontmatter keys; move/rename.</td>
+    <td><strong>Writes &amp; file management.</strong> Create/replace; append; surgical patch by heading/block/frontmatter; guarded delete (<code>confirm: true</code>); one or many frontmatter keys; move/rename. <strong><code>ifMatch</code> (v0.60)</strong>: replay <code>get_file</code>'s <code>contentSha256</code> and the write is refused (409) if the file changed since you read it — atomic with bridge ≥ 0.7.0, checked fallback otherwise.</td>
   </tr>
   <tr>
     <td>execute_template</td>
