@@ -13,6 +13,7 @@ import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { writeFileIfMatch, assertContentMatches } from '../src/rest-client.mjs';
+import { getFile } from '../src/tools/get-file.mjs';
 import { writeFileTool } from '../src/tools/write-file.mjs';
 import { patchFileTool } from '../src/tools/patch-file.mjs';
 import { deleteFileTool } from '../src/tools/delete-file.mjs';
@@ -40,8 +41,10 @@ function readBody(req) {
 before(async () => {
   server = http.createServer(async (req, res) => {
     const body = await readBody(req);
+    // rawUrl = the wire form BEFORE decoding — lets tests assert the router's
+    // percent-encoding contract instead of the mock masking it (codex #8).
     const url = decodeURIComponent(req.url);
-    recorded.requests.push({ method: req.method, url, body, headers: req.headers });
+    recorded.requests.push({ method: req.method, url, rawUrl: req.url, body, headers: req.headers });
 
     // Atomic CAS route.
     if (req.method === 'PUT' && url.startsWith('/vault-cas/')) {
@@ -125,21 +128,27 @@ describe('writeFileIfMatch — atomic bridge tier', () => {
     assert.equal(casReq.body, 'new');
   });
 
-  test('bridge route present + conflict (409 content-changed) → throws, no fallback', async () => {
+  test('bridge route present + conflict (409 content-changed) → throws, NEVER probes the fallback tier', async () => {
     behaviour.vaultCas = { status: 409, body: { kind: 'cas_conflict', reason: 'content-changed' } };
     await assert.rejects(
       () => writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('old')),
       /precondition failed|changed since/i,
     );
-    assert.equal(recorded.corePut, null); // must NOT fall through to a core write
+    // Codex #4: a real conflict must not be retried through the weaker tier —
+    // assert the COMPLETE traffic: one CAS PUT, zero core GET, zero core PUT.
+    assert.equal(recorded.corePut, null);
+    assert.equal(recorded.requests.filter((r) => r.method === 'GET').length, 0);
+    assert.equal(recorded.requests.length, 1);
   });
 
-  test('bridge 409 target-missing → throws with "no longer exists" phrasing', async () => {
+  test('bridge 409 target-missing → throws with "no longer exists" phrasing, no fallback traffic', async () => {
     behaviour.vaultCas = { status: 409, body: { kind: 'cas_conflict', reason: 'target-missing' } };
     await assert.rejects(
       () => writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('old')),
       /no longer exists/i,
     );
+    assert.equal(recorded.corePut, null);
+    assert.equal(recorded.requests.filter((r) => r.method === 'GET').length, 0);
   });
 });
 
@@ -229,6 +238,95 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
     const casReq = recorded.requests.find((r) => r.url.startsWith('/vault-cas/'));
     // server decodes req.url — the decoded path must equal the original.
     assert.equal(casReq.url, `/vault-cas/${p}`);
+    // Codex #8: assert the WIRE form too — the mock's decode was masking the
+    // encoding contract (per-segment encodeURIComponent, slashes intact).
+    assert.equal(casReq.rawUrl, '/vault-cas/wiki/caf%C3%A9%20notes/Mot%C3%B6rhead.md');
+  });
+
+  test('fallback STATUS MATRIX: 400/404/413/415 degrade — 401/403/500 hard-fail (codex #6)', async () => {
+    // Degrading group: the fallback GET fires and the core PUT services the write.
+    for (const status of [400, 404, 413, 415]) {
+      recorded = { requests: [], corePut: null, corePatch: null, coreDelete: null };
+      behaviour.vaultCas = { status, body: {} };
+      behaviour.get = { status: 200, body: 'current' };
+      const out = await writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('current'));
+      assert.equal(out.casMode, 'fallback', `status ${status} must degrade`);
+      assert.ok(recorded.corePut, `status ${status}: core PUT must service the write`);
+    }
+    // Hard-error group: no fallback GET, no core PUT — the error surfaces.
+    for (const status of [401, 403, 500]) {
+      recorded = { requests: [], corePut: null, corePatch: null, coreDelete: null };
+      behaviour.vaultCas = { status, body: {} };
+      behaviour.get = { status: 200, body: 'current' };
+      await assert.rejects(
+        () => writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('current')),
+        undefined,
+        `status ${status} must hard-fail`,
+      );
+      assert.equal(recorded.corePut, null, `status ${status}: no core PUT`);
+      assert.equal(
+        recorded.requests.filter((r) => r.method === 'GET').length,
+        0,
+        `status ${status}: no fallback GET`,
+      );
+    }
+  });
+});
+
+// --- get_file: the contentSha256 contract (codex #3) ------------------------
+
+describe('get_file — contentSha256 is the RAW hash, content is sanitized', () => {
+  test('sanitizable content: displayed content differs, hash equals the raw bytes', async () => {
+    // sanitizeContent neutralizes agentic markers: '<system-reminder' becomes
+    // '&lt;system-reminder'. The hash MUST be computed BEFORE that — it has to
+    // match what is on disk (what the bridge's adapter.read will hash).
+    const raw = 'avant <system-reminder> après';
+    behaviour.get = { status: 200, body: raw };
+    const out = await getFile(realRegistry(), { path: 'a.md' });
+    assert.notEqual(out.content, raw, 'content must be sanitized');
+    assert.match(out.content, /&lt;system-reminder/);
+    assert.equal(out.contentSha256, contentSha256(raw), 'hash must be of the RAW content');
+  });
+
+  test('plain content: hash present and equals the served bytes', async () => {
+    behaviour.get = { status: 200, body: 'contenu ordinaire é🙂' };
+    const out = await getFile(realRegistry(), { path: 'a.md' });
+    assert.equal(out.content, 'contenu ordinaire é🙂');
+    assert.equal(out.contentSha256, contentSha256('contenu ordinaire é🙂'));
+  });
+});
+
+// --- write_file tool: end-to-end atomic path (codex #5 + #9) ----------------
+
+describe('write_file tool — atomic ifMatch end-to-end', () => {
+  test('forwards ifMatch on the wire, reports if-match:atomic, returns the NEW-content hash', async () => {
+    behaviour.vaultCas = { status: 200, body: { ok: true } };
+    const oldHash = contentSha256('ancien contenu');
+    const newContent = 'nouveau contenu é🙂';
+    const out = await writeFileTool(realRegistry(), {
+      path: 'note.md',
+      content: newContent,
+      ifMatch: oldHash,
+    });
+    // Result contract.
+    assert.equal(out.mode, 'if-match:atomic');
+    assert.equal(out.contentSha256, contentSha256(newContent), 'chaining token = hash of the NEW content');
+    assert.notEqual(out.contentSha256, oldHash);
+    // Wire contract (codex #9): CAS PUT with the exact header, text/plain, and
+    // byte-identical non-ASCII body; and NO unconditional core PUT.
+    const casReq = recorded.requests.find((r) => r.rawUrl.startsWith('/vault-cas/'));
+    assert.ok(casReq, 'the CAS route must be used');
+    assert.equal(casReq.headers['if-match-content-sha256'], oldHash);
+    assert.match(casReq.headers['content-type'], /^text\/plain/);
+    assert.equal(casReq.body, newContent);
+    assert.equal(recorded.corePut, null, 'no unconditional core PUT');
+  });
+
+  test('without ifMatch: the plain core PUT path is used, mode unchanged', async () => {
+    const out = await writeFileTool(realRegistry(), { path: 'note.md', content: 'x' });
+    assert.equal(out.mode, 'create-or-replace');
+    assert.ok(recorded.corePut, 'plain write goes through core PUT');
+    assert.equal(recorded.requests.filter((r) => r.rawUrl.startsWith('/vault-cas/')).length, 0);
   });
 });
 
@@ -287,6 +385,21 @@ describe('ifMatch guard suppresses the operation on mismatch (patch/delete/move/
       /changed since|precondition failed/i,
     );
     assert.equal(recorded.corePatch, null);
+  });
+
+  test('merge_frontmatter: match + two keys → ONE guard GET before TWO PATCHes, all applied (codex #7)', async () => {
+    behaviour.get = { status: 200, body: 'current' };
+    const out = await mergeFrontmatterTool(realRegistry(), {
+      path: 'a.md',
+      values: { status: 'done', outcome: 'ok' },
+      ifMatch: contentSha256('current'),
+    });
+    assert.equal(out.applied, 2);
+    assert.equal(out.failed, 0);
+    // The guard is checked ONCE, before the first mutation — moving it inside
+    // the per-key loop (or after) would change this sequence.
+    const seq = recorded.requests.map((r) => r.method);
+    assert.deepEqual(seq, ['GET', 'PATCH', 'PATCH']);
   });
 
   test('move_file: source mismatch → rejects AND neither PUT nor DELETE fires', async () => {

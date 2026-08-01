@@ -52,9 +52,24 @@ describe('contentSha256 (node:crypto)', () => {
     assert.notEqual(contentSha256('x'), contentSha256('x\n'));
   });
 
-  test('deterministic: same input → same digest', () => {
-    const big = 'wiki '.repeat(10000);
-    assert.equal(contentSha256(big), contentSha256(big));
+  test('pinned LARGE-content vector — no truncation at scale (matches bridge suite)', () => {
+    // A self-comparison would stay green if large input were truncated or the
+    // digest constant (codex #11) — pin the exact digest instead.
+    assert.equal(
+      contentSha256('wiki '.repeat(10000)),
+      '37807f83aa437c33db5eeb3520550e3c0cb50b114aae97e78d8175188cbd4278',
+    );
+  });
+
+  test('pinned astral vectors (surrogate pairs) — MUST match the bridge suite (codex #12)', () => {
+    assert.equal(
+      contentSha256('é🙂'),
+      '7382f537af6a53054b6a72792df00fa0be0f5d2e8214db9cd6ebbcc3d57d02b9',
+    );
+    assert.equal(
+      contentSha256('a🙂b'),
+      'ff39f0ecaa28603997510830e3bcd1953150e1ac44cb8637bbbcd2270112a7cd',
+    );
   });
 
   test('rejects non-string input', () => {
