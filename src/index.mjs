@@ -91,6 +91,10 @@ import {
   buildWikiTourTool,
 } from './tools/build-wiki-tour.mjs';
 import {
+  TOOL_DEFINITION as BUILD_SEARCH_INDEX_TOOL_DEFINITION,
+  buildSearchIndexTool,
+} from './tools/build-search-index.mjs';
+import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
 } from './tools/get-page-neighbors.mjs';
@@ -470,6 +474,12 @@ const TOOLS = [
           type: 'boolean',
           description:
             'Include hits from `archives/` folders (archived decision deliberation moved out by consolidation). Default false: those chunks are dropped and counted in `archivesExcluded`.',
+        },
+        tier: {
+          type: 'string',
+          enum: ['auto', 'semantic', 'local'],
+          description:
+            "Which search engine answers. 'auto' (default): semantic, degrading WHOLLY to the local BM25 index when Smart Connections cannot serve this vault (the response then carries tier + fallback). 'semantic': semantic only — error out instead of degrading. 'local': the deterministic BM25 index only (works on every vault, no plugin needed; requires build_search_index). Results always come from exactly ONE tier — BM25 and cosine scores are never blended.",
         },
       },
       required: ['query'],
@@ -864,6 +874,7 @@ const TOOLS = [
   // from the knowledge graph. Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
   BUILD_WIKI_TOUR_TOOL_DEFINITION,
+  BUILD_SEARCH_INDEX_TOOL_DEFINITION,
   // Page-neighbors roadmap W-A — the neighbourhood of ONE page from the graph
   // (backlinks + forward-links, bounded depth). Read-only (reads the graph JSON)
   // — excluded from WRITE_TOOL_NAMES.
@@ -1042,6 +1053,8 @@ const TOOL_HANDLERS = {
   get_wiki_context_pack: (reg, args) => getWikiContextPack(reg, args),
   // Roadmap item #1 (understand-anything) — deterministic knowledge-graph builder.
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
+  // C4/C5 — local deterministic BM25 index (plugin-free search tier).
+  build_search_index: (reg, args) => buildSearchIndexTool(reg, args),
   refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
@@ -1109,6 +1122,9 @@ const WRITE_TOOL_NAMES = new Set([
   // Roadmap item #1 (understand-anything) — writes the knowledge-graph JSON
   // to wiki-meta/graph/ + .understand-anything/. Read-only must hide it.
   'build_wiki_graph',
+  // C4 — writes wiki-meta/search-index.json. Read-only deployments must hide
+  // it (search_smart's `tier: 'local'` still READS the index, which is fine).
+  'build_search_index',
   // v0.59.0 — rewrites the generated OKF projections inside wiki/. Read-only
   // deployments must hide it.
   'refresh_okf_projections',

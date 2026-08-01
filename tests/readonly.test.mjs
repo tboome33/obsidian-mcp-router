@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 12 documented write tools', () => {
+  test('contains the 13 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -103,6 +103,9 @@ describe('WRITE_TOOL_NAMES', () => {
       'provision_vault',
       // v0.59.0 — volet ②: rewrites the generated OKF projections in wiki/.
       'refresh_okf_projections',
+      // C4 — writes wiki-meta/search-index.json (the local BM25 index).
+      // search_smart's `tier: 'local'` only READS it, so it stays exposed.
+      'build_search_index',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {

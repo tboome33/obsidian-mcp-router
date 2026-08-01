@@ -1,6 +1,7 @@
 /**
  * search_smart — semantic search powered by Smart Connections, exposed via
- * the obsidian-mcp-router-bridge plugin's API extension to Local REST API.
+ * the obsidian-mcp-router-bridge plugin's API extension to Local REST API,
+ * with the C4 local BM25 tier underneath it.
  *
  * Per-vault: the vault must have BOTH the obsidian-mcp-router-bridge plugin
  * AND the smart-connections plugin installed and enabled. The router surfaces
@@ -22,17 +23,36 @@
  * `archivesExcluded` count so the cut is never silent. The page is
  * overfetched before filtering so exclusion does not shrink the result set
  * below `limit`. Opt back in with `includeArchives: true`.
+ *
+ * C4 (v0.63.0) — HONEST FALLBACK, NEVER MIXED. Most of the fleet has no Smart
+ * Connections. When the semantic tier CANNOT SERVE a vault, this tool now falls
+ * back WHOLLY to the local deterministic BM25 index and labels the response
+ * (`tier`, `fallback.reason`) instead of erroring out. It never blends the two
+ * rankings — their score scales are incomparable — and it never falls back on an
+ * empty-but-successful semantic answer, which is a real answer. `tier: 'semantic'`
+ * forbids the fallback; `tier: 'local'` demands the deterministic tier outright.
+ * See src/helpers/local-search.mjs for the full doctrine.
  */
-import { searchSmart } from '../rest-client.mjs';
+import { searchSmart, getFileContent } from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
+import {
+  searchLocalIndex,
+  isSemanticTierUnusable,
+  TIER_SEMANTIC,
+  TIER_LOCAL,
+} from '../helpers/local-search.mjs';
+import { validateQuery, clampLimit } from '../helpers/bm25-index.mjs';
 
 /** Overfetch margin: enough that a handful of archive chunks in the top of
  * the ranking cannot empty the page, small enough to stay cheap. */
 const ARCHIVE_OVERFETCH = 10;
 
-export async function searchSmartTool(registry, args = {}) {
+/** Requested tier. `auto` = semantic, degrading to local when it cannot serve. */
+const TIER_MODES = new Set(['auto', 'semantic', 'local']);
+
+export async function searchSmartTool(registry, args = {}, _deps = {}) {
   const {
     vault: name,
     query,
@@ -40,37 +60,100 @@ export async function searchSmartTool(registry, args = {}) {
     excludeFolders,
     limit = 10,
     includeArchives = false,
+    tier: requestedTier = 'auto',
   } = args;
 
   if (!query) {
     throw new Error('Missing required argument: query');
   }
+  if (!TIER_MODES.has(requestedTier)) {
+    throw new Error(
+      `Invalid tier "${requestedTier}": expected 'auto' (semantic, falling back to the local BM25 index), ` +
+        `'semantic' (semantic only — error if unavailable), or 'local' (the deterministic BM25 index only).`,
+    );
+  }
+  // C4 bounds are TIER-INDEPENDENT. Validating only inside the local tier made
+  // acceptance depend on which engine happened to be available — a 1000-char
+  // query was refused locally and forwarded verbatim to the semantic tier
+  // (Codex verification, v0.63.0). Bound the public input once, up front.
+  const bounds = validateQuery(query);
+  if (!bounds.ok) {
+    const err = new Error(bounds.message);
+    err.kind = 'validation';
+    err.reason = bounds.reason;
+    throw err;
+  }
+  const boundedLimit = clampLimit(limit);
+
+  const deps = { searchSmart: _deps.searchSmart || searchSmart };
+  // The local tier reads the index through the same REST client; injectable so
+  // tests drive both tiers without touching the network.
+  const localDeps = { getFileContent: _deps.getFileContent || getFileContent };
 
   const filter = {};
   if (Array.isArray(folders) && folders.length) filter.folders = folders;
   if (Array.isArray(excludeFolders) && excludeFolders.length) {
     filter.excludeFolders = excludeFolders;
   }
-  if (typeof limit === 'number') filter.limit = limit;
+  filter.limit = boundedLimit;
 
   // The filter reported in the response keeps the caller's limit; the one
   // sent to Smart Connections overfetches so dropping archive hits does not
   // return fewer results than asked for.
-  const scFilter = includeArchives
-    ? filter
-    : { ...filter, limit: (Number.isFinite(filter.limit) ? filter.limit : 10) + ARCHIVE_OVERFETCH };
+  const scFilter = includeArchives ? filter : { ...filter, limit: boundedLimit + ARCHIVE_OVERFETCH };
 
-  const searchOne = async (vault) => {
-    const raw = await searchSmart(vault, query, scFilter);
+  /** The semantic tier, unchanged from v0.8.8 behaviour. */
+  const searchSemantic = async (vault) => {
+    const raw = await deps.searchSmart(vault, query, scFilter);
     const { data, archivesExcluded } = filterArchiveResults(raw, {
       includeArchives,
       limit: filter.limit,
     });
     return {
+      tier: TIER_SEMANTIC,
+      scoreScale: 'cosine',
       ...data,
       ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
       ...collectClickToOpenLinks(vault, data),
     };
+  };
+
+  /** The local deterministic tier (C4). */
+  const searchLocal = async (vault) => {
+    const local = await searchLocalIndex(vault, localDeps, {
+      query,
+      limit: boundedLimit,
+      folders,
+      excludeFolders,
+      includeArchives,
+    });
+    return { ...local, ...collectClickToOpenLinks(vault, local.results) };
+  };
+
+  /**
+   * One vault, one tier. The ONLY place the fallback decision is made — and it
+   * degrades exclusively on a capability gap (never on an empty answer, never
+   * on auth/transport failure).
+   */
+  const searchOne = async (vault) => {
+    if (requestedTier === 'local') return searchLocal(vault);
+    if (requestedTier === 'semantic') return searchSemantic(vault);
+    try {
+      return await searchSemantic(vault);
+    } catch (err) {
+      if (!isSemanticTierUnusable(err)) throw err;
+      const local = await searchLocal(vault);
+      return {
+        ...local,
+        fallback: {
+          from: TIER_SEMANTIC,
+          to: TIER_LOCAL,
+          reason: 'semantic-tier-unavailable',
+          detail: err.message,
+          note: 'Results come ENTIRELY from the local BM25 index — no semantic result is blended in. BM25 scores are not comparable to cosine scores.',
+        },
+      };
+    }
   };
 
   // Cross-vault fan-out
@@ -91,6 +174,7 @@ export async function searchSmartTool(registry, args = {}) {
     return sanitizeResponse({
       query,
       filter,
+      requestedTier,
       perVault: settled.map((r, i) =>
         r.status === 'fulfilled'
           ? r.value
@@ -104,6 +188,7 @@ export async function searchSmartTool(registry, args = {}) {
     vault: vault.name,
     query,
     filter,
+    requestedTier,
     ...(await searchOne(vault)),
   });
 }

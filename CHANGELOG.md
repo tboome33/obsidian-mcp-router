@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.63.0] — 2026-08-02 — a local BM25 search tier that works on every vault (borrowings C4 + C5)
+
+### Added
+
+Third and fourth borrowings from the [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) study (§2.17). The router had two search tiers and a hole between them: `search` (plain substring — dumb but always there) and `search_smart` (semantic — good, but it needs the Smart Connections plugin installed *and* indexed, which most of the fleet does not have). Missing was the search-engine classic: **BM25**, ranking by how much each term discriminates. No model, no plugin, no network, no egress — and the same question always yields the same ranking.
+
+- **`build_search_index` (new tool)** builds a vault's local BM25 index into `wiki-meta/search-index.json`. It walks `wiki/` (excluding the generated OKF projections), chunks every page, and writes an inverted index. **Idempotent**: the index carries a byte-exact content fingerprint of the corpus, so re-running on an unchanged vault skips the write entirely. `check: true` reports absent/stale/current without writing. **Fail-closed**: if any page fails to read, or any directory fails to *list*, or the enumeration is truncated, the build refuses — an index that silently omits content is worse than one that admits it cannot run.
+- **C5 — contextual chunk headers.** Every chunk is prefixed with metadata that already exists: page title · frontmatter `description` · heading path (`Parent::Child`). That header is indexed *with* the body, so a query matching only a page's summary still finds it, and every hit can say where it came from. Purely derived — no LLM, no egress. Block-scalar descriptions (`description: |`) are parsed locally, since the shared line-oriented frontmatter parser returns the indicator instead of the text.
+- **`search_smart` gains `tier: auto | semantic | local`.** `auto` (default) tries semantic and, **only when that tier cannot serve this vault**, falls back **wholly** to BM25 and labels the response (`tier`, `fallback`). The two rankings are **never blended** — cosine and BM25 scores are incomparable, and interleaving them produces an order that means nothing. `semantic` forbids the fallback; `local` demands the deterministic tier outright.
+- **Honest failure everywhere.** An absent, empty, foreign-version, corrupt, or truncated index produces an actionable refusal naming `build_search_index` — never a bare `[]`, which would read as "your vault has nothing on this" when the truth is "nothing has been indexed". Query bounds (length, token count, limit) are enforced **before** tier dispatch, so acceptance never depends on which engine happens to be available.
+- New `/obsidian-router:build-search-index` command + skill; `read-search-smart` documents the tiers.
+
+Hardened before commit by a Fable 5 adversarial review **and** an independent Codex pass — both ran the suite and reproduced every finding by probe. **14 real defects found and fixed**, each with a regression test. The ones worth naming: a generic bridge 503 (which wraps *any* Smart Connections crash) was treated as a capability gap, silently demoting a broken semantic tier to a labelled degrade forever; post-filtering a capped page returned **zero** results on archive-heavy corpora while matches sat just past the cap; an empty 0-chunk index answered every query with `[]`; a directory that failed to *list* was indistinguishable from an empty one, so a partial index was written and reported as success; reusing C1's BOM-stripping hash made a BOM-only edit hash as "unchanged" and skip a genuinely needed rebuild; a reordered chunk list with untouched postings returned unrelated pages *permanently* (no corpus fingerprint can see that — the index now carries a self-integrity digest); and C5 silently dropped block-scalar descriptions, which measurably wrecked relevance on the real corpus (a French deletion query ranked an unrelated skill first; it now ranks `manage-delete` first).
+
+Tests: router **+57**. Suite green (**2827**). Validated on a real 45-page corpus: 487 chunks built in ~54 ms, sub-millisecond queries.
+
+Known v1 limitation (deliberate, inherited from `bm25-filter.mjs`): exact-token matching — no stemming or synonyms, so `équations` does not match `équation`. That is the price of zero-dependency determinism.
+
 ## [0.62.0] — 2026-08-01 — C3 completed: the sealed preview reaches the CLI two-phase flows
 
 ### Added

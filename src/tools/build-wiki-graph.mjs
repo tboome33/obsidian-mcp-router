@@ -127,6 +127,12 @@ function joinPath(dir, name) {
 export async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null) {
   const paths = [];
   let truncated = false;
+  // Directory listings that FAILED (not "absent" — genuinely errored). The walk
+  // still skips them, so existing callers are unaffected, but the count is now
+  // reported: a caller that must be fail-closed (the BM25 index builder) cannot
+  // otherwise tell "this subtree is empty" from "this subtree did not answer",
+  // and would silently index a partial vault (Codex verification, v0.63.0).
+  let listFailures = 0;
   let visited = 0; // total entries examined (dirs + files), bounded by MAX_VISITS
   // Iterative DFS to avoid deep recursion; stack of {dir, depth}.
   const stack = [{ dir: rootDir, depth: 0 }];
@@ -143,8 +149,12 @@ export async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null
     let listing;
     try {
       listing = await listFilesIn(vault, dir);
-    } catch {
-      continue; // missing/inaccessible directory → skip
+    } catch (err) {
+      // A true 404 means the directory simply isn't there (normal for an
+      // un-scaffolded vault); anything else is a failure to LOOK, which a
+      // fail-closed caller must know about.
+      if (err?.kind !== 'not_found') listFailures += 1;
+      continue;
     }
     const files = Array.isArray(listing?.files) ? listing.files : [];
     for (const entry of files) {
@@ -169,7 +179,7 @@ export async function collectMarkdown(listFilesIn, vault, rootDir, ignore = null
       }
     }
   }
-  return { paths, truncated };
+  return { paths, truncated, listFailures };
 }
 
 /** Read a set of vault paths in parallel → [{path, content}] (failures dropped). */
