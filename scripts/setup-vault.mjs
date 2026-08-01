@@ -37,6 +37,7 @@ import { samePath, canonicalPath } from './path-helpers.mjs';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
 import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/targz-extract.mjs';
+import { computePlanSeal, verifyPlanSeal, isPlanSeal, PlanDriftError } from '../src/helpers/plan-seal.mjs';
 import {
   CATALOG_BASENAME,
   JOURNAL_BASENAME,
@@ -450,6 +451,9 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
     scaffoldsMoved: [],
     mode: null,
     claudeMdReplacements: 0,
+    // C3: the ACTUAL matched scaffold refs per CLAUDE.md candidate (dry-run
+    // only), so a same-count-but-different-text change is caught as drift.
+    claudeMdMatches: null,
     error: null,
   };
 
@@ -523,11 +527,20 @@ function migrateVaultToWikiMeta(vaultPath, opts = {}) {
   if (dryRun) {
     // Compute what WOULD change across ALL discovered CLAUDE.md copies.
     let total = 0;
+    const claudeMdMatches = [];
     for (const claudeMd of findClaudeMdCandidates(vaultPath)) {
       const content = fs.readFileSync(claudeMd, 'utf8');
-      total += (content.match(/wiki\/(hot|index|log|overview)\.md/g) || []).length;
+      const found = content.match(/wiki\/(hot|index|log|overview)\.md/g) || [];
+      total += found.length;
+      if (found.length) {
+        claudeMdMatches.push({ relPath: path.relative(vaultPath, claudeMd), matches: [...found].sort() });
+      }
     }
     result.claudeMdReplacements = total;
+    // C3: seal the exact matched refs per file — not just the sum — so a
+    // CLAUDE.md that swaps `wiki/hot.md`→`wiki/index.md` (count unchanged) is
+    // caught as drift instead of rewritten under a matching seal (Codex).
+    result.claudeMdMatches = claudeMdMatches.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
   } else {
     result.claudeMdReplacements = rewriteClaudeMdScaffoldPaths(vaultPath);
   }
@@ -594,6 +607,14 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
     sessionsMoved: [],
     sessionsSkipped: [], // already present in target — kept in source as conflicts
     mode: null,
+    // 'rename' (dst absent → whole-dir move) vs 'merge' (dst present →
+    // per-file move, skip dups). Sealed by C3 so a dst directory appearing
+    // between preview and apply — which flips a rename into a merge into
+    // pre-existing content — is caught as drift (Fable 5 review).
+    strategy: null,
+    // C3 (rename case only): every top-level entry the directory rename moves —
+    // not just .md — so a non-.md file dropped in before the apply is caught.
+    sessionsAllEntries: null,
     error: null,
   };
 
@@ -622,12 +643,17 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
   // From here on: srcExists === true.
   const useGit = vaultIsGitRepo(vaultPath);
   result.mode = useGit ? 'git' : 'fs';
+  result.strategy = dstExists ? 'merge' : 'rename';
 
   // Case 1: dst absent → full rename of the directory (fast path).
   if (!dstExists) {
     if (dryRun) {
-      const srcFiles = fs.readdirSync(srcDir).filter((f) => f.endsWith('.md'));
+      const allEntries = fs.readdirSync(srcDir).sort();
+      const srcFiles = allEntries.filter((f) => f.endsWith('.md'));
       result.sessionsMoved = srcFiles.map((f) => ({ file: f, mode: result.mode, dryRun: true }));
+      // The rename relocates the WHOLE directory — seal every entry so the
+      // manifest matches what actually moves, not just the .md subset (Codex).
+      result.sessionsAllEntries = allEntries;
       result.status = 'migrated';
       if (!quiet) info(`[DRY-RUN] ${vaultPath} — would rename wiki/Sessions/ → wiki-meta/Sessions/ via ${result.mode} (${srcFiles.length} files).`);
       return result;
@@ -3324,6 +3350,117 @@ function reportHooksStatus(settings, example, opts = {}) {
 // execute the top-level CLI dispatch. Instead, tests spawn it as a
 // subprocess (see tests/install-hooks.test.mjs) — these exports stay
 // in the module namespace for future intra-module use.
+// ---------------------------------------------------------------------------
+// C3 sealed preview for the CLI two-phase flows (migrations + sync-from-github).
+// Same contract as the MCP tools (src/helpers/plan-seal.mjs): a --dry-run emits
+// an approvedPlanSha256 over a canonical, vault-bound plan core; the apply
+// accepts --approved-plan-sha256 and refuses — before any filesystem or network
+// mutation — if the freshly re-derived plan drifted since the preview. Opt-in:
+// an apply without the flag behaves exactly as before.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drift-sensitive core of a migration dry-run result (wiki-meta or sessions).
+ * Both the preview and the pre-apply re-derivation are DRY-RUN results, so an
+ * unchanged vault yields an identical core. Captures WHAT would move (scaffold
+ * names / session files, sorted), the transport mode (git vs fs — a repo that
+ * gained/lost `.git` between preview and apply is a real change), the detected
+ * state/status, and the CLAUDE.md rewrite count.
+ */
+export function migrationPlanCore(op, result) {
+  const r = result || {};
+  return {
+    op,
+    state: r.state ?? null,
+    status: r.status ?? null,
+    mode: r.mode ?? null,
+    // Sessions: the rename-vs-merge strategy (a dst directory appearing since
+    // the preview flips one into the other — same moved-set, different executed
+    // behaviour) and the conflict set left behind, both sealed (Fable 5 review).
+    strategy: r.strategy ?? null,
+    scaffolds: Array.isArray(r.scaffoldsMoved)
+      ? r.scaffoldsMoved.map((s) => String(s.scaffold)).sort()
+      : [],
+    sessions: Array.isArray(r.sessionsMoved)
+      ? r.sessionsMoved.map((s) => String(typeof s === 'string' ? s : s.file)).sort()
+      : [],
+    sessionsSkipped: Array.isArray(r.sessionsSkipped)
+      ? r.sessionsSkipped.map((s) => String(typeof s === 'string' ? s : s.file)).sort()
+      : [],
+    // Rename case: every entry moved (not just .md). Merge case: null (the
+    // .md-level moved/skipped sets fully describe it).
+    sessionsAllEntries: Array.isArray(r.sessionsAllEntries) ? [...r.sessionsAllEntries].map(String).sort() : null,
+    claudeMdReplacements: r.claudeMdReplacements ?? null,
+    // Exact matched scaffold refs per CLAUDE.md candidate (dry-run only).
+    claudeMdMatches: Array.isArray(r.claudeMdMatches)
+      ? r.claudeMdMatches
+          .map((m) => ({ relPath: String(m.relPath), matches: Array.isArray(m.matches) ? [...m.matches].map(String).sort() : [] }))
+          .sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0))
+      : null,
+  };
+}
+
+/**
+ * Drift-sensitive core of a `--sync-from-github` plan. Binds the ARCHIVE
+ * identity (its SHA-256 — the key signal: a moving ref like `main` can advance
+ * between preview and apply), the repo/ref/force knobs, and the resolved
+ * eligible-target set. It deliberately does NOT model per-plugin sync decisions
+ * (those live inside the hardened, un-touched syncPluginsMode) — the seal
+ * guarantees the apply runs against the SAME archive + vault set + force the
+ * caller previewed, which is the outer drift that matters.
+ */
+export function syncPlanCore({ repo, ref, force, archiveSha256, targets }) {
+  return {
+    op: 'sync-from-github',
+    repo: repo ?? null,
+    ref: ref ?? null,
+    force: Boolean(force),
+    archiveSha256: archiveSha256 ?? null,
+    targets: Array.isArray(targets) ? [...targets].map(String).sort() : [],
+  };
+}
+
+/**
+ * Parse `--approved-plan-sha256 <hash>` from argv. Returns the validated seal or
+ * null when absent. Fails loudly (before any work) on a missing/flag-like value
+ * or a malformed hash, so a typo never silently degrades to "no seal".
+ */
+function readApprovedPlanSeal(argv) {
+  const i = argv.indexOf('--approved-plan-sha256');
+  if (i === -1) return null;
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('-')) {
+    fail('--approved-plan-sha256 requires a value (the 64-hex seal a --dry-run printed).');
+  }
+  if (!isPlanSeal(value)) {
+    fail('Invalid --approved-plan-sha256: expected a 64-char lowercase hex plan seal (the value a --dry-run printed).');
+  }
+  return value;
+}
+
+/** Print the seal after a dry-run, with the exact command to apply it. */
+function printPlanSeal(seal, applyHint) {
+  console.log('');
+  console.log(c('bold', `approvedPlanSha256: ${seal}`));
+  info(applyHint);
+}
+
+/**
+ * Verify a caller-provided seal against the current plan. On drift, `fail()`
+ * (exit 1) BEFORE any mutation with an actionable message. Any other error type
+ * propagates unchanged.
+ */
+function verifyPlanSealOrFail({ op, identity, plan, provided, previewHint }) {
+  try {
+    verifyPlanSeal({ op, identity, plan, approvedPlanSha256: provided, previewHint });
+  } catch (e) {
+    if (e instanceof PlanDriftError) {
+      fail(`Sealed-preview drift — nothing was changed.\n   ${e.message}`);
+    }
+    throw e;
+  }
+}
+
 export {
   loadHooksExample,
   commandBasename,
@@ -3478,11 +3615,14 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --sync-all                            Run --sync-plugins on every vault in portRegistry
   node setup-vault.mjs --sync-all --force                    Same, force-overwrite plugins + snippets
   node setup-vault.mjs --sync-from-github <vault…>|--all     Sync plugins/themes/snippets straight from the GitHub
-      [--ref <branch|tag>] [--force]                          skeleton — no dev repo or local .template needed.
+      [--ref <branch|tag>] [--force] [--dry-run]              skeleton — no dev repo or local .template needed.
       [--repo <owner/name> --trust-repo]                      Same guards as --sync-plugins (credentials, anti-
-                                                              downgrade) + hardened archive extraction + pinned
+      [--approved-plan-sha256 <hash>]                         downgrade) + hardened archive extraction + pinned
                                                               plugin allowlist. A non-default --repo requires the
-                                                              explicit --trust-repo acknowledgement.
+                                                              explicit --trust-repo acknowledgement. C3: --dry-run
+                                                              prints an approvedPlanSha256 sealing {archive, targets,
+                                                              force}; pass it back on apply to refuse a drifted archive
+                                                              (moved ref) or vault set before any sync.
   node setup-vault.mjs --bootstrap-reference <path>          Scaffold a fresh reference vault from the
                                                               shipped skeleton + download bridge plugin.
                                                               Follow up with --init-reference once you've
@@ -3501,7 +3641,11 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               if .git/ exists, plain rename otherwise. Also
                                                               rewrites scaffold paths in vault's CLAUDE.md.
                                                               Idempotent. Add --dry-run to preview, --force to
-                                                              re-rewrite CLAUDE.md on already-migrated vaults.
+                                                              re-rewrite CLAUDE.md on already-migrated vaults. C3:
+                                                              --dry-run prints an approvedPlanSha256; pass it back via
+                                                              --approved-plan-sha256 <hash> to apply exactly that plan
+                                                              (refused if the vault drifted). Same on --migrate-
+                                                              sessions-to-wiki-meta.
   node setup-vault.mjs --migrate-all-wiki-meta               Same migration, run on every vault in
                                                               portRegistry. Reports per-vault status; non-zero
                                                               exit if any vault fails.
@@ -3755,19 +3899,54 @@ if (args[0] === '--migrate-wiki-meta' || args[0] === '--migrate-all-wiki-meta') 
   const forceFlag = args.includes('--force');
   const isBatch = args[0] === '--migrate-all-wiki-meta';
 
+  // C3: the seal binds ONE vault's plan. The batch form has no single plan to
+  // seal, so it must REJECT the flag rather than silently ignore it (which would
+  // let an operator believe drift protection is active when it is not — Fable 5).
+  if (isBatch && args.includes('--approved-plan-sha256')) {
+    fail('--approved-plan-sha256 is only supported on the single-vault form (--migrate-wiki-meta <vault>); the seal binds one vault\'s plan.');
+  }
+
   if (!isBatch) {
-    // Single vault: require an explicit path argument
-    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--'));
+    // Single vault: require an explicit path argument. Exclude the value that
+    // follows --approved-plan-sha256 so a seal is never mistaken for the path.
+    const sealValIdx = args.indexOf('--approved-plan-sha256') + 1;
+    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--') && i !== sealValIdx);
     if (!vaultArg) {
-      fail('--migrate-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-wiki-meta <vault-path> [--dry-run] [--force]');
+      fail('--migrate-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-wiki-meta <vault-path> [--dry-run] [--force] [--approved-plan-sha256 <hash>]');
     }
-    const abs = path.resolve(vaultArg);
+    // canonicalPath (not path.resolve): the seal identity must be case-stable so
+    // previewing `i:\v` then applying `I:\V` (same NTFS dir) isn't a false drift
+    // refusal on Windows (Codex verification).
+    const abs = canonicalPath(vaultArg);
+    const approvedPlanSha256 = readApprovedPlanSeal(args);
+    // C3 apply: verify the sealed preview against the CURRENT plan (a read-only
+    // dry-run) BEFORE mutating anything.
+    if (!dryRun && approvedPlanSha256) {
+      const preview = migrateVaultToWikiMeta(abs, { dryRun: true, force: forceFlag, quiet: true });
+      if (preview.status === 'failed') fail(`Migration failed for ${abs}:\n   ${preview.error}`);
+      verifyPlanSealOrFail({
+        op: 'migrate-wiki-meta',
+        identity: { target: abs },
+        plan: migrationPlanCore('migrate-wiki-meta', preview),
+        provided: approvedPlanSha256,
+        previewHint: `setup-vault.mjs --migrate-wiki-meta "${abs}" --dry-run`,
+      });
+    }
     const result = migrateVaultToWikiMeta(abs, { dryRun, force: forceFlag });
     if (result.status === 'failed') {
       fail(`Migration failed for ${abs}:\n   ${result.error}`);
     }
     if (result.status === 'skipped') {
       info(`Skipped: ${result.error}`);
+    }
+    // C3 preview: seal the plan so a later apply can pin exactly this.
+    if (dryRun && result.status !== 'failed') {
+      const seal = computePlanSeal({
+        op: 'migrate-wiki-meta',
+        identity: { target: abs },
+        plan: migrationPlanCore('migrate-wiki-meta', result),
+      });
+      printPlanSeal(seal, `Re-run with --approved-plan-sha256 ${seal} to apply exactly this plan (refused if the vault drifts).`);
     }
     process.exit(0);
   }
@@ -3835,12 +4014,35 @@ if (args[0] === '--migrate-sessions-to-wiki-meta' || args[0] === '--migrate-all-
   const dryRun = args.includes('--dry-run');
   const isBatch = args[0] === '--migrate-all-sessions-to-wiki-meta';
 
+  // C3: reject the seal on the batch form — it binds one vault's plan (Fable 5).
+  if (isBatch && args.includes('--approved-plan-sha256')) {
+    fail('--approved-plan-sha256 is only supported on the single-vault form (--migrate-sessions-to-wiki-meta <vault>); the seal binds one vault\'s plan.');
+  }
+
   if (!isBatch) {
-    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--'));
+    // Exclude the --approved-plan-sha256 value from vault-path detection.
+    const sealValIdx = args.indexOf('--approved-plan-sha256') + 1;
+    const vaultArg = args.find((a, i) => i > 0 && !a.startsWith('--') && i !== sealValIdx);
     if (!vaultArg) {
-      fail('--migrate-sessions-to-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-sessions-to-wiki-meta <vault-path> [--dry-run]');
+      fail('--migrate-sessions-to-wiki-meta requires a vault path argument.\n   Usage: setup-vault.mjs --migrate-sessions-to-wiki-meta <vault-path> [--dry-run] [--approved-plan-sha256 <hash>]');
     }
-    const abs = path.resolve(vaultArg);
+    // canonicalPath (not path.resolve): the seal identity must be case-stable so
+    // previewing `i:\v` then applying `I:\V` (same NTFS dir) isn't a false drift
+    // refusal on Windows (Codex verification).
+    const abs = canonicalPath(vaultArg);
+    const approvedPlanSha256 = readApprovedPlanSeal(args);
+    // C3 apply: verify the sealed preview against the current plan first.
+    if (!dryRun && approvedPlanSha256) {
+      const preview = migrateSessionsToWikiMeta(abs, { dryRun: true, quiet: true });
+      if (preview.status === 'failed') fail(`Migration failed for ${abs}:\n   ${preview.error}`);
+      verifyPlanSealOrFail({
+        op: 'migrate-sessions',
+        identity: { target: abs },
+        plan: migrationPlanCore('migrate-sessions', preview),
+        provided: approvedPlanSha256,
+        previewHint: `setup-vault.mjs --migrate-sessions-to-wiki-meta "${abs}" --dry-run`,
+      });
+    }
     const res = migrateSessionsToWikiMeta(abs, { dryRun });
     if (res.status === 'failed') fail(`Migration failed for ${abs}:\n   ${res.error}`);
     if (res.status === 'merged' && res.sessionsSkipped.length > 0) {
@@ -3849,6 +4051,15 @@ if (args[0] === '--migrate-sessions-to-wiki-meta' || args[0] === '--migrate-all-
         warn(`  - ${s.file}: ${s.reason}`);
       }
       warn('Inspect manually and remove or rename the source copies in wiki/Sessions/.');
+    }
+    // C3 preview: seal the plan.
+    if (dryRun && res.status !== 'failed') {
+      const seal = computePlanSeal({
+        op: 'migrate-sessions',
+        identity: { target: abs },
+        plan: migrationPlanCore('migrate-sessions', res),
+      });
+      printPlanSeal(seal, `Re-run with --approved-plan-sha256 ${seal} to apply exactly this plan (refused if the vault drifts).`);
     }
     process.exit(0);
   }
@@ -3973,6 +4184,8 @@ if (args[0] === '--sync-from-github') {
   let force = false;
   let all = false;
   let trustRepo = false;
+  let dryRun = false;
+  let approvedPlanSha256 = null;
   let ref = 'main';
   let repo = DEFAULT_SYNC_REPO;
   const targets = [];
@@ -3981,15 +4194,27 @@ if (args[0] === '--sync-from-github') {
     if (a === '--force') { force = true; continue; }
     if (a === '--all') { all = true; continue; }
     if (a === '--trust-repo') { trustRepo = true; continue; }
-    if (a === '--ref' || a === '--repo') {
+    if (a === '--dry-run') { dryRun = true; continue; }
+    if (a === '--ref' || a === '--repo' || a === '--approved-plan-sha256') {
       const value = args[i + 1];
       if (value === undefined || value.startsWith('-')) fail(`${a} requires a value`);
-      if (a === '--ref') ref = value; else repo = value;
+      if (a === '--ref') ref = value;
+      else if (a === '--repo') repo = value;
+      else {
+        if (!isPlanSeal(value)) fail('Invalid --approved-plan-sha256: expected a 64-char lowercase hex plan seal (the value a --dry-run printed).');
+        approvedPlanSha256 = value;
+      }
       i++;
       continue;
     }
     if (a.startsWith('-')) fail(`Unknown flag for --sync-from-github: ${a}`);
-    targets.push(a);
+    // canonicalPath (absolute + case-stable): the seal binds the concrete vault,
+    // not a cwd-relative string (`./v` from two directories is two different
+    // vaults — sealing the raw string would let an apply from another cwd sync a
+    // vault the preview never saw; Fable 5) and equivalent Windows spellings of
+    // the same vault don't spuriously refuse (Codex). --all keys are canonicalized
+    // + de-duplicated below.
+    targets.push(canonicalPath(a));
   }
 
   try { assertSafeRepoRef(repo, ref); } catch (e) { fail(e.message); }
@@ -4007,13 +4232,16 @@ if (args[0] === '--sync-from-github') {
     fail('--all cannot be combined with explicit vault paths — pick one or the other.');
   }
   if (!all && targets.length === 0) {
-    fail('Usage: --sync-from-github <vault-path…> | --all  [--ref <branch|tag>] [--repo <owner/name>] [--force]');
+    fail('Usage: --sync-from-github <vault-path…> | --all  [--ref <branch|tag>] [--repo <owner/name>] [--force] [--dry-run] [--approved-plan-sha256 <hash>]');
   }
 
   // Resolve the target list BEFORE downloading anything: it fails fast, and
   // loadConfig() throwing after the temp dir exists leaked the extraction
   // (review finding — process.exit skips finally, so exits must stay simple).
-  const list = all ? Object.keys(loadConfig().portRegistry || {}) : targets;
+  const rawList = all ? Object.keys(loadConfig().portRegistry || {}) : targets;
+  // Canonicalize (case-stable absolute) + de-duplicate so two spellings of the
+  // same vault seal and sync once (Codex). targets[] is already canonicalized.
+  const list = [...new Set(rawList.map((p) => canonicalPath(p)))];
   if (list.length === 0) {
     info('No vaults in portRegistry. Nothing to do.');
     process.exit(0);
@@ -4025,6 +4253,35 @@ if (args[0] === '--sync-from-github') {
   try { buffer = await httpsGetBuffer(url); }
   catch (e) { fail(`Download failed: ${e.message}\n   ${url}`); }
   info(`Downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
+
+  // C3 sealed preview: bind the plan to the ARCHIVE identity (its sha256 — a
+  // moving ref like `main` advancing between preview and apply is the drift that
+  // matters), the repo/ref/force knobs, and the resolved eligible-target set.
+  // The hardened per-vault syncPluginsMode is NOT modelled or touched. Compute
+  // it — and, on an apply, VERIFY it — from the downloaded buffer + read-only fs
+  // checks, BEFORE creating or extracting any temp dir, so a drifted apply
+  // refuses before even a scratch write (Codex: "refuse before any mutation").
+  const archiveSha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+  const eligible = [];
+  const skippedNoObsidian = [];
+  for (const vp of list) {
+    (fs.existsSync(path.join(vp, '.obsidian')) ? eligible : skippedNoObsidian).push(vp);
+  }
+  const planCore = syncPlanCore({ repo, ref, force, archiveSha256, targets: eligible });
+  if (!dryRun && approvedPlanSha256) {
+    try {
+      verifyPlanSeal({
+        op: 'sync-from-github',
+        identity: { repo },
+        plan: planCore,
+        approvedPlanSha256,
+        previewHint: `setup-vault.mjs --sync-from-github … --dry-run`,
+      });
+    } catch (e) {
+      if (e instanceof PlanDriftError) fail(`Sealed-preview drift — nothing was synced (no archive extracted).\n   ${e.message}`);
+      throw e;
+    }
+  }
 
   // NOTE on cleanup: process.exit() skips finally blocks, so every exit path
   // below calls cleanup() explicitly before failing or exiting.
@@ -4049,6 +4306,17 @@ if (args[0] === '--sync-from-github') {
     cleanup();
     fail(`The archive has no templates/reference-vault-skeleton with plugins — wrong repo or ref? (${repo}@${ref})`);
   }
+
+  if (dryRun) {
+    console.log(c('bold', `[DRY-RUN] Would sync ${eligible.length} eligible vault(s) from ${repo}@${ref}${force ? ' (--force)' : ''} (archive ${archiveSha256.slice(0, 12)}…):`));
+    for (const vp of eligible) console.log(c('cyan', `  → ${vp}`));
+    for (const vp of skippedNoObsidian) console.log(c('yellow', `  - skip (no .obsidian): ${vp}`));
+    cleanup();
+    const seal = computePlanSeal({ op: 'sync-from-github', identity: { repo }, plan: planCore });
+    printPlanSeal(seal, `Re-run without --dry-run and with --approved-plan-sha256 ${seal} to apply exactly this plan — refused if the archive or vault set drifts.`);
+    process.exit(0);
+  }
+
   info(`Skeleton extracted (${extracted.files} files) — applying with the standard sync guards…`);
   console.log('');
 

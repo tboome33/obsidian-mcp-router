@@ -6,6 +6,21 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.62.0] — 2026-08-01 — C3 completed: the sealed preview reaches the CLI two-phase flows
+
+### Added
+
+The remaining C3 sub-scope from §2.17: the sealed-preview mechanism now also guards the two CLI-surface two-phase flows in `scripts/setup-vault.mjs`, reusing the same `plan-seal` primitive. All five families named in the attack order — `delete_file`, `provision_vault`, `refresh_okf_projections`, `sync-from-github --force`, and scaffold migrations — are now sealed. **C3 is complete.**
+
+- **`--migrate-wiki-meta` and `--migrate-sessions-to-wiki-meta` (single vault) gain a sealed preview.** `--dry-run` prints an `approvedPlanSha256` over the migration plan — the scaffolds/sessions moved, the transport mode (git vs fs), the rename-vs-merge strategy, the full rename manifest, the exact CLAUDE.md scaffold-refs to rewrite, and the conflict set. Re-run with `--approved-plan-sha256 <hash>` to apply exactly that plan: it is re-derived from a read-only dry-run and refused, before any move, on drift. The batch forms (`--migrate-all-*`) reject the flag — the seal binds one vault's plan.
+- **`--sync-from-github` gains `--dry-run` + `--approved-plan-sha256`.** The dry-run downloads + SHA-256s the archive, resolves the eligible-target set, and seals `{repo, ref, force, archiveSha256, targets}`; an apply echoing the seal refuses — before extracting anything — if the archive drifted (a moving ref like `main` advanced between preview and apply) or the vault set changed. The hardened per-vault `syncPluginsMode` is untouched; the seal wraps the outer orchestration.
+
+Opt-in throughout: a run without the flag behaves exactly as before.
+
+Hardened before commit by a Fable 5 adversarial review (subagent) **and** an independent Codex pass that ran the suite and empirically reproduced each finding — **six real defects found and fixed**, each with a regression test: the batch forms silently swallowing the flag (a malformed seal migrated the fleet, exit 0); sync targets sealed as raw cwd-relative strings (same string + different cwd = wrong vault under a matching seal); the sessions rename-vs-merge strategy and the full non-`.md` rename manifest omitted from the seal; the CLAUDE.md plan sealed as a bare replacement count (a same-count-different-ref swap slipped through); a lexical (non-canonical) vault identity causing Windows case-drift false refusals; and the GitHub apply extracting into a temp dir before verifying (now verifies before any scratch write).
+
+Tests: router **+14** (`plan-seal-cli`: spawn-tested migration dry-run→apply, drift refusals across every sealed dimension — CLAUDE.md refs, rename manifest, merge strategy, plan change — plus batch rejection, malformed-seal fail-fast, and seal-not-mistaken-for-path; sync plan-core determinism/binding units). Suite green (**2770**).
+
 ## [0.61.1] — 2026-08-01 — C3 hardening from the independent double verification
 
 ### Fixed
