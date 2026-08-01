@@ -6,6 +6,10 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### Added
+
+- **`npm run update:bridge-fleet`** (`scripts/bridge-fleet-update.mjs`) — deterministic bridge rollout across the fleet. Every vault already self-updates the bridge via BRAT's `updateAtStartup` (audited: 21/21 vaults tracked + enabled), but that startup check is lazy and silent. The script compares each registered vault's on-disk bridge manifest to the target version (GitHub latest release, or `--target X.Y.Z` — fail-closed, never guesses), and for stale REACHABLE vaults fires BRAT's `checkForUpdatesAndUpdate` through the Local REST API command endpoint — the exact procedure that shipped bridge 0.7.0 to the open fleet on 2026-08-01 (a few minutes of BRAT latency, hot-reload, no Obsidian restart). Closed vaults are reported as such: BRAT covers them at next launch. `--dry-run`, `--wait [min]` (polls manifests until the target lands), `--json`. Loopback-only, API keys never printed, up-to-date and ahead-of-release vaults are never touched.
+
 ## [0.60.0] — 2026-08-01 — optimistic-concurrency writes (`ifMatch`, borrowing C1)
 
 ### Added
