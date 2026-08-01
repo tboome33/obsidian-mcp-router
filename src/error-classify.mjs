@@ -67,5 +67,12 @@ export function classifyError(err) {
   if (/Unknown vault|No vault specified|has no API key/i.test(msg)) {
     return { errorCategory: 'validation', isRetryable: false };
   }
+  // Malformed precondition tokens (C1 ifMatch / C3 approvedPlanSha256) thrown
+  // as a plain Error at the tool layer: the request is wrong, a retry with the
+  // same token cannot succeed. (The C3 tools now throw PlanDriftError with
+  // kind:'plan_drift' — this match is the safety net for C1's ifMatch sites.)
+  if (/^Invalid (ifMatch|approvedPlanSha256)/.test(msg)) {
+    return { errorCategory: 'validation', isRetryable: false };
+  }
   return UNKNOWN;
 }

@@ -37,6 +37,18 @@
  * canonical JSON string, so there is one hashing core in the router, pinned by
  * the same known-vector discipline. A fixed domain prefix keeps a plan seal from
  * ever colliding with a raw file-content hash.
+ *
+ * KNOWN LIMITATION (inherited from C1, deliberate): content fingerprints inside
+ * a plan hash the DECODED read representation (what core `GET /vault` returns
+ * via `res.text()`), not raw disk bytes. For markdown that is exact. For a
+ * BINARY file, invalid UTF-8 sequences decode to U+FFFD, so two distinct binary
+ * contents can decode — and therefore fingerprint — identically, and a drift
+ * between them is invisible to the seal (and to C1's ifMatch alike). This is the
+ * price of "hash exactly what get_file returned" (content-hash.mjs), which is
+ * what keeps router/bridge/caller agreeing; vault operations target markdown,
+ * where the limitation is moot. Surfaced by the independent Codex verification
+ * of v0.61.0 — documented, not "fixed", because a raw-bytes read path would
+ * break that agreement.
  */
 import { contentSha256, isContentSha256 } from './content-hash.mjs';
 

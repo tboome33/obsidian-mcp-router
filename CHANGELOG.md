@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.61.1] — 2026-08-01 — C3 hardening from the independent double verification
+
+### Fixed
+
+v0.61.0 was re-verified by two independent passes before publication — a Fable 5 code re-read + 16 empirical probes on the primitive (all clean), then a Codex pass that ran the suite itself and adversarially reviewed the commit diff. Codex confirmed the normal paths (verify-before-write, opt-in backward-compat) but found one real false negative and one structured-error inconsistency, both fixed here; a third observation is documented as a known limitation.
+
+- **`provision_vault`: the engine's ordered `steps` are now part of the seal.** The step list is state-dependent — "create vault directory X" appears only when the target does not exist — and it was excluded from the sealed plan core, so a preview taken against an absent target followed by someone creating that directory before the apply hashed IDENTICALLY (reproduced by probe). That flipped the engine into adopt semantics (pre-existing `app.json` preserved, existing plugin dirs skipped) under a create-era seal — exactly the executed-behaviour drift C3 exists to refuse. Steps are deterministic for an identical input+environment, so sealing them (order-preserved) adds no false positives.
+- **Malformed `approvedPlanSha256` now throws `PlanDriftError`** (kind `plan_drift`) at all three tool layers instead of a plain `Error`, so the refusal classifies as `validation`/non-retryable (and carries `_meta.kind`) instead of `unknown`. Same message text. `error-classify` also gains a message-match safety net covering C1's `Invalid ifMatch` sites, which shared the mislabel.
+- **Documented (not fixed, deliberate):** content fingerprints hash the DECODED read representation (`res.text()`), so two distinct BINARY contents whose invalid-UTF-8 bytes decode identically (U+FFFD) fingerprint identically — invisible to the seal and to C1's `ifMatch` alike. Inherited from C1's "hash exactly what get_file returned" contract, which is what keeps router/bridge/caller agreeing; vault operations target markdown, where this is moot. Now stated in `plan-seal.mjs`.
+
+Tests: **+1** (the reproduced target-existence drift now refuses at the tool level; the malformed-seal test additionally pins the `PlanDriftError` classification). Suite **2756** green.
+
 ## [0.61.0] — 2026-08-01 — sealed preview (`approvedPlanSha256`, borrowing C3)
 
 ### Added

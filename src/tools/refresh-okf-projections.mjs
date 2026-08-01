@@ -24,7 +24,7 @@ import * as defaultRestClient from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { parseFrontmatter } from '../helpers/llms-txt-exporter.mjs';
 import { contentSha256 } from '../helpers/content-hash.mjs';
-import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity } from '../helpers/plan-seal.mjs';
+import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
 import {
   buildProjections,
   planProjectionWrites,
@@ -226,9 +226,11 @@ export async function refreshOkfProjectionsTool(registry, args = {}, _deps = {})
   // Validate the seal SHAPE before any network I/O — a typo must not silently
   // behave like "no seal" and let a drifted apply through.
   if (args.approvedPlanSha256 !== undefined && !isPlanSeal(args.approvedPlanSha256)) {
-    throw new Error(
+    // PlanDriftError so the refusal classifies as validation, not unknown.
+    throw new PlanDriftError(
       'Invalid approvedPlanSha256: expected a 64-char lowercase hex plan seal ' +
         '(the value refresh_okf_projections returned with check:true).',
+      { op: 'refresh_okf_projections', provided: String(args.approvedPlanSha256) },
     );
   }
   const vault = registry.resolveVault(args.vault);

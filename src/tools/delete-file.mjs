@@ -1,6 +1,6 @@
 import { deleteFile, assertContentMatches, getFileContent } from '../rest-client.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
-import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, canonicalize } from '../helpers/plan-seal.mjs';
+import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, canonicalize, PlanDriftError } from '../helpers/plan-seal.mjs';
 
 /**
  * Derive the delete plan from CURRENT vault state: what file, does it still
@@ -47,10 +47,14 @@ export async function deleteFileTool(registry, args = {}, deps = {}) {
       'Invalid ifMatch: expected a 64-char lowercase hex content hash (the contentSha256 field from get_file).',
     );
   }
+  // PlanDriftError (not a plain Error) so the malformed-seal refusal carries
+  // kind:'plan_drift' and classifies as validation/non-retryable, matching the
+  // structured-error contract (Codex verification of v0.61.0).
   if (approvedPlanSha256 !== undefined && !isPlanSeal(approvedPlanSha256)) {
-    throw new Error(
+    throw new PlanDriftError(
       'Invalid approvedPlanSha256: expected a 64-char lowercase hex plan seal ' +
         '(the value delete_file returned with preview:true).',
+      { op: 'delete', provided: String(approvedPlanSha256) },
     );
   }
 

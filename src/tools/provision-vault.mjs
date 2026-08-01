@@ -21,7 +21,7 @@ import {
   provisionPlanCore,
   provisionExecOptions,
 } from '../helpers/vault-wizard-engine.mjs';
-import { verifyPlanSeal, isPlanSeal } from '../helpers/plan-seal.mjs';
+import { verifyPlanSeal, isPlanSeal, PlanDriftError } from '../helpers/plan-seal.mjs';
 
 export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
@@ -33,8 +33,10 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   // Validate the seal SHAPE before spawning the planner — a typo must surface
   // as a validation error, not silently behave like "no seal".
   if (args.approvedPlanSha256 !== undefined && !isPlanSeal(args.approvedPlanSha256)) {
-    throw new Error(
+    // PlanDriftError so the refusal classifies as validation, not unknown.
+    throw new PlanDriftError(
       'Invalid approvedPlanSha256: expected a 64-char lowercase hex plan seal (the value plan_vault returned).',
+      { op: 'provision', provided: String(args.approvedPlanSha256) },
     );
   }
   // Drive the child against the SERVER'S active config, not setup-vault's

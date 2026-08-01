@@ -20,6 +20,7 @@ import { refreshProjectionsForVault, refreshOkfProjectionsTool } from '../src/to
 import { PlanDriftError } from '../src/helpers/plan-seal.mjs';
 import { contentSha256 } from '../src/helpers/content-hash.mjs';
 import { projectionMarkerLine } from '../src/helpers/okf-projections.mjs';
+import { classifyError } from '../src/error-classify.mjs';
 
 const notFound = () => Object.assign(new Error('404'), { kind: 'not_found' });
 
@@ -126,7 +127,13 @@ describe('delete_file — sealed preview', () => {
     const exploding = { resolveVault() { throw new Error('must not resolve'); } };
     await assert.rejects(
       () => deleteFileTool(exploding, { path: 'a.md', confirm: true, approvedPlanSha256: 'nope' }),
-      /Invalid approvedPlanSha256/,
+      // A PlanDriftError (kind plan_drift), so classifyError reports
+      // validation/non-retryable instead of unknown (Codex verification).
+      (e) =>
+        e instanceof PlanDriftError &&
+        /Invalid approvedPlanSha256/.test(e.message) &&
+        classifyError(e).errorCategory === 'validation' &&
+        classifyError(e).isRetryable === false,
     );
   });
 
@@ -212,6 +219,32 @@ describe('provision_vault — sealed preview', () => {
       (e) => e instanceof PlanDriftError && /drift/i.test(e.message),
     );
     assert.equal(provisioned, false, 'no filesystem-mutating run after a drift refusal');
+  });
+
+  test('target-existence drift (create step vanished) → refuses — steps are part of the seal', async () => {
+    // The Codex-verified false negative of v0.61.0: the caller previewed
+    // "create vault directory X" (target absent); someone then CREATED that
+    // directory before the apply, flipping the engine into adopt semantics
+    // (pre-existing app.json preserved, existing plugin dirs skipped) — an
+    // executed-behaviour change the caller never saw. With steps excluded from
+    // the plan core both states hashed identically; steps are now sealed, so
+    // this must refuse before the mutating run.
+    const previewPlan = okPlan();
+    previewPlan.steps = ['create vault directory C:/VAULTS/x', 'clone 2 plugin(s): local-rest-api, bridge'];
+    const planned = await planVaultTool(registry, { path: 'C:/VAULTS/x' }, { runDryRunPlan: async () => previewPlan });
+
+    const applyPlan = okPlan();
+    applyPlan.steps = ['clone 2 plugin(s): local-rest-api, bridge']; // create step gone: target now exists
+    let provisioned = false;
+    await assert.rejects(
+      () => provisionVaultTool(
+        registry,
+        { path: 'C:/VAULTS/x', approvedPlanSha256: planned.approvedPlanSha256 },
+        { runDryRunPlan: async () => applyPlan, runProvision: async () => { provisioned = true; return okProvisionResult(); } },
+      ),
+      (e) => e instanceof PlanDriftError && /drift/i.test(e.message),
+    );
+    assert.equal(provisioned, false, 'adopt-instead-of-create must not run under a create-era seal');
   });
 
   test('exec-options drift (gitInit flipped) → refuses even though the dry-run core is identical', async () => {

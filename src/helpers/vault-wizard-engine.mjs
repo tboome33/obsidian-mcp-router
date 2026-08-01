@@ -116,10 +116,22 @@ export function runSetupVault(args, { extraEnv = {}, configPath } = {}) {
  * than what the caller approved.
  *
  * A curated subset (not the raw plan) on purpose: it captures WHAT will be
- * created (resolved path/slug/source/plugins/theme/wikiMode/conventions) plus
- * the blocking/adjusting signals (warning CODES, order-independent), while
- * excluding presentational context (copyable-vault lists, available-theme lists,
- * probe latencies) that can jitter without changing the outcome.
+ * created (resolved path/slug/source/plugins/theme/wikiMode/conventions), the
+ * ORDERED action steps, and the blocking/adjusting signals (warning CODES,
+ * order-independent), while excluding presentational context (copyable-vault
+ * lists, available-theme lists, probe latencies) that can jitter without
+ * changing the outcome.
+ *
+ * `steps` must be part of the seal (independent Codex verification of v0.61.0,
+ * confirmed by probe): the engine's step list is itself state-dependent — e.g.
+ * "create vault directory X" appears only when the target does NOT exist. A
+ * preview taken against an absent target, followed by someone creating that
+ * directory before the apply, used to hash IDENTICALLY (create-vs-adopt is
+ * exactly the kind of executed-behaviour drift the seal exists to refuse: the
+ * adopt path preserves a pre-existing app.json and skips existing plugin dirs
+ * the caller never previewed). Steps are deterministic for an identical
+ * input+environment (they embed the resolved path/plugins/mode, all stable), so
+ * including them order-preserved adds no false positives.
  *
  * @param {object} plan a `runDryRunPlan` result
  * @returns {object} stable plan core
@@ -140,6 +152,8 @@ export function provisionPlanCore(plan) {
     wikiMode: p.wikiMode && typeof p.wikiMode === 'object' ? p.wikiMode.mode ?? null : p.wikiMode ?? null,
     conventions: p.conventions ?? null,
     claudeWorkspace: p.claudeWorkspace ?? null,
+    // Ordered action steps — order preserved (it is the execution order).
+    steps: Array.isArray(p.steps) ? p.steps.map((s) => String(s)) : [],
     // Warning CODES only, sorted — order-independent set of blocking/adjusting
     // conditions. The human-readable `message` is excluded (it may embed a path
     // or count that jitters without changing the verdict).
