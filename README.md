@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.64.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.65.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -255,6 +255,14 @@ You also need:
 - A **reference vault** registered with the router. It holds the canonical plugin set + config that `setup-vault.mjs` clones into every new vault. Fast path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` scaffolds it from the shipped skeleton ([`templates/reference-vault-skeleton/`](./templates/reference-vault-skeleton/)) and auto-downloads the bridge plugin. Full procedure (manual + troubleshooting): [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
 > 🧙 **Guided vault-creation wizard (v0.35.0+).** Creating a new vault is defaults-first: the engine computes a complete default plan, shows it in one line, and you accept it as-is (happy path = 1 interaction) or adjust any point (name · location · template source · plugins · theme · wiki mode). It works from **any LLM harness** via the `plan_vault` (read-only) + `provision_vault` MCP tools — not just the CLI. In Claude Code: the [`meta-attach-vault`](./skills/meta-attach-vault/SKILL.md) skill. From any other agent (Codex, Hermes, a raw MCP client): the [`docs/vault-wizard.md`](./docs/vault-wizard.md) playbook. Directly: `node scripts/setup-vault.mjs "<vault-path>" --dry-run --json` to preview, then without `--dry-run` to apply (`--help` lists all wizard flags). The two tools are LOCAL-ONLY (hidden on gated deployments); `provision_vault` refuses paths outside known vault roots; `--from-vault` copies config only (secrets always regenerated).
+
+> 🔗 **The vault already exists? Don't run the wizard — attach it (v0.65.0+).** One idempotent command, from the workspace directory:
+>
+> ```bash
+> obsidian-mcp-router --attach <vault-slug> [--also <other-slug>]...
+> ```
+>
+> It provisions nothing (every slug must already be registered) and does the four workspace-side writes: the `.env` binding, `.claude/settings.json` to **enable the router plugin — without it the `.env` is inert and no hook runs**, a `CLAUDE.md` block naming the vaults, and `.gitignore`. Flags: `--workspace <path>` (defaults to the cwd), `--no-plugin` / `--no-claude-md` / `--no-gitignore`. It lives on the binary rather than in the plugin on purpose: it is the command you need *before* the router has any presence in the workspace, and the plugin is enabled by one of the writes it performs. **Multi-vault**: the router binds ONE vault per workspace — `--also` vaults are documented in the generated block and addressed explicitly with `vault: "<slug>"`, never auto-loaded. Then restart Claude Code in that workspace.
 
 > **CSS snippets are cloned automatically.** Since v0.10.1, every `setup-vault.mjs` invocation also copies `<referenceVault>/.obsidian/snippets/*.css` into the target vault and merges the basenames into `<target>/.obsidian/appearance.json` `enabledCssSnippets`. The shipped skeleton ships `no-task-strikethrough.css` (kills Obsidian's default `text-decoration: line-through` on `- [x]` items, aligned with the [`roadmap-discipline`](./skills/conventions/snippets/roadmap-discipline.md) §2bis convention). Opt-out per vault in Settings → Appearance → CSS snippets. To push a snippet (or plugin) update to ALL configured vaults at once: `node scripts/setup-vault.mjs --sync-all` (idempotent; add `--force` to re-clone existing files).
 
@@ -885,7 +893,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.64.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.65.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1106,6 +1114,14 @@ Il te faut aussi :
 - **Node.js ≥ 20.18.1** (required by `undici@7`)
 - Au moins un vault provisionné dans `~/.claude/obsidian-mcp-router/config.json`. Si tu n'as jamais fait ce setup, lance `npm run setup-vault -- "<vault-path>"` depuis un clone de ce repo, ou invoque [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directement — il bootstrappe la config interactivement. Référence du schéma : [`examples/config.example.json`](./examples/config.example.json).
 - Un **vault de référence** enregistré auprès du router. Il contient le set canonique de plugins + config que `setup-vault.mjs` clone dans chaque nouveau vault. Voie rapide : `node scripts/setup-vault.mjs --bootstrap-reference <path>` scaffolde depuis le skeleton livré ([`templates/reference-vault-skeleton/`](./templates/reference-vault-skeleton/)) et télécharge automatiquement le bridge plugin. Procédure complète (manuelle + troubleshooting) : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
+
+> 🔗 **Le vault existe déjà ? Ne lance pas le wizard — attache-le (v0.65.0+).** Une seule commande idempotente, depuis le dossier du workspace :
+>
+> ```bash
+> obsidian-mcp-router --attach <slug-du-vault> [--also <autre-slug>]...
+> ```
+>
+> Elle ne provisionne rien (chaque slug doit déjà être enregistré) et fait les quatre écritures côté workspace : le binding `.env`, `.claude/settings.json` pour **activer le plugin router — sans quoi le `.env` est inerte et aucun hook ne tourne**, un bloc `CLAUDE.md` qui nomme les vaults, et `.gitignore`. Flags : `--workspace <path>` (défaut : le cwd), `--no-plugin` / `--no-claude-md` / `--no-gitignore`. Elle vit sur le binaire et non dans le plugin, délibérément : c'est la commande dont tu as besoin *avant* que le router existe dans ton workspace, et le plugin est justement activé par l'une de ses écritures. **Multi-vault** : le router lie UN vault par workspace — les vaults `--also` sont documentés dans le bloc généré et s'adressent explicitement par `vault: "<slug>"`, jamais chargés automatiquement. Ensuite, redémarre Claude Code dans ce workspace.
 
 > 🧙 **Wizard guidé de création de vault (v0.35.0+).** Créer un nouveau vault est defaults-first : le moteur calcule un plan par défaut complet, le montre en une ligne, et tu l'acceptes tel quel (happy path = 1 interaction) ou tu ajustes n'importe quel point (nom · emplacement · source du template · plugins · thème · mode wiki). Il fonctionne depuis **n'importe quel harnais LLM** via les outils MCP `plan_vault` (read-only) + `provision_vault` — pas seulement le CLI. Dans Claude Code : le skill [`meta-attach-vault`](./skills/meta-attach-vault/SKILL.md). Depuis tout autre agent (Codex, Hermes, un client MCP brut) : le playbook [`docs/vault-wizard.md`](./docs/vault-wizard.md). En direct : `node scripts/setup-vault.mjs "<vault-path>" --dry-run --json` pour prévisualiser, puis sans `--dry-run` pour appliquer (`--help` liste tous les flags du wizard). Les deux outils sont LOCAL-ONLY (masqués sur les déploiements gated) ; `provision_vault` refuse les chemins hors des racines de vaults connues ; `--from-vault` copie la config seule (secrets toujours régénérés).
 

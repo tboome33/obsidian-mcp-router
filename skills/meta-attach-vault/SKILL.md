@@ -1,6 +1,6 @@
 ---
 name: meta-attach-vault
-description: Interactive DEFAULTS-FIRST wizard to attach an Obsidian vault to a code/dev workspace (the dominant case), or bootstrap a standalone local vault, or register a remote vault. Computes a complete default plan via the `plan_vault` MCP tool, shows it in one line, lets the user accept it as-is (happy path = 1 interaction) or adjust any single point, then provisions in one `provision_vault` call (plugins + wiki scaffold + workspace binding + .gitignore + conventions picker + programmatic Obsidian open + health probe). Use whenever the user wants to "set up Obsidian for this project", "attach a vault to this workspace", "add a vault to the router", "register a new obsidian vault", "create a wiki for this repo", "connect my remote vault" — in EN or FR. Replaces the old `meta-add-vault` skill (v0.12.7+); v2 defaults-first + MCP tools (v0.35.0+).
+description: Interactive DEFAULTS-FIRST wizard to attach an Obsidian vault to a code/dev workspace (the dominant case), or bootstrap a standalone local vault, or register a remote vault. If the target vault ALREADY exists in the router config, skip the wizard entirely — Step 0.0 is a one-command link-only path (`obsidian-mcp-router --attach <slug> [--also <slug>]`), no provisioning. Computes a complete default plan via the `plan_vault` MCP tool, shows it in one line, lets the user accept it as-is (happy path = 1 interaction) or adjust any single point, then provisions in one `provision_vault` call (plugins + wiki scaffold + workspace binding + .gitignore + conventions picker + programmatic Obsidian open + health probe). Use whenever the user wants to "set up Obsidian for this project", "attach a vault to this workspace", "add a vault to the router", "register a new obsidian vault", "create a wiki for this repo", "connect my remote vault" — in EN or FR. Replaces the old `meta-add-vault` skill (v0.12.7+); v2 defaults-first + MCP tools (v0.35.0+).
 ---
 
 # meta-attach-vault
@@ -25,6 +25,30 @@ The wizard detects the right flow from context, but the user can override at any
 ---
 
 ## Step 0 — Detect the flow
+
+### 0.0 — FIRST: is the vault already provisioned? (the link-only fast path)
+
+Before anything else, ask yourself whether this is a **creation** request at all. If the user names a vault that **already exists and is already registered**, there is nothing to provision — the entire job is the workspace-side binding, and it is ONE command. Do not run `plan_vault`/`provision_vault` for it.
+
+Signals: the user says *"connecte/attache ce workspace au vault X"*, *"link this repo to my existing vault"*, *"connect this workspace to X and Y"* — or names a vault you can see in `list_vaults`.
+
+**Check** (one call): `mcp__obsidian-router__list_vaults` → is the named vault in the list? If yes, run:
+
+```bash
+obsidian-mcp-router --attach <primary-slug> [--also <secondary-slug>]...
+```
+
+(from the workspace directory; add `--workspace <path>` to target another one. Fallback when the binary is not on PATH: `node "<router-repo>/scripts/setup-vault.mjs" --attach <slug> ...`.)
+
+That single command does the four writes and is idempotent: `.env` binding · `.claude/settings.json` (enables the router plugin — **without it the `.env` is inert**, no hook runs) · a `CLAUDE.md` block naming primary + secondaries · `.gitignore`. Then tell the user to **restart Claude Code** in that workspace.
+
+**Multi-vault**: the router binds ONE vault per workspace — `detectVaultContext()` reads a single slug. Secondaries passed via `--also` are documented in the generated `CLAUDE.md` block and reached with an explicit `vault: "<slug>"` on each call; they are never auto-loaded. Say this plainly to the user — the failure mode is silent (a forgotten `vault:` writes to the primary without any error).
+
+⚠️ **In a workspace that has never been attached, this skill is not loadable** (it ships in the plugin, and the plugin is enabled by the very write above). So the CLI command is the real entry point, and this section exists for the case where the plugin is already on and the user wants to attach *another* vault. If you are reading this, you are in the lucky case — but still prefer the one command over re-deriving the mechanism.
+
+If the vault does NOT exist yet, continue with the flow detection below.
+
+### 0.1 — Otherwise, pick the creation flow
 
 Look at the cwd and the user's message. Decide which flow:
 
@@ -256,6 +280,9 @@ Returns server-info JSON → golden. 401 → wrong API key. Timeout → URL unre
 
 ## Anti-patterns (apply across all flows)
 
+- **Don't run the creation wizard on a vault that already exists** — if it is in `list_vaults`, the answer is `--attach` (Step 0.0), one command. Running `plan_vault`/`provision_vault` against an existing vault path is slow, alarming, and wrong.
+- **Don't re-derive the binding mechanism from the router source** — reading `config.json`, grepping for `OBSIDIAN_ROUTER_DEFAULT_VAULT`, opening `hooks/_helpers/workspace-vault.mjs`. That investigation is exactly what `--attach` exists to make unnecessary. (It happened on 2026-08-02: ~15 tool calls for what is four file writes.)
+- **Don't write `.env` and call the workspace attached** — without `.claude/settings.json`, the plugin stays off and the binding has no effect. Use `--attach`, or `--link-workspace --claude-workspace` if you truly want only the low-level step.
 - **Don't run any Bash without a pre-flight explanation** — the user sees the permission prompt and the description; both must make sense without prior context.
 - **Don't bury the explanation in long paragraphs** — 2-3 lines per pre-flight, in plain words. Roland is technical but tired; respect his time.
 - **Don't write secrets** (API keys, service token secrets) anywhere except `~/.claude/obsidian-mcp-router/config.json` and the vault's own `.env`. No log files, no echo to terminal beyond the immediate confirmation, no clipboard write.

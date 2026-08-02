@@ -7,6 +7,30 @@ over the same engine; this playbook is the other. **The wizard lives in the plan
 DATA, not the harness** — so any agent that can call the two MCP tools (or run the
 CLI) can create a fully-configured vault in one guided pass.
 
+## Before you start: is the vault already registered?
+
+If the user names a vault that **already exists** in `list_vaults`, this playbook does
+not apply. Nothing needs provisioning — the whole job is the workspace-side binding,
+and it is one idempotent command run from the workspace directory:
+
+```bash
+obsidian-mcp-router --attach <primary-slug> [--also <secondary-slug>]...
+```
+
+(Fallback if the binary is not on PATH: `node <router-repo>/scripts/setup-vault.mjs --attach <slug> ...`.)
+
+It writes the `.env` binding, enables the router plugin in `.claude/settings.json`
+(**without which the `.env` is inert** — no hook runs), generates a `CLAUDE.md` block
+naming the vaults, and guards `.gitignore`. Then the user restarts their agent in that
+workspace.
+
+**Multi-vault**: the router binds ONE vault per workspace. Vaults passed with `--also`
+are documented in the generated block but are NOT auto-loaded — reach them by naming
+them (`vault: "<slug>"`) on each call. The failure mode is silent: omitting `vault:`
+reads and writes the primary without any error.
+
+Only continue below when the vault does **not** exist yet.
+
 ## Architecture (3 layers)
 
 ```

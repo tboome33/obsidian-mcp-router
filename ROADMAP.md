@@ -2,6 +2,20 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.65.0 — `--attach`: binding a workspace to vaults that already exist (shipped 2026-08-02)
+
+Phase W4 of the vault-wizard roadmap. The wizard could create a vault and bind it in one shot, but "this repo uses that vault, which already exists" had no first-class path — so it got re-derived from source each time (~15 tool calls, observed 2026-08-02, for four file writes).
+
+- **The four workspace writes in one idempotent command**: `.env` binding · `.claude/settings.json` (the plugin toggle — without it the `.env` is inert) · a generated `CLAUDE.md` block naming primary + secondaries · `.gitignore`. Slugs are all resolved before the first write, so a bad secondary cannot half-attach a workspace.
+- **On the published binary, not in the plugin** — this is the command you need *before* the router exists in your workspace, and the plugin is enabled by one of the writes it performs. Putting the remedy inside the thing it switches on is the bootstrap paradox that made the original session expensive.
+- **Fixed**: standalone `--link-workspace` ignored `--claude-workspace`, silently producing inert bindings.
+- **Skill**: `meta-attach-vault` Step 0.0 short-circuits to the command when the vault is already registered.
+
+### Deferred
+
+- **Hooks-level multi-vault.** `detectVaultContext()` still reads a SINGLE slug; secondaries are a documented convention (`vault: "<slug>"`) surfaced in the generated `CLAUDE.md`, not a binding the hooks understand. Making the hooks read a list (`OBSIDIAN_ROUTER_WORKSPACE_VAULTS`) is a real design change — it doubles the incompressible session cost if it means auto-loading two `hot.md`, which collides with the hot-cache budget work. Left as an explicit decision rather than a silent default.
+- **MCP tool `link_workspace`** (W4.5) — convenience for harnesses where the server already runs. It does not solve the bootstrap paradox, so it waits until the CLI has been used in anger.
+
 ## ✅ v0.59.0 — OKF projections: the wiki carries its own generated navigation (shipped 2026-07-30)
 
 Volet ② of the catalog/journal decision, unlocked by v0.58.0's rename. `wiki/` now holds `index.md` (root, `okf_version` only), one `index.md` per content directory, and a newest-first `log.md` — all **generated** from page frontmatter, marked, never hand-edited, never wikilinked. Conformant by construction (shared §6 builder with the export bundle + a `checkOkfConformance` round-trip test at zero errors/zero warnings; the router vault's 169-file wiki lints clean live).

@@ -6,6 +6,8 @@ description: Interactive wizard to attach an Obsidian vault to a code/dev worksp
 
 Interactive wizard that bundles the full setup of an Obsidian vault for use with obsidian-mcp-router. The dominant case is **workspace-first**: you're in a code/dev project (with or without `.git/`), and you want a vault attached to it for documentation/notes — the vault lives OUTSIDE the workspace, the workspace's `.env` gets a binding line, and your `.gitignore` is updated to protect credentials.
 
+> 🔗 **Vault already registered? Skip the wizard.** `obsidian-mcp-router --attach <slug> [--also <slug>]...` (run from the workspace) does the four workspace writes in one idempotent command — `.env`, `.claude/settings.json` (the plugin toggle, without which the `.env` is inert), a `CLAUDE.md` block naming the vaults, `.gitignore`. Nothing is provisioned. The skill's Step 0.0 short-circuits here automatically.
+
 Three flows, one wizard:
 
 1. **Workspace-first** (common) — vault attached to the current code workspace via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in `.env`. Default vault path: `C:\VAULTS\<basename-cwd>`.

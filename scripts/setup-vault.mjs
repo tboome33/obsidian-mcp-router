@@ -1557,6 +1557,235 @@ function appendGitignore(vaultPath) {
 }
 
 // ---------------------------------------------------------------------------
+// v0.65.0 (roadmap W4) — ATTACH an already-provisioned vault to a workspace.
+//
+// Distinct from bootstrap: every vault here ALREADY exists and is ALREADY in
+// portRegistry. Nothing is provisioned, no port is allocated, no plugin is
+// cloned. The whole job is the four workspace-side writes that make the
+// binding real:
+//
+//   1. <ws>/.env                  OBSIDIAN_ROUTER_DEFAULT_VAULT=<primary slug>
+//   2. <ws>/.claude/settings.json enabledPlugins[router] = true
+//   3. <ws>/CLAUDE.md             a marked block naming primary + secondaries
+//   4. <ws>/.gitignore            .env + .mcp.json
+//
+// Why a CLI subcommand and not (only) a skill or an MCP tool: the skill and
+// the MCP server both ship INSIDE the Claude Code plugin, and the plugin is
+// enabled per-workspace by write #2 above. In a workspace that has never been
+// attached, the plugin is off, so `/obsidian-router:meta-attach-vault` does
+// not exist and — under plugin-only distribution — neither does the router's
+// MCP surface. The remedy cannot live in the thing it has to switch on. A
+// terminal command has no such bootstrap paradox.
+//
+// Observed 2026-08-02: binding an empty workspace to two already-registered
+// vaults cost ~15 tool calls of reverse-engineering for what is, in the end,
+// these four writes.
+// ---------------------------------------------------------------------------
+
+const WS_BLOCK_START = '<!-- obsidian-mcp-router:vaults:start -->';
+const WS_BLOCK_END = '<!-- obsidian-mcp-router:vaults:end -->';
+
+/**
+ * Resolve a vault slug against the router config's portRegistry. Returns the
+ * absolute vault path, or null when no registered vault carries that slug.
+ * Case-insensitive (Windows/macOS friendly), and honors `vaultNames` display
+ * overrides exactly like src/registry.mjs and hooks/_helpers/workspace-vault.mjs.
+ *
+ * Extracted in v0.65.0 — the same loop was inlined in the standalone
+ * --link-workspace handler and needed a third caller for --attach.
+ */
+export function resolveSlugToVaultPath(cfg, slug) {
+  if (!cfg || !slug) return null;
+  const target = String(slug).trim().toLowerCase();
+  if (!target) return null;
+  const vaultNames = cfg.vaultNames || {};
+  for (const vp of Object.keys(cfg.portRegistry || {})) {
+    if ((vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase() === target) return vp;
+  }
+  return null;
+}
+
+/** Every slug registered in the config, for "did you mean" error text. */
+export function knownSlugs(cfg) {
+  const vaultNames = (cfg && cfg.vaultNames) || {};
+  return Object.keys((cfg && cfg.portRegistry) || {})
+    .map((vp) => vaultNames[vp] || defaultNameFromPath(vp));
+}
+
+/**
+ * Render the workspace CLAUDE.md block that names the attached vaults.
+ *
+ * This block is the ONLY first-class representation of "this workspace uses
+ * more than one vault". The hooks cannot carry it: `detectVaultContext()`
+ * reads a SINGLE `OBSIDIAN_ROUTER_DEFAULT_VAULT` slug, so exactly one vault is
+ * ever auto-loaded and implicitly written to. Secondaries are reachable only
+ * by naming them — `vault: "<slug>"` — on each tool call. The block states
+ * that rule where the agent will actually read it, because the failure mode is
+ * silent: a forgotten `vault:` writes to the primary and nothing complains.
+ *
+ * Pure string builder, so the wording is testable without touching disk.
+ */
+export function buildWorkspaceVaultsBlock({ primary, secondaries = [] }) {
+  const lines = [];
+  lines.push(WS_BLOCK_START);
+  lines.push('## Obsidian vaults for this workspace');
+  lines.push('');
+  lines.push('*Managed by `obsidian-mcp-router --attach`. Edits inside this block are overwritten on re-attach; write your own notes outside it.*');
+  lines.push('');
+  lines.push(`- **Primary — \`${primary.slug}\`** (${primary.path})`);
+  lines.push('  Auto-loaded at session start (its `wiki-meta/hot.md`), and the target of every router call made **without** a `vault:` argument.');
+  if (secondaries.length > 0) {
+    lines.push('');
+    for (const s of secondaries) {
+      lines.push(`- **Secondary — \`${s.slug}\`** (${s.path})`);
+      lines.push(`  Reachable ONLY by naming it explicitly: \`vault: "${s.slug}"\`.`);
+    }
+    lines.push('');
+    lines.push('> ⚠️ **The trap**: the router binds ONE vault per workspace. Omitting `vault:` does not raise an error — it silently reads and writes the primary. When you mean a secondary, name it.');
+  }
+  lines.push(WS_BLOCK_END);
+  return lines.join('\n');
+}
+
+/**
+ * Insert or replace the managed block in <ws>/CLAUDE.md, preserving whatever
+ * the user wrote around it. Creates the file when absent.
+ *
+ * Returns { file, changed, created }.
+ */
+export function upsertWorkspaceClaudeMd(workspacePath, block) {
+  const file = path.join(workspacePath, 'CLAUDE.md');
+  const existed = fs.existsSync(file);
+  let existing = '';
+  if (existed) existing = fs.readFileSync(file, 'utf8');
+
+  const start = existing.indexOf(WS_BLOCK_START);
+  const end = existing.indexOf(WS_BLOCK_END);
+  let next;
+  if (start !== -1 && end !== -1 && end > start) {
+    // Replace in place, keeping the text before and after untouched.
+    next = existing.slice(0, start) + block + existing.slice(end + WS_BLOCK_END.length);
+  } else {
+    const sep = existing && !existing.endsWith('\n') ? '\n\n' : (existing ? '\n' : '');
+    next = existing + sep + block + '\n';
+  }
+  if (existed && next === existing) return { file, changed: false, created: false };
+  fs.writeFileSync(file, next, 'utf8');
+  return { file, changed: true, created: !existed };
+}
+
+/**
+ * Workspace-side .gitignore guard. Distinct from `appendGitignore()`, which
+ * targets the VAULT (and also ignores `.smart-env/`). Here the concern is the
+ * code repo: `.env` carries the vault binding and `.mcp.json` the router
+ * wiring — neither belongs in a pushed commit. Idempotent.
+ */
+export function appendWorkspaceGitignore(workspacePath) {
+  const giPath = path.join(workspacePath, '.gitignore');
+  const wanted = ['.env', '.mcp.json'];
+  let existing = '';
+  if (fs.existsSync(giPath)) existing = fs.readFileSync(giPath, 'utf8');
+  const present = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const toAdd = wanted.filter((l) => !present.has(l));
+  if (toAdd.length === 0) return { file: giPath, added: [] };
+  const sep = existing && !existing.endsWith('\n') ? '\n' : '';
+  const header = existing.includes('# obsidian-mcp-router') ? '' : '# obsidian-mcp-router (added by --attach)\n';
+  fs.writeFileSync(giPath, existing + sep + header + toAdd.join('\n') + '\n', 'utf8');
+  return { file: giPath, added: toAdd };
+}
+
+/**
+ * Attach a workspace to one primary vault (+ optional secondaries), doing all
+ * four writes. Every vault must already be in portRegistry — this never
+ * provisions. Idempotent: re-running with the same arguments rewrites the same
+ * bytes and reports "no change".
+ *
+ * `opts.claudeMd` / `opts.gitignore` / `opts.plugin` (all default true) let a
+ * caller opt out of individual writes.
+ */
+export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], opts = {} }) {
+  const ws = path.resolve(workspacePath);
+  if (!fs.existsSync(ws)) fail(`Workspace path does not exist: ${ws}`);
+  if (!fs.statSync(ws).isDirectory()) fail(`Workspace path is not a directory: ${ws}`);
+
+  const cfg = loadConfig();
+  if (Object.keys(cfg.portRegistry || {}).length === 0) {
+    fail(
+      'Router config has no vaults in portRegistry.\n' +
+      '   --attach binds EXISTING vaults. Bootstrap one first with `setup-vault.mjs <vault-path>`,\n' +
+      '   or use the /obsidian-router:meta-attach-vault wizard to create one.',
+    );
+  }
+
+  // Resolve every slug BEFORE writing anything — a typo in the 2nd vault must
+  // not leave the workspace half-attached.
+  const resolve1 = (slug, label) => {
+    const vp = resolveSlugToVaultPath(cfg, slug);
+    if (!vp) {
+      fail(
+        `${label} vault slug "${slug}" is not in portRegistry.\n` +
+        `   Known slugs: ${knownSlugs(cfg).join(', ')}`,
+      );
+    }
+    return { slug, path: vp };
+  };
+  const primary = resolve1(primarySlug, 'Primary');
+  const seen = new Set([primary.slug.toLowerCase()]);
+  const secondaries = [];
+  for (const s of alsoSlugs) {
+    if (seen.has(String(s).trim().toLowerCase())) {
+      warn(`Ignoring duplicate --also "${s}" (already the primary or listed twice).`);
+      continue;
+    }
+    seen.add(String(s).trim().toLowerCase());
+    secondaries.push(resolve1(s, 'Secondary'));
+  }
+
+  const steps = [];
+
+  // 1) .env — reuses the bootstrap path's validation (catalog present, rebind
+  //    warning) so both entry points refuse the same broken states.
+  const link = linkWorkspaceToVault({
+    workspacePath: ws,
+    vaultPath: primary.path,
+    vaultSlug: primary.slug,
+    opts: { quiet: true },
+  });
+  steps.push({ step: '.env', detail: `OBSIDIAN_ROUTER_DEFAULT_VAULT=${primary.slug}`, path: link.envPath });
+
+  // 2) .claude/settings.json — WITHOUT this the .env above is inert: the
+  //    plugin stays off, so hot-cache-load and wiki-query-first-nudge never
+  //    run and the binding has no observable effect.
+  if (opts.plugin !== false) {
+    const res = writeClaudeWorkspaceSettings(ws);
+    steps.push({ step: '.claude/settings.json', detail: res.changed ? 'router plugin enabled' : 'already enabled', path: res.file });
+  }
+
+  // 3) CLAUDE.md — the multi-vault declaration.
+  if (opts.claudeMd !== false) {
+    const block = buildWorkspaceVaultsBlock({ primary, secondaries });
+    const res = upsertWorkspaceClaudeMd(ws, block);
+    steps.push({
+      step: 'CLAUDE.md',
+      detail: res.created ? 'created with the vaults block' : (res.changed ? 'vaults block updated' : 'vaults block already current'),
+      path: res.file,
+    });
+  }
+
+  // 4) .gitignore.
+  if (opts.gitignore !== false) {
+    const res = appendWorkspaceGitignore(ws);
+    steps.push({
+      step: '.gitignore',
+      detail: res.added.length ? `added ${res.added.join(', ')}` : 'already covers .env + .mcp.json',
+      path: res.file,
+    });
+  }
+
+  return { workspacePath: ws, primary, secondaries, steps, previousSlug: link.previousSlug };
+}
+
+// ---------------------------------------------------------------------------
 // v0.12.7 — Wiki scaffolding at vault bootstrap time
 // ---------------------------------------------------------------------------
 //
@@ -3657,10 +3886,20 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --migrate-all-sessions-to-wiki-meta   Same Sessions/ migration, run on every vault in
                                                               portRegistry. Reports per-vault status; non-zero
                                                               exit if any vault fails.
-  node setup-vault.mjs --link-workspace <path> <vault-slug>  Bind a code/dev workspace to a vault by writing
-                                                              OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug> into the
-                                                              workspace's .env. Activates workspace-bound mode
-                                                              for hot-cache-load + wiki-query-first-nudge hooks.
+  node setup-vault.mjs --attach <slug> [--also <slug>]...    v0.65.0. Bind the CURRENT directory to vault(s)
+                                                              that ALREADY exist in portRegistry. Does the four
+                                                              workspace writes in one go: .env binding,
+                                                              .claude/settings.json (enables the router plugin —
+                                                              without it the .env is inert), a CLAUDE.md block
+                                                              naming primary + secondaries, and .gitignore.
+                                                              Nothing is provisioned. Idempotent.
+                                                              Add --workspace <path> to target another directory,
+                                                              or --no-plugin / --no-claude-md / --no-gitignore
+                                                              to skip an individual write.
+  node setup-vault.mjs --link-workspace <path> <vault-slug>  Lower-level: write ONLY the .env binding
+      [--claude-workspace]                                    (OBSIDIAN_ROUTER_DEFAULT_VAULT=<slug>). Prefer
+                                                              --attach unless you specifically want just this.
+                                                              Pass --claude-workspace to also enable the plugin.
   node setup-vault.mjs --unlink-workspace <path>             Remove the OBSIDIAN_ROUTER_DEFAULT_VAULT line from
                                                               the workspace's .env (preserves other entries).
   node setup-vault.mjs --upgrade-insecure-server <vault>     v0.13.9. Patch insecurePort + enableInsecureServer
@@ -3870,10 +4109,95 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   }
 
   linkWorkspaceToVault({ workspacePath: wsPath, vaultPath, vaultSlug });
+
+  // v0.65.0 (W4.2) — honor --claude-workspace HERE too. Before this, the flag
+  // was wired only into the bootstrap subcommand, so a standalone re-link wrote
+  // a correct .env that stayed INERT: the router plugin was never enabled in
+  // the workspace, so no hook ran and the binding had no observable effect.
+  // Observed 2026-08-02 — the missing link had to be written by hand.
+  if (args.includes('--claude-workspace')) writeClaudeWorkspaceSettings(wsPath);
+  else {
+    console.log('');
+    info('The .env binding alone is INERT until the router plugin is enabled in this workspace.');
+    info('  Re-run with --claude-workspace, or use `--attach` which does both (and more).');
+  }
+
   console.log('');
   info('Restart Claude Code in this workspace to activate:');
   info('  • hot-cache-load will print the associated vault\'s wiki-meta/hot.md');
   info('  • wiki-query-first-nudge will inject pre-answer reminders');
+  process.exit(0);
+}
+
+// v0.65.0 (W4.1) — bind a workspace to vault(s) that ALREADY exist.
+//
+//   --attach <primary-slug> [--also <slug>]... [--workspace <path>]
+//
+// Workspace defaults to the cwd, so the common case is a single line typed
+// from the repo you want attached. See attachWorkspace() for why this lives in
+// the CLI rather than in the skill or an MCP tool.
+if (args[0] === '--attach') {
+  const positional = [];
+  const alsoSlugs = [];
+  let wsArg = null;
+  const optOut = { plugin: true, claudeMd: true, gitignore: true };
+
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--also') {
+      const v = args[++i];
+      if (!v || v.startsWith('--')) fail('--also requires a vault slug (e.g. `--also dedibox-hermes`).');
+      alsoSlugs.push(v);
+    } else if (a === '--workspace') {
+      wsArg = args[++i];
+      if (!wsArg || wsArg.startsWith('--')) fail('--workspace requires a path argument.');
+    } else if (a === '--no-plugin') optOut.plugin = false;
+    else if (a === '--no-claude-md') optOut.claudeMd = false;
+    else if (a === '--no-gitignore') optOut.gitignore = false;
+    else if (a.startsWith('--')) fail(`Unknown flag for --attach: ${a}`);
+    else positional.push(a);
+  }
+
+  if (positional.length === 0) {
+    fail(
+      '--attach requires a vault slug.\n' +
+      '   Usage: --attach <primary-slug> [--also <slug>]... [--workspace <path>]\n' +
+      '   The workspace defaults to the current directory.',
+    );
+  }
+  if (positional.length > 1) {
+    fail(
+      `--attach takes ONE primary slug; got ${positional.length} (${positional.join(', ')}).\n` +
+      '   Additional vaults go behind --also: `--attach a --also b --also c`.',
+    );
+  }
+
+  const result = attachWorkspace({
+    workspacePath: wsArg || process.cwd(),
+    primarySlug: positional[0],
+    alsoSlugs,
+    opts: optOut,
+  });
+
+  console.log('');
+  ok(`Attached ${result.workspacePath}`);
+  console.log(`    ${c('green', '→')} primary: ${c('bold', result.primary.slug)}  ${c('gray', `(${result.primary.path})`)}`);
+  for (const s of result.secondaries) {
+    console.log(`    ${c('green', '→')} also:    ${s.slug}  ${c('gray', `(${s.path})`)} — address with vault: "${s.slug}"`);
+  }
+  console.log('');
+  for (const s of result.steps) {
+    console.log(`    ${c('gray', '·')} ${s.step.padEnd(22)} ${s.detail}`);
+  }
+  if (result.previousSlug && result.previousSlug !== result.primary.slug) {
+    console.log('');
+    warn(`This workspace was previously bound to "${result.previousSlug}" — the primary is now "${result.primary.slug}".`);
+  }
+  console.log('');
+  info('Restart Claude Code in this workspace so the plugin and the binding load.');
+  if (result.secondaries.length > 0) {
+    info(`Secondary vault(s) are NOT auto-loaded: name them explicitly (vault: "${result.secondaries[0].slug}").`);
+  }
   process.exit(0);
 }
 

@@ -2,6 +2,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   ensureDependencies,
   formatFailure,
@@ -92,6 +93,21 @@ function printHelp() {
 
 USAGE
   obsidian-mcp-router [options]
+  obsidian-mcp-router --attach <vault-slug> [--also <slug>]...
+
+SETUP
+      --attach <slug>   Bind the CURRENT directory to vault(s) that already
+                        exist in the router config. Writes the .env binding,
+                        enables the router plugin in .claude/settings.json
+                        (without which the binding is inert), adds a CLAUDE.md
+                        block naming the vaults, and guards .gitignore.
+                        Provisions nothing; idempotent; safe to re-run.
+                        Extra vaults: --also <slug> (repeatable). They are NOT
+                        auto-loaded — address them with vault: "<slug>".
+                        Other flags: --workspace <path>, --no-plugin,
+                        --no-claude-md, --no-gitignore.
+                        Run \`node scripts/setup-vault.mjs --help\` for the
+                        full vault-creation toolbox.
 
 OPTIONS
   -c, --config <path>   Path to config file. Default:
@@ -155,6 +171,40 @@ function printVersion() {
   );
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   process.stdout.write(`${pkg.name} v${pkg.version}\n`);
+}
+
+// ── `--attach` passthrough (v0.65.0, roadmap W4) ─────────────────────
+// Bind the current workspace to already-registered vault(s). Delegated to
+// scripts/setup-vault.mjs, which owns the four writes.
+//
+// It is intercepted HERE, before parseArgs (which rejects unknown flags),
+// before loadDotenvSync (a workspace being attached for the first time has no
+// .env yet — that is the point) and before the dependency self-heal (the
+// setup script and its imports are node: builtins + local modules, so this
+// answers even on a torn install).
+//
+// Why the server binary carries a setup subcommand at all: this is the one
+// command a user needs BEFORE the router has any presence in their workspace.
+// The skill and the MCP tools ship inside the Claude Code plugin, and the
+// plugin is enabled per-workspace by one of the very writes below — so they
+// cannot be the entry point without a bootstrap paradox. `obsidian-mcp-router`
+// is on PATH the moment the package is installed.
+if (process.argv[2] === '--attach') {
+  // Spawned rather than imported on purpose: setup-vault.mjs runs its CLI only
+  // when it IS the process entrypoint (it compares import.meta.url to argv[1]),
+  // so an in-process import would define helpers and do nothing at all. The
+  // child inherits stdio and its exit code is propagated verbatim.
+  const setupScript = join(packageRoot, 'scripts', 'setup-vault.mjs');
+  if (!existsSync(setupScript)) {
+    process.stderr.write(
+      `[obsidian-mcp-router] --attach needs ${setupScript}, which is missing from this install.\n`,
+    );
+    process.exit(1);
+  }
+  const res = spawnSync(process.execPath, [setupScript, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+  });
+  process.exit(res.status === null ? 1 : res.status);
 }
 
 // Load .env from cwd BEFORE parsing args or reading env, so VAULT_PATH /

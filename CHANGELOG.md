@@ -6,6 +6,33 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.65.0] — 2026-08-02 — `--attach`: bind a workspace to vaults that already exist
+
+### Added
+
+- **`obsidian-mcp-router --attach <slug> [--also <slug>]...`** — the missing verb. Until now the toolbox could *create* a vault and bind it in the same breath, but had no first-class way to say "this repo uses that vault, which already exists". The wizard would have provisioned; the low-level `--link-workspace` wrote one file out of four. The new subcommand does the whole workspace side in one idempotent command, from the workspace directory:
+
+  1. `<ws>/.env` — `OBSIDIAN_ROUTER_DEFAULT_VAULT=<primary slug>`
+  2. `<ws>/.claude/settings.json` — enables the router plugin (**without this the `.env` is inert**: no hook runs, so the binding has no observable effect)
+  3. `<ws>/CLAUDE.md` — a marked block naming the primary and every secondary, with the addressing rule
+  4. `<ws>/.gitignore` — `.env` + `.mcp.json`
+
+  Nothing is provisioned: every slug must already be in `portRegistry`. All slugs are resolved **before** the first write, so a typo in the second vault cannot leave a half-attached workspace. Re-running rewrites the same bytes and reports "already current". Flags: `--workspace <path>` (defaults to the cwd), `--no-plugin` / `--no-claude-md` / `--no-gitignore`.
+
+- **It is exposed on the published binary, deliberately.** This is the one command a user needs *before* the router has any presence in their workspace, so it cannot live where the router already lives. The skill and the MCP tools ship inside the Claude Code plugin, and the plugin is enabled per-workspace by write #2 above — the remedy cannot be gated behind the thing it exists to switch on. `obsidian-mcp-router` is on PATH as soon as the package is installed; the flag is intercepted before argument parsing and before the dependency self-heal, and delegates to `scripts/setup-vault.mjs`.
+
+- **Multi-vault, stated where it is read.** The router binds ONE vault per workspace — `detectVaultContext()` reads a single slug, and that is unchanged here. Vaults passed with `--also` are *not* auto-loaded; they are reached by naming them (`vault: "<slug>"`). The generated `CLAUDE.md` block says so, including the trap: omitting `vault:` raises no error, it silently reads and writes the primary. That block is now generated instead of hand-written.
+
+### Fixed
+
+- **Standalone `--link-workspace` ignored `--claude-workspace`** — the flag was wired only into the bootstrap subcommand, so a standalone re-link wrote a correct `.env` that stayed inert. It is now honored on both paths, and when it is absent the command says outright that the binding is inert and points at `--attach`. Observed in production on 2026-08-02: the missing `.claude/settings.json` had to be written by hand.
+
+### Changed
+
+- **`meta-attach-vault` skill gains a Step 0.0 link-only fast path** — if the named vault is already in `list_vaults`, the skill now stops and runs the one command instead of entering the defaults-first wizard. Three anti-patterns added, including the one that motivated the work: re-deriving the binding mechanism from the router source. That investigation cost ~15 tool calls on 2026-08-02 for what is four file writes.
+
+Tests: **+39** (`tests/attach-workspace.test.mjs`) — pure helpers (slug resolution incl. `vaultNames` overrides, block builder, `CLAUDE.md` in-place replace preserving surrounding user text, `.gitignore` idempotency), the CLI happy path, opt-outs, the binary passthrough, and nine refusals each asserting the workspace is left untouched (unknown primary, unknown secondary → no half-attach, vault without `wiki-meta/catalog.md`, empty registry, bad flags, missing paths). Suite green: **2985**.
+
 ## [0.64.1] — 2026-08-02 — heading patches no longer corrupt CRLF files (patched router-side now)
 
 ### Fixed
