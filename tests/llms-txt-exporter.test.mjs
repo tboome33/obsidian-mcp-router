@@ -70,6 +70,99 @@ describe('parseFrontmatter', () => {
     assert.equal(result.frontmatter.title, 'Foo');
     assert.equal(result.body, 'Body');
   });
+
+  // -------------------------------------------------------------------------
+  // Block scalars (v0.63.2). The line-oriented reader used to keep the
+  // INDICATOR as the value, so a page written with `description: |` carried a
+  // literal "|" — which surfaced verbatim in the generated OKF indexes
+  // (`* [Title](file.md) - |`), in llms.txt/OKF exports and in the knowledge
+  // graph, while the real text was silently dropped.
+  // -------------------------------------------------------------------------
+
+  test('literal block scalar (|) keeps its line breaks', () => {
+    const r = parseFrontmatter('---\ndescription: |\n  Ligne un.\n  Ligne deux.\n---\n\ncorps\n');
+    assert.equal(r.frontmatter.description, 'Ligne un.\nLigne deux.');
+  });
+
+  test('folded block scalar (>) joins lines with spaces, blank line = paragraph', () => {
+    assert.equal(
+      parseFrontmatter('---\ndescription: >\n  para un a\n  para un b\n\n  para deux\n---\n').frontmatter.description,
+      'para un a para un b\npara deux',
+    );
+  });
+
+  test('chomping and explicit-indent indicators are accepted in either order', () => {
+    for (const header of ['|-', '|+', '>-', '|2-', '|-2', '>2']) {
+      const r = parseFrontmatter(`---\ndescription: ${header}\n  Le texte.\n---\n`);
+      assert.equal(r.frontmatter.description, 'Le texte.', `header ${header}`);
+    }
+  });
+
+  test('a trailing comment after the indicator is ignored', () => {
+    assert.equal(
+      parseFrontmatter('---\ndescription: >- # une note\n  ligne un\n  ligne deux\n---\n').frontmatter.description,
+      'ligne un ligne deux',
+    );
+  });
+
+  test('the block ends at the next sibling key, which still parses', () => {
+    const r = parseFrontmatter('---\ndescription: |\n  Le texte.\ntype: note\ntags: [a]\n---\n');
+    assert.equal(r.frontmatter.description, 'Le texte.');
+    assert.equal(r.frontmatter.type, 'note');
+    assert.deepEqual(r.frontmatter.tags, ['a']);
+  });
+
+  test('markdown inside a block (colons, list items, deeper indent) survives intact', () => {
+    // Without block handling these lines were re-read by the key/value loop:
+    // `Note: important.` became a bogus `Note` key.
+    const r = parseFrontmatter('---\ndescription: |\n  Note: important.\n  - un\n  - deux\n    imbriqué\ntype: x\n---\n');
+    assert.equal(r.frontmatter.description, 'Note: important.\n- un\n- deux\n  imbriqué');
+    assert.equal(r.frontmatter.Note, undefined, 'no bogus key leaked out of the block');
+    assert.equal(r.frontmatter.type, 'x');
+  });
+
+  test('a pipe inside a QUOTED value is not treated as a block scalar', () => {
+    assert.equal(parseFrontmatter('---\ntitle: "a | b"\n---\n').frontmatter.title, 'a | b');
+  });
+
+  test('an explicit indent indicator keeps the content indentation consistent', () => {
+    // Codex review: trimming the whole value stripped the leading spaces of the
+    // FIRST line only, so `|2` over 4-space content produced "alpha\n  beta" —
+    // internally inconsistent. Leading whitespace of a content line is content.
+    assert.equal(
+      parseFrontmatter('---\ndescription: |2\n    alpha\n    beta\n---\n').frontmatter.description,
+      '  alpha\n  beta',
+    );
+  });
+
+  test('folded scalars do not fold MORE-INDENTED lines (YAML rule)', () => {
+    assert.equal(
+      parseFrontmatter('---\ndescription: >\n  alpha\n    code\n  omega\n---\n').frontmatter.description,
+      'alpha\n  code\nomega',
+    );
+  });
+
+  test('folded scalars preserve the number of blank lines', () => {
+    assert.equal(
+      parseFrontmatter('---\ndescription: >\n  alpha\n\n\n  omega\n---\n').frontmatter.description,
+      'alpha\n\nomega',
+    );
+  });
+
+  test('malformed block headers are NOT swallowed as blocks', () => {
+    // `|0` (indent indicator must be 1-9) and `|#x` (a comment needs separating
+    // whitespace) are invalid YAML headers — treating them as blocks would
+    // silently consume the following lines as content (Codex review).
+    assert.equal(parseFrontmatter('---\ntitle: |0\n---\n').frontmatter.title, '|0');
+    assert.equal(parseFrontmatter('---\ntitle: |#comment\n---\n').frontmatter.title, '|#comment');
+  });
+
+  test('block scalars work with CRLF', () => {
+    assert.equal(
+      parseFrontmatter('---\r\ndescription: |\r\n  Ligne un.\r\n  Ligne deux.\r\n---\r\nBody').frontmatter.description,
+      'Ligne un.\nLigne deux.',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

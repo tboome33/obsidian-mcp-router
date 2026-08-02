@@ -46,6 +46,112 @@ function closesQuotedScalar(text, quote) {
   return false;
 }
 
+/**
+ * A YAML block-scalar header: `|` (literal) or `>` (folded), with an optional
+ * explicit indentation digit and an optional chomping indicator (`-`/`+`) in
+ * EITHER order (`|2-` and `|-2` are both legal), and an optional trailing
+ * comment. Returns `{ folded, indent }` or null.
+ */
+function parseBlockScalarHeader(value) {
+  // Indentation indicator is 1–9 (0 is invalid YAML), and a trailing comment
+  // needs separating whitespace — otherwise `|0` and `|#x` were accepted and
+  // silently swallowed the following lines as block content (Codex review).
+  const m = /^([|>])(?:([1-9])([-+]?)|([-+]?)([1-9])?)(?:\s+#.*)?\s*$/.exec(value);
+  if (!m) return null;
+  const digit = m[2] ?? m[5];
+  return { folded: m[1] === '>', indent: digit ? Number(digit) : null };
+}
+
+/**
+ * Collect a block scalar's body, starting at `startIdx` (the line AFTER the
+ * key line).
+ *
+ * Base indentation: an explicit digit is relative to the KEY's own indent;
+ * otherwise the first non-empty body line defines it. The block ends at the
+ * first non-empty line indented less than that.
+ *
+ * Joining follows YAML closely enough for prose metadata:
+ *   - `|` (literal) keeps every line break AND the content's own relative
+ *     indentation. The value is NOT trimmed as a whole: with an explicit
+ *     indicator (`|2`) the block's leading spaces are real content, and
+ *     trimming only stripped them from the FIRST line, yielding internally
+ *     inconsistent indentation (Codex review).
+ *   - `>` (folded) joins adjacent base-indented lines with a space, but a
+ *     MORE-INDENTED line is not folded — it keeps its own line and relative
+ *     indentation (YAML's "more indented" rule), and a run of k blank lines
+ *     becomes k newlines rather than collapsing to one.
+ * Chomping is normalized away (trailing blank lines dropped either way) —
+ * these values feed prose fields, never byte-significant payloads.
+ *
+ * @returns {{ value: string, endIdx: number }} endIdx = last consumed line.
+ */
+function collectBlockScalar(lines, startIdx, keyIndent, header) {
+  let baseIndent = header.indent === null ? null : keyIndent + header.indent;
+  const collected = [];
+  let j = startIdx;
+  for (; j < lines.length; j += 1) {
+    const line = lines[j];
+    if (line.trim() === '') {
+      collected.push('');
+      continue;
+    }
+    const indent = line.length - line.trimStart().length;
+    if (indent <= keyIndent) break; // dedented to a sibling key — block over
+    if (baseIndent === null) baseIndent = indent;
+    if (indent < baseIndent) break;
+    collected.push(line.slice(baseIndent));
+  }
+  // Drop surrounding blank lines (accidental in practice); never touch the
+  // leading whitespace of a CONTENT line.
+  while (collected.length && collected[collected.length - 1] === '') collected.pop();
+  while (collected.length && collected[0] === '') collected.shift();
+
+  if (!header.folded) {
+    return { value: collected.join('\n').replace(/[ \t]+$/, ''), endIdx: j - 1 };
+  }
+
+  // Folded: build pieces — folded paragraphs, literal (more-indented) lines,
+  // and explicit blank runs — then assemble with the right separators.
+  const pieces = [];
+  let para = [];
+  const flushPara = () => {
+    if (para.length) pieces.push({ text: para.join(' ') });
+    para = [];
+  };
+  for (let k = 0; k < collected.length; k += 1) {
+    const l = collected[k];
+    if (l === '') {
+      let blanks = 0;
+      while (k < collected.length && collected[k] === '') { blanks += 1; k += 1; }
+      k -= 1;
+      flushPara();
+      pieces.push({ blanks });
+      continue;
+    }
+    if (/^[ \t]/.test(l)) {
+      flushPara();
+      pieces.push({ text: l, literal: true });
+      continue;
+    }
+    para.push(l.trim());
+  }
+  flushPara();
+
+  let value = '';
+  let afterText = false;
+  for (const piece of pieces) {
+    if (piece.blanks !== undefined) {
+      value += '\n'.repeat(piece.blanks);
+      afterText = false;
+      continue;
+    }
+    if (afterText) value += '\n';
+    value += piece.text;
+    afterText = true;
+  }
+  return { value, endIdx: j - 1 };
+}
+
 export function parseFrontmatter(content) {
   const match = FRONTMATTER_RE.exec(content);
   if (!match) return { frontmatter: {}, body: content };
@@ -87,6 +193,22 @@ export function parseFrontmatter(content) {
         continue;
       }
       // else fall through — genuine empty scalar
+    }
+
+    // Block scalar (`key: |`, `key: >`, with optional indent digit / chomping /
+    // comment) — what Obsidian writes for a multi-paragraph property, and what
+    // every SKILL.md `description:` uses. The line-oriented reader used to keep
+    // the INDICATOR as the value, so those pages carried a literal `"|"` as
+    // their description: it surfaced verbatim in the generated OKF indexes
+    // (`* [Title](file.md) - |`), in exports, and in the knowledge graph, while
+    // the real text was silently dropped. Consume the block instead.
+    const blockHeader = parseBlockScalarHeader(value);
+    if (blockHeader) {
+      const keyIndent = line.length - line.trimStart().length;
+      const { value: blockValue, endIdx } = collectBlockScalar(lines, i + 1, keyIndent, blockHeader);
+      frontmatter[key] = blockValue;
+      i = endIdx;
+      continue;
     }
 
     // Quoted scalar folded over continuation lines — what Obsidian's YAML

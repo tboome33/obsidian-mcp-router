@@ -230,18 +230,14 @@ function derivePageTitle(path, frontmatter, blocks) {
 }
 
 /**
- * A YAML block-scalar INDICATOR (`|`, `>`, `|-`, `>+`, …) rather than real text.
+ * A bare YAML block-scalar INDICATOR (`|`, `>`, `|-`, `|2-`, `>- # note`, …)
+ * where real text was expected.
  *
- * The shared `parseFrontmatter` is line-oriented: for `description: |` followed
- * by an indented block, it returns the indicator as the value instead of the
- * block's text.
- */
-/**
- * YAML block-scalar header: `|` or `>`, then indentation digit and chomping
- * (`-`/`+`) in EITHER order (`|2-` and `|-2` are both legal), optionally
- * followed by a comment (`>- # note`). The first regex accepted only
- * chomping-then-digit and no comment, so `|2-` and `>- # commentaire` leaked
- * through as literal descriptions (post-release Codex verification, v0.63.1).
+ * Since v0.63.2 the SHARED `parseFrontmatter` consumes block scalars properly,
+ * so this should never fire — the block's text arrives instead of its header.
+ * The guard stays as a cheap regression net: if that parser ever loses the
+ * capability again, C5 degrades to `title · section` (honest) rather than
+ * indexing a stray `|` and presenting an empty description as populated.
  */
 const BLOCK_SCALAR_RE = /^[|>](?:\d+[-+]?|[-+]?\d*)(?:\s+#.*)?$/;
 
@@ -249,54 +245,6 @@ function isBlockScalarIndicator(value) {
   return BLOCK_SCALAR_RE.test(value);
 }
 
-/**
- * Recover a YAML block-scalar `description:` from the raw frontmatter.
- *
- * C5 requires every chunk to carry the page's description. Merely treating the
- * indicator as "absent" avoided the stray `|` but SILENTLY DROPPED a real
- * description — a page documented with `description: |` became unfindable by its
- * own summary (Codex verification, v0.63.0). So parse the block here: take the
- * lines more-indented than the key, dedent by the block's own base indent, and
- * join with newlines for `|` (literal) or spaces for `>` (folded).
- *
- * Deliberately local: fixing the SHARED parser would change the generated OKF
- * projections fleet-wide, which is a separate, bigger change.
- */
-function readBlockScalarDescription(rawInput) {
-  // Strip a leading BOM up front rather than encoding one in the pattern — a
-  // literal BOM character in this source file makes grep/diff treat the whole
-  // file as binary.
-  const raw = String(rawInput).charCodeAt(0) === 0xfeff ? String(rawInput).slice(1) : String(rawInput);
-  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
-  if (!fm) return '';
-  const lines = fm[1].split(/\r?\n/);
-  const start = lines.findIndex((l) => {
-    const m = /^description:\s*(.*)$/.exec(l);
-    return m !== null && BLOCK_SCALAR_RE.test(m[1].trim());
-  });
-  if (start === -1) return '';
-  const indicator = /^description:\s*(.*)$/.exec(lines[start])[1].trim();
-  const folded = indicator.startsWith('>');
-  // An explicit indentation digit fixes the block's base indent; without one,
-  // the first non-empty body line defines it.
-  const digit = /\d+/.exec(indicator.split('#')[0]);
-  const body = [];
-  let baseIndent = digit ? Number(digit[0]) : null;
-  for (let i = start + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line.trim() === '') {
-      body.push('');
-      continue;
-    }
-    const indent = line.length - line.trimStart().length;
-    if (indent === 0) break; // dedented back to a sibling key — block over
-    if (baseIndent === null) baseIndent = indent;
-    if (indent < baseIndent) break;
-    body.push(line.slice(baseIndent));
-  }
-  while (body.length && body[body.length - 1] === '') body.pop();
-  return body.join(folded ? ' ' : '\n').trim();
-}
 
 /**
  * Build the C5 header line for a chunk. Pure concatenation of metadata that
@@ -335,9 +283,9 @@ export function chunkPage({ path: pagePath, content, maxChunkTokens = MAX_CHUNK_
     typeof frontmatter.description === 'string' ? frontmatter.description.trim() : '';
   // A block-scalar indicator means the real text sits in the indented block the
   // line-oriented parser skipped — recover it rather than losing the description.
-  const description = isBlockScalarIndicator(rawDescription)
-    ? readBlockScalarDescription(raw)
-    : rawDescription;
+  // `parseFrontmatter` already expands block scalars (v0.63.2); the guard only
+  // catches a regression there — see isBlockScalarIndicator.
+  const description = isBlockScalarIndicator(rawDescription) ? '' : rawDescription;
 
   const chunks = [];
   /** Heading stack → the `Parent::Child` section path. */

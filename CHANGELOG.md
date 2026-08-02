@@ -6,6 +6,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.63.2] — 2026-08-02 — the shared frontmatter reader understands YAML block scalars
+
+### Fixed
+
+- **`parseFrontmatter` now consumes block scalars** (`key: |`, `key: >`, with any combination of explicit indentation digit, chomping indicator in either order, and a trailing comment). The line-oriented reader used to keep the INDICATOR as the value, so a page written with `description: |` carried a literal `"|"` and its real text was silently dropped. That value feeds the **generated OKF projections** (`* [Title](file.md) - |`), the **OKF bundle export**, **llms.txt**, and the **knowledge graph** — a page documented with a multi-paragraph property was mis-rendered in all four. Literal blocks keep their line breaks; folded blocks join lines with spaces and preserve blank lines as paragraph breaks; markdown inside a block (colons, list items, deeper indentation) is no longer leaked back into the key/value loop as bogus keys.
+
+  Blast radius measured before shipping: across **14 real vaults / 1863 pages**, the old and new parsers produce **identical frontmatter** — no page currently uses a block scalar in an indexed field, so no generated projection changes and no fleet-wide `refresh_okf_projections` is needed. The fix is preventive (Obsidian's Properties UI can emit these) and removes a duplication.
+
+- **C4/C5 drops its local copy of that logic.** `bm25-index.mjs` had grown its own block-scalar recovery in v0.63.0/v0.63.1 precisely because the shared reader could not do it; it now relies on the shared parser (one source of truth, per the repo's "import, never copy" discipline) and keeps only a cheap guard so a future regression there degrades the C5 header to `title · section` instead of indexing a stray `|`. The 64 C4/C5 tests now exercise the shared parser and still pass unchanged — equivalence proven rather than assumed.
+
+Reviewed by a Codex pass before commit, which reproduced three YAML-fidelity defects in the first cut — all fixed here: trimming the whole value stripped the leading spaces of the **first line only** under an explicit indent indicator (`|2`), yielding internally inconsistent indentation; folded scalars **folded more-indented lines** instead of keeping them literal (YAML's "more indented" rule) and collapsed runs of blank lines to one; and malformed headers (`|0` — the indicator must be 1–9 — and `|#x` — a comment needs separating whitespace) were accepted, silently swallowing the following lines as block content.
+
+Tests: **+12** on the shared parser (literal/folded, every indicator form, trailing comment, explicit-indent consistency, more-indented folding, blank-run preservation, malformed-header rejection, block termination at a sibling key, markdown-inside-block, quoted pipe not mistaken for a block, CRLF). Suite green (**2846**).
+
 ## [0.63.1] — 2026-08-02 — C4/C5 hardening from the post-release double verification
 
 ### Fixed
