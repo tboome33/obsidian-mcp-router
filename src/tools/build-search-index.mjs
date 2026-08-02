@@ -25,8 +25,10 @@ import {
   buildSearchIndex,
   corpusFingerprint,
   isUsableIndex,
+  indexProblem,
   staleIndexMessage,
   emptyIndexMessage,
+  unusableIndexMessage,
   SEARCH_INDEX_PATH,
   INDEX_VERSION,
 } from '../helpers/bm25-index.mjs';
@@ -136,13 +138,17 @@ export async function buildIndexForVault(vault, deps, opts = {}) {
   const fingerprint = corpusFingerprint(pages);
 
   const stored = await readStoredIndex(deps.getFileContent, vault);
-  const storedUsable = isUsableIndex(stored);
+  // Precise state: 'integrity-failed' (same version, corrupted — sync conflict,
+  // truncated write, hand edit) is NOT 'foreign-version' (another router
+  // generation). Conflating them pointed the operator at an upgrade that does
+  // not exist (post-release Codex verification, v0.63.1).
+  const problem = stored === null ? null : stored.__unparseable ? 'malformed' : indexProblem(stored);
   const storedState = stored === null
     ? 'absent'
     : stored.__unparseable
       ? 'unparseable'
-      : !storedUsable
-        ? 'foreign-version'
+      : problem !== null
+        ? problem === 'malformed' ? 'unparseable' : problem
         : stored.fingerprint === fingerprint
           ? 'current'
           : 'stale';
@@ -177,6 +183,11 @@ export async function buildIndexForVault(vault, deps, opts = {}) {
   // The stale state is the one worth spelling out in `check` mode: the caller
   // asked whether the index still matches the vault, and it does not.
   if (storedState === 'stale') warnings.push(staleIndexMessage(vault.name));
+  // Corruption gets its own diagnostic — the rebuild fixes it, but the operator
+  // should know the stored file was inconsistent, not merely old.
+  if (storedState === 'integrity-failed') {
+    warnings.push(unusableIndexMessage(vault.name, stored, 'integrity-failed'));
+  }
 
   const result = {
     vault: vault.name,

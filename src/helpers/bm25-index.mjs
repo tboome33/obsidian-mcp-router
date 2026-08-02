@@ -78,7 +78,7 @@ export const SEARCH_INDEX_PATH = 'wiki-meta/search-index.json';
  * scoring inputs; a reader that sees a foreign version refuses the index and
  * asks for a rebuild rather than scoring against a shape it misunderstands.
  */
-export const INDEX_VERSION = 1;
+export const INDEX_VERSION = 2;
 
 /** BM25 parameters — textbook defaults, same as the filter module. */
 export const DEFAULT_K1 = 1.2;
@@ -91,6 +91,20 @@ export const PREVIEW_CHARS = 240;
 
 /** Query bounds (C4: "bornes de requête"). */
 export const MAX_QUERY_CHARS = 1000;
+/**
+ * Longest token worth indexing or querying. A 10k-character alphanumeric run
+ * (minified blob, base64 payload) would become a giant postings key that no
+ * bounded query can ever match — pure index bloat with zero recall value
+ * (post-release Codex verification, v0.63.1). Applied on BOTH sides (chunk
+ * tokens and query tokens), so the two vocabularies stay aligned.
+ */
+export const MAX_TOKEN_CHARS = 200;
+
+/** `tokenise` with the token-length cap applied. The shared tokeniser stays
+ * untouched (other call sites have different needs). */
+function boundedTokens(text) {
+  return tokenise(text).filter((t) => t.length <= MAX_TOKEN_CHARS);
+}
 export const MAX_QUERY_TOKENS = 32;
 export const MAX_LIMIT = 100;
 export const DEFAULT_LIMIT = 10;
@@ -105,12 +119,14 @@ export const MAX_INDEXED_CHUNKS = 20000;
 /**
  * Split text into pieces of at most `maxTokens` indexable tokens.
  *
- * Two levels, because both shapes occur: a block of many lines (a list, a
- * table) splits on line boundaries to preserve structure, while a single
- * wall-of-text paragraph — which has NO newlines, the common real case — must
- * be broken inside the line, on word boundaries. Without the second level the
- * advertised bound silently did not apply to exactly the blocks that needed it
- * (Codex verification, v0.63.0).
+ * Three levels, because all three shapes occur: a block of many lines (a list,
+ * a table) splits on line boundaries to preserve structure; a single
+ * wall-of-text paragraph — no newlines, the common real case — breaks inside
+ * the line on whitespace; and a whitespace-free run of punctuation-separated
+ * terms (`a1,b2,c3,…` — 500 tokens, zero spaces) breaks on TOKEN-RUN
+ * boundaries. Without the third level, one comma-separated line blew straight
+ * through the advertised bound as a single "word" (post-release Codex
+ * verification, v0.63.1).
  */
 function splitByTokenBudget(text, maxTokens) {
   const pieces = [];
@@ -124,25 +140,59 @@ function splitByTokenBudget(text, maxTokens) {
     currentTokens = 0;
   };
 
+  // Level 3 — a single whitespace-free unit over budget: cut on alternating
+  // runs of token / non-token characters (the same alphabet `tokenise` splits
+  // on), so each emitted segment carries at most `maxTokens` indexable tokens.
+  const splitOversizedWord = (word) => {
+    const runs = word.match(/[\p{L}\p{N}_]+|[^\p{L}\p{N}_]+/gu) || [word];
+    const segments = [];
+    let seg = [];
+    let segTokens = 0;
+    for (const run of runs) {
+      const t = boundedTokens(run).length;
+      if (segTokens > 0 && segTokens + t > maxTokens) {
+        segments.push(seg.join(''));
+        seg = [];
+        segTokens = 0;
+      }
+      seg.push(run);
+      segTokens += t;
+    }
+    if (seg.length) segments.push(seg.join(''));
+    return segments;
+  };
+
   for (const line of String(text).split('\n')) {
-    const lineTokens = tokenise(line).length;
+    const lineTokens = boundedTokens(line).length;
     if (lineTokens <= maxTokens) {
       if (currentTokens > 0 && currentTokens + lineTokens > maxTokens) flushCurrent();
       current.push(line);
       currentTokens += lineTokens;
       continue;
     }
-    // The line itself is over budget — break it on word boundaries.
+    // Level 2 — the line is over budget: break it on whitespace boundaries,
+    // delegating any single over-budget "word" to level 3.
     flushCurrent();
     let words = [];
     let wordTokens = 0;
+    const emitWordsPiece = () => {
+      if (!words.length) return;
+      pieces.push(words.join('').trimEnd());
+      words = [];
+      wordTokens = 0;
+    };
     for (const word of line.split(/(?<=\s)/)) {
-      const t = tokenise(word).length;
-      if (wordTokens > 0 && wordTokens + t > maxTokens) {
-        pieces.push(words.join('').trimEnd());
-        words = [];
-        wordTokens = 0;
+      const t = boundedTokens(word).length;
+      if (t > maxTokens) {
+        emitWordsPiece();
+        const segments = splitOversizedWord(word);
+        for (let i = 0; i < segments.length - 1; i += 1) pieces.push(segments[i]);
+        const last = segments[segments.length - 1];
+        words.push(last);
+        wordTokens = boundedTokens(last).length;
+        continue;
       }
+      if (wordTokens > 0 && wordTokens + t > maxTokens) emitWordsPiece();
       words.push(word);
       wordTokens += t;
     }
@@ -186,8 +236,17 @@ function derivePageTitle(path, frontmatter, blocks) {
  * by an indented block, it returns the indicator as the value instead of the
  * block's text.
  */
+/**
+ * YAML block-scalar header: `|` or `>`, then indentation digit and chomping
+ * (`-`/`+`) in EITHER order (`|2-` and `|-2` are both legal), optionally
+ * followed by a comment (`>- # note`). The first regex accepted only
+ * chomping-then-digit and no comment, so `|2-` and `>- # commentaire` leaked
+ * through as literal descriptions (post-release Codex verification, v0.63.1).
+ */
+const BLOCK_SCALAR_RE = /^[|>](?:\d+[-+]?|[-+]?\d*)(?:\s+#.*)?$/;
+
 function isBlockScalarIndicator(value) {
-  return /^[|>][-+]?\d*$/.test(value);
+  return BLOCK_SCALAR_RE.test(value);
 }
 
 /**
@@ -211,11 +270,18 @@ function readBlockScalarDescription(rawInput) {
   const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
   if (!fm) return '';
   const lines = fm[1].split(/\r?\n/);
-  const start = lines.findIndex((l) => /^description:\s*[|>][-+]?\d*\s*$/.test(l));
+  const start = lines.findIndex((l) => {
+    const m = /^description:\s*(.*)$/.exec(l);
+    return m !== null && BLOCK_SCALAR_RE.test(m[1].trim());
+  });
   if (start === -1) return '';
-  const folded = /^description:\s*>/.test(lines[start]);
+  const indicator = /^description:\s*(.*)$/.exec(lines[start])[1].trim();
+  const folded = indicator.startsWith('>');
+  // An explicit indentation digit fixes the block's base indent; without one,
+  // the first non-empty body line defines it.
+  const digit = /\d+/.exec(indicator.split('#')[0]);
   const body = [];
-  let baseIndent = null;
+  let baseIndent = digit ? Number(digit[0]) : null;
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i];
     if (line.trim() === '') {
@@ -298,7 +364,7 @@ export function chunkPage({ path: pagePath, content, maxChunkTokens = MAX_CHUNK_
       text,
       // The header is indexed WITH the body (C5): a query matching the page
       // title or its description reaches this chunk.
-      tokens: tokenise(`${header}\n${text}`),
+      tokens: boundedTokens(`${header}\n${text}`),
     });
   };
 
@@ -313,7 +379,7 @@ export function chunkPage({ path: pagePath, content, maxChunkTokens = MAX_CHUNK_
       }
       continue;
     }
-    const blockTokens = tokenise(block.text).length;
+    const blockTokens = boundedTokens(block.text).length;
     // Split an over-long section rather than truncate it.
     if (bufferTokens > 0 && bufferTokens + blockTokens > maxChunkTokens) flush();
 
@@ -327,7 +393,7 @@ export function chunkPage({ path: pagePath, content, maxChunkTokens = MAX_CHUNK_
       const parts = splitByTokenBudget(block.text, maxChunkTokens);
       for (let i = 0; i < parts.length; i += 1) {
         buffer.push(parts[i]);
-        bufferTokens += tokenise(parts[i]).length;
+        bufferTokens += boundedTokens(parts[i]).length;
         // Every piece but the last closes a chunk; the last stays open so a
         // short following block can share it.
         if (i < parts.length - 1) flush();
@@ -351,7 +417,7 @@ export function chunkPage({ path: pagePath, content, maxChunkTokens = MAX_CHUNK_
         section: '',
         header,
         text: '',
-        tokens: tokenise(header),
+        tokens: boundedTokens(header),
       });
     }
   }
@@ -387,8 +453,17 @@ export function corpusFingerprint(pages) {
  * permanently. This self-digest turns any such corruption into an actionable
  * refusal instead of a confident wrong answer.
  */
-export function indexIntegrityDigest({ chunks, postings, idf, avgdl }) {
-  return exactSha256(JSON.stringify({ chunks, postings, idf, avgdl }));
+export function indexIntegrityDigest({ version, fingerprint, stats, chunks, postings, idf, avgdl }) {
+  // The digest covers the METADATA too, not just the scored payload: a stale
+  // index whose `fingerprint` was hand-set to the current corpus value passed
+  // as `current` forever, and a fabricated `stats.truncated: false` silenced
+  // the incompleteness warning (post-release Codex verification, v0.63.1).
+  //
+  // Threat model, stated honestly: this is a CORRUPTION check (sync conflicts,
+  // truncated writes, casual hand-edits). An unkeyed hash cannot authenticate
+  // against an active editor who recomputes it — that would need a key the
+  // router holds and the vault file does not, which is not this feature.
+  return exactSha256(JSON.stringify({ version, fingerprint, stats, chunks, postings, idf, avgdl }));
 }
 
 /**
@@ -465,19 +540,30 @@ export function buildSearchIndex({ pages, vaultName, maxChunks = MAX_INDEXED_CHU
   }));
   const avgdl = chunks.length > 0 ? totalLen / chunks.length : 0;
 
+  const fingerprint = corpusFingerprint(sorted);
+  const stats = {
+    pages: pagesIndexed,
+    chunks: chunks.length,
+    tokens: totalLen,
+    truncated,
+    ...(truncated ? { maxChunks } : {}),
+  };
+
   return {
     version: INDEX_VERSION,
     vault: vaultName ?? null,
-    fingerprint: corpusFingerprint(sorted),
-    // Self-check over the scored payload — see indexIntegrityDigest.
-    integrity: indexIntegrityDigest({ chunks: chunkMeta, postings: orderedPostings, idf, avgdl }),
-    stats: {
-      pages: pagesIndexed,
-      chunks: chunks.length,
-      tokens: totalLen,
-      truncated,
-      ...(truncated ? { maxChunks } : {}),
-    },
+    fingerprint,
+    // Self-check over metadata + scored payload — see indexIntegrityDigest.
+    integrity: indexIntegrityDigest({
+      version: INDEX_VERSION,
+      fingerprint,
+      stats,
+      chunks: chunkMeta,
+      postings: orderedPostings,
+      idf,
+      avgdl,
+    }),
+    stats,
     avgdl,
     chunks: chunkMeta,
     idf,
@@ -507,7 +593,9 @@ export function validateQuery(query) {
       message: `Query is ${q.length} characters; the limit is ${MAX_QUERY_CHARS}. Shorten it to the discriminating terms.`,
     };
   }
-  const tokens = [...new Set(tokenise(q))];
+  // boundedTokens on the query too: a token longer than MAX_TOKEN_CHARS cannot
+  // exist in the index, so keeping it here would only distort the bounds count.
+  const tokens = [...new Set(boundedTokens(q))];
   if (tokens.length === 0) {
     return {
       ok: false,
@@ -533,43 +621,69 @@ export function clampLimit(limit) {
 }
 
 /**
+ * Classify what is wrong with a stored index — or null when it is usable.
+ *
+ * The distinction matters for the DIAGNOSTIC (post-release Codex verification,
+ * v0.63.1: a same-version corrupted index was reported as "foreign-version",
+ * pointing the operator at an upgrade that does not exist):
+ *   - 'malformed'        — not an index at all / broken shape.
+ *   - 'foreign-version'  — a real index from another router generation.
+ *   - 'integrity-failed' — right version, right shape, but the self-digest does
+ *     not match: corruption (sync conflict, truncated write, hand edit).
+ *
+ * The index file is VAULT CONTENT — hand-editable, attacker-influenced on a
+ * shared vault. A shape that merely looks plausible must not be scored: an
+ * index missing `idf` would weight every term 0 and answer "nothing matches"
+ * for every query (a silent lie), and a non-object `postings` would throw a raw
+ * TypeError instead of an actionable refusal. (Fable 5 review, v0.63.0.)
+ *
+ * @returns {'malformed'|'foreign-version'|'integrity-failed'|null}
+ */
+export function indexProblem(index) {
+  if (!index || typeof index !== 'object') return 'malformed';
+  if (index.version !== INDEX_VERSION) return 'foreign-version';
+  const shapeOk =
+    Array.isArray(index.chunks) &&
+    index.postings &&
+    typeof index.postings === 'object' &&
+    index.idf &&
+    typeof index.idf === 'object' &&
+    typeof index.avgdl === 'number' &&
+    Number.isFinite(index.avgdl);
+  if (!shapeOk) return 'malformed';
+  // A non-empty index MUST have postings and IDF: a chunk list with an empty
+  // postings map is accepted arithmetic-wise but answers "nothing matches" for
+  // every query — a silent lie about the vault's contents.
+  if (
+    index.chunks.length > 0 &&
+    (Object.keys(index.postings).length === 0 || Object.keys(index.idf).length === 0)
+  ) {
+    return 'integrity-failed';
+  }
+  // Self-digest over metadata + scored payload: catches postings/chunks
+  // desynchronisation and metadata tampering that no corpus fingerprint can see.
+  const digestOk =
+    typeof index.integrity === 'string' &&
+    index.integrity ===
+      indexIntegrityDigest({
+        version: index.version,
+        fingerprint: index.fingerprint,
+        stats: index.stats,
+        chunks: index.chunks,
+        postings: index.postings,
+        idf: index.idf,
+        avgdl: index.avgdl,
+      });
+  if (!digestOk) return 'integrity-failed';
+  return null;
+}
+
+/**
  * True when `index` is a usable index of the expected shape and version.
  * A foreign version is REFUSED rather than scored — see INDEX_VERSION.
  */
 export function isUsableIndex(index) {
-  return Boolean(
-    index &&
-      typeof index === 'object' &&
-      index.version === INDEX_VERSION &&
-      Array.isArray(index.chunks) &&
-      index.postings &&
-      typeof index.postings === 'object' &&
-      // The index file is VAULT CONTENT — hand-editable, and attacker-influenced
-      // on a shared vault. A shape that merely looks plausible must not be
-      // scored: an index missing `idf` would weight every term 0 and answer
-      // "nothing matches" for every query (a silent lie), and a non-object
-      // `postings` would throw a raw TypeError instead of an actionable refusal.
-      // (Fable 5 review, v0.63.0.)
-      index.idf &&
-      typeof index.idf === 'object' &&
-      typeof index.avgdl === 'number' &&
-      Number.isFinite(index.avgdl) &&
-      // A non-empty index MUST have postings and IDF: a chunk list with an empty
-      // postings map is accepted arithmetic-wise but answers "nothing matches"
-      // for every query — a silent lie about the vault's contents.
-      (index.chunks.length === 0 ||
-        (Object.keys(index.postings).length > 0 && Object.keys(index.idf).length > 0)) &&
-      // Self-digest: catches postings/chunks desynchronisation that no corpus
-      // fingerprint can see (a reordered chunk list, a truncated write).
-      typeof index.integrity === 'string' &&
-      index.integrity ===
-        indexIntegrityDigest({
-          chunks: index.chunks,
-          postings: index.postings,
-          idf: index.idf,
-          avgdl: index.avgdl,
-        }),
-  );
+  return indexProblem(index) === null;
 }
 
 /** Own-property lookup — never inherit from Object.prototype (a token like
@@ -684,11 +798,28 @@ export function absentIndexMessage(vaultName) {
 }
 
 /** Message for "index exists but this router cannot read its shape/version". */
-export function unusableIndexMessage(vaultName, found) {
-  const v = found && typeof found.version !== 'undefined' ? String(found.version) : 'unknown';
+export function unusableIndexMessage(vaultName, found, problem = null) {
+  const p = problem ?? indexProblem(found);
+  // Name the ACTUAL problem: a same-version corrupted index reported as a
+  // version mismatch pointed the operator at an upgrade that does not exist
+  // (post-release Codex verification, v0.63.1).
+  if (p === 'integrity-failed') {
+    return (
+      `The local search index for vault "${vaultName}" is CORRUPT — its integrity self-check failed ` +
+      `(a hand edit, a sync conflict, or an interrupted write left the file inconsistent with itself), ` +
+      `so this router refuses to score against it. ${rebuildHint(vaultName)}`
+    );
+  }
+  if (p === 'foreign-version') {
+    const v = found && typeof found.version !== 'undefined' ? String(found.version) : 'unknown';
+    return (
+      `The local search index for vault "${vaultName}" is version ${v}; this router speaks version ` +
+      `${INDEX_VERSION}, so it refuses to score against a shape it may misread. ${rebuildHint(vaultName)}`
+    );
+  }
   return (
-    `The local search index for vault "${vaultName}" is version ${v}; this router speaks version ` +
-    `${INDEX_VERSION}, so it refuses to score against a shape it may misread. ${rebuildHint(vaultName)}`
+    `The file at ${SEARCH_INDEX_PATH} in vault "${vaultName}" is not a readable search index, ` +
+    `so this router refuses to score against it. ${rebuildHint(vaultName)}`
   );
 }
 

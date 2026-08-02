@@ -6,6 +6,21 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.63.1] — 2026-08-02 — C4/C5 hardening from the post-release double verification
+
+### Fixed
+
+v0.63.0 was re-verified after publication by the same two independent passes that gated it — a Fable 5 re-read of the committed code (24 empirical probes, including the JSON round-trip of the integrity digest and the previously-untested mixed-tier `vault: "*"` fan-out, both clean) and a Codex pass attacking the 14 pre-release fixes with its own probe scripts. Six reproduced defects, all fixed here with regression tests:
+
+- **Short queries reach the semantic tier again.** v0.63.0's tier-independent bounds over-corrected: `search_smart({query: "C1"})` was refused ("no usable term") *before even trying* Smart Connections — a regression vs v0.62.0, and embeddings handle short queries fine. `no-usable-tokens` is a BM25 prerequisite, not a semantic one: it now refuses only when the local tier must answer (`tier: 'local'`, or the auto path actually falling back). Upper bounds (length, token count) stay tier-independent.
+- **The integrity digest now covers the metadata too** (`version`, `fingerprint`, `stats`). With only the scored payload digested, a stale index whose `fingerprint` was hand-set to the current corpus value passed as `current` forever, and a fabricated `stats.truncated: false` silenced the mandatory incompleteness warning. `INDEX_VERSION` bumped to 2 (existing v1 indexes report foreign-version → one rebuild). Threat model stated honestly in the code: this is a corruption check, not authentication — an unkeyed hash cannot stop an editor who recomputes it.
+- **The chunk-token bound holds against punctuation.** A 500-term comma-separated line (zero whitespace) sailed through the whitespace-level splitter as one 501-token chunk; a third splitting level now cuts on token-run boundaries. And a 10k-character alphanumeric run — unqueryable under the 1000-char query cap — no longer becomes a giant postings key: tokens over 200 chars are dropped from both the index and query vocabularies (`MAX_TOKEN_CHARS`).
+- **YAML block-scalar variants `|2-` (digit+chomping) and `>- # comment` are recovered** instead of leaking their indicator into the C5 header as a literal description. An explicit indentation digit now also fixes the block's base indent.
+- **The fallback predicate requires the verbal assertion** (`Smart Connections … is not available/installed/enabled`): a 503 crash whose message merely *quoted* a page titled "Smart Connections not available guide" triggered the fallback and hid the crash. Residual limitation documented: this is still prose matching — the durable fix is a structured error code from the bridge (future bridge work).
+- **Same-version corruption is named `integrity-failed`**, with a corruption diagnostic, instead of being misreported as `foreign-version` (which pointed the operator at an upgrade that does not exist). The query path carries the machine-readable reason (`index-integrity-failed`) too.
+
+Tests: **+7** (metadata-tamper refusal, comma-monster bound, giant-token drop, block-scalar variants, quoted-title false positive, the "C1" semantic path incl. the honest local refusal, integrity-failed naming end-to-end). Suite green (**2834**).
+
 ## [0.63.0] — 2026-08-02 — a local BM25 search tier that works on every vault (borrowings C4 + C5)
 
 ### Added

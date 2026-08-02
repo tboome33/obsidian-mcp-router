@@ -34,7 +34,7 @@
 
 import {
   queryIndex,
-  isUsableIndex,
+  indexProblem,
   clampLimit,
   absentIndexMessage,
   unusableIndexMessage,
@@ -75,7 +75,14 @@ export const TIER_LOCAL = 'local-bm25';
 export function isSemanticTierUnusable(err) {
   if (!err) return false;
   if (err.kind === 'not_found' || err.status === 404) return true;
-  return /smart[\s-]?connections[^.]{0,80}?\b(not available|not installed|not enabled|unavailable)/i.test(
+  // Match the bridge's ASSERTION ("Smart Connections … is not available"), not
+  // loose proximity: a crash whose message merely QUOTED a page titled
+  // "Smart Connections not available guide" used to trigger the fallback and
+  // hide the crash (post-release Codex verification, v0.63.1). Requiring the
+  // verb kills that; the genuine bridge bodies all carry it. Residual honesty:
+  // this is still prose matching — the durable fix is a structured error code
+  // from the bridge, tracked as future bridge work.
+  return /smart[\s-]?connections(?:\s+plugin)?\s+is\s+not\s+(?:available|installed|enabled)/i.test(
     String(err.message || ''),
   );
 }
@@ -130,8 +137,11 @@ export async function searchLocalIndex(vault, deps, params = {}) {
   if (stored === null) {
     throw actionable(absentIndexMessage(vault.name), 'index-absent');
   }
-  if (!isUsableIndex(stored)) {
-    throw actionable(unusableIndexMessage(vault.name, stored), 'index-unusable');
+  const problem = stored.__unparseable ? 'malformed' : indexProblem(stored);
+  if (problem !== null) {
+    // Name the precise problem (corrupt vs foreign-version vs unreadable) —
+    // `index-${problem}` gives the caller a machine-readable reason too.
+    throw actionable(unusableIndexMessage(vault.name, stored, problem), `index-${problem}`);
   }
   // An EMPTY index is a misconfiguration, not an answer. Serving `[]` from it
   // would be indistinguishable from "the vault has nothing on this" — the exact

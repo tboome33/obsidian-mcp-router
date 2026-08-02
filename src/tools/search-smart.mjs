@@ -72,16 +72,24 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
         `'semantic' (semantic only — error if unavailable), or 'local' (the deterministic BM25 index only).`,
     );
   }
-  // C4 bounds are TIER-INDEPENDENT. Validating only inside the local tier made
-  // acceptance depend on which engine happened to be available — a 1000-char
-  // query was refused locally and forwarded verbatim to the semantic tier
-  // (Codex verification, v0.63.0). Bound the public input once, up front.
+  // C4 UPPER bounds are TIER-INDEPENDENT (abuse guards): an over-long or
+  // over-tokenised query is refused before any dispatch, whichever engine is
+  // live (Codex verification, v0.63.0). But `no-usable-tokens` (no token ≥ 3
+  // chars) is a BM25 PREREQUISITE, not a semantic one — embeddings serve short
+  // queries like "C1" or "IA" fine, and v0.62.0 did. Refusing it up-front
+  // regressed exactly those queries on semantic vaults (post-release Fable 5
+  // verification, v0.63.1). So: refuse it here only when the LOCAL tier is the
+  // one that must answer; on the auto path, if the fallback is reached,
+  // queryIndex re-validates and refuses with the same actionable message.
   const bounds = validateQuery(query);
   if (!bounds.ok) {
-    const err = new Error(bounds.message);
-    err.kind = 'validation';
-    err.reason = bounds.reason;
-    throw err;
+    const bm25PrereqOnly = bounds.reason === 'no-usable-tokens';
+    if (!bm25PrereqOnly || requestedTier === 'local') {
+      const err = new Error(bounds.message);
+      err.kind = 'validation';
+      err.reason = bounds.reason;
+      throw err;
+    }
   }
   const boundedLimit = clampLimit(limit);
 

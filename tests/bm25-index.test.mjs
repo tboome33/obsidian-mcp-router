@@ -127,6 +127,18 @@ describe('C5 — contextual chunk headers', () => {
     assert.equal(hits.length > 0, true, 'the recovered description must be searchable');
   });
 
+  test('block-scalar VARIANTS are recovered: |2- (digit+chomping) and >- with a comment', () => {
+    // Post-release Codex, v0.63.1: these two legal YAML forms leaked their
+    // indicator into the header as a literal description.
+    const digitChomp = '---\ndescription: |2-\n  Texte du bloc indenté.\n---\n\n# T\n\nCorps.\n';
+    const c1 = chunkPage({ path: 'wiki/v1.md', content: digitChomp })[0];
+    assert.equal(c1.description, 'Texte du bloc indenté.');
+    const foldedComment = '---\ndescription: >- # commentaire\n  ligne un\n  ligne deux\n---\n\n# T\n\nCorps.\n';
+    const c2 = chunkPage({ path: 'wiki/v2.md', content: foldedComment })[0];
+    assert.equal(c2.description, 'ligne un ligne deux');
+    for (const c of [c1, c2]) assert.ok(!/[|>]/.test(c.header), `no indicator may leak into the header: ${c.header}`);
+  });
+
   test('a folded (>) block scalar joins on spaces; an absent description stays absent', () => {
     const folded = '---\ndescription: >\n  ligne un\n  ligne deux\n---\n\n# T\n\nCorps.\n';
     assert.equal(chunkPage({ path: 'wiki/f.md', content: folded })[0].description, 'ligne un ligne deux');
@@ -249,6 +261,42 @@ describe('C4 — ranking and bounds', () => {
     const chunks = chunkPage({ path: 'wiki/code.md', content: PAGE('Code', 'Du code', `# Code\n\n\`\`\`js\n${bigCode}\n\`\`\`\n`) });
     const fenced = chunks.filter((c) => c.text.includes('```'));
     assert.equal(fenced.length, 1, 'the fence is never split into invalid fragments');
+  });
+
+  test('METADATA is inside the digest: a copied fingerprint or a flipped truncated flag is refused', () => {
+    // Post-release Codex, v0.63.1: with only the scored payload digested, a
+    // STALE index whose `fingerprint` was hand-set to the current corpus value
+    // passed as `current` forever, and `stats.truncated: false` silenced the
+    // incompleteness warning. Both are now integrity failures.
+    const idx = index();
+    const fpTampered = JSON.parse(JSON.stringify(idx));
+    fpTampered.fingerprint = 'f'.repeat(64);
+    assert.equal(isUsableIndex(fpTampered), false, 'fingerprint tamper must be refused');
+    const statsTampered = JSON.parse(JSON.stringify(idx));
+    statsTampered.stats = { ...statsTampered.stats, truncated: !statsTampered.stats.truncated };
+    assert.equal(isUsableIndex(statsTampered), false, 'stats tamper must be refused');
+  });
+
+  test('punctuation-separated monster line respects the chunk-token bound', () => {
+    // 500 comma-separated terms, ZERO whitespace — one "word" for the
+    // whitespace-level splitter, which sailed through as a 501-token chunk
+    // (post-release Codex, v0.63.1). Level-3 token-run splitting bounds it.
+    const monster = Array.from({ length: 500 }, (_, i) => `terme${i}`).join(',');
+    const chunks = chunkPage({ path: 'wiki/m.md', content: PAGE('M', 'd', `# M\n\n${monster}\n`) });
+    assert.ok(chunks.length > 1, 'the comma monster must be subdivided');
+    for (const c of chunks) {
+      assert.ok(c.tokens.length <= MAX_CHUNK_TOKENS * 1.5, `chunk of ${c.tokens.length} tokens exceeds the bound`);
+    }
+  });
+
+  test('a giant single token is dropped from the vocabulary, not indexed as a 10k key', () => {
+    // A 10k-char alphanumeric run can never be matched by a bounded query —
+    // indexing it is pure bloat (post-release Codex, v0.63.1).
+    const giant = 'x'.repeat(10000);
+    const idx = buildSearchIndex({ pages: [{ path: 'wiki/g.md', content: PAGE('G', 'd', `# G\n\nmot normal ${giant} autre contenu\n`) }], vaultName: 'v' });
+    assert.ok(Object.keys(idx.postings).every((k) => k.length <= 200), 'no oversized postings key');
+    const hits = queryIndex({ index: idx, query: 'autre contenu normal', limit: 3 }).hits;
+    assert.ok(hits.length > 0, 'the surrounding real content stays findable');
   });
 
   test('a BOM-only change is a REAL change: the fingerprint must not collide', () => {
@@ -533,6 +581,48 @@ describe('C4 — fallback doctrine (never mixed)', () => {
     assert.ok(sentLimit <= 100 + 10, `forwarded limit ${sentLimit} must be clamped`);
   });
 
+  test('a crash message that merely QUOTES a Smart-Connections-ish page title is NOT a gap', async () => {
+    // Post-release Codex, v0.63.1: this exact message triggered the fallback
+    // and hid the crash. The predicate now requires the verbal assertion.
+    const msg = 'Semantic query crashed while reading page "Smart Connections not available guide"';
+    assert.equal(isSemanticTierUnusable({ status: 503, message: msg }), false);
+    await assert.rejects(
+      () => searchSmartTool(registry, { query: 'recherche locale' }, {
+        searchSmart: async () => { throw Object.assign(new Error(msg), { status: 503 }); },
+        ...localDeps,
+      }),
+      /crashed while reading/,
+    );
+  });
+
+  test('short queries ("C1") reach the semantic tier; tier local still refuses them', async () => {
+    // Post-release Fable 5, v0.63.1: v0.63.0 refused "C1" before even trying
+    // Smart Connections — a regression vs v0.62.0. no-usable-tokens is a BM25
+    // prerequisite, not a semantic one.
+    const out = await searchSmartTool(registry, { query: 'C1' }, {
+      searchSmart: async () => ({ results: [{ path: 'wiki/c1.md', score: 0.9 }] }),
+      ...localDeps,
+    });
+    assert.equal(out.tier, TIER_SEMANTIC);
+    assert.equal(out.results.length, 1);
+    // The local tier keeps its honest refusal — BM25 genuinely cannot score it.
+    await assert.rejects(
+      () => searchSmartTool(registry, { query: 'C1', tier: 'local' }, {
+        searchSmart: async () => ({ results: [] }),
+        ...localDeps,
+      }),
+      /no usable term/i,
+    );
+    // And the auto path on a semantic-less vault surfaces the local refusal.
+    await assert.rejects(
+      () => searchSmartTool(registry, { query: 'C1' }, {
+        searchSmart: async () => { throw Object.assign(new Error('Smart Connections plugin is not available'), { status: 503 }); },
+        ...localDeps,
+      }),
+      /no usable term/i,
+    );
+  });
+
   test('a truncated index announces its incompleteness on every response', async () => {
     // The flag lived only inside the index file, invisible to searchers — a
     // partial index served as if it were a complete fallback (Codex).
@@ -669,6 +759,24 @@ describe('build_search_index', () => {
     const r = await buildIndexForVault(VAULT, deps);
     assert.equal(r.stats.chunks, 0);
     assert.ok(Array.isArray(r.warnings) && r.warnings.some((w) => /EMPTY/.test(w)));
+  });
+
+  test('same-version corruption is named integrity-failed, never foreign-version', async () => {
+    // Post-release Codex, v0.63.1: a corrupted same-version index reported
+    // indexState 'foreign-version', pointing at an upgrade that does not exist.
+    const { deps, store } = makeVaultFs(files);
+    await buildIndexForVault(VAULT, deps);
+    const corrupt = JSON.parse(store.get(SEARCH_INDEX_PATH));
+    corrupt.chunks = [...corrupt.chunks].reverse(); // digest now mismatches
+    store.set(SEARCH_INDEX_PATH, JSON.stringify(corrupt));
+    const r = await buildIndexForVault(VAULT, deps, { check: true });
+    assert.equal(r.indexState, 'integrity-failed');
+    assert.ok(r.warnings.some((w) => /CORRUPT/.test(w) && /build_search_index/.test(w)), 'corruption diagnostic present');
+    // And the query path names it too, with a machine-readable reason.
+    await assert.rejects(
+      () => searchLocalIndex({ name: 'v' }, { getFileContent: async () => JSON.stringify(corrupt) }, { query: 'recherche' }),
+      (e) => /CORRUPT/.test(e.message) && e.reason === 'index-integrity-failed',
+    );
   });
 
   test('check: true on a drifted vault spells out the staleness', async () => {
