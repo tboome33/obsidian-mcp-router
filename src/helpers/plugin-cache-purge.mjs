@@ -227,12 +227,17 @@ export function findLiveSnapshotVersions({ cacheDir, platform = process.platform
     return { ok: false, reason: 'process scan returned no output', versions: new Set() };
   }
 
-  // Compare case-insensitively and separator-agnostically: Windows argv
-  // mixes `/` and `\` freely and varies drive-letter case.
-  const needle = normalizePathKey(cacheDir);
+  // Compare separator-agnostically, and case-insensitively only where the
+  // filesystem is. `platform` MUST be threaded through: it was dropped here
+  // while the rest of the module became platform-aware, so both calls fell
+  // back to `process.platform`. On a Linux runner that made an injected
+  // `win32` behave like Linux — the scan returned `ok: true` with an EMPTY
+  // set for a snapshot that was in use, which is precisely the "I believe
+  // nothing is running" answer that authorises deleting a served directory.
+  const needle = normalizePathKey(cacheDir, platform);
   const versions = new Set();
   for (const line of out.split(/\r?\n/)) {
-    const norm = normalizePathKey(line);
+    const norm = normalizePathKey(line, platform);
     let from = norm.indexOf(needle);
     while (from !== -1) {
       const rest = norm.slice(from + needle.length);
@@ -245,18 +250,23 @@ export function findLiveSnapshotVersions({ cacheDir, platform = process.platform
 }
 
 /**
- * Forward slashes always; lowercase ONLY where the filesystem is itself
- * case-insensitive.
+ * Forward slashes always; lowercase ONLY on Windows.
  *
- * Unconditional lowercasing aliases two genuinely distinct paths on
- * Linux/macOS (`/home/u/Cache` and `/home/u/cache` are different
- * directories there), which would let one cache's plan seal authorize a
- * purge of another's.
+ * Unconditional lowercasing aliases two genuinely distinct paths
+ * (`/home/u/Cache` and `/home/u/cache` are different directories on Linux),
+ * which would let one cache's plan seal authorise a purge of another's.
+ *
+ * macOS was folded in here at first because HFS+/APFS default to
+ * case-insensitive — but that is a VOLUME setting, not a platform one, and
+ * APFS case-sensitive volumes are ordinary. Since the only cost of being
+ * case-sensitive on a case-insensitive volume is a seal that refuses and
+ * asks for a fresh preview, while the cost of the reverse is a seal that
+ * authorises deleting a DIFFERENT cache, `darwin` is treated as
+ * case-sensitive. The safe direction is the one that refuses.
  */
 export function normalizePathKey(s, platform = process.platform) {
   const slashed = String(s ?? '').replace(/\\/g, '/');
-  const caseInsensitive = platform === 'win32' || platform === 'darwin';
-  return caseInsensitive ? slashed.toLowerCase() : slashed;
+  return platform === 'win32' ? slashed.toLowerCase() : slashed;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +283,7 @@ export function normalizePathKey(s, platform = process.platform) {
  * shape would silently under-report a reference, and under-reporting here
  * deletes something live. Text scanning cannot miss a path that is present.
  */
-export function referencedVersions({ files, cacheDir, platform = process.platform }) {
+export function referencedVersions({ files, cacheDir, platform = process.platform, pluginKey = null }) {
   const needle = normalizePathKey(cacheDir, platform);
   const found = new Map(); // version -> [file, ...]
   const unreadable = [];
@@ -306,7 +316,7 @@ export function referencedVersions({ files, cacheDir, platform = process.platfor
     // STRUCTURALLY too, so a reference we would miss as text — a relative
     // `installPath`, an entry carrying only a `version`, a path spelled
     // through a mapped drive — still protects its version.
-    for (const v of structuralVersions(text)) {
+    for (const v of structuralVersions(text, pluginKey)) {
       if (!found.has(v)) found.set(v, []);
       const list = found.get(v);
       if (!list.includes(file)) list.push(file);
@@ -317,17 +327,25 @@ export function referencedVersions({ files, cacheDir, platform = process.platfor
 }
 
 /**
- * Every `"version": "x.y.z"` an installed-plugins manifest carries.
+ * Every `"version": "x.y.z"` the manifest names FOR THIS PLUGIN.
  *
- * Deliberately schema-agnostic: this file has had three shapes, and the
- * point here is not to model them but to make sure no version string in it
- * can go unnoticed. Over-collecting is harmless — the worst case is keeping
- * a directory we could have removed.
+ * Scoped to the plugin's own key on purpose. A whole-file walk also picked
+ * up every other installed plugin's versions — harmless while the result was
+ * only used to protect directories that happen to share a number, but once
+ * those versions became rollback ANCHORS it started protecting "the
+ * predecessor of 6.2.0" inside this plugin's cache: over-keeping for a
+ * reason that makes no sense to whoever reads the plan.
+ *
+ * Still schema-agnostic BELOW that key: the entry shape has had three
+ * versions (flat object, nested object, array of scoped entries) and the
+ * point is not to model them but to miss nothing inside them.
  */
-function structuralVersions(text) {
+function structuralVersions(text, pluginKey) {
   const out = new Set();
   let data;
   try { data = JSON.parse(text); } catch { return out; }
+  const scoped = (data && data.plugins && data.plugins[pluginKey]) ?? (data && data[pluginKey]);
+  if (scoped === undefined || scoped === null) return out;
   const walk = (node) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { node.forEach(walk); return; }
@@ -336,7 +354,7 @@ function structuralVersions(text) {
       else walk(v);
     }
   };
-  walk(data);
+  walk(scoped);
   return out;
 }
 
@@ -403,6 +421,33 @@ export function planCachePurge({
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       return { ...blockedBase, blockedReason: `${cacheDir} resolves to ${canonCache}, which is outside the plugin cache root ${canonBase} — refusing (a symlink or junction in the parent chain would redirect every delete)` };
     }
+    // Global containment is NOT enough. A link from
+    // `cache/<marketplace>/<plugin>` to a SIBLING plugin's directory stays
+    // inside the cache root, so the check above accepts it — while the
+    // manifest and process matching keep using the alias path and `rmSync`
+    // follows the link. The result is another plugin's live snapshot being
+    // deleted under a plan that looks perfectly well-formed. The canonical
+    // directory must therefore be exactly the one we were asked for.
+    const expected = path.join(canonBase, marketplace, plugin);
+    // Case folding here is NOT the seal-identity rule. `realpath` returns the
+    // on-disk casing, while `expected` carries whatever casing the caller
+    // typed — so on a case-INSENSITIVE volume a legitimate
+    // `--plugin obsidian-Router` would compare unequal and be blocked
+    // forever, with "re-run the preview" unable to help. Seal identity stays
+    // strict (a wrong seal must refuse); this path check tolerates casing on
+    // the platforms whose filesystems commonly do, because here the failure
+    // costs a usable install rather than an unwanted delete.
+    const foldForPathCheck = (s) => (
+      platform === 'win32' || platform === 'darwin'
+        ? String(s).replace(/\\/g, '/').toLowerCase()
+        : String(s).replace(/\\/g, '/')
+    );
+    if (foldForPathCheck(canonCache) !== foldForPathCheck(expected)) {
+      return {
+        ...blockedBase,
+        blockedReason: `${cacheDir} resolves to ${canonCache}, not to ${expected} — refusing: a link to a different plugin's cache would have its snapshots deleted under this plugin's plan`,
+      };
+    }
   }
 
   const listing = listCachedVersions(cacheDir);
@@ -446,7 +491,7 @@ export function planCachePurge({
     // Without the manifest we cannot know what is installed. Refuse.
     return { ...base, blockedReason: `installed_plugins.json not found at ${installedPath} — refusing to purge without knowing what is installed` };
   }
-  const refs = referencedVersions({ files: manifestFiles, cacheDir, platform });
+  const refs = referencedVersions({ files: manifestFiles, cacheDir, platform, pluginKey: `${plugin}@${marketplace}` });
   if (refs.unreadable && refs.unreadable.length > 0) {
     return {
       ...base,
@@ -468,9 +513,18 @@ export function planCachePurge({
   const anchor = currentVersion && ordered.some((o) => o.version === currentVersion)
     ? currentVersion
     : (ordered[0] && ordered[0].version) || null;
-  const below = ordered.filter((o) => anchor && compareSemver(o.version, anchor) < 0);
-  for (const { version } of below.slice(0, keepCount)) {
-    protect(version, `kept for rollback (predecessor of ${anchor})`);
+  //     The predecessor of EVERY manifest-named version is protected, not
+  //     just the anchor's. `installed_plugins.json` holds one entry per
+  //     SCOPE, so a project-scope install can name a different version than
+  //     the user-scope one; protecting only the anchor's predecessor left
+  //     the other install's rollback purgeable, and array order is no basis
+  //     for deciding which of the two deserves it.
+  const anchors = new Set([anchor, ...refs.keys()].filter(Boolean));
+  for (const a of anchors) {
+    const below = ordered.filter((o) => compareSemver(o.version, a) < 0);
+    for (const { version } of below.slice(0, keepCount)) {
+      protect(version, `kept for rollback (predecessor of ${a})`);
+    }
   }
   if (ordered.length > 0) protect(ordered[0].version, 'newest cached version');
 

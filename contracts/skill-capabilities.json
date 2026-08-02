@@ -156,20 +156,27 @@
       "summary": "Compresses a settled decision page to its canon and moves the deliberation chronicle to an archive note.",
       "reads": [
         "vault:content",
+        "vault:derived",
+        "vault:frontmatter",
+        "vault:listing",
+        "vault:scaffold",
         "vault:search"
       ],
       "writes": [
-        "vault:content"
+        "vault:content",
+        "vault:derived",
+        "vault:frontmatter"
       ],
       "tools": [
         "get_file",
-        "search_smart",
         "write_file"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "search_smart"
+      ],
       "writeMode": "mutating",
       "requires": {
-        "shell": false,
+        "shell": true,
         "network": false,
         "python": false,
         "obsidianPlugins": [],
@@ -177,8 +184,11 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill, and this one rewrites authored prose in place — the highest-consequence unverified contract in the set. The page's own guard (refuse on status `proposed`, verify the archive before compressing) is procedural, not enforced by code."
-      }
+        "reason": "No harness executes a skill, and this one rewrites authored prose in place — the highest-consequence unverified contract in the set. Its guards (refuse on status 'proposed', verify the archive before compressing) are procedural, not enforced by code. Step 6 prescribes re-running the decision lint pass 'via the wiki-lint skill OR the repo script', so BOTH paths are declared: the delegation closure of wiki-lint, and requires.shell. search_smart is prose only — it appears once, to say archives are excluded from that surface — but vault:search stays in reads because the wiki-lint closure genuinely reaches it."
+      },
+      "delegatesTo": [
+        "wiki-lint"
+      ]
     },
     "defuddle": {
       "summary": "Fetches a webpage and returns cleaned markdown plus structured metadata, before ingestion.",

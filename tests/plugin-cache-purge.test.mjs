@@ -138,6 +138,25 @@ describe('what the purge protects', () => {
       .reasons.some((r) => /installed_plugins\.json/.test(r)));
   });
 
+  test('the predecessor of EVERY manifest-named version is kept, not just the anchor\'s', () => {
+    // installed_plugins.json holds one entry per SCOPE, so a project-scope
+    // install can name a different version than the user-scope one. Anchoring
+    // the rollback on a single "current" version left the other install's
+    // predecessor purgeable — and array order is no basis for deciding which
+    // of the two deserves a rollback.
+    const f = makeHome({
+      versions: ['0.1.0', '0.2.0', '0.3.0', '0.4.0', '0.5.0'],
+      installed: ['0.5.0', '0.3.0'],   // user scope + an older project scope
+    });
+    const plan = planFor(f, { currentVersion: '0.5.0' });
+    const kept = keptVersions(plan);
+    assert.ok(kept.includes('0.5.0'), 'current');
+    assert.ok(kept.includes('0.4.0'), 'predecessor of 0.5.0');
+    assert.ok(kept.includes('0.3.0'), 'named by the manifest');
+    assert.ok(kept.includes('0.2.0'), 'predecessor of the project-scope 0.3.0');
+    assert.deepEqual(purgedVersions(plan), ['0.1.0'], renderPurgePlan(plan));
+  });
+
   test('a version a HOOK PATH in settings.json names is kept', () => {
     const f = makeHome({ versions: ['0.1.0', '0.2.0', '0.3.0'], installed: ['0.3.0'], settingsVersions: ['0.1.0'] });
     const plan = planFor(f, { currentVersion: '0.3.0' });
@@ -427,6 +446,32 @@ describe('discovery and reporting units', () => {
     assert.ok(!purgedVersions(plan).includes('0.1.0'), renderPurgePlan(plan));
   });
 
+  test('findLiveSnapshotVersions honours the INJECTED platform, not the host', () => {
+    // The regression this pins: `platform` was accepted, used to pick the
+    // scan, and then dropped before both normalizePathKey calls — so case
+    // folding silently followed `process.platform`. Every test injecting
+    // `win32` therefore validated the HOST's casing, and on a Linux runner
+    // the scan returned `ok: true` with an EMPTY set for a snapshot that was
+    // in use: the "nothing is running" answer that authorises deleting a
+    // served directory. It also turned the CI matrix red on both Linux legs.
+    const cacheDir = 'C:/Users/u/.claude/plugins/cache/MKT/PLG';
+    const line = `node ${cacheDir.toUpperCase()}/0.1.0/src/index.mjs`;
+    const scan = () => ({ status: 0, stdout: `${line}\n` });
+
+    const desc = Object.getOwnPropertyDescriptor(process, 'platform');
+    try {
+      for (const host of ['win32', 'linux', 'darwin']) {
+        Object.defineProperty(process, 'platform', { value: host, configurable: true });
+        const r = findLiveSnapshotVersions({ cacheDir, platform: 'win32', scan });
+        assert.equal(r.ok, true);
+        assert.deepEqual([...r.versions], ['0.1.0'],
+          `injected win32 must fold case regardless of host platform (host=${host})`);
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', desc);
+    }
+  });
+
   test('normalizePathKey folds case ONLY where the filesystem does', () => {
     // Unconditional lowercasing aliases two genuinely distinct POSIX paths,
     // which would let one cache's seal identity collide with another's.
@@ -436,6 +481,40 @@ describe('discovery and reporting units', () => {
       normalizePathKey('/home/u/Cache', 'linux'),
       normalizePathKey('/home/u/cache', 'linux'),
     );
+    // macOS is treated as case-SENSITIVE: case-insensitivity is a volume
+    // property there, not a platform one, and APFS case-sensitive volumes
+    // are ordinary. Folding would let a seal for `Foo` authorise deleting
+    // `foo`. Being wrong the other way only costs a refused seal.
+    assert.notEqual(
+      normalizePathKey('/Users/u/Cache', 'darwin'),
+      normalizePathKey('/Users/u/cache', 'darwin'),
+    );
+  });
+
+  test('a link to a SIBLING plugin cache is refused', () => {
+    // Global containment alone accepted this: the alias stays under the
+    // cache root, so the parent check passed, while manifest and process
+    // matching kept using the alias path and rmSync followed the link —
+    // another plugin's live snapshot deleted under a well-formed plan.
+    const f = makeHome({ versions: ['0.1.0', '0.2.0', '0.3.0'], installed: ['0.3.0'] });
+    const victimCache = path.join(f.home, '.claude', 'plugins', 'cache', MARKETPLACE, 'other-plugin');
+    fs.mkdirSync(path.join(victimCache, '0.9.0'), { recursive: true });
+    const aliasParent = path.join(f.home, '.claude', 'plugins', 'cache', MARKETPLACE);
+    const alias = path.join(aliasParent, 'aliased-plugin');
+    let linked = false;
+    try {
+      fs.symlinkSync(victimCache, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      linked = true;
+    } catch { /* unprivileged environment */ }
+    if (!linked) return;
+
+    const plan = planCachePurge({
+      homeDir: f.home, marketplace: MARKETPLACE, plugin: 'aliased-plugin',
+      currentVersion: '0.3.0', platform: 'linux', scan: scanNothingLive(f.cache),
+    });
+    assert.equal(plan.blocked, true, renderPurgePlan(plan));
+    assert.match(plan.blockedReason, /not to .*other-plugin|different plugin/);
+    assert.ok(fs.existsSync(path.join(victimCache, '0.9.0')));
   });
 
   test('formatBytes is readable at every scale', () => {

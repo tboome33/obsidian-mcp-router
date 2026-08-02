@@ -240,6 +240,7 @@ const req = https.get(
               latestVersion,
               result.settingsRewrite,
               result.markitdownStatus,
+              result.cachePurge,
             );
           } else {
             versionNotice = composeNotice(installedVersion, latestVersion, result.error || 'unknown');
@@ -312,7 +313,13 @@ function composeNotice(installed, latest, autoUpdateFailureReason) {
   return lines.join('\n');
 }
 
-function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, markitdownStatus) {
+function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, markitdownStatus, cachePurge) {
+  // cachePurge: the plan tryAutoUpdate computed but deliberately did not
+  // apply. It used to be computed and then dropped on the floor — the
+  // update paid for a process scan and a directory walk on every run, and
+  // nobody ever saw the number. Surfacing it here is what makes the work
+  // worth doing, and it is the only place the user learns the cache has
+  // grown at all.
   // settingsRewrite: { changed: boolean, settingsExists: boolean } from
   // rewriteSettingsHookPaths. When settings.json exists but nothing was
   // rewritten, hooks may still be pinned to the old version dir — warn
@@ -390,6 +397,8 @@ function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, mark
       '',
     );
   }
+  // Last-resort net: a SessionStart hook must never die on a cosmetic notice.
+  try { lines.push(...composeCachePurgeLines(cachePurge)); } catch { /* stay silent */ }
   lines.push(
     `New sessions will load v${latest} automatically — no action needed.`,
     '',
@@ -399,6 +408,72 @@ function composeAutoUpdateSuccessNotice(installed, latest, settingsRewrite, mark
     '',
   );
   return lines.join('\n');
+}
+
+/**
+ * Render the cache-purge plan the update computed.
+ *
+ * Every update copies ~155 MB in and removes nothing, so without this the
+ * cache grows silently forever — eight versions and ~1.2 GB by the time it
+ * was first measured. Nothing is deleted here: the user gets the number and
+ * the exact command, and decides.
+ */
+function composeCachePurgeLines(cachePurge) {
+  if (!cachePurge) return [];
+  const out = [];
+
+  // An opted-in apply already ran: report what actually happened, including
+  // failures, which would otherwise be invisible.
+  if (cachePurge.applied) {
+    const a = cachePurge.applied;
+    // A BLOCKED apply used to be completely silent: this branch short-circuited
+    // the `blocked` branch below, and then returned [] because `removed` and
+    // `failed` are both empty on a refusal. The user had opted in, the purge
+    // fail-closed, and nothing said so.
+    if (a.blocked) {
+      out.push(`🧹 Plugin-cache purge refused — ${a.blockedReason}`, '');
+      return out;
+    }
+    if (Array.isArray(a.removed) && a.removed.length > 0) {
+      out.push(`🧹 Reclaimed ${formatPurgeBytes(a.freedBytes)} from ${a.removed.length} stale plugin snapshot(s) (${a.removed.map((r) => r.version).join(', ')}).`, '');
+    }
+    if (Array.isArray(a.failed) && a.failed.length > 0) {
+      out.push(`⚠️  ${a.failed.length} snapshot(s) could not be removed: ${a.failed.filter(Boolean).map((f) => `${f.version} (${f.error})`).join('; ')}`, '');
+    }
+    return out;
+  }
+
+  if (cachePurge.blocked) {
+    // Fail-closed is not a bug, but staying silent about it is: the user
+    // would never learn the cache is growing unchecked.
+    out.push(`🧹 Plugin-cache purge skipped — ${cachePurge.blockedReason}`, '');
+    return out;
+  }
+
+  if (!Array.isArray(cachePurge.purge) || cachePurge.purge.length === 0) return [];
+
+  out.push(
+    `🧹 **${formatPurgeBytes(cachePurge.reclaimableBytes)} of stale plugin snapshots** can be reclaimed `
+    + `(${cachePurge.purge.length} old version${cachePurge.purge.length === 1 ? '' : 's'}: ${cachePurge.purge.filter(Boolean).map((p) => p.version).join(', ')}).`,
+    '   Nothing has been deleted. The current version, the rollback snapshot, and anything a running session is using are never touched. To review and apply:',
+    '',
+    '```',
+    'npm run purge:plugin-cache',
+    '```',
+    '',
+  );
+  return out;
+}
+
+/** Local byte formatter — the hook must not import from src/ at runtime. */
+function formatPurgeBytes(bytes) {
+  const n = Number(bytes) || 0;
+  if (n < 1024) return `${n} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
 /**

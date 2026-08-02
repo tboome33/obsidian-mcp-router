@@ -674,6 +674,26 @@ describe('a contract may never be gentler than the tools it declares', () => {
     }
   });
 
+  test('`cache` may not cover authored writes', () => {
+    // `cache` is defined as "only regenerable derived artifacts". Pairing it
+    // with `vault:content` passed, because the consistency check only
+    // compared EMPTY writes against `read-only` — so a contract could tell a
+    // permission engine that authored notes were safe from a skill holding
+    // `write_file`, which can replace them.
+    const { issues } = validateRepo(withTools({
+      tools: ['get_file', 'write_file'], writes: ['vault:content'], writeMode: 'cache',
+    }));
+    assert.ok(issues.some((i) => i.code === 'understated' && /not regenerable derived data/.test(i.message)),
+      renderIssues(issues));
+  });
+
+  test('`cache` with only derived writes is accepted', () => {
+    const { issues } = validateRepo(withTools({
+      tools: ['get_file', 'build_search_index'], writes: ['vault:derived'], writeMode: 'cache',
+    }));
+    assert.ok(!issues.some((i) => i.code === 'understated'), renderIssues(issues));
+  });
+
   test('a write tool with a specific target must declare that write atom', () => {
     const { issues } = validateRepo(withTools({
       tools: ['get_file', 'set_frontmatter'], writes: ['vault:content'], writeMode: 'mutating',

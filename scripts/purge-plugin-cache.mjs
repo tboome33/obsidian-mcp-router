@@ -25,12 +25,15 @@
  * 1 = refused (fail-closed) or an apply hit an error.
  */
 
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 
 import {
   planCachePurge, applyCachePurge, renderPurgePlan, formatBytes,
 } from '../src/helpers/plugin-cache-purge.mjs';
 import { PKG_VERSION } from '../src/helpers/pkg-version.mjs';
+import { compareSemver, parseSemver } from '../src/helpers/semver-compare.mjs';
 
 const DEFAULT_MARKETPLACE = 'obsidian-mcp-router-marketplace';
 const DEFAULT_PLUGIN = 'obsidian-router';
@@ -50,8 +53,8 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') out.help = true;
     else { console.error(`Unknown flag: ${a}`); process.exit(2); }
   }
-  if (!Number.isFinite(out.keepPrevious) || out.keepPrevious < 0) {
-    console.error('--keep-previous must be a non-negative number');
+  if (!Number.isInteger(out.keepPrevious) || out.keepPrevious < 1) {
+    console.error('--keep-previous must be an integer >= 1 — the N-1 rollback snapshot is not negotiable');
     process.exit(2);
   }
   return out;
@@ -73,26 +76,45 @@ function main() {
     return;
   }
 
+  // The current version must come from the MANIFEST, not from this
+  // checkout's package.json. Run the CLI from a stale clone and
+  // `PKG_VERSION` is some older release that may still sit in the cache —
+  // the rollback would then be anchored to the checkout instead of to what
+  // is installed, and could purge the true N-1 of the running release. The
+  // package version is only a last resort, and it is reported as such.
+  const installed = installedVersionFor(args.marketplace, args.plugin);
+  const currentVersion = installed || safeVersion();
+
   const common = {
     homeDir: os.homedir(),
     marketplace: args.marketplace,
     plugin: args.plugin,
-    currentVersion: safeVersion(),
+    currentVersion,
     pluginRoot: process.env.CLAUDE_PLUGIN_ROOT || null,
     keepPrevious: args.keepPrevious,
   };
 
+  if (!args.json && !installed) {
+    console.error(`note: installed_plugins.json names no version for ${args.plugin}@${args.marketplace};`);
+    console.error(`      falling back to this checkout's version (${safeVersion()}) to anchor the rollback.`);
+    console.error('');
+  }
+
   if (!args.confirm) {
     const plan = planCachePurge(common);
     if (args.json) {
-      console.log(JSON.stringify(plan, null, 2));
+      console.log(JSON.stringify({ ...plan, currentVersion, currentVersionSource: installed ? 'installed_plugins.json' : 'package.json' }, null, 2));
     } else {
       console.log(renderPurgePlan(plan));
       if (!plan.blocked && plan.purge.length > 0) {
         console.log('');
         console.log('Nothing has been deleted. To apply exactly this plan:');
         console.log('');
-        console.log(`  node scripts/purge-plugin-cache.mjs --confirm ${plan.approvedPlanSha256}`);
+        // Every non-default planning option is repeated. Dropping them made
+        // the apply re-derive a DIFFERENT plan, which then failed seal
+        // verification — the printed command could not reproduce the plan it
+        // claimed to reproduce.
+        console.log(`  ${applyCommandFor(args, plan.approvedPlanSha256)}`);
       }
     }
     process.exit(plan.blocked ? 1 : 0);
@@ -119,7 +141,7 @@ function main() {
   }
 
   if (args.json) {
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ ...result, currentVersion, currentVersionSource: installed ? 'installed_plugins.json' : 'package.json' }, null, 2));
   } else if (result.blocked) {
     console.error(`REFUSING TO PURGE — ${result.blockedReason}`);
   } else {
@@ -136,6 +158,56 @@ function main() {
 
 function safeVersion() {
   return PKG_VERSION || null;
+}
+
+/**
+ * The version `installed_plugins.json` currently names for this plugin.
+ *
+ * Two things this must NOT do, both found in review:
+ *
+ *   - Take the FIRST array entry. The v2 schema stores an array of SCOPED
+ *     installs, and array order carries no claim about which one is active:
+ *     a stale `scope: project` at 0.50.0 listed before the live
+ *     `scope: user` at 0.67.0 would anchor the rollback on 0.50.0, leaving
+ *     the real predecessor of the running release purgeable. The highest
+ *     semver is picked instead — deterministic, and it errs toward keeping
+ *     more.
+ *   - Accept any non-empty string. The manifest on the machine this was
+ *     written on holds ten `"version": "unknown"` entries and one commit
+ *     sha. Those are not versions: `"unknown"` would become the anchor, no
+ *     cached directory would match it, the anchor would silently fall back
+ *     to the newest directory, and the "falling back" note would NOT print
+ *     because a truthy value had been found. Non-semver values are ignored.
+ *
+ * Returns null when nothing usable is named — the caller then falls back
+ * to the package version and SAYS so.
+ */
+function installedVersionFor(marketplace, plugin) {
+  try {
+    const raw = fs.readFileSync(
+      path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8',
+    );
+    const data = JSON.parse(raw);
+    const key = `${plugin}@${marketplace}`;
+    const value = (data.plugins && data.plugins[key]) ?? data[key];
+    const entries = Array.isArray(value) ? value : (value ? [value] : []);
+    const versions = entries
+      .map((e) => (e && typeof e.version === 'string' ? e.version.trim() : ''))
+      .filter((v) => v && parseSemver(v));
+    if (versions.length === 0) return null;
+    return versions.sort((a, b) => compareSemver(b, a))[0];
+  } catch { /* fall through to the package version */ }
+  return null;
+}
+
+/** The apply command, carrying every non-default planning option. */
+function applyCommandFor(args, seal) {
+  const parts = ['node scripts/purge-plugin-cache.mjs'];
+  if (args.marketplace !== DEFAULT_MARKETPLACE) parts.push(`--marketplace ${args.marketplace}`);
+  if (args.plugin !== DEFAULT_PLUGIN) parts.push(`--plugin ${args.plugin}`);
+  if (args.keepPrevious !== 1) parts.push(`--keep-previous ${args.keepPrevious}`);
+  parts.push(`--confirm ${seal}`);
+  return parts.join(' ');
 }
 
 main();

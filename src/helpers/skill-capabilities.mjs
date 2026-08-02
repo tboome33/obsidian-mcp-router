@@ -932,6 +932,21 @@ export function validateDeclarations(facts) {
           where,
         ));
       }
+      // `cache` is DEFINED as "writes only regenerable derived artifacts".
+      // Without this, a contract could pair `cache` with `vault:content` and
+      // still pass — telling a permission engine that authored notes are
+      // safe from a skill that can replace them.
+      if (entry.writeMode === 'cache') {
+        const notDerived = entry.writes.filter((a) => a !== 'vault:derived');
+        if (notDerived.length > 0) {
+          issues.push(issue(
+            'understated',
+            `entry \`${name}\` is writeMode \`cache\` but writes ${notDerived.join(', ')}, which is not regenerable derived data.`,
+            '`cache` means only `vault:derived`. Anything that touches authored content is at least `create-only`/`mutating` — pick that instead.',
+            where,
+          ));
+        }
+      }
     }
 
     // --- requires ---
