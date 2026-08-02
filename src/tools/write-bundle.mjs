@@ -45,6 +45,7 @@ import {
   isVerifiedRollback,
   journalPathFor,
   newOperationId,
+  normalizeRecoverArg,
   outcomeMessage,
   parseJournal,
   planRestore,
@@ -96,9 +97,13 @@ export const TOOL_DEFINITION = {
       preview: { type: 'boolean', description: 'Return the plan (what each step would touch, the current state of every target, and any ifMatch precondition that is ALREADY stale) plus an approvedPlanSha256 seal, WITHOUT writing.' },
       approvedPlanSha256: { type: 'string', description: 'C3 sealed preview: the seal a preview:true call returned. When supplied, the bundle is refused — before any write — if the plan or any target drifted since the preview.' },
       recover: {
-        oneOf: [{ type: 'boolean' }, { type: 'string' }],
+        // NOT `oneOf`: a union does not survive every MCP client's schema
+        // normalisation — observed in production on the first real call, where
+        // `recover: true` arrived as the string "true" and the read-only listing
+        // became unreachable. The handler normalises both forms.
+        type: ['boolean', 'string'],
         description:
-          'true → LIST the journals left behind by bundles that never finished (read-only), each with a per-file verdict of what a recovery would do. ' +
+          'true (or "true") → LIST the journals left behind by bundles that never finished (read-only), each with a per-file verdict of what a recovery would do. ' +
           'An operationId string → replay that journal\'s rollback (requires confirm:true). Recovery cannot attribute the current content to anyone — it also cannot tell which files the crashed bundle actually reached — so it reports every restore as `unverified`: list first, look at the files, then decide. Narrow it with `only`.',
       },
       only: { type: 'array', items: { type: 'string' }, description: 'For a recovery run: restore ONLY these paths out of the journal. Use it when the listing shows files you know you edited yourself after the crash.' },
@@ -338,8 +343,12 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
   const deps = resolveDeps(_deps);
   const vault = registry.resolveVault(args.vault);
 
-  if (args.recover !== undefined && args.recover !== false) {
-    return recover(vault, args, deps);
+  // The `recover` union does not survive every MCP client intact (a boolean can
+  // arrive as the string "true"), so normalise it once, here, before anything
+  // branches on it.
+  const recoverArg = normalizeRecoverArg(args.recover);
+  if (recoverArg !== false) {
+    return recover(vault, { ...args, recover: recoverArg }, deps);
   }
 
   // ---- Pre-flight. Everything that can refuse, refuses HERE — before the

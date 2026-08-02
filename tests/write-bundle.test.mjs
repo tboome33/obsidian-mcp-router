@@ -27,6 +27,7 @@ import {
   isVerifiedRollback,
   journalPathFor,
   newOperationId,
+  normalizeRecoverArg,
   outcomeMessage,
   parseJournal,
   planRestore,
@@ -448,6 +449,24 @@ describe('operation ids', () => {
       assert.throws(() => journalPathFor(evil), /Invalid operationId/);
     }
     assert.equal(journalPathFor('op-0123456789abcdef'), `${BUNDLE_JOURNAL_DIR}/op-0123456789abcdef.json`);
+  });
+
+  test('the recover union is normalised — a boolean that arrived as a string still lists', () => {
+    // Found in production on the very first real call: `recover: true` reached
+    // the handler as the STRING "true", so the read-only listing — the entry
+    // point to the whole recovery story — was unreachable from that client.
+    for (const truthy of [true, 'true', 'TRUE', ' yes ', '1', 'on']) {
+      assert.equal(normalizeRecoverArg(truthy), true, JSON.stringify(truthy));
+    }
+    for (const falsy of [false, 'false', 'no', '0', 'off', '', undefined, null]) {
+      assert.equal(normalizeRecoverArg(falsy), false, JSON.stringify(falsy));
+    }
+    // An operationId passes through untouched…
+    assert.equal(normalizeRecoverArg('op-0123456789abcdef'), 'op-0123456789abcdef');
+    // …and so does anything malformed, so it still gets the actionable refusal
+    // instead of being silently coerced into "list everything".
+    assert.equal(normalizeRecoverArg('../../etc/passwd'), '../../etc/passwd');
+    assert.equal(normalizeRecoverArg(42), 42);
   });
 
   test('newOperationId refuses an id source that does not yield 16 hex chars', () => {

@@ -143,6 +143,34 @@ export function isOperationId(value) {
 }
 
 /**
+ * Normalise the `recover` argument into `false` | `true` (list) | an operationId.
+ *
+ * Why this exists: the field is a union (boolean OR operationId string), and a
+ * union does NOT survive the trip through every MCP client — observed in
+ * production on the first real call, where `recover: true` arrived as the STRING
+ * `"true"` and the read-only listing became unreachable. The listing is the
+ * entry point to the whole recovery story, so it must not depend on how a client
+ * happens to render a boolean. The recognised tokens are the same ones the
+ * router already accepts for its boolean env vars.
+ *
+ * Anything else is returned untouched, so a malformed value still produces the
+ * actionable refusal rather than being silently coerced into "list everything".
+ *
+ * @param {unknown} value
+ * @returns {boolean|string|unknown}
+ */
+export function normalizeRecoverArg(value) {
+  if (value === undefined || value === null) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const token = value.trim().toLowerCase();
+    if (token === 'true' || token === '1' || token === 'yes' || token === 'on') return true;
+    if (token === '' || token === 'false' || token === '0' || token === 'no' || token === 'off') return false;
+  }
+  return value;
+}
+
+/**
  * Mint an operation id. `randomHex` is injected so tests are deterministic.
  * @param {() => string} randomHex 16 lowercase hex chars
  */

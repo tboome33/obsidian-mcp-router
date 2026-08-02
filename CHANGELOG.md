@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.66.1] — 2026-08-02 — `write_bundle recover:true` was unreachable from the MCP wire
+
+### Fixed
+
+- **The recovery listing could not be called.** `recover` was declared as a `oneOf: [boolean, string]` union, and that union does not survive every MCP client's schema normalisation: on the first real call after v0.66.0 shipped, `recover: true` arrived at the handler as the **string** `"true"`, which matched neither the `=== true` listing branch nor the operationId form — so it was refused as a malformed value. The read-only listing is the entry point to the whole crash-recovery story (it is what you run *before* deciding whether to restore anything), so a client-dependent encoding is not an acceptable dependency for it.
+
+  The schema now declares `type: ['boolean', 'string']` instead of a union, and the handler normalises the argument once at the entry point: real booleans and the usual boolean tokens (`"true"` / `"1"` / `"yes"` / `"on"`, and their falsy counterparts) all resolve, an operationId passes through untouched, and anything else still gets the actionable refusal rather than being silently coerced into "list everything".
+
+  Found in production, on the first call — the same way C1's BOM asymmetry and C3's provision-steps gap were.
+
+Tests: **+4** (`normalizeRecoverArg` over every token, and the wire-level equivalence of `recover: true` and `recover: "true"` including that both write nothing). Suite green: **3118**.
+
 ## [0.66.0] — 2026-08-02 — the write bundle: all-or-nothing, journaled, with rollback (borrowing C2)
 
 ### Added

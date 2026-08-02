@@ -1240,3 +1240,35 @@ describe('write_bundle — drives the real write tools over the wire', () => {
     assert.equal(files.get('wiki/stale.md'), 'STALE CONTENT');
   });
 });
+
+// ---------------------------------------------------------------------------
+// C. The wire shape of `recover`, found broken in production.
+// ---------------------------------------------------------------------------
+
+describe('write_bundle — the recover union survives a client that stringifies booleans', () => {
+  test('recover:"true" lists exactly like recover:true, and writes nothing', async () => {
+    const h = harness({ files: { 'a.md': 'A' } });
+    const asBool = await writeBundleTool(h.registry, { recover: true }, h.deps);
+    const asString = await writeBundleTool(h.registry, { recover: 'true' }, h.deps);
+    assert.equal(asBool.recover, 'list');
+    assert.deepEqual(asString, asBool);
+    assert.equal(h.io.some(([verb]) => verb !== 'get'), false);
+  });
+
+  test('the falsy tokens mean "not a recovery" — they run the bundle, they do not list', async () => {
+    for (const falsy of [false, 'false', '', undefined]) {
+      const h = harness({ files: {} });
+      const out = await writeBundleTool(h.registry, { recover: falsy, steps: [{ op: 'write', path: 'a.md', content: 'X' }] }, h.deps);
+      assert.equal(out.outcome, 'applied', JSON.stringify(falsy));
+      assert.equal(h.store.get('a.md'), 'X');
+    }
+  });
+
+  test('a malformed recover value still gets the actionable refusal, not a silent "list everything"', async () => {
+    const h = harness({ files: { 'a.md': 'A' } });
+    await assert.rejects(
+      writeBundleTool(h.registry, { recover: 'yep-do-it', confirm: true }, h.deps),
+      /Invalid recover value/,
+    );
+  });
+});
