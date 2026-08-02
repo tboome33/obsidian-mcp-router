@@ -95,6 +95,12 @@ import {
   buildSearchIndexTool,
 } from './tools/build-search-index.mjs';
 import {
+  RECORD_TOOL_DEFINITION as RECORD_SOURCE_TOOL_DEFINITION,
+  AUDIT_TOOL_DEFINITION as AUDIT_SOURCES_TOOL_DEFINITION,
+  recordSourceTool,
+  auditSourcesTool,
+} from './tools/source-ledger.mjs';
+import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
 } from './tools/get-page-neighbors.mjs';
@@ -875,6 +881,8 @@ const TOOLS = [
   // WRITE_TOOL_NAMES.
   BUILD_WIKI_TOUR_TOOL_DEFINITION,
   BUILD_SEARCH_INDEX_TOOL_DEFINITION,
+  RECORD_SOURCE_TOOL_DEFINITION,
+  AUDIT_SOURCES_TOOL_DEFINITION,
   // Page-neighbors roadmap W-A — the neighbourhood of ONE page from the graph
   // (backlinks + forward-links, bounded depth). Read-only (reads the graph JSON)
   // — excluded from WRITE_TOOL_NAMES.
@@ -1055,6 +1063,9 @@ const TOOL_HANDLERS = {
   build_wiki_graph: (reg, args) => buildWikiGraphTool(reg, args),
   // C4/C5 — local deterministic BM25 index (plugin-free search tier).
   build_search_index: (reg, args) => buildSearchIndexTool(reg, args),
+  // C6 — source ledger: forward-fill register + read-only independence audit.
+  record_source: (reg, args) => recordSourceTool(reg, args),
+  audit_sources: (reg, args) => auditSourcesTool(reg, args),
   refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
@@ -1125,6 +1136,9 @@ const WRITE_TOOL_NAMES = new Set([
   // C4 — writes wiki-meta/search-index.json. Read-only deployments must hide
   // it (search_smart's `tier: 'local'` still READS the index, which is fine).
   'build_search_index',
+  // C6 — writes wiki-meta/source-ledger.json. `audit_sources` is read-only and
+  // is deliberately NOT in this set.
+  'record_source',
   // v0.59.0 — rewrites the generated OKF projections inside wiki/. Read-only
   // deployments must hide it.
   'refresh_okf_projections',
