@@ -6,6 +6,28 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.67.1] — 2026-08-03 — a third review round: the C8 gate would never have run in CI
+
+### Fixed
+
+A third review round on the v0.67.0 work (two independent reviewers per pass, every finding reproduced by an executable probe before it was accepted). Two passes, **14 findings**. The headline one is why this release exists at all.
+
+- **The C8 gate would never have run in CI.** `findLiveSnapshotVersions` accepted a `platform` argument and then dropped it before both `normalizePathKey` calls, so case folding silently followed `process.platform`. On a Linux runner the liveness scan returned `ok: true` with an **empty set** for a snapshot that was in use — the "nothing is running" answer that authorises deleting a served directory — and the test injecting `win32` went red. That reddened both Linux legs of the matrix, and since `npm run validate` is sequenced *after* `npm test` on the ubuntu leg, the capability-contract gate introduced in v0.67.0 would never have been reached. This was a regression introduced by v0.67.0's own second-round fix, the one that had just made `normalizePathKey` platform-aware.
+
+- **Two more ways the purge could reach the wrong directory.** `darwin` is no longer folded to lowercase for seal identity — case-insensitivity is a *volume* property, not a platform one, and an APFS case-sensitive volume would have let one cache's seal authorise a purge of another's. And containment checked only the global cache root, so a link from `cache/<marketplace>/<plugin>` to a **sibling plugin's** directory passed while `rmSync` followed it; the canonical directory must now be exactly the one asked for.
+
+- **The rollback anchor was unreliable.** The CLI anchored N-1 on `PKG_VERSION`, so a stale checkout could purge the true predecessor of the installed release. It now reads `installed_plugins.json` — taking the highest **valid semver** rather than the first array entry (scope order says nothing about which install is active), and ignoring non-semver values (the manifest on the author's machine holds ten `"version": "unknown"` entries, any of which would have become the anchor and silently defeated the fix). The predecessor of *every* manifest-named version is protected, not just the anchor's.
+
+- **Guards that switched themselves off.** The `--force` guard protecting 46 reviewed declarations hung on `existing.ok`, so it was skipped for an unreadable target — exactly the state it claimed to cover; `--write` overwrote everything with exit 0. A *blocked* auto-purge was completely silent, because the `applied` branch short-circuited the `blocked` one and then returned nothing. And `composeCachePurgeLines` could throw on a malformed shape, which would have killed a `SessionStart` hook.
+
+- **The contracts themselves.** `writeMode: "cache"` accepted non-derived write atoms — telling a permission engine that authored notes were safe from a skill holding `write_file`. `decision-consolidate` declared `search_smart` as called (it appears once, in prose, about archives being excluded from that surface) and declared neither path of its step 6, "the `wiki-lint` skill **or** the repo script"; both are now declared, with the delegation closure and `requires.shell` that follow.
+
+- Plus: bootstrap vocabularies imported instead of duplicated, duplicate-key detection extended to `--out` targets, the printed apply command now repeats every non-default planning option (it previously reproduced a *different* plan and failed its own seal), and the seal-drift message no longer says "vault" for a plugin cache.
+
+**Correcting the v0.67.0 entry below**: it says "two rounds of two independent reviewers", which was true when it was written and is no longer — this is the third round, and it found a release-blocking defect the first two missed. The reviewers verified each fix by reverting it in a scratch copy: exactly one test goes red per fix, and only that one.
+
+Tests: **+5**. Suite green: **3256**. `npm run validate` clean.
+
 ## [0.67.0] — 2026-08-02 — capability contracts per skill (C8), and a plugin cache that finally shrinks
 
 ### Added
