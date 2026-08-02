@@ -72,6 +72,10 @@ Also worth surfacing:
 
 **If a step is refused because the file "was changed by something other than this bundle"**, that is not a transient error: the bundle proved a concurrent writer is working on that file. Re-read it and rebuild on the current content — do not retry the same bundle.
 
+## What a bundle costs
+
+Every target's **full** content is copied into memory and into the journal, so the price is the size of the files you touch, not the size of your edit. Measured on a real vault: a three-step bundle (new page + append to `journal.md` + patch `hot.md`) carried **401 KB** of before-images, almost all of it the journal. That is well inside the 5 MB bound and it is the honest cost of being able to undo — but it is why the bound exists, and why you should not casually add a large file to a bundle that does not need it.
+
 ## Steps that must not be inside a bundle
 
 A step whose failure is a *normal branch* of your logic will roll the whole bundle back. The classic case is the backlink dance in `save`: `patch_file` on `## Backlinks`, falling back to `append_to_file` when the heading is absent. Resolve the branch **before** building the bundle (read the target, decide which op to use), or leave that write outside the bundle. Never rely on a step failing.
