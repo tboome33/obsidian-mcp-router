@@ -16,7 +16,7 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 - **The known "heading containing a slash gets swallowed" bug (hot.md §2.17) is the same buggy component** — the plugin's markdown-patch engine — reached through a different trigger. Since heading patches never leave the router anymore, that variant is unreachable too; a slash-heading test (`A::C/D`) locks it in. Note: `block` targets still go through the plugin engine, so a block patch on a CRLF file remains exposed to the upstream bug — heading was the corruption vector observed in production; block can be migrated later if it ever bites.
 
-Tests: **+37** — 28 on the pure engine (including a byte-level REPRO fixture of the corrupted roadmap page: CRLF + `·` + emoji headings, asserting nothing splits mid-line, the heading survives a replace, and zero mixed line endings), 8 wire-level (heading → GET+PUT, never PATCH; invalid-target → structured `not_found` with the full-ancestry hint; block/frontmatter forward untouched), plus the ifMatch-guard tests updated for the new wire shape. Suite green (**2883**).
+Tests: **+37** — 28 on the pure engine (including a byte-level REPRO fixture of the corrupted roadmap page: CRLF + `·` + emoji headings, asserting nothing splits mid-line, the heading survives a replace, and zero mixed line endings), 8 wire-level (heading → GET+PUT, never PATCH; invalid-target → structured `not_found` with the full-ancestry hint; block/frontmatter forward untouched), plus the ifMatch-guard tests updated for the new wire shape. Suite green (**2946** after merging the concurrent v0.64.0 / C6 work).
 
 ## [0.64.0] — 2026-08-02 — the source ledger and the independence rule (borrowing C6)
 
