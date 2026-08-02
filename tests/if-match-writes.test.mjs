@@ -348,8 +348,8 @@ describe('ifMatch guard suppresses the operation on mismatch (patch/delete/move/
     assert.ok(recorded.coreDelete, 'DELETE should fire when the hash matches');
   });
 
-  test('patch_file: mismatch → rejects AND no core PATCH fires', async () => {
-    behaviour.get = { status: 200, body: 'current' };
+  test('patch_file: mismatch → rejects AND no write fires (neither PATCH nor PUT)', async () => {
+    behaviour.get = { status: 200, body: '# H\ncurrent' };
     await assert.rejects(
       () =>
         patchFileTool(realRegistry(), {
@@ -363,15 +363,33 @@ describe('ifMatch guard suppresses the operation on mismatch (patch/delete/move/
       /changed since|precondition failed/i,
     );
     assert.equal(recorded.corePatch, null);
+    assert.equal(recorded.corePut, null);
   });
 
-  test('patch_file: match → the PATCH fires', async () => {
-    behaviour.get = { status: 200, body: 'current' };
+  test('patch_file heading: match → the router-side GET+PUT patch fires (headings never PATCH)', async () => {
+    behaviour.get = { status: 200, body: '# H\ncurrent' };
     await patchFileTool(realRegistry(), {
       path: 'a.md',
       operation: 'append',
       targetType: 'heading',
       target: 'H',
+      content: 'c',
+      ifMatch: contentSha256('# H\ncurrent'),
+    });
+    // Heading patches are applied router-side since the CRLF corruption fix:
+    // guard GET → patch GET → core PUT. The plugin PATCH must not be touched.
+    assert.equal(recorded.corePatch, null, 'heading patch must not hit the plugin PATCH');
+    assert.ok(recorded.corePut, 'the locally patched content is written back via PUT');
+    assert.deepEqual(recorded.requests.map((r) => r.method), ['GET', 'GET', 'PUT']);
+  });
+
+  test('patch_file block: match → the plugin PATCH fires (forward path unchanged)', async () => {
+    behaviour.get = { status: 200, body: 'current' };
+    await patchFileTool(realRegistry(), {
+      path: 'a.md',
+      operation: 'replace',
+      targetType: 'block',
+      target: 'blockid',
       content: 'c',
       ifMatch: contentSha256('current'),
     });

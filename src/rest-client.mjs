@@ -10,6 +10,7 @@
 import { fetch, Agent } from 'undici';
 import { encodeVaultPath, normalizeAnchor } from './helpers/click-to-open.mjs';
 import { contentSha256 } from './helpers/content-hash.mjs';
+import { applyHeadingPatch, HeadingPatchError } from './helpers/heading-patch.mjs';
 
 const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
 const secureAgent = new Agent();
@@ -668,7 +669,7 @@ export function deleteFile(vault, filePath) {
  *   @param {boolean} [args.applyIfContentPreexists]
  *   @param {boolean} [args.trimTargetWhitespace]
  */
-export function patchFile(vault, filePath, args) {
+export async function patchFile(vault, filePath, args) {
   const {
     operation,
     targetType,
@@ -679,6 +680,53 @@ export function patchFile(vault, filePath, args) {
     applyIfContentPreexists,
     trimTargetWhitespace,
   } = args;
+
+  // Heading targets are patched ROUTER-SIDE (GET → line-based edit → PUT)
+  // instead of being forwarded to Local REST API's PATCH. The plugin's heading
+  // engine computes character offsets on LF-normalized content and splices
+  // them into the raw bytes — on a CRLF file every line above the target
+  // shifts the true offset by one byte, so appends land mid-line and replaces
+  // swallow the heading (real corruption, 2026-08-02; same failure class as
+  // the "heading containing a slash" bug). The line-based engine is immune
+  // and keeps the file's own line endings. Trade-off: GET+PUT is the same
+  // non-atomic read-modify-write tier as the plugin's own PATCH; the ifMatch
+  // guard upstream still applies.
+  if (targetType === 'heading') {
+    if (typeof content !== 'string') {
+      throw new RestApiError(
+        `[${vault.name}] heading patch content must be a string`,
+        { kind: 'unknown', vaultName: vault.name, urlPath: `/vault/${encodePath(filePath)}` },
+      );
+    }
+    const raw = await getFileContent(vault, filePath);
+    let result;
+    try {
+      result = applyHeadingPatch(typeof raw === 'string' ? raw : String(raw), {
+        operation,
+        target,
+        content,
+        targetDelimiter,
+        createTargetIfMissing,
+        applyIfContentPreexists,
+        trimTargetWhitespace,
+      });
+    } catch (err) {
+      if (err instanceof HeadingPatchError) {
+        throw new RestApiError(`[${vault.name}] ${err.message}`, {
+          kind: err.code === 'invalid-target' ? 'not_found' : 'unknown',
+          vaultName: vault.name,
+          status: 400,
+          urlPath: `/vault/${encodePath(filePath)}`,
+          hint: 'Heading targets need the FULL ancestry path joined by the delimiter (default "::") — read the file with get_file to inspect its heading structure.',
+        });
+      }
+      throw err;
+    }
+    if (result.applied) {
+      await writeFile(vault, filePath, result.content);
+    }
+    return result;
+  }
 
   // For frontmatter targets, anything that is not a string should be JSON-
   // encoded so types are preserved (numbers stay numbers, booleans stay

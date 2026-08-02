@@ -22,7 +22,7 @@ export async function patchFileTool(registry, args = {}) {
   if (ifMatch !== undefined) {
     await assertContentMatches(vault, filePath, ifMatch);
   }
-  await patchFile(vault, filePath, {
+  const result = await patchFile(vault, filePath, {
     operation: args.operation,
     targetType: args.targetType,
     target: args.target,
@@ -33,13 +33,20 @@ export async function patchFileTool(registry, args = {}) {
     trimTargetWhitespace: args.trimTargetWhitespace,
   });
   const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
+  // Heading targets are patched router-side and report whether the patch was
+  // actually applied (applyIfContentPreexists can skip it) and whether the
+  // target heading had to be created. Block/frontmatter targets go through
+  // the plugin's PATCH, which reports nothing — patched stays true there.
+  const skipped = result && result.applied === false;
   return {
     vault: vault.name,
     path: filePath,
     operation: args.operation,
     targetType: args.targetType,
     target: args.target,
-    patched: true,
+    patched: !skipped,
+    ...(skipped && { skippedReason: result.skippedReason }),
+    ...(result && result.createdTarget && { createdTarget: true }),
     ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

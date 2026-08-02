@@ -6,6 +6,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.63.3] — 2026-08-02 — heading patches no longer corrupt CRLF files (patched router-side now)
+
+### Fixed
+
+- **`patch_file` targetType `heading` corrupted CRLF files** — reproduced in production on 2026-08-02 against a real roadmap page: an *append* under a `H1::H2::H3` path landed **in the middle of an unrelated line** (splitting a sentence in two), and a *replace* **swallowed the target heading** and spliced the new content into the following paragraph. Root cause, confirmed by reading the bundled plugin code byte-by-byte: Local REST API's PATCH delegates to `markdown-patch`, whose `getDocumentMap` lexes the document with **marked** — and marked's `lex()` first normalizes `\r\n → \n`. The heading positions are then accumulated from `token.raw.length` over that **LF-normalized** text, but `applyPatch` splices those offsets into the **raw CRLF** document. Every CRLF line above the target shifts the true position by one character, so the patch lands short by exactly the number of preceding lines. The `·` and emoji in the failing headings were red herrings.
+
+  The fix takes the plugin's buggy engine out of the loop entirely: **heading patches are now applied router-side** (GET → line-based edit → PUT) by a new pure engine, `src/helpers/heading-patch.mjs`. It never counts character offsets — it resolves the full `::`-joined ancestry path against a line-by-line parse (ATX headings, fenced code blocks excluded, closing-hash form handled, BOM preserved) and splices whole lines. Existing lines keep their exact bytes; **inserted content adopts the file's dominant EOL**, so LF content patched into a CRLF file no longer produces mixed endings either. All documented options are honored: `targetDelimiter`, `createTargetIfMissing` (creates the missing tail of the path, nested, capped at H6 — now reported via `createdTarget: true`), `applyIfContentPreexists` (a skipped idempotent patch now honestly returns `patched: false` + `skippedReason` instead of claiming it patched), and `trimTargetWhitespace`. `block` and `frontmatter` targets still forward to the plugin PATCH unchanged.
+
+- **The known "heading containing a slash gets swallowed" bug (hot.md §2.17) is the same buggy component** — the plugin's markdown-patch engine — reached through a different trigger. Since heading patches never leave the router anymore, that variant is unreachable too; a slash-heading test (`A::C/D`) locks it in. Note: `block` targets still go through the plugin engine, so a block patch on a CRLF file remains exposed to the upstream bug — heading was the corruption vector observed in production; block can be migrated later if it ever bites.
+
+Tests: **+37** — 28 on the pure engine (including a byte-level REPRO fixture of the corrupted roadmap page: CRLF + `·` + emoji headings, asserting nothing splits mid-line, the heading survives a replace, and zero mixed line endings), 8 wire-level (heading → GET+PUT, never PATCH; invalid-target → structured `not_found` with the full-ancestry hint; block/frontmatter forward untouched), plus the ifMatch-guard tests updated for the new wire shape. Suite green (**2883**).
+
 ## [0.63.2] — 2026-08-02 — the shared frontmatter reader understands YAML block scalars
 
 ### Fixed
