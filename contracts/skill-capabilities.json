@@ -1,0 +1,1353 @@
+{
+  "schemaVersion": 1,
+  "$comment": "Capability contracts for the shipped skills (C8). Machine-readable on purpose: this is the raw material for MCPHub/SaaS permissioning. Vocabularies and the honesty rule live in src/helpers/skill-capabilities.mjs; `npm run validate` fails the build when this file, the SKILL.md pages, and the code disagree.",
+  "skills": {
+    "auto-mode": {
+      "summary": "Sets the wiki auto-enrichment mode for the session, optionally persisting it to the workspace .env.",
+      "reads": [],
+      "writes": [
+        "router:config"
+      ],
+      "tools": [
+        "set_auto_enrich_mode"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill, so nothing proves the page calls what it declares. The write side is narrow and well understood: the only mutation is the router's own mode state, persisted to the workspace .env by the tool itself."
+      }
+    },
+    "autoresearch": {
+      "summary": "Runs an autonomous web-fed research loop against a written research program until its questions close.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:listing",
+        "vault:search",
+        "web"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:derived",
+        "vault:frontmatter",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "get_file",
+        "search_smart"
+      ],
+      "toolsMentionedNotCalled": [],
+      "delegatesTo": [
+        "wiki-ingest",
+        "defuddle"
+      ],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": true,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Two specifics the reader should know. First, the network access is NOT via a router tool but via the host's WebSearch/WebFetch, so no router-side policy sees it. Second, this entry's reads/writes/writeMode are the DELEGATION CLOSURE, not what this page does itself: the vault writes all happen inside wiki-ingest, which is `destructive` (it moves files, and write_bundle has no move step), so the closure is what a permission engine must grant to run autoresearch at all. The validator enforces that dominance rather than trusting the prose."
+      }
+    },
+    "build-search-index": {
+      "summary": "Builds or refreshes the vault's local BM25 search index under wiki-meta/search-index.json.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:derived"
+      ],
+      "tools": [
+        "build_search_index",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [
+        "search_smart"
+      ],
+      "writeMode": "cache",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The tool behind it is well covered (tests/bm25-index.test.mjs) and the only artifact written is regenerable, so a wrong contract here costs a rebuild, not content."
+      }
+    },
+    "canvas": {
+      "summary": "Creates or rewrites Obsidian .canvas files with auto-layout, always as a whole-file write.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_file",
+        "list_files",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [
+        "patch_file"
+      ],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. patch_file appears only as a documented anti-pattern (\"don't patch JSON\"), which is why it sits in toolsMentionedNotCalled — a reader of the page alone could reasonably conclude the opposite."
+      }
+    },
+    "conventions": {
+      "summary": "Installs, removes or reports CLAUDE.md convention snippets across vaults.",
+      "reads": [
+        "local:fs",
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "local:fs",
+        "vault:content"
+      ],
+      "tools": [
+        "append_to_file",
+        "get_file",
+        "list_vaults",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs and (for `add`) writes into — outside every vault and outside the workspace."
+      }
+    },
+    "decision-consolidate": {
+      "summary": "Compresses a settled decision page to its canon and moves the deliberation chronicle to an archive note.",
+      "reads": [
+        "vault:content",
+        "vault:search"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_file",
+        "search_smart",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill, and this one rewrites authored prose in place — the highest-consequence unverified contract in the set. The page's own guard (refuse on status `proposed`, verify the archive before compressing) is procedural, not enforced by code."
+      }
+    },
+    "defuddle": {
+      "summary": "Fetches a webpage and returns cleaned markdown plus structured metadata, before ingestion.",
+      "reads": [
+        "web"
+      ],
+      "writes": [],
+      "tools": [
+        "extract_page_metadata"
+      ],
+      "toolsMentionedNotCalled": [
+        "filter_relevant_blocks"
+      ],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": true,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. filter_relevant_blocks is explicitly left to the CONSUMER by the page ('don't filter inside defuddle') — the bootstrap read the mention as a call, which is exactly why the generated proposal is not the contract. The page's 'hand off to wiki-ingest' is listed as mentioned-not-invoked rather than a delegation: defuddle is a PREPROCESSOR that wiki-ingest calls, so reading that line as a descent produces a defuddle->wiki-ingest->defuddle cycle. The cycle check is what surfaced the mismodelling."
+      },
+      "skillsMentionedNotInvoked": [
+        "wiki-ingest"
+      ]
+    },
+    "discover-list-files": {
+      "summary": "Lists files and subdirectories inside a vault directory.",
+      "reads": [
+        "vault:listing"
+      ],
+      "writes": [],
+      "tools": [
+        "list_files",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper; the residual risk is that a future edit adds a call without updating this entry, which is what the tool-mention check catches."
+      }
+    },
+    "discover-list-vaults": {
+      "summary": "Lists every configured vault with its online status and metadata.",
+      "reads": [
+        "router:config",
+        "vault:listing"
+      ],
+      "writes": [],
+      "tools": [
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper. `router:config` is listed because list_vaults surfaces the router's own configuration, not just vault contents."
+      }
+    },
+    "hot-compact": {
+      "summary": "Compacts an oversized wiki-meta/hot.md back to its cache contract, after a verified full backup.",
+      "reads": [
+        "vault:content",
+        "vault:scaffold"
+      ],
+      "writes": [
+        "vault:scaffold"
+      ],
+      "tools": [
+        "get_file",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": true,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `shell: true` is not incidental: step 1 tells the operator to reach the vault's Local REST API from a Bash/python script when hot.md is too large to load into context. That path bypasses every router-side guard, so a permission model must see it."
+      }
+    },
+    "lock": {
+      "summary": "Restricts the router to a single vault for the session, optionally persisting to the workspace .env.",
+      "reads": [],
+      "writes": [
+        "router:config"
+      ],
+      "tools": [
+        "lock_vault"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The only mutation is the router's own lock state; persistence writes the workspace .env via the tool."
+      }
+    },
+    "manage-delete": {
+      "summary": "Permanently deletes a vault file, behind a two-step preview-then-confirm guard.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "delete_file",
+        "get_file",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The confirm=true guard IS enforced by the tool (not by the page), but nothing verifies the page honours its own preview-first procedure — the highest-consequence gap in the set alongside decision-consolidate."
+      }
+    },
+    "manage-move": {
+      "summary": "Moves or renames a vault file via GET source → PUT destination → DELETE source.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_file",
+        "list_vaults",
+        "move_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Classed `destructive` rather than `mutating` because the move is not atomic: the Local REST API has no native move, so a failure between PUT and DELETE leaves two copies or none."
+      }
+    },
+    "meta-attach-vault": {
+      "summary": "Interactive wizard that attaches an Obsidian vault to a code workspace: provision, bind .env, edit .gitignore.",
+      "reads": [
+        "local:fs",
+        "router:config",
+        "vault:config",
+        "vault:content",
+        "vault:listing",
+        "workspace:files"
+      ],
+      "writes": [
+        "local:fs",
+        "router:config",
+        "vault:config",
+        "vault:content",
+        "workspace:files"
+      ],
+      "tools": [
+        "append_to_file",
+        "list_vaults",
+        "plan_vault",
+        "provision_vault"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": true,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": [
+          "git",
+          "node"
+        ]
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. This is the widest contract in the set: it runs setup-vault.mjs through Bash, can `git init`, and writes four files in the workspace. It also invokes the `conventions` skill, so its reads/writes cover that closure too — the vault:content and local:fs atoms come from there, not from anything this page does itself. The preview-and-explain discipline the page describes is entirely procedural."
+      },
+      "delegatesTo": [
+        "conventions"
+      ]
+    },
+    "meta-audit-bridge-readiness": {
+      "summary": "Read-only audit of click-to-open readiness per vault, including a live probe of the /open route.",
+      "reads": [
+        "router:config",
+        "vault:config"
+      ],
+      "writes": [],
+      "tools": [],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": true,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [
+          "obsidian-local-rest-api",
+          "obsidian-mcp-router-bridge"
+        ],
+        "binaries": [
+          "node"
+        ]
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. It calls no router tool at all — the work is a CLI script run through Bash, which is why `tools` is empty and `shell` is true. The live probe hits loopback only, so `network` stays false."
+      }
+    },
+    "meta-setup": {
+      "summary": "Installs obsidian-mcp-router and registers it as the user-scope Obsidian MCP server.",
+      "reads": [
+        "local:fs",
+        "router:config",
+        "vault:listing"
+      ],
+      "writes": [
+        "local:fs",
+        "router:config"
+      ],
+      "tools": [
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": true,
+        "network": true,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": [
+          "git",
+          "node",
+          "npm"
+        ]
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `network: true` because the documented path clones from GitHub and installs npm dependencies; `local:fs` because it edits ~/.claude/settings.json and ~/.claude.json, outside any vault."
+      }
+    },
+    "meta-status": {
+      "summary": "Read-only diagnostic of the router and every configured vault, with fix suggestions.",
+      "reads": [
+        "router:config",
+        "vault:config",
+        "vault:listing"
+      ],
+      "writes": [],
+      "tools": [
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The page states its own read-only contract explicitly (\"Don't run write/delete tools as part of this skill\"), but that is a written instruction, not an enforced one."
+      }
+    },
+    "meta-sync-template": {
+      "summary": "Propagates the reference vault's plugins, snippets and root docs to one or more configured vaults.",
+      "reads": [
+        "local:fs",
+        "router:config",
+        "vault:config",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:config"
+      ],
+      "tools": [
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": true,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": [
+          "node"
+        ]
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill — but this is the one entry where the dangerous part IS verified elsewhere: the credential-leak refusal and the self-sync refusal live in setup-vault.mjs and are pinned by tests/setup-vault-safety.test.mjs. The skill layer above them is pure UX and unverified."
+      }
+    },
+    "obsidian-bases": {
+      "summary": "Creates or edits Obsidian Bases (.base files) — YAML database views over vault notes.",
+      "reads": [
+        "vault:frontmatter",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_frontmatter",
+        "list_files",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Writes .base files, which Obsidian executes as live queries — a malformed one degrades a view but cannot lose authored content."
+      }
+    },
+    "obsidian-markdown": {
+      "summary": "Reference-only syntax guide for Obsidian Flavored Markdown; other skills consult it.",
+      "reads": [],
+      "writes": [],
+      "tools": [],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. This one is pure reference — it has no procedure and calls nothing, so the contract is trivially empty and its only failure mode is going stale against Obsidian's syntax."
+      }
+    },
+    "read-frontmatter": {
+      "summary": "Reads frontmatter (whole object or one key) from a vault file, preserving types.",
+      "reads": [
+        "vault:frontmatter"
+      ],
+      "writes": [],
+      "tools": [
+        "get_frontmatter"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper."
+      }
+    },
+    "read-get": {
+      "summary": "Reads the full content of a vault file and surfaces its contentSha256 for later conditional writes.",
+      "reads": [
+        "vault:content"
+      ],
+      "writes": [],
+      "tools": [
+        "get_file"
+      ],
+      "toolsMentionedNotCalled": [
+        "write_file",
+        "patch_file",
+        "merge_frontmatter",
+        "move_file",
+        "delete_file"
+      ],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The five write tools named here appear ONLY in the contentSha256 paragraph, which explains where to replay the hash later — the bootstrap read them as calls and proposed writeMode `destructive` for a pure reader. Corrected by hand; this is the clearest evidence that the generated proposal must never be trusted as-is."
+      }
+    },
+    "read-search": {
+      "summary": "Plain-text substring search inside a vault, with surrounding context.",
+      "reads": [
+        "vault:content",
+        "vault:search"
+      ],
+      "writes": [],
+      "tools": [
+        "search"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper; cross-vault fan-out (vault: \"*\") widens the read surface to every configured vault, which is why a permission model should treat `vault:search` as fleet-wide here."
+      }
+    },
+    "read-search-smart": {
+      "summary": "Semantic search via Smart Connections embeddings, with an honest fall back to the local BM25 tier.",
+      "reads": [
+        "vault:content",
+        "vault:search"
+      ],
+      "writes": [],
+      "tools": [
+        "search_smart"
+      ],
+      "toolsMentionedNotCalled": [
+        "build_search_index"
+      ],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [
+          "smart-connections",
+          "obsidian-mcp-router-bridge"
+        ],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The plugin requirement is conditional, not absolute — it binds only the semantic tier; `tier: local` needs nothing but a built index. The declaration lists the maximum, which overstates the requirement rather than the permission, the safe direction."
+      }
+    },
+    "save": {
+      "summary": "Files the current conversation (or one insight) as a typed, cross-linked wiki note plus its journal line.",
+      "reads": [
+        "router:config",
+        "vault:content",
+        "vault:listing",
+        "vault:scaffold",
+        "vault:search"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:frontmatter",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "write_bundle",
+        "get_file",
+        "list_files",
+        "patch_file",
+        "append_to_file",
+        "set_frontmatter",
+        "write_file",
+        "execute_template",
+        "move_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `destructive` rather than `transactional` is deliberate and the validator now enforces it: the page moves files, and `write_bundle` has NO move step (C2 left it out because a half-undone move is worse than no undo), so those calls run outside the transaction. The page also leaves the backlinks step out of the bundle on purpose — its patch→404→append fallback would roll the save back — so one documented write runs unprotected. `router:config` covers the session-journal sidecar it reads from ~/.claude/."
+      }
+    },
+    "sync-from-github": {
+      "summary": "Syncs one vault or the whole fleet straight from the GitHub skeleton — plugins, themes, snippets, root docs.",
+      "reads": [
+        "router:config",
+        "vault:config",
+        "vault:listing",
+        "web"
+      ],
+      "writes": [
+        "vault:config"
+      ],
+      "tools": [
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": true,
+        "network": true,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": [
+          "node"
+        ]
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill — but the hard parts are verified below it: archive extraction refuses path traversal, NTFS streams and Windows device names (tests/targz-extract.test.mjs), and only a pinned plugin allowlist may be copied from the network. Unverified at this layer: that the skill never passes --repo on its own, which is a written rule and the whole reason a non-default repo also demands --trust-repo."
+      }
+    },
+    "template-execute": {
+      "summary": "Executes a Templater template, optionally writing the rendered output to a new file.",
+      "reads": [
+        "vault:content"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "execute_template"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "create-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [
+          "templater-obsidian",
+          "obsidian-mcp-router-bridge"
+        ],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `create-only` reflects the documented use (render to a NEW file); note that the template itself is arbitrary user JavaScript run inside Obsidian, so the real reach of this skill is bounded by Templater, not by this contract."
+      }
+    },
+    "unlock": {
+      "summary": "Lifts the single-vault lock and restores normal multi-vault routing.",
+      "reads": [],
+      "writes": [
+        "router:config"
+      ],
+      "tools": [
+        "unlock_vaults"
+      ],
+      "toolsMentionedNotCalled": [
+        "lock_vault"
+      ],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. lock_vault is named only to describe what is being undone. Worth flagging for a permission model: unlocking WIDENS the reachable vault set, so it is a privilege-increasing operation despite looking like a cleanup."
+      }
+    },
+    "who-is-speaking": {
+      "summary": "Identifies the family member for the session on a shared vault, then locks the router and sets the enrich mode.",
+      "reads": [
+        "vault:content"
+      ],
+      "writes": [
+        "router:config"
+      ],
+      "tools": [
+        "lock_vault",
+        "set_auto_enrich_mode"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. It changes routing based on an identity the user asserts in chat — there is no authentication anywhere in this path, and nothing verifies the claimed member."
+      }
+    },
+    "wiki": {
+      "summary": "Bootstraps the Karpathy-style LLM-wiki structure inside a vault and initialises the OKF projections.",
+      "reads": [
+        "local:fs",
+        "vault:content",
+        "vault:listing",
+        "vault:scaffold"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:derived",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "append_to_file",
+        "get_file",
+        "list_files",
+        "list_vaults",
+        "move_file",
+        "refresh_okf_projections",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Classed `destructive` because the scaffolding step relocates misplaced files with move_file. `local:fs` covers reading templates/wiki/CLAUDE.md from the plugin install directory, outside the vault."
+      }
+    },
+    "wiki-export": {
+      "summary": "Exports the wiki as an llms.txt file or a conformant OKF v0.1 bundle under wiki-meta/exports/.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:derived"
+      ],
+      "tools": [
+        "get_file",
+        "list_files",
+        "list_vaults",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "cache",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `cache` because output lands only under wiki-meta/exports/ and is regenerable — the page states the wiki itself is never mutated, but that is a written rule and it writes with the same general-purpose write_file as everything else."
+      }
+    },
+    "wiki-fold": {
+      "summary": "Rolls up journal entries into a structurally-idempotent fold page with backlinks to its children.",
+      "reads": [
+        "vault:content",
+        "vault:scaffold"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "get_file",
+        "write_bundle",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "transactional",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Its idempotency contract is enforced by hand (fetch, normalise, compare) rather than by the router; the programmatic equivalent, contentIsUnchanged in src/helpers/wiki-fingerprint.mjs, is tested but is not what this skill runs."
+      }
+    },
+    "wiki-graph": {
+      "summary": "Builds a typed knowledge graph from the wiki and writes it under wiki-meta/graph/.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:derived"
+      ],
+      "tools": [
+        "build_wiki_graph",
+        "get_wiki_context_pack",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "cache",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The graph build itself is deterministic and tested (tests/wiki-graph-builder.test.mjs); everything written is regenerable from the wiki."
+      }
+    },
+    "wiki-ingest": {
+      "summary": "Ingests a source (URL, file or pasted text) into the wiki as cross-referenced pages, recording the source.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:listing",
+        "vault:search",
+        "web"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:derived",
+        "vault:frontmatter",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "append_to_file",
+        "download_page_assets",
+        "extract_page_metadata",
+        "filter_relevant_blocks",
+        "get_file",
+        "list_files",
+        "list_vaults",
+        "merge_frontmatter",
+        "move_file",
+        "patch_file",
+        "propose_linked_sources",
+        "record_source",
+        "search",
+        "search_smart",
+        "webpage_to_markdown",
+        "write_bundle",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "delegatesTo": [
+        "defuddle"
+      ],
+      "writeMode": "destructive",
+      "requires": {
+        "shell": false,
+        "network": true,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The BATCH path runs inside agents/wiki-ingest.md, whose tool allowlist the harness does enforce — but the ordinary in-process path is bound by nothing, so no tier above `declared` would be true for the skill as a whole. `destructive` rather than `transactional`: it calls move_file, and write_bundle has no move step, so that call sits outside the rollback. list_files, merge_frontmatter, search and search_smart are declared because that agent grants them, even though the page never names them — the agent-allowlist cross-check surfaced the gap."
+      }
+    },
+    "wiki-lint": {
+      "summary": "Health-checks the wiki (orphans, dead links, index drift, frontmatter gaps); read-only unless --fix is asked for.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:frontmatter",
+        "vault:listing",
+        "vault:scaffold",
+        "vault:search"
+      ],
+      "writes": [
+        "vault:derived",
+        "vault:frontmatter"
+      ],
+      "tools": [
+        "audit_sources",
+        "get_file",
+        "list_files",
+        "list_vaults",
+        "refresh_okf_projections",
+        "search",
+        "set_frontmatter"
+      ],
+      "toolsMentionedNotCalled": [
+        "record_source"
+      ],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Declared `mutating` for the MAXIMUM reachable state (--fix-errors applies set_frontmatter), not the default posture, which is read-only. refresh_okf_projections is called with check:true only — read-only in practice — but this schema cannot express \"this tool, only in its read mode\", so `vault:derived` is declared as a write: overstating the reach is the safe direction, understating it is not. record_source is named only to say lint must never write the ledger."
+      }
+    },
+    "wiki-neighbors": {
+      "summary": "Shows a page's graph neighbours — forward links, backlinks, or both, at a configurable hop depth.",
+      "reads": [
+        "vault:derived"
+      ],
+      "writes": [],
+      "tools": [
+        "get_page_neighbors"
+      ],
+      "toolsMentionedNotCalled": [
+        "build_wiki_graph",
+        "search",
+        "search_smart"
+      ],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The three extra tools are named only in error-recovery advice (\"graph missing → offer to run /wiki-graph\"); the bootstrap proposed writeMode `cache` from them, which would have made a pure reader look like a writer."
+      }
+    },
+    "wiki-path": {
+      "summary": "Finds the shortest chain of links between two wiki pages from the persisted knowledge graph.",
+      "reads": [
+        "vault:derived"
+      ],
+      "writes": [],
+      "tools": [
+        "wiki_path"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper over a deterministic graph lookup; it reads only the persisted graph, never the pages."
+      }
+    },
+    "wiki-query": {
+      "summary": "Answers a question grounded in the existing vault via three-tier retrieval, without fetching the web.",
+      "reads": [
+        "vault:content",
+        "vault:listing",
+        "vault:scaffold",
+        "vault:search"
+      ],
+      "writes": [],
+      "tools": [
+        "get_file",
+        "list_vaults",
+        "search",
+        "search_smart"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The \"no web fetching\" property that distinguishes this from autoresearch is a written rule, not an enforced one — nothing stops the model from reaching for WebFetch mid-answer."
+      }
+    },
+    "wiki-refresh-digests": {
+      "summary": "Regenerates stale or missing digest sidecars under wiki-meta/digests/.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:derived"
+      ],
+      "tools": [
+        "get_file",
+        "list_files",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "cache",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill, AND this contract's write side is inferred rather than read: the page describes writing digests (\"serialise and write to digestPathForPage\") without ever naming the write tool, so get_file and write_file are declared from how the skill must work, not from what it says. That gap is itself worth fixing in the page."
+      }
+    },
+    "wiki-tour": {
+      "summary": "Generates a guided reading tour through a vault, ordered deterministically from the graph topology.",
+      "reads": [
+        "vault:content",
+        "vault:derived",
+        "vault:scaffold"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "build_wiki_tour",
+        "get_wiki_context_pack"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "create-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `create-only` because the tour lands as a new standalone page; the build_wiki_tour tool also updates the graph's tour[] field, which is derived data."
+      }
+    },
+    "write-append": {
+      "summary": "Appends content at the end of a vault file, auto-creating it unless requireExisting is set.",
+      "reads": [
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "append_to_file",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [
+        "write_file"
+      ],
+      "writeMode": "append-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `append-only` is accurate for the tool but note it auto-creates missing files, so it is not purely additive to an existing corpus. write_file is named only as the contrast case."
+      }
+    },
+    "write-bundle": {
+      "summary": "Runs several vault writes as one journaled all-or-nothing operation; also the crash-recovery entry point.",
+      "reads": [
+        "vault:content",
+        "vault:listing",
+        "vault:scaffold"
+      ],
+      "writes": [
+        "vault:content",
+        "vault:derived",
+        "vault:frontmatter",
+        "vault:scaffold"
+      ],
+      "tools": [
+        "write_bundle",
+        "list_vaults"
+      ],
+      "toolsMentionedNotCalled": [
+        "append_to_file",
+        "delete_file",
+        "merge_frontmatter",
+        "patch_file",
+        "set_frontmatter",
+        "write_file"
+      ],
+      "writeMode": "transactional",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill — but this is the least worrying entry in the set, because write_bundle executes its steps THROUGH the existing tools and their guards, and the underlying transaction is heavily pinned (tests/write-bundle.test.mjs, tests/write-bundle-integration.test.mjs). The six tools in toolsMentionedNotCalled are step KINDS the skill passes as data, not calls it makes; the effective write surface is therefore all of them, which is what `writes` records."
+      }
+    },
+    "write-create-or-replace": {
+      "summary": "Creates a new vault file or replaces an existing one entirely, with ifNew / ifMatch guards.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_file",
+        "list_vaults",
+        "write_file"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The ifMatch precondition IS enforced by the tool and the bridge (tests/if-match-writes.test.mjs), but nothing makes this skill USE it — the page's overwrite-confirm discipline is procedural."
+      }
+    },
+    "write-frontmatter-merge": {
+      "summary": "Applies several frontmatter updates to one file in a single call.",
+      "reads": [
+        "vault:content",
+        "vault:frontmatter",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:frontmatter"
+      ],
+      "tools": [
+        "get_file",
+        "list_vaults",
+        "merge_frontmatter",
+        "write_bundle"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "transactional",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. `transactional` only when the page routes through write_bundle, which is what makes merge_frontmatter all-or-nothing since v0.66.0; called directly, the tool is still sequential and reports partial failures per key."
+      }
+    },
+    "write-frontmatter-set": {
+      "summary": "Sets or replaces a single frontmatter property, preserving types.",
+      "reads": [
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:frontmatter"
+      ],
+      "tools": [
+        "list_vaults",
+        "set_frontmatter"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. Thin single-tool wrapper; type inference from the user's phrasing happens in the skill layer and is exactly the unverified part."
+      }
+    },
+    "write-patch": {
+      "summary": "Surgical edit — inserts or replaces under a heading, block id or frontmatter key.",
+      "reads": [
+        "vault:content",
+        "vault:listing"
+      ],
+      "writes": [
+        "vault:content"
+      ],
+      "tools": [
+        "get_file",
+        "list_vaults",
+        "patch_file"
+      ],
+      "toolsMentionedNotCalled": [
+        "append_to_file",
+        "write_file"
+      ],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The heading-full-path rule the page teaches (H1::H2::H3, not the bare leaf) is the kind of thing that fails at runtime with invalid-target and is checked by nothing here. The two other write tools are named as fallbacks for the 404 case."
+      }
+    }
+  }
+}

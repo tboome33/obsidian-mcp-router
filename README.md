@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.66.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.67.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -82,7 +82,7 @@ See `wiki/obsidian-mcp-router sur Dedibox et MCPHub/` in the [opsidian-mcp-route
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes **49 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
+The repo doubles as a **Claude Code plugin marketplace** that exposes **50 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
 > 📄 **Quick reference PDF** (router overview + setup + config + every slash command with NL trigger phrases) — [English](./docs/quick-reference-en.pdf) · [Français](./docs/quick-reference-fr.pdf). Printable, accessible font sizes — for paper or screen reference.
 
@@ -222,6 +222,51 @@ The hooks ship in [`hooks/`](./hooks/); `setup-vault.mjs` wires them automatical
 
 Install steps are in the [Install](#install) section below.
 
+## Skill capability contracts (`contracts/skill-capabilities.json`)
+
+Every shipped skill has a machine-readable declaration of what it **reads**, what it **writes**, and what it **requires** — a shell? the network? a third-party Obsidian plugin? The file is `contracts/skill-capabilities.json`, one entry per skill, closed vocabularies throughout so a policy engine can consume it without parsing prose. It exists so that a deployment can answer "what does granting this skill actually allow?" before granting it, and so that doc, manifest and code cannot drift apart unnoticed.
+
+```bash
+npm run validate
+```
+
+The validator (`scripts/validate-capabilities.mjs`, also asserted by `npm test` and run as its own CI step) fails when the three tellings disagree:
+
+| Leg | What it is |
+|---|---|
+| **Code** | the router's MCP tool catalog (`TOOLS` in `src/index.mjs`) and the sub-agent tool allowlists (`agents/*.md` frontmatter) — the only two things enforced at runtime |
+| **Doc** | each `SKILL.md`, plus the artifact counters published in `README.md` and `docs/architecture.md` |
+| **Manifest** | `contracts/skill-capabilities.json` and `.claude-plugin/{plugin,marketplace}.json` |
+
+What it catches: a skill that ships undeclared · a declaration whose skill was deleted or renamed · a published counter that no longer matches reality · a declared tool that is not in the catalog · a tool a `SKILL.md` names that the contract does not account for · a sub-agent allowlist granting more than its own skill's contract · a `writeMode` that contradicts the declared writes.
+
+**The honesty rule.** A capability with no behavioral verifier must *say so*, never quietly promote itself. Each entry carries a `verification` block with exactly two possible states, and the validator refuses either one it cannot substantiate:
+
+- `verified` — requires `evidence` naming test files that **exist** and that **mention the skill**. Citing an unrelated suite is rejected.
+- `declared` — requires a written `reason` naming the specific residual uncertainty.
+
+**All 46 skills are `declared` today**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically, so there is nothing a behavioral verifier could hook onto. There is deliberately no middle tier — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist only binds the batch path while the ordinary in-process path is bound by nothing.
+
+**Bootstrapping.** `npm run capabilities:bootstrap` derives a proposal from the code (which tools each `SKILL.md` names, what those tools imply). It previews by default and writes nothing; `--missing-only --write` adds entries for new skills without touching reviewed ones. Every generated entry is stamped `UNREVIEWED-BOOTSTRAP`, **which the validator rejects** — so a generated file cannot go green until a human has read the page and replaced the reason. That mechanism is the point: the seeding pass is a proposal, and on the first run it was wrong often enough to prove it (it read the pure-reader `read-get` as `destructive`, `autoresearch` as offline, and `defuddle`'s prose-only `filter_relevant_blocks` mention as a call).
+
+*Scope note:* the counter check watches an explicit allowlist of **current-state** sentences. Historical documents (`docs/announcements.md`, `docs/v0.10.2-skills-promotion.md`, `ROADMAP.md`, `CHANGELOG.md`) record what a past version shipped and are deliberately excluded — a blanket scan would demand rewriting the past to make the present pass.
+
+## Reclaiming the plugin cache (`npm run purge:plugin-cache`)
+
+Every plugin update copies a new version into `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/` and removes nothing. Measured on 2026-08-02: **eight versions, ~1.2 GB**, of which ~900 MB was dead.
+
+```bash
+npm run purge:plugin-cache
+```
+
+Preview by default — it prints what it would remove, how much that frees, and a seal; nothing is deleted until you pass that seal back with `--confirm <seal>`. The apply re-derives the plan from the *current* state and aborts on any drift, so a snapshot that went live in between stops the whole operation instead of being deleted under that session. Every update also computes this plan and returns it, but never applies it: that path is a silent `SessionStart` hook, and deleting ~800 MB unannounced is not something this repo does. `OBSIDIAN_ROUTER_AUTO_PURGE_CACHE=1` opts in.
+
+**Never removed**: the current version · anything `installed_plugins.json` or `~/.claude/settings.json` names (including a `scope: project` entry from another workspace) · the **N-1 rollback** snapshot · the snapshot this process is running from · any snapshot a running process is serving from.
+
+That last one is the reason the whole thing is careful. A session started before an update stays pinned to its snapshot until `/reload-plugins`, and the manifest has already moved on — so a purge keyed on the manifest alone deletes a directory out from under a live MCP server. Not hypothetical: while this was written, one node process was serving `0.65.0` while the manifest named only `0.66.1`.
+
+**What the liveness check does *not* promise.** It is a best-effort process scan, not a lock. A process reaching its snapshot by a route the scan cannot see (an 8.3 short path, a mapped drive, a truncated command line) is missed, and there is an unavoidable race between the scan and the delete — the seal narrows that window but does not close it. So the honest claim is *"nothing a manifest names, never the rollback, and no snapshot this scan can see in use"*, not *"never a running snapshot"*. If the scan cannot run at all, nothing is purged and the reason is printed.
+
 ## The three pieces and how they depend on each other
 
 Three components, two repos, one dependency chain. Reading bottom-up — each layer talks to the one above it:
@@ -317,7 +362,7 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 }
 ```
 
-**Then enable the plugin per-workspace**, NOT globally. The plugin loads 49 slash commands and 45 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
+**Then enable the plugin per-workspace**, NOT globally. The plugin loads 50 slash commands and 46 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
 
 ```json
 {
@@ -329,11 +374,11 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 
 For vaults bootstrapped via `setup-vault.mjs`, this file is **cloned automatically** from `.template/.claude/settings.json` — you don't have to write it by hand. For non-vault workspaces (dev repos that work with vault content), copy the snippet above into `<workspace>/.claude/settings.json`.
 
-Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 49 slash commands should appear. From a workspace without, the namespace stays clean.
+Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 50 slash commands should appear. From a workspace without, the namespace stays clean.
 
 > **Why not enable it globally?** If you put `enabledPlugins` in `~/.claude/settings.json` instead of per-workspace, the plugin loads in EVERY Claude Code session — random scripts, debug sessions, unrelated repos — paying ~10k tokens for commands those sessions will never use. Project-scope keeps the budget tight.
 
-> **Bump the skill-listing budget (recommended).** The router contributes 45 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
+> **Bump the skill-listing budget (recommended).** The router contributes 46 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -893,7 +938,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.66.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.67.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -943,7 +988,7 @@ Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complèt
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose **49 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **50 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
 > 📄 **PDF de référence rapide** (vue d'ensemble du router + setup + config + chaque slash command avec phrases déclencheuses en langage naturel) — [Français](./docs/quick-reference-fr.pdf) · [English](./docs/quick-reference-en.pdf). Imprimable, fontes lisibles — pour papier ou consultation écran.
 
@@ -1178,7 +1223,7 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 }
 ```
 
-**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 49 slash commands et 45 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
+**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 50 slash commands et 46 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
 
 ```json
 {
@@ -1190,11 +1235,11 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 
 Pour les vaults bootstrappés via `setup-vault.mjs`, ce fichier est **cloné automatiquement** depuis `.template/.claude/settings.json` — pas à écrire à la main. Pour les workspaces hors-vault (repos de code qui travaillent avec le contenu d'un vault), copie le snippet ci-dessus dans `<workspace>/.claude/settings.json`.
 
-Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 49 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
+Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 50 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
 
 > **Pourquoi pas en global ?** Si tu mets `enabledPlugins` dans `~/.claude/settings.json` au lieu de per-workspace, le plugin se charge dans CHAQUE session Claude Code — scripts random, sessions de debug, repos sans rapport — payant ~10k tokens pour des commandes que ces sessions n'utiliseront jamais. Le project-scope garde le budget serré.
 
-> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 45 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
+> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 46 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }

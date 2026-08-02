@@ -49,3 +49,13 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      # C8 — capability contracts. `npm test` already fails on the same drift
+      # (tests/skill-capabilities.test.mjs asserts the live repo is clean), but
+      # a dedicated step makes the failure name itself instead of hiding inside
+      # a 3000-test run, and prints the actionable fix for each finding.
+      # Runs on one matrix leg only: the check reads files, so every leg would
+      # report the identical result.
+      - name: Validate skill capability contracts
+        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        run: npm run validate

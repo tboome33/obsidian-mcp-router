@@ -28,6 +28,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { planCachePurge, applyCachePurge } from './plugin-cache-purge.mjs';
+
 const NPM_INSTALL_TIMEOUT_MS = 180 * 1000;
 
 /**
@@ -231,7 +233,49 @@ export function tryAutoUpdate({
     newVersion,
   });
 
-  return { success: true, settingsRewrite, markitdownStatus };
+  // 11. Plan (never apply) the cache purge.
+  //
+  //     Every update copies ~155 MB in and removes nothing, so the cache grows
+  //     without bound — eight versions and ~1.2 GB by the time this was
+  //     measured. The plan is computed HERE, where we know which version was
+  //     just installed, and returned to the caller so the success notice can
+  //     say how much is reclaimable and how to reclaim it.
+  //
+  //     It is deliberately NOT applied. This runs inside a silent SessionStart
+  //     hook; deleting ~800 MB with no one watching is exactly the kind of
+  //     unannounced destruction this repo refuses everywhere else. Opt in with
+  //     OBSIDIAN_ROUTER_AUTO_PURGE_CACHE=1 and the update applies its own
+  //     sealed plan — still fail-closed, still never touching a snapshot a
+  //     running session is pinned to.
+  //
+  //     Best-effort: a purge that cannot even be planned must never turn a
+  //     successful update into a reported failure.
+  let cachePurge = null;
+  try {
+    //     `pluginRoot` must be the snapshot THIS process is executing from,
+    //     which during an update is the OLD one — `pluginRoot`, not
+    //     `newCacheDir`. The new directory is already protected by
+    //     `currentVersion`; passing it here would have left the directory we
+    //     are actually running out of protected by nothing but the
+    //     best-effort process scan.
+    const purgeArgs = {
+      homeDir, marketplace, plugin,
+      currentVersion: newVersion,
+      pluginRoot,
+    };
+    cachePurge = planCachePurge(purgeArgs);
+    if (cachePurge && !cachePurge.blocked && cachePurge.purge.length > 0
+        && String(process.env.OBSIDIAN_ROUTER_AUTO_PURGE_CACHE || '') === '1') {
+      cachePurge.applied = applyCachePurge({
+        ...purgeArgs,
+        approvedPlanSha256: cachePurge.approvedPlanSha256,
+      });
+    }
+  } catch (err) {
+    cachePurge = { blocked: true, blockedReason: `purge planning failed: ${err.message}`, purge: [], keep: [] };
+  }
+
+  return { success: true, settingsRewrite, markitdownStatus, cachePurge };
 }
 
 /**

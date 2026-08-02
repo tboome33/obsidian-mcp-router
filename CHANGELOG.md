@@ -6,6 +6,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.67.0] — 2026-08-02 — capability contracts per skill (C8), and a plugin cache that finally shrinks
+
+### Added
+
+Seventh borrowing from the [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) study (§2.17). The repo ships **46 skills** and nothing declared what any of them reads, writes, or requires — no shell/network/plugin answer a machine could consult before granting one anything, and no check that the documentation, the manifests and the code told the same story. Drift was found by hand, weeks late.
+
+- **`contracts/skill-capabilities.json` (new)** — one declaration per skill: `reads` / `writes` (closed vocabularies of capability atoms), `writeMode` (the roadmap's *create-only / transactional / cache* axis, as a maximum rather than a typical run), `requires` (`shell`, `network`, `python`, `obsidianPlugins`, `binaries`), the router `tools` it calls, the tools its page only *names* (`toolsMentionedNotCalled`), and `delegatesTo` for the skills it invokes. Machine-readable on purpose: this is the raw material for MCPHub/SaaS permissioning, and it ships in the package.
+
+- **`npm run validate` (new, wired into `npm test` and CI)** — fails when the three tellings disagree. **Code**: the router's MCP tool catalog and the sub-agent tool allowlists — the only two things enforced at runtime. **Doc**: every `SKILL.md`, plus the artifact counters published in `README.md` and `docs/architecture.md`. **Manifest**: the declarations and `.claude-plugin/{plugin,marketplace}.json`. It catches an undeclared skill · an orphan declaration · a false doc counter · a declared tool absent from the catalog · a tool a page names that the contract does not account for · an undeclared delegation edge · a sub-agent allowlist granting more than its own skill's contract · and any declaration **gentler than the tools it declares** (naming `delete_file` while claiming `read-only`, or a network tool while claiming `network: false`).
+
+- **The honesty rule, made mechanical.** Every entry carries a `verification` block with exactly two possible states. `verified` demands `evidence` naming real `*.test.mjs` files, realpath-contained inside `tests/`, each naming the skill as a whole identifier — citing the README, a fixture, a path that escapes the repo, or a file that merely contains the letters "save" is refused. `declared` demands a written reason naming the specific residual uncertainty. **All 46 skills are `declared`**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically. There is deliberately **no middle tier** — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist binds only the batch path while the in-process path is bound by nothing. The allowlists are still cross-checked, just never as a badge.
+
+- **`npm run capabilities:bootstrap` (new)** seeds proposals from the code, previewing by default. Every generated entry is stamped `UNREVIEWED-BOOTSTRAP`, **which the validator rejects** — a generated file cannot go green until a human has read the page and replaced the reason. The mechanism earned itself immediately: the first run read the pure-reader `read-get` as `destructive`, `autoresearch` as offline, and `defuddle`'s prose-only `filter_relevant_blocks` mention as a call.
+
+- **`npm run purge:plugin-cache` (new)** — the plugin cache had never been purged. `tryAutoUpdate` copies each new version in beside the old ones and repoints `installed_plugins.json`, so the cache had reached **eight versions and ~1.2 GB**, of which ~900 MB was dead. The purge is planned at the end of every update and returned in its result; it is **not applied** there, because that path is a silent `SessionStart` hook and deleting 800 MB unannounced is what this repo refuses everywhere else (`OBSIDIAN_ROUTER_AUTO_PURGE_CACHE=1` opts in). It never removes the current version, anything a manifest names, the **N-1 rollback** snapshot, or **a snapshot a running process is serving from** — that last one is the real trap and it is not hypothetical: while this was being written, one node process was serving `0.65.0` while the manifest named only `0.66.1`. **Fail-closed**: if liveness cannot be determined, nothing is purged and the reason is stated. Preview-first with a C3 plan seal, so an apply re-derives the plan and aborts on any drift rather than removing something that went live in between.
+
+### Fixed
+
+- **Four published counters had rotted** and are now guarded: `README.md` said 49 slash commands (50) and 45 skills (46), `docs/architecture.md` said 42 MCP tools (48, with a per-category breakdown that no longer added up), and `.claude-plugin/marketplace.json`'s two blocks disagreed with each other about the command count.
+
+Both features went through **two rounds of two independent reviewers**, every finding reproduced by an executable probe before it was accepted. Round 1 produced ~25 real defects, including **six tests that pinned a wrong behaviour** — one of them asserting that a check going silent was *correct* — a `verified` badge obtainable by citing the README, and declarations free to name `delete_file` while claiming `read-only`. Round 2, run on the corrected code, found **three criticalities introduced by round 1's own fixes**: loudest, a wrapper that normalised a missing argument into an empty set and thereby switched the new understatement check straight back off in the only path that runs in production. Two claims were narrowed rather than defended — the purge says what its process scan can and cannot see, and `verified` documents that it proves a citation is a test *about* a skill, not that the test exercises the contract.
+
+Tests: **+133** (`tests/skill-capabilities.test.mjs`, `tests/plugin-cache-purge.test.mjs`). Suite green: **3251**.
+
 ## [0.66.1] — 2026-08-02 — `write_bundle recover:true` was unreachable from the MCP wire
 
 ### Fixed
