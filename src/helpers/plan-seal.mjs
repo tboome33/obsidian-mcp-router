@@ -86,7 +86,16 @@ function sortDeep(v) {
       .reduce((acc, k) => {
         acc[k] = sortDeep(v[k]);
         return acc;
-      }, {});
+        // The accumulator MUST have a null prototype. On an ordinary object,
+        // `acc['__proto__'] = x` invokes the inherited setter instead of
+        // creating an own enumerable property, so JSON.stringify drops the key
+        // entirely — and a plan carrying an own `__proto__` (which is exactly
+        // what JSON.parse produces from `{"__proto__": ...}` on the wire) would
+        // seal identically to a plan without it. A caller could then preview a
+        // harmless plan and apply a materially different one under the approved
+        // seal. Reproduced by probe during the C2 review; with Object.create
+        // (null) the key is serialized as data, like any other.
+      }, Object.create(null));
   }
   return v;
 }

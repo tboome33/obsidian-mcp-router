@@ -26,6 +26,27 @@ describe('canonicalize', () => {
     assert.notEqual(canonicalize([1, 2]), canonicalize([2, 1]));
   });
 
+  test('an own "__proto__" key is SERIALIZED, not silently dropped', () => {
+    // JSON.parse produces an OWN `__proto__` property, and MCP arguments arrive
+    // through JSON.parse. On an ordinary accumulator `acc.__proto__ = x` hits the
+    // inherited setter instead of creating an own key, so the value vanished from
+    // the canonical form — and a plan carrying it sealed identically to a plan
+    // without it. `Object.entries` (used by merge_frontmatter) DOES see the key,
+    // so an approved seal could authorize a materially different bundle.
+    const plain = JSON.parse('{"values":{}}');
+    const injected = JSON.parse('{"values":{"__proto__":"payload"}}');
+    assert.equal(Object.prototype.hasOwnProperty.call(injected.values, '__proto__'), true);
+    assert.match(canonicalize(injected), /__proto__/);
+    assert.notEqual(canonicalize(plain), canonicalize(injected));
+    assert.notEqual(
+      computePlanSeal({ op: 'write_bundle', plan: plain }),
+      computePlanSeal({ op: 'write_bundle', plan: injected }),
+    );
+    // …and canonicalizing it does not pollute anything either.
+    assert.equal({}.payload, undefined);
+    assert.equal(Object.prototype.payload, undefined);
+  });
+
   test('sorts keys recursively (nested objects)', () => {
     const x = { z: { d: 1, c: 2 }, a: [{ q: 1, p: 2 }] };
     const y = { a: [{ p: 2, q: 1 }], z: { c: 2, d: 1 } };

@@ -101,6 +101,10 @@ import {
   auditSourcesTool,
 } from './tools/source-ledger.mjs';
 import {
+  TOOL_DEFINITION as WRITE_BUNDLE_TOOL_DEFINITION,
+  writeBundleTool,
+} from './tools/write-bundle.mjs';
+import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
 } from './tools/get-page-neighbors.mjs';
@@ -237,6 +241,10 @@ const TOOLS = [
           type: 'boolean',
           description: 'If true, fail when the file does not exist. Default: false (auto-create).',
         },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The append is refused with a 409 conflict if the file changed since you read it. Checked before the append, not atomically with it.',
+        },
       },
       required: ['path', 'content'],
       additionalProperties: false,
@@ -299,6 +307,10 @@ const TOOLS = [
         createIfMissing: {
           type: 'boolean',
           description: 'Create the key if absent. Default: true.',
+        },
+        ifMatch: {
+          type: 'string',
+          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The property is not set if the file changed since you read it — a 409 conflict instead. Checked before the patch, not atomically with it.',
         },
       },
       required: ['path', 'key', 'value'],
@@ -883,6 +895,9 @@ const TOOLS = [
   BUILD_SEARCH_INDEX_TOOL_DEFINITION,
   RECORD_SOURCE_TOOL_DEFINITION,
   AUDIT_SOURCES_TOOL_DEFINITION,
+  // C2 — journaled multi-file bundle with rollback. WRITES (it runs the other
+  // write tools, plus its own journal under wiki-meta/) → WRITE_TOOL_NAMES.
+  WRITE_BUNDLE_TOOL_DEFINITION,
   // Page-neighbors roadmap W-A — the neighbourhood of ONE page from the graph
   // (backlinks + forward-links, bounded depth). Read-only (reads the graph JSON)
   // — excluded from WRITE_TOOL_NAMES.
@@ -1066,6 +1081,8 @@ const TOOL_HANDLERS = {
   // C6 — source ledger: forward-fill register + read-only independence audit.
   record_source: (reg, args) => recordSourceTool(reg, args),
   audit_sources: (reg, args) => auditSourcesTool(reg, args),
+  // C2 — journaled multi-file bundle (all-or-nothing apply + rollback).
+  write_bundle: (reg, args) => writeBundleTool(reg, args),
   refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
   // Roadmap item #3 (understand-anything) — read-only guided-tour skeleton.
   build_wiki_tour: (reg, args) => buildWikiTourTool(reg, args),
@@ -1139,6 +1156,11 @@ const WRITE_TOOL_NAMES = new Set([
   // C6 — writes wiki-meta/source-ledger.json. `audit_sources` is read-only and
   // is deliberately NOT in this set.
   'record_source',
+  // C2 — runs several write tools as one journaled operation. Its `recover:true`
+  // listing is read-only, but the tool as a whole writes (steps + journal), so
+  // it is hidden wholesale in readonly mode: a deployment that cannot write
+  // cannot have left a bundle half-applied either.
+  'write_bundle',
   // v0.59.0 — rewrites the generated OKF projections inside wiki/. Read-only
   // deployments must hide it.
   'refresh_okf_projections',

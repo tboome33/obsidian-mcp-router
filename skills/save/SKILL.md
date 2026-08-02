@@ -135,18 +135,28 @@ If the content is genuinely too thin to support 2 `## H2` sections, push back to
 
 End with a `## See also` section linking to wiki pages mentioned during the conversation: `[[Page A]]`, `[[Page B]]`.
 
-### 6. Write to the vault
+### 6. Write to the vault — as ONE bundle (v0.66.0+, borrowing C2)
+
+A save is not one write: it is the page **plus** the journal line **plus** the `hot.md` refresh (steps 8 below). A crash between them leaves a journal entry for a page that does not exist, or a page nobody logged. Group them into a single `write_bundle` call so the whole save either lands or does not:
 
 ```
-mcp__obsidian-router__write_file({
+mcp__obsidian-router__write_bundle({
   vault: <name>,
-  path: "wiki/<folder>/<slug>.md",
-  content: <frontmatter + body>,
-  ifNew: true
+  steps: [
+    { op: "write",  path: "wiki/<folder>/<slug>.md", content: <frontmatter + body>, ifNew: true },
+    { op: "append", path: "wiki-meta/journal.md",    content: "- YYYY-MM-DD HH:MM — save — …\n" },
+    { op: "write",  path: "wiki-meta/hot.md",        content: <rewritten hot>, ifMatch: <its contentSha256> }
+  ]
 })
 ```
 
-If `ifNew: true` returns conflict, the slug-suffix logic from step 2 should have prevented this — bail and tell the user.
+Read the `outcome` field before reporting anything: `applied` means the whole save landed; `rolled-back` means **nothing** did (say what failed, do not claim a partial save); `rolled-back-partial` means some files are still dirty — name them from `rollback.paths`.
+
+Put `ifMatch` on the shared files (`hot.md`, `catalog.md`) with the `contentSha256` you got when you read them: every precondition is checked before the first write, so a parallel session's edit refuses the whole save instead of overwriting them.
+
+If the `write` step reports a conflict on `ifNew: true`, the slug-suffix logic from step 2 should have prevented it — bail and tell the user.
+
+**Leave step 7 (backlinks) OUT of the bundle.** Its `patch_file` → 404 → `append_to_file` fallback relies on a step *failing*, which inside a bundle rolls the whole save back. Either resolve the branch first (read the target, pick the right op, then bundle it) or run the backlinks separately after the bundle applied.
 
 ### 7. Cross-link related pages
 
@@ -178,6 +188,8 @@ This is the "compounding" property: every saved page becomes more findable from 
 - `catalog.md` — **usually nothing to do.** The catalog is a *map of maps*: one entry per directory, pointing at that directory's generated `index.md`. A new page in an existing directory is picked up by the generated index automatically — appending a row here is what grew one vault's catalog to 70 KB / 115 rows and made it unreadable in a single tool call. Touch it **only** when the page creates a **new directory** under `wiki/`: then add one area block (italic one-liner + markdown link `[<dir>](../wiki/<dir>/index.md)` — never a wikilink, since every index shares the `index` basename and Obsidian would resolve it ambiguously). Promoting a page into "Read first" is a deliberate editorial call, not a mechanical step.
 - `journal.md` — `- YYYY-MM-DD HH:MM — save — wiki/<folder>/<slug>.md — <type>: <one-line summary>`
 - `hot.md` — replace `## Recent Changes` to mention this save
+
+These two are **steps of the bundle from step 6**, not separate calls afterwards — that grouping is the whole point. Only a `catalog.md` edit (rare: a genuinely new directory) is a judgement call worth its own write.
 
 ### 8b. Optional cross-link to the active session journal (v0.12.8+)
 

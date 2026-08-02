@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 14 documented write tools', () => {
+  test('contains the 15 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -109,6 +109,11 @@ describe('WRITE_TOOL_NAMES', () => {
       // C6 — writes wiki-meta/source-ledger.json. `audit_sources` is read-only
       // and is deliberately NOT gated.
       'record_source',
+      // C2 — runs several write tools as one journaled operation, and writes its
+      // own rollback journal under wiki-meta/write-journal/. Gated wholesale:
+      // its read-only `recover:true` listing goes with it, which costs nothing
+      // because a readonly deployment cannot leave a bundle half-applied.
+      'write_bundle',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {

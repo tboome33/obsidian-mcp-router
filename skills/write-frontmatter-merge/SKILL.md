@@ -41,14 +41,24 @@ Call the obsidian-router `merge_frontmatter` MCP tool with arguments parsed from
 - `{...}` → JSON object
 - otherwise → string
 
-## ⚠️ Not atomic
+## ⚠️ Not atomic on its own
 
-This is NOT atomic. If applying 5 updates and the 3rd fails, the first two are already applied. The tool returns a per-key status — surface that result honestly:
+Called directly, this is NOT atomic. If applying 5 updates and the 3rd fails, the first two are already applied. The tool returns a per-key status — surface that result honestly:
 
 - N succeeded, M failed
 - list the failed keys with their error
 
-For atomic multi-key updates, the alternative is to read the current frontmatter (`read-frontmatter`), modify the object client-side, and `write-create-or-replace` the entire file back — but that rewrites the body too.
+**To make it all-or-nothing (v0.66.0+, borrowing C2): run it as a `write_bundle` step.** The bundle captures the file's content before the first key is written, and treats a partial merge (`failed > 0`) as a **failed step** — so the file goes back to exactly what it was:
+
+```
+write_bundle({
+  vault, steps: [
+    { op: "merge_frontmatter", path: "wiki/<page>.md", values: { status: "closed", outcome: "tp1" } }
+  ]
+})
+```
+
+Then read `outcome`: `applied` or `rolled-back`, never a half-updated file. This is the intended remedy — see the `write-bundle` skill. The older workaround (read the frontmatter, modify it client-side, `write-create-or-replace` the whole file) still works but rewrites the body too.
 
 ## On failure — remediate, NEVER fall back to filesystem writes
 

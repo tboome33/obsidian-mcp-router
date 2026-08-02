@@ -121,6 +121,23 @@ Under a `## Folds` section (create it if missing), add a row pointing at the new
 
 Note: the fold itself becomes a log entry, but it doesn't appear inside its own window (the timestamp is after the window's last_entry).
 
+### 7.5 Steps 5-7 are ONE bundle (v0.66.0+, borrowing C2)
+
+The "write+index+log triplet" this skill already names as a unit should also *behave* as one. A fold page listed in `catalog.md` but never logged — or logged and never written — is a fold you cannot trust to be complete, and the idempotency contract above depends on the three staying in agreement.
+
+```
+mcp__obsidian-router__write_bundle({
+  vault, steps: [
+    { op: "write",  path: "wiki/folds/<window-id>.md", content: <fold page> },
+    { op: "patch",  path: "wiki-meta/catalog.md", operation: "append", targetType: "heading",
+                    target: "Folds", content: "- [[folds/<window-id>]]", ifMatch: <catalog contentSha256> },
+    { op: "append", path: "wiki-meta/journal.md", content: "- YYYY-MM-DD HH:MM — fold — …\n" }
+  ]
+})
+```
+
+`catalog.md` is a shared file: pass its `contentSha256` as `ifMatch` so a parallel session's edit refuses the fold instead of being overwritten. If the `## Folds` heading does not exist yet, decide that **before** building the bundle (use an `append` step with the heading inline) — a bundle step must never be one you expect to fail. Re-check `outcome` before printing step 8: a `rolled-back` fold wrote nothing at all.
+
 ### 8. Output
 
 > ✅ Folded N entries from `<first>` to `<last>` into `wiki/folds/<window-id>.md`.

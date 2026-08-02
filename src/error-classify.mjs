@@ -36,6 +36,12 @@ export const KIND_TO_CATEGORY = {
   // validation — the request itself is wrong
   not_found: { errorCategory: 'validation', isRetryable: false },
   conflict: { errorCategory: 'validation', isRetryable: false },
+  // Router-side refusals that never reached the network: a malformed source
+  // ledger / write journal, a step list that fails pre-flight, a bound that was
+  // exceeded. They carry kind:'validation' explicitly (source-ledger.mjs,
+  // write-bundle.mjs) and were previously falling through to `unknown` — same
+  // retry verdict, but the category told the caller nothing.
+  validation: { errorCategory: 'validation', isRetryable: false },
   // C3 sealed-preview drift (or a malformed approvedPlanSha256): the approved
   // plan no longer matches current state/vault. A retry with the SAME stale seal
   // can never succeed — the caller must re-run the preview. Non-retryable.

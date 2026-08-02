@@ -399,11 +399,40 @@ Use a **markdown link** for the index, never a wikilink: every directory index s
 
 Promoting a freshly ingested page into a section's "Read first" list is an editorial judgement, not a mechanical step: do it when the page genuinely supersedes what is already listed, and say so.
 
+### 6.5 Group the ingestion writes into ONE bundle (v0.66.0+, borrowing C2)
+
+An ingestion is the archetypal multi-file operation: the source page, two or three entity pages, the journal line. A failure in the middle leaves a source page nothing links to, or entity pages citing a source that was never filed — and nothing detects it afterwards.
+
+Once you know **all** the pages you are about to write (you do, from the page plan in step 3), run them as one operation instead of a sequence of calls:
+
+```
+mcp__obsidian-router__write_bundle({
+  vault, steps: [
+    { op: "write",  path: "wiki/sources/<slug>.md",   content: <source page> },
+    { op: "write",  path: "wiki/concepts/<a>.md",     content: <new concept page> },
+    { op: "patch",  path: "wiki/entities/<b>.md",     operation: "append", targetType: "heading",
+                    target: "Sources", content: "- [[sources/<slug>]]", ifMatch: <its contentSha256> },
+    { op: "append", path: "wiki-meta/journal.md",     content: "- YYYY-MM-DD HH:MM — ingest — …\n" }
+  ]
+})
+```
+
+Rules that make this work:
+
+- **Resolve every branch first.** Step 5's "patch `## Sources`, fall back to `append_to_file` if the heading is missing" relies on a call *failing* — inside a bundle that rolls the whole ingestion back. Read the target page (you often already have it), decide `patch` vs `append`, and put the decided op in the bundle.
+- **Put `ifMatch` on pages you are updating**, using the `contentSha256` from the read that informed your edit. All preconditions are checked before the first write, so an entity page a parallel session touched refuses the whole ingestion instead of being overwritten.
+- **Keep `record_source` (4.4) outside the bundle** — it is its own compare-and-swap on a shared file, and a ledger conflict must not roll back pages that are perfectly fine.
+- **Read `outcome` before confirming to the user.** `applied` · `rolled-back` (nothing landed — report the failure, do not describe pages that do not exist) · `rolled-back-partial` (name what `rollback.paths` left dirty).
+
+For a source that produces a single page and a journal line, a bundle is still worth it: two files is already enough to be half-written.
+
 ### 7. Append to journal.md
 
 ```
 - YYYY-MM-DD HH:MM — ingest — <source-title> — created N pages, updated M pages
 ```
+
+This is a **step of the bundle above**, not a separate call after it — a journal line for an ingestion that failed is exactly the drift C2 removes.
 
 ### 8. Refresh hot.md
 
