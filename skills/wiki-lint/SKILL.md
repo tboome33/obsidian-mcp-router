@@ -46,6 +46,22 @@ For each check, accumulate findings. Don't bail on the first issue — surface t
 #### Check A: orphan pages
 A page is orphan if NO other page wikilinks to it (excluding self-references and the page being its own index entry). Build the inbound-link set by reading every page and parsing `[[wikilinks]]`. Pages with `type: source` or `type: answer` in frontmatter are exempt — those are reachable via the index.
 
+#### Check A-bis: source ledger — stale, unreviewed, single-origin (v0.64.0+, borrowing C6)
+
+Call `mcp__obsidian-router__audit_sources` once. It is read-only and needs no arguments beyond the vault.
+
+Report, in the **info** tier unless noted:
+- **`stale[]`** — sources past their refresh horizon, worst overdue first. Each is a *"go re-check this"*, not an error. Surface the count and the top few with their `overdueDays`.
+- **`unreviewed[]` / `disputed[]`** — review gaps. `disputed` is worth a **warning** tier: the vault is resting on contested material.
+- **`invalid[]`** — malformed entries. **Warning**: these are silently excluded from every other count, so an unreported `invalid` means the audit you just showed is narrower than it looks.
+- **`origins.count` vs `total`** — how many genuinely independent publishers the whole ledger represents. A vault with 40 sources and 3 origins is worth mentioning out loud.
+
+If `ledgerPresent: false`, say so **plainly and without alarm**: the ledger is filled forward by ingestion, so an absent one means *"nothing has been recorded yet"*, **not** *"this vault has no sources"*. Never present it as a defect of the pages.
+
+**Per-page verdicts (opt-in, on request):** for a specific page, `audit_sources({ page })` returns whether it is corroborated by at least 2 distinct origins, with `excluded` listing what did NOT count and why (synthetic output, retired entries, unvouched local files). Do **not** run this across every page by default — it is a reviewer's question, not a lint sweep, and a low origin count is frequently legitimate.
+
+Never write to the ledger from a lint run. Lint reports; `record_source` (ingestion) is the only writer.
+
 #### Check B: dead wikilinks
 A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve aliases (`[[Target|Alias]]`) and folder-prefixed forms (`[[concepts/Foo]]`). If a link looks dead, double-check by trying both with and without the `.md` extension and against alias frontmatter.
 

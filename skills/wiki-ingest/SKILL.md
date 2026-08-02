@@ -200,6 +200,40 @@ Never produce a flat body without H2 sections — Outline plugin relies on the s
 
 Use `mcp__obsidian-router__write_file` with `ifNew: true`. If a page with this slug already exists, **stop and ask** — never silently overwrite.
 
+### 4.4 Record the source in the ledger (v0.64.0+, borrowing C6) — MANDATORY
+
+Immediately after the source page is written, call `mcp__obsidian-router__record_source` **once for this source**. This is what lets the vault later answer *"which sources is this page resting on, how authoritative are they, and when should they be re-checked?"* — questions prose cannot answer.
+
+```
+record_source({
+  vault, kind: "url" | "file" | "text",
+  url:  <the fetched URL>          // kind: "url"
+  id:   <absolute path or a stable id>,   // kind: "file" | "text"
+  authority: "official" | "primary" | "secondary" | "community" | "synthetic",
+  title: <source title>,
+  content: <the post-defuddle markdown you ingested>,   // fingerprints it
+  pages: [<the source page path you just wrote>],
+})
+```
+
+**`authority` is DECLARED by you, from what the source IS — never guessed from how confident it sounds:**
+
+| tier | what it means | typical |
+|---|---|---|
+| `official` | the thing itself speaking | vendor docs, a spec, a law text, the project's own repo |
+| `primary` | first-hand evidence | a study, a dataset, an interview, a dated announcement by the actor |
+| `secondary` | reporting/analysis ABOUT primary material | press articles, explainers |
+| `community` | useful but unvetted | forums, Q&A, personal blogs, wikis |
+| `synthetic` | produced by a model | anything an LLM wrote, including your own synthesis |
+
+**If you genuinely cannot tell, use `community` and say so in `note`** — do not upgrade a tier to look thorough. The ledger measures confidence; inflating it defeats the whole point.
+
+Rules:
+- **One call per source, going forward only.** Never walk old pages to back-fill entries: a page that says *"per the official docs"* is not evidence that an official source was consulted.
+- Passing `content` matters — it fingerprints the capture, so a later re-ingest can tell whether the source actually changed (and invalidate a stale human review).
+- Re-ingesting the same source is safe and idempotent: pages accumulate, an unchanged capture writes nothing.
+- If the call **refuses** (a credential in the URL, a schemeless address, a non-http scheme), relay the message — do not work around it by editing the ledger by hand.
+
 ### 4.5 Propose linked sources (v0.13.3+, Phase C obsidian-clipper port)
 
 For URL sources, after the source page is filed but BEFORE you start the entity/concept extraction in step 5, scan the page's body for hyperlinks worth proposing for **recursive ingestion**. This is the user-in-the-loop "Ask mode" of link-following ingestion — you don't follow links autonomously, you present candidates and let the user pick.

@@ -6,6 +6,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.64.0] — 2026-08-02 — the source ledger and the independence rule (borrowing C6)
+
+### Added
+
+Fifth borrowing from the [claude-obsidian](https://github.com/AgriciDaniel/claude-obsidian) study (§2.17). The vault's source pages read beautifully, but the vault could not ANSWER questions about them: *which sources are stale? aren't these two articles from the same site? what is this page actually resting on?* Prose is not queryable. C6 is the structured register that is.
+
+- **`record_source` (new tool)** writes one entry per source into `wiki-meta/source-ledger.json`: normalised identity, DECLARED authority tier (`official` / `primary` / `secondary` / `community` / `synthetic`), content fingerprint, refresh horizon, review state, and the pages resting on it. **Forward-fill only** — the ledger is never back-filled by guessing from existing prose, and authority is never inferred from the source itself. Re-recording accumulates page links and is idempotent; re-recording *changed* content invalidates any prior human review and says so. The write is a **compare-and-swap using C1's `ifMatch`**, and creation is guarded too, so parallel sessions cannot clobber a shared ledger.
+- **The independence rule.** Every source carries an `independenceKey` — its registrable domain — so `blog.example.com/a`, `www.example.com/b?utm=x` and `EXAMPLE.com:443/b/` collapse into ONE origin. Counting distinct origins rather than distinct URLs is what makes "corroborated by two independent sources" mean something. A per-vault `publisherAliases` map handles what no hostname heuristic can know (`bbc.com` + `bbc.co.uk` are one newsroom).
+- **`audit_sources` (new tool, read-only)** reports staleness (with days overdue), review gaps, malformed entries, the authority spread, and how many genuinely independent publishers the ledger represents. `page` gives one page's verdict — corroborated or not, with everything that did *not* count listed and explained.
+- **Wired into the flows the spec names**: `wiki-ingest` records every source it files (with a tier-choice table and an explicit "if you cannot tell, say `community`" rule), `wiki-lint` audits the ledger, and both sub-agents' tool allowlists were extended.
+
+Refusals rather than silent defaults throughout: a missing/invalid authority, a schemeless URL (which the normaliser cannot clean, so one article would land twice), a non-http(s) scheme, a credential the normaliser cannot strip (including matrix parameters like `;jsessionid=`), a credential pasted into a free-text field, a corrupt or foreign-version ledger — each is an actionable error, and nothing is overwritten on refusal.
+
+Hardened before commit by a Fable 5 adversarial review **and** an independent Codex pass — both ran the suite and reproduced every finding by probe. **21 real defects fixed**, each with a regression test. The ones worth naming, all in the direction that matters (a FALSE "corroborated"): schemeless URLs became their own countable origins, so two articles from one newsroom corroborated each other; `www.substack.com` counted as a different publisher than `substack.com`; two copies of one local PDF corroborated a page (and an earlier version of the test suite *pinned* that behaviour); `text://host/x` recorded as a URL collided with a `text:` id, merging two different sources; `/~alice` and `/%7Ealice` were two identities for one page. Plus, on the honesty side: a content-less re-record erased the stored fingerprint (destroying provenance and letting a stale review survive the next real change); a re-capture of identical content never advanced the refresh horizon, so a re-verified source stayed "stale" forever; conversely a metadata-only re-record *did* advance it, marking an unfetched source as freshly checked; declared overrides silently reverted to the heuristic on the next ingest while still claiming to be vouched for; malformed entries were treated as fresh (and a null entry crashed the audit); and `required: 0` made a page with zero sources "corroborated".
+
+Also hardened in the shared URL normaliser (which `ingest-state` uses too): secrets in a URL **fragment** (OAuth implicit flow) were persisted verbatim, percent-encoded unreserved characters produced duplicate identities, and a trailing-dot FQDN produced a second entry for one source.
+
+Tests: router **+63**. Suite green (**2909**).
+
 ## [0.63.2] — 2026-08-02 — the shared frontmatter reader understands YAML block scalars
 
 ### Fixed

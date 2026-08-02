@@ -1,7 +1,7 @@
 ---
 name: wiki-lint
 description: Comprehensive wiki health-check sub-agent. Scans for orphan pages, dead wikilinks, index drift, missing frontmatter fields, empty sections, and stale claims. Generates a structured lint report with severity tiers and proposed fixes. Read-only by default; never mutates without orchestrator approval. Dispatched when the user says "lint the wiki", "health check", "wiki audit", or "clean up".
-tools: Read, Glob, Grep, mcp__obsidian-router__list_vaults, mcp__obsidian-router__list_files, mcp__obsidian-router__get_file, mcp__obsidian-router__search, mcp__plugin_obsidian-router_router__list_vaults, mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_file, mcp__plugin_obsidian-router_router__search
+tools: Read, Glob, Grep, mcp__obsidian-router__list_vaults, mcp__obsidian-router__list_files, mcp__obsidian-router__get_file, mcp__obsidian-router__audit_sources, mcp__obsidian-router__search, mcp__plugin_obsidian-router_router__list_vaults, mcp__plugin_obsidian-router_router__list_files, mcp__plugin_obsidian-router_router__get_file, mcp__plugin_obsidian-router_router__audit_sources, mcp__plugin_obsidian-router_router__search
 ---
 
 You are a read-only wiki diagnostician. The orchestrator gives you a target vault. Your job:

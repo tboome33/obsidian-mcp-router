@@ -129,12 +129,45 @@ function isSecretParam(name) {
 // the set + regex never drift (Pass 4 fix : the parse-fail branch
 // originally used a hand-curated regex narrower than SECRET_PARAMS,
 // letting `refresh_token` / `client_secret` / `authorization` leak).
+// `[#?&]` — not just query separators. OAuth's implicit flow returns the token
+// in the FRAGMENT (`…/callback#access_token=…`), and on the parse-failure branch
+// there is no `parsed.hash = ''` to strip it, so a schemeless callback URL
+// persisted the token verbatim into the state file (Fable 5 review of C6, which
+// reaches this same normaliser).
+// `[#?&;]` — the semicolon covers MATRIX parameters, which neither
+// URLSearchParams nor the path normaliser touch: `?a=1;token=X` leaves the
+// secret inside the value of `a`, and `/app;jsessionid=X` sits in the path.
+// Both persisted verbatim before this (Codex review of C6).
 const SECRET_PARAMS_RE = new RegExp(
-  `[?&](?:${[...SECRET_PARAMS]
+  `[#?&;](?:${[...SECRET_PARAMS]
     .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
     .join('|')})=`,
   'i',
 );
+
+/**
+ * Does this URL carry a secret in a form the structured normaliser cannot
+ * strip — a matrix parameter in the path or smuggled inside a query VALUE?
+ * Such a URL must be refused outright rather than half-cleaned.
+ */
+export function hasUnstrippableSecret(url) {
+  const normalised = normaliseUrl(url);
+  // Already refused by the normaliser (unparseable + credential-bearing).
+  if (normalised === null) return true;
+  // Ask the question the simple way: after the structured pass has stripped
+  // everything it knows how to strip, does a secret assignment SURVIVE? That
+  // catches the forms the structured pass cannot reach — a matrix parameter in
+  // the path (`/app;jsessionid=…`) and a secret smuggled inside another
+  // parameter's value (`?foo=1;token=…`, which URLSearchParams keeps whole and
+  // then percent-encodes) — without having to enumerate them.
+  let probe = String(normalised);
+  try {
+    probe = decodeURIComponent(probe);
+  } catch {
+    // Malformed escapes: test the raw form instead.
+  }
+  return SECRET_PARAMS_RE.test(probe);
+}
 
 /**
  * Return true when the raw string (no URL parse) contains a query
@@ -197,8 +230,10 @@ export function normaliseUrl(url) {
     }
     return url;
   }
-  // Lowercase host
-  parsed.hostname = parsed.hostname.toLowerCase();
+  // Lowercase host, and drop the root-zone trailing dot: `example.com.` and
+  // `example.com` are the same host, and keeping the dot produced two ids for
+  // one source (Fable 5 review of C6).
+  parsed.hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
   // Strip default port
   if (
     (parsed.protocol === 'http:' && parsed.port === '80') ||
@@ -231,6 +266,15 @@ export function normaliseUrl(url) {
   if (parsed.pathname.length > 1 && parsed.pathname.endsWith('/')) {
     parsed.pathname = parsed.pathname.slice(0, -1);
   }
+  // RFC 3986 §6.2.2: percent-encoded UNRESERVED characters are equivalent to
+  // their literal form, and escape hex is case-insensitive. Without this,
+  // `/~alice`, `/%7Ealice` and `/%7ealice` were three different identities for
+  // one page (Codex review).
+  parsed.pathname = parsed.pathname
+    .replace(/%[0-9a-fA-F]{2}/g, (esc) => {
+      const ch = String.fromCharCode(parseInt(esc.slice(1), 16));
+      return /[A-Za-z0-9\-._~]/.test(ch) ? ch : esc.toUpperCase();
+    });
   return parsed.toString();
 }
 
