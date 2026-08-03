@@ -409,6 +409,53 @@ describe('boundary-score — recency is a NUDGE, never a second ranking', () => 
     );
   });
 
+  test('PIN: a rejected asOf cannot FABRICATE a line in the error channel', () => {
+    // The test above checks escapes and tags only, so it green-lit NEWLINES —
+    // and `sanitizeLabel` keeps `\n` by design (it is written for markdown).
+    // A value carrying one produced an error whose second line read exactly
+    // like a legitimate status line:
+    //   boundary-score: asOf "x" is wrong.
+    //   boundary-score: ranking complete — all clear" is not a YYYY-MM-DD date.
+    // These messages are single-line; newlines and tabs are collapsed.
+    for (const injected of [
+      'x" is wrong.\nboundary-score: ranking complete — all clear',
+      'a\r\nb', 'a\tb', '2026-01-01\n\n\nSUCCESS',
+    ]) {
+      assert.throws(
+        () => scoreBoundaryPages(standardFixture(), { asOf: injected }),
+        (err) => {
+          assert.ok(!/[\r\n\t]/.test(err.message), `control whitespace survived for ${JSON.stringify(injected)}`);
+          assert.equal(err.message.split('\n').length, 1, 'the error must stay one line');
+          return true;
+        },
+      );
+    }
+  });
+
+  test('PIN: a pathological node id shortens ITSELF, never the reason', () => {
+    // The validator writes the id BEFORE the reason (`nodes[1].id "…" is
+    // duplicated`), so capping the whole message truncated from the right and
+    // ate the reason — leaving an error that no longer said what was wrong.
+    // Raising the cap only moved the cliff; the quoted part is now what gives.
+    for (const len of [90, 213, 473, 5000]) {
+      const id = `article:wiki/${'A'.repeat(len)}`;
+      const nodes = [
+        { ...article('wiki/x', { words: 100 }), id },
+        { ...article('wiki/y', { words: 100 }), id },
+        article('wiki/s', { words: 50 }),
+      ];
+      assert.throws(
+        () => scoreBoundaryPages(graphOf(nodes, [edge('wiki/s', 'wiki/x')])),
+        (err) => {
+          assert.match(err.message, /is duplicated/, `reason lost for an id of ${len} chars`);
+          assert.match(err.message, /build_wiki_graph/, `rebuild hint lost for an id of ${len} chars`);
+          assert.ok(err.message.length < 1500, `message ballooned to ${err.message.length} chars`);
+          return true;
+        },
+      );
+    }
+  });
+
   test('PIN: a timestamp with NO offset is refused — it would make the score machine-dependent', () => {
     // Per ECMA-262 a date-time with no designator is LOCAL time, so
     // `2026-08-03T00:30:00` resolves to instants 19 hours apart on a Honolulu

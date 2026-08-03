@@ -342,10 +342,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
     // point the string is built, rather than trusting every future caller to
     // remember. (`sanitizeLabel` also caps length, which keeps a pathological
     // id from turning the message into a wall.)
-    const shown = report.errors
-      .slice(0, 3)
-      .map((e) => sanitizeLabel(String(e), { neutralizeInjection: true, maxLen: 500 }))
-      .join('; ');
+    const shown = report.errors.slice(0, 3).map((e) => oneLine(String(e))).join('; ');
     throw new Error(
       `boundary-score: this knowledge graph is invalid, so it cannot be ranked — ${shown}`
         + `${report.errors.length > 3 ? ` (+${report.errors.length - 3} more)` : ''}. `
@@ -378,10 +375,12 @@ export function scoreBoundaryPages(graph, opts = {}) {
   if (callerAsOf) {
     asOfDay = toEpochDay(callerAsOf, { allowAnnotated: false });
     if (asOfDay === null) {
-      // Sanitised: the value is echoed back, and this message re-enters the
-      // model's context through the MCP error channel. Caller args are not
-      // vault content, but neutralising costs one call and closes the hole.
-      const shown = sanitizeLabel(String(opts.asOf), { neutralizeInjection: true, maxLen: 80 });
+      // The value is echoed back, and this message re-enters the model's
+      // context through the MCP error channel. Escapes and tags were already
+      // neutralised; NEWLINES were not, and that was enough: a value carrying
+      // `\n` fabricated a second line reading `boundary-score: ranking complete
+      // — all clear` inside the error. `oneLine` collapses them.
+      const shown = oneLine(String(opts.asOf)).slice(0, 80);
       throw new Error(`boundary-score: asOf "${shown}" is not a YYYY-MM-DD date.`);
     }
     asOfSource = 'caller';
@@ -534,6 +533,27 @@ export function scoreBoundaryPages(graph, opts = {}) {
     truncated: rows.length > limit,
     pages: rows.slice(0, limit),
   };
+}
+
+/**
+ * Make a vault-derived string safe to interpolate into a ONE-LINE error.
+ *
+ * Three jobs, and each closes a hole a previous round left open:
+ *  - neutralise ANSI escapes and injection-shaped tags (`sanitizeLabel`);
+ *  - collapse newlines and tabs. `sanitizeLabel` keeps them by design — it is
+ *    written for markdown — but these messages are single-line, and a value
+ *    containing `\n` could FABRICATE a second line that reads exactly like a
+ *    legitimate status line inside the MCP error channel;
+ *  - cap the QUOTED IDENTIFIER rather than the whole message. Capping the
+ *    message truncated from the right, and the validator writes the id BEFORE
+ *    the reason (`nodes[1].id "…" is duplicated`), so a long enough id ate the
+ *    reason — leaving an error that no longer said what was wrong. Shortening
+ *    the quoted part instead makes the reason structurally untruncatable.
+ */
+function oneLine(text) {
+  const capped = String(text).replace(/"([^"]{80,})"/g, (_m, id) => `"${id.slice(0, 77)}…"`);
+  return sanitizeLabel(capped, { neutralizeInjection: true, maxLen: 500 })
+    .replace(/[\r\n\t]+/g, ' ');
 }
 
 /**

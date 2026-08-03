@@ -203,6 +203,15 @@ describe('find_boundary_pages — refusals point somewhere useful', () => {
       new Error("ENOENT: no such file or directory, open 'knowledge-graph.json'"),
       new Error('Request failed with status code 404'),
       new Error('HTTP 404'),
+      // The canonical spellings. The first contextual version of this sniff
+      // took `HTTP 404` and missed every one of these — which is the wrong way
+      // round: these are what real HTTP stacks actually print.
+      new Error('HTTP/1.1 404 Not Found'),
+      new Error('404 Not Found'),
+      new Error('Error 404'),
+      new Error('Request failed: 404 Not Found'),
+      new Error('server responded with 404'),
+      new Error('Response code 404 (Not Found)'),
     ];
     for (const err of readsAsMissing) {
       await assert.rejects(
