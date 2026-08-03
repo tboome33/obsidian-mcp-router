@@ -216,6 +216,10 @@ describe('find_boundary_pages — refusals point somewhere useful', () => {
       new Error('connect ENOTFOUND vault.example.invalid'),
       new Error('user not found'),
       new Error('4040 bytes read'),
+      // A PORT that happens to be 404. The 404 must be contextualised by
+      // "http"/"status", never matched bare anywhere in the message.
+      new Error('connect ECONNREFUSED 127.0.0.1:404'),
+      new Error('listening on 0.0.0.0:404'),
     ];
     for (const err of mustNotReadAsMissing) {
       await assert.rejects(

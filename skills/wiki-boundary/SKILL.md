@@ -41,7 +41,7 @@ The result carries everything needed to audit itself:
 | `measure` | the formula and its three constants, verbatim |
 | `exempted` | how many pages were held out, and of which types — **never present a ranking without mentioning this** |
 | `excluded` | pages with no substance measurement, and pages below `minInbound` |
-| `withoutRecency` | pages whose `updated:` was missing, scored at ×1 rather than assumed stale |
+| `withoutRecency` | pages with no usable age — `updated:` missing or unparseable, **or** the graph carrying no reference date at all. Scored ×1 rather than assumed stale |
 | `ranked` vs `limit` | how much of the list you are showing |
 
 ### 3. Present it honestly

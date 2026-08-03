@@ -6,6 +6,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.69.1] — 2026-08-03 — the third round found the clock the second round let in
+
+### Fixed
+
+**A timestamp with no offset made the score depend on the machine that ran it.** `toEpochDay` handed `2026-08-03T00:30:00` — a `T` form with no `Z` and no `±hh:mm` — straight to `Date.parse`, which per ECMA-262 reads a designator-less date-time as **local time**. Measured: the same string resolves to instants **19 hours apart** on a Honolulu machine and a Tokyo one, which flowed into `ageDays`, `recencyMultiplier`, `score` and the reported `asOf`.
+
+That falsified the feature's headline promise — *"no clock; the same graph yields the same bytes anywhere"* — stated in the module header, the tool description, the README, `docs/features/08` and the skill. An offset is now **mandatory** on the timestamp branch; a value that cannot be placed on the timeline reads as **unknown (×1)**, the conservative direction used everywhere else here. Latent rather than shipped-wrong: every `updated:` in the vault is date-only and the builder always writes `toISOString()`, but tools that write local `YYYY-MM-DDTHH:mm` frontmatter are common, and third-party graphs can carry an offset-less `analyzedAt`.
+
+**`allowAnnotated: false` was not enforced on every path.** v0.69.0 introduced it so a caller's `asOf` would really be the `YYYY-MM-DD` its contract promises. The strict date-only regex rejected the timestamp *shape* — and then execution fell through to the timestamp branch, which was not gated at all, and accepted it anyway. So `asOf: '2026-08-03T12:00:00Z'` passed, and `asOf: '2026-08-03T00:30:00'` passed *and* dragged the timezone bug in with it. The release notes for v0.69.0 claimed that fix removed caller latitude; it removed half of it.
+
+Both defects sit in `toEpochDay` — **the function v0.69.0 had already rewritten twice**. Third time the pattern held: the round's own fixes are where the next round's defects live.
+
+Also corrected, all minor:
+- the `asOf` rejection echoed the caller's value **raw**, so a control byte or an injection-shaped tag re-entered the model's context through the MCP error channel;
+- the last-resort not-found sniff matched a bare `404` anywhere in a message, so `connect ECONNREFUSED 127.0.0.1:404` — a **port number** — read as "your graph is missing". The 404 must now be contextualised by `http`/`status`;
+- the validator-error cap rose from 300 to 500 characters, so a long node id can no longer push the *reason* ("is duplicated") past the truncation while leaving the quoted id;
+- a stale `13` in a test comment (the measured figure is 12), and the skill's gloss on `withoutRecency`, which omitted the case where the graph itself carries no reference date.
+
+### Verified clean under attack
+
+The third round probed the one v0.69.0 change with product-wide reach — `sanitizeResponse` switching from an assignment loop to `Object.fromEntries` — against null-prototype objects, getters (invocation counts compared), throwing getters, symbol and non-enumerable keys, Date/RegExp/Map/Set/Buffer/TypedArray, frozen and sealed objects, numeric-string key ordering, circular references and class instances: **byte-identical to the old implementation in every case except the intended `__proto__` fix**, at 1.1× cost on 200k-key inputs. The ranking core, exemption policy, refusals, the dark-test guard (including its new recursive walk, on Windows separators) and the real-vault output all held.
+
+**Tests:** suite **3473**. The real vault's ranking is unchanged.
+
 ## [0.69.0] — 2026-08-03 — C10: the frontier-page detector, and what "thin" refuses to mean
 
 ### Added

@@ -98,7 +98,10 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
       ? kind === 'not_found'
       : status === 404
         || /\benoent\b|no such file/i.test(message)
-        || /\b(?:http\s*)?(?:status(?:\s*code)?\s*)?404\b/i.test(message);
+        // The 404 must be CONTEXTUALISED, not bare: an optional prefix meant a
+        // stray `404` matched anywhere, so `connect ECONNREFUSED 127.0.0.1:404`
+        // — a port number — read as "your graph is missing".
+        || /\b(?:http|status(?:\s*code)?)\s*:?\s*404\b/i.test(message);
     if (isNotFound) {
       throw new Error(
         `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,

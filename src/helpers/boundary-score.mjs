@@ -218,7 +218,22 @@ function toEpochDay(value, { allowAnnotated = true } = {}) {
   // Full ISO timestamp (the shape of `project.analyzedAt`). Reduced to its UTC
   // day — the SAME rule as the Date branch, so a timestamp string and the Date
   // built from it cannot disagree when an offset crosses midnight.
-  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) {
+  //
+  // Gated on `allowAnnotated` so a CALLER's `asOf` really is the `YYYY-MM-DD`
+  // its contract promises: the strict date-only regex above rejected the
+  // timestamp *shape*, but execution then fell through to here and accepted it
+  // anyway, which left the documented contract unenforced.
+  if (allowAnnotated && /^\d{4}-\d{2}-\d{2}T/.test(s)) {
+    // An OFFSET IS MANDATORY. Per ECMA-262, a date-time with no designator is
+    // interpreted as LOCAL time — so `2026-08-03T00:30:00` resolves to instants
+    // 19 hours apart on a Honolulu machine and a Tokyo one (measured). Feeding
+    // that into the score would make the ranking depend on the ambient
+    // timezone, falsifying this module's headline promise that the same graph
+    // yields the same bytes anywhere. A value we cannot place on the timeline
+    // reads as UNKNOWN (×1), which is the conservative direction everywhere
+    // else here. The builder always writes `toISOString()`, so real graphs are
+    // unaffected.
+    if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(s)) return null;
     // The calendar date is validated SEPARATELY and FIRST. Without this, the
     // timestamp branch re-admitted exactly the rollover the date-only branch
     // exists to stop: `2026-02-29` was refused, while `2026-02-29T00:00:00Z`
@@ -329,7 +344,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
     // id from turning the message into a wall.)
     const shown = report.errors
       .slice(0, 3)
-      .map((e) => sanitizeLabel(String(e), { neutralizeInjection: true, maxLen: 300 }))
+      .map((e) => sanitizeLabel(String(e), { neutralizeInjection: true, maxLen: 500 }))
       .join('; ');
     throw new Error(
       `boundary-score: this knowledge graph is invalid, so it cannot be ranked — ${shown}`
@@ -362,7 +377,13 @@ export function scoreBoundaryPages(graph, opts = {}) {
   const callerAsOf = typeof opts.asOf === 'string' && opts.asOf.trim() ? opts.asOf.trim() : null;
   if (callerAsOf) {
     asOfDay = toEpochDay(callerAsOf, { allowAnnotated: false });
-    if (asOfDay === null) throw new Error(`boundary-score: asOf "${opts.asOf}" is not a YYYY-MM-DD date.`);
+    if (asOfDay === null) {
+      // Sanitised: the value is echoed back, and this message re-enters the
+      // model's context through the MCP error channel. Caller args are not
+      // vault content, but neutralising costs one call and closes the hole.
+      const shown = sanitizeLabel(String(opts.asOf), { neutralizeInjection: true, maxLen: 80 });
+      throw new Error(`boundary-score: asOf "${shown}" is not a YYYY-MM-DD date.`);
+    }
     asOfSource = 'caller';
   } else {
     const d = toEpochDay(graph.project && graph.project.analyzedAt);
