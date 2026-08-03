@@ -87,7 +87,7 @@ Reference vault (source — auto-skipped): C:\VAULTS\.template
 Configured target vaults:
   #   Status            Vault                       Path
   1   ✅                roland                       P:\VAULTS\Roland
-  2   ❌                qnap-archive                 \\qnap\notes\Archive
+  2   ❌                qnap-archive                 \\server\notes\Archive
   3   ✅                coursera                     D:\Vaults\coursera
   4   ⚠️ needs bootstrap  raw-import                 D:\Vaults\raw-import
   ...

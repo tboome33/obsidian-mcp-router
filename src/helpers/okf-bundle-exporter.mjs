@@ -35,8 +35,27 @@
  */
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
+import { gateFileSet } from './export-gate.mjs';
 
 export const OKF_VERSION = '0.1';
+
+/**
+ * Deterministic string ordering, by UTF-8 byte value.
+ *
+ * Replaces `localeCompare` throughout this module. `localeCompare` consults
+ * ICU, so its result depends on the runtime's collation data and default
+ * locale — and three of the sorts here decide the CONTENT of generated pages,
+ * not merely the order of an array: the bullet order inside each `index.md`,
+ * the grouping of type headings, and which candidate an ambiguous wikilink
+ * resolves to. Measured: the same vault produced different `index.md` bytes
+ * under `en` and `da` collation, which changes `SHA256SUMS`, which breaks the
+ * one property C9 exists to provide.
+ *
+ * Byte order is uglier for a human reader and identical on every machine.
+ */
+export function compareByBytes(a, b) {
+  return Buffer.compare(Buffer.from(String(a), 'utf8'), Buffer.from(String(b), 'utf8'));
+}
 
 /**
  * Reserved filenames (§3.1) — never usable as concept documents.
@@ -242,7 +261,7 @@ function makeTargetResolver(mappings, report) {
     const sameDir = candidates.find(
       (c) => c.newPath.split('/').slice(0, -1).join('/') === fromDir,
     );
-    const sorted = candidates.slice().sort((a, b) => a.newPath.localeCompare(b.newPath));
+    const sorted = candidates.slice().sort((a, b) => compareByBytes(a.newPath, b.newPath));
     const chosen = exactCase ?? sameDir ?? sorted[0];
     const reason = exactCase
       ? ' (exact-case preference)'
@@ -712,12 +731,12 @@ export function buildDirectoryIndexes({ documents, vaultName, summary }) {
       if (!byType.has(type)) byType.set(type, []);
       byType.get(type).push(doc);
     }
-    const typeNames = [...byType.keys()].sort((a, b) => a.localeCompare(b));
+    const typeNames = [...byType.keys()].sort(compareByBytes);
     for (const type of typeNames) {
       const heading = type.charAt(0).toUpperCase() + type.slice(1);
       lines.push(`# ${heading}`, '');
       const entries = byType.get(type).slice().sort((a, b) =>
-        a.okfFrontmatter.title.toLowerCase().localeCompare(b.okfFrontmatter.title.toLowerCase()),
+        compareByBytes(a.okfFrontmatter.title.toLowerCase(), b.okfFrontmatter.title.toLowerCase()),
       );
       for (const doc of entries) {
         const filename = doc.newPath.split('/').pop();
@@ -738,7 +757,7 @@ export function buildDirectoryIndexes({ documents, vaultName, summary }) {
         );
         const firstTitles = subDocs
           .slice()
-          .sort((a, b) => a.newPath.localeCompare(b.newPath))
+          .sort((a, b) => compareByBytes(a.newPath, b.newPath))
           .slice(0, 3)
           .map((d) => d.okfFrontmatter.title);
         const desc = `Contains ${subDocs.length} document${subDocs.length === 1 ? '' : 's'}${
@@ -861,6 +880,21 @@ export function buildOkfBundle({
   now,
   summary,
   includeAgentReadme = false,
+  // C9 export-gate inputs. Injected so this function stays pure and
+  // clock-free: `gateContract` is the parsed contracts/export-allowlist.json,
+  // `gatePrivatePathRoots` the machine paths that must never appear in a
+  // shared bundle (derived at call time, never committed — see
+  // scripts/export-gate.mjs → collectPrivateRoots).
+  //
+  // Both are REQUIRED. They defaulted to `null` and `[]`, which meant the
+  // documented production caller — skills/wiki-export/SKILL.md, which passed
+  // neither — ran with no allowlist and with the one rule that can catch a
+  // machine-specific vault root switched off. A bundle containing a real vault
+  // path came back `gate.ok: true` wearing a valid SHA256SUMS. A default that
+  // silently weakens a security check is worse than an argument error.
+  gateContract,
+  gatePrivatePathRoots,
+  gateSource = {},
 }) {
   if (!vaultName || typeof vaultName !== 'string') {
     throw new TypeError('buildOkfBundle: vaultName is required (string)');
@@ -870,6 +904,15 @@ export function buildOkfBundle({
   }
   if (typeof now !== 'string' || Number.isNaN(Date.parse(now))) {
     throw new TypeError('buildOkfBundle: now is required (ISO date string)');
+  }
+  if (!gateContract || !gateContract.targets?.okf) {
+    throw new TypeError(
+      'buildOkfBundle: gateContract is required (the parsed contracts/export-allowlist.json, declaring an "okf" target). '
+      + 'An OKF bundle is made to be handed to someone else — it is never exported without the C9 gate.',
+    );
+  }
+  if (!Array.isArray(gatePrivatePathRoots)) {
+    throw new TypeError('buildOkfBundle: gatePrivatePathRoots is required (array of absolute paths that must never be published)');
   }
 
   const report = {
@@ -897,7 +940,7 @@ export function buildOkfBundle({
     .filter((p) => p.path.endsWith('.md'))
     .filter((p) => !p.path.startsWith('wiki-meta/'))
     .slice()
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => compareByBytes(a.path, b.path));
 
   // 1b. Split the at-rest projections out of the content set.
   //
@@ -1043,6 +1086,47 @@ export function buildOkfBundle({
     });
   }
 
-  files.sort((a, b) => a.path.localeCompare(b.path));
+  files.sort((a, b) => compareByBytes(a.path, b.path));
+
+  // ---- C9: the export gate ------------------------------------------------
+  // An OKF bundle is made to be handed to someone else, which makes it the
+  // most exposed of the three exits. It goes through the same module as the
+  // .mcpb and the release: same allowlist, same leak scan, same checksums.
+  //
+  // The scan ALWAYS runs — a gate that must be switched on is a gate that will
+  // be off when it matters. What is conditional is the reward: `SHA256SUMS`
+  // and `export-manifest.json` are appended only when the bundle is clean, so
+  // a leaking bundle cannot be shipped wearing a valid-looking checksum set.
+  // `auditArchive` reports a bundle with no checksums as one that never passed
+  // the gate, which is exactly what happened.
+  //
+  // The caller decides what to do with `report.gate.ok` — only the caller knows
+  // whether an address found in a vault note is a leak or the point of the page.
+  const gate = gateFileSet({
+    files,
+    target: 'okf',
+    contract: gateContract,
+    productVersion: OKF_VERSION,
+    source: gateSource,
+    privatePathRoots: gatePrivatePathRoots,
+    artifact: `okf-bundle:${vaultName}`,
+  });
+  report.gate = {
+    ok: gate.ok,
+    findings: gate.findings,
+    byCategory: gate.byCategory,
+    suppressed: gate.suppressed.length,
+    checksumsSha256: gate.manifest.entries.checksumsSha256,
+  };
+  if (!gate.ok) {
+    // A refused bundle returns NO files. Withholding only the checksums was
+    // not enough: the caller's documented next step is "write every returned
+    // file", so the leaking pages were still handed over ready to publish, and
+    // the word "refused" described nothing that actually happened.
+    return { files: [], report };
+  }
+  for (const f of gate.gateFiles) files.push(f);
+  files.sort((a, b) => compareByBytes(a.path, b.path));
+
   return { files, report };
 }

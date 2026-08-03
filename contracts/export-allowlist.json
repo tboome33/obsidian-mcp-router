@@ -1,0 +1,154 @@
+{
+  "$comment": [
+    "C9 — the export gate's whitelist. A file ships because it is NAMED here,",
+    "never because nobody thought to exclude it.",
+    "",
+    "This file replaces the robocopy /XD + /XF deny list that scripts/build-mcpb.ps1",
+    "used until v0.68.0. That deny list shipped .codex/config.toml — a live",
+    "Authorization bearer token — inside obsidian-mcp-router-v0.67.1.mcpb, because",
+    "the directory was created after the exclusions were written. A deny list can",
+    "only ever be as complete as the last time someone remembered to update it.",
+    "",
+    "Zones are tried in declaration order; the first match wins, and the zone",
+    "decides how hard the leak scan looks at the file (see src/helpers/export-gate.mjs).",
+    "Machine-specific private roots are NOT listed here on purpose — writing",
+    "C:\\VAULTS\\... into a committed file in order to detect it being published",
+    "would publish it. They are passed at call time from the repo root, the home",
+    "directory and OBSIDIAN_ROUTER_EXPORT_PRIVATE_ROOTS."
+  ],
+  "contractVersion": 1,
+  "targets": {
+    "mcpb": {
+      "description": "The .mcpb bundle uploaded to MCPHub. Archive layout: manifest.json at the root, everything else under server/.",
+      "zones": {
+        "authored": [
+          ".mcp.json",
+          "bin/**",
+          "src/**",
+          "scripts/**",
+          "examples/**",
+          "skills/**",
+          "commands/**",
+          "agents/**",
+          "hooks/**",
+          "templates/**",
+          "contracts/**",
+          ".claude-plugin/**",
+          "README.md",
+          "ROADMAP.md",
+          "CHANGELOG.md",
+          "LICENSE",
+          "NOTICE",
+          "package.json",
+          "package-lock.json"
+        ],
+        "vendored": [
+          "node_modules/**"
+        ]
+      }
+    },
+    "okf": {
+      "description": "An OKF v0.1 knowledge bundle exported for sharing. Produced in memory by src/helpers/okf-bundle-exporter.mjs, so the allowlist constrains what the exporter is allowed to emit rather than what a directory happens to hold.",
+      "zones": {
+        "authored": [
+          "**/*.md",
+          "SHA256SUMS",
+          "export-manifest.json"
+        ]
+      }
+    },
+    "release": {
+      "description": "The source surface a GitHub release publishes. Same authored set as the bundle minus the vendored tree — a release ships source, never node_modules.",
+      "zones": {
+        "authored": [
+          ".mcp.json",
+          "bin/**",
+          "src/**",
+          "scripts/**",
+          "examples/**",
+          "skills/**",
+          "commands/**",
+          "agents/**",
+          "hooks/**",
+          "templates/**",
+          "contracts/**",
+          ".claude-plugin/**",
+          "README.md",
+          "ROADMAP.md",
+          "CHANGELOG.md",
+          "LICENSE",
+          "NOTICE",
+          "package.json",
+          "package-lock.json"
+        ]
+      }
+    }
+  },
+  "vendoredPrune": [
+    {
+      "path": "node_modules/.bin",
+      "reason": "npm GENERATES this directory when it installs; it is launcher shims for the machine that ran `npm ci`, not package content. On Windows it is three real files per binary (.cmd, .ps1, and an extension-less sh script); on Linux it is symlinks, which the gate refuses and the archive writer cannot represent — so leaving it in would make the bundle buildable on one platform only. Dropping it is safe because the single consumer, resolveRepomixPath() in src/markdownify/utils.mjs, is a three-tier cascade: REPOMIX_PATH, then this directory, then a PATH lookup. Tier 2 could not be relied on inside the MCPHub container in any case — no zip produced by either the old Compress-Archive build or this one preserves a unix executable bit, so an extracted sh shim is not executable. An MCPHub deployment that wants git_repo_to_markdown should set REPOMIX_PATH or put repomix on PATH."
+    }
+  ],
+  "beyondPackageFiles": [
+    {
+      "pattern": "CHANGELOG.md",
+      "reason": "An MCPHub operator upgrading a deployed instance needs to read what changed between two bundles; the file is public in the repo anyway, so shipping it leaks nothing and answers the first question every upgrade raises."
+    },
+    {
+      "pattern": "package-lock.json",
+      "reason": "The vendored zone is defined as the output of `npm ci` against this lockfile. Shipping the lockfile is what makes that provenance claim checkable by whoever receives the bundle."
+    }
+  ],
+  "emailAllowlist": [
+    "git@github.com"
+  ],
+  "scanExceptions": [
+    {
+      "path": "tests/export-gate.test.mjs",
+      "category": "personal-email",
+      "targets": [
+        "mcpb",
+        "release"
+      ],
+      "reason": "The export gate's own test file must CONTAIN a catchable address, or the personal-email rule is tested by nothing. Every one of them is a fixture built to be found (the suite asserts each is reported, and asserts its clean twin is not). This is the narrowest possible scope — one file, one category — and it exists because a leak scanner's fixtures are leaks by construction."
+    },
+    {
+      "path": "tests/export-gate.test.mjs",
+      "category": "private-path",
+      "targets": [
+        "mcpb",
+        "release"
+      ],
+      "reason": "Same reason as the personal-email entry above: the private-path rules are exercised by fixtures that are private paths. Scoped to this one file so a real path anywhere else in tests/ is still caught — and note that the gate ALSO caught a fixture here whose fake account name happened to begin with the real one, which is why the fixtures were renamed rather than simply excepted."
+    },
+    {
+      "path": "tests/**",
+      "category": "secret",
+      "rule": "assigned-credential",
+      "reason": "Test fixtures assign deliberately credential-shaped values (apiKey, SECRET, token) because that is what they exist to exercise — the safety code under test would have nothing to refuse otherwise. The GENERIC rule cannot tell such a fixture from a real key; it asks whether the author meant the value to be a credential, and in tests/ the answer is always 'yes, and it is fake'. Scoped to that ONE rule: every shaped format (AWS, GitHub, Anthropic, OpenAI, Google, Slack, npm, JWT, PEM private keys, Authorization headers) still runs over tests/, so a real credential pasted into a fixture is still caught. The personal-email and private-path categories also stay fully active here, since 'a personal address in a fixture' is one of the leaks this gate was built to stop.",
+      "$note": "Scoped to the repo's own exits. Exception paths are matched against BUNDLE-relative paths, and the OKF exporter strips the vault's wiki/ prefix — so without this scoping, a stranger's knowledge bundle containing a tests/ folder inherited this repo's muting. tests/ is not in the mcpb or release allowlist, but a GitHub release publishes an auto-generated source archive containing every tracked file, so tests/ IS published and create-release.mjs scans every tracked blob rather than the allowlist subset.",
+      "targets": [
+        "mcpb",
+        "release"
+      ]
+    },
+    {
+      "path": "**/node_modules/@secretlint/**",
+      "category": "secret",
+      "reason": "@secretlint (pulled in by repomix) IS a secret scanner: its rule presets are a catalogue of credential formats, so every AWS-shaped string in them is a pattern by definition, not a key. Scoped to the package rather than to a bundled filename because that filename carries a content hash and changes on every upgrade."
+    },
+    {
+      "path": "**/node_modules/jose/**",
+      "category": "secret",
+      "rule": "private-key-block",
+      "reason": "jose compares an input against the literal PKCS#8 PEM opening line in order to recognise a private-key string. That line is the parser's input format; no key material follows it in the source. (The header is described here rather than quoted: a file that spells out the patterns the scanner looks for makes the scanner fire on itself.)"
+    },
+    {
+      "path": "**/node_modules/zod/**",
+      "category": "secret",
+      "rule": "jwt",
+      "reason": "zod ships its own test sources, including two example JWTs used to exercise the string validator. They are RFC 7519 sample tokens signed with a published key, not credentials for anything."
+    }
+  ]
+}

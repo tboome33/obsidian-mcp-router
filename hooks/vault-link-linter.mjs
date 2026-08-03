@@ -49,7 +49,7 @@
  *
  *   3. **`cwd-vault-mix`** (v0.18.1 — added after Roland incident
  *      2026-05-29 where Claude emitted
- *      `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\...\graph-viewer-survey.md`
+ *      `C:\dev\my-project\wiki\...\graph-viewer-survey.md`
  *      — the workspace cwd path concatenated with a vault-internal
  *      subpath) — an ABSOLUTE path (markdown-link href OR bare prose
  *      token) that starts with the workspace cwd, continues into a

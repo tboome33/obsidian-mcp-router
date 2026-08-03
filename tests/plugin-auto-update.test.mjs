@@ -691,8 +691,8 @@ describe('tryAutoUpdate', () => {
           SessionStart: [{
             matcher: 'startup|resume',
             hooks: [
-              { type: 'command', command: `node "/Users/nicolas/.claude/plugins${oldCacheRel}hooks/check-router-update.mjs"` },
-              { type: 'command', command: `node "/Users/nicolas/.claude/plugins${oldCacheRel}hooks/hot-cache-load.mjs"` },
+              { type: 'command', command: `node "/Users/me/.claude/plugins${oldCacheRel}hooks/check-router-update.mjs"` },
+              { type: 'command', command: `node "/Users/me/.claude/plugins${oldCacheRel}hooks/hot-cache-load.mjs"` },
               { type: 'command', command: 'node "/some/other/unrelated/hook.mjs"' },
             ],
           }],

@@ -45,6 +45,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { compareSemver } from '../src/helpers/semver-compare.mjs';
+import { scanEntries, renderFindings } from '../src/helpers/export-gate.mjs';
+import { readContract, collectPrivateRoots } from './export-gate.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -254,6 +256,148 @@ if (isMain) {
 
   if (pending.length > 1) {
     say(`${pending.length} versions to publish: ${pending.map((v) => `v${v}`).join(', ')}`);
+  }
+
+  // 5b. C9 — the export gate. A GitHub release is the third exit, and the one
+  //     whose mistakes are hardest to take back: a tag is public the moment it
+  //     is pushed, and the notes are mirrored into e-mail and feeds within
+  //     seconds. Both halves are checked BEFORE the first push, so a refusal
+  //     costs nothing.
+  //
+  //     The notes are scanned as their own document because they are prose
+  //     written by hand at the end of a long session — the exact conditions
+  //     under which a real path or an address gets pasted in. The source
+  //     surface is scanned because that is what the tag makes downloadable.
+  //
+  //     There is no bypass flag. Fix the file, or add a `scanExceptions`
+  //     entry with a written reason to contracts/export-allowlist.json.
+  {
+    say('running the C9 export gate over every pending tag + its notes…');
+    const { contract } = readContract(repoRoot);
+    const privatePathRoots = collectPrivateRoots({ repoRoot });
+
+    // What a GitHub release actually publishes is the auto-generated source
+    // archive of the TAG, and that archive contains EVERY TRACKED FILE. Two
+    // consequences the first version of this gate got wrong:
+    //
+    //   1. It scanned the worktree. The worktree is not what ships: a secret
+    //      committed and then "fixed" on disk without committing passed the
+    //      gate while the tag published the key. Blobs are now read from the
+    //      tag with `git show`, so what is scanned is what is served.
+    //   2. It scanned the `release` allowlist subset — 309 of 465 tracked
+    //      files. The allowlist governs what WE assemble into a bundle; it
+    //      cannot shrink an archive GitHub generates. `docs/`, `tests/`,
+    //      `.github/` and the deployment files are all published regardless,
+    //      so every tracked blob is scanned here.
+    //
+    // Every pending tag is checked, not just the current version: this script
+    // publishes a BACKLOG, so an older tag carrying a leak would otherwise be
+    // released on the strength of today's clean tree.
+    const alreadyPublished = new Set(publishedTags.map((t) => t.replace(/^v/, '')));
+    for (const v of pending) {
+      const vTag = `v${v}`;
+      // Gate what is ABOUT to become public, not what already is. The current
+      // version is force-added to `pending` so its notes can be refreshed via
+      // `gh release edit`; gating it again means an already-published tag —
+      // whose bytes are immutable — can never be re-run, and a finding there
+      // could only ever be excepted, never fixed.
+      if (alreadyPublished.has(v)) {
+        say(`${vTag}: already published — gate skipped (its bytes are public and immutable).`);
+        continue;
+      }
+      // Which tree does this version actually publish? Normally the tag. But
+      // `--dry-run` does not create the tag at step 3, so a naive "no tag →
+      // skip" turned the dry run into a guaranteed pass — the one mode whose
+      // entire purpose is to tell you what the real run will do. When the tag
+      // is absent and the version is the one HEAD carries, HEAD *is* the tree
+      // the tag will be created on, so scan that and say so. Any other missing
+      // tag is a hard failure, never a skip.
+      let treeish = vTag;
+      let tagExistsForV = true;
+      try {
+        git(['rev-parse', '-q', '--verify', `refs/tags/${vTag}`]);
+      } catch {
+        tagExistsForV = false;
+        if (v === version) {
+          treeish = 'HEAD';
+          say(`${vTag}: tag not created yet — gating HEAD, which is the commit it will point at.`);
+        } else {
+          fail(`the export gate cannot read ${vTag} (no such tag) — refusing to publish a version it could not scan.`);
+        }
+      }
+
+      let listing;
+      try {
+        // `-z` + `core.quotePath=false`: with the defaults, git RENDERS a
+        // non-ASCII path as a C-quoted literal (`"caf\303\251.md"`). The gate
+        // then saw backslashes in the name, reported `path-traversal` — which
+        // is deliberately unsuppressable — and refused the release with a
+        // message about a "backslash separator" in a filename containing
+        // none. One accented file anywhere in the tree was an unfixable block.
+        // A larger `maxBuffer` because the default 1 MiB caps out on a big
+        // tree, and the failure would land mid-gate.
+        listing = execFileSync(
+          'git',
+          ['-c', 'core.quotePath=false', 'ls-tree', '-r', '-z', '--full-tree', treeish],
+          { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+        );
+      } catch (err) {
+        fail(`the export gate could not read the tree of ${tagExistsForV ? vTag : 'HEAD'}: ${err.message}`);
+      }
+
+      const blobs = [];
+      for (const line of listing.split('\0')) {
+        // `<mode> <type> <sha>\t<path>`
+        const m = line.match(/^(\d{6}) (blob|commit) ([0-9a-f]{40})\t([\s\S]+)$/);
+        if (!m) continue;
+        const [, mode, type, sha, filePath] = m;
+        if (type === 'commit') {
+          blobs.push({ path: filePath, content: '', isSymlink: false, submodule: true });
+          continue;
+        }
+        // Mode 120000 is a symlink: its blob content is the link TARGET, and
+        // the gate must see it as a link rather than as a one-line text file.
+        if (mode === '120000') {
+          const target = execFileSync('git', ['cat-file', 'blob', sha], { cwd: repoRoot, encoding: 'utf8' });
+          blobs.push({ path: filePath, isSymlink: true, linkTarget: target.trim(), content: null });
+          continue;
+        }
+        const content = execFileSync('git', ['cat-file', 'blob', sha], { cwd: repoRoot, maxBuffer: 256 * 1024 * 1024 });
+        blobs.push({ path: filePath, content, isSymlink: false });
+      }
+
+      if (blobs.length === 0) {
+        fail(`the export gate read 0 files from ${vTag} — refusing to treat an empty scan as clean.`);
+      }
+
+      const scan = scanEntries(blobs, {
+        target: 'release',
+        exceptions: contract.scanExceptions || [],
+        privatePathRoots,
+        emailAllowlist: contract.emailAllowlist || [],
+      });
+      if (!scan.ok) {
+        process.stderr.write(`\n${renderFindings(scan.findings)}\n`);
+        fail(`the export gate refused the source archive of ${vTag} (${blobs.length} tracked files) — nothing was pushed.`);
+      }
+      say(`export gate: ${vTag} clean (${blobs.length} tracked files scanned from the tag itself).`);
+    }
+
+    const noteDocs = pending.map((v) => {
+      const s = extractChangelogSection(changelogRaw, v);
+      return s ? { path: `release-notes/v${v}.md`, content: s.heading + '\n' + s.body, zone: 'authored' } : null;
+    }).filter(Boolean);
+    const noteScan = scanEntries(noteDocs, {
+      target: 'release',
+      exceptions: contract.scanExceptions || [],
+      privatePathRoots,
+      emailAllowlist: contract.emailAllowlist || [],
+    });
+    if (!noteScan.ok) {
+      process.stderr.write(`\n${renderFindings(noteScan.findings)}\n`);
+      fail('the export gate refused the release notes — nothing was pushed.');
+    }
+    say(`export gate: OK — ${pending.length} tag(s) and ${noteDocs.length} note document(s) clean.`);
   }
 
   // 6. Push: the branch once (tag commits must be reachable), then each tag.

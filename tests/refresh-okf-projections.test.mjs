@@ -29,6 +29,15 @@ import {
 } from '../src/helpers/okf-projections.mjs';
 import { buildOkfBundle } from '../src/helpers/okf-bundle-exporter.mjs';
 
+import fs2 from 'node:fs';
+// C9 (v0.68.0): buildOkfBundle requires the export-gate inputs — they are not
+// optional, so the OKF exit can never run without the gate. See
+// tests/okf-bundle-exporter.test.mjs for the full reasoning.
+const GATE = {
+  gateContract: JSON.parse(fs2.readFileSync(new URL('../contracts/export-allowlist.json', import.meta.url), 'utf8')),
+  gatePrivatePathRoots: [],
+};
+
 const VAULT = { name: 'test-vault' };
 
 /** In-memory vault: Map path → content, with rest-shaped deps + write log. */
@@ -312,6 +321,7 @@ describe('marker contract across modules (anti-drift pin)', () => {
       now: '2026-07-30',
     });
     const bundle = buildOkfBundle({
+      ...GATE,
       vaultName: 'v',
       now: '2026-07-30',
       pages: [
@@ -326,6 +336,7 @@ describe('marker contract across modules (anti-drift pin)', () => {
 
   test('an UNMARKED page reusing a reserved name still exports (as a renamed doc)', () => {
     const bundle = buildOkfBundle({
+      ...GATE,
       vaultName: 'v',
       now: '2026-07-30',
       pages: [

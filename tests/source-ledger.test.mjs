@@ -212,7 +212,7 @@ describe('C6 — independence rule', () => {
   test('a source whose origin cannot be derived is reported, never counted', () => {
     const { count, unknown } = countIndependentOrigins([
       { kind: 'url', url: 'https://good.com/a', id: 'a' },
-      { kind: 'url', url: '//user:pw@bad.com/x?secret=1', id: 'leaky' },
+      { kind: 'url', url: '//user:pw@example.com/x?secret=1', id: 'leaky' },
     ]);
     assert.equal(count, 1, 'the underivable source must not inflate the count');
     assert.deepEqual(unknown, ['leaky']);

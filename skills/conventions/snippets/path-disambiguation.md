@@ -45,4 +45,4 @@ Cette convention sert de doublon visible dans le `CLAUDE.md` du vault pour les c
 
 ### Source
 
-Convention shippée en v0.10.2 du router (2026-05-23) à la demande explicite de Roland après *"avant tu m'as créé ce lien : `C:\Users\rolan\DEDIBOX/Stack/host.md` !!!!!!! lui c'est de la merde"* puis *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user (section "Workspace-bound path disambiguation") et est injectée déterministiquement par le hook au prompt-submit.
+Convention shippée en v0.10.2 du router (2026-05-23) à la demande explicite de Roland après *"avant tu m'as créé ce lien : `C:\Users\me\DEDIBOX/Stack/host.md` !!!!!!! lui c'est de la merde"* puis *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user (section "Workspace-bound path disambiguation") et est injectée déterministiquement par le hook au prompt-submit.

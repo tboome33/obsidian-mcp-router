@@ -132,17 +132,44 @@ Fetch the selected pages (`list_files` + parallel `get_file`, same as step 2). O
 
 ```javascript
 import { buildOkfBundle } from 'src/helpers/okf-bundle-exporter.mjs';
+import { readContract, collectPrivateRoots } from 'scripts/export-gate.mjs';
+
+const { contract } = readContract();       // contracts/export-allowlist.json
 
 const { files, report } = buildOkfBundle({
   vaultName,               // bundle title
   pages,                   // [{ path, content }] — the scoped subset
   now: new Date().toISOString(),  // injected clock (helper is pure)
   summary,                 // optional blurb
-  includeAgentReadme: true // when --readme-agent
+  includeAgentReadme: true,// when --readme-agent
+
+  // C9 export gate — REQUIRED, the call throws without them.
+  gateContract: contract,
+  // Absolute paths that must never appear in a shared bundle. Pass the VAULT
+  // ROOT here, plus the repo root and home directory: a vault path is exactly
+  // the kind of thing that ends up quoted inside a note.
+  gatePrivatePathRoots: [vaultAbsolutePath, ...collectPrivateRoots()],
 });
 ```
 
-`buildOkfBundle` is pure and deterministic. It returns every file of the bundle (`files: [{ path, content }]`) plus a `report` you MUST surface to the user : `renamed` (reserved-name and slug collisions), `dangling` (links to pages outside the export — legal per the spec, but the user should know), `anchorsDropped` (heading/block anchors have no OKF equivalent), `embeds` (demoted to plain links ; assets are not exported), `warnings` (pages missing `type`).
+`buildOkfBundle` is pure and deterministic. It returns every file of the bundle (`files: [{ path, content }]`) plus a `report` you MUST surface to the user : `renamed` (reserved-name and slug collisions), `dangling` (links to pages outside the export — legal per the spec, but the user should know), `anchorsDropped` (heading/block anchors have no OKF equivalent), `embeds` (demoted to plain links ; assets are not exported), `warnings` (pages missing `type`), and **`gate`** (see O3b).
+
+### O3b. STOP if the export gate refused the bundle
+
+```javascript
+if (!report.gate.ok) {
+  // `files` is EMPTY — there is nothing to write, by design.
+  // Show report.gate.findings and stop. Do not work around it.
+}
+```
+
+An OKF bundle is made to be handed to someone else, which makes it the most exposed of the three things this repo publishes. The gate scans every produced page for secrets, personal e-mail addresses, private filesystem paths, symlinks and path traversal.
+
+**When `report.gate.ok` is `false`, `files` comes back empty** — a refused bundle is not partially publishable. Surface `report.gate.findings` (each has `category`, `rule`, `path`, `line`, `evidence`) and tell the user which pages to fix or exclude from the scope. Measured on a real 174-page vault: 3 personal addresses and 59 private paths, so this fires on ordinary vaults and is not a formality.
+
+Never silence a finding by widening the scope filter or by editing the contract's `scanExceptions` on the user's behalf — that is their call, and every exception needs a written reason.
+
+When the gate passes, the bundle additionally carries `SHA256SUMS` and `export-manifest.json`; both are legal in an OKF bundle (the conformance checker only inspects `.md` files) and let the recipient verify what they received.
 
 ### O4. Self-check conformance
 
@@ -155,7 +182,7 @@ const check = checkOkfConformance(files);
 
 ### O5. Write the bundle into the vault
 
-Write each file under `wiki-meta/exports/okf/<bundleName>/` via `write_file`. Tell the user the bundle directory is self-contained : they can copy it anywhere, `git init && git push` it, or hand the folder to any OKF-aware agent.
+Only reachable when **both** gates passed: `report.gate.ok === true` (O3b) and `check.conformant === true` (O4). Write each file under `wiki-meta/exports/okf/<bundleName>/` via `write_file`. Tell the user the bundle directory is self-contained : they can copy it anywhere, `git init && git push` it, or hand the folder to any OKF-aware agent.
 
 ### O6. Log + confirm
 

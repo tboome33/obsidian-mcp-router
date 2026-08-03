@@ -69,7 +69,7 @@ export async function lockVault(registry, args = {}) {
     // project directory.
     //
     // Case-folding caveat: Windows paths are case-insensitive (NTFS),
-    // so `C:\Users\Donald` and `C:\Users\donald` resolve to the same
+    // so `C:\Users\Alice` and `C:\Users\alice` resolve to the same
     // directory. We normalize case on Windows before comparison so a
     // mixed-case cwd doesn't bypass the refusal.
     const samePath = (a, b) => {

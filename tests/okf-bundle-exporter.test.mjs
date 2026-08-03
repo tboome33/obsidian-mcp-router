@@ -5,6 +5,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   slugifyOkfSegment,
@@ -20,6 +21,19 @@ import { checkOkfConformance } from '../src/helpers/okf-conformance-checker.mjs'
 import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
 
 const NOW = '2026-07-03T10:00:00+00:00';
+
+// C9 (v0.68.0): the export gate is not optional on the OKF exit. `gateContract`
+// and `gatePrivatePathRoots` used to default to `null` / `[]`, which meant the
+// documented production caller ran with no allowlist and with the one rule that
+// catches a machine-specific vault root switched off. They are now required
+// arguments; these fixtures supply the real contract and no extra private roots
+// (each test controls its own content). Spread FIRST so a test can override.
+const GATE = {
+  gateContract: JSON.parse(
+    fs.readFileSync(new URL('../contracts/export-allowlist.json', import.meta.url), 'utf8'),
+  ),
+  gatePrivatePathRoots: [],
+};
 
 function page(path, frontmatterLines, body) {
   return {
@@ -430,6 +444,7 @@ describe('rewriteWikilinks', () => {
 describe('buildOkfBundle — ambiguous basename resolution (codex regression)', () => {
   test('two exported pages sharing a basename: same-folder candidate wins, reported', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -451,6 +466,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
 
   test('ambiguous basename, both candidates equally exact-case, no same-folder: falls back to alphabetical, still reported', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -471,6 +487,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     // realistically coexistable across two folders even on a
     // case-insensitive filesystem) went completely undetected/unreported.
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -496,6 +513,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     // tie-break silently redirected the link to concepts/other.md instead
     // of the explicitly-linked refs/other.md.
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -524,6 +542,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     // the pass-1 fix was meant to eliminate, reintroduced by the two-step
     // resolve cascade.
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -545,6 +564,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
 
   test('REGRESSION (codex pass 3): a root-relative markdown link (/path.md) resolves against the vault root, ignoring the citing page folder', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -562,6 +582,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
 
   test('a bare-filename markdown link (no "/" at all) still uses basename resolution as before', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -588,6 +609,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
     // the OTHER (later-sorted) folder, silently overriding the more
     // meaningful same-folder tie-break.
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -605,6 +627,7 @@ describe('buildOkfBundle — ambiguous basename resolution (codex regression)', 
 
   test('unambiguous basename resolution produces no ambiguousLinks entries', () => {
     const { report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -632,6 +655,7 @@ describe('buildOkfBundle', () => {
 
   test('excludes wiki-meta/ pages defensively', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -650,6 +674,7 @@ describe('buildOkfBundle', () => {
     // non-canonical path (backslashes, leading ./). Regression for a
     // /review+ IMPORTANT finding.
     const { report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -666,13 +691,14 @@ describe('buildOkfBundle', () => {
       page('wiki/concepts/Foo Bar.md', ['type: concept', 'title: Foo Bar'], 'See [[Baz]].'),
       page('wiki/refs/Baz.md', ['type: reference', 'title: Baz'], 'Baz body.'),
     ];
-    const a = buildOkfBundle({ vaultName: 'V', pages, now: NOW });
-    const b = buildOkfBundle({ vaultName: 'V', pages, now: NOW });
+    const a = buildOkfBundle({ ...GATE, vaultName: 'V', pages, now: NOW });
+    const b = buildOkfBundle({ ...GATE, vaultName: 'V', pages, now: NOW });
     assert.deepEqual(a.files, b.files);
   });
 
   test('rewrites cross-folder wikilinks between slugified paths', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -686,6 +712,7 @@ describe('buildOkfBundle', () => {
 
   test('renames content pages that collide with reserved filenames', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [page('wiki/notes/index.md', ['type: note', 'title: Fake Index'], 'Body.')],
@@ -699,6 +726,7 @@ describe('buildOkfBundle', () => {
 
   test('resolves slug collisions deterministically with -2 suffix', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -713,6 +741,7 @@ describe('buildOkfBundle', () => {
 
   test('root index carries only okf_version frontmatter + title + summary', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Mon Vault',
       now: NOW,
       summary: 'Une base de test.',
@@ -728,6 +757,7 @@ describe('buildOkfBundle', () => {
 
   test('per-folder index groups by type with canonical bullet shape', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [
@@ -749,6 +779,7 @@ describe('buildOkfBundle', () => {
 
   test('log.md is newest-first with a Creation entry dated from now', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       pages: [page('wiki/a.md', ['type: note', 'title: A'], 'x')],
@@ -761,6 +792,7 @@ describe('buildOkfBundle', () => {
 
   test('includeAgentReadme emits README.md and protects the name', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'V',
       now: NOW,
       includeAgentReadme: true,
@@ -778,6 +810,7 @@ describe('buildOkfBundle', () => {
 
   test('exported bundle passes the OKF conformance checker with zero errors', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Vault Complet',
       now: NOW,
       summary: 'Cross-check bundle.',

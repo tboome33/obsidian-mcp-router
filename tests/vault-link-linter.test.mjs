@@ -711,7 +711,7 @@ describe('vault-link-linter — wrong-port detection (v0.12.8)', () => {
 // ---------------------------------------------------------------------------
 // v0.18.1 — cwd + vault-subpath "phantom path" trap.
 // Roland incident 2026-05-29: Claude emitted
-// `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\...\graph-viewer-survey.md` — the
+// `C:\dev\my-project\wiki\...\graph-viewer-survey.md` — the
 // workspace cwd concatenated with a vault-internal subpath. The cwd (code
 // repo) and the vault (Obsidian notes) live at DIFFERENT absolute roots, so
 // the path is a phantom that doesn't exist on disk. Pre-v0.18.1 the linter
@@ -795,7 +795,7 @@ describe('vault-link-linter — cwd+vault-subpath trap (v0.18.1)', () => {
   test('REGRESSION: the exact Roland 2026-05-29 path shape is caught', () => {
     // The incident path was a Windows path with mixed separators: backslash
     // cwd separators + a forward-slash vault subpath
-    // (`I:\DEVELOPPEMENT\obsidian-mcp-router/wiki/...`). That exact shape is
+    // (`C:\dev\my-project/wiki/...`). That exact shape is
     // a Windows-only phenomenon — on POSIX a literal `\` is a valid filename
     // char (NOT a separator), so `path.resolve('/fake-code-ws\\wiki/...')`
     // yields a path that never starts with `<cwd>/`, the linter's Pass-3
@@ -820,7 +820,7 @@ describe('vault-link-linter — cwd+vault-subpath trap (v0.18.1)', () => {
 // Roland incident 2026-06-01: Claude wrote `wiki-meta/index.md` and
 // `wiki-meta/log.md` as backtick-wrapped relative paths in a chat recap.
 // The Claude Code renderer clickified them against the cwd
-// (I:\DEVELOPPEMENT\obsidian-mcp-router\wiki-meta\index.md → phantom).
+// (C:\dev\my-project\wiki-meta\index.md → phantom).
 // Two prior blind spots let them through: (a) stripCode() deletes inline-
 // code spans BEFORE detection, so backtick-wrapped paths were invisible;
 // (b) the bare-path pass only scans markdown links and the cwd-vault-mix

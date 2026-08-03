@@ -6,6 +6,45 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.68.0] — 2026-08-03 — C9: one export gate, and the bearer token that was already shipping
+
+### Added
+
+**C9 — the export gate.** Three things built here go somewhere else: the `.mcpb` bundle (MCPHub), OKF knowledge bundles (made to be shared), and GitHub releases. All three now pass through one module, `src/helpers/export-gate.mjs`: whitelist → leak scan → `SHA256SUMS` → manifest → deterministic archive → audit without extraction.
+
+- **The bundle was shipping a live credential.** `scripts/build-mcpb.ps1` selected files with a robocopy deny list, and a deny list is only as complete as the last time somebody remembered it. `obsidian-mcp-router-v0.67.1.mcpb` — the file uploaded to MCPHub — contained `server/.codex/config.toml`, holding a live `Authorization` bearer token, plus 25 internal review documents under `.superpowers/`. `.codex/` is gitignored *precisely because* it holds a credential: git knew to protect it, the bundle did not, because the directory was created after the exclusions were written. Selection now comes from `contracts/export-allowlist.json`, where a file ships because a pattern names it.
+
+- **The same deny list also dropped a file it should have shipped.** `/XD .claude` matched that directory name at any depth, silently removing the git-tracked `templates/reference-vault-skeleton/.claude/settings.json` from the vault skeleton the bundle exists to ship. Before/after on the real artifact: 9695 → 9584 entries, 33 real files removed (including the token), 1 restored, 63 directory-only entries dropped, and **zero files silently lost**.
+
+- **The scan catches five categories** — secrets, personal e-mail addresses, private filesystem paths, symlinks, path traversal — each with a dedicated fixture *and its clean twin*, so a rule that matched everything would fail as loudly as one that matched nothing. Run over this repo it first reported 40 private-path findings, most of them the repo's own documentation examples; the rules became placeholder-aware (a conventional stand-in such as `C:\Users\me` is documentation, a real account name is not), and all 20 survivors were **fixed at the source rather than excepted** — so the gate starts with zero authored-zone exceptions. `gitleaks` in `.githooks/pre-commit` did not and could not cover this: it scans *staged* changes and is fail-open, so it never sees what goes into a bundle or an export.
+
+- **Reproducible, and honest about the edges.** Two full clean builds of the same commit — each with its own `npm ci` — produce a byte-identical archive, verified in CI on every push. The writer normalises entry order, mtimes, path separators, host OS, external attributes and extra fields, and the manifest carries a commit rather than a clock. What is **not** claimed: byte equality across zlib versions (the manifest records `zlibVersion` so a disagreement names its own cause; `--compression store` removes the dependency), across platforms (unmeasured), or of the input file set itself (`npm ci` and git's line-ending translation are upstream). ZIP64 is not implemented — the writer throws rather than emitting a truncated central directory.
+
+- **Audit without extraction.** `node scripts/export-gate.mjs audit <archive>` verifies entry names, CRC-32s, and a checksum chain — each entry against the `SHA256SUMS` inside the archive, and `SHA256SUMS` against the hash pinned in `export-manifest.json` — reading only the bytes, because unpacking is the dangerous half. Rewriting a file forces rewriting the checksums, which breaks the manifest link; a test performs exactly that two-step forgery.
+
+- **Fail-closed, with no quiet bypass.** There is no `--skip-scan`. A finding is silenced by a `scanExceptions` entry that **must** carry a written reason — one without a reason is itself reported, and suppresses nothing. Exceptions are scoped by package, never by a hashed filename that changes on the next upgrade. `build-mcpb.ps1` is now a forwarder: the deny-list build was removed rather than kept as a fallback, because a working way around a gate is a way around it.
+
+### Changed
+
+- **CI runs the gate on every matrix leg, behind `!cancelled()`.** The v0.67.0 lesson applied directly: that release shipped a capability gate pinned to one leg, the tests on that leg went red, and the gate reported `skipped` — advertised in the release notes, never executed. `npm run validate` loses its single-leg pin for the same reason. Every leg, because this gate is about paths, and paths are what differ between a Windows and a Linux runner.
+- `actions/checkout` and `actions/setup-node` bumped to v5; every leg was already annotated "being forced to run on Node.js 24".
+- `node_modules/.bin` is pruned from the bundle, declared in the contract with a written reason: npm *generates* it, it is real files on Windows and symlinks on Linux, and no zip from either the old or the new builder preserves a unix executable bit. An MCPHub deployment wanting `git_repo_to_markdown` should set `REPOMIX_PATH` or put `repomix` on `PATH`.
+- Redacted the developer's account name and dev-drive layout from `CHANGELOG.md`, two hooks, three skills and `src/tools/lock.mjs` — all of it shipped in every bundle and every release.
+
+### Three review rounds, and what each one cost
+
+Two independent reviewers per round, every finding reproduced by an executable probe before it was accepted. **Round 1: 4 blocking + 8 serious + 10 minor, and 15 tests that pinned bad behaviour. Round 2: 4 more blocking, several introduced by the round-1 fixes. Round 3: 2 blocking that both earlier rounds had missed.** The pattern is now three-for-three on this codebase, and this release is the clearest case yet for the third round.
+
+- **Round 1 — the gate could report clean while leaking.** `auditArchive` returned `ok: true` for an archive whose *local* header said `../../evil.mjs` while its central record said `server/abc.mjs`: listing tools read one copy of the metadata, streaming extractors read the other, and a 14-byte patch separated them. The OKF exit was wired in the tests only — its gate inputs defaulted to `null`, so the documented production caller ran with no allowlist and with the one rule that catches a machine-specific vault root switched off. The release gate scanned the worktree while the tag published `HEAD`, and only the allowlist subset while GitHub publishes every tracked file. A single NUL byte exempted a file from every content rule. A `scanExceptions` entry containing nothing but a reason silenced the entire scanner.
+
+- **Round 2 — the fixes had their own holes.** A code comment claimed an EOCD check that was never written, so *appending* an EOCD hid an entry where *editing* one no longer could. The catch-all guard tested the pattern's text, so respelling the glob re-opened the hole round 1 had closed. `swap16` threw a `RangeError` on any odd-length UTF-16BE buffer and took the whole gate down. The honesty counter added in round 1 had no caller at all.
+
+- **Round 3 — the one both earlier rounds missed.** Every check iterated the *central directory*, and nothing verified that the local-header region contained only the declared entries. A complete local record spliced in before the directory — with the EOCD offset bumped by four bytes — was invisible to all of it, and a third-party streaming reader extracted the file. The reader now requires the entries to tile the file contiguously. Round 3 also found that `auditArchive` accepted a `target` and dropped it, that the UTF-16 detector keyed on NUL parity and so missed any note not written in a Latin alphabet, and that byte regions belonging to no entry — the archive comment, local extra fields, the gate's own two files — were read by nothing.
+
+Deliberate limits, stated rather than implied: the generic credential rule does not run over `node_modules` or `tests/` fixtures (shaped formats still do); an exception must name a literal directory, so a narrow but wildcard-only pattern is refused; and `--verify-reproducible` was renamed `--verify-writer-idempotent` because it checked writer idempotence, not reproducibility — CI's two full builds are what prove the actual claim.
+
+New: `npm run gate`, `npm run build:mcpb`, [`docs/export-gate.md`](./docs/export-gate.md). Suite **3390**, +134 tests.
+
 ## [0.67.1] — 2026-08-03 — a third review round: the C8 gate would never have run in CI
 
 ### Fixed
@@ -1346,7 +1385,7 @@ Follow-up to 0.18.1 that removes the *deeper* root cause behind the recurring ph
 
 ## [0.18.1] — 2026-05-29 — fix: `vault-link-linter` catches cwd+vault "phantom" paths
 
-Patch. The `vault-link-linter` Stop hook gains a **third violation kind**, `cwd-vault-mix`, closing the blind spot behind a recurring broken-link bug. In workspace-bound sessions, Claude would emit an absolute path that concatenates the workspace cwd with a vault-internal subpath — e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router\wiki\…\graph-viewer-survey.md` — a phantom that does not exist, because the vault lives at a *different* absolute root (`C:\VAULTS\opsidian-mcp-router et bridge`). The two share near-identical basenames (`obsidian-mcp-router` vs `opsidian-mcp-router et bridge`), which is what made the confusion sticky. (Reminder: the hooks only fire once wired into `~/.claude/settings.json` via `node scripts/setup-vault.mjs --install-hooks` — a dormant linter catches nothing.)
+Patch. The `vault-link-linter` Stop hook gains a **third violation kind**, `cwd-vault-mix`, closing the blind spot behind a recurring broken-link bug. In workspace-bound sessions, Claude would emit an absolute path that concatenates the workspace cwd with a vault-internal subpath — e.g. `<repo>\wiki\…\graph-viewer-survey.md` — a phantom that does not exist, because the vault lives at a *different* absolute root (`C:\VAULTS\opsidian-mcp-router et bridge`). The two share near-identical basenames (`obsidian-mcp-router` vs `opsidian-mcp-router et bridge`), which is what made the confusion sticky. (Reminder: the hooks only fire once wired into `~/.claude/settings.json` via `node scripts/setup-vault.mjs --install-hooks` — a dormant linter catches nothing.)
 
 ### Fixed
 
@@ -2560,7 +2599,7 @@ Final test count: **466/466 passing** (453 pre-existing + 6 v0.12.7 base + 7 rev
 
 ## [0.12.5] — 2026-05-23
 
-Closes a recurring path-confusion footgun in workspace-bound mode: when the workspace cwd and the associated vault share the same basename (e.g. `C:\Users\rolan\DEDIBOX` ↔ `C:\VAULTS\DEDIBOX`), Claude could generate filesystem paths that concatenate the cwd path with a vault-internal subpath (`wiki/`, `wiki-meta/`) — producing non-existent paths. The pre-existing `wiki-query-first-nudge` hook already warned `cwd ≠ vault` but didn't give the two absolute paths concretely or forbid the mix explicitly. v0.12.5 enriches the hook with a dynamic `PATH RESOLUTION RULES` block + ships a matching installable convention + a backup section in the global user CLAUDE.md.
+Closes a recurring path-confusion footgun in workspace-bound mode: when the workspace cwd and the associated vault share the same basename (e.g. `C:\Users\me\DEDIBOX` ↔ `C:\VAULTS\DEDIBOX`), Claude could generate filesystem paths that concatenate the cwd path with a vault-internal subpath (`wiki/`, `wiki-meta/`) — producing non-existent paths. The pre-existing `wiki-query-first-nudge` hook already warned `cwd ≠ vault` but didn't give the two absolute paths concretely or forbid the mix explicitly. v0.12.5 enriches the hook with a dynamic `PATH RESOLUTION RULES` block + ships a matching installable convention + a backup section in the global user CLAUDE.md.
 
 ### Added
 
@@ -2585,9 +2624,9 @@ Closes a recurring path-confusion footgun in workspace-bound mode: when the work
 
 ### Why
 
-Roland's verbatim trigger: *"avant tu m'as créé ce lien : `C:\Users\rolan\DEDIBOX/Stack/host.md` !!!!!!! lui c'est de la merde"* followed by *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*.
+Roland's verbatim trigger: *"avant tu m'as créé ce lien : `C:\Users\me\DEDIBOX/Stack/host.md` !!!!!!! lui c'est de la merde"* followed by *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*.
 
-The previous protection (wiki-query-first nudge with "cwd is a code/dev project, not the vault itself") was too generic — it told Claude the cwd and vault are different but didn't show the concrete paths side-by-side or forbid the trap pattern explicitly. With both paths visible (`C:\Users\rolan\DEDIBOX` next to `C:\VAULTS\DEDIBOX`) and a WRONG/RIGHT example using the actual session paths, the LLM has zero excuse to mix them — the trap is named, shown, and a safer default (wikilink `[[basename]]`) is recommended.
+The previous protection (wiki-query-first nudge with "cwd is a code/dev project, not the vault itself") was too generic — it told Claude the cwd and vault are different but didn't show the concrete paths side-by-side or forbid the trap pattern explicitly. With both paths visible (`C:\Users\me\DEDIBOX` next to `C:\VAULTS\DEDIBOX`) and a WRONG/RIGHT example using the actual session paths, the LLM has zero excuse to mix them — the trap is named, shown, and a safer default (wikilink `[[basename]]`) is recommended.
 
 Three layers of defense in depth, mirroring the `roadmap-discipline` v0.10.1 + `wiki-query-first` v0.11.6 patterns:
 1. **Hook** (deterministic, fires at every prompt-submit) — most reliable layer
@@ -2783,7 +2822,7 @@ The automated `setup-vault.mjs --migrate-wiki-meta <vault-path>` ships in v0.12.
 
 ## [0.11.6] — 2026-05-23
 
-Closes the v0.11.5 gap Roland surfaced: the new `wiki-query-first-nudge` hook only detected vault context when cwd ITSELF contained `wiki/index.md`, missing the common case where the workspace is a code/dev project ASSOCIATED with a vault (e.g. `I:\DEVELOPPEMENT\obsidian-mcp-router` ↔ vault `opsidian-mcp-router et bridge`). v0.11.6 introduces **workspace-bound mode**: hooks resolve an associated vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in the workspace `.env`, and operate against THAT vault's wiki when cwd has none. Also closes the related gap on `hot-cache-load` (now reads associated vault's `wiki/hot.md` with a marker).
+Closes the v0.11.5 gap Roland surfaced: the new `wiki-query-first-nudge` hook only detected vault context when cwd ITSELF contained `wiki/index.md`, missing the common case where the workspace is a code/dev project ASSOCIATED with a vault (e.g. `<repo>` ↔ vault `opsidian-mcp-router et bridge`). v0.11.6 introduces **workspace-bound mode**: hooks resolve an associated vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT` in the workspace `.env`, and operate against THAT vault's wiki when cwd has none. Also closes the related gap on `hot-cache-load` (now reads associated vault's `wiki/hot.md` with a marker).
 
 ### Added
 
@@ -2806,7 +2845,7 @@ Run from the router repo for each code workspace that's associated with a vault:
 ```bash
 cd <router-repo>
 node scripts/setup-vault.mjs --link-workspace . "opsidian-mcp-router et bridge"
-# (already run on I:\DEVELOPPEMENT\obsidian-mcp-router during this session)
+# (already run on <repo> during this session)
 
 # Repeat for other code workspaces (SMILE, PORTFOLIO-NICOLAS, etc.)
 ```
@@ -3484,7 +3523,7 @@ First of three graphify-borrowed Tier 1 patches (see [`ROADMAP.md`](./ROADMAP.md
 - Tests: 19 new cases covering set/unset, persist round-trip, homedir refusal, hot-reload preserve.
 
 ### Fixed
-- **Critical** — `samePath()` Windows case-insensitive comparison so a homedir refusal can't be bypassed by typing `C:\Users\donald` vs `C:\Users\Donald`.
+- **Critical** — `samePath()` Windows case-insensitive comparison so a homedir refusal can't be bypassed by typing `C:\Users\alice` vs `C:\Users\Alice`.
 - `upsertDotenvVar` now updates the FIRST occurrence (matches the reader convention in `bin/obsidian-mcp-router.mjs`).
 - Hot-reload preserves the lock state across config reloads, but revalidates so disabling the locked vault drops the lock instead of bricking.
 

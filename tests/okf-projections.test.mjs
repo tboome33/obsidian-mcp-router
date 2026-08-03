@@ -12,6 +12,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import fs2 from 'node:fs';
 
 import {
   PROJECTION_MARKER,
@@ -25,6 +26,13 @@ import {
 import { checkOkfConformance } from '../src/helpers/okf-conformance-checker.mjs';
 import { buildOkfBundle } from '../src/helpers/okf-bundle-exporter.mjs';
 import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
+
+// C9 (v0.68.0): buildOkfBundle requires the export-gate inputs — see the same
+// constant in tests/okf-bundle-exporter.test.mjs for why they are not optional.
+const GATE = {
+  gateContract: JSON.parse(fs2.readFileSync(new URL('../contracts/export-allowlist.json', import.meta.url), 'utf8')),
+  gatePrivatePathRoots: [],
+};
 
 const NOW = '2026-07-30';
 
@@ -333,6 +341,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
   test('a whole-vault export ships the projections byte-for-byte', () => {
     const proj = projectionsFor(LOWER);
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: [...LOWER, ...proj], now: EXPORT_NOW,
     });
     assert.equal(report.projectionsReused, true);
@@ -348,6 +357,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
 
   test('projections are never mangled into `index-page.md` (§3.1)', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: [...LOWER, ...projectionsFor(LOWER)], now: EXPORT_NOW,
     });
     assert.ok(!files.some((f) => /index-page\.md$|log-page\.md$/.test(f.path)));
@@ -357,6 +367,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
   test('a page standing on a reserved basename is STILL renamed', () => {
     // The projection split must not weaken §3.1 for real content.
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo',
       pages: contentPages([{ path: 'wiki/guides/index.md', fm: { type: 'note', title: 'Hand written' } }]),
       now: EXPORT_NOW,
@@ -368,6 +379,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
   test('a FILTERED export regenerates instead of shipping stale navigation', () => {
     const proj = projectionsFor(LOWER);
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: [LOWER[0], ...proj], now: EXPORT_NOW,
     });
     assert.equal(report.projectionsReused, false);
@@ -382,6 +394,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
       { path: 'wiki/Divers/note.md', fm: { type: 'note', title: 'N', description: 'd', created: '2026-07-01' } },
     ]);
     const { report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: [...pages, ...projectionsFor(pages)], now: EXPORT_NOW,
     });
     assert.equal(report.projectionsReused, false);
@@ -390,6 +403,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
 
   test('with no projections supplied the exporter behaves exactly as before', () => {
     const { files, report } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: LOWER, now: EXPORT_NOW,
     });
     assert.equal(report.projectionsReused, false);
@@ -399,6 +413,7 @@ describe('buildOkfBundle — at-rest projection reuse', () => {
 
   test('a reused bundle is conformant with zero errors and zero warnings', () => {
     const { files } = buildOkfBundle({
+      ...GATE,
       vaultName: 'Demo', pages: [...LOWER, ...projectionsFor(LOWER)], now: EXPORT_NOW,
     });
     const result = checkOkfConformance(files);

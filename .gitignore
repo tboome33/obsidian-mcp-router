@@ -16,6 +16,12 @@ node_modules/
 # regenerable and large (~36 MB) — never committed.
 mcpb-staging/
 *.mcpb
+# The C9 gate writes these two next to the bundle. They were untracked AND
+# unignored, so the first build dirtied the worktree that the second build
+# hashed — flipping `source.dirty` inside export-manifest.json, inside the
+# archive, and failing the very CI step that exists to prove reproducibility.
+*.mcpb.sha256
+*.mcpb.manifest.json
 
 # Personal config — must never be committed (contains API keys)
 config.json

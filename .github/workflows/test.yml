@@ -35,11 +35,13 @@ jobs:
         node: ['20.18.1', '22']
 
     steps:
+      # v5: GitHub is retiring the Node 20 runtime these actions target, and
+      # every leg was already annotated "being forced to run on Node.js 24".
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node ${{ matrix.node }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -57,5 +59,48 @@ jobs:
       # Runs on one matrix leg only: the check reads files, so every leg would
       # report the identical result.
       - name: Validate skill capability contracts
-        if: matrix.os == 'ubuntu-latest' && matrix.node == '22'
+        if: ${{ !cancelled() }}
         run: npm run validate
+
+      # C9 — the export gate. Runs on EVERY leg, and behind `!cancelled()`
+      # rather than the default "previous step succeeded".
+      #
+      # Both details are the v0.67.0 lesson paid for in full: that release
+      # shipped a capability gate pinned to one matrix leg, the tests on that
+      # leg went red, and the gate step reported `skipped` — so the guard
+      # advertised in the release notes never executed in CI even once. A check
+      # that only runs when everything already passes is not a check.
+      #
+      # Every leg, not one, because this gate is about PATHS — separators,
+      # case-collisions, symlinks — and those are exactly what differs between
+      # a Windows and a Linux runner. One leg would prove the least
+      # interesting half.
+      - name: Export gate — leak scan over the shipping surface
+        if: ${{ !cancelled() }}
+        run: |
+          node scripts/export-gate.mjs scan release
+          node scripts/export-gate.mjs scan mcpb
+
+      # Byte-reproducibility, end to end, on the platform the bundle is built
+      # on. Two full builds — each with its own `npm ci` — must produce the
+      # same sha256. Windows-only because that is where the bundle is
+      # released from; the Linux path is exercised by the scan above.
+      - name: Bundle is byte-reproducible (two full builds)
+        if: ${{ !cancelled() && matrix.os == 'windows-latest' && matrix.node == '22' }}
+        shell: bash
+        run: |
+          # The exact filename, not a glob: a checkout has no .mcpb (they are
+          # gitignored), but a glob would silently audit the wrong bundle on
+          # any machine that has an older one lying around.
+          BUNDLE="obsidian-mcp-router-v$(node -p "require('./package.json').version").mcpb"
+          node scripts/build-mcpb.mjs --verify-writer-idempotent
+          first=$(cut -d' ' -f1 < "$BUNDLE.sha256")
+          node scripts/build-mcpb.mjs
+          second=$(cut -d' ' -f1 < "$BUNDLE.sha256")
+          echo "build 1: $first"
+          echo "build 2: $second"
+          if [ "$first" != "$second" ]; then
+            echo "::error::two builds of the same commit produced different bytes"
+            exit 1
+          fi
+          node scripts/export-gate.mjs audit "$BUNDLE" --sha256 "$second"

@@ -176,7 +176,7 @@ const indexReadHint = isWorkspaceBound
 // v0.10.2: PATH RESOLUTION RULES (workspace-bound only)
 // Triggered by Roland 2026-05-23 after Claude generated a filesystem path
 // that concatenated the cwd path with a vault-internal subpath
-// (`C:\Users\rolan\DEDIBOX/Stack/host.md` instead of
+// (`C:\Users\me\DEDIBOX/Stack/host.md` instead of
 // `C:\VAULTS\DEDIBOX\wiki\Stack\host.md`). The cwd and the vault share
 // the same basename (DEDIBOX) but live under different parents — easy to
 // mix up at generation time. This block injects the two absolute roots

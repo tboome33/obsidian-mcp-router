@@ -49,7 +49,7 @@ const FIXTURE_TRICKY = `<html><body>
   <main>
     <p>Real link: <a href="https://example.com/article">read more</a> for details.</p>
     <p>A <a href="#section1">fragment-only link</a> should be skipped.</p>
-    <p>A <a href="mailto:foo@bar.com">mailto</a> should be skipped.</p>
+    <p>A <a href="mailto:foo@example.com">mailto</a> should be skipped.</p>
     <p>A <a href="javascript:void(0)">js handler</a> should be skipped.</p>
     <p>Duplicate: <a href="https://example.com/article">same link</a>.</p>
     <p>With trailing slash: <a href="https://example.com/article/">should dedup with above</a>.</p>
@@ -399,7 +399,7 @@ describe('_internals — resolveAndNormalize', () => {
   });
 
   test('rejects non-http(s) schemes', () => {
-    assert.equal(_internals.resolveAndNormalize('mailto:x@y.com', base), null);
+    assert.equal(_internals.resolveAndNormalize('mailto:x@example.com', base), null);
     assert.equal(_internals.resolveAndNormalize('tel:+1234', base), null);
     assert.equal(_internals.resolveAndNormalize('javascript:alert(1)', base), null);
     assert.equal(_internals.resolveAndNormalize('ftp://x/y', base), null);
