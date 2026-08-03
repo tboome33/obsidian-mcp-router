@@ -343,7 +343,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
     // remember. (`sanitizeLabel` also caps length, which keeps a pathological
     // id from turning the message into a wall.)
     const shown = report.errors.slice(0, 3).map((e) => oneLine(String(e))).join('; ');
-    throw new Error(
+    throw refusal(
       `boundary-score: this knowledge graph is invalid, so it cannot be ranked — ${shown}`
         + `${report.errors.length > 3 ? ` (+${report.errors.length - 3} more)` : ''}. `
         + 'Re-run build_wiki_graph (the /wiki-graph skill) to rebuild it.',
@@ -381,7 +381,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
       // `\n` fabricated a second line reading `boundary-score: ranking complete
       // — all clear` inside the error. `oneLine` collapses them.
       const shown = oneLine(String(opts.asOf)).slice(0, 80);
-      throw new Error(`boundary-score: asOf "${shown}" is not a YYYY-MM-DD date.`);
+      throw refusal(`boundary-score: asOf "${shown}" is not a YYYY-MM-DD date.`);
     }
     asOfSource = 'caller';
   } else {
@@ -420,7 +420,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
   let measured = 0;
   for (const node of articles.values()) if (substanceOf(node) !== null) measured += 1;
   if (articles.size > 0 && measured === 0) {
-    throw new Error(
+    throw refusal(
       'This knowledge graph carries no substance measurements, so "thin" cannot be evaluated '
         + '— it was built before boundary scoring existed. Re-run build_wiki_graph (the /wiki-graph '
         + 'skill) to rebuild it, then ask again.',
@@ -533,6 +533,27 @@ export function scoreBoundaryPages(graph, opts = {}) {
     truncated: rows.length > limit,
     pages: rows.slice(0, limit),
   };
+}
+
+/**
+ * An ACTIONABLE refusal — the caller can fix this, so it must not be reported
+ * as an unclassified failure.
+ *
+ * `kind: 'validation'` is the router's established convention for a router-side
+ * refusal that never reached the network (see `source-ledger.mjs`,
+ * `local-search.mjs`, `write-bundle.mjs`, and the comment on `validation` in
+ * `error-classify.mjs`: such errors "were previously falling through to
+ * `unknown` — same retry verdict, but the category told the caller nothing").
+ *
+ * C10's refusals were doing exactly that, and no unit test could see it: four
+ * review rounds all caught the raw `Error` in-process. Only an END-TO-END call
+ * through the real MCP transport surfaced the `Category: unknown` on an error
+ * whose whole purpose is to tell the caller what to do about it.
+ */
+function refusal(message) {
+  const err = new Error(message);
+  err.kind = 'validation';
+  return err;
 }
 
 /**

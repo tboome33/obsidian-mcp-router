@@ -298,6 +298,58 @@ describe('find_boundary_pages — refusals point somewhere useful', () => {
     );
   });
 
+  test('PIN: every refusal is classified `validation`, never `unknown`', async () => {
+    // Found only by an END-TO-END call through the real MCP transport: four
+    // review rounds caught these errors in-process, where the `kind` is
+    // invisible. Over the wire they surfaced as `Category: unknown` — on errors
+    // whose entire purpose is to tell the caller what to do. `error-classify`
+    // says it plainly: such refusals "were previously falling through to
+    // `unknown` — same retry verdict, but the category told the caller nothing".
+    const bad = fixtureGraph();
+    for (const n of bad.nodes) delete n.knowledgeMeta.substance;
+
+    const cases = [
+      ['unbuilt graph', Object.assign(new Error('Not Found'), { kind: 'not_found' })],
+      ['not JSON', '<html>nope</html>'],
+      ['malformed graph', JSON.stringify({ hello: 'world' })],
+      ['no substance measurements', bad],
+    ];
+    for (const [label, input] of cases) {
+      await assert.rejects(
+        () => findBoundaryPagesTool(registry, {}, depsFor(input)),
+        (err) => {
+          assert.equal(err.kind, 'validation', `${label} must be classified validation, got ${err.kind}`);
+          return true;
+        },
+      );
+    }
+    // An invalid graph is refused by the scorer, and must carry it too.
+    const dup = fixtureGraph();
+    dup.nodes.push({ ...article('wiki/dup'), id: 'article:wiki/dup' }, { ...article('wiki/dup2'), id: 'article:wiki/dup' });
+    await assert.rejects(
+      () => findBoundaryPagesTool(registry, {}, depsFor(dup)),
+      (err) => { assert.equal(err.kind, 'validation', 'invalid graph must be validation'); return true; },
+    );
+    // ...and so must a bad caller argument.
+    await assert.rejects(
+      () => findBoundaryPagesTool(registry, { asOf: 'nope' }, depsFor(fixtureGraph())),
+      (err) => { assert.equal(err.kind, 'validation', 'bad asOf must be validation'); return true; },
+    );
+  });
+
+  test('PIN: a REAL operational failure keeps its own classification', async () => {
+    // The counterpart: tagging our refusals must not relabel an upstream
+    // failure. A transient error stays transient and stays retryable.
+    const err = Object.assign(new Error('connect ECONNREFUSED'), { kind: 'transient' });
+    await assert.rejects(
+      () => findBoundaryPagesTool(registry, {}, depsFor(err)),
+      (thrown) => {
+        assert.equal(thrown.kind, 'transient', 'an upstream failure must not be rewritten as validation');
+        return true;
+      },
+    );
+  });
+
   test('a pre-C10 graph is refused rather than scored as all-empty', async () => {
     const g = fixtureGraph();
     for (const n of g.nodes) delete n.knowledgeMeta.substance;

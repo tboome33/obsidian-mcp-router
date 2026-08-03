@@ -6,6 +6,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.69.3] — 2026-08-03 — the first end-to-end call, and what four review rounds could not see
+
+### Fixed
+
+**Every C10 refusal was reported to the caller as `Category: unknown`.** The tool's whole refusal design — *"rebuild the graph"*, *"this graph is invalid"*, *"asOf is not a date"* — exists to tell the caller what to do. Over the wire, all of it arrived unclassified.
+
+`error-classify.mjs` states the convention outright, and had already been through this once: a router-side refusal that never reached the network carries `kind: 'validation'`, because such errors *"were previously falling through to `unknown` — same retry verdict, but the category told the caller nothing"*. C10's six refusal sites were doing exactly that. They now use the same `refusal()` shape as `local-search.mjs` and `source-ledger.mjs`. An upstream failure keeps its own classification — a test pins that tagging our refusals does not relabel someone else's.
+
+**Why four review rounds missed it.** Every previous check — 3475 tests, two reviewers per round over four rounds — called the tool function **in process**, where a thrown `Error` is caught directly and its `kind` is invisible. The classification only appears once the error crosses the MCP transport. The gap was in the test *method*, not in anyone's attention.
+
+So this release also closes that gap: the fix was found by **spawning the real server binary and speaking JSON-RPC over stdio**, the way a client does — `initialize` → `tools/list` → `tools/call`. That path had never been exercised for C10. It confirmed the rest: `find_boundary_pages` is present and listed, the refusal on a pre-C10 graph fires with its actionable message, `build_wiki_graph` rebuilds (140 pages → 174 nodes / 749 edges), and the ranking that comes back over the wire is **numerically identical** to every offline probe — `graphify` at 1.6264405305501193, `features-index` at 1.5708383810145061.
+
+**Tests:** suite **3477**.
+
 ## [0.69.2] — 2026-08-03 — the fourth round: `toEpochDay` converged, its neighbours did not
 
 ### Fixed

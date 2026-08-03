@@ -24,6 +24,13 @@ import {
 } from '../helpers/boundary-score.mjs';
 import { CANONICAL_GRAPH_PATH } from './build-wiki-graph.mjs';
 
+/** An actionable refusal — see the twin in `helpers/boundary-score.mjs`. */
+function refusal(message) {
+  const err = new Error(message);
+  err.kind = 'validation';
+  return err;
+}
+
 export const TOOL_NAME = 'find_boundary_pages';
 
 export const TOOL_DEFINITION = {
@@ -80,18 +87,15 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
   } catch (err) {
     const kind = err && err.kind;
     const status = err && (err.status ?? err.statusCode);
-    // A STRUCTURED kind is authoritative; only fall back to sniffing the
-    // message when the error carries none. The order matters, and not
-    // theoretically: the rest-client reports a dead host as
-    // `kind: 'unreachable'` with the message "... (ENOTFOUND)", and a bare
-    // /not.?found/ matches the NOTFOUND inside ENOTFOUND — so a mistyped or
-    // offline remote vault was being told to rebuild a graph it already has,
-    // against a vault that cannot answer. The word boundary keeps the
-    // last-resort sniff from repeating the same trick.
-    // The message fallback is deliberately NARROW: filesystem-shaped
-    // "missing file" signals and an explicit 404, nothing else. A bare
-    // /not.?found/ was both too broad (it matched the NOTFOUND in ENOTFOUND)
-    // and too narrow (it missed "status code 404") — a sniff that guesses in
+    // A STRUCTURED kind is authoritative; the message is sniffed only when the
+    // error carries none. The order matters, and not theoretically: the
+    // rest-client reports a dead host as `kind: 'unreachable'` with a message
+    // ending "(ENOTFOUND)", and a bare /not.?found/ matches the NOTFOUND inside
+    // ENOTFOUND — so a mistyped or offline remote vault was being told to
+    // rebuild a graph it already has, against a vault that cannot answer.
+    //
+    // The fallback itself stays NARROW: filesystem-shaped "missing file"
+    // signals and a contextualised 404, nothing else. A sniff that guesses in
     // both directions is worse than one that admits it does not know.
     const message = String((err && err.message) || '');
     const isNotFound = kind
@@ -108,7 +112,7 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
         || /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s*code)?|error|code|responded\s*(?:with)?)\s*:?\s*404\b/i.test(message)
         || /\b404\s+not[-\s]?found\b/i.test(message);
     if (isNotFound) {
-      throw new Error(
+      throw refusal(
         `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,
       );
     }
@@ -119,12 +123,12 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
   try {
     graph = JSON.parse(asText(raw));
   } catch {
-    throw new Error(
+    throw refusal(
       `Knowledge graph at ${CANONICAL_GRAPH_PATH} is not valid JSON — re-run /wiki-graph.`,
     );
   }
   if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
-    throw new Error(
+    throw refusal(
       `Knowledge graph at ${CANONICAL_GRAPH_PATH} is malformed (missing nodes/edges) — re-run /wiki-graph.`,
     );
   }
