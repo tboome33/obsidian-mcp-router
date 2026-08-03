@@ -6,6 +6,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.69.4] — 2026-08-04 — the second vault: the exemption list is one vault's vocabulary
+
+### Fixed
+
+**Running C10 on a vault other than the one it was built against exposed the thing its own documentation had called the load-bearing part.** The `/wiki-boundary` skill now calibrates before it reports, and gained the argument that made calibration possible.
+
+C10 ships with `redirect` / `source` / `answer` held out by default, and the module says plainly that this policy — not the formula — is what keeps the ranking meaningful. What that note did not say is that those three names are **one vault's vocabulary**.
+
+First run on a second vault (DEDIBOX, 27 articles): the top result scored **2.68**, more than 1.6× anything the router's own vault produces, and a clean outlier rather than a flat top. It was `type: index`, `kind: folder-index`, `status: redirect-summary`, and its body said the real documentation had been migrated to another vault. **A migration stub in all but name** — precisely the species the exemptions exist for — invisible to the default list because that vault calls it `index`. With `index` added, the ranking became sane.
+
+- The skill gained a step **1-bis**: on a vault it has not run against before, inspect the top few results and ask of each whether the page is thin *by neglect* or thin *by job*, then re-run with any stub-shaped `type:` added. It must name which exemptions it applied, and why, in the report.
+- **The skill had no way to add one.** It exposed `--all-types` (clear the list entirely) and nothing else, while the tool's `exemptTypes` argument had been there since v0.69.0 — so the only documented response to a mismatch was to turn every exemption off. `--exempt-types a,b,c` is now documented, with the warning that it **replaces** the list rather than extending it.
+- Written down rather than fixed by widening the defaults: `index` means "deliberate curated map" in one vault and "leftover pointer" in another. Growing the built-in list to cover every vocabulary is the unfalsifiable creep the deliberately simple word count exists to avoid.
+
+**A second honesty note, from the same run.** After calibration DEDIBOX's top page held 986 words — not thin at all. It rose because ten pages cite it, and it *was* worth opening (a binding `critical: true` gate, untouched 82 days, its completion table still blank) — but for a different reason than the score implied. The skill now says to distinguish the two when presenting a page: heavily linked, or genuinely thin.
+
+**Tests:** suite **3477**, unchanged — this release edits guidance, not code.
+
 ## [0.69.3] — 2026-08-03 — the first end-to-end call, and what four review rounds could not see
 
 ### Fixed

@@ -28,8 +28,19 @@ mcp__obsidian-router__find_boundary_pages({ vault, limit: 10 })
 Arguments, all optional:
 - `--limit N` → `limit` (default 10, ceiling 100).
 - `--min-inbound N` → `minInbound` (default 1). Raise it on a big vault to keep only real crossroads.
+- `--exempt-types a,b,c` → `exemptTypes`, **replacing** the default list. Pass the defaults plus the additions — `["redirect","source","answer","index"]`, not just `["index"]` — or you will silently un-exempt the rest. See step 1-bis.
 - `--all-types` → `exemptTypes: []`, scoring every page including the ones held out by default. Use only when the user explicitly asks to see everything; warn them that migration stubs and capture records will dominate.
 - `--as-of YYYY-MM-DD` → `asOf`. By default recency is measured against the graph's own build stamp, which makes the ranking a pure function of the graph file.
+
+### 1-bis. On a vault you have not run this on before: check the exemptions FIT
+
+**Do this before presenting anything.** The default `exemptTypes` — `redirect` / `source` / `answer` — are not universal truths; they are **one vault's vocabulary**. Every vault names "a page whose job is to point elsewhere" differently, and that list is the single thing keeping the ranking meaningful (see the limitation note below: on the router's own vault, without exemptions, 12 of the top 20 were migration stubs).
+
+So look at the top few results and ask of each: **is this page thin because it was neglected, or thin because that is its job?** The page's own frontmatter usually says. If a `type:` value means "stub / pointer / summary / moved", re-run with it added.
+
+This is not hypothetical. The first run on a second vault (DEDIBOX) put a page at **2.68** — more than 1.6× anything the router's vault produces, and a clean outlier. It was `type: index`, `kind: folder-index`, `status: redirect-summary`, and its body said the real documentation had been migrated to another vault. A migration stub in all but name, which the default list does not catch because that vault calls it `index`. Re-run with `--exempt-types redirect,source,answer,index` and the ranking became sane.
+
+**Do not silently widen the defaults instead.** `index` means "deliberate curated map" in some vaults and "leftover pointer" in others — growing the built-in list to cover every vocabulary is exactly the unfalsifiable creep the simple word count exists to avoid. Calibrate per vault, and **say in your report which exemptions you applied and why**.
 
 ### 2. Read the numbers before presenting them
 
@@ -50,7 +61,8 @@ Render a short table — path, score, inbound, words, age — then **three sente
 
 Then say what the list cannot tell you, in plain words:
 
-- **Index and hub pages will legitimately appear near the top.** A page whose job is to point elsewhere is thin by design, and the score cannot tell that from a page that is thin by neglect. Expect to dismiss one or two at a glance — that is the tool working as intended, not failing.
+- **Index and hub pages will legitimately appear near the top**, unless their `type:` is exempted (step 1-bis). A page whose job is to point elsewhere is thin by design, and the score cannot tell that from a page that is thin by neglect. Expect to dismiss one or two at a glance — that is the tool working as intended, not failing.
+- **A high score is not a promise that the page is thin.** It can also come from a page that is merely well-linked: on DEDIBOX the top-ranked page after calibration held 986 words — not thin at all — and rose because ten pages cite it. It was still worth opening (a binding, `critical: true` gate, untouched for 82 days, its completion table still blank), but the reason was not the one the score implied. Say which of the two it is when you present a page.
 - **A thin page is very often fine.** A definition, a deliberate index, a disambiguation page. Read before acting.
 - **Low scores across the board mean the vault is in good shape.** Say so rather than manufacturing urgency from the top of a flat list.
 
@@ -72,6 +84,8 @@ Note that the two count inbound links differently and that this is deliberate: l
 
 - **Don't present the score as a priority list.** It proposes attention; the human decides importance.
 - **Don't hide the exemptions.** A ranking that silently dropped 31 pages reads as "I looked at everything" when it did not.
+- **Don't skip the calibration on a new vault.** The default exemptions come from one vault's conventions; on another they can miss the very pages they exist to hold out, and the top of the list becomes noise that looks like signal.
+- **Don't add a type to `exemptTypes` without saying so.** Every exemption is a page you chose not to show; that choice belongs in the report, not in your head.
 - **Don't rank a stale graph without saying so.** Check `graphAnalyzedAt` first.
 - **Don't rewrite a page because it scored high.** Read it. Thin is frequently correct.
 - **Don't chain into `/autoresearch` automatically.**
@@ -87,6 +101,8 @@ Note that the two count inbound links differently and that this is deliberate: l
 | 2 | … | | | | |
 
 Held out: 31 pages (29 redirect, 2 source) — thin by design.
+Exemptions applied: the defaults. [Or: "+ `index`, because this vault labels its
+migration stubs that way" — always name any addition and its reason.]
 Ranked 103 of 140 articles; 6 have no inbound links (orphans are Check A's subject).
 
 Score = inbound links damped by length (`inbound / (1 + words/100)`: full weight on an empty page, halved at 100 words, a tenth at 900), ×1 to ×2 for staleness.
