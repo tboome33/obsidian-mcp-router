@@ -1261,7 +1261,18 @@ export function gateDirectory({
   const spec = contract.targets?.[target];
   if (!spec) throw new Error(`export contract has no target "${target}"`);
 
-  const all = collectFiles(root, { withContent: false });
+  // `vendoredPrune` names directories the BUILD removes because npm generates
+  // them and they are not package content. The scan has to honour the same
+  // declaration, or it judges a surface that never ships.
+  //
+  // This was not theoretical: `node_modules/.bin` holds real files on Windows
+  // and SYMLINKS on Linux, so `npm run gate` passed locally and failed on both
+  // ubuntu legs of CI with seven symlink findings — for a directory the build
+  // had already pruned. One contract entry, one meaning, both callers.
+  const prunePrefixes = (contract.vendoredPrune || []).map((p) => `${String(p.path).replace(/\\/g, '/').replace(/\/$/, '')}/`);
+  const isPruned = (p) => prunePrefixes.some((prefix) => p === prefix.slice(0, -1) || p.startsWith(prefix));
+
+  const all = collectFiles(root, { withContent: false }).filter((e) => !isPruned(e.path));
   const { included, excluded } = applyAllowlist(all.map((e) => e.path), spec.zones);
   const zoneOf = new Map(included.map((i) => [i.path, i.zone]));
   const byPath = new Map(all.map((e) => [e.path, e]));

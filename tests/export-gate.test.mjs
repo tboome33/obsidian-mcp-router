@@ -1714,6 +1714,39 @@ describe('C9 · the bundle build', () => {
       'the file that actually leaked must not reach staging');
   });
 
+  test('CI REGRESSION: the scan prunes what the contract says the build prunes', (t) => {
+    // Found by the real CI run of v0.68.0, not by three review rounds: the
+    // gate was green on Windows and RED on both ubuntu legs with seven
+    // symlink findings under `node_modules/.bin` — a directory the BUILD
+    // already prunes (it is npm-generated, real files on Windows, symlinks on
+    // Linux). `vendoredPrune` was honoured by the build and ignored by the
+    // scan, so the scan judged a surface that never ships.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'c9-prune-'));
+    t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+    fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'node_modules/.bin'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'node_modules/repomix/bin'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'src/index.mjs'), 'export const a = 1;\n');
+    fs.writeFileSync(path.join(tmp, 'node_modules/repomix/bin/repomix.cjs'), '#!/usr/bin/env node\n');
+    try {
+      fs.symlinkSync('../repomix/bin/repomix.cjs', path.join(tmp, 'node_modules/.bin/repomix'));
+    } catch {
+      t.skip('symlink creation not permitted on this machine');
+      return;
+    }
+
+    const { contract } = readContract(REPO_ROOT);
+    const result = gateDirectory({ root: tmp, contract, target: 'mcpb', productVersion: '0.0.0' });
+    assert.equal(result.scan.findings.filter((f) => f.category === 'symlink').length, 0,
+      'a pruned directory must not produce findings');
+    assert.equal(result.included.some((i) => i.path.startsWith('node_modules/.bin/')), false,
+      'a pruned directory must not be selected');
+    // The control: the package content beside it still ships, so the prune is
+    // scoped and did not quietly swallow the vendored zone.
+    assert.ok(result.included.some((i) => i.path === 'node_modules/repomix/bin/repomix.cjs'));
+    assert.equal(result.ok, true);
+  });
+
   test('a symlink matched by the whitelist is reported, never followed', (t) => {
     const tmp = fs.mkdtempSync(path.join(REPO_ROOT, 'mcpb-staging-test-'));
     t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));

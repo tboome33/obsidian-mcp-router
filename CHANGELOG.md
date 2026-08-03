@@ -6,6 +6,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.68.1] — 2026-08-03 — the gate judged a surface that never ships
+
+### Fixed
+
+**`vendoredPrune` was honoured by the build and ignored by the scan.** v0.68.0's CI was green on both Windows legs and red on both ubuntu ones, with seven `symlink` findings under `node_modules/.bin` — a directory the *build* already prunes, because npm generates it and it is real files on Windows but symlinks on Linux. `npm run gate` therefore passed on the author's machine and failed on every Linux runner, over a directory that is not in any artifact.
+
+One contract entry now has one meaning: `gateDirectory` drops the declared `vendoredPrune` paths before selecting, exactly as `build-mcpb.mjs` does. The regression test builds a real symlink under `node_modules/.bin` and asserts both that it produces no finding and that the package content beside it still ships — so the prune cannot quietly swallow the vendored zone.
+
+Worth recording plainly: **three review rounds and a byte-identical local build did not catch this; the first real CI run did.** The gate step itself behaved exactly as designed — it ran on every matrix leg rather than being skipped behind a red step, which is the v0.67.0 lesson holding, and it failed loudly on a platform difference instead of passing quietly.
+
 ## [0.68.0] — 2026-08-03 — C9: one export gate, and the bearer token that was already shipping
 
 ### Added
