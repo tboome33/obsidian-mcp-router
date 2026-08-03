@@ -48,6 +48,33 @@ Un wiki, ce sont des pages **et** les liens entre elles. Ces outils matérialise
 
 **À savoir.** Élargir `nodeTypes` (ex. `["article","entity","topic"]`) autorise les chemins « connectés via un **concept partagé** » — souvent la réponse la plus intéressante à « qu'est-ce qui relie A et B ? ». Lecture seule.
 
+## `find_boundary_pages` — les pages « frontière »
+
+**Le besoin.** Certaines pages sont des carrefours : tout le monde pointe vers elles, mais elles restent maigres. Ce sont les endroits où écrire rapporte le plus — encore faut-il les repérer autrement qu'au flair.
+
+**Ce que ça fait.** Classe les pages par **pression de liens rapportée à la substance**, avec un coup de pouce pour l'ancienneté :
+
+```
+score = liens entrants / (1 + mots/100) × (1 + min(âge, 365)/365)
+```
+
+Le score, ce sont les **liens entrants amortis par la longueur** — et non, malgré le raccourci tentant, « des liens entrants par tranche de 100 mots » : le `1 +` du dénominateur fait qu'une page vide garde son compte entier au lieu de diviser par zéro, et qu'une page de 100 mots est divisée par deux plutôt que laissée intacte. Le tout multiplié par ×1 (page éditée le jour de la construction du graphe, ou date inconnue) jusqu'à ×2 (rien depuis un an). Lecture seule, une seule lecture de fichier, aucun LLM : **même graphe ⇒ même classement, toujours** — la récence se mesure contre l'horodatage du graphe lui-même, pas contre l'horloge.
+
+**Comment l'utiliser.**
+
+> « sur quoi devrais-je écrire ? », « où sont les trous du wiki ? » — ou `/obsidian-router:wiki-boundary`
+
+**Ce que le score prétend, et ce qu'il ne prétend pas.** Il **propose l'attention**, il n'établit **pas** l'importance. Un score élevé dit une seule chose : beaucoup de pages pointent ici, et il n'y a pas grand-chose une fois arrivé.
+
+**La limite, assumée par écrit.** La « substance » est un **compte de mots de prose**, et c'est un proxy franchement faible : il récompense le bavardage, punit la densité, ne distingue pas 89 mots de vraie définition de 89 mots de texte de redirection, et compte double les pages bilingues FR+EN. Il est livré tel quel plutôt qu'une formule à cinq coefficients que personne ne saurait régler — avec deux garde-fous qui le rendent utilisable :
+
+1. **Le biais est choisi.** Sur-compter la substance (le code, les tableaux, les listes de liens comptent comme des mots) produit des faux **négatifs** — une page maigre qu'on ne signale pas. Sous-compter produirait des faux **positifs** — une page saine qu'on envoie retravailler. Pour une liste de suggestions, le silence est l'erreur la moins chère.
+2. **La politique d'exemption pèse plus lourd que la formule.** Mesuré sur le vault du router : sans exemptions, **12 des 20 premiers étaient des `type: redirect`** — tous exactement 89 mots du même texte type, maigres *par construction*. Aucun raffinement du compte de mots ne les sépare du vrai contenu ; seul le `type:` déclaré le fait. `redirect` / `source` / `answer` sont donc écartés par défaut (les deux derniers reprennent verbatim les exemptions du Check A de `wiki-lint`), et **le nombre de pages écartées est toujours rapporté** — une exemption silencieuse se lirait comme « j'ai tout regardé ».
+
+**À savoir.** Les pages d'index et les pages-hub remontent légitimement en tête : une page dont le métier est de pointer ailleurs est maigre par construction, et le score ne sait pas distinguer ça d'une page maigre par négligence. En attendre une ou deux à écarter d'un coup d'œil fait partie du fonctionnement normal.
+
+Un graphe construit avant cette fonctionnalité ne porte aucune mesure de substance : l'outil **refuse** plutôt que de traiter toutes les pages comme vides — un classement par liens entrants bruts qui aurait l'air d'avoir mesuré la maigreur. `graphAnalyzedAt` voyage avec chaque réponse, parce qu'un graphe périmé classe des pages qui n'existent peut-être plus.
+
 ## `get_wiki_context_pack` — le vault consommable par d'autres agents
 
 **Le besoin.** Un agent qui n'est pas Claude Code (un script, un autre LLM, un pipeline) veut exploiter le vault : il lui faut du contexte **structuré**, pas une conversation.

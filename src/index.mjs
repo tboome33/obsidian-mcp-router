@@ -113,6 +113,10 @@ import {
   wikiPathTool,
 } from './tools/wiki-path.mjs';
 import {
+  TOOL_DEFINITION as FIND_BOUNDARY_PAGES_TOOL_DEFINITION,
+  findBoundaryPagesTool,
+} from './tools/find-boundary-pages.mjs';
+import {
   TOOL_DEFINITION as FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
   filterRelevantBlocksTool,
 } from './tools/filter-relevant-blocks.mjs';
@@ -906,6 +910,9 @@ const TOOLS = [
   // (undirected). Read-only (reads the graph JSON) — excluded from
   // WRITE_TOOL_NAMES.
   WIKI_PATH_TOOL_DEFINITION,
+  // C10 — "frontier" pages: heavily linked, thin inside. Read-only (reads the
+  // graph JSON, writes nothing) — excluded from WRITE_TOOL_NAMES.
+  FIND_BOUNDARY_PAGES_TOOL_DEFINITION,
   // Crawl4AI roadmap W-A — BM25 relevance second-pass over already-acquired
   // markdown (no fetch, no vault I/O) — excluded from WRITE_TOOL_NAMES.
   FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
@@ -1090,6 +1097,8 @@ const TOOL_HANDLERS = {
   get_page_neighbors: (reg, args) => getPageNeighborsTool(reg, args),
   // Page-neighbors roadmap W-B — read-only shortest-path query between two pages.
   wiki_path: (reg, args) => wikiPathTool(reg, args),
+  // C10 — read-only ranking of heavily-linked-but-thin "frontier" pages.
+  find_boundary_pages: (reg, args) => findBoundaryPagesTool(reg, args),
   // Crawl4AI roadmap W-A — read-only BM25 relevance filter over given markdown.
   filter_relevant_blocks: (reg, args) => filterRelevantBlocksTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;

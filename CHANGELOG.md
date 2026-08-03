@@ -6,6 +6,71 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.69.0] — 2026-08-03 — C10: the frontier-page detector, and what "thin" refuses to mean
+
+### Added
+
+**C10 — boundary scoring.** Some pages are crossroads: everybody links to them and they stay thin. `find_boundary_pages` ranks them from the persisted knowledge graph — read-only, one file read, no LLM — so research can be pointed at reasoned subjects instead of hunches.
+
+```
+score = inbound / (1 + words/100) × (1 + min(ageDays, 365)/365)
+```
+
+The score reads literally as *inbound links damped by length (`inbound / (1 + words/100)`: full weight on an empty page, halved at 100 words, a tenth at 900)*, nudged ×1 → ×2 by staleness. **The score proposes attention; it does not establish importance.** That is a design commitment, not a politeness formula: a high score says only that many pages point somewhere with little in it.
+
+- **The graph did not carry substance, and §2.17 read as though it did.** A node held `id, type, name, filePath, summary, tags, complexity, knowledgeMeta` — no size measurement anywhere. Inbound links were derivable from the edges and recency sat in the frontmatter, but the third term of the score had to be produced. It is now recorded at build time in `knowledgeMeta.substance`, because the builder is the only place holding the page content — which keeps the query itself exactly what the roadmap promised: one more read of the graph.
+
+- **Not in `complexity`, deliberately.** That field is ironically the natural home for a substance signal, and it is dead — 118 of 118 nodes said `'simple'`, written by the builder. But `wiki-graph-schema.mjs` is a verbatim Understand-Anything mirror claimed as such for interop, `complexity` sits inside `validateGraph`'s enum, and the UA dashboard reads our `knowledge-graph.json`. Redefining `simple|moderate|complex` to mean thin/medium/thick would have changed what a third-party consumer sees, silently. `knowledgeMeta` is the router's own extension bag — nothing validates it, it already carries Obsidian-only keys — so the extension went in the extension bag, and `complexity` stayed dead on purpose. A test pins it.
+
+- **One notion of "inbound link", and the divergence written down rather than papered over.** Two already existed: the graph's edges, and `wiki-lint` Check A, which re-parses every page. C10 uses the graph — the roadmap names it, and the builder's resolver handles path-qualified links, basename collisions, embeds and ambiguity refusal that a regex cannot. Measured on the router's own vault (140 articles): the two agree on 117 pages; on the 23 that differ **the graph always counts fewer**, and the cause is exactly one thing — wikilinks written in **frontmatter** (`related:`, `superseded_by:`), which the builder never sees because it parses bodies only. The graph's set is a strict subset (verified, 0 violations), so a page credited with inbound links here can never be called an orphan by Check A: the two coexist in one lint report without contradicting. Teaching the builder to index frontmatter links would have moved 53 edges and perturbed neighbours, paths, tours and Louvain layers for every consumer — a change that needs its own justification, not a side effect of C10.
+
+- **Wired one storey above autoresearch, not into it.** The roadmap's "instead of picking at random" framing was wrong: `/autoresearch` never picked at random — it reads `## Open Questions` and takes the least-covered one, gauged with `search_smart`. That selector works and was left alone. Boundary scoring answers the upstream question — *which page deserves a programme at all* — as a step 0 that only fires when the user named no topic. In `wiki-lint` it is a new **info**-tier check and can never be raised above it: a thin crossroads is not a defect.
+
+### The honest part — what "thin" is allowed to mean
+
+Substance is a **prose word count**, and that is a genuinely weak proxy: it rewards verbosity, punishes density, cannot tell 89 words of real definition from 89 words of redirect boilerplate, and counts a bilingual FR+EN page as twice as substantial as a monolingual one. It ships as-is, written down, rather than a five-coefficient formula that would look scientific and that nobody could tune. Two things make it workable:
+
+1. **The bias is chosen.** Over-counting substance (code, tables and link lists all count as words) yields false *negatives* — a thin page we fail to mention. Under-counting would yield false *positives* — a healthy page we send someone to rewrite. For a list of suggestions, silence is the cheaper error.
+2. **The exemption policy carries more weight than the formula.** Measured: with exemptions off, **12 of the top 20 on the real vault were `type: redirect` migration stubs**, all exactly 89 words of identical boilerplate, thin *by construction*. No word-count refinement separates those from real content — only the declared `type:` does. `redirect`/`source`/`answer` are held out by default (the last two mirroring Check A verbatim) and **the number held out is always reported**, because a silent exemption reads as "I looked at everything".
+
+The three constants — 100 words, 365 days, ×2 ceiling — are conventions, not calibrations; nothing was fitted to any corpus. They are exported, restated in every result, and bounded so that staleness can never more than double a score. A test pins that: a page cannot climb past another on staleness alone across a pressure gap wider than 2×.
+
+Also written down rather than smoothed over: **index and hub pages legitimately surface near the top.** A page whose job is to point elsewhere is thin by design, and the score cannot distinguish that from thin by neglect.
+
+### Refusals, over confident wrong answers
+
+- A graph built before this feature carries no substance measurements. The tool **refuses** instead of treating every page as empty — which would have silently ranked the vault by raw inbound links while looking like it had measured thinness.
+- `graphAnalyzedAt` travels with every answer. The graph is a snapshot; the vault's own persisted graph was **a month old with 49 of its 96 article nodes pointing at files that no longer existed**, which is precisely how a stale ranking looks confident.
+- A real operational failure (vault offline, timeout) is never reported as "no graph yet" — a test pins the distinction.
+
+### Two review rounds, and the second one found what the first one broke
+
+Two independent reviewers per round, every finding reproduced by a probe before it was acted on. **Round 1: eleven defects. Round 2, run on the corrected code: five more, three of them created by round 1's fixes.** The pattern from C2, C8 and C9 held exactly.
+
+**The one that mattered most was in the CI wiring, not the code.** `npm test` is an explicit list of files and CI runs precisely that script — and both new test files were missing from it. Roughly fifty tests would have shipped dark while the changelog claimed them. Same class as "the C8 gate would never have run in CI" (v0.67.1) and the C9 gate pinned to one matrix leg (v0.68.0), which is why the fix is a **guard rather than an edit**: a test now asserts that every `tests/*.test.mjs` on disk appears in the script. It found a casualty on its first run — `tests/resolve-vault-path.test.mjs`, 8 tests dark since v0.45.0. They pass, and they now run.
+
+Round 1, on the original code:
+
+- **Rounding the scores inverted the ranking.** Four decimals looked like tidiness; two pages one word apart (2000 vs 2001) collapsed to the same value, the path tiebreak ran, and the *thicker* page came out first — the exact inversion this module exists to prevent. It also made the stated ×2 ceiling false in the reported numbers. Scores are now full precision; IEEE-754 and JS number serialisation are both specified, so rounding bought no stability and cost correctness.
+- **`localeCompare` is not a total order.** It returns 0 for distinct strings — an accented name in NFC vs NFD (what a vault synced between macOS and Windows produces), a soft hyphen, a zero-width space. When every key tied, the sort fell back to insertion order, reintroducing the very node-order dependence the tiebreak existed to remove. Now compared by UTF-16 code unit.
+- **`/not.?found/` matched ENOTFOUND**, so a mistyped or offline remote vault was told to rebuild a graph it already has. Reproduced end-to-end through the real REST client. Structured `err.kind` is now authoritative and the message sniff is a narrow last resort.
+- **The substance measure's unit was never checked.** `{words: 0, measure: 'bytes-v1'}` was accepted and scored as an empty page, and a whole graph of them slipped past the "no measurements" refusal — a confident ranking by raw inbound links that looked as though thinness had been measured.
+- **Only the container shape was validated.** Duplicate article ids resolved last-wins, so reversing the node array changed which page got scored; an edge from a non-existent node silently cost its target an inbound link. `validateGraph` now runs first.
+- **The word count was quadratic.** `'[['.repeat(40000)` took **3.8 seconds**, inside the builder, on every page. Excluding `[` from the link character classes makes the same input 0.1 ms without changing the count for any of the 176 real pages.
+- Plus: unanchored date parsing, `minInbound: 0` silently behaving as 1 while echoing 0, prototype-named page types corrupting the audit tally, and the `wiki-lint` sub-agent lacking the new tool in its allowlist.
+
+Round 2, on the corrected code — **the three regressions round 1 introduced**:
+
+- **The new ISO-timestamp branch re-admitted the rollover the fix existed to kill.** `2026-02-29` was refused; `2026-02-29T00:00:00Z` sailed through as 1 March and earned a real staleness score. The calendar date is now validated separately, before the instant is parsed.
+- **`sanitizeResponse` undid the `byType` fix in the shipped output.** The scorer's Map produced the right object; the sanitiser then copied it with `out[k] = v`, and for `__proto__` that hits the inherited setter — the key vanished and `total` no longer equalled the sum of `byType`. Fixed in the shared sanitiser with `Object.fromEntries`, which creates own properties: a generic latent bug that C10 was simply the first response to expose, since its keys come from vault content.
+- **The new validation-error path bypassed the sanitiser.** `validateGraph` quotes offending node ids, and those are vault paths — so an ANSI escape or an injection-shaped tag reached the reader raw on a path where the success response neutralises both.
+
+Also corrected: `asOf` echoed the raw input rather than the day actually used (they differ when an offset crosses midnight), a caller-supplied `asOf` inherited the annotation tolerance meant for human-written frontmatter, and the dark-test guard was non-recursive.
+
+**One measurement had to be walked back by the vault itself.** The first date fix demanded an exact `YYYY-MM-DD`. Run against the real vault, `withoutRecency` jumped from 1 to 4: three pages carry values like `updated: 2026-05-25 (v0.14.7 — Phase E.2 hardening)`. Those *are* dates with a human note appended, and refusing them traded a false "ancient" for a false "unknown". The rule is now a separator test — a date followed by whitespace is an annotated date and is honoured; a date followed immediately by another character (`2026-08-0399`) is a typo and is refused.
+
+**Tests:** suite **3470**, from 3391 — 66 new C10 tests, 4 builder tests, 1 dark-test guard, and 8 pre-existing tests that had never run.
+
 ## [0.68.1] — 2026-08-03 — the gate judged a surface that never ships
 
 ### Fixed

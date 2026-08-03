@@ -142,11 +142,17 @@ export function sanitizeResponse(value, opts = {}) {
   if (typeof value === 'string') return sanitizeLabel(value, opts);
   if (Array.isArray(value)) return value.map((v) => sanitizeResponse(v, opts));
   if (typeof value === 'object') {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      out[k] = sanitizeResponse(v, opts);
-    }
-    return out;
+    // `Object.fromEntries` CREATES each own property; a plain `out[k] = v` loop
+    // does not, for one key. Assigning to `__proto__` goes through the
+    // inherited accessor instead: a primitive value is silently discarded (the
+    // key vanishes from the response) and an object value would set the
+    // prototype of the object being built rather than a property on it. Either
+    // way a sanitiser must not do it — the whole point is that keys here come
+    // from vault content. Found via C10, whose `exempted.byType` is the first
+    // response object keyed by vault-derived strings, but the bug was generic.
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, sanitizeResponse(v, opts)]),
+    );
   }
   return value;
 }

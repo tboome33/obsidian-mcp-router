@@ -11,6 +11,7 @@ import { buildWikiGraph } from '../src/helpers/wiki-graph-builder.mjs';
 import { validateGraph } from '../src/helpers/wiki-graph-schema.mjs';
 import { createWikiIgnore } from '../src/helpers/wiki-ignore.mjs';
 import { serialiseDigest, computePageHash } from '../src/helpers/digest-generator.mjs';
+import { measureSubstanceWords, SUBSTANCE_MEASURE } from '../src/helpers/boundary-score.mjs';
 
 const FIXED_TS = '2026-05-29T12:00:00Z';
 
@@ -68,6 +69,63 @@ describe('buildWikiGraph — basics', () => {
     assert.equal(a.knowledgeMeta.format, 'obsidian');
     assert.ok(nodeById(g, 'article:wiki/b'));
     assert.ok(validateGraph(g).valid, validateGraph(g).errors.join('; '));
+  });
+
+  // C10 — the graph did not carry any notion of "how much page is there", which
+  // is half of what boundary scoring compares. The builder is the only place
+  // holding the content, so it records the measure here.
+  test('C10: every article node carries a substance measurement', () => {
+    const pages = [
+      { path: 'wiki/a.md', content: '---\ntitle: Alpha\n---\none two three four five' },
+      { path: 'wiki/b.md', content: '# B\n\nsee [[a|the alpha page]] and [[c]]' },
+    ];
+    const g = buildWikiGraph({ vaultName: 'V', pages, generatedAt: FIXED_TS });
+    const a = nodeById(g, 'article:wiki/a');
+    assert.equal(a.knowledgeMeta.substance.measure, SUBSTANCE_MEASURE);
+    assert.equal(a.knowledgeMeta.substance.words, 5, 'frontmatter must not count as prose');
+    // "# B" + "see" + "the alpha page" (alias, 3) + "and" + "c" = 8
+    assert.equal(nodeById(g, 'article:wiki/b').knowledgeMeta.substance.words, 8);
+    assert.ok(validateGraph(g).valid, validateGraph(g).errors.join('; '));
+  });
+
+  test('C10: the measure the builder records is the one boundary-score computes', () => {
+    // One definition, two doors — a drift here would make every score wrong in
+    // a way no scorer test could catch.
+    const content = '---\ntype: x\ndescription: "ignored ignored ignored"\n---\n\n'
+      + 'Some prose with [[a-link]] and [[b|an alias here]].\n\n## Heading\n\n- bullet one\n- bullet two';
+    const g = buildWikiGraph({
+      vaultName: 'V', pages: [{ path: 'wiki/p.md', content }], generatedAt: FIXED_TS,
+    });
+    assert.equal(
+      nodeById(g, 'article:wiki/p').knowledgeMeta.substance.words,
+      measureSubstanceWords(content),
+    );
+  });
+
+  test('C10: an empty page records 0 words rather than omitting the measure', () => {
+    const g = buildWikiGraph({
+      vaultName: 'V', pages: [{ path: 'wiki/empty.md', content: '---\ntype: x\n---\n' }], generatedAt: FIXED_TS,
+    });
+    const n = nodeById(g, 'article:wiki/empty');
+    assert.equal(n.knowledgeMeta.substance.words, 0);
+    assert.equal(typeof n.knowledgeMeta.substance.words, 'number');
+  });
+
+  test('C10: `complexity` is left alone — it is the verbatim UA mirror field', () => {
+    // Substance deliberately does NOT ride on `complexity`: that field is in
+    // validateGraph's enum and the UA dashboard reads it, so redefining
+    // simple|moderate|complex to mean thin|medium|thick would silently change
+    // what a third-party consumer sees.
+    const g = buildWikiGraph({
+      vaultName: 'V',
+      pages: [
+        { path: 'wiki/tiny.md', content: 'hi' },
+        { path: 'wiki/huge.md', content: Array.from({ length: 5000 }, (_, i) => `w${i}`).join(' ') },
+      ],
+      generatedAt: FIXED_TS,
+    });
+    for (const n of g.nodes) assert.equal(n.complexity, 'simple');
+    assert.ok(nodeById(g, 'article:wiki/huge').knowledgeMeta.substance.words > 4000);
   });
 });
 

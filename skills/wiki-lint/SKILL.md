@@ -62,6 +62,19 @@ If `ledgerPresent: false`, say so **plainly and without alarm**: the ledger is f
 
 Never write to the ledger from a lint run. Lint reports; `record_source` (ingestion) is the only writer.
 
+#### Check A-ter: frontier pages — heavily linked, thin inside (v0.69.0+, borrowing C10)
+
+Call `mcp__obsidian-router__find_boundary_pages({ vault, limit: 10 })` once. Read-only, one graph read, nothing written.
+
+Report in the **info** tier and **never above it**. A crossroads that is thin is not a defect: nothing is broken, nothing needs fixing, and a lint report that raised it to a warning would be telling the user to repair something that may be exactly right. Show the top few with their `inbound` / `substanceWords` / `ageDays`, and always state the count in `exempted` — a ranking that silently dropped 31 pages reads as "I looked at everything" when it did not.
+
+Skip the check without alarm when:
+- the tool reports no graph → *"no knowledge graph yet; run `/wiki-graph` to enable frontier detection"*. This is not a wiki defect.
+- the tool refuses for want of substance measurements → the graph predates the feature; same offer, same absence of alarm.
+- `graphAnalyzedAt` is old → still report, but say how old the snapshot is. A stale graph ranks pages that may have been rewritten or deleted since.
+
+**Two notions of "inbound link" coexist in this report, deliberately.** Check A above re-parses every page, so it counts wikilinks written in **frontmatter** (`related:`, `superseded_by:`); `find_boundary_pages` uses the knowledge graph, which parses page **bodies** only. Measured on the router's own vault (140 articles): they agree on 117 pages, and on the 23 that differ the graph always counts fewer. The graph's set is a strict **subset** of Check A's, so the two can never contradict — a page credited with inbound links by the frontier check can never be reported as an orphan by Check A. Don't "reconcile" the numbers if a reader notices the gap; explain it.
+
 #### Check B: dead wikilinks
 A wikilink is dead if `[[Target]]` points to a page that doesn't exist. Resolve aliases (`[[Target|Alias]]`) and folder-prefixed forms (`[[concepts/Foo]]`). If a link looks dead, double-check by trying both with and without the `.md` extension and against alias frontmatter.
 
@@ -207,7 +220,7 @@ Group findings by severity:
 
 - **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`)
 - **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`
-- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`
+- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect)
 
 For each finding:
 - The path or wikilink involved

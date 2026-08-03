@@ -247,6 +247,7 @@ export const TOOL_READ_FLOOR = Object.freeze({
   search_smart:       'vault:search',
   get_page_neighbors: 'vault:derived',
   wiki_path:          'vault:derived',
+  find_boundary_pages: 'vault:derived',
   audit_sources:      'vault:derived',
 });
 

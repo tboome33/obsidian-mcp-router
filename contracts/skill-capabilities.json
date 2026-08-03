@@ -41,6 +41,7 @@
         "vault:scaffold"
       ],
       "tools": [
+        "find_boundary_pages",
         "get_file",
         "search_smart"
       ],
@@ -59,7 +60,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. Two specifics the reader should know. First, the network access is NOT via a router tool but via the host's WebSearch/WebFetch, so no router-side policy sees it. Second, this entry's reads/writes/writeMode are the DELEGATION CLOSURE, not what this page does itself: the vault writes all happen inside wiki-ingest, which is `destructive` (it moves files, and write_bundle has no move step), so the closure is what a permission engine must grant to run autoresearch at all. The validator enforces that dominance rather than trusting the prose."
+        "reason": "No harness executes a skill. Two specifics the reader should know. First, the network access is NOT via a router tool but via the host's WebSearch/WebFetch, so no router-side policy sees it. Second, this entry's reads/writes/writeMode are the DELEGATION CLOSURE, not what this page does itself: the vault writes all happen inside wiki-ingest, which is `destructive` (it moves files, and write_bundle has no move step), so the closure is what a permission engine must grant to run autoresearch at all. The validator enforces that dominance rather than trusting the prose. Since v0.69.0 the page also calls find_boundary_pages (C10) in step 0, and only when the user named no topic: it is read-only and adds nothing to the write closure, but it is a real call, not a mention."
       }
     },
     "build-search-index": {
@@ -865,6 +866,32 @@
         "reason": "No harness executes a skill. Classed `destructive` because the scaffolding step relocates misplaced files with move_file. `local:fs` covers reading templates/wiki/CLAUDE.md from the plugin install directory, outside the vault."
       }
     },
+    "wiki-boundary": {
+      "summary": "Ranks the wiki's \"frontier\" pages — heavily linked, thin inside — from the persisted knowledge graph.",
+      "reads": [
+        "vault:derived"
+      ],
+      "writes": [],
+      "tools": [
+        "find_boundary_pages"
+      ],
+      "toolsMentionedNotCalled": [
+        "build_wiki_graph",
+        "search_smart"
+      ],
+      "writeMode": "read-only",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The reach is genuinely one read: find_boundary_pages makes a single get_file call for wiki-meta/graph/knowledge-graph.json and computes the rest in memory — pinned by a test that asserts the exact call list. build_wiki_graph is named only in the recovery advice (\"graph missing or too old → offer /wiki-graph\") and search_smart only in the explanation of what autoresearch already does on its own; declaring either as called would make a pure reader look like a writer."
+      }
+    },
     "wiki-export": {
       "summary": "Exports the wiki as an llms.txt file or a conformant OKF v0.1 bundle under wiki-meta/exports/.",
       "reads": [
@@ -1019,6 +1046,7 @@
       ],
       "tools": [
         "audit_sources",
+        "find_boundary_pages",
         "get_file",
         "list_files",
         "list_vaults",
@@ -1039,7 +1067,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. Declared `mutating` for the MAXIMUM reachable state (--fix-errors applies set_frontmatter), not the default posture, which is read-only. refresh_okf_projections is called with check:true only — read-only in practice — but this schema cannot express \"this tool, only in its read mode\", so `vault:derived` is declared as a write: overstating the reach is the safe direction, understating it is not. record_source is named only to say lint must never write the ledger."
+        "reason": "No harness executes a skill. Declared `mutating` for the MAXIMUM reachable state (--fix-errors applies set_frontmatter), not the default posture, which is read-only. refresh_okf_projections is called with check:true only — read-only in practice — but this schema cannot express \"this tool, only in its read mode\", so `vault:derived` is declared as a write: overstating the reach is the safe direction, understating it is not. record_source is named only to say lint must never write the ledger. Since v0.69.0 Check A-ter calls find_boundary_pages (C10) — read-only, reported at info tier only, so it widens neither the write set nor writeMode."
       }
     },
     "wiki-neighbors": {

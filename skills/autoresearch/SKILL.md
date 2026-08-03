@@ -15,6 +15,20 @@ Driven by an explicit research program (`program.md`) so the loop has clear exit
 
 ## Steps
 
+### 0. No topic in mind? Ask which pages deserve a programme (v0.69.0+, borrowing C10)
+
+**Only when the user has NOT named a topic** — "what should I research next?", "where are the gaps?". If they named one, skip straight to step 1.
+
+```
+mcp__obsidian-router__find_boundary_pages({ vault, limit: 10 })
+```
+
+It ranks the wiki's "frontier" pages — the crossroads many pages link to that stay thin inside — deterministically, from the knowledge graph. Present the top few as **candidate subjects for a new programme** and let the user choose. Never pick for them, and never open a programme off the back of a score alone.
+
+**This is upstream of the loop, and must stay there.** Step 2a below already picks the least-covered question inside an existing programme, gauged with `search_smart` — that mechanism works and is not to be replaced. Boundary scoring answers a different question, one storey up: *which page deserves a programme at all*. Wiring it into 2a would break a working selector to solve a problem it does not have.
+
+Say plainly what the ranking is worth: it **proposes attention, it does not establish importance**. Index and hub pages legitimately surface near the top, and a thin page is very often thin on purpose. If the tool reports no graph (or one too old to carry substance measurements), say so and offer `/wiki-graph` — do not fall back to guessing a topic.
+
 ### 1. Get or create the research program
 
 Look for `wiki/programs/<topic-slug>.md`:

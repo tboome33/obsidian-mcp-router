@@ -1143,6 +1143,45 @@ describe('the live repo', () => {
     assert.deepEqual(result.issues, [], '\n' + renderIssues(result.issues));
   });
 
+  // `npm test` is an explicit list of files, and CI runs exactly that script.
+  // A test file that exists but is missing from the list is DARK: it passes
+  // locally when invoked by hand and never runs in CI at all. That is the same
+  // class as "the C8 gate would never have run in CI" (v0.67.1) and the C9 gate
+  // scoped to one matrix leg (v0.68.0) — and it happened again in C10, whose
+  // two new files were absent from the list while the changelog claimed +52
+  // tests. Both reviewers reported it as their top finding.
+  //
+  // The guard's reach is stated honestly rather than oversold: it lives INSIDE
+  // the list it audits, so deleting this file from `scripts.test` would also
+  // remove the check that would have noticed. It catches the realistic mistake
+  // — adding a test file and forgetting the list — not a deliberate removal of
+  // the guard itself.
+  test('every test file on disk actually runs in `npm test` (no dark tests)', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+    const script = String(pkg.scripts?.test ?? '');
+    const listed = new Set(
+      script.split(/\s+/).filter((t) => t.startsWith('tests/') && t.endsWith('.test.mjs')),
+    );
+    // RECURSIVE: a plain readdirSync would make any test in a `tests/`
+    // subdirectory invisible to the very check meant to find dark tests.
+    const onDisk = fs
+      .readdirSync(path.join(REPO_ROOT, 'tests'), { recursive: true })
+      .map((f) => String(f).split(path.sep).join('/'))
+      .filter((f) => f.endsWith('.test.mjs'))
+      .map((f) => `tests/${f}`)
+      .sort();
+    const dark = onDisk.filter((f) => !listed.has(f));
+    assert.deepEqual(
+      dark,
+      [],
+      `these test files exist but never run in CI — add them to package.json "scripts.test":\n  ${dark.join('\n  ')}`,
+    );
+    // And the mirror: a listed file that no longer exists would make `npm test`
+    // die on a missing path, which is loud, but naming it here is cheaper.
+    const ghosts = [...listed].filter((f) => !fs.existsSync(path.join(REPO_ROOT, f))).sort();
+    assert.deepEqual(ghosts, [], `listed in "scripts.test" but absent from disk:\n  ${ghosts.join('\n  ')}`);
+  });
+
   test('countArtifacts reports what is really on disk', () => {
     // The previous version of this test compared countArtifacts to itself
     // (`counts.skills === discoverSkills(...).length` — the former CALLS the

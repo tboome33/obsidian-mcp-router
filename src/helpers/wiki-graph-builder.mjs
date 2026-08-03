@@ -36,6 +36,7 @@
 import { parseFrontmatter, parseIndex } from './llms-txt-exporter.mjs';
 import { parseDigest } from './digest-generator.mjs';
 import { detectCommunities } from './louvain.mjs';
+import { countProseWords, SUBSTANCE_MEASURE } from './boundary-score.mjs';
 import {
   emptyGraph,
   articleId,
@@ -420,6 +421,16 @@ export function buildWikiGraph({
         format: 'obsidian',
         wikilinks,
         frontmatter: safeFrontmatter(frontmatter),
+        // C10 — how much page there IS, recorded at build time because the
+        // builder is the only place holding the content. Deliberately NOT
+        // folded into `complexity`: that field is part of the verbatim
+        // Understand-Anything mirror (it is in `validateGraph`'s enum and the
+        // UA dashboard reads it), so redefining `simple|moderate|complex` to
+        // mean thin/medium/thick would silently change what a third-party UA
+        // consumer sees. `knowledgeMeta` is the router's own extension bag —
+        // nothing in the schema validates it, and it already carries
+        // Obsidian-only keys. Extensions belong in the extension bag.
+        substance: { words: countProseWords(body), measure: SUBSTANCE_MEASURE },
         ...(sourceUrl ? { sourceUrl } : {}),
       },
     };

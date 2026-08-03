@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.68.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.69.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -40,7 +40,7 @@ What you get:
 | Vault provisioning (v0.35+) | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
+| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
 Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. Bridge **≥ 0.7.0** also registers `PUT /vault-cas/*`, which makes `ifMatch` writes **atomic** (read-compare-write inside the Obsidian process); without it, `ifMatch` still works everywhere through a checked — but non-atomic — GET-compare fallback. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
@@ -82,7 +82,7 @@ See `wiki/obsidian-mcp-router sur Dedibox et MCPHub/` in the [opsidian-mcp-route
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes **50 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
+The repo doubles as a **Claude Code plugin marketplace** that exposes **51 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
 > 📄 **Quick reference PDF** (router overview + setup + config + every slash command with NL trigger phrases) — [English](./docs/quick-reference-en.pdf) · [Français](./docs/quick-reference-fr.pdf). Printable, accessible font sizes — for paper or screen reference.
 
@@ -245,7 +245,7 @@ What it catches: a skill that ships undeclared · a declaration whose skill was 
 - `verified` — requires `evidence` naming test files that **exist** and that **mention the skill**. Citing an unrelated suite is rejected.
 - `declared` — requires a written `reason` naming the specific residual uncertainty.
 
-**All 46 skills are `declared` today**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically, so there is nothing a behavioral verifier could hook onto. There is deliberately no middle tier — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist only binds the batch path while the ordinary in-process path is bound by nothing.
+**All 47 skills are `declared` today**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically, so there is nothing a behavioral verifier could hook onto. There is deliberately no middle tier — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist only binds the batch path while the ordinary in-process path is bound by nothing.
 
 **Bootstrapping.** `npm run capabilities:bootstrap` derives a proposal from the code (which tools each `SKILL.md` names, what those tools imply). It previews by default and writes nothing; `--missing-only --write` adds entries for new skills without touching reviewed ones. Every generated entry is stamped `UNREVIEWED-BOOTSTRAP`, **which the validator rejects** — so a generated file cannot go green until a human has read the page and replaced the reason. That mechanism is the point: the seeding pass is a proposal, and on the first run it was wrong often enough to prove it (it read the pure-reader `read-get` as `destructive`, `autoresearch` as offline, and `defuddle`'s prose-only `filter_relevant_blocks` mention as a call).
 
@@ -362,7 +362,7 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 }
 ```
 
-**Then enable the plugin per-workspace**, NOT globally. The plugin loads 50 slash commands and 46 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
+**Then enable the plugin per-workspace**, NOT globally. The plugin loads 51 slash commands and 47 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
 
 ```json
 {
@@ -374,11 +374,11 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 
 For vaults bootstrapped via `setup-vault.mjs`, this file is **cloned automatically** from `.template/.claude/settings.json` — you don't have to write it by hand. For non-vault workspaces (dev repos that work with vault content), copy the snippet above into `<workspace>/.claude/settings.json`.
 
-Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 50 slash commands should appear. From a workspace without, the namespace stays clean.
+Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 51 slash commands should appear. From a workspace without, the namespace stays clean.
 
 > **Why not enable it globally?** If you put `enabledPlugins` in `~/.claude/settings.json` instead of per-workspace, the plugin loads in EVERY Claude Code session — random scripts, debug sessions, unrelated repos — paying ~10k tokens for commands those sessions will never use. Project-scope keeps the budget tight.
 
-> **Bump the skill-listing budget (recommended).** The router contributes 46 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
+> **Bump the skill-listing budget (recommended).** The router contributes 47 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -752,6 +752,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 | `build_wiki_tour` | Generate a deterministic, ordered pedagogical reading tour from the knowledge-graph link topology. Read-only. |
 | `get_page_neighbors` | Return the neighbours of ONE page from the knowledge graph — the pages it links to (`forward`), the pages that link to it (`backward`), or both — out to `depth` hops. Defaults to page↔page links; widen `nodeTypes` to surface the concepts/sources a page also touches. An ambiguous page name is refused with the list of candidates. Two optional structural enrichments (`includeSameFolder`, `includeSharedTags`) surface non-linked siblings — same directory, or a shared real tag — at zero extra cost. Read-only. |
 | `wiki_path` | Find the shortest chain of links between TWO pages ("how are A and B connected?"). Undirected traversal; returns the ordered list of pages hop by hop, or an explicit null path when they are not connected (not an error). Widen `nodeTypes` (e.g. `["article","entity","topic"]`) for "connected via a shared concept" paths. Read-only. |
+| `find_boundary_pages` | Rank the wiki's "frontier" pages — the crossroads many pages link to that stay thin inside — from the persisted graph. Score = inbound links damped by length (`inbound / (1 + words/100)`: full weight on an empty page, halved at 100 words, a tenth at 900), ×1 to ×2 for staleness; same graph ⇒ same ranking (recency is measured against the graph's own build stamp, not a clock). Pages typed `redirect`/`source`/`answer` are held out by default and the count held out is reported. The score PROPOSES ATTENTION, it does not establish importance — index and hub pages legitimately surface near the top. Refuses on a graph built before the feature rather than scoring every page as empty. Read-only. |
 | `filter_relevant_blocks` | BM25 relevance second-pass over markdown you ALREADY have (no fetch, no LLM, deterministic). Drops blocks unrelated to a `query` topic — an ingestion knows *why* it fetched a page, so it can strip intros/bios/digressions before synthesis. Frontmatter and headings always kept; a code block follows the relevance of the prose that introduces it. Safety nets: empty query → strict no-op; <4 scorable blocks → untouched; would drop >70% → returns the original intact. Reuses the router's own tokeniser + IDF. Read-only. Borrowed from [Crawl4AI](https://github.com/unclecode/crawl4ai) (W-A). |
 
 See [ROADMAP.md](./ROADMAP.md) for what's next.
@@ -938,7 +939,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.68.1-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.69.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -968,7 +969,7 @@ Ce que tu obtiens :
 | Provisionnement de vault (v0.35+) | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Aussi `pdf_to_images` (rend les pages d'un PDF en PNG que le modèle peut *voir*) et `filter_relevant_blocks` (filtre de pertinence BM25 sur du markdown déjà acquis). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `build_open_link`, `open_in_obsidian` |
+| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `build_open_link`, `open_in_obsidian` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
 La recherche sémantique (`search_smart`), l'exécution Templater (`execute_template`) et les liens click-to-open (`build_open_link`, `open_in_obsidian`, le `clickToOpenUrl` auto-émis sur les résultats d'écriture) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart`, `/templates/execute` et `/open/*` sur Local REST API. Les outils de conversion nécessitent Python 3.10+ sur le `PATH` plus un `npm run install-markitdown` explicite (opt-in depuis v0.56.0) — voir la section anglaise « Conversion tools — runtime dependencies ». Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
@@ -988,7 +989,7 @@ Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complèt
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose **50 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
 > 📄 **PDF de référence rapide** (vue d'ensemble du router + setup + config + chaque slash command avec phrases déclencheuses en langage naturel) — [Français](./docs/quick-reference-fr.pdf) · [English](./docs/quick-reference-en.pdf). Imprimable, fontes lisibles — pour papier ou consultation écran.
 
@@ -1223,7 +1224,7 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 }
 ```
 
-**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 50 slash commands et 46 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
+**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 51 slash commands et 47 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
 
 ```json
 {
@@ -1235,11 +1236,11 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 
 Pour les vaults bootstrappés via `setup-vault.mjs`, ce fichier est **cloné automatiquement** depuis `.template/.claude/settings.json` — pas à écrire à la main. Pour les workspaces hors-vault (repos de code qui travaillent avec le contenu d'un vault), copie le snippet ci-dessus dans `<workspace>/.claude/settings.json`.
 
-Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 50 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
+Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 51 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
 
 > **Pourquoi pas en global ?** Si tu mets `enabledPlugins` dans `~/.claude/settings.json` au lieu de per-workspace, le plugin se charge dans CHAQUE session Claude Code — scripts random, sessions de debug, repos sans rapport — payant ~10k tokens pour des commandes que ces sessions n'utiliseront jamais. Le project-scope garde le budget serré.
 
-> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 46 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
+> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 47 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -1589,6 +1590,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 | `build_wiki_tour` | Génère un parcours de lecture pédagogique déterministe et ordonné depuis la topologie de liens du knowledge-graph. Read-only. |
 | `get_page_neighbors` | Retourne les voisines d'UNE page depuis le knowledge-graph — celles qu'elle cite (`forward`), celles qui la citent (`backward`), ou les deux — jusqu'à `depth` sauts. Par défaut des liens page↔page ; élargir `nodeTypes` pour faire apparaître les concepts/sources que la page touche aussi. Un nom de page ambigu est refusé avec la liste des candidats. Deux enrichissements structurels optionnels (`includeSameFolder`, `includeSharedTags`) font apparaître des voisines non liées — même dossier, ou un tag réel partagé — à coût nul. Read-only. |
 | `wiki_path` | Trouve la chaîne de liens la plus courte entre DEUX pages (« quel rapport entre A et B ? »). Parcours non-orienté ; retourne la liste ordonnée des pages saut par saut, ou un chemin null explicite si elles ne sont pas connectées (pas une erreur). Élargir `nodeTypes` (ex. `["article","entity","topic"]`) pour des chemins « par concept partagé ». Read-only. |
+| `find_boundary_pages` | Classe les pages « frontière » du wiki — les carrefours vers lesquels tout le monde pointe et qui restent maigres — depuis le graphe persisté. Score = liens entrants amortis par la longueur (`inbound / (1 + mots/100)` : poids plein sur une page vide, moitié à 100 mots, un dixième à 900), ×1 à ×2 selon l'ancienneté ; même graphe ⇒ même classement (la récence se mesure contre l'horodatage du graphe, pas contre l'horloge). Les pages typées `redirect`/`source`/`answer` sont écartées par défaut, et le nombre écarté est rapporté. Le score PROPOSE L'ATTENTION, il n'établit pas l'importance — les pages d'index et de hub remontent légitimement en tête. Refuse sur un graphe antérieur à la fonctionnalité plutôt que de compter toutes les pages comme vides. Read-only. |
 | `filter_relevant_blocks` | 2ᵉ passe de pertinence BM25 sur du markdown que tu as DÉJÀ (aucun fetch, aucun LLM, déterministe). Écarte les blocs hors-sujet vis-à-vis d'une `query` — une ingestion sait *pourquoi* elle a récupéré une page, donc elle peut retirer intros/bios/digressions avant la synthèse. Frontmatter et titres toujours conservés ; un bloc de code suit la pertinence de la prose qui l'introduit. Garde-fous : requête vide → no-op strict ; < 4 blocs scorables → intact ; filtrerait > 70 % → renvoie l'original intact. Réutilise le tokeniseur + l'IDF du router. Read-only. Emprunté à [Crawl4AI](https://github.com/unclecode/crawl4ai) (W-A). |
 
 Voir [ROADMAP.md](./ROADMAP.md) pour la suite.
