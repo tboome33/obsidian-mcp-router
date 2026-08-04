@@ -6,6 +6,25 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.70.1] — 2026-08-04 — ENOTFOUND: one definition instead of five copies
+
+### Fixed
+
+**An unreachable vault was reported as "your file is missing" by five different call sites.** The rest-client raises a dead host as `kind: 'unreachable'` with a message ending `(ENOTFOUND)` — and a bare `/not.?found/` matches the **NOTFOUND inside ENOTFOUND**. C10 hit this in v0.69.1 and fixed only its own copy; the others were still lying.
+
+- **`get_page_neighbors`, `wiki_path`, `build_wiki_tour`** told the user to run `build_wiki_graph` — i.e. rebuild a graph they already have, against a vault that cannot answer. Reproduced on all three through the real error shape.
+- **`get_wiki_context_pack`** was worse, and was found only by review: its citation resolver had the same predicate with `err.kind` **OR'd instead of authoritative** and a message test matching a bare `404` *and* `enotfound` outright. An unreachable vault therefore recorded a live citation as a **confirmed dead link**, with `fetchError: null` and no warning.
+
+The fix is one shared predicate (`helpers/missing-read-guard.mjs`) used by all five, rather than the same patch applied five times — which is what let the copies drift in the first place. Hardened under review beyond the original bug:
+
+- **Inspection can no longer mask the original error.** The predicate runs inside a `catch`; an error object with a throwing `kind`/`status`/`message` getter used to replace the real failure with a meaningless one. Every access is guarded and fails to `false`.
+- **A present-but-empty `kind` fails closed.** `if (kind)` let `kind: ''` fall through and be talked into "missing" by its message.
+- **The 404 sniff stopped guessing in both directions.** It matched a 404 inside a *filename* (`Error 404.md`) and a *hash* (`code 404-deadbeef`), while missing `404 (Not Found)`, `File not found` and a string-valued `status: '404'`. A 404 must now be introduced by an HTTP-ish word or followed by "not found", and must not be glued to `.`, `-` or another digit.
+
+One deliberate behaviour change: the three older tools threw a bare `Error` for the missing-graph case, so it surfaced as `Category: unknown`. They now carry `kind: 'validation'` like `find_boundary_pages` — the message is byte-for-byte unchanged, and an actionable refusal is no longer reported as an unclassified failure.
+
+**Tests:** suite **3504** (+13, including a pin that every tool rethrows the *same error object* rather than a reconstruction, and the context-pack regression).
+
 ## [0.70.0] — 2026-08-04 — closed pages: annotate by default, hide only on request
 
 ### Added

@@ -34,6 +34,7 @@ import * as defaultRestClient from '../rest-client.mjs';
 import { sanitizeResponse, sanitizeLabel } from '../helpers/sanitize.mjs';
 import { rankAndPick, scoreCandidates } from '../helpers/idf-score.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
+import { isMissingReadError } from '../helpers/missing-read-guard.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -438,10 +439,13 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
           // (review+ pass 1 finding A IMP-5 + B IMPORTANT #6 convergent)
           const status = err?.status ?? err?.statusCode;
           const msg = String(err?.message ?? err ?? '');
-          const isNotFound =
-            status === 404 ||
-            err?.kind === 'not_found' ||
-            /not.?found|no such file|404|enoent/i.test(msg);
+          // Shared predicate (helpers/missing-read-guard.mjs). The local copy
+          // this replaces carried BOTH original defects: `err.kind` was OR'd
+          // rather than authoritative, and the message test matched a bare
+          // `404` AND `enotfound` outright — so an unreachable vault was
+          // recorded here as a CONFIRMED dead citation with `fetchError: null`,
+          // which is a worse lie than the graph tools told.
+          const isNotFound = isMissingReadError(err);
           if (!isNotFound && !nonNotFoundError) {
             nonNotFoundError = { status, message: msg };
           }

@@ -643,6 +643,34 @@ describe('drill loop surfaces real fetch errors as page-read-failed', () => {
     assert.equal(entry.summary, '');
   });
 
+  test('PIN: an UNREACHABLE vault is not recorded as a confirmed dead link', async () => {
+    // Regression. This resolver carried its own copy of "is the file missing?"
+    // with both of the defects the shared guard now fixes: `err.kind` was OR'd
+    // rather than authoritative, and the message test matched a bare `404` AND
+    // `enotfound` outright. So an unreachable vault — kind 'unreachable',
+    // message ending "(ENOTFOUND)" — was classified as a CONFIRMED missing
+    // page with `fetchError: null` and NO warning: the consumer was told a live
+    // citation was a dead link. Worse than the lie the graph tools told.
+    const indexMd = `## Refs\n\n- [[live-page]] - exists, vault just unreachable\n`;
+    const deps = {
+      getFileContent: async (_vault, path) => {
+        if (path === 'wiki-meta/catalog.md') return indexMd;
+        return null;
+      },
+      getNote: async () => {
+        const err = new Error('[roland] unreachable at https://127.0.0.1:27126/vault/live-page.md (ENOTFOUND)');
+        err.kind = 'unreachable';
+        throw err;
+      },
+      searchSmart: async () => null,
+    };
+    const result = await getWikiContextPack(makeRegistry(), { query: 'live page' }, deps);
+    assert.ok(
+      result.warnings.includes('page-read-failed'),
+      `an unreachable vault must be flagged as provisional, got ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
   test('legitimate 404 does NOT emit page-read-failed (just dead wikilink)', async () => {
     const indexMd = `## Refs\n\n- [[deleted-page]] - was deleted\n`;
     const deps = {

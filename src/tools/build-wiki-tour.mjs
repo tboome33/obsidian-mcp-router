@@ -14,6 +14,7 @@ import * as defaultRestClient from '../rest-client.mjs';
 import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { computeTourTopology } from '../helpers/wiki-tour-topology.mjs';
 import { CANONICAL_GRAPH_PATH } from './build-wiki-graph.mjs';
+import { isMissingReadError, graphMissingError } from '../helpers/missing-read-guard.mjs';
 
 export const TOOL_NAME = 'build_wiki_tour';
 
@@ -67,16 +68,9 @@ export async function buildWikiTourTool(registry, args = {}, _deps = {}) {
     // Only a genuine "not found" means the graph hasn't been built. Preserve
     // real operational failures (vault offline, bad API key, timeout) instead
     // of misleadingly telling the user to run /wiki-graph (codex review).
-    const status = err && (err.status ?? err.statusCode);
-    const isNotFound =
-      (err && err.kind === 'not_found') ||
-      status === 404 ||
-      /not.?found|enoent|no such file/i.test(String((err && err.message) || ''));
-    if (isNotFound) {
-      throw new Error(
-        `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,
-      );
-    }
+    // One shared definition (helpers/graph-read-guard.mjs) — the three copies
+    // of this decision had drifted into the same ENOTFOUND bug.
+    if (isMissingReadError(err)) throw graphMissingError(CANONICAL_GRAPH_PATH);
     throw err;
   }
   let graph;

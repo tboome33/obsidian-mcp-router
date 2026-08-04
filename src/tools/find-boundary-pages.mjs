@@ -23,6 +23,7 @@ import {
   DEFAULT_EXEMPT_TYPES,
 } from '../helpers/boundary-score.mjs';
 import { CANONICAL_GRAPH_PATH } from './build-wiki-graph.mjs';
+import { isMissingReadError, graphMissingError } from '../helpers/missing-read-guard.mjs';
 
 /** An actionable refusal — see the twin in `helpers/boundary-score.mjs`. */
 function refusal(message) {
@@ -90,37 +91,9 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
   try {
     raw = await deps.getFileContent(vault, CANONICAL_GRAPH_PATH);
   } catch (err) {
-    const kind = err && err.kind;
-    const status = err && (err.status ?? err.statusCode);
-    // A STRUCTURED kind is authoritative; the message is sniffed only when the
-    // error carries none. The order matters, and not theoretically: the
-    // rest-client reports a dead host as `kind: 'unreachable'` with a message
-    // ending "(ENOTFOUND)", and a bare /not.?found/ matches the NOTFOUND inside
-    // ENOTFOUND — so a mistyped or offline remote vault was being told to
-    // rebuild a graph it already has, against a vault that cannot answer.
-    //
-    // The fallback itself stays NARROW: filesystem-shaped "missing file"
-    // signals and a contextualised 404, nothing else. A sniff that guesses in
-    // both directions is worse than one that admits it does not know.
-    const message = String((err && err.message) || '');
-    const isNotFound = kind
-      ? kind === 'not_found'
-      : status === 404
-        || /\benoent\b|no such file/i.test(message)
-        // The 404 must be CONTEXTUALISED, never bare — a stray `404` matched
-        // anywhere meant `connect ECONNREFUSED 127.0.0.1:404`, a PORT number,
-        // read as "your graph is missing". But the first contextual form was
-        // too tight the other way: it took `HTTP 404` while missing
-        // `HTTP/1.1 404 Not Found`, `404 Not Found` and `Error 404` — the most
-        // canonical spellings there are. Two alternatives now: a 404 introduced
-        // by an HTTP-ish word, or a 404 followed by "not found".
-        || /\b(?:http(?:\/\d(?:\.\d)?)?|status(?:\s*code)?|error|code|responded\s*(?:with)?)\s*:?\s*404\b/i.test(message)
-        || /\b404\s+not[-\s]?found\b/i.test(message);
-    if (isNotFound) {
-      throw refusal(
-        `No knowledge graph at ${CANONICAL_GRAPH_PATH}. Run build_wiki_graph (the /wiki-graph skill) first.`,
-      );
-    }
+    // Shared with build_wiki_tour / get_page_neighbors / wiki_path — one
+    // definition, so the ENOTFOUND lesson cannot be re-learned per tool.
+    if (isMissingReadError(err)) throw graphMissingError(CANONICAL_GRAPH_PATH);
     throw err;
   }
 
