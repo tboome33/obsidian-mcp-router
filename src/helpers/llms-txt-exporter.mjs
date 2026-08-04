@@ -152,6 +152,21 @@ function collectBlockScalar(lines, startIdx, keyIndent, header) {
   return { value, endIdx: j - 1 };
 }
 
+// KNOWN LIMITATION (pre-dating the v0.70.x hardening, uniform across keys):
+// this is a LINE-ORIENTED reader, not a YAML parser. A nested MAPPING —
+//   parent:
+//     child: value
+// — is flattened: `parent` gets an empty string and `child` surfaces as a
+// TOP-LEVEL key. That applies to every parent key, `__proto__` included, so a
+// suppressed `__proto__:` with mapping children still yields those children
+// at top level. This is NOT a privilege escalation: the page author writes
+// their own frontmatter and could put `child: value` at top level directly —
+// there is no boundary between "under __proto__" and "not". The round-2 P1
+// (block-scalar lines leaking) was different and IS fixed: there the parser
+// CLAIMS to consume the value, so leaking its lines contradicted its own
+// contract. Teaching this reader real nesting is a separate decision with
+// vault-wide consequences (today's flat behaviour is what every consumer and
+// every existing digest was built against).
 export function parseFrontmatter(content) {
   const match = FRONTMATTER_RE.exec(content);
   if (!match) return { frontmatter: {}, body: content };
@@ -169,6 +184,28 @@ export function parseFrontmatter(content) {
     const key = line.slice(0, colonIdx).trim();
     let value = line.slice(colonIdx + 1).trim();
     if (!key) continue;
+    // Refuse the one key whose assignment is not an assignment. On a plain
+    // object, `frontmatter['__proto__'] = v` goes through Object.prototype's
+    // inherited accessor: a string value was silently discarded (the key just
+    // vanished), but an ARRAY value — the block-sequence and inline forms
+    // below — REPARENTED the frontmatter object onto a page-chosen array, so
+    // every consumer of this shared parser inherited `length` and numeric
+    // indices from vault content. `constructor`/`prototype` stay allowed:
+    // assigning those creates an ordinary own property.
+    //
+    // The suppression happens at the ASSIGNMENT, not as an early `continue`:
+    // the first version of this fix skipped the key before the multiline
+    // branches below had consumed its value, so the lines of a discarded
+    // `__proto__: |` block were re-read as TOP-LEVEL keys — a page could
+    // manufacture sibling metadata (`status: accepted`, …) out of a value the
+    // parser claimed to have dropped. Worse than the bug it fixed; caught by
+    // the round-2 adversarial review. The value must travel the exact same
+    // parse path as any other key's, and only its last step differs.
+    // (Same defect family as `safeFrontmatter`'s DANGEROUS_FM_KEYS in
+    // wiki-graph-builder.mjs, which guards its own copy for the same reason.)
+    const setKey = (v) => {
+      if (key !== '__proto__') frontmatter[key] = v;
+    };
 
     // Block-sequence form (what Obsidian's Properties UI writes):
     //   key:
@@ -188,7 +225,7 @@ export function parseFrontmatter(content) {
         j += 1;
       }
       if (items.length > 0) {
-        frontmatter[key] = items;
+        setKey(items);
         i = j - 1; // skip the consumed item lines
         continue;
       }
@@ -206,7 +243,7 @@ export function parseFrontmatter(content) {
     if (blockHeader) {
       const keyIndent = line.length - line.trimStart().length;
       const { value: blockValue, endIdx } = collectBlockScalar(lines, i + 1, keyIndent, blockHeader);
-      frontmatter[key] = blockValue;
+      setKey(blockValue);
       i = endIdx;
       continue;
     }
@@ -238,12 +275,12 @@ export function parseFrontmatter(content) {
     // Array inline form: [a, b, c]
     if (value.startsWith('[') && value.endsWith(']')) {
       const inner = value.slice(1, -1).trim();
-      frontmatter[key] = inner
+      setKey(inner
         ? inner.split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''))
-        : [];
+        : []);
       continue;
     }
-    frontmatter[key] = value;
+    setKey(value);
   }
   return { frontmatter, body };
 }

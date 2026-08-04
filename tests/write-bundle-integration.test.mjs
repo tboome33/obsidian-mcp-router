@@ -1272,3 +1272,53 @@ describe('write_bundle — the recover union survives a client that stringifies 
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// clickToOpenLinks — dynamic keys are vault paths (reachable: canonicalVaultPath
+// accepts a bare `__proto__` as a step path)
+// ---------------------------------------------------------------------------
+
+describe('write_bundle — clickToOpenLinks survives a `__proto__` step path', () => {
+  test('PIN: a step writing to the path `__proto__` still gets its link', async (t) => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { _resetCache } = await import('../src/helpers/click-to-open.mjs');
+
+    const vaultPath = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-vault-'));
+    t.after(() => fs.rmSync(vaultPath, { recursive: true, force: true }));
+    const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api');
+    fs.mkdirSync(pluginDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginDir, 'data.json'),
+      JSON.stringify({ insecurePort: 27144, enableInsecureServer: true }),
+    );
+    _resetCache();
+    t.after(() => _resetCache());
+
+    // Same executor harness, but a LOCAL vault so URLs are buildable.
+    const h = harness();
+    const localVault = { name: 'v', type: 'local', path: vaultPath };
+    const registry = { resolveVault: () => localVault };
+
+    const out = await writeBundleTool(registry, {
+      steps: [
+        { op: 'write', path: '__proto__', content: 'a file named like the accessor\n' },
+        { op: 'write', path: 'wiki/normal.md', content: '# ok\n' },
+      ],
+    }, h.deps);
+
+    assert.equal(out.ok, true);
+    const links = out.clickToOpenLinks ?? {};
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(links, '__proto__'),
+      `the \`__proto__\` step lost its link; keys were ${JSON.stringify(Object.keys(links))}`,
+    );
+    assert.equal(Object.keys(links).length, 2, 'both steps must be linked');
+    assert.equal(
+      JSON.parse(JSON.stringify(out)).clickToOpenLinks.__proto__,
+      links.__proto__,
+      'must survive a JSON round-trip',
+    );
+  });
+});

@@ -28,7 +28,23 @@
 const ANSI_CSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const ANSI_OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 // Control chars except \t (0x09), \n (0x0A), \r (0x0D).
-const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
+//
+// C1 (\x80-\x9F) is stripped too. It was missing, and it matters for the same
+// reason C0 does: U+009B is a single-character CSI — an ANSI escape introducer
+// that needs no `ESC [`.
+//
+// The three Unicode LINE BREAKS outside \n\r — U+0085 (NEL, inside the C1
+// block), U+2028 and U+2029 — are NORMALIZED to `\n` by LINE_SEPARATORS, not
+// deleted. Deleting them JOINED adjacent words ("alpha beta" became
+// "alphabeta"), silently changing meaning; the round-3 review caught that the
+// first version of this hardening pinned the destructive behaviour as correct.
+// Normalization keeps the word boundary while still closing the hole they
+// opened: JSON.stringify does not escape them, so raw they could split a
+// rendered line exactly as an unescaped `\n` would.
+// ORDER MATTERS: NEL sits inside \x7F-\x9F, so it must be rewritten to `\n`
+// BEFORE the control strip runs, or the strip eats it first.
+const LINE_SEPARATORS = /[\u0085\u2028\u2029]/g;
+const CONTROL_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 
 // Agentic markers that have semantic meaning to Claude / Claude Code and
 // should never appear inside vault content reaching the model verbatim.
@@ -93,6 +109,7 @@ export function sanitizeLabel(input, opts = {}) {
   let out = input;
   out = out.replace(ANSI_CSI, '');
   out = out.replace(ANSI_OSC, '');
+  out = out.replace(LINE_SEPARATORS, '\n'); // before CONTROL_CHARS — NEL is C1
   out = out.replace(CONTROL_CHARS, '');
 
   if (neutralizeInjection) {
@@ -148,10 +165,33 @@ export function sanitizeResponse(value, opts = {}) {
     // key vanishes from the response) and an object value would set the
     // prototype of the object being built rather than a property on it. Either
     // way a sanitiser must not do it — the whole point is that keys here come
-    // from vault content. Found via C10, whose `exempted.byType` is the first
-    // response object keyed by vault-derived strings, but the bug was generic.
+    // from vault content. Found via C10's `exempted.byType`, but the bug is
+    // generic and C10 was NOT the only response keyed by vault strings: the
+    // click-to-open walker keys by vault PATH, `get_frontmatter` returns
+    // arbitrary frontmatter keys, and `decision-lint` keeps its own tallies.
+    // (The earlier version of this comment claimed C10 was the first such
+    // response — an overstatement corrected after an audit found the others.)
+    //
+    // KEYS go through `sanitizeLabel` too. They come from the same untrusted
+    // places as values (frontmatter key names, vault paths), and a key was a
+    // clean bypass: a C1 escape introducer or an injection tag in a KEY
+    // reached the model verbatim even when the caller explicitly asked for
+    // `neutralizeInjection` — caught by the round-2 adversarial review.
+    //
+    // Keys keep the caller's `neutralizeInjection` but NOT the caller's
+    // `maxLen`: that option sizes VALUES (a caller passing `maxLen: 200` means
+    // "cap the snippets"), and forwarding it to keys renamed structural fields
+    // (`vault`, `path`, …) into their own truncation notices — the round-3
+    // review's repro. Keys always use the default label cap, which no sane
+    // key approaches.
+    //
+    // If two keys sanitize to the same string, the LAST one wins (the
+    // `Object.fromEntries` duplicate rule, same as JSON parsing); response
+    // builders that need a collision policy (like C10's tally, which sums)
+    // must merge BEFORE handing the object here.
+    const keyOpts = { ...opts, maxLen: DEFAULT_LABEL_CAP };
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, sanitizeResponse(v, opts)]),
+      Object.entries(value).map(([k, v]) => [sanitizeLabel(k, keyOpts), sanitizeResponse(v, opts)]),
     );
   }
   return value;

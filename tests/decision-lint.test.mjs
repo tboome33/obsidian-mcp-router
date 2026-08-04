@@ -582,3 +582,36 @@ describe('findHistorySection', () => {
     assert.deepEqual(findHistorySection('# T\n\nBody.\n'), { found: false, hasLink: false, heading: null });
   });
 });
+
+describe('stats.byStatus — keys come from vault frontmatter', () => {
+  test('PIN: decisions whose `status` is exactly `__proto__` are still counted', () => {
+    // `parseFrontmatter` passes `status: __proto__` through as an ordinary
+    // string, so the vault chooses this tally key. On a plain `{}` the
+    // `counts[status] = (counts[status] ?? 0) + 1` assignment hit
+    // Object.prototype's inherited setter instead of creating an own property:
+    // `counts.__proto__` read back as Object.prototype, `?? 0` kept it, `+ 1`
+    // produced the string "[object Object]1", and assigning a string to
+    // `__proto__` is a silent no-op. Four decisions in, a reported total of two.
+    const result = lintDecisions([
+      cleanDecision('wiki/decisions/a.md'),
+      cleanDecision('wiki/decisions/b.md'),
+      decision('wiki/decisions/c.md', { status: '__proto__', scope: 'router', evidence: ['[[study]]'] }),
+      decision('wiki/decisions/d.md', { status: '__proto__', scope: 'router', evidence: ['[[study]]'] }),
+      OTHER_PAGE,
+    ]);
+    const byStatus = result.stats.byStatus;
+    assert.equal(result.stats.decisions, 4);
+    assert.equal(
+      Object.values(byStatus).reduce((a, b) => a + b, 0),
+      4,
+      `the tally must account for every decision; got ${JSON.stringify(byStatus)}`,
+    );
+    assert.equal(byStatus.__proto__, 2);
+    assert.equal(byStatus.accepted, 2);
+    assert.equal(
+      JSON.parse(JSON.stringify(byStatus)).__proto__,
+      2,
+      'must survive a JSON round-trip',
+    );
+  });
+});

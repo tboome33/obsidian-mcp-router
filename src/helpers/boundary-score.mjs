@@ -212,6 +212,24 @@ function toEpochDay(value, { allowAnnotated = true } = {}) {
   // `allowAnnotated` is false for a CALLER-supplied `asOf`, whose documented
   // contract is `YYYY-MM-DD`. Tolerating a trailing note is a concession to
   // pages a human wrote; an API argument gets no such latitude.
+  // A date followed by a space and a TIME is a timestamp with a space
+  // separator (the SQL/ISO-8601-profile spelling), not a date with a note —
+  // so it must resolve to the same day as the `T` form. They disagreed by a
+  // day: `2026-08-03 23:30:00-02:00` read as the 3rd (annotated date) while
+  // `2026-08-03T23:30:00-02:00` read as the 4th (the instant, in UTC).
+  // Normalising to the `T` form makes one value, one answer.
+  //
+  // The separator is HORIZONTAL ASCII whitespace only — `[ \t]+`, not `\s+`.
+  // The first version matched one space; the second overcorrected to `\s+`,
+  // which swallowed line breaks (and U+2028/U+2029), so a multiline
+  // `updated: |` block whose two lines happened to be date-shaped and
+  // time-shaped was read as a TIMESTAMP. A value with a line break is a note,
+  // not a spelling of an instant. NBSP is excluded on the same reasoning: not
+  // a recognised timestamp spelling, so it reads as an annotated date via the
+  // branch below — deterministically, which is the property that matters.
+  const spacedTime = s.match(/^(\d{4}-\d{2}-\d{2})[ \t]+(\d{2}:\d{2}.*)$/);
+  if (spacedTime) return toEpochDay(`${spacedTime[1]}T${spacedTime[2]}`, { allowAnnotated });
+
   const dateOnly = s.match(allowAnnotated ? /^(\d{4}-\d{2}-\d{2})(?:\s|$)/ : /^(\d{4}-\d{2}-\d{2})$/);
   if (dateOnly) return calendarDay(dateOnly[1]);
 
@@ -390,6 +408,16 @@ export function scoreBoundaryPages(graph, opts = {}) {
   let asOfSource = 'none';
   let asOfDay = null;
   let asOf = '';
+  // A NON-STRING asOf is refused, not ignored. It used to fall through to the
+  // graph's own stamp, so `asOf: new Date()` or `asOf: 20668` silently scored
+  // against a different date than the caller asked for — discoverable only by
+  // noticing `asOfSource` said `graph-analyzedAt`. Silence about a
+  // misunderstood argument is the same failure as silence about a filter.
+  if (opts.asOf != null && typeof opts.asOf !== 'string') {
+    throw refusal(
+      `boundary-score: asOf must be a YYYY-MM-DD string (got ${Array.isArray(opts.asOf) ? 'array' : typeof opts.asOf}).`,
+    );
+  }
   const callerAsOf = typeof opts.asOf === 'string' && opts.asOf.trim() ? opts.asOf.trim() : null;
   if (callerAsOf) {
     asOfDay = toEpochDay(callerAsOf, { allowAnnotated: false });
@@ -565,8 +593,8 @@ export function scoreBoundaryPages(graph, opts = {}) {
       // total = sum(byType) + sum(byStatus), guaranteed by the type-first
       // precedence above: a page matching both is counted once, under byType.
       total: exemptedTotal,
-      byType: Object.fromEntries([...exemptedByType.entries()].sort((a, b) => cmp(a[0], b[0]))),
-      byStatus: Object.fromEntries([...exemptedByStatus.entries()].sort((a, b) => cmp(a[0], b[0]))),
+      byType: tallyToObject(exemptedByType),
+      byStatus: tallyToObject(exemptedByStatus),
       types: [...exemptTypes].sort(cmp),
       statuses: [...exemptStatuses].sort(cmp),
     },
@@ -627,6 +655,30 @@ function oneLine(text) {
   const capped = String(text).replace(/"([^"]{80,})"/g, (_m, id) => `"${id.slice(0, 77)}…"`);
   return sanitizeLabel(capped, { neutralizeInjection: true, maxLen: 500 })
     .replace(/[\r\n\t]+/g, ' ');
+}
+
+/**
+ * Turn a count tally into the emitted object: keys SANITISED, code-unit
+ * sorted, colliding keys SUMMED.
+ *
+ * These keys are vault-derived (`type:` / `status:` frontmatter), so a control
+ * byte or an injection-shaped tag in a page's type reached the reader raw
+ * before this existed. Since the round-2 hardening `sanitizeResponse` DOES
+ * sanitise keys too (last-wins on collision) — but the tally keeps sanitising
+ * its own, because its collision policy is better than the generic one: these
+ * are COUNTS, so two keys that sanitise to the same string can be SUMMED
+ * without inventing or losing anything, and `total` continues to equal the
+ * sum of the buckets. That invariant is pinned by test; the walker layer
+ * would collapse colliders to the last value instead.
+ */
+function tallyToObject(tally) {
+  const merged = new Map();
+  for (const [rawKey, count] of tally) {
+    const key = sanitizeLabel(String(rawKey), { neutralizeInjection: true, maxLen: 80 })
+      .replace(/[\r\n\t]+/g, ' ');
+    merged.set(key, (merged.get(key) || 0) + count);
+  }
+  return Object.fromEntries([...merged.entries()].sort((a, b) => cmp(a[0], b[0])));
 }
 
 /**

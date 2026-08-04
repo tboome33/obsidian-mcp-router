@@ -17,6 +17,7 @@ import {
   TOOL_NAME,
   CANONICAL_GRAPH_PATH,
   UNDERSTAND_ANYTHING_GRAPH_PATH,
+  _internals,
 } from '../src/tools/build-wiki-graph.mjs';
 import { validateGraph } from '../src/helpers/wiki-graph-schema.mjs';
 import { serialiseDigest, computePageHash } from '../src/helpers/digest-generator.mjs';
@@ -313,5 +314,37 @@ describe('pickAuditPath — build_wiki_graph (codex P2)', () => {
   test('records the canonical graph path (no `path` arg → not "(unknown)")', async () => {
     const { pickAuditPath } = await import('../src/index.mjs');
     assert.equal(pickAuditPath('build_wiki_graph', {}), CANONICAL_GRAPH_PATH);
+  });
+});
+
+describe('tallyByType — defensive against adversarial type keys', () => {
+  test('PIN: a node whose `type` is exactly `__proto__` is still counted', () => {
+    // DEFENSIVE pin on the helper, not a reachable tool path: the builder
+    // emits fixed node types (`type: 'article'`, …) and `validateGraph`
+    // rejects anything outside NODE_TYPES, so a vault-chosen `__proto__`
+    // cannot reach this tally today. (The first version of this comment
+    // claimed the keys came from vault frontmatter — false, corrected by the
+    // round-2 review.) The pin exists so a future builder change cannot
+    // silently resurrect the undercount: on a plain `{}` accumulator the
+    // `out[t] = (out[t] || 0) + 1` assignment hits Object.prototype's
+    // inherited setter — four nodes in, a reported total of two.
+    const tally = _internals.tallyByType([
+      { type: 'article' },
+      { type: '__proto__' },
+      { type: 'article' },
+      { type: '__proto__' },
+    ]);
+    assert.equal(
+      Object.values(tally).reduce((a, b) => a + b, 0),
+      4,
+      `the tally must account for every node; got ${JSON.stringify(tally)}`,
+    );
+    assert.equal(tally.__proto__, 2);
+    assert.equal(JSON.parse(JSON.stringify(tally)).__proto__, 2, 'must survive a JSON round-trip');
+  });
+
+  test('ordinary types are unaffected', () => {
+    const tally = _internals.tallyByType([{ type: 'article' }, { type: 'reference' }, {}]);
+    assert.deepEqual({ ...tally }, { article: 1, reference: 1, unknown: 1 });
   });
 });

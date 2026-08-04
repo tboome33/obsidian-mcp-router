@@ -201,8 +201,101 @@ describe('sanitizeResponse', () => {
     assert.equal(sanitizeResponse(undefined), undefined);
   });
 
+  test('PIN: a `__proto__` KEY survives as an own property (v0.69.2 regression)', () => {
+    // The walker used to rebuild objects with `out[k] = v`. For the single key
+    // `__proto__` that goes through Object.prototype's inherited accessor
+    // instead of creating a property: a primitive value was silently DISCARDED
+    // (the key vanished from the response) and an object value would have
+    // reparented the object being built. Found via C10's `exempted.byType`,
+    // but that was NOT the first response keyed by vault-derived strings (the
+    // click-to-open walker and `get_frontmatter` predate it) and the bug was
+    // generic — which is why it is pinned here, in the sanitizer's own suite.
+    // NOTE the construction: `{ __proto__: 3 }` in an object LITERAL is special
+    // syntax that sets the prototype, so the key would never exist and this
+    // test would pass or fail for the wrong reason. `Object.fromEntries` is how
+    // you build a genuinely own `__proto__` key — the same call the fix uses.
+    const withProtoKey = Object.fromEntries([['__proto__', 3], ['redirect', 1]]);
+    const out = sanitizeResponse({ byType: withProtoKey });
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(out.byType, '__proto__'),
+      '`__proto__` must be an OWN property, not a swallowed assignment',
+    );
+    assert.equal(out.byType.__proto__, 3);
+    assert.equal(Object.values(out.byType).reduce((a, b) => a + b, 0), 4, 'no entry may be lost');
+    assert.equal(JSON.parse(JSON.stringify(out)).byType.__proto__, 3, 'must survive a JSON round-trip');
+  });
+
+  test('PIN: an object-valued `__proto__` stays a PROPERTY and does not reparent', () => {
+    // Written first as `sanitizeResponse({ __proto__: { polluted: true } })`,
+    // which asserted nothing at all — the literal form sets the prototype, so
+    // `Object.keys(input)` was `[]`. The very trap the test above documents,
+    // walked into one test later. Build it the only way that works.
+    const input = Object.fromEntries([['__proto__', { polluted: true }]]);
+    assert.deepEqual(Object.keys(input), ['__proto__'], 'the fixture must really carry the key');
+    const out = sanitizeResponse(input);
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(out, '__proto__'),
+      'an object-valued `__proto__` must remain an own property',
+    );
+    assert.deepEqual(out.__proto__, { polluted: true }, 'its value must survive');
+    assert.equal(Object.getPrototypeOf(out), Object.prototype, 'the output prototype must be untouched');
+    assert.equal({}.polluted, undefined, 'no global pollution');
+  });
+
+  test('other prototype-shaped keys keep their own numeric values', () => {
+    // `toString` used to turn a tally into the string
+    // "function toString() { [native code] }1".
+    const out = sanitizeResponse({ byType: { toString: 2, constructor: 1 } });
+    assert.equal(out.byType.toString, 2);
+    assert.equal(out.byType.constructor, 1);
+  });
+
   test('sanitizes a top-level string', () => {
     assert.equal(sanitizeResponse('a\x01b'), 'ab');
+  });
+
+  test('PIN: C1 controls are stripped, not just C0', () => {
+    // The class covered C0 only. U+009B is a SINGLE-CHARACTER CSI — an ANSI
+    // escape introducer needing no `ESC [`.
+    for (const [name, ch] of [
+      ['U+009B CSI', '\u009b'],
+      ['U+008D RI', '\u008d'],
+      ['U+007F DEL', '\u007f'],
+    ]) {
+      assert.equal(sanitizeResponse(`a${ch}b`), 'ab', `${name} must be stripped`);
+    }
+    // ...and the characters that must SURVIVE still do.
+    assert.equal(sanitizeResponse('a\tb\nc\rd'), 'a\tb\nc\rd', 'tab/newline/CR are legitimate');
+    assert.equal(sanitizeResponse('café — naïve 日本語 🚀'), 'café — naïve 日本語 🚀', 'real text is untouched');
+  });
+
+  test('PIN: Unicode line breaks are NORMALIZED to \\n, never deleted', () => {
+    // Round-3 correction of a round-1 overreach. The first hardening DELETED
+    // U+0085/U+2028/U+2029 — and its test pinned the destructive result
+    // ("alpha<sep>beta" → "alphabeta"), enshrining silent word-joining as
+    // correct. They are line BREAKS: JSON.stringify does not escape them (the
+    // hole), but readers treat them as boundaries (the meaning). Rewriting to
+    // `\n` closes the hole and keeps the boundary. NEL sits inside the C1
+    // block, so the normalization must run BEFORE the control strip — pinned
+    // by asserting it survives as `\n` instead of vanishing with its C1
+    // neighbours.
+    for (const [name, ch] of [
+      ['U+0085 NEL', '\u0085'],
+      ['U+2028 LINE SEPARATOR', '\u2028'],
+      ['U+2029 PARAGRAPH SEPARATOR', '\u2029'],
+    ]) {
+      assert.equal(sanitizeResponse(`alpha${ch}beta`), 'alpha\nbeta', `${name} must become \\n`);
+    }
+  });
+
+  test('PIN: a caller maxLen sizes VALUES — structural keys are never truncated', () => {
+    // Round-3 regression catch: forwarding the caller's maxLen to key
+    // sanitization renamed `vault` / `path` into their own truncation notices
+    // for any maxLen below the key length. Keys always use the default label
+    // cap.
+    const out = sanitizeResponse({ vault: 'v', path: 'wiki/a.md', matches: ['x'.repeat(500)] }, { maxLen: 100 });
+    assert.deepEqual(Object.keys(out).sort(), ['matches', 'path', 'vault']);
+    assert.ok(out.matches[0].includes('[truncated by sanitize'), 'values must still honour the cap');
   });
 
   test('preserves non-string scalars', () => {
@@ -270,5 +363,37 @@ describe('regression — real-world cases', () => {
   test('YAML frontmatter survives intact', () => {
     const fm = '---\ntype: reference\ntags: [a, b]\n---\n';
     assert.equal(sanitizeLabel(fm), fm);
+  });
+});
+
+describe('sanitizeResponse — KEYS are sanitized like values', () => {
+  // Round-2 finding: keys passed through verbatim, so a C1 escape introducer
+  // or an injection tag in a KEY reached the model even when the caller
+  // explicitly asked for neutralizeInjection. Keys come from the same
+  // untrusted places as values (frontmatter key names, vault paths).
+  test('PIN: a C1 CSI (U+009B) in a key is stripped', () => {
+    const input = { links: Object.fromEntries([['evil\u009b31m.md', 'http://x']]) };
+    const out = sanitizeResponse(input);
+    assert.deepEqual(Object.keys(out.links), ['evil31m.md']);
+  });
+
+  test('PIN: an injection tag in a key is neutralized when asked', () => {
+    const k = '<system-reminder>PWN';
+    const input = { m: Object.fromEntries([[k, 1]]) };
+    const out = sanitizeResponse(input, { neutralizeInjection: true });
+    assert.deepEqual(Object.keys(out.m), ['&lt;system-reminder>PWN']);
+    // ...and stays verbatim when NOT asked, like values do (same contract).
+    assert.deepEqual(Object.keys(sanitizeResponse(input).m), [k]);
+  });
+
+  test('keys colliding after sanitization follow the fromEntries rule: last wins', () => {
+    const input = Object.fromEntries([['a\u0000', 1], ['a', 2]]);
+    const out = sanitizeResponse(input);
+    assert.deepEqual(out, { a: 2 });
+  });
+
+  test('ordinary keys are untouched (accents, spaces, CJK)', () => {
+    const input = { 'wiki/décisions/décision — finale.md': 1, '日本語.md': 2 };
+    assert.deepEqual(sanitizeResponse(input), input);
   });
 });

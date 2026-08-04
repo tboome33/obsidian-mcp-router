@@ -601,11 +601,16 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
     }
   }
 
-  const clickToOpenLinks = {};
+  // Build through a Map: keyed by vault path, and a file named exactly
+  // `__proto__` would otherwise lose its link on a plain `{}` — the
+  // click-to-open walker carried the same bug. See `decision-lint
+  // .countByStatus` for why this is a Map rather than `Object.create(null)`.
+  const linkPairs = new Map();
   for (const p of paths) {
     const url = buildClickToOpenUrl(vault, p);
-    if (url) clickToOpenLinks[p] = url;
+    if (url) linkPairs.set(p, url);
   }
+  const clickToOpenLinks = Object.fromEntries(linkPairs);
   const applied = stepResults.filter((s) => s.status === 'ok').length;
   const skipped = stepResults.filter((s) => s.status === 'skipped').length;
 

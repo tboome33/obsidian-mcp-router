@@ -111,11 +111,17 @@ export function collectClickToOpenLinks(vault, payload) {
   const pathSet = new Set();
   walk(payload, pathSet, 0);
   if (pathSet.size === 0) return {};
-  const links = {};
-  for (const p of pathSet) {
-    const url = buildClickToOpenUrl(vault, p);
-    if (url) links[p] = url;
-  }
+  // `Object.fromEntries`, not `links[p] = url`: these keys are VAULT PATHS, and
+  // a plain assignment to the single key `__proto__` goes through the inherited
+  // accessor instead of creating a property — so a vault-root file literally
+  // named `__proto__` (the WHOLE path, extensionless; `wiki/__proto__.md` was
+  // never affected) lost its link, silently. Same defect class as the one
+  // fixed in `sanitizeResponse` for v0.69.2.
+  const links = Object.fromEntries(
+    [...pathSet]
+      .map((p) => [p, buildClickToOpenUrl(vault, p)])
+      .filter(([, url]) => url),
+  );
   if (Object.keys(links).length === 0) return {};
   return { clickToOpenLinks: links };
 }

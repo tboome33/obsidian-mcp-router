@@ -583,3 +583,99 @@ This page is not in the index.
     assert.doesNotMatch(output, /^---$/m);
   });
 });
+
+describe('parseFrontmatter — the `__proto__` key never reparents the result', () => {
+  // On a plain object, `frontmatter['__proto__'] = v` is not an assignment: it
+  // goes through Object.prototype's inherited accessor. A scalar value was
+  // silently discarded — but an ARRAY value (block-sequence or inline form)
+  // REPARENTED the frontmatter object onto a page-chosen array, so every
+  // consumer of this shared parser (bm25 index, boundary score, decision lint,
+  // graph builder) inherited `length` and numeric indices from vault content.
+  // The parser now skips the key uniformly, for every value shape.
+  test('PIN: block-sequence `__proto__:` list does not become the prototype', () => {
+    const raw = '---\ntitle: t\n__proto__:\n  - polluted-a\n  - polluted-b\nstatus: accepted\n---\nbody';
+    const { frontmatter, body } = parseFrontmatter(raw);
+    assert.equal(Object.getPrototypeOf(frontmatter), Object.prototype, 'frontmatter was reparented');
+    assert.equal(frontmatter.length, undefined, 'inherited a `length` from the injected array');
+    assert.equal(frontmatter[0], undefined, 'inherited numeric indices from the injected array');
+    assert.deepEqual(Object.keys(frontmatter), ['title', 'status']);
+    assert.equal(frontmatter.status, 'accepted');
+    assert.equal(body, 'body');
+  });
+
+  test('inline `__proto__: [x, y]` does not become the prototype either', () => {
+    const { frontmatter } = parseFrontmatter('---\n__proto__: [x, y]\ntitle: t2\n---\nbody');
+    assert.equal(Object.getPrototypeOf(frontmatter), Object.prototype);
+    assert.equal(frontmatter.length, undefined);
+    assert.deepEqual(Object.keys(frontmatter), ['title']);
+  });
+
+  test('scalar `__proto__: v` stays dropped (unchanged behaviour, now explicit)', () => {
+    const { frontmatter } = parseFrontmatter('---\n__proto__: hostile\ntitle: t3\n---\nbody');
+    assert.equal(Object.prototype.hasOwnProperty.call(frontmatter, '__proto__'), false);
+    assert.deepEqual(Object.keys(frontmatter), ['title']);
+  });
+
+  test('`constructor:` and `prototype:` keys remain ordinary data', () => {
+    // Only `__proto__` is an inherited ACCESSOR; these two shadow cleanly into
+    // own properties and legitimately survive as page data.
+    const { frontmatter } = parseFrontmatter('---\nconstructor: builder-page\nprototype: draft\n---\nx');
+    assert.equal(frontmatter.constructor, 'builder-page');
+    assert.equal(frontmatter.prototype, 'draft');
+  });
+});
+
+describe('parseFrontmatter — a discarded `__proto__` value is CONSUMED, not re-parsed', () => {
+  // Round-2 regression, worse than the bug it fixed: the first guard skipped
+  // the key with an early `continue`, BEFORE the multiline branches had
+  // consumed its value — so the lines of a `__proto__: |` block were re-read
+  // as top-level keys, and a page could manufacture sibling metadata
+  // (`status: accepted`, …) out of a value the parser claimed to have dropped.
+  // The suppression now happens at the assignment, after the value has
+  // travelled the same parse path as any other key's.
+  test('PIN: block-scalar lines under `__proto__: |` do not become top-level keys', () => {
+    const raw = '---\n__proto__: |\n  type: decision\n  status: accepted\ntitle: safe\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.deepEqual(Object.keys(frontmatter), ['title'],
+      `manufactured sibling metadata: ${JSON.stringify(frontmatter)}`);
+    assert.equal(frontmatter.status, undefined);
+    assert.equal(frontmatter.type, undefined);
+  });
+
+  test('PIN: quoted-continuation lines under `__proto__: "` do not become top-level keys', () => {
+    const raw = '---\n__proto__: "ignored\nstatus: accepted\n"\ntitle: safe\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.deepEqual(Object.keys(frontmatter), ['title'],
+      `manufactured sibling metadata: ${JSON.stringify(frontmatter)}`);
+  });
+
+  test('block-sequence items under `__proto__:` are still consumed, not re-parsed', () => {
+    // The list form never leaked keys (items carry a `- ` prefix), but pin the
+    // consumption anyway: `key: value`-shaped ITEMS must not surface either.
+    const raw = '---\n__proto__:\n  - "status: accepted"\ntitle: safe\n---\nbody';
+    const { frontmatter } = parseFrontmatter(raw);
+    assert.deepEqual(Object.keys(frontmatter), ['title']);
+  });
+});
+
+describe('parseFrontmatter — nested mappings flatten UNIFORMLY (known limitation)', () => {
+  test('the flattening is not `__proto__`-specific — no boundary exists to escalate across', () => {
+    // Round-3 review flagged nested children of a suppressed `__proto__:`
+    // surfacing at top level. Reproduction showed the line-oriented reader
+    // flattens nested mappings under EVERY parent key identically — the
+    // behaviour predates the hardening and grants nothing: the page author
+    // already writes their own top-level frontmatter. Pinned as EQUAL
+    // treatment so any future divergence (either key behaving differently)
+    // fails loudly and forces the real-nesting decision to be taken
+    // deliberately.
+    const under = (parent) =>
+      parseFrontmatter(`---\n${parent}:\n  status: accepted\ntitle: safe\n---\nb`).frontmatter;
+    const viaProto = under('__proto__');
+    const viaPlain = under('anything');
+    assert.equal(viaProto.status, 'accepted');
+    assert.equal(viaPlain.status, 'accepted');
+    // Only difference allowed: the suppressed key itself is absent.
+    assert.equal(Object.prototype.hasOwnProperty.call(viaProto, '__proto__'), false);
+    assert.equal(viaPlain.anything, '');
+  });
+});

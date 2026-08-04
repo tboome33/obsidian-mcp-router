@@ -203,12 +203,18 @@ export async function readAll(getFileContent, vault, filePaths) {
 
 /** Tally nodes / edges by type for the summary. */
 function tallyByType(items) {
-  const out = {};
+  // Tally in a Map — DEFENSIVE, not (today) reachable: the builder emits
+  // fixed node types (`type: 'article'`, …) and `validateGraph` rejects
+  // anything outside NODE_TYPES, so a vault-chosen `__proto__` cannot reach
+  // this tally through the tool path. The Map form costs nothing and stops a
+  // future builder change from resurrecting the silent-undercount bug that IS
+  // reachable in `decision-lint.countByStatus` (see the note there).
+  const out = new Map();
   for (const it of items) {
     const t = it.type || 'unknown';
-    out[t] = (out[t] || 0) + 1;
+    out.set(t, (out.get(t) || 0) + 1);
   }
-  return out;
+  return Object.fromEntries(out);
 }
 
 // ---------------------------------------------------------------------------

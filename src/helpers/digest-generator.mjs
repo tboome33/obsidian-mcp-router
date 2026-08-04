@@ -309,26 +309,32 @@ export function parseDigest(digestMd) {
  * @returns {Record<string, string>}
  */
 function parseBodySections(body) {
-  const sections = {};
+  // A Map, not a plain object: section names come from digest files, which
+  // are vault-editable. On a `{}`, `sections['__proto__'] = ...` silently
+  // no-oped, so `hasOwnProperty` never became true and two `## __proto__`
+  // sections BYPASSED the duplicate-H2 refusal below — the one rule this
+  // function exists to enforce. With a Map every name is ordinary data.
+  const sections = new Map();
   const lines = body.split(/\r?\n/);
   let currentName = null;
   let currentLines = [];
+  const commit = () => {
+    // Detect duplicate H2 (review+ pass 2 fix for Reviewer A IMP-3).
+    // Previously the parser silently overwrote — a re-generated
+    // digest that accidentally produced two `## Summary` blocks
+    // would lose the first one without warning. Throw instead so
+    // the user notices and can fix the digest source.
+    if (sections.has(currentName)) {
+      throw new Error(
+        `parseDigest: duplicate H2 section "${currentName}" — refuse to silently overwrite`,
+      );
+    }
+    sections.set(currentName, currentLines.join('\n').trim());
+  };
   for (const line of lines) {
     const h2Match = /^##\s+(.+?)\s*$/.exec(line);
     if (h2Match) {
-      if (currentName !== null) {
-        // Detect duplicate H2 (review+ pass 2 fix for Reviewer A IMP-3).
-        // Previously the parser silently overwrote — a re-generated
-        // digest that accidentally produced two `## Summary` blocks
-        // would lose the first one without warning. Throw instead so
-        // the user notices and can fix the digest source.
-        if (Object.prototype.hasOwnProperty.call(sections, currentName)) {
-          throw new Error(
-            `parseDigest: duplicate H2 section "${currentName}" — refuse to silently overwrite`,
-          );
-        }
-        sections[currentName] = currentLines.join('\n').trim();
-      }
+      if (currentName !== null) commit();
       currentName = h2Match[1].trim();
       currentLines = [];
       continue;
@@ -337,15 +343,8 @@ function parseBodySections(body) {
       currentLines.push(line);
     }
   }
-  if (currentName !== null) {
-    if (Object.prototype.hasOwnProperty.call(sections, currentName)) {
-      throw new Error(
-        `parseDigest: duplicate H2 section "${currentName}" — refuse to silently overwrite`,
-      );
-    }
-    sections[currentName] = currentLines.join('\n').trim();
-  }
-  return sections;
+  if (currentName !== null) commit();
+  return Object.fromEntries(sections);
 }
 
 // ---------------------------------------------------------------------------

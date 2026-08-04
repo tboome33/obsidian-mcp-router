@@ -287,8 +287,12 @@ export async function handleDownloadPageAssets(args = {}) {
   });
 
   // Serialize the Map for MCP transport (JSON has no Map type).
-  const urlMapObj = {};
-  for (const [k, v] of result.urlMap.entries()) urlMapObj[k] = v;
+  // `Object.fromEntries`, not a `urlMapObj[k] = v` loop. Defensive: today the
+  // keys are canonicalized ABSOLUTE http(s) URLs (asset-downloader resolves
+  // every raw src against baseUrl), so the exact string `__proto__` cannot
+  // occur; the fromEntries form keeps that true even if the keying ever
+  // changes back to raw page-supplied values.
+  const urlMapObj = Object.fromEntries(result.urlMap);
 
   return {
     baseUrl,

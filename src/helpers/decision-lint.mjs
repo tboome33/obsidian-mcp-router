@@ -530,12 +530,21 @@ export function lintDecisions(pages, options = {}) {
 }
 
 function countByStatus(decisions) {
-  const counts = {};
+  // Tally in a Map, not a plain object: the keys are `status` values straight
+  // out of vault frontmatter, and `parseFrontmatter` passes `status: __proto__`
+  // through as an ordinary string. `counts[status] = ...` on a `{}` would hit
+  // Object.prototype's inherited setter instead of creating an own property, so
+  // those decisions vanished from the tally — 4 decisions in, a reported total
+  // of 2. `Object.fromEntries` then CREATES each own property, which
+  // `Object.create(null)` would also do — but that changes the prototype of a
+  // value we hand back in a tool response, and callers compare it with
+  // `deepStrictEqual`. Keep the shape, fix the assignment.
+  const counts = new Map();
   for (const entry of decisions) {
     const status = String(entry.frontmatter.status ?? '').trim().toLowerCase() || '(none)';
-    counts[status] = (counts[status] ?? 0) + 1;
+    counts.set(status, (counts.get(status) ?? 0) + 1);
   }
-  return counts;
+  return Object.fromEntries(counts);
 }
 
 /**

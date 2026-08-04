@@ -665,3 +665,48 @@ describe('digestPathForPage', () => {
     assert.notEqual(c, d);
   });
 });
+
+describe('parseBodySections — `__proto__` sections obey the duplicate-H2 refusal', () => {
+  test('PIN: two `## __proto__` sections throw like any other duplicate', () => {
+    // The sections accumulator was a plain `{}`: `sections['__proto__'] = v`
+    // silently no-oped, so `hasOwnProperty` never became true and duplicate
+    // `## __proto__` sections BYPASSED the refusal — the one rule this parser
+    // exists to enforce. Digests are vault-editable files.
+    const md = `---
+for: x
+page_hash: ${'a'.repeat(64)}
+---
+
+## __proto__
+
+one
+
+## __proto__
+
+two
+`;
+    assert.throws(() => parseDigest(md), /duplicate H2 section "__proto__"/);
+  });
+
+  test('a single `## __proto__` section parses cleanly and does not disturb its neighbours', () => {
+    // The section map is internal (`parseDigest` only surfaces Summary and
+    // Notable), so the public pin is: no throw, and the sibling section is
+    // extracted intact — pre-fix the `__proto__` name could not even be
+    // TRACKED, which is what let duplicates through.
+    const md = `---
+for: x
+page_hash: ${'a'.repeat(64)}
+---
+
+## __proto__
+
+kept
+
+## Summary
+
+s
+`;
+    const digest = parseDigest(md);
+    assert.equal(digest.summary, 's');
+  });
+});

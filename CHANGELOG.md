@@ -6,6 +6,32 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.70.2] — 2026-08-04 — the `__proto__` sweep: four review rounds until the reviewers agreed
+
+### Fixed
+
+**A vault-chosen string equal to `__proto__` silently corrupted several responses — and closing that hole took four adversarial rounds, two of which caught regressions in the fixes themselves.** On a plain object, assigning to the key `__proto__` is not an assignment: it goes through `Object.prototype`'s inherited accessor. A string value vanishes; an array or object value **reparents** the object being built. Every accumulator keyed by vault content carried the defect.
+
+The reachable sites, each reproduced before fixing:
+
+- **The shared frontmatter parser** (`llms-txt-exporter.mjs`) — the worst one. `__proto__:` with a YAML **list** value reparented the frontmatter object onto a page-chosen array (`fm.length`, `fm[0]` inherited by every consumer: bm25, boundary score, decision lint, graph builder). The first fix skipped the key **before** the multiline branches consumed its value — so the lines of a discarded `__proto__: |` block were re-read as top-level keys and a page could manufacture sibling metadata out of a value the parser claimed to have dropped. *Worse than the bug; caught by round 2.* Suppression now happens at the assignment, after the value travels the normal parse path.
+- **`decision-lint` `stats.byStatus`** — `status: __proto__` decisions vanished from the tally: 4 decisions in, a reported total of 2, and the string `"[object Object]1"` manufactured along the way.
+- **`write_bundle` `clickToOpenLinks`** — a step writing to the path `__proto__` (which `canonicalVaultPath` accepts) lost its link. Same fix as the walker's.
+- **Digest `parseBodySections`** — two `## __proto__` sections **bypassed the duplicate-H2 refusal** (the failed assignment meant `hasOwnProperty` never became true), the one rule that parser exists to enforce.
+- **`build_wiki_graph` `tallyByType` / `download_page_assets` `urlMap`** — same shape, fixed defensively; both are documented as *unreachable today* (builder-fixed node types, URL canonicalization) after review corrected the first version's overstated provenance claims.
+
+**`sanitizeResponse` now sanitises KEYS, not just values.** A C1 escape introducer (U+009B — a one-character ANSI CSI) or an injection-shaped tag in a *key* reached the model verbatim even when the caller asked for `neutralizeInjection`. Keys use the caller's neutralization setting but never the caller's `maxLen` — forwarding it renamed structural fields (`vault`, `path`) into truncation notices, a regression caught in round 3. Collisions follow the `Object.fromEntries` last-wins rule; C10's tally keeps its own summing pass, which is documented as the better merge for counts.
+
+**Unicode line breaks are normalized, not deleted.** The first hardening stripped U+0085/U+2028/U+2029 outright — silently joining words (`alpha⟨sep⟩beta` → `alphabeta`), with a test pinning the destructive result as correct. They are now rewritten to `\n` before the C1 strip (order matters: NEL is C1), which still closes the `JSON.stringify`-doesn't-escape-them hole.
+
+**The space-separated timestamp form accepts horizontal ASCII whitespace only.** The v0.69.x fix had overcorrected from one literal space to `\s+`, which read a multiline `updated: |` block whose lines happened to be date-shaped and time-shaped as a *timestamp*. `[ \t]+` now; a line break or NBSP reads as an annotated date, deterministically.
+
+Explicitly **reclassified, not fixed**: nested mappings under any frontmatter key flatten to top-level keys — a pre-existing, key-uniform limitation of the line-oriented reader, with no privilege boundary (the page author already writes their own top-level frontmatter). Pinned by a test asserting `__proto__:` and `anything:` flatten *identically*, so any future divergence forces the real-nesting decision deliberately.
+
+Also fixed in passing: the sweep that found these sites had itself been blind — `wiki-graph-builder.mjs` contains literal NUL bytes in composite keys, so grep treated it as **binary** and suppressed its matches. And three of the scariest-looking sites (`bm25-index`, the write-bundle journals, `plan-seal`) turned out to be already defended by earlier reviews — the plan-seal comment even documents the seal-bypass scenario.
+
+**Tests:** suite **3533** (+21). Every fix's pin verified by revert: the fix removed → its pin fails. Four Codex rounds: NO-GO → NO-GO → NO-GO (comments only) → GO.
+
 ## [0.70.1] — 2026-08-04 — ENOTFOUND: one definition instead of five copies
 
 ### Fixed

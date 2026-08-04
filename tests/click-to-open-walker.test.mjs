@@ -36,6 +36,48 @@ beforeEach(() => {
 
 const VAULT = () => ({ type: 'local', path: vaultPath, name: 'test' });
 
+describe('collectClickToOpenLinks — dynamic keys are vault paths', () => {
+  test('PIN: a file named exactly `__proto__` still gets its link', () => {
+    // The map was built with `links[p] = url`. Only the key `__proto__` ITSELF
+    // hits Object.prototype's inherited accessor instead of creating an own
+    // property, so that entry vanished — a real file silently lost its
+    // click-to-open link.
+    //
+    // The first version of this test used `wiki/__proto__.md`, which is NOT the
+    // string `__proto__` and therefore passed against the unfixed code: it
+    // pinned nothing. The triggering key is the WHOLE path, so it only bites a
+    // vault-root file with no extension. Verified by reverting the fix and
+    // watching this assertion fail.
+    const payload = [
+      { filename: '__proto__', matches: [{ context: '...' }] },
+      { filename: 'wiki/normal.md', matches: [{ context: '...' }] },
+    ];
+    const result = collectClickToOpenLinks(VAULT(), payload);
+    const links = result.clickToOpenLinks ?? {};
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(links, '__proto__'),
+      `\`__proto__\` lost its link; keys were ${JSON.stringify(Object.keys(links))}`,
+    );
+    assert.equal(Object.keys(links).length, 2, 'both files must be linked');
+    assert.equal(
+      JSON.parse(JSON.stringify(result)).clickToOpenLinks.__proto__,
+      links.__proto__,
+      'must survive a JSON round-trip',
+    );
+  });
+
+  test('PIN: a nested path containing `__proto__` is unaffected (non-regression)', () => {
+    // Guards the boundary the test above establishes: `wiki/__proto__.md` was
+    // never broken (only the WHOLE path `__proto__` hits the inherited
+    // accessor), and must keep working after the `Object.fromEntries` fix.
+    const result = collectClickToOpenLinks(VAULT(), [{ filename: 'wiki/__proto__.md' }]);
+    assert.equal(
+      result.clickToOpenLinks['wiki/__proto__.md'],
+      'http://127.0.0.1:27142/open/wiki%2F__proto__.md',
+    );
+  });
+});
+
 describe('collectClickToOpenLinks — shape coverage', () => {
   test('Local REST API /search/simple shape (array of {filename, matches})', () => {
     const payload = [
