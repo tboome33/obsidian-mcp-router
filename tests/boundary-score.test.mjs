@@ -551,6 +551,150 @@ describe('boundary-score — exemptions, and never silently', () => {
   });
 });
 
+describe('boundary-score — status: annotate by default, exempt only on request', () => {
+  // Design arbitrated 2026-08-04 (adversarial review, Codex + Claude, decided
+  // by Roland): status is VISIBLE on every row; `exemptStatuses` exists but
+  // has NO default. The candidate default `['superseded']` was rejected as a
+  // scope leak — the ADR contract that standardises the token governs decision
+  // pages only, while this scorer is global.
+
+  const mkStatus = (status) => {
+    const a = article('wiki/a', { words: 100 });
+    if (status === undefined) delete a.knowledgeMeta.frontmatter.status;
+    else a.knowledgeMeta.frontmatter.status = status;
+    return graphOf([a, article('wiki/s', { words: 500 })], [edge('wiki/s', 'wiki/a')]);
+  };
+
+  test('every row carries `status`, null when absent', () => {
+    const withIt = scoreBoundaryPages(mkStatus('superseded'));
+    assert.equal(withIt.pages.find((p) => p.path === 'wiki/a.md').status, 'superseded');
+    // Only wiki/a ranks (the linker has zero inbound), and it has a status.
+    assert.equal(withIt.withoutStatus, 0);
+  });
+
+  test('absent, blank and non-string statuses all read as null, exactly counted', () => {
+    // Three unusable shapes, one meaning: `status: null` on the row, counted in
+    // withoutStatus, never exemptable. The counter is EXACT, not >=.
+    for (const unusable of [undefined, '   ', 42, ['a'], { x: 1 }, true, null]) {
+      const r = scoreBoundaryPages(mkStatus(unusable), { exemptStatuses: ['42', 'a', 'true', ''] });
+      const row = r.pages.find((p) => p.path === 'wiki/a.md');
+      assert.equal(row.status, null, `status ${JSON.stringify(unusable)} must surface as null`);
+      assert.equal(r.exempted.total, 0, `status ${JSON.stringify(unusable)} must never be exempted`);
+      // Exactly 1: only wiki/a ranks (the linker has zero inbound and is
+      // excluded before the counter runs). An exact assertion, not >=, so a
+      // future change to WHAT the counter covers cannot pass unnoticed.
+      assert.equal(r.withoutStatus, 1);
+    }
+  });
+
+  test('matching is TRIMMED, then exact, case-insensitive', () => {
+    // A YAML value like `status: " superseded "` is the same lifecycle state;
+    // the trim is documented contract, not an accident.
+    const r = scoreBoundaryPages(mkStatus('  Superseded  '), { exemptStatuses: [' superseded '] });
+    assert.equal(r.exempted.total, 1);
+    assert.deepEqual(r.exempted.statuses, ['superseded']);
+  });
+
+  test('withoutStatus counts EVERY ranked row, including those past `limit`', () => {
+    const nodes = [article('wiki/linker', { words: 900 })];
+    const edges = [];
+    for (let i = 0; i < 5; i += 1) {
+      const n = article(`wiki/p${i}`, { words: 50 + i });
+      delete n.knowledgeMeta.frontmatter.status;
+      nodes.push(n);
+      edges.push(edge('wiki/linker', `wiki/p${i}`));
+    }
+    const r = scoreBoundaryPages(graphOf(nodes, edges), { limit: 1 });
+    assert.equal(r.pages.length, 1);
+    assert.equal(r.withoutStatus, 5, 'the counter describes the ranking, not the truncated page list');
+  });
+
+  test('PIN: a status-exempted page is counted as exempted, NOT as withoutSubstance', () => {
+    // Exemption precedes the substance check, so the exclusion taxonomy stays
+    // mutually exclusive — one page, one bucket, and the report adds up.
+    const a = article('wiki/closed', { words: 100 });
+    a.knowledgeMeta.frontmatter.status = 'superseded';
+    delete a.knowledgeMeta.substance; // ALSO lacks a substance measurement
+    const g = graphOf([a, article('wiki/ok', { words: 100 }), article('wiki/s', { words: 500 })],
+      [edge('wiki/s', 'wiki/closed'), edge('wiki/s', 'wiki/ok')]);
+    const r = scoreBoundaryPages(g, { exemptStatuses: ['superseded'] });
+    assert.deepEqual(r.exempted.byStatus, { superseded: 1 });
+    assert.equal(r.excluded.withoutSubstance, 0, 'one page, one bucket — exempted wins');
+  });
+
+  test('PIN: NO default — omitted and [] produce byte-identical output', () => {
+    // The replace-not-extend trap documented for exemptTypes cannot recur here:
+    // with no default there is nothing to forget to repeat.
+    const g = mkStatus('superseded');
+    const omitted = scoreBoundaryPages(g);
+    const empty = scoreBoundaryPages(g, { exemptStatuses: [] });
+    assert.equal(JSON.stringify(omitted), JSON.stringify(empty));
+    assert.ok(omitted.pages.some((p) => p.status === 'superseded'),
+      'a closed page must stay VISIBLE by default — hiding it is opt-in');
+    assert.deepEqual(omitted.exempted.statuses, []);
+    assert.deepEqual(omitted.exempted.byStatus, {});
+  });
+
+  test('exemptStatuses filters on request, exact and case-insensitive', () => {
+    const r = scoreBoundaryPages(mkStatus('SuperSeded'), { exemptStatuses: ['superseded'] });
+    assert.equal(r.pages.find((p) => p.path === 'wiki/a.md'), undefined);
+    assert.deepEqual(r.exempted.byStatus, { SuperSeded: 1 });
+    assert.deepEqual(r.exempted.statuses, ['superseded']);
+  });
+
+  test('PIN: `superseded-in-part` is NOT swept up by `superseded`', () => {
+    // Partially superseded is partially alive. Exact matching is the rule that
+    // keeps it visible — a prefix or substring match would silently hide it.
+    const r = scoreBoundaryPages(mkStatus('superseded-in-part'), { exemptStatuses: ['superseded'] });
+    assert.ok(r.pages.some((p) => p.status === 'superseded-in-part'));
+    assert.equal(r.exempted.total, 0);
+  });
+
+  test('PIN: an ABSENT status is never exempted, whatever the list says', () => {
+    // 82 of the router vault’s 140 articles carry no status at all. Absence
+    // must read as unknown, never as any particular lifecycle state.
+    const r = scoreBoundaryPages(mkStatus(undefined), { exemptStatuses: ['superseded', ''] });
+    assert.equal(r.pages.length, 1);
+    assert.equal(r.exempted.total, 0);
+  });
+
+  test('PIN: type-first precedence — a page matching both is counted ONCE, under byType', () => {
+    const a = article('wiki/both', { words: 20, type: 'redirect' });
+    a.knowledgeMeta.frontmatter.status = 'superseded';
+    const g = graphOf([a, article('wiki/s', { words: 500 })], [edge('wiki/s', 'wiki/both')]);
+    const r = scoreBoundaryPages(g, { exemptStatuses: ['superseded'] });
+    assert.equal(r.exempted.total, 1);
+    assert.deepEqual(r.exempted.byType, { redirect: 1 });
+    assert.deepEqual(r.exempted.byStatus, {}, 'must not be double-counted under byStatus');
+    const sum = Object.values(r.exempted.byType).reduce((x, y) => x + y, 0)
+      + Object.values(r.exempted.byStatus).reduce((x, y) => x + y, 0);
+    assert.equal(sum, r.exempted.total, 'total must equal sum(byType) + sum(byStatus)');
+  });
+
+  test('order-independence covers byStatus too', () => {
+    const nodes = [
+      (() => { const n = article('wiki/p1', { words: 20 }); n.knowledgeMeta.frontmatter.status = 'retired'; return n; })(),
+      (() => { const n = article('wiki/p2', { words: 20 }); n.knowledgeMeta.frontmatter.status = 'archived'; return n; })(),
+      article('wiki/linker', { words: 900 }),
+    ];
+    const edges = [edge('wiki/linker', 'wiki/p1'), edge('wiki/linker', 'wiki/p2')];
+    const opts = { exemptStatuses: ['retired', 'archived'] };
+    const fwd = scoreBoundaryPages(graphOf(nodes, edges), opts);
+    const rev = scoreBoundaryPages(graphOf([...nodes].reverse(), [...edges].reverse()), opts);
+    assert.deepEqual(Object.keys(fwd.exempted.byStatus), ['archived', 'retired']);
+    assert.equal(JSON.stringify(fwd), JSON.stringify(rev));
+  });
+
+  test('KNOWN LIMIT, pinned: a topically closed page marked active passes every filter', () => {
+    // The case that raised the whole question — KIVIRI’s genesis page — is
+    // `status: active` while documenting an abandoned approach. No metadata
+    // filter can see that; only reading the page can. Pinned so a future
+    // "improvement" that claims to solve it has to delete this test first.
+    const r = scoreBoundaryPages(mkStatus('active'), { exemptStatuses: ['superseded', 'retired', 'archived'] });
+    assert.ok(r.pages.some((p) => p.status === 'active'));
+  });
+});
+
 describe('boundary-score — refuses rather than answering confidently wrong', () => {
   test('PIN: a graph with no substance measurements is REFUSED, not scored as all-empty', () => {
     // The pre-C10 graph shape. Scoring it would rank the vault by raw inbound

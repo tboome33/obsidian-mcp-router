@@ -29,6 +29,7 @@ Arguments, all optional:
 - `--limit N` → `limit` (default 10, ceiling 100).
 - `--min-inbound N` → `minInbound` (default 1). Raise it on a big vault to keep only real crossroads.
 - `--exempt-types a,b,c` → `exemptTypes`, **replacing** the default list. Pass the defaults plus the additions — `["redirect","source","answer","index"]`, not just `["index"]` — or you will silently un-exempt the rest. See step 1-bis.
+- `--exempt-statuses a,b,c` → `exemptStatuses`. **No default** — closed pages (`status: superseded`, `retired`…) stay visible and labelled unless the user asks to hide them. Exact match, case-insensitive; a page with no `status:` is never exempted; `superseded-in-part` is not swept up by `superseded`. This asymmetry with types is a decision, not an oversight: the candidate default `["superseded"]` was rejected after adversarial review, because the ADR contract that standardises the token covers decision pages only, and a global filter would silently erase legitimate historical hubs.
 - `--all-types` → `exemptTypes: []`, scoring every page including the ones held out by default. Use only when the user explicitly asks to see everything; warn them that migration stubs and capture records will dominate.
 - `--as-of YYYY-MM-DD` → `asOf`. By default recency is measured against the graph's own build stamp, which makes the ranking a pure function of the graph file.
 
@@ -48,9 +49,10 @@ The result carries everything needed to audit itself:
 
 | Field | What it tells you |
 |---|---|
-| `pages[]` | the ranking: `score`, `linkPressure`, `recencyMultiplier`, `inbound`, `substanceWords`, `ageDays` |
+| `pages[]` | the ranking: `score`, `linkPressure`, `recencyMultiplier`, `inbound`, `substanceWords`, `ageDays`, `type`, `status` |
 | `measure` | the formula and its three constants, verbatim |
-| `exempted` | how many pages were held out, and of which types — **never present a ranking without mentioning this** |
+| `exempted` | how many pages were held out — `byType` AND `byStatus`, plus the applied lists — **never present a ranking without mentioning this** |
+| `withoutStatus` | ranked pages with no USABLE status — absent, blank, or non-string. Absence means unknown, never active |
 | `excluded` | pages with no substance measurement, and pages below `minInbound` |
 | `withoutRecency` | pages with no usable age — `updated:` missing or unparseable, **or** the graph carrying no reference date at all. Scored ×1 rather than assumed stale |
 | `ranked` vs `limit` | how much of the list you are showing |
@@ -63,6 +65,7 @@ Then say what the list cannot tell you, in plain words:
 
 - **Index and hub pages will legitimately appear near the top**, unless their `type:` is exempted (step 1-bis). A page whose job is to point elsewhere is thin by design, and the score cannot tell that from a page that is thin by neglect. Expect to dismiss one or two at a glance — that is the tool working as intended, not failing.
 - **A high score is not a promise that the page is thin.** It can also come from a page that is merely well-linked: on DEDIBOX the top-ranked page after calibration held 986 words — not thin at all — and rose because ten pages cite it. It was still worth opening (a binding, `critical: true` gate, untouched for 82 days, its completion table still blank), but the reason was not the one the score implied. Say which of the two it is when you present a page.
+- **Read the `status` column before recommending research.** A `superseded`/`retired` page in the top spots is a closed subject — say so, and if the user wants it hidden, re-run with `--exempt-statuses` and name the filter in the report. Do NOT hide it on your own initiative: a retired page with many inbound links is itself information (those links should probably point at the successor — a link-hygiene observation worth passing along, not a research topic). And the inverse trap is pinned in the tests: a topically closed page still marked `status: active` (KIVIRI's genesis page) passes every metadata filter — only reading the page catches it.
 - **A thin page is very often fine.** A definition, a deliberate index, a disambiguation page. Read before acting.
 - **Low scores across the board mean the vault is in good shape.** Say so rather than manufacturing urgency from the top of a flat list.
 
@@ -95,14 +98,18 @@ Note that the two count inbound links differently and that this is deliberate: l
 ```
 🧭 Frontier pages — vault `<name>` — graph built <date>
 
-| # | Page | Score | Inbound | Words | Age |
-|---|---|---|---|---|---|
-| 1 | wiki/…/graphify.md | 1.63 | 11 | 719 | 77d |
-| 2 | … | | | | |
+| # | Page | Score | Inbound | Words | Age | Status |
+|---|---|---|---|---|---|---|
+| 1 | wiki/…/graphify.md | 1.63 | 11 | 719 | 77d | — |
+| 2 | wiki/…/adr-modes-ecriture.md | 0.90 | 8 | 808 | 6d | superseded ⚠️ |
+
+The Status column is not optional decoration: the API annotating closed pages
+while the table hides the annotation is exactly the failure this feature fixed.
 
 Held out: 31 pages (29 redirect, 2 source) — thin by design.
-Exemptions applied: the defaults. [Or: "+ `index`, because this vault labels its
-migration stubs that way" — always name any addition and its reason.]
+Exemptions applied: types = the defaults; statuses = none. [Name every addition
+and its reason — e.g. "+ type `index`, this vault labels its migration stubs
+that way" or "+ status `superseded` at the user's request".]
 Ranked 103 of 140 articles; 6 have no inbound links (orphans are Check A's subject).
 
 Score = inbound links damped by length (`inbound / (1 + words/100)`: full weight on an empty page, halved at 100 words, a tenth at 900), ×1 to ×2 for staleness.

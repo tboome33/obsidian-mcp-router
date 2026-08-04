@@ -16,6 +16,7 @@ Arguments:
 - `[--limit N]` — how many pages to show (default 10, ceiling 100).
 - `[--min-inbound N]` — ignore pages with fewer inbound links (default 1).
 - `[--exempt-types a,b,c]` — REPLACES the default exemption list, so pass the defaults plus your additions.
+- `[--exempt-statuses a,b,c]` — hide pages by frontmatter `status:` (e.g. `superseded`). NO default: closed pages stay visible and labelled (`status` is on every row); hiding them is per-vault calibration, named in the report.
 - `[--all-types]` — score every page, exemptions off. Expect migration stubs to dominate.
 - `[--as-of YYYY-MM-DD]` — measure recency against this date instead of the graph's build stamp.
 

@@ -77,7 +77,7 @@ describe('find_boundary_pages — the tool contract', () => {
     assert.equal(TOOL_DEFINITION.name, 'find_boundary_pages');
     assert.deepEqual(TOOL_DEFINITION.inputSchema.required, []);
     assert.equal(TOOL_DEFINITION.inputSchema.additionalProperties, false);
-    for (const k of ['vault', 'limit', 'minInbound', 'exemptTypes', 'asOf']) {
+    for (const k of ['vault', 'limit', 'minInbound', 'exemptTypes', 'exemptStatuses', 'asOf']) {
       assert.ok(TOOL_DEFINITION.inputSchema.properties[k], `missing arg ${k}`);
     }
   });
@@ -136,6 +136,51 @@ describe('find_boundary_pages — the answer', () => {
     const asOf = await findBoundaryPagesTool(registry, { asOf: '2027-06-01' }, depsFor(g));
     assert.equal(asOf.asOfSource, 'caller');
     assert.ok(asOf.pages[0].ageDays > 300);
+  });
+
+  test('exemptStatuses reaches the scorer, and rows carry status end-to-end', async () => {
+    const g = fixtureGraph();
+    g.nodes.push((() => {
+      const n = article('wiki/closed', { words: 30 });
+      n.knowledgeMeta.frontmatter.status = 'superseded';
+      return n;
+    })());
+    g.edges.push(edge('wiki/l1', 'wiki/closed'), edge('wiki/l2', 'wiki/closed'));
+
+    // Default: visible AND annotated — that is the shipped posture.
+    const shown = await findBoundaryPagesTool(registry, {}, depsFor(g));
+    const row = shown.pages.find((p) => p.path === 'wiki/closed.md');
+    assert.equal(row.status, 'superseded');
+    assert.deepEqual(shown.exempted.statuses, []);
+
+    // Opt-in: hidden, and the report names the filter that hid it.
+    const hidden = await findBoundaryPagesTool(registry, { exemptStatuses: ['superseded'] }, depsFor(g));
+    assert.equal(hidden.pages.find((p) => p.path === 'wiki/closed.md'), undefined);
+    assert.deepEqual(hidden.exempted.byStatus, { superseded: 1 });
+  });
+
+  test('PIN: hostile STATUS names survive the FULL tool path, sanitizer included', async () => {
+    // Mirror of the hostile-types pin: the scorer's Map was proven safe, but
+    // the shipped answer goes through sanitizeResponse — the exact layer that
+    // silently dropped `__proto__` from byType in v0.69.0. byStatus must not
+    // reintroduce that hole.
+    const g = fixtureGraph();
+    const hostile = ['__proto__', 'toString', 'constructor'];
+    hostile.forEach((s, i) => {
+      const n = article(`wiki/hs-${i}`, { words: 20 });
+      n.knowledgeMeta.frontmatter.status = s;
+      g.nodes.push(n);
+      g.edges.push(edge('wiki/l1', `wiki/hs-${i}`));
+    });
+    const r = await findBoundaryPagesTool(registry, { exemptStatuses: hostile }, depsFor(g));
+    const sum = Object.values(r.exempted.byStatus).reduce((a, b) => a + b, 0);
+    assert.equal(sum, hostile.length, `byStatus lost an entry: ${JSON.stringify(r.exempted.byStatus)}`);
+    assert.equal(r.exempted.total, hostile.length);
+    for (const s of hostile) {
+      assert.ok(Object.prototype.hasOwnProperty.call(r.exempted.byStatus, s), `${s} must be an own property`);
+      assert.equal(r.exempted.byStatus[s], 1);
+    }
+    assert.equal(JSON.parse(JSON.stringify(r)).exempted.total, hostile.length, 'must survive a JSON round-trip');
   });
 
   test('exemptTypes: [] survives as "score everything" rather than resetting to defaults', async () => {

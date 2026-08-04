@@ -365,6 +365,25 @@ export function scoreBoundaryPages(graph, opts = {}) {
     ? opts.exemptTypes.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim())
     : [...DEFAULT_EXEMPT_TYPES];
   const exemptSet = new Set(exemptTypes.map((t) => t.toLowerCase()));
+  // `exemptStatuses` has NO default — deliberately, and the asymmetry with
+  // `exemptTypes` is the decision, not an oversight (arbitrated 2026-08-04,
+  // Roland, after an adversarial design review). The candidate default was
+  // `['superseded']`, argued as "contract-backed" by the ADR token decision —
+  // but that contract governs DECISION pages only, while this scorer is
+  // global: of the three superseded pages polluting the router's own top 7,
+  // one was a `type: idea`, outside the contract's reach. A global default
+  // would also have been rhetoric: it looks like lifecycle awareness while
+  // handling exactly one metadata spelling — the case that raised the
+  // question (a topically-closed page marked `status: active`) sails through
+  // any status filter. So: closed pages stay VISIBLE and annotated (`status`
+  // on every row), and hiding them is a per-vault calibration the caller
+  // must ask for and the report must name. Bonus of no-default: omitted and
+  // `[]` mean the same thing, so the replace-not-extend trap documented for
+  // types cannot recur here.
+  const exemptStatuses = Array.isArray(opts.exemptStatuses)
+    ? opts.exemptStatuses.filter((v) => typeof v === 'string' && v.trim()).map((v) => v.trim())
+    : [];
+  const exemptStatusSet = new Set(exemptStatuses.map((s) => s.toLowerCase()));
   const edgeTypes = new Set(coerceList(opts.edgeTypes, DEFAULT_EDGE_TYPES));
 
   // `asOf`: caller's date, else the graph's own build stamp, else none.
@@ -433,18 +452,34 @@ export function scoreBoundaryPages(graph, opts = {}) {
   // `type: __proto__` incremented nothing at all while still counting toward
   // the total. An audit line that silently corrupts itself is worse than none.
   const exemptedByType = new Map();
+  const exemptedByStatus = new Map();
   let exemptedTotal = 0;
   let withoutSubstance = 0;
   let withoutRecency = 0;
+  let withoutStatus = 0;
   let belowMinInbound = 0;
   const rows = [];
 
   for (const [id, node] of articles) {
     const fm = frontmatterOf(node);
     const type = typeof fm.type === 'string' ? fm.type.trim() : '';
+    const status = typeof fm.status === 'string' ? fm.status.trim() : '';
+    // Precedence: TYPE first. A page matching both filters is counted once,
+    // under byType — so `total` always equals sum(byType) + sum(byStatus) and
+    // no page is double-reported.
     if (type && exemptSet.has(type.toLowerCase())) {
       exemptedTotal += 1;
       exemptedByType.set(type, (exemptedByType.get(type) || 0) + 1);
+      continue;
+    }
+    // Exact match, case-insensitive. An ABSENT status is never exempted — on
+    // the router vault 82 of 140 articles carry none, and absence must read as
+    // "unknown", not as any particular lifecycle state. Exactness also keeps
+    // `superseded-in-part` visible when `superseded` is exempted: partially
+    // superseded is partially alive.
+    if (status && exemptStatusSet.has(status.toLowerCase())) {
+      exemptedTotal += 1;
+      exemptedByStatus.set(status, (exemptedByStatus.get(status) || 0) + 1);
       continue;
     }
     const words = substanceOf(node);
@@ -457,6 +492,7 @@ export function scoreBoundaryPages(graph, opts = {}) {
     let ageDays = null;
     if (updatedDay !== null && asOfDay !== null) ageDays = Math.max(0, asOfDay - updatedDay);
     if (ageDays === null) withoutRecency += 1;
+    if (!status) withoutStatus += 1;
 
     const staleness = ageDays === null
       ? 0
@@ -470,6 +506,12 @@ export function scoreBoundaryPages(graph, opts = {}) {
       path: typeof node.filePath === 'string' ? node.filePath : '',
       name: typeof node.name === 'string' ? node.name : '',
       type: type || null,
+      // Always reported, null when absent. The lesson that put it here: three
+      // of the router's own top-7 pages were `status: superseded` — closed
+      // decisions presented as research candidates — and nobody could see it,
+      // because the rows carried `type` but not `status`. Annotation is the
+      // baseline; hiding is opt-in via `exemptStatuses`.
+      status: status || null,
       inbound: inboundCount,
       substanceWords: words,
       ageDays,
@@ -520,9 +562,13 @@ export function scoreBoundaryPages(graph, opts = {}) {
     // same data, a different response. Caught by the real vault, not by the
     // fixture (which only ever had one exempt type present).
     exempted: {
+      // total = sum(byType) + sum(byStatus), guaranteed by the type-first
+      // precedence above: a page matching both is counted once, under byType.
       total: exemptedTotal,
       byType: Object.fromEntries([...exemptedByType.entries()].sort((a, b) => cmp(a[0], b[0]))),
+      byStatus: Object.fromEntries([...exemptedByStatus.entries()].sort((a, b) => cmp(a[0], b[0]))),
       types: [...exemptTypes].sort(cmp),
+      statuses: [...exemptStatuses].sort(cmp),
     },
     excluded: {
       withoutSubstance,
@@ -530,6 +576,12 @@ export function scoreBoundaryPages(graph, opts = {}) {
       minInbound,
     },
     withoutRecency,
+    // Ranked pages with no USABLE status — absent, blank/whitespace-only, or
+    // non-string all count here (they all surface as `status: null` on the
+    // row). Reported so a consumer never infers a lifecycle from silence —
+    // absence means unknown, not active. Counts every ranked row, including
+    // those past `limit`.
+    withoutStatus,
     truncated: rows.length > limit,
     pages: rows.slice(0, limit),
   };

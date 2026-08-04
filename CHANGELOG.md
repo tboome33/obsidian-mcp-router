@@ -6,6 +6,26 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.70.0] — 2026-08-04 — closed pages: annotate by default, hide only on request
+
+### Added
+
+**`find_boundary_pages` now sees page lifecycle — and shows it rather than acting on it.** The design was settled by an adversarial review (Claude proposed, Codex counter-argued, the user arbitrated), and the dissent is worth recording because the rejected option looked reasonable.
+
+The problem, measured: three of the router vault's own top-7 frontier pages were `status: superseded` — closed decisions presented as research candidates, one of them literally a reverted decision — and nobody could see it, because result rows carried `type` but not `status`.
+
+- **Every row now carries `status`** (`null` when absent, blank, or non-string). Annotation is the baseline: on the router vault the three closed pages now show up *labelled* at ranks 4/5/7 instead of invisibly polluting them.
+- **New `exemptStatuses` parameter** — trimmed, then exact, case-insensitive matching. A page with no usable status is never exempted; `superseded-in-part` is not swept up by `superseded` (partially superseded is partially alive). Type-first precedence: a page matching both filters is counted once, under `byType`, so `exempted.total` always equals `sum(byType) + sum(byStatus)`.
+- **Deliberately NO default** — and this is the arbitrated decision, not an omission. The candidate default `['superseded']` was argued as "contract-backed" (the ADR token decision standardises the term), but the counter-argument won: that contract governs *decision pages* only, while the scorer is global — of the three polluting pages, one was a `type: idea`, outside the contract's reach. A global default would also be rhetoric: it looks like lifecycle awareness while handling exactly one metadata spelling. Bonus of no-default: omitted and `[]` mean the same thing, so the replace-not-extend trap documented for `exemptTypes` cannot recur here.
+- **New `withoutStatus` count** — ranked pages with no usable status (82 of the router's 140 articles carry none). Absence must read as unknown, never as active.
+- **The unsolvable case is pinned by a named test.** The page that raised the whole question — KIVIRI's genesis page, topically closed but `status: active` — passes every metadata filter, by definition. A test asserts it stays visible, so any future "improvement" claiming to solve it has to delete that test first.
+
+The implementation was reviewed by the same reviewer who specified the design — the strictest possible conformance check — and came back conformant on all eight points, with four presentation-level fixes applied before commit (the sharpest: the skill's output template had no Status column, which would have recreated the original failure with the annotation sitting unused in the API).
+
+Recorded for later, not built: a `superseded` page with many inbound links is a *link-hygiene* signal (those links should point at the successor) — a future wiki-lint info check, deliberately not folded into boundary scoring.
+
+**Tests:** suite **3491** (+14).
+
 ## [0.69.4] — 2026-08-04 — the second vault: the exemption list is one vault's vocabulary
 
 ### Fixed

@@ -57,6 +57,11 @@ export const TOOL_DEFINITION = {
         items: { type: 'string' },
         description: `Frontmatter \`type:\` values to hold out of the ranking. Default ${JSON.stringify([...DEFAULT_EXEMPT_TYPES])} — pages whose thinness is by design. Pass [] to score every page (expect migration stubs and capture records to dominate).`,
       },
+      exemptStatuses: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Frontmatter `status:` values to hold out of the ranking (e.g. ["superseded"]). NO default — closed pages stay visible and annotated (every row carries `status`), and hiding them is a per-vault calibration you must ask for. Matching is trimmed, then exact, case-insensitive; a page with no usable status (absent, blank, non-string) is never exempted; a page matching both a type and a status exemption is counted once, under the type. Note the limit: this only sees what the metadata says — a topically closed page still marked `status: active` passes any filter.',
+      },
       asOf: {
         type: 'string',
         description: 'The date recency is measured against, `YYYY-MM-DD`. Defaults to the graph\'s own build stamp, which makes the ranking a pure function of the graph file (same graph ⇒ same scores, forever). Override to ask "how would this look today?" against an older graph.',
@@ -74,7 +79,7 @@ function asText(res) {
 }
 
 export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
-  const { vault: name, limit, minInbound, exemptTypes, asOf } = args;
+  const { vault: name, limit, minInbound, exemptTypes, exemptStatuses, asOf } = args;
   const deps = { getFileContent: _deps.getFileContent || defaultRestClient.getFileContent };
   const vault = registry.resolveVault(name);
 
@@ -133,7 +138,7 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
     );
   }
 
-  const result = scoreBoundaryPages(graph, { limit, minInbound, exemptTypes, asOf });
+  const result = scoreBoundaryPages(graph, { limit, minInbound, exemptTypes, exemptStatuses, asOf });
 
   return sanitizeResponse({
     vault: vault.name,
