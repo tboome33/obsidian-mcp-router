@@ -125,6 +125,10 @@ import {
   findBoundaryPagesTool,
 } from './tools/find-boundary-pages.mjs';
 import {
+  TOOL_DEFINITION as FIND_TWIN_PAGES_TOOL_DEFINITION,
+  findTwinPagesTool,
+} from './tools/find-twin-pages.mjs';
+import {
   TOOL_DEFINITION as FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
   filterRelevantBlocksTool,
 } from './tools/filter-relevant-blocks.mjs';
@@ -927,6 +931,10 @@ const TOOLS = [
   // C10 — "frontier" pages: heavily linked, thin inside. Read-only (reads the
   // graph JSON, writes nothing) — excluded from WRITE_TOOL_NAMES.
   FIND_BOUNDARY_PAGES_TOOL_DEFINITION,
+  // C11 — quasi-twin pages by cosine over the Smart Connections vector store.
+  // Read-only (reads `.smart-env/multi/` + the wiki pages, writes nothing) —
+  // excluded from WRITE_TOOL_NAMES.
+  FIND_TWIN_PAGES_TOOL_DEFINITION,
   // Crawl4AI roadmap W-A — BM25 relevance second-pass over already-acquired
   // markdown (no fetch, no vault I/O) — excluded from WRITE_TOOL_NAMES.
   FILTER_RELEVANT_BLOCKS_TOOL_DEFINITION,
@@ -1113,6 +1121,10 @@ const TOOL_HANDLERS = {
   wiki_path: (reg, args) => wikiPathTool(reg, args),
   // C10 — read-only ranking of heavily-linked-but-thin "frontier" pages.
   find_boundary_pages: (reg, args) => findBoundaryPagesTool(reg, args),
+  // C11 — read-only detection of quasi-twin page pairs (cosine over the local
+  // Smart Connections vector store). LOCAL-ONLY: the store is a dot-directory
+  // the REST API does not serve.
+  find_twin_pages: (reg, args) => findTwinPagesTool(reg, args),
   // Crawl4AI roadmap W-A — read-only BM25 relevance filter over given markdown.
   filter_relevant_blocks: (reg, args) => filterRelevantBlocksTool(reg, args),
   // v0.35.0 — vault-creation wizard (LOCAL-ONLY). plan_vault is read-only;

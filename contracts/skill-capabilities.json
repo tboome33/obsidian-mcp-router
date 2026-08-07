@@ -1047,6 +1047,7 @@
       "tools": [
         "audit_sources",
         "find_boundary_pages",
+        "find_twin_pages",
         "get_file",
         "list_files",
         "list_vaults",
@@ -1067,7 +1068,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. Declared `mutating` for the MAXIMUM reachable state (--fix-errors applies set_frontmatter), not the default posture, which is read-only. refresh_okf_projections is called with check:true only — read-only in practice — but this schema cannot express \"this tool, only in its read mode\", so `vault:derived` is declared as a write: overstating the reach is the safe direction, understating it is not. record_source is named only to say lint must never write the ledger. Since v0.69.0 Check A-ter calls find_boundary_pages (C10) — read-only, reported at info tier only, so it widens neither the write set nor writeMode."
+        "reason": "No harness executes a skill. Declared `mutating` for the MAXIMUM reachable state (--fix-errors applies set_frontmatter), not the default posture, which is read-only. refresh_okf_projections is called with check:true only — read-only in practice — but this schema cannot express \"this tool, only in its read mode\", so `vault:derived` is declared as a write: overstating the reach is the safe direction, understating it is not. record_source is named only to say lint must never write the ledger. Since v0.69.0 Check A-ter calls find_boundary_pages (C10) — read-only, reported at info tier only, so it widens neither the write set nor writeMode. Since v0.72.0 Check J-bis calls find_twin_pages (C11) — read-only, filesystem-only, reported at info tier only, so it widens neither the write set nor writeMode."
       }
     },
     "wiki-neighbors": {

@@ -780,6 +780,11 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       // module's own docstring says read-only, and neither contains a mutating
       // call. Corrected after an audit checked them one by one.
       'build-wiki-tour.mjs', 'plan-vault.mjs', 'propose-linked-sources.mjs',
+      // C11. Reads the Smart Connections vector store and the wiki pages off
+      // the LOCAL DISK and returns a ranking; no REST call, no write. Pinned
+      // behaviourally in find-twin-pages.test.mjs, which snapshots the fixture
+      // vault before and after a run.
+      'find-twin-pages.mjs',
     ]);
     const classified = new Set([
       ...GUARDED, ...DERIVED_PATH_WRITERS, ...GATED_ABSOLUTE_WRITERS, ...NO_VAULT_CONTENT_MUTATION,
@@ -2339,6 +2344,16 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
       // index read from a fixed path. Neither tier turns them into a URL.
       ['search_smart.folders', 'a filter in the POST body of a fixed route, never a URL segment'],
       ['search_smart.excludeFolders', 'a filter in the POST body of a fixed route, never a URL segment'],
+      // C11 reaches no route at all: it walks the LOCAL disk. `folders` is
+      // compared (`rel === f || rel.startsWith(f + "/")`) against paths the walk
+      // ALREADY enumerated from that disk — it never contributes a segment to a
+      // path that is opened. A traversal simply matches nothing, so the corpus
+      // comes out empty and the tool answers `available: false`.
+      ['find_twin_pages.folders', 'an in-memory prefix filter over already-enumerated page paths; never joined into a path that is read'],
+      // A set of frontmatter `type:` values, lowercased and compared against
+      // what each page declares. A traversal is a perfectly legal (if useless)
+      // type name, so refusing it would be refusing a value the field is for.
+      ['find_twin_pages.exemptTypes', 'a set of frontmatter `type:` values matched against page frontmatter; never a path'],
     ]);
     assert.deepEqual(
       accepted.filter((a) => !ACCEPTED_BY_DESIGN.has(a)), [],

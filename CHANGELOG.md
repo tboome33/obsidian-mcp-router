@@ -4,6 +4,132 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.72.0] — 2026-08-07 — twin pages: every vault gets its own threshold
+
+### Added — `find_twin_pages`, and the number that says when two pages are too close
+
+**A 50th tool, read-only and deterministic, no LLM in the loop.** Over time a
+vault manufactures near-duplicates: two pages on one subject, born in two
+different sessions. Links, searches and updates then split between them and
+neither is ever complete. `find_twin_pages` compares the per-page vectors Smart
+Connections already stores on disk (`<vault>/.smart-env/multi/`), every page
+against every other, and reports the suspicious pairs. It is surfaced in
+`wiki-lint --deep` as **Check J-bis** — the extension of Check J (Jaccard over
+digest concepts) into cosine, not a second mechanism beside it. Severity is
+`info`, never higher: two pages that resemble each other are not a broken state.
+
+Measured across the real fleet: **7 usable vaults, 383 comparable pages, 18 512
+pairs, 33 pairs reported, 1 354 ms total** (85 ms/vault average). The archetypal
+find, on the KIVIRI vault: exactly three pairs, all three roadmaps
+(`kiviri-roadmap` / `saas-web-app-roadmap` / `kiviri-app-build-roadmap`) for what
+is plausibly one thing.
+
+#### A fixed threshold is not merely crude — it is measurably wrong
+
+At `cos ≥ 0.95` the same number behaves in opposite ways: the router vault yields
+**93 pairs / 14 535** (97.8 % precision against a content oracle), SchoolMouv
+yields **398 / 13 366** at **12.1 %**. Their medians differ (0.746 vs 0.845)
+because one is a heterogeneous project journal and the other a homogeneous course
+catalogue. One is a good filter, the other a flood.
+
+The obvious repair fails too, and for a structural reason: a robust z-score on
+raw cosine leaves the domain, because cosine is bounded by 1 — **the threshold
+exceeds 1.0 from k=4 on four of six vaults**. So the statistic moves to the space
+where the variable is unbounded:
+
+```
+threshold = 1 − exp( median(ln(1−cos)) − k · 1.4826 · MAD(ln(1−cos)) )
+```
+
+Median and MAD rather than mean and standard deviation because **the twins are in
+the sample** — a vault holding many of them would inflate a standard deviation
+until it hides what you are looking for. `k = 5` is a **declared convention, not
+a calibration**: nothing was tuned to it, it is exported, adjustable per call, and
+reported in every answer. Thresholds actually derived on the fleet range
+**0.8789 → 0.9800**, tracking medians of 0.687 → 0.859. Threshold, vault median
+and sample size travel with every response, so the result is auditable and
+replayable.
+
+#### The spec's bound is implemented, and is not the default
+
+Restricting comparison to "same folder or shared links" is available
+(`restrictTo`) but off by default, on measurement. Of the 33 pairs above
+threshold, `folder` alone keeps **9/33 — it discards 72.7 %** (and 23/23, i.e.
+100 %, on SchoolMouv, whose twins live in sibling folders); `folder-or-links`
+keeps **33/33**, discarding nothing at all. On this fleet the bound is either a
+73 % recall cut or a no-op — never a useful middle. And it buys no time: its
+prerequisite (reading every page body) cost **11 ms against the 7 ms** of dot
+products it would avoid. The loss also lands exactly where it hurts most: two
+genuine twins born in two sessions are precisely the pair that shares neither
+folder nor link.
+
+Folder and links are therefore shipped as **triage evidence on each row**
+(`sameFolder`, `sameBasename`, `sharedLinks`, `linked`) rather than as an upstream
+filter, and `removedByRestriction` is always reported. Note that `folders` and
+`restrictTo` are deliberately asymmetric: `restrictTo` filters *pairs* after
+derivation (same corpus, same threshold), while `folders` filters *pages* before
+it — **a scoped run answers a scoped question**, and the same pair may be
+reported at one scope and not another.
+
+#### "Unavailable here" is a different answer from "zero pairs"
+
+Structurally, not by convention. Five reasons return `available: false` **with no
+`pairs` key at all** (`no-embeddings`, `remote-vault`, `no-wiki`,
+`corpus-too-small`, `no-spread`); a sixth is a thrown refusal
+(`too-many-pages`). **9 of 16 vaults are unavailable** — none of them reports
+zero. A consumer writing `result.pairs?.length ?? 0` would read all six as "no
+twins found", which is why the key is absent rather than empty, and why the field
+to branch on is **`available`**.
+
+#### The response tells the truth about what it did
+
+`coverage` says it in words — *"104 of 113 eligible page(s) were compared… 180
+markdown file(s) exist under wiki/, of which 67 were held out"* — because
+`available: true` does not mean the whole vault was analysed. `freshness` states
+that the vectors are an **index snapshot** whose per-page staleness is *unknown*.
+Every exclusion is counted: **108 of the 279** indexed paths in the router vault
+point at pages that no longer exist, and generated projections and `redirect`
+stubs are held out (29 stubs alone produced 406 spurious pairs). The accounting
+identity `comparedPages + withoutVector + incompatibleVector + heldOut ===
+wikiPagesOnDisk` holds, and a vector that exists but cannot be compared (minority
+model, minority dimensionality, zero norm) is reported as such rather than as "no
+vector".
+
+**A pair proposes a reading, never a merge.** No field names an action, and a
+bilingual EN/FR guard extends to the skill's prose.
+
+### Known limits — measured, not glossed
+
+- **Templated series are the dominant false positive.** Vectors are whole-page and
+  the model window is 512 tokens, so two pages sharing a boilerplate head score
+  very high: measured **cosine 0.9914 for a 5-shingle overlap of 0.064**.
+  `sameBasename` rides on every row to make the pattern visible at a glance.
+- **Cost at the ceiling.** `MAX_PAGES = 3000` costs **5 777 ms and 737 MB peak
+  heap** — unconditionally, even to report 4 pairs, because deriving the threshold
+  copies the pair array five times. `MAX_PAGES_CEILING = 5000` is the largest size
+  actually executed (17 801 ms, 2 024 MB); nothing beyond that was measured, so
+  nothing beyond it is permitted. The check **refuses** rather than silently
+  truncating. No real vault comes close: the largest of 16 holds 180 comparable
+  pages, 17× under the ceiling.
+- **The emitted array is bounded (`limit`, default 10, max 100) but the
+  intermediate one is not**: 198 pages / 19 503 pairs materialised 6 435 row
+  objects to emit 10.
+- **`k = 5` is unvalidated outside this fleet** — seven vaults, all indexed with
+  `TaylorAI/bge-micro-v2` (384 dims). The method adapts to any distribution; the
+  default constant has only been read on one geometry.
+- **The store is a snapshot with no usable freshness hash.** A page edited since
+  indexing carries its old vector, and per-page staleness cannot be determined
+  from here. Gross drift is visible (`excluded.notOnDisk`); fine drift is not.
+- **Block-level embeddings are not used** (`smart_blocks:` exists in the store),
+  so "a section of A duplicates a section of B" is out of scope.
+- **No lexical tier**: `wiki-meta/digests/` exists in none of the 16 vaults, so the
+  digest substrate is unused; Check J already covers that ground where digests do
+  exist.
+- **The sort tie-break is unfalsifiable.** Deleting `cmp` from `rows.sort` breaks
+  no test — the path pre-sort plus stable `Array#sort` (ES2019) make its effect
+  unobservable. Kept as insurance and annotated in the code so nobody reads it as
+  a tested guarantee.
+
 ## [0.71.0] — 2026-08-07 — normalization left the 36 tools for one boundary
 
 ### Changed — normalization left the 36 tools for ONE boundary

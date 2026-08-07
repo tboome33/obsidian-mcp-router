@@ -12,7 +12,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 The skill has three modes :
 
 - **Default (structural)** — runs Checks A through H. Cheap, scans page metadata + wikilinks + citations only. The right mode for routine health checks.
-- **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L, which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
+- **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L (plus Check J-bis, C11, which needs no digest — it reads the Smart Connections vector store and reports itself unavailable where there is none), which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
 - **`--okf <path>` (v0.33.0+)** — runs Check M ONLY : validates an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1) against the spec's three conformance rules. The path is either a bundle exported by `wiki-export --target okf` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned repo containing a third-party bundle. This mode doesn't lint the wiki itself.
 
 Trigger phrases :
@@ -132,10 +132,50 @@ If the page referenced by `digest.for` no longer exists (page deleted), surface 
 
 Load all digests. For each pair of digests `(A, B)`, compute `conceptOverlap(A, B)` via `src/helpers/digest-generator.mjs` (Jaccard similarity over the concepts arrays). Thresholds :
 
-- **Overlap ≥ 0.7** → ERROR `concept-overlap-strong` : "pages X and Y share concepts [list] — likely candidates for merge"
-- **Overlap 0.4..0.7** → WARNING `concept-overlap-moderate` : "pages X and Y share concepts [list] — consider cross-linking or partial merge"
+- **Overlap ≥ 0.7** → ERROR `concept-overlap-strong` : "pages X and Y share concepts [list] — read both, they may be covering one subject twice"
+- **Overlap 0.4..0.7** → WARNING `concept-overlap-moderate` : "pages X and Y share concepts [list] — worth a look at how the two divide the subject"
+
+The severities above are unchanged (`concept-overlap-strong` stays ERROR — see the severity list in step 3). Only the WORDING is: a lint finding reports what it measured and hands the judgement back. What to do about two overlapping pages — leave them, cross-link them, rewrite one, combine them — is a decision about MEANING that no overlap coefficient can make, and phrasing it as an instruction was inviting the reader to act on a number. Same posture as Check J-bis below; the two sit two paragraphs apart and must not contradict each other.
 
 Report only pairs where the OVERLAP is above the WARNING threshold, not all 5000+ pairs.
+
+#### Check J-bis (deep): quasi-twin pages by cosine (v0.72.0+, C11)
+
+Check J compares CONCEPT LISTS (Jaccard over the digests' `concepts` arrays). Check J-bis is the same question asked of the **embedding space** instead: two pages can be the same page written twice and share almost no concept vocabulary, because two sessions name things differently. Where the vault has Smart Connections vectors, cosine sees that; Jaccard cannot.
+
+```
+mcp__obsidian-router__find_twin_pages({ vault, limit: 10 })
+```
+
+Read-only, one pass over the local vector store, nothing written.
+
+**Report in the *info* tier and never above it.** Two pages that resemble each other are not a broken state: a templated series, a decision and its record, a page deliberately split from its "gotchas" companion all look alike and are all correct. This is a deliberate divergence from Check J, which raises `concept-overlap-strong` to ERROR — do not inherit that severity here, and never phrase a finding as a merge instruction. Show, per pair, the similarity and the four evidence columns (`sameFolder`, `sameBasename`, `sharedLinks`, `linked`); they are what lets a reader dismiss a false positive in one glance.
+
+**Always state the derived threshold and the corpus it came from.** The cut is computed from *this* vault's own distribution — `threshold.similarity`, `threshold.medianSimilarity`, `threshold.sensitivity` — and it does not transfer to another vault. A report that shows pairs without the threshold that produced them is unauditable. Raise or lower `sensitivity` (higher = stricter) until the list is a length the user will actually read.
+
+**A scoped run answers a scoped question.** Passing `folders` narrows the corpus *and* the distribution the cut comes from, so **the same pair can be reported by a whole-vault run and absent from a folder-scoped one** (measured on the router's vault: whole wiki → cut 0.9326, 4 pairs ; `folders: ['wiki/obsidian-mcp-router/Features']` → cut 0.9613, 0 pairs). That is correct — *"unusual for this section"* and *"unusual for this vault"* are different questions — but say which one you asked, and quote the cut. `restrictTo` behaves differently on purpose: it filters pairs **after** the cut is derived, so it never changes a pair's verdict, only whether it is shown.
+
+**Always state `excluded`.** The tool holds out indexed paths whose page is gone from disk (`notOnDisk` — routinely a third of the store), generated projections, and pages typed `redirect`/`source`/`answer`. A list of pairs that silently ignored a third of the corpus reads as "I compared everything" when it did not.
+
+**Always state the COVERAGE, in the numbers the tool gives you.** `available: true` does NOT mean the whole vault was analysed — only the pages that carried a vector were compared, and on a vault indexed a while ago that can be far fewer. Quote `coverage.statement` verbatim, or render `coverage.comparedPages` / `coverage.eligiblePages` in the "N of M" form: *"112 of 187 eligible pages carried a vector and were compared"*. Never present an exhaustive comparison of the 4 vectorised pages as coverage of the 10 pages that exist.
+
+**Always state the FRESHNESS.** `freshness.caveat` says it: these similarities come from an index **snapshot**, not from the pages as they are now. A page edited since the last indexing pass still carries its previous vector, and per-page staleness cannot be determined from here (`freshness.perPageStaleness: "unknown"`) — the store keeps no hash the router can recompute. Say so in the report; an unqualified similarity reads as a statement about the pages today.
+
+**`available: false` IS NOT "no twins", and `available` is THE discriminator.** Branch on it. Five reasons arrive as a response with `available: false`, a `reason`, and **no `pairs` key at all**:
+
+| `reason` | what it means |
+|---|---|
+| `no-embeddings` | no Smart Connections index (or no indexed page survives the exclusions) |
+| `remote-vault` | no local disk to read the store from |
+| `no-wiki` | nothing under `wiki/` |
+| `corpus-too-small` | fewer than 30 comparable pairs (≈ 9 pages) — a median+MAD would describe nothing |
+| `no-spread` | at least half the pairs share one similarity; no outlier cut can be derived |
+
+A **sixth** way to decline is a **thrown refusal**, `too-many-pages` (`err.kind: "validation"`, `err.reason: "too-many-pages"`), when the corpus is past `maxPages` — there is no response body at all. Scope with `folders`, or raise `maxPages` knowingly.
+
+Report any of these as *"this check is unavailable on this vault, because …"* — never as a clean bill of health. `result.pairs?.length ?? 0` would read all six as "no twins", which is exactly why the key is absent rather than empty; the absence is defence in depth, the field to read is `available`. The honest fallback line: *"Check J (concept overlap) still runs wherever digests exist; cosine needs embeddings, and this vault has none."* Only `available: true` with `found: 0` means the vault was examined and nothing stood out.
+
+**Known false-positive mode, worth saying out loud in the report:** the vectors are whole-page and the model's window is 512 tokens, so pages that share a template score very high on their common head. Measured on a real vault, two course sheets scored cosine 0.9914 with a 5-word-shingle overlap of 0.064. When `sameBasename` is true across sibling folders, say so — it is usually a series, not a duplication.
 
 #### Check K (deep): contradiction signals
 
@@ -220,7 +260,7 @@ Group findings by severity:
 
 - **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`)
 - **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`
-- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect)
+- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect), **Check J-bis** quasi-twin pairs (never above info — resemblance is not a defect, and the check proposes a reading, never a merge)
 
 For each finding:
 - The path or wikilink involved

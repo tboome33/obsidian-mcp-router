@@ -2,6 +2,30 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.72.0 — C11 `find_twin_pages`: the threshold belongs to the vault (shipped 2026-08-07)
+
+Item C11 of the borrowings register (§2.17), delivered as **Check J-bis** in `wiki-lint --deep` — the extension of Check J's page-to-page comparison from Jaccard-over-concepts into cosine-over-embeddings, deliberately not a parallel mechanism. Read-only, deterministic, no LLM. Two independent designs were produced without shared context (one building, one contradicting) before a word of it was arbitrated; where they converged spontaneously, the constraint was real.
+
+- **Smart Connections is the sole numeric authority**, read from disk (`<vault>/.smart-env/multi/*.ajson`, append-log, last-wins, `null` = tombstone). `search_smart` cannot serve: it is a *query* interface (string → ranking), and C11 needs the vectors themselves. Consequence accepted: a remote vault answers `available: false, reason: 'remote-vault'`. The BM25 fallback is explicitly forbidden — a lexical score and a cosine are not the same scale, the doctrine already written for `search_smart`.
+- **Threshold derived per vault in log-distance space.** Both obvious forms were rejected *by measurement*, not by taste: a fixed cutoff behaves oppositely on two real vaults (97.8 % vs 12.1 % precision at the same 0.95), and a robust z-score on raw cosine leaves the domain from k=4 on 4 of 6 vaults because cosine is bounded above. Median+MAD rather than mean+σ because the twins are *inside* the sample. Two guards are validity conditions, not magic numbers: `MIN_PAIRS_FOR_THRESHOLD = 30` (below which we **refuse to derive** rather than invent a cut) and `MAD = 0 → no-spread`. No absolute floor on cosine — it would have reintroduced the very constant the design exists to remove.
+- **The spec's bound is implemented but not the default**, on measurement: `folder` discards 72.7 % of real pairs, `folder-or-links` discards 0 %, and the prerequisite costs 1.6× the dot products it avoids. Folder and links ship as per-row triage evidence instead. `folders` and `restrictTo` are asymmetric on purpose (pages-before vs pairs-after derivation): narrowing the scope changes the question, and that is documented rather than hidden.
+- **Unavailable is structurally distinct from zero** — no `pairs` key at all on the five unavailable reasons, plus a thrown `too-many-pages`. The contract is asserted **after `wrapResult`**, on the bytes the client receives, not on the internal return value.
+- **The ceiling refuses instead of truncating.** `MAX_PAGES = 3000`; `MAX_PAGES_CEILING = 5000` is the largest size actually executed, because a limit justified by extrapolation is not a measurement.
+
+### Verification
+
+Twenty-one adversarial rounds preceded this work on v0.71.0; C11 added its own. **51 mutations, all restored by saved copy with sha256 verified identical** — one survivor, documented rather than papered over (the sort tie-break is unfalsifiable: the path pre-sort plus stable `Array#sort` make its effect unobservable). Two "blocking" candidates raised by design review were **refuted by execution** (the `ln(1−cos)` singularity is already clamped; output volume is bounded at the wire and unreachable on any real vault). Seven proven defects — all of the family *the response does not tell the whole truth about what it did* — were closed and independently re-verified. An instrumented read-only pass (46 `fs` mutators trapped) reported **zero writes** across 16 real vaults and 9 hostile fabricated ones. A wrong number in a code comment (~1.6 s at the ceiling, extrapolated from dot products alone) was replaced by a measured table after being caught: the real figure is 5 777 ms and 737 MB.
+
+### Deferred
+
+- **`k = 5` is unvalidated outside this fleet** — seven vaults, all `TaylorAI/bge-micro-v2` (384 dims). The method depends only on the distribution and adapts; the default constant has been read on one geometry. Supervised calibration (human-labelled twin/distinct pairs, precision-recall over k, leave-one-vault-out) is the honest next step and exceeds an effort-2 item.
+- **Minority cohorts are reported, not calibrated separately.** Only the largest model/dimensionality cohort is compared; the others are counted and named (`incompatibleByReason`) rather than silently folded into "no vector". Per-cohort calibration is the fuller answer.
+- **Block-level embeddings unused** — the store holds `smart_blocks:`, which would allow "a section of A duplicates a section of B".
+- **No lexical tier**: `wiki-meta/digests/` exists in none of the 16 vaults, so there is nothing to feed it; if digests ever appear, C11 must decide whether to ingest them as a second tier — never blended into one opaque score.
+- **Per-page staleness is undeterminable** from the router: the store carries no hash we can recompute. Gross drift shows up as `excluded.notOnDisk`; a page edited since indexing silently carries its old vector.
+- **The intermediate row array is unbounded** (the emitted one is not): 198 pages materialised 6 435 rows to emit 10. Refuted as a failure mode, out of reach of the real fleet, left in place.
+- **Check J keeps `ERROR` severity** while Check J-bis is `info`. The vocabulary of both was neutralised (a resemblance is not an instruction to merge), but changing a shipped check's severity is a product decision outside C11's mandate.
+
 ## ✅ v0.65.0 — `--attach`: binding a workspace to vaults that already exist (shipped 2026-08-02)
 
 Phase W4 of the vault-wizard roadmap. The wizard could create a vault and bind it in one shot, but "this repo uses that vault, which already exists" had no first-class path — so it got re-derived from source each time (~15 tool calls, observed 2026-08-02, for four file writes).
