@@ -54,6 +54,7 @@
  */
 
 import { slugifyOkfSegment, joinVaultRelativePath, relativeLink } from './okf-bundle-exporter.mjs';
+import { cmp } from './total-order.mjs';
 
 /** Charset Google's reference implementation accepts for one path segment. */
 const OKF_SAFE_SEGMENT_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
@@ -135,7 +136,7 @@ export function buildRenamePlan(filePaths) {
   const walk = (oldParent, newParent) => {
     const sibs = children.get(oldParent);
     if (!sibs) return;
-    const entries = [...sibs.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const entries = [...sibs.values()].sort((a, b) => cmp(a.name, b.name));
     const taken = new Set(); // lowercased FINAL names in this directory
     // Entries keeping their name claim it first — a renamed sibling must
     // never collide into an untouched one.
@@ -535,7 +536,7 @@ export function buildRewriteContext(plan, opts = {}) {
   };
 }
 
-const WIKILINK_TOKEN_RE = /(!?)\[\[([^\]]+)\]\]/g;
+const WIKILINK_TOKEN_RE = /(!?)\[\[([^\]\n[]+)\]\]/g;
 const MD_LINK_TARGET_RE = /(\]\()([^()\s]+)(\))/g;
 const EXTERNAL_TARGET_RE = /^[a-z][a-z0-9+.-]*:/i; // http:, https:, mailto:, obsidian:…
 

@@ -22,7 +22,6 @@ import {
   provisionExecOptions,
 } from '../helpers/vault-wizard-engine.mjs';
 import { verifyPlanSeal, isPlanSeal, PlanDriftError } from '../helpers/plan-seal.mjs';
-
 export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
   const runProvision = _deps.runProvision || defaultRunProvision;
@@ -99,7 +98,7 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
 
   // A non-zero exit WITH a parsed result means the probe went red (exit 3) but
   // the vault WAS provisioned — surface it as a soft failure, not a throw.
-  return {
+  return ({
     ok: result.ok === true && (code === 0 || code === 3),
     kind: result.kind || plan.source.kind,
     path: result.abs,
@@ -118,5 +117,5 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
     // mutates ~/.claude/settings.json. Wire them via the skill or the CLI.
     hooksWired: false,
     exitCode: code,
-  };
+  });
 }

@@ -57,6 +57,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { cmp } from './total-order.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema + controlled vocabularies
@@ -350,7 +351,7 @@ export function discoverSkills(repoRoot) {
       text,
     });
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  return out.sort((a, b) => cmp(a.name, b.name));
 }
 
 /**
@@ -1845,7 +1846,7 @@ export function renderIssues(issues) {
     if (!byCode.has(i.code)) byCode.set(i.code, []);
     byCode.get(i.code).push(i);
   }
-  for (const [code, list] of [...byCode].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [code, list] of [...byCode].sort((a, b) => cmp(a[0], b[0]))) {
     lines.push(`── ${code} (${list.length})`);
     for (const i of list) {
       lines.push(`   • ${i.message}`);

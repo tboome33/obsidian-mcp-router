@@ -39,6 +39,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { cmp } from '../../src/helpers/total-order.mjs';
 
 /**
  * Frontmatter `type` values under decision discipline. Mirrors
@@ -512,7 +513,7 @@ export function selectRelevant(decisions, prompt, options = {}) {
   scored.sort((a, b) =>
     Number(b.distinctive) - Number(a.distinctive)
     || b.score - a.score
-    || a.path.localeCompare(b.path));
+    || cmp(a.path, b.path));
   return scored.slice(0, limit).map(({ distinctive, ...item }) => item);
 }
 

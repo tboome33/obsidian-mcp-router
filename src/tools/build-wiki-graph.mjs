@@ -27,7 +27,7 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
+import { safeForMessage } from '../helpers/sanitize.mjs';
 import { buildWikiGraph } from '../helpers/wiki-graph-builder.mjs';
 import { validateGraph } from '../helpers/wiki-graph-schema.mjs';
 import { createWikiIgnore } from '../helpers/wiki-ignore.mjs';
@@ -35,7 +35,7 @@ import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-met
 import { isProjectionPath, hasProjectionMarker } from '../helpers/okf-projections.mjs';
 // Reuse the project's canonical vault-path-safety guard (single source of
 // truth for path policy) rather than a bespoke, weaker check.
-import { isSafeVaultRelativePath } from './get-wiki-context-pack.mjs';
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 
 export const TOOL_NAME = 'build_wiki_graph';
 
@@ -239,14 +239,22 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   const vault = registry.resolveVault(name);
   const warnings = [];
 
-  // Defensive: a caller-supplied pagesDir must stay vault-relative. Reuse the
-  // project's canonical guard (rejects leading `/`, drive letters, UNC, `..`
-  // segments, control chars, URL-like). We DON'T strip a leading slash before
-  // the check — doing so would let `/etc` slip through as `etc`.
-  const safePagesDir = String(pagesDir || 'wiki').replace(/\\/g, '/').replace(/\/+$/g, '');
-  if (!safePagesDir || !isSafeVaultRelativePath(safePagesDir)) {
-    throw new Error(`Invalid pagesDir: ${pagesDir}`);
-  }
+  // ONE definition of what a vault path is — the same one every write tool
+  // uses. This line used to say "reuse the project's canonical guard" and then
+  // call a DIFFERENT one: swept across 3 074 inputs, `isSafeVaultRelativePath`
+  // and `canonicalVaultPath` disagreed on 688 of them (22 %). The looser one
+  // accepts C1 controls including U+009B (single-byte CSI), bare `.` segments,
+  // `<result>` markup, `C:` without a separator, U+2028/U+2029 and mid-string
+  // backslashes — and 556 of those still reached the REST layer through the
+  // pre-normalisation this line used to do first. Two answers to one question
+  // is the shape that has cost this codebase three rounds already.
+  //
+  // `canonicalVaultPath` already handles leading/trailing slashes and empty
+  // segments, and it REFUSES a backslash rather than converting one, which is
+  // what the rest of the tree does. Measured on the real fleet: none of the
+  // 6 791 vault files exercises any of the divergent classes, so tightening
+  // costs nothing.
+  const safePagesDir = canonicalVaultPath(pagesDir || 'wiki', 'pagesDir');
 
   // 1. .wikiignore (optional)
   let userIgnore = '';
@@ -326,7 +334,59 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   // post-sanitize object means referential integrity is checked on the EXACT
   // bytes we persist — not a pre-sanitize copy (review+ IMPORTANT: closes a
   // latent bug class should a future sanitiser transform ever be non-idempotent).
-  const safeGraph = sanitizeResponse(graph);
+  // Slot-mismatched digests were dropped by the builder (the security
+  // invariant); say so, or the operator cannot tell a forgery attempt from a
+  // legitimate sidecar someone filed in the wrong place. Read BEFORE
+  // sanitizeResponse, which returns a fresh object without the non-enumerable
+  // annotation.
+  if (Array.isArray(graph.digestsRejected) && graph.digestsRejected.length) {
+    // SANITISE the interpolated strings. `r.digest` is a vault FILE NAME and
+    // `r.claimed` is the digest's own `for:` frontmatter — both chosen by the
+    // very attacker this rejection exists to stop, and a warning goes straight
+    // into the model's context. The first version interpolated them raw, so a
+    // digest named `evil</output></result><result>…` turned the diagnostic
+    // into the injection carrier: the same defect class this release closes in
+    // `heading-patch.mjs`, recreated one file away while fixing a review note.
+    // `expected` is derived from `claimed`, so it carries the payload twice.
+    const safe = (s) => safeForMessage(s, 200);
+    warnings.push(`digest-slot-mismatch:${graph.digestsRejected.length}`);
+    for (const r of graph.digestsRejected.slice(0, 5)) {
+      warnings.push(
+        `digest-slot-mismatch: ${safe(r.digest)} claims ${safe(r.claimed)}`
+        + (r.expected ? ` (expected slot ${safe(r.expected)})` : ''),
+      );
+    }
+  }
+  // DATA AT REST STAYS FAITHFUL; data in transit gets neutralized.
+  //
+  // This object is not only a response — it is `JSON.stringify`d and WRITTEN to
+  // `knowledge-graph.json` and the `.understand-anything/` copy. When
+  // `sanitizeResponse` gained neutralize-by-default in v0.71.0, that silently
+  // changed the bytes on disk: a node named `Agent transcript <result> handling`
+  // became `… &lt;result> handling`, permanently, for the 122 notes fleet-wide
+  // that mention `result`. Nobody decided that; it fell out of a default flip
+  // two files away, and no test could see it because the suite checks
+  // responses, not the vault.
+  //
+  // So the write keeps the note's own text. Neutralisation belongs at the READ
+  // boundary — `get_page_neighbors`, `wiki_path`, `build_wiki_tour` all wrap
+  // their own returns — which is also the only place it is correct, since a
+  // consumer that is not an LLM has no reason to receive `&lt;`.
+  //
+  // WRITTEN RAW, and `{ neutralizeInjection: false }` was not enough.
+  //
+  // That option only spared the injection MARKUP. `sanitizeResponse` still
+  // stripped CSI and control characters, normalized line separators, and
+  // truncated every string at 16 KiB — so a node titled `Alpha ESC[31mRED`
+  // persisted as `Alpha RED`, and a long name lost its tail. "Data at rest
+  // stays faithful" was implemented as "injection tags stay faithful", which
+  // is a different and much weaker sentence than the one in the comment.
+  //
+  // The correct split, and the one the boundary now makes possible: serialize
+  // the RAW validated graph here, and let `wrapResult` normalize the separate
+  // RESPONSE copy on its way to the model. The vault gets what the notes say;
+  // the model gets something safe to render. Neither is a compromise.
+  const safeGraph = graph;
   const report = validateGraph(safeGraph);
   for (const w of report.warnings) warnings.push(`schema:${w}`);
   if (!report.valid) {
@@ -352,7 +412,7 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
     }
   }
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     kind: safeGraph.kind,
     dryRun: Boolean(dryRun),

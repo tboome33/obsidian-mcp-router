@@ -24,6 +24,7 @@
  */
 
 import { kebab } from './wiki-graph-schema.mjs';
+import { cmp } from './total-order.mjs';
 
 const DEFAULT_MAX_STEPS = 12;
 const DEFAULT_MAX_NODES_PER_STEP = 5;
@@ -123,7 +124,7 @@ export function computeTourTopology(graph, opts = {}) {
   // tie-break by id.
   const entryScore = (a) => (fanIn.get(a.id) || 0) + (ENTRY_NAME_RE.test(a.name || '') ? 1000 : 0);
   const entryPoints = [...scopedArticles]
-    .sort((a, b) => entryScore(b) - entryScore(a) || a.id.localeCompare(b.id))
+    .sort((a, b) => entryScore(b) - entryScore(a) || cmp(a.id, b.id))
     .slice(0, 3)
     .map((a) => ({ id: a.id, name: a.name, fanIn: fanIn.get(a.id) || 0 }));
 
@@ -153,7 +154,7 @@ export function computeTourTopology(graph, opts = {}) {
       .filter((id) => scopedIds.has(id))
       .reduce((acc, id) => acc + (fanIn.get(id) || 0), 0);
   const rankedLayers = [...scopedLayers].sort(
-    (a, b) => layerScore(b) - layerScore(a) || (a.name || a.id).localeCompare(b.name || b.id),
+    (a, b) => layerScore(b) - layerScore(a) || cmp((a.name || a.id), b.name || b.id),
   );
 
   // One step per layer — its top members by fan-in, EXCLUDING nodes already
@@ -166,7 +167,7 @@ export function computeTourTopology(graph, opts = {}) {
     if (members.length === 0) continue;
     const top = members
       .map((id) => ({ id, fi: fanIn.get(id) || 0 }))
-      .sort((a, b) => b.fi - a.fi || a.id.localeCompare(b.id))
+      .sort((a, b) => b.fi - a.fi || cmp(a.id, b.id))
       .slice(0, maxNodesPerStep)
       .map((x) => x.id);
     top.forEach((id) => seenInSteps.add(id));
@@ -180,7 +181,7 @@ export function computeTourTopology(graph, opts = {}) {
       .filter((a) => !seenInSteps.has(a.id))
       .map((a) => ({ id: a.id, fi: fanIn.get(a.id) || 0 }))
       .filter((x) => x.fi > 0)
-      .sort((a, b) => b.fi - a.fi || a.id.localeCompare(b.id))
+      .sort((a, b) => b.fi - a.fi || cmp(a.id, b.id))
       .slice(0, maxNodesPerStep)
       .map((x) => x.id);
     if (leftovers.length > 0) {

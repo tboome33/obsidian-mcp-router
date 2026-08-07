@@ -63,6 +63,8 @@
  * every rule here is unit-testable without a vault.
  */
 import { contentSha256 } from './content-hash.mjs';
+import { canonicalVaultPath as guardVaultPath } from './vault-path-guard.mjs';
+import { safeForMessage } from './sanitize.mjs';
 import { canonicalize } from './plan-seal.mjs';
 
 /** Where journals live. Outside `wiki/`, so no index/graph/projection walks it. */
@@ -183,62 +185,17 @@ export function newOperationId(randomHex) {
 }
 
 /**
- * THE canonical spelling of a vault path, matching exactly what the REST client
- * will put on the wire (`encodePath` splits on `/` and drops empty segments).
- *
- * Two reasons this cannot be skipped:
- *
- *   1. IDENTITY. `a/b.md`, `a//b.md`, `/a.md` and `a.md/` all address the SAME
- *      file, but as raw strings they are four different map keys — so a bundle
- *      would take four separate before-images of one file, and a rollback would
- *      restore it several times from images that contradict each other. Reduced
- *      to one spelling, they collapse into one target. (Reproduced by probe
- *      during the C2 review.)
- *   2. CONTAINMENT. `..` segments survive `encodeURIComponent`, so a path like
- *      `../../x` reaches `/vault/../../x` and can resolve outside the vault
- *      route. A bundle refuses them outright — and, more importantly, so does
- *      the journal parser, since a recovery replays paths that came from a file
- *      inside the vault (i.e. from a writable, syncable place).
+ * Canonical vault path — delegates to the ONE definition in
+ * `helpers/vault-path-guard.mjs`, wrapping refusals in `BundleError` so a
+ * step-level rejection keeps this module's error type. The guard used to live
+ * here and nowhere else, which is exactly why five write tools never got it.
  *
  * @param {unknown} p
  * @param {string} where label used in the refusal
  * @returns {string} canonical vault-relative path
  */
 export function canonicalVaultPath(p, where = 'path') {
-  if (typeof p !== 'string' || p.trim() === '') {
-    throw new BundleError(`${where} is required (vault-relative path of the file this step writes).`);
-  }
-  // Reject spellings whose containment this canonicaliser cannot reason about.
-  // A backslash is not a separator here, so `..\outside.md` would survive as ONE
-  // innocent-looking segment — and percent-encoded, land on a server that may
-  // well treat it as a separator (Windows does). Same for drive letters, UNC
-  // prefixes, and a NUL, which truncates a path in more than one filesystem API.
-  if (p.includes('\\')) {
-    throw new BundleError(
-      `${where} "${p}" contains a backslash. Vault paths use "/" only — a backslash is not a separator ` +
-        `here, so its containment cannot be verified.`,
-    );
-  }
-  if (p.includes('\0')) {
-    throw new BundleError(`${where} contains a NUL character.`);
-  }
-  if (/^[a-zA-Z]:/.test(p)) {
-    throw new BundleError(`${where} "${p}" looks like an absolute filesystem path. Vault paths are relative to the vault root.`);
-  }
-  const segments = p.split('/').filter((s) => s !== '');
-  for (const segment of segments) {
-    if (segment === '.' || segment === '..') {
-      throw new BundleError(
-        `${where} "${p}" contains a "${segment}" segment. Vault paths are relative to the vault root ` +
-          `and may not walk outside it.`,
-      );
-    }
-  }
-  const canonical = segments.join('/');
-  if (canonical === '') {
-    throw new BundleError(`${where} "${p}" does not name a file.`);
-  }
-  return canonical;
+  return guardVaultPath(p, where, (m) => new BundleError(m));
 }
 
 /**
@@ -705,68 +662,68 @@ export function parseJournal(raw, sourcePath, { expectOperationId, requirePendin
     parsed = JSON.parse(raw);
   } catch {
     throw new BundleError(
-      `The write journal at ${sourcePath} is not readable JSON. Refusing to roll back from it — ` +
+      `The write journal at ${safeForMessage(sourcePath, 200)} is not readable JSON. Refusing to roll back from it — ` +
         `inspect the file by hand.`,
     );
   }
   if (!isPlainObject(parsed)) {
-    throw new BundleError(`The write journal at ${sourcePath} is not an object.`);
+    throw new BundleError(`The write journal at ${safeForMessage(sourcePath, 200)} is not an object.`);
   }
   if (parsed.version !== JOURNAL_VERSION) {
     throw new BundleError(
-      `The write journal at ${sourcePath} is version ${String(parsed.version)}; this router speaks ` +
+      `The write journal at ${safeForMessage(sourcePath, 200)} is version ${safeForMessage(parsed.version, 80)}; this router speaks ` +
         `version ${JOURNAL_VERSION}. Refusing to act on a shape it may misread.`,
     );
   }
   if (!isOperationId(parsed.operationId)) {
-    throw new BundleError(`The write journal at ${sourcePath} has no valid operationId.`);
+    throw new BundleError(`The write journal at ${safeForMessage(sourcePath, 200)} has no valid operationId.`);
   }
   if (expectOperationId !== undefined && parsed.operationId !== expectOperationId) {
     throw new BundleError(
-      `The write journal at ${sourcePath} carries operationId "${parsed.operationId}" but is filed ` +
-        `under "${expectOperationId}". Refusing to act on a record that was renamed or planted.`,
+      `The write journal at ${safeForMessage(sourcePath, 200)} carries operationId "${safeForMessage(parsed.operationId, 80)}" but is filed ` +
+        `under "${safeForMessage(expectOperationId, 80)}". Refusing to act on a record that was renamed or planted.`,
     );
   }
   const state = typeof parsed.state === 'string' ? parsed.state : null;
   if (state !== JOURNAL_PENDING && !TERMINAL_JOURNAL_STATES.includes(state)) {
     throw new BundleError(
-      `The write journal at ${sourcePath} has an unrecognised state ${JSON.stringify(parsed.state)}.`,
+      `The write journal at ${safeForMessage(sourcePath, 200)} has an unrecognised state ${safeForMessage(JSON.stringify(parsed.state), 80)}.`,
     );
   }
   if (requirePending && state !== JOURNAL_PENDING) {
     throw new BundleError(
-      `The write journal at ${sourcePath} is already "${state}" — that operation reached a decided ` +
+      `The write journal at ${safeForMessage(sourcePath, 200)} is already "${safeForMessage(state, 80)}" — that operation reached a decided ` +
         `state. Replaying its backups would UNDO it. Delete the file if you no longer need the record.`,
     );
   }
   const backups = parsed.backups;
   if (!isPlainObject(backups)) {
-    throw new BundleError(`The write journal at ${sourcePath} has no backups map.`);
+    throw new BundleError(`The write journal at ${safeForMessage(sourcePath, 200)} has no backups map.`);
   }
   const clean = Object.create(null);
   for (const key of Object.keys(backups)) {
     // The keys become write targets during a recovery. Canonicalise + contain
     // them here, exactly as a live step list is contained.
-    const canonical = canonicalVaultPath(key, `The write journal at ${sourcePath}: backup path`);
+    const canonical = canonicalVaultPath(key, `The write journal at ${safeForMessage(sourcePath, 200)}: backup path`);
     if (isJournalPath(canonical)) {
       throw new BundleError(
-        `The write journal at ${sourcePath} names "${key}", inside ${BUNDLE_JOURNAL_DIR}/. A recovery ` +
+        `The write journal at ${safeForMessage(sourcePath, 200)} names "${safeForMessage(key, 200)}", inside ${BUNDLE_JOURNAL_DIR}/. A recovery ` +
           `never writes into the journal directory.`,
       );
     }
     if (canonical !== key) {
       throw new BundleError(
-        `The write journal at ${sourcePath} names "${key}", which is not the canonical spelling of ` +
-          `"${canonical}". Refusing to act on a record this router did not write.`,
+        `The write journal at ${safeForMessage(sourcePath, 200)} names "${safeForMessage(key, 200)}", which is not the canonical spelling of ` +
+          `"${safeForMessage(canonical, 200)}". Refusing to act on a record this router did not write.`,
       );
     }
     const b = backups[key];
     if (!isPlainObject(b) || typeof b.existed !== 'boolean') {
-      throw new BundleError(`The write journal at ${sourcePath} has a malformed backup for "${key}".`);
+      throw new BundleError(`The write journal at ${safeForMessage(sourcePath, 200)} has a malformed backup for "${safeForMessage(key, 200)}".`);
     }
     if (b.existed && typeof b.content !== 'string') {
       throw new BundleError(
-        `The write journal at ${sourcePath} records "${key}" as existing but stores no content — ` +
+        `The write journal at ${safeForMessage(sourcePath, 200)} records "${safeForMessage(key, 200)}" as existing but stores no content — ` +
           `it cannot restore what it does not hold.`,
       );
     }
@@ -785,7 +742,7 @@ export function parseJournal(raw, sourcePath, { expectOperationId, requirePendin
     for (const key of Object.keys(parsed.salvage)) {
       const entry = parsed.salvage[key];
       if (!isPlainObject(entry) || typeof entry.content !== 'string') continue;
-      const canonical = canonicalVaultPath(key, `The write journal at ${sourcePath}: salvage path`);
+      const canonical = canonicalVaultPath(key, `The write journal at ${safeForMessage(sourcePath, 200)}: salvage path`);
       if (canonical !== key || isJournalPath(canonical)) continue;
       salvage[canonical] = { content: entry.content, contentSha256: contentSha256(entry.content) };
     }

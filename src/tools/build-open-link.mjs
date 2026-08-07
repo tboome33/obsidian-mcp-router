@@ -36,6 +36,8 @@ import {
   normalizeAnchor,
 } from '../helpers/click-to-open.mjs';
 import { resolveVaultPathOnDisk } from '../helpers/resolve-vault-path.mjs';
+import { safeForMessage } from '../helpers/sanitize.mjs';
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 
 /**
  * Verify the path, then build the URL for the (possibly corrected) real path.
@@ -49,11 +51,27 @@ import { resolveVaultPathOnDisk } from '../helpers/resolve-vault-path.mjs';
  *   doesn't sink the whole batch.
  */
 function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}) {
-  const verdict = resolveVaultPathOnDisk(vault, requestedPath);
+  // `resolveVaultPathOnDisk` strips leading slashes and does NOT reject `..`,
+  // then stats the joined result — so an unguarded caller path made this an
+  // EXISTENCE ORACLE for files outside the vault: `../secret.md` came back as
+  // a success. Reading no content, but answering "does this exist" about a
+  // filesystem the caller was never granted.
+  //
+  // Guarded here rather than in the caller because both entry points (single
+  // and batch) funnel through this function — the mistake that produced the
+  // hole was covering one door.
+  const safeRequested = canonicalVaultPath(requestedPath, 'path');
+  const verdict = resolveVaultPathOnDisk(vault, safeRequested);
 
   if (verdict.status === 'not_found') {
+  // Built ONCE, sanitised at construction, because this exact string leaves by
+  // TWO doors: it is thrown as a plain Error when throwOnMiss is set, and
+  // returned inside the object when it is not. The return path went through
+  // sanitizeResponse and the throw path did not — the same message, safe on one
+  // branch and raw on the other, ninety lines apart. A plain Error also bypasses
+  // the RestApiError constructor fix entirely.
     const message =
-      `build_open_link: "${requestedPath}" does not exist in vault "${vault.name}". ` +
+      `build_open_link: "${safeForMessage(requestedPath, 200)}" does not exist in vault "${safeForMessage(vault.name, 80)}". ` +
       `Check the folder and basename, or use list_files / search to find the real path — ` +
       `do NOT hand-compose the URL.`;
     if (throwOnMiss) throw new Error(message);
@@ -62,8 +80,8 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
 
   if (verdict.status === 'ambiguous') {
     const message =
-      `build_open_link: "${requestedPath}" not found, and its basename is AMBIGUOUS ` +
-      `across multiple files: ${verdict.matches.join(', ')}. Pass the exact full path of the one you mean.`;
+      `build_open_link: "${safeForMessage(requestedPath, 200)}" not found, and its basename is AMBIGUOUS ` +
+      `across multiple files: ${verdict.matches.map((p) => safeForMessage(p, 200)).join(', ')}. Pass the exact full path of the one you mean.`;
     if (throwOnMiss) throw new Error(message);
     return {
       path: requestedPath,
@@ -76,7 +94,7 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
 
   if (verdict.status === 'resolution_incomplete') {
     const message =
-      `build_open_link: could not verify "${requestedPath}" — the vault is too large to prove ` +
+      `build_open_link: could not verify "${safeForMessage(requestedPath, 200)}" — the vault is too large to prove ` +
       `the basename is unique within the scan budget. Pass the exact full path.`;
     if (throwOnMiss) throw new Error(message);
     return { path: requestedPath, error: 'resolution_incomplete', message, clickToOpenUrl: null };
@@ -142,15 +160,15 @@ export async function buildOpenLinkTool(registry, args = {}) {
     }
     // Batch: verify per-entry, never throw for a single bad path — that entry
     // gets an `error` field + null URL, the rest still resolve.
-    return {
+    return ({
       vault: vault.name,
       links: paths.map((p) => buildOneLink(vault, p, { throwOnMiss: false })),
-    };
+    });
   }
 
   // Single: a bad path THROWS — the caller cannot walk away with a dead URL.
-  return {
+  return ({
     vault: vault.name,
     ...buildOneLink(vault, filePath, { anchor, throwOnMiss: true }),
-  };
+  });
 }

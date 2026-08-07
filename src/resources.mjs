@@ -30,7 +30,7 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getFileContent } from './rest-client.mjs';
-import { sanitizeContent } from './helpers/sanitize.mjs';
+import { sanitizeContent, safeForMessage, NO_TRUNCATION } from './helpers/sanitize.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 
 export const RESOURCE_SCHEME = 'obsidian-router';
@@ -111,7 +111,10 @@ export function buildResourceList(vaults = []) {
     for (const f of VAULT_RESOURCE_FILES) {
       resources.push({
         uri: buildResourceUri(v.name, f.id),
-        name: `${v.name} — ${f.title}`,
+        // Vault names come from the router config, which a provisioning flow
+        // writes from caller input — and NOTHING downstream normalizes this
+        // list: it is served straight to the client by the SDK.
+        name: `${safeForMessage(v.name, 120)} — ${f.title}`,
         description: f.description,
         mimeType: 'text/markdown',
       });
@@ -124,16 +127,53 @@ export function buildResourceList(vaults = []) {
 export function buildVaultCatalog(vaults = []) {
   return JSON.stringify(
     {
+      // Same reasoning as buildResourceList: this JSON is the response body,
+      // and the resources channel has no wrapResult to normalize it.
       vaults: vaults.map((v) => ({
-        name: v.name,
-        type: v.type,
-        baseUrl: v.baseUrl,
-        ...(v.description ? { description: v.description } : {}),
+        name: safeForMessage(v.name, 120),
+        type: safeForMessage(v.type, 40),
+        baseUrl: safeForMessage(v.baseUrl, 200),
+        ...(v.description ? { description: safeForMessage(v.description, 500) } : {}),
       })),
     },
     null,
     2,
   );
+}
+
+/**
+ * THE ERROR BOUNDARY FOR THIS CHANNEL — the counterpart of the CallTool `catch`
+ * in index.mjs, and here for the same reason.
+ *
+ * The comment below says this channel "never had a boundary" and then builds
+ * one out of per-throw sanitising: the two refusals this module WRITES both go
+ * through `safeForMessage`. That was mistaken for coverage — the guard named
+ * "resources normalize their errors" exercises exactly those two and nothing
+ * else. Every throw the function merely PASSES ALONG stayed outside:
+ *
+ *   - `registry.resolveVault(parsed.vault)`, whose message interpolates the
+ *     caller's own URI segment raw, and
+ *   - `throw lastErr`, which re-raises whatever the REST read produced.
+ *
+ * The first was live. Driven against the real stdio server, `resources/read` on
+ * `obsidian-router://<payload>/wiki-catalog` answered `Unknown vault "<payload>"`
+ * byte for byte — ESC, BEL, NUL, DEL, U+009B, CR/LF and a forged
+ * `</result><result>` wrapper straight into the model's context. The second is
+ * clean today only because `RestApiError`'s constructor sanitises, which is a
+ * fact about another class, not about this channel.
+ *
+ * So: one choke point rather than a list of sites, because a list only ever
+ * covers the throws somebody already thought of. That is the same lesson the
+ * comment below claims to have learned, generalised one level further.
+ */
+function normalizeResourceError(err) {
+  const out = new Error(safeForMessage(err && err.message ? err.message : String(err), 2000));
+  if (err && err.kind) out.kind = safeForMessage(err.kind, 80);
+  if (err && err.hint) out.hint = safeForMessage(err.hint, 500);
+  // `code` is preserved as-is: the SDK maps it to a JSON-RPC code. It is a
+  // number, never a string that reaches the model.
+  if (err && err.code !== undefined) out.code = err.code;
+  return out;
 }
 
 /**
@@ -146,10 +186,40 @@ export function buildVaultCatalog(vaults = []) {
  * @returns {Promise<{contents: object[]}>}
  */
 export async function readResource(uri, registry, readFile) {
+  try {
+    return await resolveResource(uri, registry, readFile);
+  } catch (err) {
+    throw normalizeResourceError(err);
+  }
+}
+
+async function resolveResource(uri, registry, readFile) {
+  // THE RESOURCES CHANNEL IS A SECOND WIRE, and until v0.71.0 it had no
+  // boundary at all.
+  //
+  // Fourteen rounds hardened the TOOLS path — success payloads through
+  // wrapResult, errors through the dispatcher catch. None of it applied here:
+  // registerResourceHandlers wires this function's caller straight onto the SDK,
+  // so a throw from here reached the client having passed through nothing. The
+  // URI is caller-supplied, so a resource id carrying a forged tool-result
+  // wrapper and a live ESC arrived verbatim.
+  //
+  // The lesson is the one round 13 already taught and I did not generalise:
+  // "centralise the error channel" was implemented as "centralise the
+  // dispatcher's error channel", and there is more than one dispatcher.
+  //
+  // THAT IS PAST TENSE NOW, and the tense matters: `readResource` above wraps
+  // every call to this function in `normalizeResourceError`, and both SDK
+  // handlers do the same. This comment kept saying a throw from here "reaches
+  // the client having passed through nothing" twenty lines below the choke
+  // point that makes it false — the exact shape of stale security prose that
+  // this module's own docstring warns about, because a reviewer reads the
+  // comment instead of the call site. The per-site `safeForMessage` calls below
+  // are now redundancy, not the boundary.
   const parsed = parseResourceUri(uri);
   if (!parsed) {
     throw new Error(
-      `Unknown resource URI "${uri}". Expected ${CATALOG_URI} or ` +
+      `Unknown resource URI "${safeForMessage(uri, 200)}". Expected ${CATALOG_URI} or ` +
         `${RESOURCE_SCHEME}://<vault>/<wiki-catalog|wiki-overview>.`,
     );
   }
@@ -169,13 +239,17 @@ export async function readResource(uri, registry, readFile) {
   const def = findResourceDef(parsed.id);
   if (!def) {
     throw new Error(
-      `Unknown resource id "${parsed.id}" for vault "${parsed.vault}". ` +
+      `Unknown resource id "${safeForMessage(parsed.id, 80)}" for vault "${safeForMessage(parsed.vault, 80)}". ` +
         `Valid ids: ${VAULT_RESOURCE_FILES.map((f) => f.id).join(', ')}.`,
     );
   }
 
-  // resolveVault throws a clear error for unknown / missing-key vaults — let it
-  // propagate so the SDK surfaces it to the client.
+  // resolveVault throws a clear error for unknown / missing-key vaults. It used
+  // to propagate straight to the SDK, and its message interpolates the vault
+  // segment of the caller's own URI — so "a clear error" was also a verbatim
+  // echo of caller-controlled bytes. `readResource` now normalises on the way
+  // out; this line is left to throw because the boundary, not the call site, is
+  // what makes that safe.
   const vault = registry.resolveVault(parsed.vault);
   // Sanitize vault-sourced markdown exactly like get_file does — strip control
   // chars / ANSI escapes that would corrupt the MCP stdio JSON stream or smuggle
@@ -199,7 +273,11 @@ export async function readResource(uri, registry, readFile) {
     }
   }
   if (lastErr) throw lastErr;
-  const text = sanitizeContent(raw);
+  // NO_TRUNCATION, to match the tools boundary. Reading the SAME note through
+  // get_file returned it whole while reading it as a resource silently capped
+  // it at 1 MiB — one document, two size policies, decided by which door the
+  // caller used.
+  const text = sanitizeContent(raw, { maxLen: NO_TRUNCATION });
   return {
     contents: [
       {
@@ -220,14 +298,25 @@ export async function readResource(uri, registry, readFile) {
  */
 export function registerResourceHandlers(server, getRegistry) {
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
-    const registry = getRegistry();
-    return { resources: buildResourceList(registry.vaults) };
+    try {
+      const registry = getRegistry();
+      return { resources: buildResourceList(registry.vaults) };
+    } catch (err) {
+      // The same boundary as ReadResource, for the same reason: `getRegistry()`
+      // reads a hot-reloaded config, and a config-load failure names the file it
+      // could not read.
+      throw normalizeResourceError(err);
+    }
   });
 
   server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-    const registry = getRegistry();
-    return readResource(request.params.uri, registry, (vault, path) =>
-      getFileContent(vault, path),
-    );
+    try {
+      const registry = getRegistry();
+      return await readResource(request.params.uri, registry, (vault, path) =>
+        getFileContent(vault, path),
+      );
+    } catch (err) {
+      throw normalizeResourceError(err);
+    }
   });
 }

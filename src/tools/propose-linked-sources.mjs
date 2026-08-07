@@ -96,9 +96,12 @@ export async function handleProposeLinkedSources(args = {}) {
     maxCandidates: typeof maxCandidates === 'number' ? maxCandidates : undefined,
   });
 
-  return {
+  // Link TEXT and titles come from the fetched page — the anchor label is
+  // attacker prose by construction. sanitizeResponse walks the candidate list
+  // (objects in an array), which is what this returns.
+  return ({
     baseUrl: resolvedBase,
     count: candidates.length,
     candidates,
-  };
+  });
 }

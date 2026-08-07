@@ -20,8 +20,9 @@
  *     it itself wrote).
  *   - TRIGGER = a NOTE-BODY write under `wiki/<...>`. The tracked tools are
  *     `write_file`/`patch_file`/`append_to_file`, the built-in
- *     `Write`/`Edit`/`MultiEdit`, and `execute_template` (only when
- *     `createFile:true`, via its `targetPath`). `move_file`, `delete_file`,
+ *     `Write`/`Edit`/`MultiEdit`, `execute_template` (only when
+ *     `createFile:true`, via its `targetPath`) and `write_bundle` (per
+ *     content-writing step, via `steps[].path`). `move_file`, `delete_file`,
  *     `set_frontmatter`, `merge_frontmatter` are deliberately NOT tracked (a
  *     rename/delete/metadata toggle adds no recent fact worth a hot entry).
  *     Pure scaffold writes (`wiki-meta/catalog.md`, `journal.md`, `overview.md`) do
@@ -35,22 +36,67 @@
  * the caller via `ctx`.
  */
 
+import { writeTargets } from './write-targets.mjs';
+
 const BUILTIN_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit']);
 
 // MCP tools whose output can be a NOTE under `wiki/` (or a `wiki-meta/hot.md`
 // refresh): the note-body writers, plus `execute_template` (counted only when
-// it actually writes — see targetsFromToolUse). Matched by SUFFIX so both the
-// local `mcp__obsidian-router__write_file` form and the MCPHub-namespaced
-// `mcp__<id>__obsidian-router-<X>-write_file` form work.
+// it actually writes) and `write_bundle` (counted per step). Matched by SUFFIX
+// so both the local `mcp__obsidian-router__write_file` form and the
+// MCPHub-namespaced `mcp__<id>__obsidian-router-<X>-write_file` form work.
+//
+// `write_bundle` WAS MISSING, and it is the tool that writes the most files at
+// once: a bundle applying twelve notes under `wiki/` was invisible here, so the
+// Stop hook let the turn end with `hot.md` describing a vault state that no
+// longer existed. Same omission, same tool, as the two the factorisation of
+// `write-targets.mjs` fixed elsewhere — this copy simply never heard about it.
 //
 // DELIBERATELY EXCLUDED: `move_file` / `delete_file` / `set_frontmatter` /
 // `merge_frontmatter`. A rename, a delete, or a metadata toggle IS a write but
 // not "new note content worth a hot entry" — tracking them would force a
 // hot.md refresh (and emit a "you wrote notes" message) for operations that
 // add no recent fact. Widen the set here if that scope ever needs to change.
-const MCP_TRACKED_RE = /(?:^|[_-])(write_file|patch_file|append_to_file|execute_template)$/;
-const EXECUTE_TEMPLATE_RE = /(?:^|[_-])execute_template$/;
-const PATCH_FILE_RE = /(?:^|[_-])patch_file$/;
+const MCP_TRACKED_RE = /(?:^|[_-])(write_file|patch_file|append_to_file|execute_template|write_bundle)$/;
+
+/**
+ * The BARE router tool name behind whatever prefix the host imposed, or null.
+ * `mcp__plugin_obsidian-router_router__write_file` → `write_file`. Needed
+ * because `writeTargets` is keyed on the bare names the server declares.
+ */
+function bareTrackedToolName(toolName) {
+  const m = MCP_TRACKED_RE.exec(String(toolName || ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * A bundle step `op` → the single-file tool it is the equivalent of.
+ *
+ * This exists so the tracked-set policy above is stated ONCE. Without it, "a
+ * bundle's `set_frontmatter` step is a metadata toggle, not note content" would
+ * be a second, hand-maintained copy of the exclusion list — and this module's
+ * whole defect was a second copy of a rule nobody re-read. Steps are filtered
+ * through `isTrackedWriteTool`, the same predicate the top-level names use.
+ */
+const STEP_OP_TO_TOOL = {
+  write: 'write_file',
+  append: 'append_to_file',
+  patch: 'patch_file',
+  set_frontmatter: 'set_frontmatter',
+  merge_frontmatter: 'merge_frontmatter',
+  delete: 'delete_file',
+};
+
+/**
+ * A `patch` that targets FRONTMATTER is a metadata-only edit — the low-level
+ * equivalent of `set_frontmatter`, which is deliberately excluded. Treated the
+ * same so the primitive and the wrapper agree; a heading/block patch IS content.
+ * (codex review+ P2, pass 2.) One definition, used by the single-file branch and
+ * by the bundle-step filter.
+ */
+function isFrontmatterOnlyPatch(bareTool, o) {
+  return bareTool === 'patch_file' && o?.targetType === 'frontmatter';
+}
 
 export function isBuiltinWriteTool(name) {
   return typeof name === 'string' && BUILTIN_WRITE_TOOLS.has(name);
@@ -58,10 +104,11 @@ export function isBuiltinWriteTool(name) {
 
 /**
  * True if a tool name is one the guard TRACKS: a note-body writer (built-in
- * Write/Edit/MultiEdit, or MCP write_file/patch_file/append_to_file) or
- * execute_template. Non-tracked writes (move_file/delete_file/
+ * Write/Edit/MultiEdit, or MCP write_file/patch_file/append_to_file),
+ * execute_template, or write_bundle. Non-tracked writes (move_file/delete_file/
  * set_frontmatter/merge_frontmatter) return false by design — see the
- * MCP_TRACKED_RE comment.
+ * MCP_TRACKED_RE comment. Also answers for a BARE name, which is how the
+ * bundle-step filter reuses this one policy instead of restating it.
  */
 export function isTrackedWriteTool(name) {
   if (!name || typeof name !== 'string') return false;
@@ -122,10 +169,25 @@ function normAbs(p, isWin) {
 
 /**
  * Pull the candidate written path(s) + optional vault slug out of one tracked
- * tool call. Built-in Write/Edit/MultiEdit carry an ABSOLUTE `file_path`;
- * write_file/patch_file/append_to_file carry a vault-RELATIVE `path`;
- * execute_template carries `targetPath` (only when `createFile === true`).
- * All MCP tools may carry an optional `vault` slug.
+ * tool call. Built-in Write/Edit/MultiEdit carry an ABSOLUTE `file_path`; the
+ * router tools carry vault-RELATIVE paths and may carry an optional `vault`
+ * slug.
+ *
+ * WHICH FIELD NAMES THE TARGET IS NOT DECIDED HERE ANY MORE.
+ * `helpers/write-targets.mjs` is the one definition — `path` for most tools,
+ * `targetPath` only when `execute_template` has `createFile === true`,
+ * `steps[].path` for a bundle, nothing for a recovery replay. This function had
+ * its own copy of two of those rules and had never heard of the other two:
+ *
+ *   - it re-spelled the `createFile === true` gate inline, the very rule the
+ *     shared module was extracted to own;
+ *   - it did not know `write_bundle` existed, so a bundle writing twelve notes
+ *     produced zero targets and the freshness guard saw an idle session.
+ *
+ * The docstring over there says it out loud — "two rounds of propagate-the-fix
+ * is exactly how the copies drift, and the second copy is always the one nobody
+ * re-reads". This was that copy. What stays local is only what is genuinely this
+ * guard's own policy: which tools count as NOTE CONTENT at all.
  */
 export function targetsFromToolUse({ toolName, input } = {}) {
   const inp = input && typeof input === 'object' ? input : {};
@@ -137,28 +199,24 @@ export function targetsFromToolUse({ toolName, input } = {}) {
   }
 
   const vaultSlug = typeof inp.vault === 'string' && inp.vault.trim() ? inp.vault.trim() : undefined;
+  const none = { absolutePaths: [], relPaths: [], vaultSlug };
 
-  // execute_template: the only WRITTEN path is `targetPath`, and only when
-  // `createFile === true`. `name` is the TEMPLATE's path (an input, not an
-  // output) → never counted; a render with `createFile:false` writes nothing.
-  if (EXECUTE_TEMPLATE_RE.test(String(toolName))) {
-    if (inp.createFile === true && typeof inp.targetPath === 'string' && inp.targetPath) {
-      return { absolutePaths: [], relPaths: [inp.targetPath], vaultSlug };
-    }
-    return { absolutePaths: [], relPaths: [], vaultSlug };
-  }
+  const bare = bareTrackedToolName(toolName);
+  if (!bare) return none;
+  if (isFrontmatterOnlyPatch(bare, inp)) return none;
 
-  // A `patch_file` with `targetType: 'frontmatter'` is a metadata-only edit —
-  // the low-level equivalent of `set_frontmatter`, which we deliberately
-  // exclude. Treat it the same (not note content) so the primitive and the
-  // wrapper agree; a heading/block patch IS content. (codex review+ P2, pass 2.)
-  if (PATCH_FILE_RE.test(String(toolName)) && inp.targetType === 'frontmatter') {
-    return { absolutePaths: [], relPaths: [], vaultSlug };
-  }
+  // A bundle's steps are filtered to the content-writing ones BEFORE the shared
+  // extractor runs, so `writeTargets` stays the sole authority on the recovery
+  // gate and on the `steps[].path` shape, while the exclusion policy is applied
+  // to its input rather than re-derived from its output.
+  const args = bare === 'write_bundle' && Array.isArray(inp.steps)
+    ? { ...inp, steps: inp.steps.filter((s) => {
+      const stepTool = STEP_OP_TO_TOOL[s?.op];
+      return isTrackedWriteTool(stepTool) && !isFrontmatterOnlyPatch(stepTool, s);
+    }) }
+    : inp;
 
-  // write_file / patch_file (heading|block) / append_to_file: vault-relative `path`.
-  const relPaths = typeof inp.path === 'string' && inp.path ? [inp.path] : [];
-  return { absolutePaths: [], relPaths, vaultSlug };
+  return { absolutePaths: [], relPaths: writeTargets(bare, args), vaultSlug };
 }
 
 /** Classify a vault-relative path into 'hot' | 'content' | 'other'. */

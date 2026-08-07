@@ -21,7 +21,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { contentSha256 } from '../helpers/content-hash.mjs';
 import {
   recordSource,
@@ -159,7 +158,7 @@ export async function recordSourceTool(registry, args = {}, _deps = {}) {
   if (outcome === 'unchanged' && existed) {
     // Nothing to persist — do not churn a shared file (and do not risk a
     // spurious conflict) for a write that would change nothing.
-    return sanitizeResponse({
+    return ({
       vault: vault.name, path: SOURCE_LEDGER_PATH, outcome, contentChanged,
       written: false, entry, total: Object.keys(next.sources).length,
     });
@@ -191,7 +190,7 @@ export async function recordSourceTool(registry, args = {}, _deps = {}) {
     }
   }
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     path: SOURCE_LEDGER_PATH,
     outcome,
@@ -213,7 +212,7 @@ export async function auditSourcesTool(registry, args = {}, _deps = {}) {
   const { ledger, existed } = await readLedger(deps.getFileContent, vault);
 
   if (!existed) {
-    return sanitizeResponse({
+    return ({
       vault: vault.name,
       path: SOURCE_LEDGER_PATH,
       ledgerPresent: false,
@@ -226,7 +225,7 @@ export async function auditSourcesTool(registry, args = {}, _deps = {}) {
   }
 
   const report = auditLedger(ledger, deps.now());
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     path: SOURCE_LEDGER_PATH,
     ledgerPresent: true,

@@ -34,7 +34,6 @@
  * See src/helpers/local-search.mjs for the full doctrine.
  */
 import { searchSmart, getFileContent } from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
 import {
@@ -179,7 +178,7 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
       candidates.map(async (v) => ({ vault: v.name, ...(await searchOne(v)) })),
     );
 
-    return sanitizeResponse({
+    return ({
       query,
       filter,
       requestedTier,
@@ -192,7 +191,7 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   }
 
   const vault = registry.resolveVault(name);
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     query,
     filter,

@@ -2,11 +2,13 @@ import { moveFileFromTo } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
 import { isContentSha256 } from '../helpers/content-hash.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 export async function moveFileTool(registry, args = {}) {
-  const { vault: name, from, to, overwrite = false, ifMatch } = args;
-  if (!from) throw new Error('Missing required argument: from');
-  if (!to) throw new Error('Missing required argument: to');
+  const { vault: name, overwrite = false, ifMatch } = args;
+  // BOTH ends need containment: `from` reads and deletes, `to` writes. See
+  // vault-path-guard.
+  const from = canonicalVaultPath(args.from, 'from');
+  const to = canonicalVaultPath(args.to, 'to');
   if (ifMatch !== undefined && !isContentSha256(ifMatch)) {
     throw new Error(
       'Invalid ifMatch: expected a 64-char lowercase hex content hash (the contentSha256 field from get_file). It is checked against the SOURCE file.',
@@ -35,7 +37,15 @@ export async function moveFileTool(registry, args = {}) {
     : null;
   // Non-blocking OKF-name guard (2026-07-29 decision) on the destination.
   const okfSuggestion = okfSafePathSuggestion(to);
-  return {
+  // NOT just "the two caller paths + status", which is how this tool was
+  // classified on the first pass of the round-10 audit. `...result` spreads the
+  // REST layer's own object, and its failure branch carries
+  // `warning: "Wrote X but failed to delete source Y: ${err.message}"` — a
+  // RestApiError message, which splices in 200 bytes of the HTTP response body.
+  // So this tool DOES put server-supplied bytes on the success path. The
+  // exemption reason was wrong, and a reason that is wrong is worse than no
+  // reason: it is a guard vouching for the thing it should have caught.
+  return ({
     vault: vault.name,
     from,
     to,
@@ -46,5 +56,5 @@ export async function moveFileTool(registry, args = {}) {
     ...(okfSuggestion && {
       okfNameWarning: `Destination is not OKF-safe (2026-07-29 policy: notes use ascii-kebab names). Suggested: ${okfSuggestion}`,
     }),
-  };
+  });
 }

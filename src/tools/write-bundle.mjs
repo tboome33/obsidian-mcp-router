@@ -26,7 +26,6 @@ import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
 import { classifyError } from '../error-classify.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import {
   BundleError,
   BUNDLE_JOURNAL_DIR,
@@ -443,7 +442,7 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
   const identity = vaultIdentity(vault);
   if (args.preview === true) {
     const seal = computePlanSeal({ op: BUNDLE_SEAL_OP, identity, plan });
-    return sanitizeResponse({
+    return ({
       vault: vault.name,
       preview: true,
       steps: plan.steps,
@@ -618,7 +617,7 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
     const journalNote = await closeJournal(deps, vault, journalPath, journal, 'applied');
     const journalUnsafe = Boolean(journalNote && journalNote.unsafe);
     if (journalNote) warnings.push(journalNote.message || journalNote);
-    return sanitizeResponse({
+    return ({
       vault: vault.name,
       operationId,
       ok: true,
@@ -670,7 +669,7 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
     );
   }
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     operationId,
     ok: false,
@@ -789,7 +788,7 @@ async function recover(vault, args, deps) {
       });
     }
     const open = pending.filter((p) => p.recoverable).length;
-    return sanitizeResponse({
+    return ({
       vault: vault.name,
       recover: 'list',
       journalDir: BUNDLE_JOURNAL_DIR,
@@ -885,7 +884,7 @@ async function recover(vault, args, deps) {
     );
   }
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     operationId,
     recover: 'run',

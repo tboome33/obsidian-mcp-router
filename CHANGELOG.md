@@ -4,7 +4,140 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased]
+## [0.71.0] — 2026-08-07 — normalization left the 36 tools for one boundary
+
+### Changed — normalization left the 36 tools for ONE boundary
+
+**Tools now return raw, and a single function normalizes on the way out.** Every
+tool used to sanitize its own result: 36 places to remember, and one forgotten
+site was enough for a hostile byte to travel. `wrapResult` in `src/index.mjs` now
+does it once — and, critically, *after* the dispatcher has consumed the raw
+values for the view-link and the audit line.
+
+That ordering is not tidiness, it fixed a functional bug no per-tool approach
+could reach: the dispatcher re-read an **already-escaped** path to compose the
+view-link, so a perfectly legal POSIX filename produced a link to a note that did
+not exist. Sanitizing an **identity** that downstream code still has to use
+cannot be made correct by vigilance — only by doing it last.
+
+Three output channels are covered, and it took three review rounds to finish
+counting them: tool results (through `wrapResult`), the error channel
+(normalized centrally at the dispatcher's `catch`, where `Error: ${err.message}`
+used to render any other throw verbatim), and **MCP resources** — a second wire
+registered straight onto the SDK that fifteen rounds never touched. The typed MCP
+payload is no longer a passthrough: every field is normalized **except `data`**,
+excluded **by name** rather than by type, so a future non-string field cannot
+inherit the exemption by accident the way `_meta` and `annotations` did.
+
+#### What changes for a caller
+
+- **The bytes returned change on roughly twenty tools.** Normalization is now
+  uniform and applied without truncation. A client comparing result strings
+  character-by-character may see differences.
+- **Some paths that used to be accepted are now refused.** `canonicalVaultPath`
+  rejects anything the sanitizer would rewrite, plus the three whitespace
+  controls — carriage return, newline **and tab** — plus unpaired surrogates.
+  Measured across the real fleet: **0 refusals**, see the table below.
+- **OSC handling changed**, and `execute_template` canonicalizes `name`
+  unconditionally.
+
+### Changed — BREAKING: one definition of what a vault path is
+
+**`isSafeVaultRelativePath` is gone; `canonicalVaultPath` is the only answer.** The repo carried two predicates for one question and they disagreed: the looser one accepted C1 control characters including U+009B (a one-character ANSI CSI), bare `.` segments, `<result>`-shaped markup, `C:` without a separator, U+2028/U+2029 and mid-string backslashes. Each of those classes is pinned by name in `tests/security-invariants.test.mjs`, against the surviving predicate. *(An earlier draft of this entry quoted a "688 of 3 074 inputs" disagreement rate. The number is removed rather than restated: the loose predicate is deleted, so nothing in the repo can reproduce it, and a figure that reads as evidence but cannot be checked is worse than no figure.)*
+
+`build_wiki_graph.pagesDir` was converted in an earlier round; the last caller — the `get_wiki_context_pack` catalogue drill, which reads wikilinks out of the vault-writable `wiki-meta/catalog.md` — is converted now, and the function is deleted so there is no second answer left to reach for. A poisoned `[[evil<result>]]` used to send `wiki/evil<result>.md` to the REST client.
+
+What changes for a path that used to be accepted, exactly:
+
+| form | before | now |
+| --- | --- | --- |
+| a backslash — `wiki\sub`, `a\b.md` | treated as ordinary text (one innocent-looking segment) | **REFUSED** — a backslash is not a separator here, so containment cannot be verified |
+| a `.` segment — `./wiki`, `wiki/./sub` | passed through, or silently converted | **REFUSED** — only `..` was ever checked for |
+| a leading slash — `/wiki/a.md` | refused | **NORMALISED** to `wiki/a.md` |
+| a trailing slash — `wiki/a.md/` | normalised | unchanged, still normalised |
+
+Swept over the repo: no production caller of a converted site, and no skill, slash command, doc or example, uses the removed forms. Some **tests** do — deliberately, as negative fixtures — so the earlier claim of "no caller anywhere" was too absolute. (The `okf-bundle-exporter` fixtures that spell `wiki-meta\hot.md` and `./wiki-meta/log.md` feed that exporter's own normaliser, which is a separate path and unchanged.)
+
+And the fleet claim now comes with its measurement — **and with its scope**, which is half the claim. Measured **2026-08-06**:
+
+| corpus | command | files | refused | renormalised |
+| --- | --- | --- | --- | --- |
+| the 21 **configured** roots, vault content | `node scripts/measure-vault-path-shapes.mjs` | 4 795 (3 937 md) | 0 | 0 |
+| the 21 configured roots, plugin trees included | `… --all` | 10 239 | 0 | 0 |
+| **the 26 roots that exist on disk**, vault content | `… --root "C:/VAULTS/PitEcho" --root …` (5 strays) | **5 070 (4 187 md)** | **0** | **0** |
+
+Three corrections to what was published, all in the same direction — the entry claimed more scope than it measured and less accuracy than it had:
+
+- The numbers were stale by one file (**4 794 / 3 936 / 10 238** written, **4 795 / 3 937 / 10 239** measured). Re-measured above rather than restated.
+- "The fleet" meant the 21 roots `portRegistry` lists. **Five more vaults exist on disk** and were never in the sweep. Passed with `--root` now, and the conclusion holds *better* than published: 5 070 files, still zero refused, still zero renormalised.
+- `walk()` swallowed `readdirSync` errors, so an unreadable subtree counted as **zero files** and "0 refused over N" could describe a corpus that was never read. The script now counts and prints `unreadable : N subtree(s) skipped mid-walk`, marks the file count a lower bound when N > 0, and prints the line even at zero — because absence of a line is not evidence. (N = 0 for every corpus above.)
+
+The script is in this release precisely so the next reader can re-run it instead of trusting it.
+
+Refusal is **per link, never global**, at the one site that reads paths out of a vault file: a poisoned wikilink cannot deny the whole context pack. See the `get_wiki_context_pack` entry below for what "dropped" now actually means — in the first draft of this release it did not mean what it said.
+
+### Fixed — the audit journal records what was written, and only once
+
+The journal line has to be four things at once: readable, **unforgeable** (no character of the payload may spell the structure), **distinguishing** (two files, two lines), and bounded. Three successive rounds fixed one of those and broke another, because unforgeability was bought by MUTILATING characters and distinctness by ESCAPING them, in two functions thirty lines apart — and mutilation is many-to-one. This release stops treating them as competing goals.
+
+**And it stops claiming a property that cannot exist.** Three rounds asserted the line is "bounded **and injective**". It cannot be both: each part is capped at ~440 characters and the input is unbounded, so by pigeonhole some pair must collide. The claim is replaced by two that are separately true and separately testable — **below the cap the rendering really is injective** (every escape is reversible, nothing is collapsed), and **above it, collision-resistant**: a sha256 **widened from 64 to 128 bits**, taken over a lossless encoding, alongside the 360-character prefix and the exact original length. Finding a collision now means breaking sha256 rather than finding the pigeonhole. This is a correction to the *specification*, not only to the code: the version of the claim that could not be true was also the version nobody could test.
+
+- **One construction instead of two.** `pickAuditPath` no longer returns a rendered string; it returns the *parts*, and `formatAuditLine` escapes each caller-derived part and then adds the structure — the separators, the parentheses, the words `path(s):`, the `(+N not shown)` notice — as router text on top. A payload cannot spell any of it because everything it contains is already escaped, and nothing is mutilated, so the distinctions that come in survive. Text the router chose (`(unknown)`, the fixed targets) is tagged as such and printed verbatim, so the readable sentinels stay readable instead of becoming `%28unknown%29`.
+- **2 047 different writes shared one journal line, byte for byte.** A JS string is UTF-16 code units, so `wiki/a\uD800.md` and `wiki/a\uD801.md` are distinct strings — and nothing in the guard objected, because an unpaired surrogate is neither a control byte nor markup. But the line is **appended over UTF-8**, where an unpaired surrogate has no encoding and becomes U+FFFD. Measured over the 2 048 of them: `distinct JS strings: 2048`, `distinct UTF-8 wire bytes: 1`. Two independent defects, two fixes: the truncation digest hashed `utf8` (lossy over exactly these) and now hashes `utf16le`, which closes the *long*-path case; and `canonicalVaultPath` **refuses unpaired surrogates outright**, which is the only thing that can close the short-path case — a twelve-character path never reaches a digest, and the collapse happens when the finished line is encoded. Cost: zero of the 5 070 files on the real fleet, and none is possible — the REST API addresses notes over UTF-8 JSON, so such a file is unreachable through this router either way. *(Two reviewers disagreed about whether this class existed. It does; the sweep that found none used surrogate **pairs** cut at the truncation boundary, never a lone one.)*
+- **`write_bundle` fused four distinct characters into one.** The previous fix collapsed `,`, `(` and `)` to `;` inside every path, which made `wiki/a,b.md`, `wiki/a(b.md`, `wiki/a)b.md` and `wiki/a;b.md` produce one identical line — **569 collisions over 8 972 distinct canonical paths** on that branch, against 0 on `write_file`, which the collapse never touched. Those characters are now percent-escaped like the rest.
+- **The 400-character cap bounded nothing.** It was applied *before* escaping, so a 408-character path reached the file at **1 051 characters**. It is applied after escaping now, and the line has a real bound.
+- **Above the cap, 5 000 distinct paths produced one line.** The only discriminants surviving truncation were the shared prefix and the original length. The truncation notice now carries a **sha256 digest of the original path**, and the same treatment closes a second hole found by the pin that closed the first: only ten bundle paths are shown, so two twelve-step bundles differing *only in their eleventh and twelfth targets* were byte-identical records. The omission notice now digests the hidden tail.
+- **`sanitize`'s own truncation notice reached the journal.** It is bracketed, so it arrived as `…%5Btruncated by sanitize: original was 608 chars%5D` — exactly the defect the bundle notice was parenthesised to avoid, in the module next door. The audit path no longer lets that truncation fire.
+- **`execute_template` journalled the raw argument, not the file it wrote.** A call the bridge received as `Sessions/today.md` was journalled `/Sessions//today.md`. The audit path is canonicalised now. *(The comment added last round claimed the handler had already canonicalised this value. It had not — `pickAuditPath` re-reads the original arguments. The comment is corrected too; a false comment about a security property is its own defect.)*
+- **Four `write_bundle` calls were journalled as recoveries while writing their real steps.** The dispatcher routes on `normalizeRecoverArg`, which reads `"false"`, `"0"`, `"no"` and `"off"` as an ordinary bundle — the field is a `boolean|operationId` union because a real client was observed sending the string `"true"`. The journal used bare truthiness and disagreed with the handler.
+- **A path containing `"`, `[` or `]` was journalled under a different name.** Those three were collapsed to `'`, so two different files could produce the same line — the same divergence that got a tab refused outright. They are now **percent-escaped** (`%22`, `%5B`, `%5D`, with `%` escaped first so the encoding stays reversible): `Notes [draft].md` stays legible as `Notes %5Bdraft%5D.md`, no literal bracket survives to forge a record marker, and the rewrite is injective. Refusing brackets upstream was rejected — they are ordinary in Obsidian filenames.
+- **The one write target that skips the canonicaliser could name two directories with one line.** `download_page_assets.outputDir` is an absolute filesystem path, so it is checked with `isAbsolute` + the `MD_ALLOWED_PATHS` sandbox and never canonicalised. That matters because **the line's ability to tell two files apart is a property of the guard, not of `formatAuditLine`**: the renderer's first step is `safeForMessage`, which normalises U+0085/U+2028/U+2029 to a newline and then flattens it to a space — many-to-one by design, and nothing downstream can undo it. Every vault path is safe from that only because the guard refuses those shapes upstream. U+2028 is a legal NTFS filename character, so this was reachable, not theoretical: two calls, **two directories really created on disk**, one journal line —
+
+  ```
+  "a b" = U+0061 U+0020 U+0062      audit sha256 = 0f979888362a07e7…
+  "a b" = U+0061 U+2028 U+0062      audit sha256 = 0f979888362a07e7…
+  BYTE-IDENTICAL: true | distinct inputs: true
+  ```
+
+  `isAuditStable` is exported from the guard and applied to `outputDir` right after the sandbox check. Defined by **difference against the real renderer** rather than by a character list, so it cannot drift from it — plus the unpaired-surrogate rule, because a pure difference test inherits the renderer's blind spots and that is one of them. Measured cost: **0 refusals over the 5 070 files** of the real fleet. `provision_vault.path` has the same shape and was checked rather than patched: it is structurally unreachable, because `gated` and `userId` are the same condition and `gated` refuses the tool *before* the handler while the audit fires only *after* success. Recorded as a decision, with the reasoning, instead of a defensive edit nobody could justify later.
+- **A record of a write that did not happen.** `execute_template` with `createFile` unset renders a template and writes nothing; the journal fell back to `args.name` **bare**, so a render was indistinguishable from a real write — `execute_template path="wiki/private/salaries.md"` either way, byte for byte, reachable with nothing more than an existing note. `write-targets.mjs` already called this fallback "a display fallback and not a write", and that sentence lived only in a docstring. The line now reads `… path="Templates/t.md (template rendered, nothing written)"`, with the disclaimer added as **router text after escaping**, so a hostile template name cannot spell it — nor dress a real write up as a render.
+
+### Fixed — a write bundle never refreshed the OKF projections
+
+**`write_bundle` scheduled no projection refresh at all.** `pathsTouchedByWrite` read raw arguments and never looked inside `steps[]`, so the tool that writes the most pages at once left the generated indexes stale until something else triggered a rebuild. A functional bug, not an audit one. Two false positives went with it: a render-only `execute_template` refreshed for a file it never wrote, and an *undeclared* `path` appended to `build_search_index` or `record_source` drove a refresh for a page those tools do not touch.
+
+The rule for "which files does this call really write" had been fixed in `pickAuditPath` two rounds earlier and never reached this second reader, because it was a **copy**. Both now import `src/helpers/write-targets.mjs`; there is one definition.
+
+**And the factorisation had left two more copies outside it.** The module's own docstring says "two rounds of *propagate the fix* is exactly how the copies drift, and the second copy is always the one nobody re-reads". There were two, and nobody had re-read them:
+
+- **`src/helpers/hot-staleness.mjs`** — the hot-cache freshness guard re-spelled the `createFile === true` gate inline (the very rule the shared module was extracted to own) and had never heard of `write_bundle`. A bundle writing twelve notes under `wiki/` produced **zero** targets, so the Stop hook let the turn end with `hot.md` describing a vault state that no longer existed.
+- **`hooks/session-auto-journal.mjs`** — its `[input.path, input.from, input.to, input.targetPath]` carried **both** bugs the factorisation had fixed elsewhere: `write_bundle` → `[]` (an empty "Files touched" recap for the tool that writes the most files at once, which was not even recognised as a router write) and a render-only `execute_template` reported as touched when nothing was written.
+
+Both import `writeTargets` now, and `write_bundle` is in both tracked-tool lists — plus `ROUTER_WRITE_TOOLS`, the exported PostToolUse matcher, and `hooks/hooks.example.json`, which are pinned equal to each other. What stays local to the freshness guard is only its own policy — *which* tools count as note content — expressed once and reused for bundle steps through a step-op → tool mapping, rather than restated.
+
+Two candidates were examined and **left alone**, with the reason: `noteForWriteResult` and the click-to-open walker answer from the handler's **result**, not from its arguments. That is an authoritative source, not a re-derivation, and converting them would have been motion rather than a fix.
+
+### Fixed — `get_wiki_context_pack` returned incomplete packs without saying so
+
+- **A poisoned catalogue spent the page budget.** The path guard ran *inside* the drill, i.e. after `slice(0, maxPrimaryPages)` had already handed out the slots, so entries that could never be read evicted ones that could — measured: three legitimate pages lost to three poisoned wikilinks, with an envelope that looked full because the placeholders filled it. Whoever can edit `wiki-meta/catalog.md` chose which pages the model was allowed to see. The guard now runs before the budget.
+- **A dead wikilink silently deleted a legitimate neighbour.** The neighbour-exclusion set was built from every entry that reached `primaryPages`, and that array carries placeholders — so one perfectly canonical catalogue entry pointing at a page that does not exist removed a real neighbour from the pack, **with an empty `warnings` array**, because a 404 is an ordinary vault fact and emits nothing. Only pages that were really read suppress a neighbour now.
+- **N refused links reported as one.** `warnings` is deduplicated at emit time, so a repeated bare token collapsed to a single `unsafe-index-target` and a consumer could not tell one poisoned wikilink from forty. The warning carries the count: `unsafe-index-target (3 links refused)`. The token is still the prefix, so a grep for it keeps working.
+- **And "the link is dropped" is now true.** The previous entry said so while the poisoned path survived in `primaryPages[].path`, echoed back verbatim — not an execution vector, nothing dereferences it, but an unannounced re-echo of attacker-controlled text into the model's context. Refused links are really gone from the envelope. The trade is deliberate and it is a real one: the consumer keeps *how many* and loses *which*. The catalogue is a vault file, and `wiki-lint` is the tool for naming them.
+
+### Fixed — the audit middleware could be switched off with the suite green
+
+**Replacing the middleware's own activation condition with `if (false)` left 3 652 / 3 652 tests passing.** The whole audit surface was covered by unit tests on `pickAuditPath` and `formatAuditLine`, plus one test named "middleware wire-up sanity" that reads `src/index.mjs` **as text** and greps it for three substrings — all of which are still present when the branch is unreachable. Sixteen rounds hardened what the line *contains*; nothing checked that the line is ever *written*. The audit journal could have been dead in production and the suite would have said nothing.
+
+`tests/audit-middleware-e2e.test.mjs` drives the real thing: the actual `bin/obsidian-mcp-router.mjs` process, over real stdio JSON-RPC, against a loopback HTTP server playing the Local REST API. It asserts on what that server **received** — the `PUT` of the note, then the `POST` appending the attribution to `wiki-meta/journal.md`, in that order, with the right bearer token and the right line. Nothing in it reads the router's source. Two companion cases keep the claim honest in both directions: with no `OBSIDIAN_ROUTER_USER_ID` the same write appends **nothing** (otherwise "wired" and "always on" are indistinguishable), and a write the containment guard refuses reaches the vault **not at all**. Verified by mutation: `if (false)` reddens exactly this file — and the old grep-based test still passes 17/17 beside it.
+
+### Fixed — three guards that could not fail
+
+- **The dotenv-writer guard was blind to arrow functions.** Its unit finder recognised only `function NAME(…)` declarations — a limit that was documented and therefore felt considered. It was not: rewrite one writer as `const upsertDotenvVar = (key, value) => { … }` in a file that already contains a valid `assertDotenvScalar` call, and the file-level rule is satisfied by the *other* writer while the per-function rule never sees this one. Green, with an unguarded writer shipped. The finder now reads five shapes, and — because there will always be one it does not know — every write primitive in a `.env`-writing file must fall inside a discovered unit, so an unparseable writer fails *loudly* instead of quietly.
+- **Two exemption tables were never read.** `NOT_DRIVEN_HERE` and `EXEMPT` were consulted only for their keys, so every justification in them could be emptied with the suite green. The previous round fixed exactly this for `ACCEPTED_BY_DESIGN` and `NOT_DRIVEN_REASONS` and carried it to neither — a rule that reached its first call site only, which is this suite's own recurring failure mode. Same floor as the other two: five words.
+- **Both resource-channel error normalisations were untested.** Deleting `normalizeResourceError` from either SDK wrapper's `catch` left the whole suite green — everything the tests drove arrived clean because `readResource` normalises its own refusals, so the wrapper's catch looked redundant. It is not: it is the only thing between the client and a throw from `getRegistry()`, which is a hot-reloaded config load and a real failure path. Now driven, for both wrappers. *(The suspicion that the wrappers themselves survived deletion was checked and is false — deleting either one reddens the pin.)*
+- **A security assertion in shipped code that named a test which did not exist.** `src/helpers/write-targets.mjs` stated that its target-field table is "pinned against the schemas in `tests/security-invariants.test.mjs`". No test mentioned the table; the only occurrences under `tests/` were two comments. That is the exact form the repo documents as **worse than no assertion** — it is what a reviewer reads instead of the call sites. It mattered because two of the three consumers cannot check for themselves: `writeTargets` takes an optional schema veto and only the audit consumer passes it (the projections scheduler would close an import cycle; the two hooks have no schema in scope). Measured with a write tool declaring `destination` and no `path`: containment still refuses it, but the audit attribution falls silently to `(unknown)` while the scheduler reads a `path` the **caller appended** — `request.params.arguments` being an open record at runtime. The pin now exists, in the file the sentence always named, and the sentence is corrected.
+- **A fifth exemption table whose values were never read**, and two fixtures that proved nothing. `ALLOWED` (the one-definition-of-the-safe-echo guard) was checked for live keys only, so every justification in it could be emptied with the suite green — the same defect fixed for four sibling tables and carried to neither. Same five-word floor now. The `heading-patch target` row of the hostile-content table returned the clean sentinel `'(no refusal)'` on the no-throw path, which the checker waved through: **deleting the call entirely left the row green**. It asserts in-row that it got a refusal, and which one. And the router-text guard's fixture combined `"`, `[` and `]` in one string, so narrowing the class to the quote alone kept it passing — an alternation masked by an OR. Each member is proved separately now, and the class from both ends.
+- **`ROUTER_TEXT_SAFE` claimed to remove a trust it did not remove.** Its comment said the check "removes the need to trust every future edit to `FIXED_AUDIT_TARGETS`", while the character class allowed digits, commas, colons and parentheses — every character of `3 path(s): a.md, b.md`. No shipped constant spells that, and the point of the check is that nobody should have to verify it. `,` and `:` are excluded now, which is exactly enough: **every** structural token needs at least one of them (`N path(s):` needs the colon, `, ` the comma, both `sha256:…` notices and the new render-only disclaimer need both). Parentheses and digits stay legal deliberately — three of the six shipped constants need them, and excluding them would turn the fleet's most common journal line into `%28unknown%29`. Pinned from both ends: every shipped constant must print verbatim, every structural token must fail.
 
 ## [0.70.2] — 2026-08-04 — the `__proto__` sweep: four review rounds until the reviewers agreed
 
@@ -1636,7 +1769,7 @@ First slice of the **Understand-Anything** borrowings (Phase 1 #1 deterministic 
 ### Security / hardening (from the pre-ship adversarial review)
 
 - **ReDoS guard in the `.wikiignore` matcher** — a `.wikiignore` is attacker-influenced vault content; a crafted pattern (`a` + 40×`*` + `b`) compiled to N adjacent `.*` groups → ~80s event-loop freeze. Fixed by collapsing consecutive-star runs to a single quantifier + caps (pattern length, `**`-run count, total wildcard count) with fail-safe drop + warnings.
-- **Path-traversal guard** — the tool's `pagesDir` argument now reuses the canonical `isSafeVaultRelativePath` (rejects leading `/`, drive letters, UNC, `..`, control chars) instead of a weaker bespoke check.
+- **Path-traversal guard** — the tool's `pagesDir` argument reuses a shared guard (rejects leading `/`, drive letters, UNC, `..`, control chars) instead of a weaker bespoke check. *(The guard named here at the time was `isSafeVaultRelativePath`; v0.71.0 replaced it with `canonicalVaultPath` and deleted it — see that entry.)*
 - **Output sanitisation** — the written graph JSON is run through `sanitizeResponse` (vault content is attacker-influenced and the JSON is consumed by external dashboards/agents); **prototype-pollution keys** (`__proto__`/`constructor`/`prototype`) are stripped from embedded frontmatter.
 - **Bounded read concurrency** — page/digest reads are batched (no unbounded `Promise.allSettled` connection storm on large vaults); enumeration bounded by depth/file caps with truncation warnings.
 

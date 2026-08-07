@@ -15,7 +15,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import {
   scoreBoundaryPages,
   DEFAULT_LIMIT,
@@ -113,7 +112,7 @@ export async function findBoundaryPagesTool(registry, args = {}, _deps = {}) {
 
   const result = scoreBoundaryPages(graph, { limit, minInbound, exemptTypes, exemptStatuses, asOf });
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     graphPath: CANONICAL_GRAPH_PATH,
     // The graph is a SNAPSHOT. A stale one ranks pages that may no longer exist,

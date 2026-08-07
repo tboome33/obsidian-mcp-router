@@ -26,7 +26,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-
+import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
+import { safeForMessage } from '../helpers/sanitize.mjs';
 export const VALID_MODES = ['ClaudeAsk', 'Hybrid', 'FullAuto', 'off'];
 
 /**
@@ -55,7 +56,10 @@ export async function setAutoEnrichMode(registry, args = {}) {
   const mode = canonicalizeMode(rawMode);
   if (!mode) {
     throw new Error(
-      `set_auto_enrich_mode: invalid mode "${rawMode}". ` +
+      // The REJECTED value, so by definition not one of VALID_MODES — i.e.
+      // whatever the caller sent. The success path of this tool is sanitized;
+      // this refusal was not.
+      `set_auto_enrich_mode: invalid mode "${safeForMessage(rawMode, 80)}". ` +
         `Valid modes: ${VALID_MODES.join(', ')}.`,
     );
   }
@@ -103,7 +107,7 @@ export async function setAutoEnrichMode(registry, args = {}) {
     persisted = true;
   }
 
-  return {
+  return ({
     mode,
     previousMode: previousMode ?? null,
     persisted,
@@ -113,7 +117,7 @@ export async function setAutoEnrichMode(registry, args = {}) {
       (persisted
         ? `OBSIDIAN_ROUTER_AUTO_ENRICH=${mode} written to ${envPath} — mode survives restart.`
         : `Mode is volatile (this session only). Use persist:true to make it survive restarts.`),
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +165,11 @@ export function canonicalizeMode(input) {
  * is lower than the cost of a new shared module that two tools depend on.
  */
 async function upsertDotenvVar(envPath, key, value) {
+  // Shared definition — see helpers/dotenv-scalar.mjs. Today this writer's
+  // caller reduces its input to a fixed mode vocabulary before reaching here,
+  // so it is not exploitable; the guard is present anyway so the NEXT caller
+  // does not have to rediscover why it matters.
+  assertDotenvScalar(value, key, envPath);
   let lines = [];
   try {
     const raw = await fs.readFile(envPath, 'utf8');

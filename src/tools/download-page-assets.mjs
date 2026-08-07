@@ -75,7 +75,7 @@ import {
 } from '../helpers/asset-downloader.mjs';
 import { extractMainContent } from '../helpers/defuddle-extract.mjs';
 import { assertPathAllowed } from '../markdownify/utils.mjs';
-
+import { isAuditStable } from '../helpers/vault-path-guard.mjs';
 export const TOOL_NAME = 'download_page_assets';
 
 export const TOOL_DEFINITION = {
@@ -236,6 +236,37 @@ export async function handleDownloadPageAssets(args = {}) {
     throw new Error(`download_page_assets: ${e.message}`);
   }
 
+  // AND THE AUDIT JOURNAL HAS TO BE ABLE TO NAME IT.
+  //
+  // `outputDir` is the one write target in this router that never meets
+  // `canonicalVaultPath` — it is an absolute filesystem path, so the two checks
+  // above (absolute + sandbox) are the whole of its validation. The audit line's
+  // injectivity, though, is a property of THAT GUARD and not of
+  // `formatAuditLine`: the renderer's first step is `safeForMessage`, which
+  // normalises U+0085 / U+2028 / U+2029 to `\n` and then flattens to a space.
+  // Many-to-one, and nothing downstream can undo it.
+  //
+  // U+2028 is a legal NTFS filename character, so this was reachable rather than
+  // theoretical — two calls, two directories really created on disk, one journal
+  // line:
+  //
+  //   "a b" = U+0061 U+0020 U+0062
+  //   "a b" = U+0061 U+2028 U+0062
+  //   audit sha256 A = 0f979888362a07e7…   audit sha256 B = 0f979888362a07e7…
+  //   BYTE-IDENTICAL: true | distinct inputs: true
+  //
+  // Refused rather than rewritten: the caller asked for a directory, and quietly
+  // writing to a DIFFERENT one so the journal reads nicely is the worse trade.
+  // Measured cost across the 26 real vault roots (5 070 files): 0 refusals.
+  if (!isAuditStable(outputDir)) {
+    throw new Error(
+      `download_page_assets: outputDir contains a character the audit journal cannot record `
+      + `unambiguously (a line separator such as U+2028/U+2029/U+0085, a tab, or a control byte). `
+      + `Two directories differing only there would be journalled as the same write. `
+      + `Use a plain single-line path.`,
+    );
+  }
+
   // Resolve HTML.
   let resolvedHtml = html;
   let baseUrl = explicitBaseUrl;
@@ -294,7 +325,12 @@ export async function handleDownloadPageAssets(args = {}) {
   // changes back to raw page-supplied values.
   const urlMapObj = Object.fromEntries(result.urlMap);
 
-  return {
+  // , the per-asset errors and the urlMap keys all originate in the
+  // fetched page. An error string from a remote host is not router text.
+  // `defuddled`, the per-asset `errors` and the `urlMap` keys all originate in
+  // the fetched page. An error string produced by a remote host is not router
+  // text, however much it looks like one.
+  return ({
     baseUrl,
     outputDir,
     defuddled,
@@ -305,5 +341,5 @@ export async function handleDownloadPageAssets(args = {}) {
     skipped: result.skipped,
     errors: result.errors,
     urlMap: urlMapObj,
-  };
+  });
 }

@@ -1,5 +1,4 @@
 import { searchSimple } from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 
 export async function search(registry, { vault: name, query, contextLength = 100 } = {}) {
@@ -33,7 +32,7 @@ export async function search(registry, { vault: name, query, contextLength = 100
       }),
     );
 
-    return sanitizeResponse({
+    return ({
       query,
       contextLength,
       perVault: results.map((r, i) =>
@@ -46,7 +45,7 @@ export async function search(registry, { vault: name, query, contextLength = 100
 
   const vault = registry.resolveVault(name);
   const matches = await searchSimple(vault, query, contextLength);
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     query,
     contextLength,

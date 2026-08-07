@@ -31,10 +31,11 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse, sanitizeLabel } from '../helpers/sanitize.mjs';
+import { sanitizeLabel } from '../helpers/sanitize.mjs';
 import { rankAndPick, scoreCandidates } from '../helpers/idf-score.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
 import { isMissingReadError } from '../helpers/missing-read-guard.mjs';
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -92,7 +93,12 @@ function stripFrontmatter(text) {
 function extractWikilinks(text) {
   if (typeof text !== 'string' || text.length === 0) return [];
   const out = new Set();
-  const re = /(?<!!)\[\[([^\]\n]+)\]\]/g;
+  // `[` excluded — this tool is a CORE READ PATH with no per-file byte cap,
+  // and `includeNeighbors` defaults true, so this runs on every page body of
+  // every call. The v0.71.0 bracket-bomb fix reached boundary-score,
+  // llms-txt-exporter and wiki-graph-builder and MISSED this copy: measured
+  // 178 / 715 / 2869 ms at 25 / 50 / 100 KB — byte-for-byte the pre-fix curve.
+  const re = /(?<!!)\[\[([^\]\n[]+)\]\]/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const raw = m[1].trim();
@@ -225,43 +231,15 @@ function candidateToVaultPath(label) {
   return `${label}.md`;
 }
 
-/**
- * Defence against a poisoned `wiki-meta/catalog.md` containing wikilinks
- * like `[[../../etc/passwd]]`, `[[/etc/passwd]]`, `[[C:\\Windows\\...]]`,
- * `[[\\\\server\\share]]`, or URL-like `[[file://etc/passwd]]`.
- * `getNote(vault, path)` ships the path verbatim to the Obsidian REST
- * API, which may resolve relative paths outside the vault. Refuse paths
- * that look unsafe BEFORE handing them to the REST layer.
- *
- * Conditions for rejection :
- *   - POSIX absolute (`/etc/...`)
- *   - Windows drive letter (`C:\Foo`, `C:/Foo`)
- *   - UNC / backslash-rooted (`\\server\share`)
- *   - `..` as a complete path segment (`../foo`, `foo/../bar`, `foo/..`)
- *   - Any control character (NUL, NL, etc.)
- *   - URL-like (`file://`, `http://`, etc.)
- *
- * @param {string} p Vault-relative path candidate
- * @returns {boolean} true when safe to pass to getNote
- */
-export function isSafeVaultRelativePath(p) {
-  if (typeof p !== 'string' || !p) return false;
-  // POSIX absolute, Windows drive letter, UNC / backslash root
-  if (p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\')) {
-    return false;
-  }
-  // Control chars (including NUL, CR, LF) — must be rejected outright
-  // eslint-disable-next-line no-control-regex
-  if (/[\x00-\x1f\x7f]/.test(p)) return false;
-  // `..` as a complete path segment (bordered by /, \, start, or end)
-  if (/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(p)) return false;
-  // URL-like (someone trying to smuggle an external fetch / file://).
-  // Catches both `scheme://host/...` (file, http, ftp, etc.) AND opaque
-  // schemes that don't use `//` (javascript:, data:, mailto:, ...).
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) return false;
-  if (/^(?:javascript|data|vbscript|mailto|file):/i.test(p)) return false;
-  return true;
-}
+// `isSafeVaultRelativePath` LIVED HERE and is gone. It was the second answer to
+// the question `canonicalVaultPath` already answers, and the two disagreed on
+// 688 of 3 074 swept inputs. Its last caller — the catalogue drill loop above —
+// now calls the canonical one, so the function had no users left; deleting it
+// rather than leaving it exported is the point, because an unused second answer
+// is exactly what the next site reaches for. What changes for a caller that
+// used it: a backslash and a `.` segment are now REFUSED instead of being
+// treated as ordinary text, and a leading `/` is NORMALISED instead of refused.
+// (v0.71.0 — see CHANGELOG.)
 
 // Pull the `summary:` frontmatter or fall back to the first paragraph of
 // the body. Returns a trimmed, length-capped string.
@@ -378,7 +356,50 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   const scored = candidates.length > 0
     ? scoreCandidates({ query, candidates })
     : [];
-  const ranked = scored.filter((s) => s.score > 0).slice(0, primaryCap);
+
+  // THE BUDGET IS SPENT ON PAGES THAT CAN BE READ, not on refusals.
+  //
+  // The guard used to run INSIDE the drill, after `slice(0, primaryCap)` had
+  // already handed out the slots — so a poisoned catalogue evicted legitimate
+  // pages before anything was validated. Measured with the default cap of 5 and
+  // a catalogue carrying three poisoned entries that outscore the real ones:
+  // 3 healthy pages lost, and the envelope came back holding three placeholders
+  // that name nothing readable. Whoever edits `wiki-meta/catalog.md` should not
+  // get to choose which pages the model is allowed to see.
+  //
+  // REFUSE THE LINK, NEVER THE CALL — unchanged, and the reason it is a filter
+  // and not a throw: these paths come out of a catalogue, not out of an
+  // argument, so one poisoned wikilink must not kill the whole context pack.
+  // The refusals are still reported, and now they are COUNTED (see
+  // `refusedLinks` below) rather than collapsed into a single warning.
+  const refusedLinks = [];
+  const admissible = [];
+  for (const s of scored) {
+    if (s.score <= 0) continue;
+    // THE CANONICAL GUARD, not the second one. This was the last caller of
+    // `isSafeVaultRelativePath`, the looser of the two predicates the repo
+    // carried for one question: swept over 3 074 inputs they disagreed on 688
+    // (22 %), the loose one accepting C1 controls including U+009B, bare `.`
+    // segments, `<result>` markup and mid-string backslashes. It reads
+    // WIKILINKS OUT OF A VAULT FILE, so it gets the strict one.
+    try {
+      s.safePath = canonicalVaultPath(candidateToVaultPath(s.candidate.label), 'catalog link');
+      admissible.push(s);
+    } catch {
+      refusedLinks.push(candidateToVaultPath(s.candidate.label));
+    }
+  }
+  const ranked = admissible.slice(0, primaryCap);
+
+  // ONE WARNING PER REFUSED LINK'S WORTH OF INFORMATION. `warnings` is
+  // deduplicated at emit time (`[...new Set(warnings)]`), which turned N
+  // refusals into a single `unsafe-index-target` — a consumer could not tell
+  // one poisoned wikilink from forty. The count is the part that matters, so
+  // it is carried IN the warning rather than by repeating a bare token that
+  // the Set would collapse anyway.
+  if (refusedLinks.length > 0) {
+    warnings.push(`unsafe-index-target (${refusedLinks.length} link${refusedLinks.length === 1 ? '' : 's'} refused)`);
+  }
 
   if (indexAvailable && ranked.length === 0) {
     warnings.push('no-primary-page-matched');
@@ -389,6 +410,9 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // -------------------------------------------------------------------------
   const queryTokens = snippetTokens(query);
   const primaryPages = [];
+  // The subset of `primaryPages` that was really read — placeholders excluded.
+  // Only these may suppress a graph neighbour; see the exclusion set below.
+  const included = [];
   const graphTargetByVia = []; // [{ targets: [...], via: filePath }]
   const citations = [];
 
@@ -398,27 +422,16 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // location AND, if that fails, fall back to a basename-only path that
   // the Obsidian REST API may still resolve.
   const drillResults = await Promise.allSettled(
-    ranked.map(async ({ candidate, score }) => {
+    ranked.map(async ({ candidate, score, safePath }) => {
+      // `safePath` was produced by `canonicalVaultPath` BEFORE the budget was
+      // spent (see above) — a poisoned link never reaches this point, and never
+      // costs a legitimate page its slot. `basePath` is kept for the
+      // dead-wikilink placeholder, which names what the catalogue asked for.
       const basePath = candidateToVaultPath(candidate.label);
-      // Path-traversal defence (review+ pass 2 hardening) : refuse to
-      // pass anything that looks unsafe to `getNote`. A poisoned
-      // wiki-meta/catalog.md with `[[../../etc/passwd]]` or `[[/etc/x]]`
-      // would otherwise be forwarded verbatim to the REST API.
-      if (!isSafeVaultRelativePath(basePath)) {
-        return {
-          path: basePath,
-          title: candidate.label,
-          summary: '',
-          source_type: null,
-          snippet: '',
-          score,
-          unsafePath: true,
-        };
-      }
       // Two heuristic attempts: `wiki/<base>.md` first (most pages live
       // under wiki/), then bare `<base>.md` as a fallback for root-level
       // pages. The first success wins.
-      const candidatePaths = [`wiki/${basePath}`, basePath];
+      const candidatePaths = [`wiki/${safePath}`, safePath];
       let note = null;
       let body = '';
       let resolvedPath = null;
@@ -495,11 +508,11 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
     }
     if (!r.value) continue;
     const page = r.value;
-    // Surface specific warnings for the two refusal categories BEFORE
-    // stripping the internal flags from the envelope.
-    if (page.unsafePath) {
-      warnings.push('unsafe-index-target');
-    } else if (page.missing && page.fetchError) {
+    // Surface specific warnings for the refusal categories BEFORE stripping the
+    // internal flags from the envelope. `unsafePath` no longer occurs here —
+    // the guard runs before the budget slice now, and refused links are counted
+    // in one warning up there rather than deduplicated to a single token.
+    if (page.missing && page.fetchError) {
       // Real fetch failure (not 404) — surface so the consumer knows
       // the missing-page status is provisional, not a confirmed dead
       // link. (review+ pass 1 A IMP-5 + B #6 convergent.)
@@ -515,6 +528,9 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
       ...publicFields
     } = page;
     primaryPages.push(publicFields);
+    // The envelope keeps the placeholder — the consumer wants to see the gap —
+    // but only a page that was really read may suppress a neighbour.
+    if (!missing) included.push(publicFields);
 
     if (missing) continue;
 
@@ -537,8 +553,19 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // -------------------------------------------------------------------------
   // 3. Graph neighbours — flatten & dedupe, exclude primary page basenames
   // -------------------------------------------------------------------------
+  // ONLY PAGES THAT ARE REALLY IN THE ENVELOPE EXCLUDE A NEIGHBOUR.
+  //
+  // This was built from every entry that reached `primaryPages`, and that array
+  // carries PLACEHOLDERS: a dead wikilink produces one, with `missing: true`
+  // and an empty body. So a single perfectly canonical catalogue entry pointing
+  // at a page that does not exist was enough to delete a legitimate neighbour
+  // from the pack — and silently, because a 404 emits no warning at all (that
+  // is deliberate: a dead wikilink is not an error). The consumer saw a
+  // complete-looking envelope with a neighbour missing and nothing to explain
+  // it. Suppressing a neighbour is only justified by a page the reader can
+  // actually read, which is what `included` means here.
   const primaryBasenames = new Set(
-    primaryPages.map((p) => {
+    included.map((p) => {
       const m = /([^/\\]+?)(?:\.md)?$/.exec(p.path);
       return m ? m[1].toLowerCase() : '';
     }),
@@ -618,7 +645,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // the response — vault content is attacker-controlled the same way as
   // search hits, so the same hygiene applies. Non-string scalars (scores,
   // booleans) pass through untouched.
-  return sanitizeResponse({
+  return ({
     version: 'v1',
     query: sanitizeLabel(query),
     vault: vault.name,
@@ -645,7 +672,6 @@ export const _internals = {
   snippetTokens,
   coerceSources,
   candidateToVaultPath,
-  isSafeVaultRelativePath,
   SUMMARY_MAX_CHARS,
   SNIPPET_MAX_CHARS,
 };

@@ -239,14 +239,43 @@ describe('buildWikiGraphTool — degradation + guards', () => {
   });
 
   test('invalid pagesDir throws (traversal / absolute / UNC / drive-letter)', async () => {
+    // The refusal now comes from `canonicalVaultPath`, the same guard every
+    // write tool uses, instead of a second local predicate that disagreed with
+    // it on 688 of 3 074 swept inputs. Its message names the argument and the
+    // reason ("pagesDir \"../etc\" contains a \"..\" segment"), so these match
+    // on the argument name rather than the old wording.
     const { deps } = makeVaultFs({ 'wiki/a.md': 'A' });
-    for (const bad of ['../etc', '/etc/passwd', '\\\\server\\share', 'C:/Windows', 'wiki/../../etc']) {
+    for (const bad of ['../etc', '\\\\server\\share', 'C:/Windows', 'wiki/../../etc']) {
       await assert.rejects(
         () => buildWikiGraphTool(makeRegistry(), { pagesDir: bad }, deps),
-        /Invalid pagesDir/,
+        /pagesDir/,
         `should reject pagesDir=${JSON.stringify(bad)}`,
       );
     }
+  });
+
+  test('a leading slash on pagesDir is NORMALISED, not refused', async () => {
+    // The one place the two guards genuinely disagreed on meaning rather than
+    // on strictness. The local predicate refused a leading slash outright,
+    // reasoning that stripping it first would let `/etc` through as `etc`.
+    // That is true of strip-then-check; it is not true of `canonicalVaultPath`,
+    // for which a leading slash is simply another SPELLING of the same
+    // vault-relative path — the identity rule that makes five spellings of one
+    // note yield one note. `/etc/passwd` therefore means `etc/passwd` INSIDE
+    // the vault, which is contained, not an escape, and is exactly what
+    // `write_file({ path: '/wiki/a.md' })` has always meant.
+    //
+    // Pinned rather than left implicit: this is the only behaviour the guard
+    // swap loosened, and a silent loosening is the thing this suite exists to
+    // prevent.
+    const { deps } = makeVaultFs({ 'wiki/a.md': 'A' });
+    const res = await buildWikiGraphTool(makeRegistry(), { pagesDir: '/etc/passwd' }, deps);
+    assert.ok(res, 'a leading slash should normalise, not throw');
+    assert.equal(
+      res.graph?.articles?.length ?? 0,
+      0,
+      'and it should resolve INSIDE the vault, where that folder holds nothing',
+    );
   });
 });
 
@@ -312,8 +341,20 @@ describe('buildWikiGraphTool — codex review regressions', () => {
 
 describe('pickAuditPath — build_wiki_graph (codex P2)', () => {
   test('records the canonical graph path (no `path` arg → not "(unknown)")', async () => {
-    const { pickAuditPath } = await import('../src/index.mjs');
-    assert.equal(pickAuditPath('build_wiki_graph', {}), CANONICAL_GRAPH_PATH);
+    const { pickAuditPath, formatAuditLine } = await import('../src/index.mjs');
+    // Router text, not a bare string: `formatAuditLine` escapes caller-derived
+    // parts and adds the line's structure afterwards, so it has to know which
+    // is which. This target is chosen by the tool, never by a caller.
+    assert.deepEqual(pickAuditPath('build_wiki_graph', {}), { kind: 'router', text: CANONICAL_GRAPH_PATH });
+    // And an appended `path` still cannot become the attribution.
+    assert.deepEqual(
+      pickAuditPath('build_wiki_graph', { path: 'wiki/FORGED.md' }),
+      { kind: 'router', text: CANONICAL_GRAPH_PATH },
+    );
+    const line = formatAuditLine({
+      userId: 'roland', toolName: 'build_wiki_graph', auditPath: pickAuditPath('build_wiki_graph', {}), now: new Date(0),
+    });
+    assert.ok(line.includes(`path="${CANONICAL_GRAPH_PATH}"`), line);
   });
 });
 

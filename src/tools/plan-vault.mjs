@@ -13,7 +13,6 @@
 import { runDryRunPlan as defaultRunDryRunPlan, provisionPlanCore, provisionExecOptions } from '../helpers/vault-wizard-engine.mjs';
 import { computePlanSeal } from '../helpers/plan-seal.mjs';
 import { WIKI_MODES } from '../../scripts/vault-plan.mjs';
-
 function buildQuestions(plan) {
   const ctx = plan.context || {};
   const copyable = ctx.copyableVaults || [];
@@ -79,7 +78,7 @@ export async function planVaultTool(registry, args = {}, _deps = {}) {
     identity: { target: plan.path ?? null },
     plan: { core: provisionPlanCore(plan), exec: provisionExecOptions(input) },
   });
-  return {
+  return ({
     context: plan.context,
     approvedPlanSha256,
     defaults: {
@@ -99,5 +98,5 @@ export async function planVaultTool(registry, args = {}, _deps = {}) {
     questions: buildQuestions(plan),
     warnings: plan.warnings,
     steps: plan.steps,
-  };
+  });
 }

@@ -90,7 +90,8 @@
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
 import { validateGraph } from './wiki-graph-schema.mjs';
-import { sanitizeLabel } from './sanitize.mjs';
+import { safeForMessage } from './sanitize.mjs';
+import { cmp } from './total-order.mjs';
 
 /** The damping unit: a page of N words halves its inbound count. */
 export const SUBSTANCE_UNIT_WORDS = 100;
@@ -653,8 +654,7 @@ function refusal(message) {
  */
 function oneLine(text) {
   const capped = String(text).replace(/"([^"]{80,})"/g, (_m, id) => `"${id.slice(0, 77)}…"`);
-  return sanitizeLabel(capped, { neutralizeInjection: true, maxLen: 500 })
-    .replace(/[\r\n\t]+/g, ' ');
+  return safeForMessage(capped, 500);
 }
 
 /**
@@ -674,24 +674,15 @@ function oneLine(text) {
 function tallyToObject(tally) {
   const merged = new Map();
   for (const [rawKey, count] of tally) {
-    const key = sanitizeLabel(String(rawKey), { neutralizeInjection: true, maxLen: 80 })
-      .replace(/[\r\n\t]+/g, ' ');
+    const key = safeForMessage(rawKey, 80);
     merged.set(key, (merged.get(key) || 0) + count);
   }
   return Object.fromEntries([...merged.entries()].sort((a, b) => cmp(a[0], b[0])));
 }
 
-/**
- * Total, locale-independent string order by UTF-16 code unit. See the sort
- * comment above for why `localeCompare` cannot be used where exactness is the
- * point, and why code-unit (rather than code-point) order is sufficient.
- */
-function cmp(a, b) {
-  const x = String(a);
-  const y = String(b);
-  if (x < y) return -1;
-  if (x > y) return 1;
-  return 0;
-}
+// `cmp` now lives in `total-order.mjs` — see the import at the top. It was
+// defined here first, correctly, with a comment explaining why localeCompare
+// could not be used… and six other modules used localeCompare anyway. One
+// definition, one place to read the reasoning.
 
 export const _internals = { toEpochDay, cmp, substanceOf, frontmatterOf };

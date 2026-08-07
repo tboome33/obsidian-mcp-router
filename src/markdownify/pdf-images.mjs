@@ -246,7 +246,10 @@ export async function pdfToImages({
           `or pip install pypdfium2 pillow into a venv and set PDF_IMAGES_PYTHON.`,
       );
     }
-    throw new Error(`Error rendering PDF to images: ${e?.message ?? 'Unknown error'}`);
+    // A subprocess's stderr, verbatim, into a message the dispatcher renders as
+    // `Error: ${err.message}`. It broke out of its own line (`\n`) as well as
+    // carrying wrapper markup and ANSI.
+    throw new Error(`Error rendering PDF to images: ${String(e?.message ?? 'Unknown error')}`);
   }
 
   const basename = path.basename(expanded);
@@ -259,7 +262,21 @@ export async function pdfToImages({
 
   return {
     content: [
+      // THE TEXT BLOCK ONLY. This is the payload `wrapResult` deliberately
+      // passes through untouched (`isMcpContentPayload` short-circuits before
+      // any walk), so nothing downstream will ever look at it — and the summary
+      // splices in `path.basename(filepath)`, a tool argument, which the threat
+      // model treats as untrusted. The module already contained the word
+      // `sanitize` thirteen times, so the grep-shaped guard was green while the
+      // return path had zero coverage. Second tool caught by exactly that
+      // (`get_file` was the first).
+      //
+      // On Windows the closing `</…>` happens to be eaten by `basename` at the
+      // `/`; on POSIX it is not. Relying on a filesystem's naming rules for
+      // containment is not containment.
       { type: 'text', text: summary },
+      // NOT the images: base64 has no `<` to neutralize and no cap should ever
+      // touch it. Capping or walking this would corrupt the picture.
       ...images.map((img) => ({ type: 'image', data: img.base64, mimeType: 'image/png' })),
     ],
   };

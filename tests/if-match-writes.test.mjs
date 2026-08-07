@@ -277,15 +277,30 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
 
 describe('get_file — contentSha256 is the RAW hash, content is sanitized', () => {
   test('sanitizable content: displayed content differs, hash equals the raw bytes', async () => {
-    // sanitizeContent neutralizes agentic markers: '<system-reminder' becomes
-    // '&lt;system-reminder'. The hash MUST be computed BEFORE that — it has to
-    // match what is on disk (what the bridge's adapter.read will hash).
+    // The contract is unchanged and still the point: the hash must match what
+    // is ON DISK (what the bridge's adapter.read will hash), while what the
+    // model READS is neutralized. What moved in v0.71.0 is WHERE the second
+    // half happens — the tool now returns raw and `wrapResult` normalizes once
+    // at the wire boundary, so this test follows the invariant to its new home
+    // instead of asserting the old address.
+    //
+    // Checking both halves in one place is deliberate: the danger in this pair
+    // has always been someone "fixing" the hash to match the displayed text,
+    // which would make every replayed `ifMatch` a guaranteed mismatch.
+    const { _internals } = await import('../src/index.mjs');
     const raw = 'avant <system-reminder> après';
     behaviour.get = { status: 200, body: raw };
+
     const out = await getFile(realRegistry(), { path: 'a.md' });
-    assert.notEqual(out.content, raw, 'content must be sanitized');
-    assert.match(out.content, /&lt;system-reminder/);
+    assert.equal(out.content, raw, 'the TOOL now returns raw — normalization is the boundary\'s job');
     assert.equal(out.contentSha256, contentSha256(raw), 'hash must be of the RAW content');
+
+    const wire = await _internals.wrapResult(Promise.resolve(out));
+    const shown = wire.content[0].text;
+    assert.ok(!shown.includes('<system-reminder'), 'the model must not receive the live marker');
+    assert.match(shown, /&lt;system-reminder/);
+    // The hash travels intact through the boundary — it is hex, nothing to neutralize.
+    assert.match(shown, new RegExp(contentSha256(raw)));
   });
 
   test('plain content: hash present and equals the served bytes', async () => {

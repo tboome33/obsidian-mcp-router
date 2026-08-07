@@ -19,7 +19,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import {
   computePath,
   DEFAULT_PATH_MAX_DEPTH,
@@ -120,7 +119,7 @@ export async function wikiPathTool(registry, args = {}, _deps = {}) {
   // error — it comes back as { found: false, path: null }.
   const result = computePath(graph, { from, to, maxDepth, edgeTypes, nodeTypes });
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     graphPath: CANONICAL_GRAPH_PATH,
     graphAnalyzedAt: (graph.project && graph.project.analyzedAt) || '',

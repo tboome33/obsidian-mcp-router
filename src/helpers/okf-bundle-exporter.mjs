@@ -188,8 +188,12 @@ export function relativeLink(fromPath, toPath) {
 
 // Embeds first (![[...]]), then plain wikilinks. Target may carry
 // `#heading`, `#^block-id`, and `|alias` decorations.
-const EMBED_RE = /!\[\[([^\]]+)\]\]/g;
-const WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
+// `[` and `\n` excluded — the EMBED form only goes quadratic on a `![[` run,
+// which a bracket-only bomb never produces. See strip_md.mjs for the numbers.
+const EMBED_RE = /!\[\[([^\]\n[]+)\]\]/g;
+// `[` and `\n` excluded — see the note on WIKILINK_RE in wiki-graph-builder.mjs.
+// Measured before: 4 KB of `[` took 3.8 ms here, the quadratic curve.
+const WIKILINK_RE = /\[\[([^\]\n[]+)\]\]/g;
 
 const ASSET_EXT_RE = /\.(png|jpe?g|gif|svg|webp|bmp|pdf|mp3|mp4|wav|ogg|mov|webm)$/i;
 
@@ -318,7 +322,7 @@ function makeTargetResolver(mappings, report) {
 // Standard markdown link/image to a `.md` target, with an optional
 // `#anchor`. Captures the `!`-or-not label bracket verbatim so image syntax
 // is preserved; only the path inside `(...)` is ever rewritten.
-const MARKDOWN_MD_LINK_RE = /(!?\[[^\]]*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
+const MARKDOWN_MD_LINK_RE = /(!?\[(?:[^\]\n[\\]|\\.)*\])\(([^()\s]+\.md)((?:#[^)\s]*)?)\)/g;
 
 // Fenced code blocks (``` or ~~~, opening fence to the next occurrence of
 // the same fence) and single-backtick inline code spans. Link-looking
@@ -528,8 +532,8 @@ function firstSentenceOfBody(body) {
     .split(/\r?\n/)
     .map((l) => l.replace(/^>\s?/, '').replace(/^[-*]\s+/, '').trim())
     .join(' ')
-    .replace(/!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t, a) => a || t.split('/').pop())
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/!?\[\[([^\]|\n[]+)(?:\|([^\]\n[]+))?\]\]/g, (_m, t, a) => a || t.split('/').pop())
+    .replace(/\[((?:[^\]\n[\\]|\\.)*)\]\([^)]*\)/g, '$1')
     .replace(/[*_`]/g, '')
     .replace(/\s+/g, ' ')
     .trim();

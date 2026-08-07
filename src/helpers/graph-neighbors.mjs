@@ -22,6 +22,8 @@
  */
 
 import { articleId, normalisePathForId } from './wiki-graph-schema.mjs';
+import { cmp } from './total-order.mjs';
+import { safeForMessage } from './sanitize.mjs';
 
 // Defaults + bounds. maxNeighbors mirrors get_wiki_context_pack's bounding
 // discipline; the depth cap keeps a depth-2 crossroads page from fanning out
@@ -109,19 +111,41 @@ function resolveArticleNode(articlesById, page, label = 'page') {
   throw notFoundError(label, raw);
 }
 
+/**
+ * Sanitise a value being interpolated into a THROWN message.
+ *
+ * These errors are the third instance of a defect this release fixed twice:
+ * `sanitizeResponse` runs on the SUCCESS path only, so an exception carries
+ * its interpolated content straight past it — `index.mjs` renders
+ * `Error: ${err.message}` verbatim into the model's context. `heading-patch`
+ * and the digest-slot warning were fixed; these two were the sibling left
+ * live, and both `get_page_neighbors` and `wiki_path` throw them.
+ *
+ * `raw` is the caller's query and `filePath` comes from the knowledge graph —
+ * a plain JSON file in the syncable vault tree, so a planted graph can carry
+ * hostile bytes in a node path. Proven: an `ESC`, a `BEL` and a forged
+ * `<result>` wrapper all reached the rendered message.
+ */
 function ambiguousError(label, raw, matches) {
   const paths = matches
     .map((n) => n.filePath || n.id)
-    .sort((a, b) => String(a).localeCompare(String(b)));
+    .sort((a, b) => cmp(String(a), String(b)))
+    // NOT point-free: `.map(safeForMessage)` hands the ARRAY INDEX to the
+    // second parameter, so the first candidate was capped at maxLen 0 and the
+    // second at 1 — every path in the list replaced by a truncation notice.
+    // The local helper this replaced took one argument, so extracting the
+    // shared two-argument one silently changed the contract at this call site.
+    // Caught by tests/graph-neighbors.test.mjs, not by review.
+    .map((p) => safeForMessage(p));
   return new Error(
-    `${label} "${raw}" is ambiguous — ${matches.length} pages match: ${paths.join(', ')}. `
+    `${label} "${safeForMessage(raw)}" is ambiguous — ${matches.length} pages match: ${paths.join(', ')}. `
       + 'Re-run with the exact vault-relative path.',
   );
 }
 
 function notFoundError(label, raw) {
   return new Error(
-    `${label} "${raw}" not found in the knowledge graph. Pass an exact vault-relative path `
+    `${label} "${safeForMessage(raw)}" not found in the knowledge graph. Pass an exact vault-relative path `
       + '(e.g. "wiki/Refs/oauth.md") or a unique page name.',
   );
 }
@@ -146,7 +170,7 @@ function computeSameFolderNeighbors(articles, startNode, cap) {
   const matches = articles
     .filter((n) => n.id !== startNode.id && dirOf(n.filePath) === startDir)
     .map((n) => ({ id: n.id, name: n.name || n.id, filePath: n.filePath || null }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => cmp(a.id, b.id));
   return { neighbors: matches.slice(0, cap), truncated: matches.length > cap, totalFound: matches.length };
 }
 
@@ -168,7 +192,7 @@ function computeSharedTagNeighbors(articles, startNode, cap) {
       matches.push({ id: n.id, name: n.name || n.id, filePath: n.filePath || null, sharedTags: shared });
     }
   }
-  matches.sort((a, b) => a.id.localeCompare(b.id));
+  matches.sort((a, b) => cmp(a.id, b.id));
   return { neighbors: matches.slice(0, cap), truncated: matches.length > cap, totalFound: matches.length };
 }
 
@@ -190,8 +214,8 @@ function buildAdjacency(edges, edgeTypesSet) {
     if (!inn.has(e.target)) inn.set(e.target, []);
     inn.get(e.target).push({ from: e.source, type: e.type });
   }
-  const bySortedTo = (a, b) => String(a.to).localeCompare(String(b.to)) || String(a.type).localeCompare(String(b.type));
-  const bySortedFrom = (a, b) => String(a.from).localeCompare(String(b.from)) || String(a.type).localeCompare(String(b.type));
+  const bySortedTo = (a, b) => cmp(String(a.to), String(b.to)) || cmp(String(a.type), String(b.type));
+  const bySortedFrom = (a, b) => cmp(String(a.from), String(b.from)) || cmp(String(a.type), String(b.type));
   for (const list of out.values()) list.sort(bySortedTo);
   for (const list of inn.values()) list.sort(bySortedFrom);
   return { out, inn };
@@ -294,7 +318,7 @@ export function computeNeighbors(graph, opts = {}) {
   }
 
   // Deterministic order: nearest first, then id.
-  neighbors.sort((a, b) => a.hopDistance - b.hopDistance || a.id.localeCompare(b.id));
+  neighbors.sort((a, b) => a.hopDistance - b.hopDistance || cmp(a.id, b.id));
   const totalFound = neighbors.length;
   const capped = neighbors.slice(0, cap);
 
@@ -410,7 +434,7 @@ export function computePath(graph, opts = {}) {
     const res = [];
     for (const { to: t } of out.get(id) || []) if (!seen.has(t)) { seen.add(t); res.push(t); }
     for (const { from: f } of inn.get(id) || []) if (!seen.has(f)) { seen.add(f); res.push(f); }
-    res.sort((a, b) => String(a).localeCompare(String(b))); // deterministic parent choice
+    res.sort((a, b) => cmp(String(a), String(b))); // deterministic parent choice
     return res;
   };
 

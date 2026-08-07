@@ -121,10 +121,19 @@ export async function handleExtractPageMetadata(args = {}) {
       .map((c) => ({ latex: c.latex, display: c.display }));
   }
 
-  return {
+  // `metadata` is title / description / author / site-name lifted out of a
+  // FETCHED page — attacker-authored strings, every one of them, arriving on
+  // the success path where nothing else was looking at them.
+  // NO_TRUNCATION: wrapping this in a bare `sanitizeResponse` also applied the
+  // 16 KiB LABEL cap, and a page's `description` or a converted `mathmlLatex`
+  // entry routinely exceeds it — a 20,000-character description came back as
+  // 16,371. Second instance of the same mistake as the 1 MiB converter cap, in
+  // the same round: reaching for a sanitiser and inheriting its size policy
+  // without deciding whether that policy fits the payload.
+  return ({
     ...metadata,
     hasLatex: latex.hasLatex,
     latexSignals: latex.signals,
     mathmlLatex,
-  };
+  });
 }

@@ -1,10 +1,13 @@
 import { appendToFile, assertContentMatches } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { isContentSha256 } from '../helpers/content-hash.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 export async function appendToFileTool(registry, args = {}) {
-  const { vault: name, path: filePath, content, requireExisting = false, ifMatch } = args;
-  if (!filePath) throw new Error('Missing required argument: path');
+  const { vault: name, content, requireExisting = false, ifMatch } = args;
+  // Containment BEFORE anything else touches the path — this tool was the
+  // sharpest of the five: `../commands/app:reload/` reached `POST /commands/`
+  // and executed an arbitrary Obsidian command. See vault-path-guard.
+  const filePath = canonicalVaultPath(args.path, 'path');
   if (typeof content !== 'string') {
     throw new Error('Missing required argument: content (string)');
   }
@@ -28,10 +31,10 @@ export async function appendToFileTool(registry, args = {}) {
     createTargetIfMissing: requireExisting ? false : undefined,
   });
   const clickToOpenUrl = buildClickToOpenUrl(vault, filePath);
-  return {
+  return ({
     vault: vault.name,
     path: filePath,
     bytesAppended: Buffer.byteLength(content, 'utf8'),
     ...(clickToOpenUrl && { clickToOpenUrl }),
-  };
+  });
 }

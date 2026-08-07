@@ -58,6 +58,7 @@ import path from 'node:path';
 
 import { isRouterWriteTool } from './tool-names.mjs';
 import { resolveScaffold, scaffoldWritePath } from '../../src/helpers/wiki-meta-scaffolds.mjs';
+import { cmp } from '../../src/helpers/total-order.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (single source of truth — imported by session-auto-journal.mjs
@@ -501,7 +502,7 @@ export function reconcileVaultSessions(opts) {
   }
 
   if (!dryRun && logExists && toAppend.length) {
-    toAppend.sort((a, b) => String(a.sortKey).localeCompare(String(b.sortKey)));
+    toAppend.sort((a, b) => cmp(String(a.sortKey), String(b.sortKey)));
     try { fs.appendFileSync(logPath, toAppend.map((e) => e.entry).join(''), 'utf8'); }
     catch { /* swallow — never block */ }
   }

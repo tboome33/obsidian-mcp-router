@@ -13,9 +13,14 @@
 export function strip_md(str) {
   let s = String(str);
 
-  s = s.replace(/!\[([^\]]*)\]\([^)]+\)/g, '');           // images
-  s = s.replace(/!\[\[([^\]]+)\]\]/g, '');                // embed wikilinks
-  s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');          // links → keep text
+  s = s.replace(/!\[((?:[^\]\n[\\]|\\.)*)\]\([^)]+\)/g, '');           // images
+  // `[` and `\n` excluded — see the note on WIKILINK_RE in
+  // wiki-graph-builder.mjs. This EMBED form needs a `![[` prefix to enter its
+  // expensive branch, so a bracket-only bomb never triggers it: the guard that
+  // was written to catch exactly this class reported 0.0 ms here and passed.
+  // With the right bomb: 1.3 / 5.0 / 20.0 / 79.8 ms at 4 / 8 / 16 / 32 KB.
+  s = s.replace(/!\[\[([^\]\n[]+)\]\]/g, '');             // embed wikilinks
+  s = s.replace(/\[((?:[^\]\n[\\]|\\.)+)\]\([^)]+\)/g, '$1');          // links → keep text
   s = s.replace(/https?:\/\/\S+/g, '');                   // bare URLs
   s = s.replace(/(\*\*|__)(.*?)\1/g, '$2');               // bold
   s = s.replace(/(\*|_)(.*?)\1/g, '$2');                  // italic
@@ -40,9 +45,14 @@ export function strip_md(str) {
   s = s.replace(/:[a-z_]+:/g, '');                        // emoji shortcodes
   s = s.replace(/<[^>]+>/g, '');                          // raw HTML
   s = s.replace(/\[\s*\]/g, '');                          // empty []
-  s = s.replace(/\[\^[^\]]+\]/g, '');                     // footnote refs
+  s = s.replace(/\[\^[^\]\n[]+\]/g, '');                     // footnote refs
   s = s.replace(/^\*\[[^\]]+\]:.+$/gm, '');               // abbreviations
-  s = s.replace(/\[\[([^\]|]+)\|?([^\]]*)\]\]/g, (_m, p1, p2) => p2 || p1); // wikilinks
+  // `[` and `\n` excluded from BOTH classes. This one was the worst in the
+  // tree: two adjacent unanchored classes over overlapping input, measured at
+  // 5431 ms on a 4 KB run of `[` — worse than quadratic, and an inventory
+  // script that ran it on 25 KB never returned at all. See the note on
+  // WIKILINK_RE in wiki-graph-builder.mjs.
+  s = s.replace(/\[\[([^\]|\n[]+)\|?([^\]\n[]*)\]\]/g, (_m, p1, p2) => p2 || p1); // wikilinks
 
   s = s.replace(/\n{3,}/g, '\n\n').trim();
   return s;

@@ -13,6 +13,9 @@ import {
 
 import fs from 'node:fs';
 import path from 'node:path';
+// The audit line's truncation notice carries a digest of the ORIGINAL path, so
+// two long paths sharing a prefix and a length cannot collapse to one line.
+import { createHash } from 'node:crypto';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { classifyError } from './error-classify.mjs';
 import { registerResourceHandlers } from './resources.mjs';
@@ -104,6 +107,11 @@ import {
   TOOL_DEFINITION as WRITE_BUNDLE_TOOL_DEFINITION,
   writeBundleTool,
 } from './tools/write-bundle.mjs';
+// The vault paths three write tools target without ever naming them in an
+// argument — see FIXED_AUDIT_TARGETS.
+import { SEARCH_INDEX_PATH } from './helpers/bm25-index.mjs';
+import { SOURCE_LEDGER_PATH } from './helpers/source-ledger.mjs';
+import { BUNDLE_JOURNAL_DIR } from './helpers/write-bundle.mjs';
 import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
@@ -133,6 +141,12 @@ import { createProjectionsScheduler, DEFAULT_DEBOUNCE_MS } from './helpers/proje
 // circular imports or duplicated reads. Pre-v0.13.4 each tool hardcoded
 // the version string and drifted across releases.
 import { PKG_VERSION } from './helpers/pkg-version.mjs';
+import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanitize.mjs';
+// The ONE definition of "which files does this call really write", shared with
+// the projections scheduler — it used to be a second copy that drifted three
+// ways. See helpers/write-targets.mjs.
+import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
+import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
 
 const TOOLS = [
   {
@@ -1273,23 +1287,209 @@ export function computeExposedTools(tools, { readonly = false, viewAgentConfigur
 }
 
 /**
- * Pick the path field that identifies the file a write tool touched.
- * Different tools name the field differently (path vs to vs targetPath) —
- * normalise so the audit log line is always populated. Returns `(unknown)`
- * as a last-resort sentinel (audit is best-effort and never blocks the
- * call, so a missing path becomes a placeholder rather than an error).
+ * The vault path each fixed-target write tool actually writes. Consulted BEFORE
+ * anything the caller supplied, because for these tools the target is not an
+ * argument at all — the tool decides it.
+ */
+const FIXED_AUDIT_TARGETS = {
+  // No `path` arg: it writes the canonical graph JSON (+ a derived UA copy).
+  build_wiki_graph: BUILD_WIKI_GRAPH_CANONICAL_PATH,
+  // Rewrites a SET of files; audit the root index.
+  refresh_okf_projections: 'wiki/index.md (okf projections)',
+  build_search_index: SEARCH_INDEX_PATH,
+  record_source: SOURCE_LEDGER_PATH,
+};
+
+/** Does this tool's own inputSchema declare `field`? */
+function declaresArg(toolName, field) {
+  const tool = TOOLS.find((t) => t.name === toolName);
+  return !!tool?.inputSchema?.properties?.[field];
+}
+
+/**
+ * Text the ROUTER chose, as opposed to text a caller supplied.
+ *
+ * The distinction is the whole reason the audit line can be unforgeable and
+ * still tell two files apart. `formatAuditLine` escapes every caller-derived
+ * part and then adds the structure around it; a value wrapped here skips the
+ * escaping because it never came from a caller — it is one of this module's own
+ * constants. `formatAuditLine` still checks that the text cannot spell the
+ * line's structure before trusting it, so a future constant containing a quote,
+ * a bracket, a comma or a colon degrades to escaping instead of opening a hole.
+ */
+const routerText = (text) => ({ kind: 'router', text });
+
+/**
+ * Pick the path that identifies the file a write tool touched.
+ *
+ * THE FIELD HAS TO BE DECLARED. `request.params.arguments` is validated by the
+ * SDK as an OPEN record, never against `inputSchema`, so `additionalProperties:
+ * false` stops nothing at runtime. Reproduced against the real dispatcher with a
+ * loopback vault recording the writes: `build_search_index` called with an
+ * undeclared `path: "wiki/innocent.md"` wrote `wiki-meta/search-index.json` and
+ * journalled
+ *
+ *     [claude-write by roland] … — build_search_index path="wiki/innocent.md"
+ *
+ * Same for `record_source` (writes the ledger) and `download_page_assets`
+ * (writes an absolute outputDir), and on `write_bundle` the appended field
+ * REPLACED the `(unknown)` sentinel and hid a real `wiki/secret-c.md` write.
+ * The journal exists to attribute writes; an attribution the caller chooses is
+ * worse than none, because it is believed.
+ *
+ * AND THE REAL TARGETS GET ENUMERATED. `write_bundle` used to log `(unknown)`
+ * while writing every path in `steps[]` — the trail was blank for exactly the
+ * tool that writes the most files at once.
+ *
+ * Returns `(unknown)` as a last-resort sentinel: audit is best-effort and never
+ * blocks the call, so a missing path is a placeholder rather than an error.
+ *
+ * RETURN TYPE — this does NOT return a pre-assembled string any more, and that
+ * change is the fix for a conflict three consecutive rounds could not settle.
+ * The line has to be unforgeable (no character of the payload may spell the
+ * structure) AND injective (two files, two lines). The previous round bought
+ * the first by MUTILATING (`,` `(` `)` → `;`) and the second by ESCAPING, in
+ * this function and the next, thirty lines apart — and mutilating destroys
+ * injectivity: `{ , ( ) ; }` all fused into one symbol, measured at 569
+ * collisions over 8 972 distinct canonical paths on this branch (0 on
+ * `write_file`, which the mutilation does not touch).
+ *
+ * So the assembly moves to `formatAuditLine`, which escapes each part FIRST and
+ * adds the structure AFTERWARDS. A payload cannot spell a separator because
+ * everything it contains has already been escaped, and no part is mutilated, so
+ * the two properties stop competing. What comes back here is therefore one of:
+ *
+ *   'wiki/a.md'                                       a caller-derived path
+ *   { kind: 'router', text }                          text this module chose
+ *   { kind: 'bundle', count, paths, omitted }         parts, not a rendering
  *
  * Exported for testing.
  */
 export function pickAuditPath(toolName, args = {}) {
-  if (toolName === 'move_file') return args.to || args.from || '(unknown)';
-  if (toolName === 'execute_template') return args.targetPath || args.name || '(unknown)';
-  // build_wiki_graph has no `path` arg — it writes the canonical graph JSON
-  // (+ a derived UA copy). Record the canonical path (codex review+ P2).
-  if (toolName === 'build_wiki_graph') return BUILD_WIKI_GRAPH_CANONICAL_PATH;
-  // refresh_okf_projections rewrites a SET of files; audit the root index.
-  if (toolName === 'refresh_okf_projections') return 'wiki/index.md (okf projections)';
-  return args.path || '(unknown)';
+  // 1. Tools whose target is not an argument at all.
+  const fixed = FIXED_AUDIT_TARGETS[toolName];
+  if (fixed) return routerText(fixed);
+
+  // 2. write_bundle carries its real targets inside steps[].
+  if (toolName === 'write_bundle') {
+    // RECOVERY IS THE HANDLER'S DEFINITION, not "is this truthy". The dispatcher
+    // routes on `normalizeRecoverArg`, which reads the strings `"false"`, `"0"`,
+    // `"no"` and `"off"` as an ORDINARY bundle — the field is a
+    // `boolean|operationId` union and a real MCP client was observed sending the
+    // string `"true"`, which is why the normaliser exists. A bare `if
+    // (args.recover)` here called those four calls recoveries, so a bundle sent
+    // with `recover: "false"` wrote its real steps and was journalled
+    // `wiki-meta/write-journal/ (recovery)` — the one tool that writes the most
+    // files at once, attributed to a file it did not touch.
+    if (isRecoveryCall(args.recover)) return routerText(`${BUNDLE_JOURNAL_DIR}/ (recovery)`);
+    const paths = writeTargets(toolName, args, { declares: declaresArg });
+    if (!paths.length) return routerText('(unknown)');
+    // The parts, unmutilated. The COUNT still comes first in the rendering, and
+    // it is still the fact a caller cannot choose — but it is now `count`, a
+    // number, and the text `path(s): ` around it is added by `formatAuditLine`
+    // after every path has been escaped. `omitted` is carried the same way, so
+    // the `(+N not shown)` notice is router text too.
+    const head = paths.slice(0, 10).map(String);
+    return {
+      kind: 'bundle',
+      count: paths.length,
+      paths: head,
+      omitted: paths.length - head.length,
+      // The tail is carried so the rendering can DIGEST it. Without that, two
+      // bundles differing only past the tenth target produced the same line.
+      tail: paths.slice(10).map(String),
+    };
+  }
+
+  // 3. execute_template writes at `targetPath` ONLY when `createFile` is true.
+  //
+  // The handler learned that in this same release — it drops a targetPath it
+  // cannot canonicalise instead of forwarding it — and the journal did not,
+  // because `pickAuditPath` re-reads the ORIGINAL `args`. Measured end to end
+  // against the real dispatcher, one `tools/call`:
+  //
+  //   WIRE body        : {"name":"Templates/t.md","arguments":{}}
+  //   JOURNAL appended : [claude-write by roland] … — execute_template
+  //                      path="../../../etc/passwd"
+  //
+  // The journal attributed to the user a write to a path the router had just
+  // refused to send anywhere. A record of a write that did not happen is the
+  // same defect as a record naming the wrong file; both make the journal
+  // unusable for the thing it exists for.
+  //
+  // `createFile === true`, strictly, because that is the gate the handler and
+  // the bridge both use (`body.createFile === true`) — a journal that disagrees
+  // with the handler about when a file is written is back where it started.
+  //
+  // WHAT THIS BRANCH DOES NOT DO — and the previous round's comment claimed it
+  // did, which is worse than saying nothing: the handler has NOT canonicalised
+  // the value that arrives here. `pickAuditPath` re-reads the ORIGINAL
+  // `request.params.arguments`, so `targetPath` is exactly the caller's bytes,
+  // never the bridge's. Measured: a call whose target the bridge received as
+  // `Sessions/today.md` was journalled `/Sessions//today.md`, the caller's
+  // spelling. The journal names the FIELD the write came from, not the byte
+  // sequence the bridge resolved; `formatAuditLine` is what makes that safe to
+  // print, and `canonicalTargetPath` below is what makes it name the same file.
+  //
+  // This branch reads three fields without asking `declaresArg`, and that is
+  // only sound while `execute_template`'s own schema declares all three — the
+  // declared-field rule below exists because `arguments` is an OPEN record at
+  // runtime. The dependency is asserted rather than re-implemented here (one
+  // mechanism, not two): see the pin in `tests/security-invariants.test.mjs`
+  // that fails if the schema stops declaring `createFile`, `targetPath` or
+  // `name`.
+  //
+  // AND THE FALLBACK SAYS SO NOW. `write-targets.mjs` calls it "a display
+  // fallback and not a write", and for two rounds that sentence existed only in
+  // the docstring: the branch returned `args.name` BARE, so a render-only call
+  // produced a line no reader could tell from a real write. Reachable with
+  // nothing more than an existing note:
+  //
+  //   REAL WRITE  : … execute_template path="wiki/private/salaries.md"
+  //   RENDER ONLY : … execute_template path="wiki/private/salaries.md"
+  //   IDENTICAL   : true
+  //
+  // Which is exactly what this module forbids thirty lines above — "A record of
+  // a write that did not happen is the same defect as a record naming the wrong
+  // file". The two cases were distinguishable in the ARGUMENTS all along and the
+  // rendering threw the distinction away, so the fix is to carry it: the tag
+  // travels to `renderAuditPath`, which appends the disclaimer as ROUTER TEXT,
+  // after the name has been escaped. A payload cannot spell the disclaimer (its
+  // own parens and commas are already `%28`/`%29`/`%2C` by then), so a hostile
+  // `name` cannot dress a real write up as a render, nor the reverse.
+  if (toolName === 'execute_template') {
+    const [target] = writeTargets(toolName, args, { declares: declaresArg });
+    if (target) return canonicalTargetPath(target);
+    return typeof args.name === 'string' && args.name
+      ? { kind: 'template-only', name: args.name }
+      : routerText('(unknown)');
+  }
+
+  // 4. Everything else: the first field this tool actually declares.
+  const [target] = writeTargets(toolName, args, { declares: declaresArg });
+  return target || routerText('(unknown)');
+}
+
+/**
+ * The path `execute_template` really wrote, spelled the way the BRIDGE spelled
+ * it — `Sessions/today.md`, not the caller's `/Sessions//today.md`.
+ *
+ * Not a security guard: `formatAuditLine` already makes any byte sequence safe
+ * to print. This is about the journal naming the same FILE the write hit, which
+ * is the property `canonicalVaultPath`'s tab rule exists for ("the journal would
+ * name a different file than the one written") and which this branch lacked
+ * because it re-reads the original arguments rather than the handler's output.
+ *
+ * Best-effort by construction: a value the guard refuses is journalled verbatim
+ * rather than dropped. Audit never blocks a call, and a refused path that was
+ * nonetheless attempted is precisely what a reader wants to see.
+ */
+function canonicalTargetPath(value) {
+  try {
+    return guardVaultPath(value, 'targetPath', (m) => new Error(m));
+  } catch {
+    return value;
+  }
 }
 
 /**
@@ -1303,7 +1503,263 @@ export function pickAuditPath(toolName, args = {}) {
  */
 export function formatAuditLine({ userId, toolName, auditPath, now = new Date() }) {
   const ts = now.toISOString().replace('T', ' ').slice(0, 16);
-  return `\n[claude-write by ${userId}] ${ts} — ${toolName} path="${auditPath}"\n`;
+  // FLATTENED HERE, at the point the line is built.
+  //
+  // `canonicalVaultPath` grew a CR/LF rule whose stated purpose was to stop
+  // exactly this forgery — and it never saw the value that arrives here,
+  // because `pickAuditPath` reads `request.params.arguments` directly. The
+  // seven write tools were protected only TRANSITIVELY (their own guard on
+  // `args.path` throws first), so any tool whose guarded field is not `path`
+  // was open. The cleanest carrier was `execute_template.targetPath`, which
+  // this same release deliberately stopped validating when `createFile` is
+  // false — correct on its own terms, and `pickAuditPath` acts on it anyway.
+  //
+  // Proven end-to-end against the real dispatcher: one `tools/call` produced
+  //
+  //   [claude-write by alice] … — execute_template path="ok.md"]
+  //   [claude-write by roland] … — delete_file path="wiki/private/salaries.md"
+  //
+  // a second attribution line naming a different user and a delete that never
+  // happened. The audit journal exists to attribute writes; a forgeable
+  // attribution is worse than none.
+  //
+  // Flattening at CONSTRUCTION rather than validating upstream, because this
+  // function is the only place that knows the output is line-structured — the
+  // same reasoning as `assertDotenvScalar`. An undeclared extra argument can
+  // reach `pickAuditPath` too (the SDK validates `arguments` as an open
+  // record, never against `inputSchema`), so no amount of per-tool guarding
+  // upstream can be complete.
+  const safeUser = safeForMessage(userId, 120).replace(/[[\]]/g, '');
+  const safeTool = safeForMessage(toolName, 80).replace(/[[\]]/g, '');
+  // NOT run through `escapeAuditPart`, and that is a decision rather than an
+  // oversight. `toolName` comes from a FIXED vocabulary two doors upstream (the
+  // dispatcher rejects an unknown name before this is reached), and the bracket
+  // strip on it is a proven no-op across all 15 real names; `userId` is operator
+  // config read once at startup, never caller-supplied. Escaping them would be
+  // free in effort and not free in effect — it would rewrite the userId of any
+  // operator whose id contains a paren, changing how their existing journals
+  // grep. Left alone, deliberately, and the strip stays because it is what makes
+  // the record marker unspellable from those two fields.
+  const safePath = renderAuditPath(auditPath);
+  return `\n[claude-write by ${safeUser}] ${ts} — ${safeTool} path="${safePath}"\n`;
+}
+
+/** Characters that would let a payload spell this line's structure. */
+const AUDIT_ESCAPES = [
+  // `%` FIRST, and this is the trap every hand-rolled percent-encoder falls
+  // into: escape the brackets before the percent and `wiki/a%5Bb.md` and
+  // `wiki/a[b.md` both journal as `wiki/a%5Bb.md` — injectivity lost to the
+  // escape mechanism itself. Escaping `%` first is what makes the encoding
+  // reversible, and reversible is the whole point.
+  [/%/g, '%25'],
+  // The LINE's structure: the `path="…"` field and the `[claude-write by …]`
+  // record marker. Flattening the newline alone stopped the forged LINE but
+  // left a second `[claude-write by roland] … delete_file …` sitting INSIDE the
+  // surviving one, so `grep "by roland"` still reported a write that never
+  // happened.
+  [/"/g, '%22'], [/\[/g, '%5B'], [/\]/g, '%5D'],
+  // The PATH FIELD's own structure: `N path(s): `, the `, ` between items and
+  // the ` (+N not shown)` notice, all three assembled below out of these three
+  // characters. The previous round bought this by MUTILATING them to `;`
+  // instead — and mutilation is many-to-one, so `,`, `(`, `)` and `;` fused
+  // into a single symbol: 569 collisions over 8 972 distinct canonical paths,
+  // against 0 on the `write_file` branch the mutilation never touched. Escaped
+  // rather than collapsed, so the payload still cannot spell the structure AND
+  // two different files still cannot produce the same line.
+  [/,/g, '%2C'], [/\(/g, '%28'], [/\)/g, '%29'],
+];
+
+// A part is capped at 400 rendered characters, and 400 is a real bound because
+// it is applied AFTER escaping. It used to be applied before, by
+// `safeForMessage(auditPath, 400)`, which is not a bound on anything the
+// journal writes: escaping runs afterwards and multiplies, so a 408-character
+// path reached the file at 1 051 characters. Measured.
+const AUDIT_PART_CAP = 400;
+const AUDIT_PART_HEAD = 360;
+
+/**
+ * Escape ONE caller-supplied part. Injective — that is the whole contract.
+ *
+ * Order: neutralise (WITHOUT truncating) → escape → truncate. The middle step
+ * is why `NO_TRUNCATION` is passed: `sanitizeLabel`'s own notice is bracketed,
+ * so letting it fire here delivered `…%5Btruncated by sanitize: original was
+ * 608 chars%5D` into the journal — the exact defect the bundle notice was
+ * parenthesised to avoid, in the module next door, unnoticed because the two
+ * truncations are 300 lines apart.
+ *
+ * Truncating LAST is also the correct half of the previous round's reasoning,
+ * kept: the notice must report a property of the ORIGINAL, never of the escaped
+ * form, because escaped length is not an injective function of the input —
+ * raw lengths 380 and 382 can escape to the same length and would then be
+ * indistinguishable.
+ *
+ * And the notice carries a DIGEST, because length alone is not enough either.
+ * Above the cap the only surviving discriminants were the shared prefix and the
+ * original length, so 5 000 distinct paths sharing their first 336 characters
+ * and their length collapsed to ONE journal line. Measured.
+ *
+ * WHAT THE DIGEST IS HASHING, and why it changed. `update(raw, 'utf8')` is not
+ * injective over JS strings: an unpaired surrogate has no UTF-8 encoding, so
+ * every one of the 2 048 lone surrogates encodes to the SAME three bytes
+ * (U+FFFD). Measured on this branch — 64 long paths differing only in their
+ * surrogate:
+ *
+ *   accepted by guard    : 64
+ *   distinct audit lines : 1
+ *   paths lost           : 63
+ *
+ * `Buffer.from(raw, 'utf16le')` is a lossless view of the code units, so the
+ * digest now distinguishes what the string distinguishes. (The GUARD refuses
+ * unpaired surrogates outright — see `vault-path-guard`, which is what fixes the
+ * short-path case where no digest is involved at all. This half exists because
+ * `escapeAuditPart` also renders values that never meet the guard.)
+ *
+ * AND THE CLAIM IS "COLLISION-RESISTANT", NOT "INJECTIVE". Three rounds asserted
+ * that this function is bounded AND injective. It cannot be both: the output is
+ * capped at ~440 characters and the input is unbounded, so by pigeonhole some
+ * pair must collide. What is achievable — and what is now claimed — is that no
+ * pair can be FOUND: 128 bits of sha256 (32 hex chars, widened from 64 bits),
+ * over a lossless encoding, alongside the 360-character prefix and the exact
+ * original length. Below the cap the escaping really is injective, and that is
+ * stated separately because it is a different, stronger property.
+ */
+function escapeAuditPart(value) {
+  const raw = String(value);
+  let clean = safeForMessage(raw, NO_TRUNCATION);
+  for (const [re, to] of AUDIT_ESCAPES) clean = clean.replace(re, to);
+  if (clean.length <= AUDIT_PART_CAP) return clean;
+  // Never cut between a surrogate pair — half a pair is a lone surrogate, which
+  // survives here as an unpaired code unit and reaches the journal as U+FFFD.
+  let head = AUDIT_PART_HEAD;
+  const c = clean.charCodeAt(head - 1);
+  if (c >= 0xd800 && c <= 0xdbff) head -= 1;
+  const tag = auditDigest(raw);
+  // Parenthesised, not bracketed, and safe either way: this text is appended
+  // AFTER the escaping above, so no payload can spell it.
+  return `${clean.slice(0, head)}…(truncated ${raw.length} chars, sha256:${tag})`;
+}
+
+/**
+ * The ONE digest used by the audit line — 128 bits over a LOSSLESS encoding.
+ *
+ * Two call sites had grown the same `createHash('sha256').update(x, 'utf8')
+ * .digest('hex').slice(0, 16)` expression independently, and both carried the
+ * same two defects: `utf8` is lossy over lone surrogates (2 048 code units, one
+ * encoding) and 64 bits is a weak claim to hang "cannot be made to collide" on.
+ * Fixing one and not the other is how this repo's recurring failure looks, so
+ * the expression moved here.
+ */
+function auditDigest(value) {
+  return createHash('sha256').update(Buffer.from(String(value), 'utf16le')).digest('hex').slice(0, 32);
+}
+
+/**
+ * Router text may be printed verbatim only while it cannot spell the structure.
+ * A future constant carrying a quote, a bracket or a percent degrades to
+ * escaping rather than opening a hole.
+ *
+ * THE COMMENT USED TO CLAIM MORE THAN THE REGEX DELIVERED — "removes the need to
+ * trust every future edit to `FIXED_AUDIT_TARGETS`" — while the class allowed
+ * digits, commas, colons and parentheses, i.e. every character of
+ * `3 path(s): a.md, b.md`. No shipped constant spells that; the point is that
+ * the check was the reason nobody had to verify that, and it was not checking.
+ *
+ * `,` and `:` are excluded, and those two are enough to make EVERY structural
+ * token unspellable, because each one needs at least one of them:
+ *
+ *   N path(s):                  needs `:`
+ *   `, ` between bundle items   needs `,`
+ *   (+N not shown, sha256:…)    needs both
+ *   …(truncated N chars, sha…)  needs both
+ *   (template rendered, …)      needs `,`
+ *   path="                      needs `"`   (already excluded)
+ *   [claude-write by            needs `[`   (already excluded)
+ *
+ * Parentheses and digits stay LEGAL on purpose: three of the six shipped
+ * constants need them (`(unknown)`, `wiki/index.md (okf projections)`,
+ * `wiki-meta/write-journal/ (recovery)`), and excluding them would push those
+ * three through `escapeAuditPart` — turning the fleet's most common journal
+ * lines into `%28unknown%29`. Pinned in `tests/security-invariants.test.mjs`
+ * from both ends: every shipped constant must pass, and every structural token
+ * must fail.
+ */
+const ROUTER_TEXT_SAFE = /^[^%"[\],:\r\n]*$/;
+
+/**
+ * ONE CONSTRUCTION, and this is the fix for the conflict that three rounds
+ * could not settle by fixing one line at a time.
+ *
+ * The audit line has to be unforgeable (no character of the payload may spell
+ * the structure) and injective (two files, two lines). The previous round got
+ * the first by mutilating and the second by escaping, in two functions thirty
+ * lines apart, and mutilation destroys injectivity. Here every caller-derived
+ * part is escaped FIRST and the structure — the separators, the parentheses,
+ * the words `path(s):`, the `(+N not shown)` notice — is router text added
+ * AFTERWARDS. A payload cannot spell any of it, because everything it contains
+ * has already been escaped; and nothing is mutilated, so the distinctions that
+ * come in survive.
+ *
+ * SAY THE PROPERTY CORRECTLY. Three rounds claimed this line is "bounded AND
+ * injective". That is not a hard property, it is an impossible one: the line is
+ * capped at ~440 characters per part and the input is unbounded, so a colliding
+ * pair must exist by pigeonhole. Two claims replace it, and they are separately
+ * true:
+ *
+ *   - BELOW the cap the rendering IS injective — every escape is reversible
+ *     (`%` first) and nothing is collapsed;
+ *   - ABOVE it, COLLISION-RESISTANT — a 128-bit sha256 over a lossless
+ *     (`utf16le`) encoding, plus the 360-character prefix and the exact original
+ *     length.
+ *
+ * The distinction is not pedantry. It is what tells a reader that finding a
+ * collision means breaking sha256, rather than that none exists — and the
+ * version of the claim that could not be true is the version nobody could test.
+ * The inputs' OWN distinctness is `canonicalVaultPath`'s job, not this
+ * function's: `safeForMessage` runs first and is many-to-one by design (U+2028
+ * → `\n` → space), so a field that skips the guard must ask `isAuditStable`.
+ */
+function renderAuditPath(auditPath) {
+  if (auditPath && typeof auditPath === 'object') {
+    if (auditPath.kind === 'router') {
+      return ROUTER_TEXT_SAFE.test(auditPath.text)
+        ? auditPath.text
+        : escapeAuditPart(auditPath.text);
+    }
+    if (auditPath.kind === 'bundle') {
+      const shown = auditPath.paths.map(escapeAuditPart).join(', ');
+      // THE OMITTED TAIL GETS A DIGEST, for the same reason the truncation
+      // notice does — and this hole was found by the pin that closed that one,
+      // not before it. Only the first ten paths are shown, so two twelve-step
+      // bundles differing ONLY in their eleventh and twelfth targets rendered
+      // byte-identical lines: same count, same ten names, same `(+2 not
+      // shown)`. Measured:
+      //
+      //   12 path(s): wiki/p0.md, … wiki/p9.md (+2 not shown)
+      //   12 path(s): wiki/p0.md, … wiki/p9.md (+2 not shown)   identical
+      //
+      // and the second bundle had written `wiki/DIFFERENT.md`. Hashing the
+      // JSON of the omitted tail rather than a joined string because joining is
+      // ambiguous: `['a\0b']` and `['a','b']` share a NUL-joined form, and the
+      // whole point of the digest is that it cannot be made to collide.
+      let omitted = '';
+      if (auditPath.omitted > 0) {
+        const tail = auditPath.tail || [];
+        omitted = ` (+${auditPath.omitted} not shown, sha256:${auditDigest(JSON.stringify(tail))})`;
+      }
+      // The COUNT leads, before any payload — the one structural fact in the
+      // line that the caller does not choose.
+      return `${auditPath.count} path(s): ${shown}${omitted}`;
+    }
+    // A RENDER THAT WROTE NOTHING, said out loud. The name is the TEMPLATE's
+    // path, not a target — `execute_template` with `createFile` unset writes no
+    // file at all. Escaped first, disclaimer appended after, so the suffix is
+    // router text a payload cannot forge: its own `(`, `)` and `,` are already
+    // `%28`, `%29` and `%2C` by the time this concatenates.
+    if (auditPath.kind === 'template-only') {
+      return `${escapeAuditPart(auditPath.name)} (template rendered, nothing written)`;
+    }
+  }
+  return escapeAuditPart(auditPath);
 }
 
 /**
@@ -1791,17 +2247,53 @@ export async function startServer({ configPath, watch = true } = {}) {
         // so no read link to promise). review+ pass 1 (Code Reviewer + codex convergent).
         const note = noteForWriteResult(result);
         if (note) {
-          Object.assign(result, await viewLinkForWrite({ vaultName: result.vault, note }));
+          // SANITISE HERE, not in the tool. This block runs AFTER the tool has
+          // already sanitized its own result, and it assigns a `viewLink` whose
+          // URL comes from an external view-agent over HTTP. A reviewer walked a
+          // forged `<result>` wrapper and a live ESC through this assignment
+          // into an otherwise-clean response — the per-tool rule cannot reach
+          // it, because the field does not exist when the tool returns.
+          //
+          // The lesson generalises past this line: "every tool sanitizes" is a
+          // statement about tools, and anything the dispatcher ADDS afterwards
+          // is outside it. This is the only such site today; a second one would
+          // need the same treatment, or the rule needs to move down here.
+          Object.assign(result, sanitizeResponse(await viewLinkForWrite({ vaultName: result.vault, note })));
         }
       }
 
       return await wrapResult(Promise.resolve(result));
     } catch (err) {
-      // Friendly errors when the underlying RestApiError carries a `hint`.
+      // THE ERROR CHANNEL, SANITISED ONCE, HERE.
+      //
+      // This is the only place every thrown error passes through, and for five
+      // rounds it was the one place nobody looked. The release fixed error
+      // echoes in `heading-patch`, in `graph-neighbors`, in the digest warning,
+      // in `parseJournal`, in `build-open-link`, and in `RestApiError`'s
+      // constructor — six sites, one at a time, each found by a reviewer — while
+      // `Error: ${err.message}` right here rendered ANY other throw verbatim.
+      //
+      // What that cost, measured: the sentence "…is version X; this router
+      // speaks version Y" exists THREE times in the tree and the release
+      // sanitised ONE of them. The other two parse a file out of the vault
+      // (`wiki-meta/source-ledger.json`, `wiki-meta/search-index.json`) and
+      // interpolate its `version` field raw — reachable through `audit_sources`
+      // and `search_smart`, both deliberately READ-ONLY tools, so a hardened
+      // `OBSIDIAN_ROUTER_READONLY` deployment was fully exposed. Plus
+      // `search_smart`'s tier echo, `delete_file`'s confirm prompt, and every
+      // unknown-tool name.
+      //
+      // Sanitising per-site is not a strategy, it is a subscription: every new
+      // throw is a new hole and the guard can only ever name the sites someone
+      // already thought of. One choke point, no exceptions.
+      //
+      // `hint` and `kind` get the same treatment — a reviewer could not make
+      // `hint` carry a payload today, but "I could not reach it" is a fact
+      // about today's call sites, not a property of the channel.
       const { errorCategory, isRetryable } = classifyError(err);
-      const lines = [`Error: ${err.message}`];
-      if (err.kind) lines.push(`Kind: ${err.kind}`);
-      if (err.hint) lines.push(`Hint: ${err.hint}`);
+      const lines = [`Error: ${safeForMessage(err.message, 2000)}`];
+      if (err.kind) lines.push(`Kind: ${safeForMessage(err.kind, 80)}`);
+      if (err.hint) lines.push(`Hint: ${safeForMessage(err.hint, 500)}`);
       // Machine-readable classification (v0.20.0, MCP standard #4). The readable
       // text lines (Category:/Retryable:) are the AUTHORITATIVE channel — every
       // MCP client sees them. `_meta` below is a best-effort programmatic mirror
@@ -1821,7 +2313,10 @@ export async function startServer({ configPath, watch = true } = {}) {
         _meta: {
           errorCategory,
           isRetryable,
-          kind: err.kind || 'unknown',
+          // Normalized like the readable `Kind:` line above. Every `kind` in
+          // the tree is fixed vocabulary today — and "today" is a fact about
+          // the current call sites, not a property of the channel.
+          kind: safeForMessage(err.kind || 'unknown', 80),
         },
       };
     }
@@ -1868,18 +2363,72 @@ export function isMcpContentPayload(result) {
     && result.content.every((c) => c && typeof c === 'object' && typeof c.type === 'string');
 }
 
+/**
+ * Sanitize an MCP content payload BLOCK-AWARE: text blocks get neutralized,
+ * binary `data` (base64 images) is never touched.
+ *
+ * The old passthrough was correct about the images and wrong about everything
+ * else — it skipped normalization for the WHOLE payload, which is how
+ * `pdf_to_images` shipped a summary splicing in a tool argument, invisible to a
+ * guard that only ever looked at tool modules.
+ */
+function sanitizeContentBlocks(payload) {
+  return {
+    ...payload,
+    content: payload.content.map((block) => {
+      // EVERY FIELD BUT THE BYTES. The first version normalized `text` and
+      // returned the block untouched otherwise — so `_meta`, `annotations`,
+      // `mimeType` and any field a future MCP revision adds rode through raw.
+      // No shipped tool carries untrusted data in them, which is exactly the
+      // sentence that was true about the error channel for thirteen rounds.
+      const { data, ...rest } = block;
+      const safe = sanitizeResponse(rest, { maxLen: NO_TRUNCATION });
+      // `data` is base64 — no `<` to neutralize, and no cap may touch it.
+      // Excluded BY NAME rather than by type, so a future non-string field
+      // cannot inherit the exemption by accident.
+      return data === undefined ? safe : { ...safe, data };
+    }),
+  };
+}
+
+/**
+ * THE WIRE BOUNDARY. Everything the model receives passes through here, and
+ * this is the only place it is normalized.
+ *
+ * Why here and not in each tool — three defects, all from putting it in the
+ * tools:
+ *
+ *   1. IT BROKE A FEATURE. The dispatcher reads `result.path` to build the
+ *      view-link. With the tool sanitizing first, a legitimate POSIX filename
+ *      `wiki/<result>.md` became `wiki/&lt;result>.md` and the link pointed at a
+ *      note that does not exist. Sanitizing an IDENTITY that later code still
+ *      has to use is simply wrong, and no amount of care in the tools fixes it —
+ *      only doing it last does.
+ *   2. IT COULD NEVER BE COMPLETE. 22 of 36 tools opted out; two more were
+ *      missed because their module merely MENTIONED a sanitizer; each new tool
+ *      is a new chance to forget. The guard could only ever name the sites
+ *      someone had already thought of.
+ *   3. IT SPRAYED SIZE POLICY EVERYWHERE. Nineteen call sites had to remember
+ *      `{ maxLen: NO_TRUNCATION }`, sixteen of them unpinned, and forgetting it
+ *      silently truncated a 100 KB note to 16 KB. Here there is one answer:
+ *      NO_TRUNCATION. Bounding size is the job of whatever produced the bytes —
+ *      the subprocess `maxBuffer`, the REST layer — not of the sanitizer, which
+ *      cannot know what it is looking at.
+ *
+ * Ordering matters and is the whole point: the view-link block and the audit
+ * journal above run on the RAW result, then this runs last.
+ */
 async function wrapResult(promise) {
-  const result = await promise;
-  // Image-returning tools (currently only `pdf_to_images`) already return a
-  // finished MCP content payload — `{ content: [{type:'text',...}, {type:
-  // 'image', data, mimeType}, ...] }`. That must pass through UNTOUCHED: the
-  // generic stringify path below would JSON.stringify the whole object
-  // (including the base64 image data) into a single text block, destroying
-  // the typed image blocks the MCP client needs to actually render them.
-  // Every other existing tool returns a plain string or a plain object with
-  // no typed `content[]` — `isMcpContentPayload` is false for those, so they
-  // fall through to the existing behavior unchanged.
-  if (isMcpContentPayload(result)) return result;
+  const raw = await promise;
+  // Decide BEFORE walking: a typed payload gets the block-aware treatment, so
+  // megabytes of base64 are never copied through the generic object rebuild.
+  if (isMcpContentPayload(raw)) return sanitizeContentBlocks(raw);
+  // Image-returning tools (currently only `pdf_to_images`) return a finished
+  // MCP content payload — `{ content: [{type:'text',…}, {type:'image', data,
+  // mimeType}, …] }` — handled above. It must NOT come down here: the generic
+  // stringify would fold the whole object, base64 included, into one text
+  // block and destroy the typed image blocks the client needs to render.
+  const result = sanitizeResponse(raw, { maxLen: NO_TRUNCATION });
   return {
     content: [
       {
@@ -1902,4 +2451,15 @@ export const _internals = {
   computeExposedTools,
   PKG_VERSION,
   isMcpContentPayload,
+  // v0.71.0 — the wire boundary. Exposed so a test can prove the ONE place
+  // normalization happens actually normalizes, instead of re-implementing it.
+  wrapResult,
+  sanitizeContentBlocks,
+  // v0.71.0 — the router-text trust class. Exposed because ONE of its members is
+  // not observable through the rendering: `escapeAuditPart` has no escape for
+  // `:`, so a colon that correctly falls out of the trusted class renders
+  // identically either way. A test that could only see the rendering therefore
+  // proved seven of the eight members and silently skipped the eighth — and the
+  // eighth is the one that makes `path(s): ` unspellable.
+  ROUTER_TEXT_SAFE,
 };

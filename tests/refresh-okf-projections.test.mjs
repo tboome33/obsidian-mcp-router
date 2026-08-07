@@ -294,15 +294,67 @@ describe('projections scheduler (debounce)', () => {
   });
 
   test('pathsTouchedByWrite maps every write tool to its path args', () => {
-    assert.deepEqual(pathsTouchedByWrite('write_file', { path: 'wiki/a.md' }), ['wiki/a.md']);
-    assert.deepEqual(pathsTouchedByWrite('delete_file', { path: 'wiki/a.md' }), ['wiki/a.md']);
+    // ORDER IS NOT MEANINGFUL to a debounced scheduler — the list is a set of
+    // things to notice, and every entry coalesces into the same per-vault
+    // timer. It is compared as a set here because the ordering now comes from
+    // the shared `writeTargets` rule, which orders by AUDIT priority
+    // (`move_file` is audited at its destination).
+    const touched = (t, a) => pathsTouchedByWrite(t, a).slice().sort();
+    assert.deepEqual(touched('write_file', { path: 'wiki/a.md' }), ['wiki/a.md']);
+    assert.deepEqual(touched('delete_file', { path: 'wiki/a.md' }), ['wiki/a.md']);
     assert.deepEqual(
-      pathsTouchedByWrite('move_file', { from: 'wiki/a.md', to: 'archives/a.md' }),
-      ['wiki/a.md', 'archives/a.md'],
+      touched('move_file', { from: 'wiki/a.md', to: 'archives/a.md' }),
+      ['archives/a.md', 'wiki/a.md'],
     );
-    assert.deepEqual(pathsTouchedByWrite('execute_template', { targetPath: 'wiki/t.md' }), ['wiki/t.md']);
     assert.deepEqual(pathsTouchedByWrite('build_wiki_graph', {}), []);
     assert.deepEqual(pathsTouchedByWrite('write_file', {}), []);
+  });
+
+  // THE RULE THE SECOND CONSUMER NEVER RECEIVED.
+  //
+  // `pickAuditPath` learned all three of these two rounds before this function
+  // did, and this function kept its own older copy of the rule. Factored onto
+  // `helpers/write-targets.mjs` rather than fixed again in place — a copy is
+  // how it drifted the first time.
+  test('a bundle write schedules a refresh, and two non-writes no longer do', () => {
+    // 1. THE FUNCTIONAL BUG. `write_bundle` carries its targets in `steps[]`,
+    //    which the raw-argument reader never looked at — so a bundle write
+    //    scheduled NO projection refresh at all, for the one tool that writes
+    //    the most pages at once.
+    assert.deepEqual(
+      pathsTouchedByWrite('write_bundle', {
+        steps: [{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }],
+      }),
+      ['wiki/a.md', 'wiki/b.md'],
+    );
+    // A recovery replays a journal; it applies no `steps[]`. And the truth test
+    // is the DISPATCHER's — `normalizeRecoverArg` reads these four strings as an
+    // ordinary bundle, so they must still report their real steps.
+    assert.deepEqual(pathsTouchedByWrite('write_bundle', { recover: true, steps: [{ path: 'wiki/a.md' }] }), []);
+    for (const falsy of ['false', '0', 'no', 'off', '']) {
+      assert.deepEqual(
+        pathsTouchedByWrite('write_bundle', { recover: falsy, steps: [{ op: 'write', path: 'wiki/a.md' }] }),
+        ['wiki/a.md'],
+        `recover: ${JSON.stringify(falsy)} is an ordinary bundle to the handler`,
+      );
+    }
+
+    // 2. A RENDER-ONLY `execute_template` writes nothing, so it must not
+    //    schedule. `createFile === true` strictly, the same gate the handler
+    //    and the bridge use.
+    assert.deepEqual(pathsTouchedByWrite('execute_template', { targetPath: 'wiki/t.md' }), []);
+    assert.deepEqual(pathsTouchedByWrite('execute_template', { createFile: 'true', targetPath: 'wiki/t.md' }), []);
+    assert.deepEqual(
+      pathsTouchedByWrite('execute_template', { createFile: true, targetPath: 'wiki/t.md' }),
+      ['wiki/t.md'],
+    );
+
+    // 3. AN UNDECLARED `path` names nothing. These tools write a fixed target
+    //    (`wiki-meta/…`), and `request.params.arguments` is an OPEN record at
+    //    runtime, so an appended field is not an argument.
+    for (const tool of ['build_search_index', 'record_source', 'refresh_okf_projections', 'build_wiki_graph']) {
+      assert.deepEqual(pathsTouchedByWrite(tool, { path: 'wiki/forged.md' }), [], tool);
+    }
   });
 
   test('default debounce is a quiet-period, not a hair trigger', () => {

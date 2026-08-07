@@ -143,6 +143,93 @@ describe('targetsFromToolUse', () => {
     });
     assert.deepEqual(t.relPaths, []);
   });
+
+  // THE FIXTURE ABOVE COULD NOT SEE THE BUG IT IS NAMED FOR. It passes no
+  // `targetPath`, so it returns `[]` for ANY gate — verified by mutation:
+  // replacing the shared `writeTargets` call with an inline
+  // `inp.createFile !== undefined` (i.e. the wrong gate, the class of copy this
+  // module had) left the whole file green. The gate has to be `=== true`, which
+  // is what the handler and the bridge both use (`body.createFile === true`);
+  // anything looser and the freshness guard disagrees with the code that does
+  // the writing. These are the shapes that discriminate.
+  test('execute_template: the gate is `=== true`, not "createFile was mentioned"', () => {
+    const rel = (createFile) => targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__execute_template',
+      input: { name: 'Templates/T.md', targetPath: 'wiki/never-written.md', ...(createFile === undefined ? {} : { createFile }) },
+    }).relPaths;
+    assert.deepEqual(rel(true), ['wiki/never-written.md']);
+    for (const loose of [false, 'true', 'false', 1, 0, undefined, null, {}]) {
+      assert.deepEqual(rel(loose), [],
+        `createFile: ${JSON.stringify(loose)} is not the handler's gate, so nothing is written`);
+    }
+  });
+
+  // THE COPY THAT NOBODY RE-READ. This module carried its own inline spelling of
+  // the `createFile === true` gate — the very rule `src/helpers/write-targets.mjs`
+  // was extracted to own — and had never heard of `write_bundle`. So a bundle
+  // writing twelve notes under `wiki/` produced ZERO targets and the freshness
+  // guard saw an idle session: the turn ended with `hot.md` describing a vault
+  // state that no longer existed, for exactly the tool that writes the most
+  // files at once.
+  test('write_bundle enumerates its content steps (the copy that ignored it)', () => {
+    const t = targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__write_bundle',
+      input: {
+        vault: 'smile',
+        steps: [
+          { op: 'write', path: 'wiki/a.md', content: 'x' },
+          { op: 'append', path: 'wiki/b.md', content: 'y' },
+          { op: 'patch', path: 'wiki/c.md', targetType: 'heading', content: 'z' },
+        ],
+      },
+    });
+    assert.deepEqual(t.relPaths, ['wiki/a.md', 'wiki/b.md', 'wiki/c.md']);
+    assert.equal(t.vaultSlug, 'smile');
+    // …and the transcript scanner has to SEE the call in the first place.
+    assert.equal(isTrackedWriteTool('mcp__obsidian-router__write_bundle'), true);
+    assert.equal(isTrackedWriteTool('mcp__plugin_obsidian-router_router__write_bundle'), true);
+  });
+
+  test('write_bundle keeps this guard\'s own exclusions, per step', () => {
+    // The tracked-set policy is stated ONCE. A bundle's `set_frontmatter`,
+    // `merge_frontmatter` and `delete` steps are the low-level equivalents of
+    // tools this guard deliberately does not track (a metadata toggle or a
+    // delete adds no recent fact worth a hot entry), and a `patch` targeting
+    // frontmatter is the same case as `patch_file` + `targetType:'frontmatter'`.
+    // If this ever diverges from the single-file rules, the primitive and the
+    // wrapper disagree about the same edit.
+    const t = targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__write_bundle',
+      input: {
+        steps: [
+          { op: 'write', path: 'wiki/kept.md' },
+          { op: 'set_frontmatter', path: 'wiki/meta-only.md', key: 'k', value: 'v' },
+          { op: 'merge_frontmatter', path: 'wiki/meta-too.md', values: {} },
+          { op: 'delete', path: 'wiki/gone.md', confirm: true },
+          { op: 'patch', path: 'wiki/fm.md', targetType: 'frontmatter', content: 'x' },
+        ],
+      },
+    });
+    assert.deepEqual(t.relPaths, ['wiki/kept.md']);
+  });
+
+  test('a RECOVERY replay is not a bundle apply — the handler\'s definition, not truthiness', () => {
+    // `normalizeRecoverArg` reads `"false"`, `"0"`, `"no"` and `"off"` as an
+    // ORDINARY bundle (the field is a boolean|operationId union and a real MCP
+    // client was observed sending the string `"true"`). Delegating to
+    // `writeTargets` is what buys this agreement for free; a hand-rolled
+    // `if (input.recover)` here would have classified those four as recoveries
+    // and let their real writes end the turn unnoticed.
+    const targets = (recover) => targetsFromToolUse({
+      toolName: 'mcp__obsidian-router__write_bundle',
+      input: { recover, steps: [{ op: 'write', path: 'wiki/a.md' }] },
+    }).relPaths;
+    assert.deepEqual(targets(true), []);
+    assert.deepEqual(targets('resume-op-1'), []);
+    for (const falsy of ['false', '0', 'no', 'off', '', undefined]) {
+      assert.deepEqual(targets(falsy), ['wiki/a.md'], `recover: ${JSON.stringify(falsy)} is an ordinary bundle`);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

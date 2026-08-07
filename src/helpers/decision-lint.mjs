@@ -241,7 +241,7 @@ export function findHistorySection(body) {
     for (let j = i + 1; j < lines.length; j += 1) {
       const next = HEADING_RE.exec(lines[j]);
       if (next && next[1].length <= level) break;
-      if (/\[\[[^\]]+\]\]/.test(lines[j])) {
+      if (/\[\[[^\]\n[]+\]\]/.test(lines[j])) {
         hasLink = true;
         break;
       }

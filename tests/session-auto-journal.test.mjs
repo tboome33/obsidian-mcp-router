@@ -371,6 +371,65 @@ describe('session-auto-journal — review+ pass 1 regressions', () => {
     assert.match(content, /Daily\/2026-05-23\.md/);
   });
 
+  // THE SECOND COPY THE FACTORISATION LEFT OUTSIDE. This hook derived its
+  // "Files touched" list from `[input.path, input.from, input.to,
+  // input.targetPath]`, which carried BOTH of the bugs `write-targets.mjs` was
+  // extracted to fix — in the release that fixed them everywhere else.
+  test('write_bundle is a router write, and every step lands in "Files touched"', () => {
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'bundle-session' });
+    runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'bundle-session',
+      toolName: 'mcp__obsidian-router__write_bundle',
+      toolInput: {
+        steps: [
+          { op: 'write', path: 'wiki/bundle-a.md', content: 'x' },
+          { op: 'append', path: 'wiki/bundle-b.md', content: 'y' },
+        ],
+      },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'bundle-session', reason: 'logout' });
+    const content = readJournal();
+    // It has to be LOGGED at all: `write_bundle` was absent from
+    // ROUTER_WRITE_TOOLS, so the hook never fired for the tool that writes the
+    // most files in one call.
+    assert.match(content, /tool: mcp__obsidian-router__write_bundle/,
+      'write_bundle is not recognised as a router write tool');
+    assert.match(content, /1 mcp writes/, 'the mcpWrites counter did not see the bundle');
+    // The "Files touched" LINE specifically — the chronological entry above it
+    // echoes the raw arguments, so matching the whole document would go green
+    // with the recap still empty.
+    const touched = content.match(/- \*\*Files touched\*\* \(\d+\): (.*)/);
+    assert.ok(touched, `the recap has no "Files touched" line at all:\n${content}`);
+    assert.match(touched[1], /wiki\/bundle-a\.md/, 'the recap dropped a bundle step');
+    assert.match(touched[1], /wiki\/bundle-b\.md/, 'the recap dropped a bundle step');
+  });
+
+  test('a render-only execute_template is not reported as a file touched', () => {
+    // The old field list read `targetPath` unconditionally, so a call that
+    // rendered a template and wrote NOTHING was recapped as having touched the
+    // file. `writeTargets` applies the handler's own `createFile === true` gate.
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'render-only-session' });
+    runHook({
+      event: 'PostToolUse',
+      cwd: vaultDir,
+      sessionId: 'render-only-session',
+      toolName: 'mcp__obsidian-router__execute_template',
+      toolInput: { name: 'Templates/Daily.md', targetPath: 'wiki/never-written.md' },
+    });
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'render-only-session', reason: 'logout' });
+    const content = readJournal();
+    // Asserted on the "Files touched" LINE, not on the whole recap section. The
+    // chronological log above it records the raw arguments — `targetPath` and
+    // all — and that is correct: it is a faithful transcript of what was ASKED,
+    // not a claim about what was written. Only the recap line makes that claim.
+    assert.doesNotMatch(content, /\*\*Files touched\*\*/,
+      'the recap claims a file was touched by a render that wrote nothing');
+    assert.match(content, /tool: mcp__obsidian-router__execute_template/,
+      'the call itself must still be logged — silence would be a different bug');
+  });
+
   test('codex P3 #3 — move_file adds both `from` and `to` to state.files', () => {
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'move-session' });
     runHook({

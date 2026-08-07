@@ -21,7 +21,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { parseFrontmatter } from '../helpers/llms-txt-exporter.mjs';
 import { contentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
@@ -239,5 +238,5 @@ export async function refreshOkfProjectionsTool(registry, args = {}, _deps = {})
     approvedPlanSha256: args.approvedPlanSha256,
     now: _deps.now,
   });
-  return sanitizeResponse(result);
+  return result; // normalized once at the wire boundary (wrapResult)
 }

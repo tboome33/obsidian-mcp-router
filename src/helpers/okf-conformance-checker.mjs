@@ -23,6 +23,7 @@
  */
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
+import { cmp } from './total-order.mjs';
 
 const FRONTMATTER_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -288,7 +289,7 @@ export function checkOkfConformance(files) {
     .map((f) => ({ ...f, path: f.path.replace(/\\/g, '/').replace(/^\.?\//, '') }))
     .filter((f) => f.path.toLowerCase().endsWith('.md'))
     .slice()
-    .sort((a, b) => a.path.localeCompare(b.path));
+    .sort((a, b) => cmp(a.path, b.path));
 
   let rootIndexSeen = false;
 
@@ -373,7 +374,10 @@ export function checkOkfConformance(files) {
 
     // Obsidian syntax leaking into a bundle (wikilinks are not OKF links, §5).
     const { body } = parseFrontmatter(file.content);
-    if (/\[\[[^\]]+\]\]/.test(body)) {
+    // `[` and `\n` excluded — see the note on WIKILINK_RE in
+    // wiki-graph-builder.mjs. A conformance checker that hangs on a hostile
+    // page cannot report on it.
+    if (/\[\[[^\]\n[]+\]\]/.test(body)) {
       out.warnings.push(finding(
         'wikilink-syntax', file.path,
         'body contains [[wikilinks]] — OKF links are standard markdown links (§5); Obsidian-only consumers can read them, everyone else cannot',

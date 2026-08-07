@@ -20,7 +20,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import {
   buildSearchIndex,
   corpusFingerprint,
@@ -218,5 +217,5 @@ export async function buildSearchIndexTool(registry, args = {}, _deps = {}) {
   };
   const vault = registry.resolveVault(args.vault);
   const result = await buildIndexForVault(vault, deps, { check: args.check === true });
-  return sanitizeResponse(result);
+  return result; // normalized once at the wire boundary (wrapResult)
 }

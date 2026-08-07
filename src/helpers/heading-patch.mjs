@@ -32,6 +32,8 @@
  * content patched into a CRLF file no longer produces mixed endings.
  */
 
+import { safeForMessage } from './sanitize.mjs';
+
 /** Thrown when the heading path cannot be resolved (and creation is off). */
 export class HeadingPatchError extends Error {
   constructor(message, { code = 'invalid-target' } = {}) {
@@ -150,7 +152,7 @@ export function applyHeadingPatch(raw, opts) {
   } = opts;
 
   if (!['append', 'prepend', 'replace'].includes(operation)) {
-    throw new HeadingPatchError(`invalid-operation: "${operation}"`, { code: 'invalid-operation' });
+    throw new HeadingPatchError(`invalid-operation: "${safeForMessage(operation, 80)}"`, { code: 'invalid-operation' });
   }
 
   // Preserve a leading BOM without letting it hide the first heading.
@@ -162,7 +164,7 @@ export function applyHeadingPatch(raw, opts) {
     .map((s) => s.trim());
   if (!segments.length || segments.some((s) => s === '')) {
     throw new HeadingPatchError(
-      `invalid-target: empty segment in heading path "${target}" (delimiter "${targetDelimiter}")`,
+      `invalid-target: empty segment in heading path "${safeForMessage(target, 200)}" (delimiter "${safeForMessage(targetDelimiter, 40)}")`,
     );
   }
 
@@ -206,14 +208,31 @@ export function applyHeadingPatch(raw, opts) {
   }
 
   if (idx === -1) {
+    // Heading text is VAULT CONTENT, and an error message is the one channel
+    // that bypasses `sanitizeResponse` entirely: the message is re-wrapped
+    // verbatim by rest-client and rendered as `Error: ${err.message}` straight
+    // into the model's context. A pen test walked a live ANSI escape and a
+    // forged tool-result block through here from an ordinary H1. Sanitise at
+    // the point of construction, and cap each heading so a long title cannot
+    // crowd out the actionable part of the refusal.
+    //
+    // ROUND 10: the fix above reached the heading LIST and left the two other
+    // untrusted values in the SAME message raw — `segments.join(delimiter)` is
+    // the caller's `target`, and `targetDelimiter` is echoed three times in the
+    // example text. Both carried a forged `</result><result>` wrapper AND a
+    // live ESC through. Ten rounds in, in the first file this release fixed:
+    // the defect is never the sanitiser, it is always the call site nobody
+    // enumerated. Hence: sanitise the whole message's inputs, not the one a
+    // reviewer happened to name.
     const roots = headings
       .filter((h) => h.path.length === 1)
-      .map((h) => `"${h.text}"`)
+      .map((h) => `"${safeForMessage(h.text, 120)}"`)
       .slice(0, 8);
+    const delim = safeForMessage(targetDelimiter, 40);
     throw new HeadingPatchError(
-      `invalid-target: heading path "${segments.join(targetDelimiter)}" not found. ` +
-        `The target must be the FULL ancestry path joined by "${targetDelimiter}" ` +
-        `(e.g. "H1${targetDelimiter}H2${targetDelimiter}H3"), not the leaf heading alone. ` +
+      `invalid-target: heading path "${safeForMessage(segments.join(targetDelimiter), 200)}" not found. ` +
+        `The target must be the FULL ancestry path joined by "${delim}" ` +
+        `(e.g. "H1${delim}H2${delim}H3"), not the leaf heading alone. ` +
         (roots.length ? `Top-level headings in this file: ${roots.join(', ')}.` : 'This file has no headings.'),
     );
   }

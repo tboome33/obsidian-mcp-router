@@ -267,7 +267,7 @@ export function extractImagesWithMeta(content, baseUrl) {
   // Stays in lock-step with rewriteAssetUrls's matching regex
   // (HARDENING P2-2 / P3-b — see tests). Accepts one level of nested
   // brackets in alt: `![Photo of [Eiffel tower]](url)`.
-  const mdRe = /!\[((?:\[[^\]]*\]|[^\]])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  const mdRe = /!\[((?:\[[^\]\[]*\]|[^\]\[])*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   let m;
   while ((m = mdRe.exec(safe)) !== null) {
     if (m[2]) {
@@ -861,7 +861,7 @@ export function rewriteAssetUrls(content, urlMap, opts = {}) {
   // matching regex in `extractImageUrls` — otherwise we'd extract images
   // we can't rewrite, leaving stale remote URLs in the markdown.
   out = out.replace(
-    /(!\[(?:\[[^\]]*\]|[^\]])*\]\()([^)\s]+)(\s+"[^"]*")?\)/g,
+    /(!\[(?:\[[^\]\[]*\]|[^\]\[])*\]\()([^)\s]+)(\s+"[^"]*")?\)/g,
     (match, prefix, url, title) => {
       const local = remap.get(url);
       if (!local) return match;

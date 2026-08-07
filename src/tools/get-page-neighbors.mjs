@@ -16,7 +16,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import {
   computeNeighbors,
   DEFAULT_MAX_NEIGHBORS,
@@ -143,7 +142,7 @@ export async function getPageNeighborsTool(registry, args = {}, _deps = {}) {
     includeSharedTags,
   });
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     graphPath: CANONICAL_GRAPH_PATH,
     graphAnalyzedAt: (graph.project && graph.project.analyzedAt) || '',

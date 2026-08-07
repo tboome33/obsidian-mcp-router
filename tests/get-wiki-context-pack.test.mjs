@@ -549,61 +549,80 @@ describe('graceful degradation', () => {
 // Security — path traversal regression (review+ pass 2)
 // ---------------------------------------------------------------------------
 
-describe('isSafeVaultRelativePath (path traversal guard)', () => {
-  const { isSafeVaultRelativePath } = _internals;
+// `isSafeVaultRelativePath` HAD A UNIT SUITE HERE and the function is gone.
+//
+// Ten assertions over a predicate that agreed with the canonical guard on the
+// easy inputs and diverged on 688 of 3 074 swept ones — none of which this
+// suite contained, because it was written from the same list of shapes the
+// predicate implements. Testing a second answer against its own author's
+// intuition is what let two answers to one question survive this long.
+//
+// What replaces it is the question the tool actually asks: does a poisoned
+// CATALOGUE reach the REST layer, and does one bad link cost the caller the
+// rest of the pack. The classes below are exactly the divergent ones — every
+// one was ACCEPTED by the deleted predicate.
+describe('the catalogue drill loop uses THE canonical guard, one link at a time', () => {
+  test('divergent-class wikilinks never reach getNote, and the healthy page still does', async () => {
+    // Three shapes the old predicate waved through. Measured before the
+    // conversion: `[[alpha<result>]]` in `wiki-meta/catalog.md` sent
+    // `wiki/alpha<result>.md` to the REST client — a vault-writable file
+    // choosing what the router asks for.
+    const poisoned = [
+      'alpha<result>',   // tool-result markup: the identity cannot survive the wire boundary
+      'beta\\gamma',     // backslash: not a separator here, so containment is unverifiable
+      './delta',         // a bare `.` segment: the loose predicate only looked for `..`
+    ];
+    const catalogue = `## Refs\n\n${poisoned.map((p) => `- [[${p}]] - poisoned`).join('\n')}\n- [[epsilon]] - healthy\n`;
+    const getNoteCalls = [];
+    const deps = {
+      getFileContent: async (_vault, path) => (path === 'wiki-meta/catalog.md' ? catalogue : null),
+      getNote: async (_vault, path) => {
+        getNoteCalls.push(path);
+        if (path === 'wiki/epsilon.md') {
+          return { frontmatter: { title: 'Epsilon' }, content: '# Epsilon\n\nBody.' };
+        }
+        const err = new Error('Not found');
+        err.status = 404;
+        throw err;
+      },
+      searchSmart: async () => null,
+    };
 
-  test('accepts ordinary vault-relative paths', () => {
-    assert.equal(isSafeVaultRelativePath('foo.md'), true);
-    assert.equal(isSafeVaultRelativePath('wiki/Refs/oauth.md'), true);
-    assert.equal(isSafeVaultRelativePath('A B/file with spaces.md'), true);
-    assert.equal(isSafeVaultRelativePath('utf-8 café/naïve.md'), true);
-  });
+    const result = await getWikiContextPack(
+      makeRegistry(),
+      { query: 'alpha beta gamma delta epsilon poisoned healthy' },
+      deps,
+    );
 
-  test('rejects POSIX absolute paths', () => {
-    assert.equal(isSafeVaultRelativePath('/etc/passwd'), false);
-    assert.equal(isSafeVaultRelativePath('/foo.md'), false);
-  });
+    // 1. Nothing poisoned reached the REST layer.
+    for (const p of poisoned) {
+      assert.ok(
+        !getNoteCalls.some((called) => called.includes(p)),
+        `${p} reached getNote: ${JSON.stringify(getNoteCalls)}`,
+      );
+    }
+    assert.ok(
+      !getNoteCalls.some((p) => /[\\<>]|\/\.\//.test(p)),
+      `a divergent-class path reached getNote: ${JSON.stringify(getNoteCalls)}`,
+    );
 
-  test('rejects Windows drive-letter absolute paths', () => {
-    assert.equal(isSafeVaultRelativePath('C:\\Windows\\system32'), false);
-    assert.equal(isSafeVaultRelativePath('c:/foo'), false);
-    assert.equal(isSafeVaultRelativePath('Z:\\notes\\x.md'), false);
-  });
+    // 2. ONE REFUSAL PER LINK, NEVER A GLOBAL ONE. These paths come out of a
+    //    vault file, so throwing would hand whoever can edit the catalogue a
+    //    denial of service on the whole tool. The healthy page must still be
+    //    fetched and returned.
+    assert.ok(getNoteCalls.includes('wiki/epsilon.md'),
+      `the healthy link was not fetched: ${JSON.stringify(getNoteCalls)}`);
+    const healthy = result.primaryPages.find((p) => p.title === 'Epsilon');
+    assert.ok(healthy, `the healthy page is missing from the pack: ${JSON.stringify(result.primaryPages)}`);
 
-  test('rejects UNC and backslash-rooted paths', () => {
-    assert.equal(isSafeVaultRelativePath('\\\\server\\share\\x.md'), false);
-    assert.equal(isSafeVaultRelativePath('\\foo'), false);
-  });
-
-  test('rejects .. as a complete path segment', () => {
-    assert.equal(isSafeVaultRelativePath('../etc/passwd'), false);
-    assert.equal(isSafeVaultRelativePath('foo/../bar'), false);
-    assert.equal(isSafeVaultRelativePath('foo/..'), false);
-    assert.equal(isSafeVaultRelativePath('..\\etc'), false);
-  });
-
-  test('accepts .. inside a filename component (not a segment)', () => {
-    assert.equal(isSafeVaultRelativePath('release..notes.md'), true);
-    assert.equal(isSafeVaultRelativePath('foo..bar.md'), true);
-  });
-
-  test('rejects URL-like paths', () => {
-    assert.equal(isSafeVaultRelativePath('file:///etc/passwd'), false);
-    assert.equal(isSafeVaultRelativePath('http://example.com/x'), false);
-    assert.equal(isSafeVaultRelativePath('javascript:alert(1)'), false);
-  });
-
-  test('rejects paths containing control characters', () => {
-    assert.equal(isSafeVaultRelativePath('foo\x00bar.md'), false);
-    assert.equal(isSafeVaultRelativePath('foo\nbar.md'), false);
-    assert.equal(isSafeVaultRelativePath('foo\rbar.md'), false);
-  });
-
-  test('rejects empty / non-string input', () => {
-    assert.equal(isSafeVaultRelativePath(''), false);
-    assert.equal(isSafeVaultRelativePath(null), false);
-    assert.equal(isSafeVaultRelativePath(undefined), false);
-    assert.equal(isSafeVaultRelativePath(42), false);
+    // 3. And the caller is told HOW MANY, rather than silently served a shorter
+    //    pack — or told "something was refused" with no way to tell one
+    //    poisoned link from forty, which is what a bare token deduplicated to.
+    assert.deepEqual(
+      result.warnings.filter((w) => w.startsWith('unsafe-index-target')),
+      [`unsafe-index-target (${poisoned.length} links refused)`],
+      `expected a counted unsafe-index-target, got ${JSON.stringify(result.warnings)}`,
+    );
   });
 });
 
@@ -732,23 +751,120 @@ describe('drill loop refuses unsafe index targets (integration)', () => {
       { query: 'passwd etc' },
       deps,
     );
+    // THE COUNT IS THE PART THAT SURVIVES. `warnings` is deduplicated at emit
+    // time, so a bare repeated token collapsed N refusals into one and a
+    // consumer could not tell one poisoned wikilink from forty. The token is
+    // still the prefix, so a grep for it keeps working.
+    assert.deepEqual(
+      result.warnings.filter((w) => w.startsWith('unsafe-index-target')),
+      ['unsafe-index-target (1 link refused)'],
+      `expected a counted unsafe-index-target warning, got ${JSON.stringify(result.warnings)}`,
+    );
+    // AND THE LINK IS REALLY DROPPED. It used to survive as a placeholder whose
+    // `path` echoed the poisoned catalogue string back verbatim — not an
+    // execution vector (nothing dereferences it) but an unannounced re-echo of
+    // attacker-controlled text into the model's context, and the CHANGELOG
+    // claimed it was dropped when it was not. The trade is deliberate: the
+    // consumer loses WHICH link was poisoned and keeps HOW MANY. The catalogue
+    // is a vault file; `wiki-lint` is the tool for naming them.
+    assert.equal(
+      result.primaryPages.find((p) => p.title === '../../etc/passwd'),
+      undefined,
+      'the poisoned catalogue string was echoed back in primaryPages',
+    );
     assert.ok(
-      result.warnings.includes('unsafe-index-target'),
-      `expected unsafe-index-target warning, got ${JSON.stringify(result.warnings)}`,
+      !JSON.stringify(result).includes('etc/passwd'),
+      `the poisoned path re-echoed somewhere in the envelope: ${JSON.stringify(result)}`,
     );
-    // The unsafe candidate should still appear in primaryPages with
-    // empty content (so consumers see the gap).
-    const unsafeEntry = result.primaryPages.find(
-      (p) => p.title === '../../etc/passwd',
-    );
-    assert.ok(unsafeEntry, 'unsafe candidate should still be in primaryPages');
-    assert.equal(unsafeEntry.summary, '');
     // CRITICAL: getNote was NEVER called on the unsafe path — the guard
     // bails BEFORE the REST call.
     assert.ok(
       !getNoteCalls.some((p) => p.includes('..')),
       `getNote should not be called with '..' paths, got: ${JSON.stringify(getNoteCalls)}`,
     );
+  });
+});
+
+describe('PIN: the pack is incomplete only for reasons it announces', () => {
+  test('a poisoned catalogue cannot spend the primary-page budget', async () => {
+    // THE BUDGET USED TO BE SPENT BEFORE ANYTHING WAS VALIDATED. The guard ran
+    // inside the drill, i.e. AFTER `slice(0, maxPrimaryPages)` had handed out
+    // the slots, so entries that could never be read still evicted ones that
+    // could. Whoever can edit `wiki-meta/catalog.md` chose which pages the model
+    // was allowed to see — and the envelope looked complete, because the
+    // placeholders filled the array to the requested length.
+    // Four shapes the canonical guard really refuses — traversal, a mid-string
+    // backslash, forged wrapper markup, and a bare `.` segment. (`/abs/secret`
+    // is NOT one: the guard normalises a leading slash away rather than
+    // refusing, which is exactly why the fixture is checked against the guard
+    // instead of assumed.)
+    const poisoned = ['../../etc/passwd', 'a\\b', 'x<result>y', './rel'];
+    const index = '## Refs\n'
+      + poisoned.map((p) => `- [[${p}]] — sizing kelly risk\n`).join('')
+      + '- [[kelly-criterion]] — sizing kelly risk\n'
+      + '- [[stop-loss-design]] — sizing kelly risk\n'
+      + '- [[position-sizing]] — sizing kelly risk\n';
+    const deps = makeDeps({
+      indexText: index,
+      notes: {
+        'wiki/kelly-criterion.md': makeNote(KELLY_BODY),
+        'wiki/stop-loss-design.md': makeNote(STOP_BODY),
+        'wiki/position-sizing.md': makeNote(POSITION_BODY),
+      },
+    });
+    const result = await getWikiContextPack(
+      makeRegistry(), { query: 'sizing kelly risk', maxPrimaryPages: 3 }, deps,
+    );
+    const titles = result.primaryPages.map((p) => p.title).sort();
+    assert.deepEqual(
+      titles,
+      ['Kelly Criterion', 'Position Sizing', 'Stop-Loss Design'],
+      `refused links spent the budget: ${JSON.stringify(result.primaryPages.map((p) => p.path))}`,
+    );
+    // And the caller is told how many were refused — not a single deduplicated
+    // token that reads the same for one link as for forty.
+    assert.deepEqual(
+      result.warnings.filter((w) => w.startsWith('unsafe-index-target')),
+      [`unsafe-index-target (${poisoned.length} links refused)`],
+      JSON.stringify(result.warnings),
+    );
+  });
+
+  test('a dead wikilink does not silently delete a legitimate neighbour', async () => {
+    // THE QUIETEST OF THE THREE. The neighbour exclusion set was built from
+    // every entry that reached `primaryPages`, and that array carries
+    // PLACEHOLDERS — so one perfectly canonical catalogue entry pointing at a
+    // page that does not exist was enough to remove a real neighbour from the
+    // pack. With an EMPTY `warnings` array, because a 404 is not an error here:
+    // a dead wikilink is an ordinary vault fact. The consumer saw a
+    // complete-looking envelope with a neighbour quietly missing.
+    //
+    // `risk-parity` is linked from the Kelly page and has no page of its own,
+    // so it is a legitimate neighbour. The catalogue also lists it, and that
+    // listing resolves to nothing.
+    const index = '## Refs\n- [[kelly-criterion]] — kelly risk parity\n- [[risk-parity]] — kelly risk parity\n';
+    const deps = makeDeps({
+      indexText: index,
+      notes: { 'wiki/kelly-criterion.md': makeNote(KELLY_BODY) },
+    });
+    const result = await getWikiContextPack(
+      makeRegistry(), { query: 'kelly risk parity' }, deps,
+    );
+    // The placeholder is still in the envelope — the consumer wants to see the
+    // gap. That is not the defect.
+    assert.ok(
+      result.primaryPages.some((p) => p.title === 'risk-parity'),
+      `the dead link stopped being reported at all: ${JSON.stringify(result.primaryPages)}`,
+    );
+    // A page nobody could read must not suppress a neighbour.
+    assert.ok(
+      result.graphNeighbors.map((n) => n.title).includes('risk-parity'),
+      `a dead wikilink deleted a legitimate neighbour: ${JSON.stringify(result.graphNeighbors)}`,
+    );
+    // …and it did so with nothing in `warnings` to explain it, which is what
+    // made this one invisible. Pinned so the silence stays honest.
+    assert.deepEqual(result.warnings, [],
+      `this scenario is supposed to be warning-free: ${JSON.stringify(result.warnings)}`);
   });
 });
 

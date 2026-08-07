@@ -23,7 +23,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-
+import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
 /**
  * Lock the router to a single vault.
  *
@@ -93,7 +93,7 @@ export async function lockVault(registry, args = {}) {
     persisted = true;
   }
 
-  return {
+  return ({
     locked: true,
     vault,
     persisted,
@@ -103,7 +103,7 @@ export async function lockVault(registry, args = {}) {
       (persisted
         ? `OBSIDIAN_ROUTER_LOCKED=${vault} written to ${envPath} — lock survives restart.`
         : `Lock is volatile (this session only). Use persist:true to make it survive restarts.`),
-  };
+  });
 }
 
 /**
@@ -140,7 +140,7 @@ export async function unlockVaults(registry, args = {}) {
     }
   }
 
-  return {
+  return ({
     locked: false,
     wasLocked: wasLocked || null,
     persisted: persist === true,
@@ -155,7 +155,7 @@ export async function unlockVaults(registry, args = {}) {
               : ` No OBSIDIAN_ROUTER_LOCKED line found in ${envPath} — already absent.`
             : ` In-memory only; if .env has OBSIDIAN_ROUTER_LOCKED set, it'll re-lock on restart. Use persist:true to remove it.`)
         : 'Router was not locked. No-op.',
-  };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -178,6 +178,10 @@ export async function unlockVaults(registry, args = {}) {
  * shells/Node parse equivalently with either ending.
  */
 async function upsertDotenvVar(envPath, key, value) {
+  // One shared definition — see helpers/dotenv-scalar.mjs. The guard first
+  // lived HERE and nowhere else, which is why the setup script kept writing
+  // injectable values for a whole review round.
+  assertDotenvScalar(value, key, envPath);
   let lines = [];
   try {
     const raw = await fs.readFile(envPath, 'utf8');

@@ -31,7 +31,14 @@
  * Zero dependencies: node builtins are not even needed.
  */
 
-/** Bare router tool names that denote a vault mutation. */
+/**
+ * Bare router tool names that denote a vault mutation.
+ *
+ * `write_bundle` WAS MISSING for its whole existence, and it is the tool that
+ * writes the most files in one call: a bundle applying twelve notes was not a
+ * "router write" to any hook, so the session journal counted zero MCP writes and
+ * its "Files touched" recap was empty for exactly the loudest operation.
+ */
 export const ROUTER_WRITE_TOOLS = [
   'write_file',
   'patch_file',
@@ -41,6 +48,7 @@ export const ROUTER_WRITE_TOOLS = [
   'delete_file',
   'move_file',
   'execute_template',
+  'write_bundle',
 ];
 
 /** Built-in (non-MCP) tools that write to the filesystem. */

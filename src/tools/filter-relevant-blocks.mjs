@@ -61,6 +61,8 @@ export async function filterRelevantBlocksTool(_registry, args = {}) {
   const { markdown, query, threshold, includeScores } = args;
   assertProvidedString(markdown, 'markdown');
   assertProvidedString(query, 'query');
+  // RAW. `wrapResult` in src/index.mjs normalizes every response at the wire
+  // boundary, once, after the dispatcher has finished using the values.
   return bm25FilterBlocks({
     markdown,
     query,

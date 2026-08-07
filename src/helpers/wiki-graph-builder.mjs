@@ -34,9 +34,10 @@
  */
 
 import { parseFrontmatter, parseIndex } from './llms-txt-exporter.mjs';
-import { parseDigest } from './digest-generator.mjs';
+import { parseDigest, digestPathForPage } from './digest-generator.mjs';
 import { detectCommunities } from './louvain.mjs';
 import { countProseWords, SUBSTANCE_MEASURE } from './boundary-score.mjs';
+import { cmp } from './total-order.mjs';
 import {
   emptyGraph,
   articleId,
@@ -54,13 +55,42 @@ const SUMMARY_MAX_CHARS = 280;
 // tool's `_internals` to avoid coupling a helper to a tool)
 // ---------------------------------------------------------------------------
 
+// The `[` excluded from every character class below is LOAD-BEARING, not
+// cosmetic. Without it, a page containing a long run of `[` makes each of the N
+// start positions consume the whole tail and then backtrack it away — the pass
+// goes quadratic. Measured on this builder before the fix: 25 KB of `[` = 178
+// ms, 50 KB = 711 ms, 100 KB = 2861 ms (exactly ×4 per doubling), and the
+// builder scans each body three times, so one 100 KB page cost 8.7 s of a
+// single `build_wiki_graph` call. There is no per-file byte cap on this path,
+// and a 1 MB note is an ordinary size — that is a session-long hang on a
+// long-lived stdio server.
+//
+// `countProseWords` in boundary-score.mjs already carried this exact fix, with
+// this exact reasoning, one file away; it was never propagated to its siblings.
+//
+// An earlier version of this comment claimed "a capability test now fails if
+// any wikilink-shaped regex accepts `[` again". THAT TEST DID NOT EXIST — the
+// only guard was a time budget on three hand-picked functions, and the fix
+// went on to miss SEVEN further sites, including `get_wiki_context_pack` (a
+// core read tool, no byte cap, neighbours on by default) and
+// `filters/strip_md.mjs` at 5431 ms on four kilobytes. A comment describing a
+// mechanism nobody built is worse than no comment: it stops the next reader
+// checking. The test exists now — `GUARD: EVERY wikilink-shaped regex in the
+// shipped tree is linear` in tests/security-invariants.test.mjs extracts every
+// such regex from src/ scripts/ hooks/ bin/ and RUNS it against a bracket
+// bomb, so this sentence is checkable rather than merely written.
+//
+// Forbidding `[` inside a link target makes a malformed run fail at its second
+// character. The only inputs that parse differently are already-malformed
+// nested forms like `[[a[b]]`, which were never valid link targets.
+
 // Non-embed wikilinks `[[target]]` (negative lookbehind excludes `![[...]]`).
-const WIKILINK_RE = /(?<!!)\[\[([^\]\n]+)\]\]/g;
+const WIKILINK_RE = /(?<!!)\[\[([^\]\n[]+)\]\]/g;
 // Embeds `![[target]]`.
-const EMBED_RE = /!\[\[([^\]\n]+)\]\]/g;
+const EMBED_RE = /!\[\[([^\]\n[]+)\]\]/g;
 // Inline line-citation marker `^[ref]` (caret then bracket — distinct from
 // markdown footnotes `[^1]` and Obsidian block refs `[[page^block]]`).
-const CITATION_RE = /\^\[([^\]\n]+)\]/g;
+const CITATION_RE = /\^\[([^\]\n[]+)\]/g;
 
 /** Strip a `[[link]]` target's `|alias` / `#heading` / `^block` decorations. */
 function bareTarget(raw) {
@@ -157,9 +187,12 @@ function firstParagraphSummary(body) {
   const cleaned = slice
     .replace(/^>\s+/gm, '')
     .replace(/^#{1,6}\s+/gm, '')
-    .replace(/!\[\[[^\]\n]*\]\]/g, '') // embeds (incl. binary refs)
-    .replace(/\^\[[^\]\n]*\]/g, '') // ^[citation] markers
-    .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t, a) => (a || t))
+    // `[` excluded from every class — see the note on WIKILINK_RE above. This
+    // summary pass is the builder's THIRD scan of the same body, so it paid
+    // the quadratic cost a third time.
+    .replace(/!\[\[[^\]\n[]*\]\]/g, '') // embeds (incl. binary refs)
+    .replace(/\^\[[^\]\n[]*\]/g, '') // ^[citation] markers
+    .replace(/\[\[([^\]|\n[]+)(?:\|([^\]\n[]+))?\]\]/g, (_m, t, a) => (a || t))
     .replace(/\s+/g, ' ')
     .trim();
   return cleaned.length > SUMMARY_MAX_CHARS
@@ -289,10 +322,22 @@ export function buildWikiGraph({
   // deterministic regardless of the order the caller enumerated pages/digests
   // (the Local REST API listing order is not guaranteed stable), and this
   // makes first-wins basename-collision resolution deterministic too.
-  const orderedPages = [...pages].sort((a, b) =>
-    String(a?.path ?? '').localeCompare(String(b?.path ?? '')));
-  const orderedDigests = [...digests].sort((a, b) =>
-    String(a?.path ?? '').localeCompare(String(b?.path ?? '')));
+  //
+  // `cmp` (code-unit), NOT `localeCompare`. localeCompare is NOT A TOTAL ORDER:
+  // it returns 0 for distinct strings (NFC vs NFD `café.md` — routine in a
+  // vault synced between macOS and Linux — and a soft hyphen U+00AD), and
+  // `Array.prototype.sort` then falls back to insertion order. So the caller's
+  // enumeration order leaked straight into the output bytes, which is exactly
+  // what this sort exists to prevent: the same vault produced two different
+  // graph hashes. It is also ICU-version and locale dependent, so two machines
+  // emitted different bytes for the same vault.
+  //
+  // boundary-score.mjs and louvain.mjs both already carry long comments saying
+  // precisely this — and this builder, which feeds them both, did the thing
+  // those comments forbid. A capability test now fails on any localeCompare in
+  // a sort comparator.
+  const orderedPages = [...pages].sort((a, b) => cmp(a?.path ?? '', b?.path ?? ''));
+  const orderedDigests = [...digests].sort((a, b) => cmp(a?.path ?? '', b?.path ?? ''));
 
   const graph = emptyGraph({
     name: vaultName,
@@ -313,6 +358,7 @@ export function buildWikiGraph({
 
   // Parse digests, keyed by the page path they summarise (`for:`).
   const digestByPage = new Map();
+  const digestsRejected = [];
   for (const d of orderedDigests) {
     if (!d || typeof d.content !== 'string') continue;
     let parsed;
@@ -321,7 +367,36 @@ export function buildWikiGraph({
     } catch {
       continue; // malformed digest → skip (defensive)
     }
-    if (parsed.for) digestByPage.set(parsed.for.replace(/\\/g, '/'), parsed);
+    if (!parsed.for) continue;
+    const claimed = parsed.for.replace(/\\/g, '/');
+    // A digest may only speak for the page whose sidecar slot it OCCUPIES.
+    //
+    // Without this check `for:` was taken on trust, so any file under
+    // `wiki-meta/digests/` could claim any page — and because the digest list
+    // is path-sorted and this is a last-wins `Map.set`, a later-sorting
+    // attacker file REPLACED the legitimate digest. The forged claims and
+    // entities were then namespaced under the VICTIM page's stem, so the graph
+    // (and every agent reading it) attributed the text to a page that never
+    // said it. Reproduced by pen test: `wiki-meta/digests/zzz-attacker.md`
+    // claiming `wiki/security-policy.md` injected "This policy permits sending
+    // API keys over email" as a claim of the security policy.
+    //
+    // `digestPathForPage` is the ONE mapping both writers use, and it already
+    // refuses absolute paths, `..` and drive letters — so binding to it also
+    // means a `for:` value cannot name anything outside the vault.
+    let expected;
+    try {
+      expected = digestPathForPage(claimed);
+    } catch {
+      digestsRejected.push({ digest: d.path, claimed, reason: 'unsafe `for:` path' });
+      continue;
+    }
+    const actual = String(d.path ?? '').replace(/\\/g, '/');
+    if (actual !== expected) {
+      digestsRejected.push({ digest: actual, claimed, expected, reason: 'digest does not occupy the sidecar slot of the page it claims' });
+      continue;
+    }
+    digestByPage.set(claimed, parsed);
   }
 
   // Node accumulators keyed by id (dedup). Maps preserve insertion order;
@@ -576,18 +651,35 @@ export function buildWikiGraph({
   );
 
   // ---- Canonical ordering (stable, diff-friendly) ---------------------------
-  graph.nodes = [...nodesById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  // `cmp` (code-unit), NOT `localeCompare`. See the note on the page ordering
+  // above: localeCompare is not a total order, so the sort silently fell back
+  // to enumeration order for NFC/NFD-equivalent ids and the graph hash changed
+  // without the vault changing.
+  graph.nodes = [...nodesById.values()].sort((a, b) => cmp(a.id, b.id));
   graph.edges = edges.sort(
     (a, b) =>
-      a.source.localeCompare(b.source) ||
-      a.target.localeCompare(b.target) ||
-      a.type.localeCompare(b.type),
+      cmp(a.source, b.source) ||
+      cmp(a.target, b.target) ||
+      cmp(a.type, b.type),
   );
   // `layers` is already canonically ordered: detectCommunities sorts communities
   // by their smallest member id, and the `community-N` numbering follows that.
   graph.layers = layers;
   // tour[] left empty (deferred to #3).
 
+  // Surface slot-mismatched digests. They are DROPPED (that is the security
+  // invariant), but a silent drop leaves the operator with no way to tell a
+  // forgery from a misplaced legitimate sidecar — and the first version of
+  // this fix collected them into a variable nothing ever read. Non-enumerable
+  // so it cannot leak into the serialized graph or change its hash.
+  if (digestsRejected.length) {
+    Object.defineProperty(graph, 'digestsRejected', {
+      value: digestsRejected,
+      enumerable: false,
+      configurable: true,
+      writable: true, // else a later `graph.digestsRejected = …` throws (ESM is strict)
+    });
+  }
   return graph;
 }
 

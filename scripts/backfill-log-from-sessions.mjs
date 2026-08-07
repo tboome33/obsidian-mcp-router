@@ -50,6 +50,7 @@ import path from 'node:path';
 
 import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs';
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
+import { cmp } from '../src/helpers/total-order.mjs';
 
 // State dir where session-auto-journal.mjs persists per-session JSON (used by
 // --include-open for recap enrichment + liveness). Mirrors the hook's path.
@@ -244,7 +245,7 @@ function backfillVault(vaultPath, { dryRun }) {
   }
 
   // Append in chronological order (sortKey ascending)
-  entries.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  entries.sort((a, b) => cmp(a.sortKey, b.sortKey));
 
   if (entries.length === 0) return result;
 

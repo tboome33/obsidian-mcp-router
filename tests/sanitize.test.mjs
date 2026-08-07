@@ -45,9 +45,18 @@ describe('sanitizeLabel', () => {
     assert.equal(sanitizeLabel(input), 'red text yellow');
   });
 
-  test('strips ANSI OSC sequences (window-title hacks)', () => {
+  test('neutralizes an OSC sequence WITHOUT deleting its payload (v0.71.0)', () => {
+    // Behaviour change, deliberate. There is no OSC pass any more: the escape
+    // bytes go (so the sequence is inert), the payload text stays (so no span
+    // is deletable). Three narrowings of a span-deleting regex all failed —
+    // the last one erased 91 621 characters to 21 for five extra bytes — and
+    // the honest conclusion is that a cosmetic rule must not be able to remove
+    // content at all. See the long note in sanitize.mjs.
     const input = 'hello\x1b]0;EVIL TITLE\x07world';
-    assert.equal(sanitizeLabel(input), 'helloworld');
+    const out = sanitizeLabel(input);
+    assert.equal(out, 'hello]0;EVIL TITLEworld');
+    assert.ok(!/\u001b|\u0007/.test(out), 'the escape and terminator bytes must still go');
+    assert.ok(out.includes('world'), 'nothing after the sequence may be swallowed');
   });
 
   test('strips bare control characters except \\n \\t \\r', () => {
@@ -377,19 +386,116 @@ describe('sanitizeResponse — KEYS are sanitized like values', () => {
     assert.deepEqual(Object.keys(out.links), ['evil31m.md']);
   });
 
-  test('PIN: an injection tag in a key is neutralized when asked', () => {
+  test('PIN: an injection tag in a key is neutralized BY DEFAULT', () => {
+    // This test used to assert the opposite half: that a key "stays verbatim
+    // when NOT asked, like values do (same contract)". That WAS the contract,
+    // and the contract was the defect — `sanitizeResponse` inherited
+    // `neutralizeInjection: false` from `sanitizeLabel`, so every bare
+    // `sanitizeResponse(result)` stripped control bytes and left forged
+    // `</result><result>` markup untouched. Roughly twenty tools were wrapped in
+    // exactly that bare call and declared safe.
+    //
+    // The assertion was not wrong about the code; it was wrong about what the
+    // code should do, which is the harder kind to notice — it went green for
+    // nine rounds while documenting the hole. Now the default is safe and
+    // opting OUT is what has to be spelled out.
     const k = '<system-reminder>PWN';
     const input = { m: Object.fromEntries([[k, 1]]) };
-    const out = sanitizeResponse(input, { neutralizeInjection: true });
-    assert.deepEqual(Object.keys(out.m), ['&lt;system-reminder>PWN']);
-    // ...and stays verbatim when NOT asked, like values do (same contract).
-    assert.deepEqual(Object.keys(sanitizeResponse(input).m), [k]);
+    assert.deepEqual(Object.keys(sanitizeResponse(input).m), ['&lt;system-reminder>PWN']);
+    assert.deepEqual(Object.keys(sanitizeResponse(input, { neutralizeInjection: true }).m), ['&lt;system-reminder>PWN']);
+    // A caller that genuinely wants raw markup must say so, out loud.
+    assert.deepEqual(Object.keys(sanitizeResponse(input, { neutralizeInjection: false }).m), [k]);
   });
 
-  test('keys colliding after sanitization follow the fromEntries rule: last wins', () => {
+  test('PIN: a cap below the truncation-notice budget still bounds the value', () => {
+    // `slice(0, maxLen - 64)` goes negative for any cap under 64, and a
+    // negative end index does not truncate — it removes the LAST 24 characters
+    // and keeps the rest. Asking for 40 returned 10,027. The one function whose
+    // job is bounding untrusted text was unbounded precisely where a caller had
+    // asked for the tightest bound.
+    for (const cap of [1, 10, 40, 63, 64, 65, 200]) {
+      const out = sanitizeLabel('z'.repeat(10000), { maxLen: cap });
+      assert.ok(out.length <= cap, `maxLen ${cap} produced ${out.length} chars`);
+    }
+    // Above the budget the notice must still be there — the cheap fix would be
+    // to drop it everywhere, and that would hide truncation instead of stating it.
+    assert.match(sanitizeLabel('z'.repeat(10000), { maxLen: 200 }), /truncated by sanitize/);
+  });
+
+  test('keys colliding after sanitization are disambiguated, never dropped', () => {
+    // This pinned "last wins, the fromEntries rule, same as JSON parsing" — a
+    // rule borrowed from a situation that does not apply here. JSON's last-wins
+    // covers a document that genuinely repeated a key; in this function the
+    // SANITISER creates the duplicate out of two keys the caller never
+    // repeated, so the rule silently discarded a value nobody chose to discard.
+    //
+    // Reachable through any response keyed by vault strings — frontmatter key
+    // names, the click-to-open walker's paths, `set_frontmatter`'s value —
+    // where the visible effect is an entry that is simply absent.
     const input = Object.fromEntries([['a\u0000', 1], ['a', 2]]);
-    const out = sanitizeResponse(input);
-    assert.deepEqual(out, { a: 2 });
+    assert.deepEqual(sanitizeResponse(input), { a: 1, 'a~2': 2 });
+
+    // Three-way, so the suffix is shown to keep counting rather than collide again.
+    const three = Object.fromEntries([['ab', 1], ['a\u0000b', 2], ['a\u009bb', 3]]);
+    const out = sanitizeResponse(three);
+    assert.equal(Object.keys(out).length, 3, 'a value was dropped');
+    assert.deepEqual(Object.values(out).sort(), [1, 2, 3]);
+
+    // The ordinary case must stay untouched — a suffix appearing without a real
+    // collision would put noise in every response.
+    assert.deepEqual(sanitizeResponse({ 'wiki/a.md': 1, 'wiki/b.md': 2 }), { 'wiki/a.md': 1, 'wiki/b.md': 2 });
+  });
+
+  test('KNOWN LIMITS, measured: what the walk does to non-JSON shapes', () => {
+    // `sanitizeResponse` went from 14 callers to all 36 tools in one round, so
+    // its blast radius grew before anyone asked what it does to values that are
+    // not plain JSON. Measured rather than assumed, and written down so the
+    // next caller can check its payload against this list instead of finding
+    // out in production.
+    //
+    // Every one of these is LOSSY. None is currently reachable: tool responses
+    // are built from JSON and REST data, which cannot carry these shapes. That
+    // sentence is the thing to re-check when a tool starts returning something
+    // new — the loss is silent, so the guard has to be the reader.
+    assert.deepEqual(sanitizeResponse({ d: new Date(0) }), { d: {} }, 'Date flattens');
+    assert.deepEqual(sanitizeResponse({ m: new Map([['a', 1]]) }), { m: {} }, 'Map flattens');
+    assert.deepEqual(sanitizeResponse({ s: new Set([1]) }), { s: {} }, 'Set flattens');
+    assert.deepEqual(sanitizeResponse({ b: Buffer.from('hi') }), { b: { 0: 104, 1: 105 } }, 'Buffer becomes numeric keys');
+    // A symbol key is dropped; a getter is invoked once and frozen to its value.
+    assert.deepEqual(sanitizeResponse({ [Symbol('s')]: 1, ok: 2 }), { ok: 2 });
+    assert.deepEqual(sanitizeResponse({ o: { get g() { return 'v'; } } }), { o: { g: 'v' } });
+    // Numbers, booleans and null must survive untouched — the walk is for
+    // strings, and coercing a number to "1" would corrupt every count we return.
+    assert.deepEqual(sanitizeResponse({ n: 1, b: true, z: null }), { n: 1, b: true, z: null });
+  });
+
+  test('KNOWN LIMIT, measured: recursion depth, and why it is not a crash', () => {
+    // The walk is recursive, so a deep enough object overflows the stack.
+    //
+    // NO MAGIC DEPTH IS PINNED HERE, and arriving at that took two wrong pins.
+    //
+    // The first said the overflow appeared near 50,000 — measured under
+    // `node --stack-size=4000`, a stack the server never runs with. Corrected
+    // to 5,000/10,000 from a plain `node -e` run; that failed too, because the
+    // test runner's own frames leave less stack than a bare script. The
+    // threshold is not a property of `sanitizeResponse` at all: it is a
+    // property of how deep the CALLER already is. Any number written here would
+    // be true of the machine that measured it and false somewhere else — the
+    // same mistake twice, in opposite directions.
+    //
+    // So the pin asserts the two things that are actually invariant:
+    //   - depth far beyond any real frontmatter (a few levels in practice) is
+    //     handled without complaint;
+    //   - pathological depth fails LOUDLY, with a RangeError, rather than
+    //     silently truncating the object or hanging.
+    //
+    // And the reason that is a limit rather than a denial of service: it
+    // throws, so the dispatcher's bare `catch (err)` turns it into one failed
+    // tool call, not a dead stdio server. Re-check if that catch ever narrows
+    // to specific error types.
+    const deep = (n) => { let o = { end: true }; for (let i = 0; i < n; i += 1) o = { k: o }; return o; };
+    assert.doesNotThrow(() => sanitizeResponse(deep(200)), 'depth well past real frontmatter must not throw');
+    assert.throws(() => sanitizeResponse(deep(1e6)), RangeError, 'pathological depth should fail loudly, not silently');
   });
 
   test('ordinary keys are untouched (accents, spaces, CJK)', () => {

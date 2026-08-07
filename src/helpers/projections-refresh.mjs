@@ -28,22 +28,41 @@
  */
 
 import { isWikiContentPath, isProjectionPath } from './okf-projections.mjs';
+import { writeTargets } from './write-targets.mjs';
 
 export const DEFAULT_DEBOUNCE_MS = 15_000;
 
 /**
- * Which vault path(s) does a write-tool call touch? Returns [] for tools
- * without a path (or with a non-string one). `move_file` reports BOTH ends —
- * a page moving out of `wiki/` must still refresh the indexes it left.
+ * Which vault path(s) does a write-tool call touch? Returns [] for tools whose
+ * call names no target. `move_file` reports BOTH ends — a page moving out of
+ * `wiki/` must still refresh the indexes it left.
+ *
+ * DELEGATES to `helpers/write-targets.mjs`, which is now the ONE definition of
+ * "what does this call write". This function used to hold a second, older copy
+ * of that rule and it had drifted three ways, all measured against this
+ * scheduler:
+ *
+ *   write_bundle steps:[{path:'wiki/a.md'}]  -> []             a bundle write
+ *                                               scheduled NO refresh at all;
+ *                                               the projections went stale for
+ *                                               exactly the tool that writes
+ *                                               the most pages at once. A
+ *                                               functional bug, not an audit one.
+ *   execute_template targetPath (no createFile)
+ *                                            -> ['wiki/t.md'] a render-only
+ *                                               call refreshed for a file it
+ *                                               never wrote.
+ *   build_search_index path:'wiki/forged.md' -> ['wiki/forged.md']
+ *                                               an UNDECLARED argument drove a
+ *                                               refresh; the tool writes
+ *                                               `wiki-meta/search-index.json`.
+ *
+ * The rule had been fixed in `pickAuditPath` two rounds earlier and never
+ * reached here, because it was a copy. Order is not meaningful to a debounced
+ * scheduler — the list is a set of things to notice.
  */
 export function pathsTouchedByWrite(toolName, args = {}) {
-  if (toolName === 'move_file') {
-    return [args.from, args.to].filter((p) => typeof p === 'string' && p);
-  }
-  if (toolName === 'execute_template') {
-    return typeof args.targetPath === 'string' && args.targetPath ? [args.targetPath] : [];
-  }
-  return typeof args.path === 'string' && args.path ? [args.path] : [];
+  return writeTargets(toolName, args);
 }
 
 /**

@@ -91,7 +91,8 @@ import {
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
 import { reconcileVaultSessions } from './_helpers/session-reconcile.mjs';
-import { isLoggedTool, isRouterWriteTool } from './_helpers/tool-names.mjs';
+import { isLoggedTool, isRouterWriteTool, routerWriteToolName } from './_helpers/tool-names.mjs';
+import { writeTargets } from '../src/helpers/write-targets.mjs';
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 
 // Same truthy vocabulary as check-router-update.mjs and the other hooks.
@@ -439,15 +440,31 @@ function handlePostToolUse(payload) {
     }
   } else if (isRouterWriteTool(toolName)) {
     state.counters.mcpWrites = (state.counters.mcpWrites || 0) + 1;
-    // v0.12.5 (review+ pass 1 fix — codex P3 #3 + P2 #2): different MCP
-    // write tools use different schema keys for the target file path —
-    // most use `path`, `move_file` uses `from`/`to`, `execute_template`
-    // uses `targetPath` when `createFile: true`. Collect any key that
-    // could name a vault file so the recap's "Files touched" list is
-    // complete regardless of which write tool fired.
+    // WHICH FILES THIS CALL REALLY WROTE — asked of the one definition,
+    // `src/helpers/write-targets.mjs`, instead of guessed from a field list.
+    //
+    // The line this replaces was `[input.path, input.from, input.to,
+    // input.targetPath].filter(Boolean)`, and it carried BOTH of the bugs the
+    // shared module was extracted to fix, in the release that fixed them
+    // everywhere else:
+    //
+    //   write_bundle     steps:[{path:'wiki/a.md'}, …]  -> []  the recap's
+    //                    "Files touched" was EMPTY for the tool that writes the
+    //                    most files at once (and the tool was not even
+    //                    recognised as a router write — see ROUTER_WRITE_TOOLS);
+    //   execute_template targetPath:'wiki/t.md', no      -> ['wiki/t.md']
+    //                    createFile                          reported as touched
+    //                                                        when nothing was
+    //                                                        written at all.
+    //
+    // `routerWriteToolName` strips whatever prefix the host imposed
+    // (`mcp__plugin_obsidian-router_router__write_bundle` → `write_bundle`),
+    // because the table over there is keyed on the bare names the server
+    // declares. No `declares` check: a hook has no `inputSchema` in scope, and
+    // the table is pinned against the real schemas in
+    // `tests/security-invariants.test.mjs`.
     const input = payload.tool_input || {};
-    const candidates = [input.path, input.from, input.to, input.targetPath].filter(Boolean);
-    for (const f of candidates) {
+    for (const f of writeTargets(routerWriteToolName(toolName), input)) {
       if (!state.files.includes(f)) state.files.push(f);
     }
   }

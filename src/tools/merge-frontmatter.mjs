@@ -2,7 +2,7 @@ import { setFrontmatterTool } from './set-frontmatter.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { assertContentMatches } from '../rest-client.mjs';
 import { isContentSha256 } from '../helpers/content-hash.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 /**
  * Apply multiple frontmatter key/value updates in sequence.
  *
@@ -13,8 +13,9 @@ import { isContentSha256 } from '../helpers/content-hash.mjs';
  * the whole file via write_file — but that rewrites the entire file content.
  */
 export async function mergeFrontmatterTool(registry, args = {}) {
-  const { vault: name, path: filePath, values, createIfMissing = true, ifMatch } = args;
-  if (!filePath) throw new Error('Missing required argument: path');
+  const { vault: name, values, createIfMissing = true, ifMatch } = args;
+  // Containment first — see set-frontmatter.mjs. Missed in the first pass.
+  const filePath = canonicalVaultPath(args.path, 'path');
   if (!values || typeof values !== 'object' || Array.isArray(values)) {
     throw new Error('Missing or invalid argument: values (must be a key/value object)');
   }
@@ -65,7 +66,7 @@ export async function mergeFrontmatterTool(registry, args = {}) {
   // best-effort click-to-open URL from the already-resolved vault (local vaults only).
   const clickToOpenUrl = resolvedVault ? buildClickToOpenUrl(resolvedVault, filePath) : null;
 
-  return {
+  return ({
     vault: resolvedVaultName,
     path: filePath,
     applied: results.filter((r) => r.status === 'ok').length,
@@ -73,5 +74,5 @@ export async function mergeFrontmatterTool(registry, args = {}) {
     results,
     ...(firstError && { firstError: firstError.message }),
     ...(clickToOpenUrl && { clickToOpenUrl }),
-  };
+  });
 }

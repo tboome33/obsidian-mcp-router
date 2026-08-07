@@ -1,10 +1,11 @@
 import { patchFile, assertContentMatches } from '../rest-client.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { isContentSha256 } from '../helpers/content-hash.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 export async function patchFileTool(registry, args = {}) {
-  const { vault: name, path: filePath, ifMatch } = args;
-  if (!filePath) throw new Error('Missing required argument: path');
+  const { vault: name, ifMatch } = args;
+  // Containment first — see vault-path-guard.
+  const filePath = canonicalVaultPath(args.path, 'path');
   if (!args.operation) throw new Error('Missing required argument: operation');
   if (!args.targetType) throw new Error('Missing required argument: targetType');
   if (!args.target) throw new Error('Missing required argument: target');
@@ -38,7 +39,7 @@ export async function patchFileTool(registry, args = {}) {
   // target heading had to be created. Block/frontmatter targets go through
   // the plugin's PATCH, which reports nothing — patched stays true there.
   const skipped = result && result.applied === false;
-  return {
+  return ({
     vault: vault.name,
     path: filePath,
     operation: args.operation,
@@ -48,5 +49,5 @@ export async function patchFileTool(registry, args = {}) {
     ...(skipped && { skippedReason: result.skippedReason }),
     ...(result && result.createdTarget && { createdTarget: true }),
     ...(clickToOpenUrl && { clickToOpenUrl }),
-  };
+  });
 }

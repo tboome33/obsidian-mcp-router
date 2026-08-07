@@ -26,7 +26,6 @@ import { pdfToImages } from '../markdownify/pdf-images.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 import { bm25FilterBlocks, MAX_DROP_FRACTION } from '../helpers/bm25-filter.mjs';
-
 function assertString(value, fieldName) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Missing required argument: ${fieldName}`);
@@ -270,9 +269,21 @@ export async function pptxToMarkdown(_registry, { filepath } = {}) {
 
 /* ---------- Git-repo via repomix ---------- */
 
-export async function gitRepoToMarkdown(_registry, { url, branch, compress } = {}) {
+export async function gitRepoToMarkdown(_registry, { url, branch, compress } = {}, _deps = {}) {
   assertString(url, 'url');
-  const { text } = await fromRepo({ repoUrl: url, branch, compress });
+  // `_deps.fromRepo` is the injection seam every sibling converter already had
+  // (`_deps.convert`, `_deps.primary`, `_deps.run`). This one lacked it, so it
+  // was the only converter with no way to test its output — and, not by
+  // coincidence, the only one the sanitisation pass missed on its first sweep.
+  // Untestable and unfixed turned out to be the same property.
+  const run = _deps.fromRepo || fromRepo;
+  const { text } = await run({ repoUrl: url, branch, compress });
+  // A repository is somebody else's text — the least trusted input in this
+  // file, since source trees routinely contain the exact byte sequences the
+  // sanitiser looks for. Missed on the first pass of this very fix because it
+  // is the only converter that destructures `{ text }` instead of returning a
+  // call; the shape differed, so the edit did not reach it. That is the whole
+  // release in one line.
   return text;
 }
 

@@ -11,6 +11,7 @@ import { fetch, Agent } from 'undici';
 import { encodeVaultPath, normalizeAnchor } from './helpers/click-to-open.mjs';
 import { contentSha256 } from './helpers/content-hash.mjs';
 import { applyHeadingPatch, HeadingPatchError } from './helpers/heading-patch.mjs';
+import { safeForMessage } from './helpers/sanitize.mjs';
 
 const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
 const secureAgent = new Agent();
@@ -36,7 +37,25 @@ function agentFor(vault) {
  */
 export class RestApiError extends Error {
   constructor(message, { kind, vaultName, status, urlPath, hint } = {}) {
-    super(message);
+    // Sanitise HERE, in the constructor, and not at the twelve construction
+    // sites. Every one of those composes a message from something that came off
+    // the wire, and the worst is `categorizeHttpStatus`, which splices in 200
+    // bytes of the HTTP RESPONSE BODY verbatim. Proven end-to-end against a
+    // local server answering 500 with a hostile body: the forged
+    // `</output></result><result>` wrapper and live ANSI/OSC bytes arrived in
+    // the model's context through `Error: ${err.message}`, and ALSO on the
+    // SUCCESS path — `move_file` surfaces this message inside its `warning`
+    // field when the source delete fails.
+    //
+    // Redirect handling interpolates hostnames taken from a `Location` header,
+    // i.e. also server-chosen. Doing this per-site would have covered the two a
+    // reviewer named and left ten; the constructor is the one place every
+    // present and future RestApiError must pass through.
+    //
+    // The cap is generous (2000) because these messages carry an actionable
+    // `hint` after the untrusted part, and truncating the hint would trade a
+    // security fix for a usability regression.
+    super(safeForMessage(message, 2000));
     this.name = 'RestApiError';
     this.kind = kind || 'unknown';
     this.vaultName = vaultName;

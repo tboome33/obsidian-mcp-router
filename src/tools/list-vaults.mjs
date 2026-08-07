@@ -16,7 +16,6 @@
  */
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
-
 /**
  * Build the `defaultVaultStatus` summary for the list_vaults response.
  *
@@ -103,7 +102,7 @@ export async function listVaults(registry) {
   // mutation; let the convention layer surface the inconsistency).
   const defaultVaultStatus = buildDefaultVaultStatus(registry.defaultVault, results);
 
-  return {
+  return ({
     defaultVault: registry.defaultVault,
     defaultVaultStatus,
     configPath: registry.configPath,
@@ -127,5 +126,5 @@ export async function listVaults(registry) {
     // NOT silently default to 'off' here, because absence of an explicit
     // mode means "user hasn't customized" and the safe default applies.
     autoEnrichMode: registry.autoEnrichMode || 'ClaudeAsk',
-  };
+  });
 }

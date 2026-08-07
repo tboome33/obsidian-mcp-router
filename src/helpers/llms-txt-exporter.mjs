@@ -20,6 +20,9 @@
 // Frontmatter parser (minimal — extract the YAML block at the top)
 // ---------------------------------------------------------------------------
 
+import { cmp } from './total-order.mjs';
+import { safeForMessage } from './sanitize.mjs';
+
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 /**
@@ -35,15 +38,57 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
  * @returns {{ frontmatter: Record<string, any>, body: string }}
  */
 /**
- * Does this partial scalar already close the quote it opened? Counts only
- * unescaped quotes after the opening one.
+ * Scan ONE APPENDED CHUNK for the closing quote. Never touches the
+ * accumulated value.
+ *
+ * Why a chunk and not an offset into the whole string. The continuation loop
+ * below appends a line at a time; the original code re-scanned the entire
+ * accumulator every iteration, so an UNTERMINATED quote cost O(n²) over the
+ * frontmatter block (2000 lines = 151 ms … 16000 = 10041 ms). The first fix
+ * carried a resume OFFSET so each character was examined once — and it was
+ * still quadratic, because `value += chunk` builds a V8 cons-string and the
+ * next `value[k]` forces a full flatten. Measured after that fix: 8000 lines
+ * = 18 ms but 16000 = 233 ms, 32000 = 1338 ms, 64000 = 5233 ms — ~×4 per
+ * doubling. The algorithm was fixed and the DATA STRUCTURE was not; the two
+ * are separate mistakes and only the second one shows past 8000 lines, which
+ * is exactly where the first measurement stopped.
+ *
+ * Scanning the chunk alone never indexes the accumulator, so nothing is ever
+ * flattened: 64000 lines drops from 5233 ms to ~2 ms, ratio ~2.0 per doubling.
+ *
+ * The escape rule is a backslash consuming the next character, and a chunk
+ * boundary can fall between the two — hence `pending`, the one bit of state
+ * that has to cross. `pending: true` means the previous chunk ended on a
+ * dangling backslash, so this chunk's first character is escaped.
+ *
+ * This is the shared parser: `build_wiki_graph`, `build_search_index`,
+ * `search_smart`, `get_wiki_context_pack`, `refresh_okf_projections` and
+ * `find_boundary_pages` all pay whatever it costs, on a long-lived stdio
+ * server with no per-file byte cap.
+ *
+ * @param {string} chunk the newly appended text
+ * @param {string} quote the opening quote character
+ * @param {number} start index to begin at within `chunk`
+ * @param {boolean} pending previous chunk ended with a dangling backslash
+ * @returns {{closed: boolean, pending: boolean}}
  */
-function closesQuotedScalar(text, quote) {
-  for (let k = 1; k < text.length; k += 1) {
-    if (text[k] === '\\') { k += 1; continue; }
-    if (text[k] === quote) return true;
+function scanChunk(chunk, quote, start, pending) {
+  let k = start;
+  if (pending) k += 1; // first character is escaped by the carried backslash
+  for (; k < chunk.length; k += 1) {
+    if (chunk[k] === '\\') {
+      k += 1; // skip the escaped character
+      if (k >= chunk.length) return { closed: false, pending: true };
+      continue;
+    }
+    if (chunk[k] === quote) return { closed: true, pending: false };
   }
-  return false;
+  return { closed: false, pending: false };
+}
+
+/** Whole-string question, no resume point. Kept for callers that ask once. */
+function closesQuotedScalar(text, quote) {
+  return scanChunk(text, quote, 1, false).closed;
 }
 
 /**
@@ -254,15 +299,23 @@ export function parseFrontmatter(content) {
     // opening quote AND cut the value mid-sentence, so exports carried
     // truncated metadata. Consume the continuations until the quote closes.
     const opener = value[0];
-    if ((opener === '"' || opener === "'") && !closesQuotedScalar(value, opener)) {
-      let j = i + 1;
-      while (j < lines.length) {
-        value += ` ${lines[j].trim()}`;
-        const closed = closesQuotedScalar(value, opener);
-        j += 1;
-        if (closed) break;
+    if (opener === '"' || opener === "'") {
+      // Scan the APPENDED CHUNK only — never re-index `value`, which would
+      // force V8 to flatten the cons-string and reintroduce the quadratic
+      // cost. `pending` carries the dangling-backslash bit across the
+      // boundary. See scanChunk.
+      let scan = scanChunk(value, opener, 1, false);
+      if (!scan.closed) {
+        let j = i + 1;
+        while (j < lines.length) {
+          const chunk = ` ${lines[j].trim()}`;
+          value += chunk;
+          scan = scanChunk(chunk, opener, 0, scan.pending);
+          j += 1;
+          if (scan.closed) break;
+        }
+        i = j - 1;
       }
-      i = j - 1;
     }
 
     // Strip surrounding quotes
@@ -289,7 +342,11 @@ export function parseFrontmatter(content) {
 // Wikilink → markdown link conversion
 // ---------------------------------------------------------------------------
 
-const WIKILINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+// `[` and `\n` excluded from both classes: without them a run of `[` drives
+// this regex quadratic (see the note on WIKILINK_RE in wiki-graph-builder.mjs,
+// which carries the measurements). A link target never legitimately contains
+// either character.
+const WIKILINK_RE = /\[\[([^\]|\n[]+)(?:\|([^\]\n[]+))?\]\]/g;
 
 /**
  * Convert Obsidian `[[wikilinks]]` into standard markdown `[label](path)`.
@@ -432,7 +489,7 @@ export function buildLlmsTxt({ vaultName, indexMd, pages, mode = 'index', summar
     throw new TypeError('buildLlmsTxt: pages is required (array)');
   }
   if (mode !== 'index' && mode !== 'full') {
-    throw new TypeError(`buildLlmsTxt: mode must be 'index' or 'full' (got ${mode})`);
+    throw new TypeError(`buildLlmsTxt: mode must be 'index' or 'full' (got ${safeForMessage(mode, 80)})`);
   }
 
   // Build a lookup of pages by basename for index resolution
@@ -490,7 +547,10 @@ export function buildLlmsTxt({ vaultName, indexMd, pages, mode = 'index', summar
     // the "MARKED OKF projection never lands in Unindexed" test.
     unindexed.push({ pageSlug: basename, description: '' });
   }
-  unindexed.sort((a, b) => a.pageSlug.localeCompare(b.pageSlug));
+  // The shared comparator, not a hand-inlined ternary: satisfying the rule by
+  // construction rather than by compliance means the next edit here has
+  // nothing to copy from.
+  unindexed.sort((a, b) => cmp(a.pageSlug, b.pageSlug));
 
   // ----------------------------------------------------------------
   // Render

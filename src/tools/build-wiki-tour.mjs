@@ -11,7 +11,6 @@
  */
 
 import * as defaultRestClient from '../rest-client.mjs';
-import { sanitizeResponse } from '../helpers/sanitize.mjs';
 import { computeTourTopology } from '../helpers/wiki-tour-topology.mjs';
 import { CANONICAL_GRAPH_PATH } from './build-wiki-graph.mjs';
 import { isMissingReadError, graphMissingError } from '../helpers/missing-read-guard.mjs';
@@ -106,7 +105,7 @@ export async function buildWikiTourTool(registry, args = {}, _deps = {}) {
   if (topo.totalArticles === 0) warnings.push('no-articles-in-scope');
   if (steps.length === 0) warnings.push('no-tour-steps');
 
-  return sanitizeResponse({
+  return ({
     vault: vault.name,
     scope: topo.scope,
     graphPath: CANONICAL_GRAPH_PATH,

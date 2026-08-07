@@ -3,10 +3,13 @@ import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
 import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
 import { isProjectionPath } from '../helpers/okf-projections.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 export async function writeFileTool(registry, args = {}) {
-  const { vault: name, path: filePath, content, ifNew = false, ifMatch } = args;
-  if (!filePath) throw new Error('Missing required argument: path');
+  const { vault: name, content, ifNew = false, ifMatch } = args;
+  // Containment BEFORE anything else touches the path: `..` survives
+  // `encodeURIComponent`, and the URL parser then collapses it onto a sibling
+  // route (`/commands/`, `/active/`) instead of `/vault/`. See vault-path-guard.
+  const filePath = canonicalVaultPath(args.path, 'path');
   if (typeof content !== 'string') {
     throw new Error('Missing required argument: content (string)');
   }
@@ -43,7 +46,7 @@ export async function writeFileTool(registry, args = {}) {
   // Non-blocking OKF-name guard (2026-07-29 decision): new notes are born
   // with ascii-kebab OKF-safe paths; the write succeeds either way.
   const okfSuggestion = okfSafePathSuggestion(filePath);
-  return {
+  return ({
     vault: vault.name,
     path: filePath,
     bytesWritten: Buffer.byteLength(content, 'utf8'),
@@ -64,5 +67,5 @@ export async function writeFileTool(registry, args = {}) {
     ...(isProjectionPath(filePath) && {
       projectionWarning: `This path is a GENERATED OKF projection (root/per-directory index.md or wiki/log.md) — hand edits will be overwritten by the next refresh_okf_projections run. Edit the page frontmatter instead; the projections regenerate from it.`,
     }),
-  };
+  });
 }

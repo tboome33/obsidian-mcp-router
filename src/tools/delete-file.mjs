@@ -1,7 +1,7 @@
 import { deleteFile, assertContentMatches, getFileContent } from '../rest-client.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, canonicalize, PlanDriftError } from '../helpers/plan-seal.mjs';
-
+import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 /**
  * Derive the delete plan from CURRENT vault state: what file, does it still
  * exist, and (for a string file) its content fingerprint. Both the preview and
@@ -34,11 +34,14 @@ export async function buildDeletePlan(vault, filePath, getFileContentFn) {
 }
 
 export async function deleteFileTool(registry, args = {}, deps = {}) {
-  const { vault: name, path: filePath, confirm, ifMatch, preview, approvedPlanSha256 } = args;
+  const { vault: name, confirm, ifMatch, preview, approvedPlanSha256 } = args;
   const getFileContentFn = deps.getFileContent || getFileContent;
   const deleteFileFn = deps.deleteFile || deleteFile;
 
-  if (!filePath) throw new Error('Missing required argument: path');
+  // Containment BEFORE the plan is built, so the seal covers the CANONICAL
+  // path and a `../` spelling can never reach `DELETE /periodic/` or
+  // `/.obsidian/`. See vault-path-guard.
+  const filePath = canonicalVaultPath(args.path, 'path');
 
   // Validate the precondition tokens' SHAPE before touching the network, so a
   // typo surfaces immediately instead of behaving like "no guard".
@@ -68,7 +71,7 @@ export async function deleteFileTool(registry, args = {}, deps = {}) {
   if (preview === true) {
     const plan = await buildDeletePlan(vault, filePath, getFileContentFn);
     const seal = computePlanSeal({ op: 'delete', identity, plan });
-    return {
+    return ({
       vault: vault.name,
       path: filePath,
       preview: true,
@@ -80,7 +83,7 @@ export async function deleteFileTool(registry, args = {}, deps = {}) {
         ? `Ready to delete "${filePath}". To proceed, call again with confirm:true and ` +
           `approvedPlanSha256:"${seal}". The delete is refused if the file changes before then.`
         : `"${filePath}" does not exist — nothing to delete.`,
-    };
+    });
   }
 
   // Phase 2 — apply. Require explicit confirmation to avoid accidental deletes
@@ -112,9 +115,9 @@ export async function deleteFileTool(registry, args = {}, deps = {}) {
     await assertContentMatches(vault, filePath, ifMatch);
   }
   await deleteFileFn(vault, filePath);
-  return {
+  return ({
     vault: vault.name,
     path: filePath,
     deleted: true,
-  };
+  });
 }

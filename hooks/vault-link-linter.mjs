@@ -282,7 +282,7 @@ const stripped = stripCode(text);
 // false positives (paths inside conversational sentences, etc.). Markdown
 // links are the explicit "I'm linking this file for the user" signal;
 // they're what the convention targets.
-const LINK_PATTERN = /\[([^\]\n]+)\]\(([^)\n]+\.md)\)/g;
+const LINK_PATTERN = /\[((?:[^\]\n[\\]|\\.)+)\]\(([^)\n]+\.md)\)/g;
 const bareCandidates = [];
 for (const m of stripped.matchAll(LINK_PATTERN)) {
   const label = m[1];
@@ -306,7 +306,7 @@ for (const m of stripped.matchAll(LINK_PATTERN)) {
 // but we don't require `.md` here because the bridge `/open/*` endpoint
 // in principle accepts any vault file extension).
 const CLICK_TO_OPEN_PATTERN =
-  /\[([^\]\n]+)\]\((https?):\/\/127\.0\.0\.1:(\d+)\/open\/([^)\s\n]+)\)/g;
+  /\[((?:[^\]\n[\\]|\\.)+)\]\((https?):\/\/127\.0\.0\.1:(\d+)\/open\/([^)\s\n]+)\)/g;
 const clickToOpenCandidates = [];
 for (const m of stripped.matchAll(CLICK_TO_OPEN_PATTERN)) {
   clickToOpenCandidates.push({
@@ -333,7 +333,7 @@ const cwdPrefix = cwdResolved.endsWith(path.sep) ? cwdResolved : cwdResolved + p
 const trapCandidates = [];
 // 3a — markdown-link form `[label](ABS.md)`. `[^)\n]+?` allows spaces so a
 // cwd containing spaces still matches inside the parens.
-const TRAP_LINK_PATTERN = /\[([^\]\n]+)\]\(((?:[A-Za-z]:[\\/]|\/)[^)\n]+?\.md)\)/g;
+const TRAP_LINK_PATTERN = /\[((?:[^\]\n[\\]|\\.)+)\]\(((?:[A-Za-z]:[\\/]|\/)[^)\n]+?\.md)\)/g;
 for (const m of stripped.matchAll(TRAP_LINK_PATTERN)) {
   trapCandidates.push({ label: m[1], raw: m[2].trim() });
 }
@@ -376,7 +376,7 @@ for (const m of blocksStripped.matchAll(/`([^`\n]+)`/g)) {
 // lookbehind rejects a `wiki`/`wiki-meta` segment sitting INSIDE a longer
 // path (preceded by a separator/word char) — that's an absolute path
 // (Pass 3) or a URL component, not a relative-path start.
-const proseNoLinks = stripped.replace(/\[[^\]\n]+\]\([^)\n]+\)/g, '');
+const proseNoLinks = stripped.replace(/\[(?:[^\]\n[\\]|\\.)+\]\([^)\n]+\)/g, '');
 for (const m of proseNoLinks.matchAll(/(?<![\w%/\\.-])(?:wiki-meta|wiki)[\\/][^\s)\]>"'`]+?\.md/g)) {
   barePassCandidates.push({ raw: m[0].trim(), form: 'prose' });
 }
