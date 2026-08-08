@@ -1,0 +1,219 @@
+{
+  "$comment": [
+    "C12 — the host registry for `scripts/install-agent-rules.mjs` and the rule set for",
+    "`scripts/skills-portability-audit.mjs`.",
+    "",
+    "WHY A CONTRACT AND NOT A CONST IN THE SCRIPT. The conventions system (skills/conventions)",
+    "learned this the hard way: a hardcoded list of conventions goes stale the day someone adds",
+    "a snippet, so the skill is told to Glob the directory instead. Hosts cannot be globbed —",
+    "they are external products — so the list has to be written down somewhere. Writing it HERE",
+    "rather than in the installer means (a) the installer has no host knowledge of its own and",
+    "cannot drift from this file, (b) `provenance` can travel next to each path, and (c) the",
+    "audit and the installer read the SAME declaration of what a portable skill looks like.",
+    "",
+    "PROVENANCE IS PART OF THE DATA. Four of these products are not installed as libraries we",
+    "can interrogate; their rule paths are documentation claims. Every target therefore carries",
+    "how its path was established, and the installer PRINTS that in the preview. A user is",
+    "entitled to know which of the seven targets was empirically confirmed on this machine and",
+    "which is being taken on a vendor's word.",
+    "",
+    "THE NEIGHBOUR THIS FILE EXISTS TO AVOID. `<repo>/.codex/config.toml` is gitignored and",
+    "holds a live bearer token; a deny-list build once shipped it inside a .mcpb (see",
+    "contracts/export-allowlist.json). Three properties, stated as narrowly as they hold:",
+    "every target file name is CONSTRUCTED by joining a base with a `file` fragment from this",
+    "contract, so no path comes from user input; `allowedTargetExtensions` and the declared",
+    "basenames are re-checked on the resolved path before any open, so a `.toml` this contract",
+    "cannot name the installer cannot name either; and a target that is itself a symlink is",
+    "refused rather than followed. That last check covers the FINAL COMPONENT ONLY — a reparse",
+    "point on a parent directory still redirects the write, and the lstat/rename window is not",
+    "closed. The claim that holds is 'no code path names a file this contract does not name, and",
+    "a target that is a link is refused', NOT 'the process cannot read' and NOT 'name and inode",
+    "cannot diverge'. The wider claims would be false, and a false security claim is worse than none."
+  ],
+  "contractVersion": 1,
+
+  "block": {
+    "name": "skills-index",
+    "beginMarker": "<!-- BEGIN obsidian-mcp-router:skills-index -->",
+    "endMarker": "<!-- END obsidian-mcp-router:skills-index -->",
+    "$comment": [
+      "Same HTML-comment marker shape as `installGlobalConvention()` in scripts/setup-vault.mjs",
+      "(v0.13.9), and for the same reason: these files are flat documents a human also writes in.",
+      "A marker block lets us own our paragraphs, re-render them on upgrade, and leave every other",
+      "line alone. A BEGIN with no matching END is an ambiguous state and is REFUSED, never guessed."
+    ]
+  },
+
+  "allowedTargetExtensions": [".md", ".mdc"],
+
+  "portableFrontmatter": {
+    "$comment": [
+      "The Agent Skills spec admits exactly six frontmatter keys. Claude Code accepts many more",
+      "and drops the extras; the spec distribution paths (claude.ai upload, the Skills API,",
+      "package_skill.py) FAIL HARD on an extra key rather than ignoring it. So a key outside this",
+      "set is not a style question — it decides whether the skill can leave Claude Code at all."
+    ],
+    "authority": "https://agentskills.io/specification",
+    "authorityAccessed": "2026-08-08",
+    "$authorityNote": [
+      "WHICH DOCUMENT IS THE AUTHORITY, AND WHY IT MATTERS. Two numbers were in play and they",
+      "are not the same measurement. https://agentskills.io/specification — the open Agent Skills",
+      "spec, which is what a NON-Claude host validates against — states verbatim, in its",
+      "frontmatter table: `description` | Yes | 'Max 1024 characters. Non-empty. Describes what",
+      "the skill does and when to use it.' and, under the `description` field heading, 'Must be",
+      "1-1024 characters'. The 1,536 figure comes from the Claude Code docs and is a different",
+      "thing entirely: the point at which the combined `description` + `when_to_use` text is",
+      "TRUNCATED IN CLAUDE CODE'S SKILL LISTING. A truncation threshold in one host is not a",
+      "validity limit in the format.",
+      "",
+      "This audit exists to answer 'could this page leave Claude Code unedited?', so the open",
+      "spec is the authority and 1024 is the limit. Pinning the wrong one was not cosmetic: at",
+      "1536 the audit reported 0 errors over 47 skills, when 3 of them were in fact invalid."
+    ],
+    "specFields": [
+      "allowed-tools",
+      "compatibility",
+      "description",
+      "license",
+      "metadata",
+      "name"
+    ],
+    "requiredFields": ["name", "description"],
+    "descriptionCharLimit": 1024,
+    "compatibilityCharBudget": 500,
+    "budgetSource": "https://agentskills.io/specification (accessed 2026-08-08) — `description`: 'Must be 1-1024 characters'; `compatibility`: 'Must be 1-500 characters if provided'; `name`: 'Must be 1-64 characters'.",
+    "claudeCodeListingTruncation": {
+      "chars": 1536,
+      "$note": "Recorded, deliberately NOT enforced as a spec rule. https://code.claude.com/docs/en/skills (accessed 2026-08-08): the combined `description` + `when_to_use` text is truncated at 1,536 characters in the skill listing. It is a host display budget, looser than the spec limit above, so the spec limit binds first and this number never decides a verdict."
+    },
+    "namePattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+    "$namePatternNote": "Encodes all four of the spec's name rules at once: lowercase alphanumerics and hyphens only, no leading hyphen, no trailing hyphen, no consecutive hyphens (the alternation cannot produce `--`).",
+    "nameMaxLength": 64,
+    "nameMustMatchDirectory": true,
+    "acceptedHostExtensions": {
+      "argument-hint": {
+        "host": "claude-code",
+        "severity": "warn",
+        "reason": "Autocomplete hint for the slash-command form. This repo's shipping path is the Claude Code plugin, where every documented field is legal, so the key earns its place there. It is recorded here — rather than deleted or ignored — because it is exactly the key the upstream docs use to illustrate the hard error ('Unexpected key(s) in SKILL.md frontmatter: argument-hint'), so any skill carrying it cannot be lifted onto a spec distribution path unedited. `--strict` promotes this to an error and prints the list."
+      }
+    }
+  },
+
+  "hosts": {
+    "agents-md": {
+      "label": "AGENTS.md (portable — read by Codex, Gemini CLI, Cursor and Windsurf)",
+      "preferred": true,
+      "targets": {
+        "project": {
+          "file": "AGENTS.md",
+          "base": "project",
+          "format": "markdown",
+          "charBudget": null,
+          "provenance": "documented",
+          "source": "https://agents.md/ — open format, repository root, nested files allowed; the site lists OpenAI Codex, Gemini CLI, Cursor and Windsurf among its readers.",
+          "note": "One file, four hosts. Install this first; the host-specific targets below are for the cases where a host is driven from OUTSIDE a project that has an AGENTS.md."
+        }
+      }
+    },
+
+    "codex": {
+      "label": "OpenAI Codex CLI",
+      "targets": {
+        "user": {
+          "file": "AGENTS.md",
+          "base": "codex-home",
+          "format": "markdown",
+          "charBudget": null,
+          "provenance": "documented",
+          "source": "Codex reads AGENTS.md; the user-scope copy lives under CODEX_HOME (default ~/.codex), the same root `codex exec -p` layers profile config from.",
+          "note": "CODEX_HOME is honoured when set — that is also what keeps the test suite off the real ~/.codex."
+        }
+      }
+    },
+
+    "gemini": {
+      "label": "Google Gemini CLI",
+      "targets": {
+        "user": {
+          "file": "GEMINI.md",
+          "base": "gemini-home",
+          "format": "markdown",
+          "charBudget": null,
+          "provenance": "documented",
+          "source": "Gemini CLI hierarchical context loading — global context file at ~/.gemini/GEMINI.md, applied to every project.",
+          "note": "GEMINI.md, not AGENTS.md: the global tier is keyed on the context file name, which defaults to GEMINI.md."
+        },
+        "project": {
+          "file": "GEMINI.md",
+          "base": "project",
+          "format": "markdown",
+          "charBudget": null,
+          "provenance": "documented",
+          "source": "Same: project-level context files are discovered in the workspace directory and its parents."
+        }
+      }
+    },
+
+    "cursor": {
+      "label": "Cursor",
+      "targets": {
+        "project": {
+          "file": ".cursor/rules/obsidian-mcp-router-skills.mdc",
+          "base": "project",
+          "format": "mdc",
+          "charBudget": null,
+          "provenance": "documented",
+          "source": "https://cursor.com/docs/context/rules — project rules live in .cursor/rules as .mdc files, version-controlled; frontmatter keys are description, globs, alwaysApply.",
+          "frontmatter": {
+            "description": "obsidian-mcp-router — index of the vault know-how skills and where to read each one. Consult when working with an Obsidian vault, the router's MCP tools, or any wiki ingestion, linting or export task.",
+            "globs": "",
+            "alwaysApply": true
+          },
+          "$frontmatterNote": [
+            "https://cursor.com/docs/context/rules (accessed 2026-08-08): a project rule uses",
+            "`description`, `globs` and `alwaysApply`, and the activation policy is chosen from them.",
+            "ACTIVATION IS DELIBERATE, and the earlier `alwaysApply: false` with no `globs` was the",
+            "one combination that makes the file inert: with no globs to match and no always-on",
+            "flag, the rule waits to be fetched by description alone, which is precisely the",
+            "chicken-and-egg this index exists to break — an agent cannot ask for the catalogue of",
+            "skills it does not know about. An index is exactly the kind of always-loaded, cheap",
+            "pointer list `alwaysApply` is for; the expensive pages stay behind it, loaded on demand.",
+            "`globs` is empty because the index is not file-scoped."
+          ],
+          "note": "No user-scope target: Cursor's User Rules are edited in Customize -> Rules and the docs publish no filesystem path for them. Guessing one would be a write into an unknown location, so the host is project-scope only."
+        }
+      }
+    },
+
+    "windsurf": {
+      "label": "Windsurf (Cascade)",
+      "targets": {
+        "project": {
+          "file": ".windsurf/rules/obsidian-mcp-router-skills.md",
+          "base": "project",
+          "format": "markdown",
+          "charBudget": 12000,
+          "provenance": "documented",
+          "source": "Windsurf Rules — workspace rules under .windsurf/rules/*.md (legacy fallback path, still read), 12,000 characters per file.",
+          "note": "The docs now name .devin/rules/*.md as preferred with .windsurf/rules/*.md as the legacy fallback. This contract writes the legacy path because it is the one the spec for this work named and the one the installed product still reads; moving it is a one-line change here, which is the point of putting it here."
+        },
+        "user": {
+          "file": "global_rules.md",
+          "base": "windsurf-memories",
+          "format": "markdown",
+          "charBudget": 6000,
+          "provenance": "documented",
+          "source": "Windsurf global rules at ~/.codeium/windsurf/memories/global_rules.md, 6,000 characters.",
+          "note": "The tightest budget of the seven targets, and the reason the renderer has a compact mode at all. A file that overflows its budget is REFUSED with `over-budget`, never silently truncated — a half-written index is worse than no index, because the missing half looks like a skill that does not exist."
+        }
+      }
+    }
+  },
+
+  "bases": {
+    "project": { "kind": "cwd", "description": "The project directory the installer was pointed at (--project, default: cwd)." },
+    "codex-home": { "kind": "env-or-home", "env": "CODEX_HOME", "homeSubdir": ".codex" },
+    "gemini-home": { "kind": "home", "homeSubdir": ".gemini" },
+    "windsurf-memories": { "kind": "home", "homeSubdir": ".codeium/windsurf/memories" }
+  }
+}

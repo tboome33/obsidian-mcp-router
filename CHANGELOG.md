@@ -4,6 +4,138 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.73.0] — 2026-08-08 — the tools were universal, the manual was not
+
+### Added — `AGENTS.md`, a portability audit, and a skills-index installer for four other hosts
+
+**The gap this closes.** Every MCP client can call the router's 50 tools; the
+tool schemas travel by themselves. What did not travel is the operating
+know-how — how to run an ingestion, which disciplines apply, which traps have
+already been paid for — because all 47 pages of it are written in Claude Code's
+skill format. An agent arriving through Codex or Gemini had the commands and no
+manual.
+
+**`AGENTS.md` at the repository root.** The host-neutral operating contract, in
+plain markdown, at the repo-root path Codex reads natively — proven here by a
+live pass, not assumed. It carries the repository layout, the three gates, the
+contracts, the bridge rule (when a request matches a skill, read its `SKILL.md`
+in full before acting; a missing host capability is declared, not imitated),
+source precedence (`skills/` is canonical; `mcpb-staging/` and worktree copies
+never are), and the house rules that are not obvious from the code: measure
+rather than recall, no green without a mutation, never restore with git, tests
+never write outside a temp directory, and the one directory nothing may open.
+
+It is treated as code rather than documentation, and that is the whole point.
+A stale line in a README costs a reader ten seconds; a stale line here is read
+automatically by every agent, on every host, in every session, and acted on
+before anyone notices. So `tests/agents-md-contract.test.mjs` resolves every
+path it names against the filesystem, every command against `package.json`, and
+the node version against `engines`. The check found a defect in the file on its
+first run.
+
+**`npm run install:agent-rules` — preview-first, seven targets, five hosts.**
+Writes a per-skill index (name, one sentence, path to the `SKILL.md`) into the
+rule file each host actually reads — an index of the skills, deliberately not
+an installation of them: nothing here makes a foreign host *execute* a
+`SKILL.md`, and the docs say so.
+
+| Host | Scope | Target |
+|---|---|---|
+| AGENTS.md (portable) | project | `AGENTS.md` |
+| Codex | user | `$CODEX_HOME`/`~/.codex` + `AGENTS.md` |
+| Gemini CLI | user · project | `~/.gemini/GEMINI.md` · `GEMINI.md` |
+| Cursor | project | `.cursor/rules/obsidian-mcp-router-skills.mdc` |
+| Windsurf | project · user | `.windsurf/rules/…md` · `~/.codeium/windsurf/memories/global_rules.md` |
+
+Preview is the default and writes nothing — every target but one is a file in
+the user's home or in a repository this tool did not author, so the run that
+writes is the one that had to be asked for. Same HTML-comment markers as
+`--install-global-convention` (v0.13.9) and the same refusal: a `BEGIN` with no
+matching `END` is reported `ambiguous-state` and left alone, because an
+installer that guesses where a half-deleted block ended eats the paragraph
+after it — and the refusal covers every unbalanced shape, including a stray
+marker after an otherwise complete block. Re-runs are no-ops, `--uninstall`
+returns the file to its original bytes when the block is where an install put
+it, `--host` / `--scope` / `--skills` narrow the plan, apply re-verifies the
+target's bytes and refuses a file that changed since the preview, writes are
+atomic (temp file + rename), and a sidecar backup precedes every destructive
+mutation. The preview announces that backup and the full chain of directories
+an apply will create — the one defect proven in this cycle's verification was
+an upgrade preview that under-declared its sidecar, and an under-declaring
+preview is the worst defect this tool can have. Uninstall removes the block,
+never the file, and says so before you apply.
+
+Host knowledge lives in `contracts/agent-host-targets.json`, not in the
+installer, and every target carries the **provenance** of its path — the
+preview prints it, so the user can see which location was confirmed and which
+is taken on a vendor's word.
+
+**Two behaviours that came from reading the hosts' limits instead of assuming
+them.** Windsurf caps global rules at 6,000 characters and the full index does
+not fit, so the renderer has a compact mode; a target that cannot fit even the
+compact form is **refused** rather than truncated: the skills past the cut
+would look like skills that do not exist.
+
+**The file the installer cannot open.** `.codex/config.toml` is gitignored,
+holds a live bearer token, and was once shipped inside a released `.mcpb`
+because a deny-list build did not know the directory existed. "Be careful
+around it" is not a design, so: every target path is constructed by joining a
+contract base with a contract `file` (no path comes from user input),
+`assertSafeTarget()` re-checks the resolved extension **and** basename against
+the contract, and `assertSafeFile()` refuses a target whose final component is
+a symlink. The claim is "no code path names a file the contract does not
+name", not "the process cannot read" — the wider version would be false, and a
+false security claim is worse than none. Proven behaviourally: a fake home
+holding a canary token is driven through preview, apply and uninstall, and the
+canary is hunted in every byte of output and every written file.
+
+**`npm run audit:skills-portability`.** The Agent Skills spec admits exactly six
+frontmatter keys; Claude Code accepts about twenty and ignores the rest, while
+the spec distribution paths reject the whole file on the first unknown key — so
+an extra key costs nothing right up until it costs everything. Measured:
+**42/47 skills carry spec-only frontmatter**, longest description **903/1024**;
+the other 5 use `argument-hint`, declared in the contract as an accepted Claude
+Code extension with its reason. Undeclared keys are errors, declared ones
+warnings, `--strict` collapses the two. The limit is **1024**, quoted from
+https://agentskills.io/specification and pinned with its access date — NOT the
+1,536 figure in the Claude Code docs, which is where that host truncates its
+skill LISTING. Pinning the looser number reported a clean run over 47 skills
+while 3 were invalid; those three descriptions were shortened and the displaced
+text moved into the skill bodies.
+
+### Verified
+
+The live check is a real `codex exec` pass, not a simulation: `codex-cli
+0.146.0` reads `AGENTS.md`, is asked for the contract handshake, and must reply
+`AGENTS-OK skills=47` — a number deliberately absent from the file, so the
+answer is only reachable by running a measurement. Removing the handshake
+section from `AGENTS.md` turns that test red, which is what makes the green
+mean anything. It is opt-in (`ROUTER_CODEX_LIVE=1`) and, when the binary or the
+opt-in is missing, skips with the reason in the test name rather than passing
+quietly. It runs with `--ignore-user-config`, which is both safer and more
+reliable: it keeps the check away from the token-bearing `config.toml`
+entirely, and measured 4/4 correct at 15–33 s against 3/4 at 63–135 s with the
+user config loaded — the one failure in that first sample being the finding,
+not the noise: unable to run a shell command, the model web-searched for the
+count and answered 39.
+
+The whole feature went through a three-voice cycle: an independent second
+design (Codex — reviewer and target host at once), a cross-review of the built
+design against it, then an execution-based verification of sixteen stated
+guarantees — preview filesystem-diffed to zero writes, announced-equals-done
+byte for byte, user text outside markers surviving install/upgrade/uninstall,
+a canary-loaded fake `CODEX_HOME` never leaking into any output or file,
+ambiguous marker states refusing in four shapes, a poisoned `AGENTS.md`
+turning all four export gates red, and the live test proven in its three
+states. One defect survived to be proven — the upgrade preview above — and was
+fixed and independently re-proven. The cross-review also corrected the audit's
+limit from 1536 to the spec's 1024; in the other direction, the Windsurf
+provenance note it challenged was confirmed against the vendor's live docs.
+
+Suite **3822 tests, 3821 pass / 1 skipped** (the opt-in codex pass), 0 fail —
+**+87** on the 3735 baseline. `npm run validate`, `npm run gate` and the
+release-target scan all exit 0.
+
 ## [0.72.0] — 2026-08-07 — twin pages: every vault gets its own threshold
 
 ### Added — `find_twin_pages`, and the number that says when two pages are too close

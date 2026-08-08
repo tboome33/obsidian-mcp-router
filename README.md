@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.72.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.73.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -250,6 +250,43 @@ What it catches: a skill that ships undeclared · a declaration whose skill was 
 **Bootstrapping.** `npm run capabilities:bootstrap` derives a proposal from the code (which tools each `SKILL.md` names, what those tools imply). It previews by default and writes nothing; `--missing-only --write` adds entries for new skills without touching reviewed ones. Every generated entry is stamped `UNREVIEWED-BOOTSTRAP`, **which the validator rejects** — so a generated file cannot go green until a human has read the page and replaced the reason. That mechanism is the point: the seeding pass is a proposal, and on the first run it was wrong often enough to prove it (it read the pure-reader `read-get` as `destructive`, `autoresearch` as offline, and `defuddle`'s prose-only `filter_relevant_blocks` mention as a call).
 
 *Scope note:* the counter check watches an explicit allowlist of **current-state** sentences. Historical documents (`docs/announcements.md`, `docs/v0.10.2-skills-promotion.md`, `ROADMAP.md`, `CHANGELOG.md`) record what a past version shipped and are deliberately excluded — a blanket scan would demand rewriting the past to make the present pass.
+
+## Working from another agent host (`AGENTS.md`, `npm run install:agent-rules`)
+
+The MCP tools are universal — any client that speaks MCP can call them. The **know-how** was not: how to run an ingestion, which disciplines apply, which traps have already been paid for, all of that lived only in Claude Code's skill format. An agent arriving through Codex or Gemini had the commands without the manual.
+
+**[`AGENTS.md`](./AGENTS.md)** at the repository root is the host-neutral half of the answer: the operating contract in plain markdown, read natively by Codex, Gemini CLI, Cursor and Windsurf. It is treated as code, not documentation, because it is an input to third-party models that act on it — every path it names is resolved against the filesystem and every command against `package.json` by `tests/agents-md-contract.test.mjs`, which fails the suite when one goes stale. A wrong line in a README costs a reader ten seconds; a wrong line here is executed by every agent, on every host, in every session.
+
+**`npm run install:agent-rules`** is the other half: it puts an **index of skills** — name, one sentence, path to the `SKILL.md` — into the rule file each host actually reads.
+
+> **It installs an index, not the skills.** Nothing here makes Codex or Cursor *execute* a `SKILL.md`. What travels is a catalogue of pointers plus the rule that says to read the pointed-at page in full before acting. That distinction is the whole honest description of the feature: the manuals stay where they are, and the foreign host is told they exist and where. Calling it "installing the skills" would promise an execution semantics no line of this code provides.
+
+```bash
+npm run install:agent-rules              # status / preview of every target (writes nothing)
+npm run install:agent-rules -- --host codex --apply
+npm run install:agent-rules -- --skills wiki-ingest,wiki-lint --apply
+npm run install:agent-rules -- --uninstall --apply
+```
+
+**Preview is also the status command.** There is no separate `--status`: run it with no flags and it reports, per target, the file, whether a managed block is there, and whether it is current (`installed` · `already-installed` · `upgraded` · `ambiguous-state` · `over-budget`). "What is installed on my machine?" and "what would this do?" are the same question asked of the same code, so they get the same answer rather than two implementations that can disagree.
+
+**Future work — a native Agent Skills adapter.** The index is a bridge, not the destination. Hosts are converging on a real skills directory, and an adapter that emits conforming skill folders would give actual progressive disclosure instead of a pointer list. The empirical hook is already on disk: **codex-cli 0.146.0 scans `%USERPROFILE%\.agents\skills\` at startup**. Measured on this machine: that directory exists and holds 9 top-level entries (7 active, 2 `_disabled_*`) containing **35 `SKILL.md` files, of which 15 have no YAML frontmatter** — which is exactly why codex logs parse errors for them at launch. Emitting the router's 47 skills into that tree is the natural next step, and it is the reason `npm run audit:skills-portability` exists now rather than later: an adapter can only emit what already conforms.
+
+Seven targets across five host entries, all declared in `contracts/agent-host-targets.json` rather than hardcoded, each carrying the **provenance** of its path so the preview can say which location was confirmed and which is taken on a vendor's word. Same HTML-comment markers as `--install-global-convention` (v0.13.9), and the same refusal: markers that do not form exactly one well-formed block are reported as `ambiguous-state` and left alone, because an installer that guesses where a half-deleted block ended eats the paragraph after it.
+
+Re-runs are no-ops. `--uninstall` returns the file to its original bytes **when the block is where an install put it — at the end**; if you have moved the block and text now follows it, head and tail are rejoined verbatim and the separator blank line may remain. That distinction is stated because the first version normalised newlines across the whole file and collapsed blank lines inside fenced code blocks, which is exactly the kind of unrequested edit an uninstaller must never make.
+
+**Uninstall removes the block, never the file.** If the installer created the file itself, uninstalling leaves it behind — empty for `AGENTS.md` / `GEMINI.md` / the Windsurf rules file, or holding just its Cursor frontmatter for the `.mdc`. This is deliberate: the tool keeps no receipt of what it authored, and deleting a file it cannot prove it created is not a call it should make. Remove the leftovers by hand if you want them gone. The preview says so before you apply.
+
+Two details that fell out of reading the hosts' own limits rather than assuming them. Windsurf caps global rules at 6,000 characters, which the full index does not fit — so the renderer has a **compact** mode, and a target that cannot fit even that is **refused** rather than truncated (the skills past the cut would look like skills that do not exist). And mutations are made **atomically** (temp file in the same directory, then rename), with a **timestamped `.bak-skills-index-*` sidecar** written before any upgrade or removal, and the exact text of a removal shown **verbatim** before it happens — the same discipline the `conventions` skill imposes on its own `remove`.
+
+**About `.codex/config.toml`** — gitignored, holding a live token, once shipped inside a released bundle. Every target path is built by joining a contract base with a contract filename, so no path comes from user input; the resolved extension *and* basename are re-checked before any open; a target that is itself a symlink is refused; and `--project` / `CODEX_HOME` are rejected when they resolve to a filesystem root or a system directory. Stated precisely, because the wider version would be false: **no code path here can name a file the contract does not name**. It is not a sandbox — the symlink check covers the final path component only, so a reparse point on a parent directory is not caught, and the check-then-write window is not closed.
+
+**`npm run audit:skills-portability`** measures the frontmatter side. Per the [Agent Skills specification](https://agentskills.io/specification) the format admits exactly six keys (`allowed-tools`, `compatibility`, `description`, `license`, `metadata`, `name`); Claude Code accepts about twenty and ignores the rest, while spec distribution paths reject the whole file on the first unknown key. So an extra key costs nothing until it costs everything.
+
+The limit that matters is **`description`: max 1024 characters**, quoted from that spec and pinned in `contracts/agent-host-targets.json` with its access date. This is not the 1,536-character figure in the Claude Code docs — that one is where Claude Code *truncates its skill listing*, a host display budget, not a validity rule. Pinning the looser number is what let the audit report a clean run over 47 skills while 3 of them were in fact invalid; **those three descriptions have been shortened**, with the displaced text moved into the skill bodies where progressive disclosure wants it anyway.
+
+Measured on this repository: **42/47 skills carry spec-only frontmatter**, longest description **903/1024**. The other 5 use `argument-hint`, declared in the contract as an accepted Claude Code extension with its reason. Undeclared keys are errors, declared ones are warnings, and `-- --strict` collapses the two to show the spec-distribution view. Scope is printed with every run: this measures **frontmatter portability only** — whether a page's metadata can be *read* elsewhere, not whether its workflow would *execute* there, which is what `contracts/skill-capabilities.json` records.
 
 ## Reclaiming the plugin cache (`npm run purge:plugin-cache`)
 
@@ -940,7 +977,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.72.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.73.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).

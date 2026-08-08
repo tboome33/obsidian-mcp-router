@@ -7,16 +7,21 @@ description: |
 
   EN triggers: "who is speaking", "I'm <name>", "this is <name>", "it's <name> talking", "set me as <name>", "identify me", "log me in as <name>", "I'm <alias>", "/who-is-speaking".
   FR triggers : "qui parle", "c'est <prénom>", "je suis <prénom>", "moi c'est <prénom>", "identifie-moi", "log-moi en <prénom>", "je m'appelle <prénom>", "/qui-parle".
-
-  Examples / Exemples:
-    EN: "I'm Karine, let's go" → identify as Karine, lock to vault_tribu, set Hybrid mode
-    FR: "c'est Roland, on enchaîne" → identifie comme Roland, lock vault_tribu, mode Hybrid
-    EN: "who's speaking today?" → ask the user (don't guess), then identify
 ---
 
 # who-is-speaking
 
 Identify the family member for the current session on a shared family vault, then lock + set mode.
+
+## Examples / Exemples
+
+Moved here from the frontmatter: the Agent Skills specification caps `description` at 1024
+characters, and worked examples are activation-time guidance, not discovery-time metadata — the
+body is where they belong under progressive disclosure.
+
+- EN: *"I'm Karine, let's go"* → identify as Karine, lock to `vault_tribu`, set `Hybrid` mode.
+- FR: *"c'est Roland, on enchaîne"* → identifie comme Roland, lock `vault_tribu`, mode `Hybrid`.
+- EN: *"who's speaking today?"* → ask the user (don't guess), then identify.
 
 ## Pre-conditions
 
