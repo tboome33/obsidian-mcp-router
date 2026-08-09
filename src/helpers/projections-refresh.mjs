@@ -1,20 +1,27 @@
 /**
- * Debounced OKF-projections refresh — the "kept fed as files are created"
+ * Debounced post-write vault MAINTENANCE — the "kept fed as files are created"
  * half of volet ② (the other half is the explicit `refresh_okf_projections`
  * tool, which shares the same core).
  *
  * Design: after any successful write-tool call touching CONTENT under
- * `wiki/`, schedule a FULL projection refresh for that vault, debounced.
+ * `wiki/`, schedule a FULL maintenance pass for that vault, debounced.
  * A burst of writes (a wiki-ingest filing six pages) coalesces into ONE
- * refresh a few seconds after the burst quiets down.
+ * pass a few seconds after the burst quiets down.
+ *
+ * BOTH derived artefacts, one window. The flush refreshes the OKF projections
+ * AND the BM25 search index, because the alternative was measured and is absurd:
+ * first contact repairs the index, the session's first write makes it stale, and
+ * nothing rebuilds it until the NEXT session's first contact — so the index is
+ * wrong for exactly as long as the session is productive. The index build
+ * short-circuits on its corpus fingerprint, so a flush that changed nothing
+ * indexable costs a read pass and no write.
  *
  * Why full-refresh-debounced rather than incremental per-write surgery:
  * projections are pure functions of the tree, so a full rebuild is ALWAYS
  * correct — no upsert grammar to keep in sync, no drifting subdirectory
  * counts, no ordering bugs. The cost (one bounded enumeration + one read per
  * page) is paid per QUIET PERIOD, not per write, and only by vaults that
- * opted in (the core's `requireInitialized` gate: root `wiki/index.md`
- * present and marker-carrying).
+ * opted in (the core's scaffold gate: `wiki-meta/catalog.md` present).
  *
  * The scheduler is deliberately dumb: it maps vault name → pending timer and
  * knows nothing about REST or projections. The refresh function is injected
@@ -82,6 +89,35 @@ export function createProjectionsScheduler({
 }) {
   const timers = new Map(); // vault name → {timer, vault}
 
+  /**
+   * Run one maintenance pass for `vault`.
+   *
+   * SERIALIZATION LIVES IN THE PASS, NOT HERE. `refresh` is the locked
+   * maintenance pass from `helpers/vault-conformance.mjs`, which takes the
+   * process-wide per-vault lock (`helpers/vault-maintenance-lock.mjs`). Holding a
+   * second mutex here would be a second lock over the same resource — and since
+   * that lock is a non-reentrant serial queue, acquiring it twice around one job
+   * would deadlock rather than protect anything.
+   *
+   * That also closes the hole the debounce was standing in for. The debounce is
+   * a delay, not a lock: a refresh slower than the quiet period was still
+   * running when the next timer fired, and the explicit MCP tools never went
+   * near it at all. Now all four callers — timer flush, first contact,
+   * `refresh_okf_projections`, `build_search_index` — queue behind one another.
+   *
+   * WHAT THIS SCHEDULER STILL OWNS: when to fire. Errors never escape.
+   */
+  function runRefresh(vault) {
+    return Promise.resolve()
+      .then(() => refresh(vault))
+      .catch((err) => {
+        logError(
+          `[obsidian-mcp-router] vault maintenance failed for vault "${vault.name}": ${err?.message ?? err}`,
+        );
+        return null;
+      });
+  }
+
   return {
     /**
      * Note a successful write. Returns true when a refresh was (re)scheduled.
@@ -101,18 +137,38 @@ export function createProjectionsScheduler({
       if (existing) clearTimeoutFn(existing.timer);
       const timer = setTimeoutFn(() => {
         timers.delete(vault.name);
-        Promise.resolve()
-          .then(() => refresh(vault))
-          .catch((err) => {
-            logError(
-              `[obsidian-mcp-router] okf-projections refresh failed for vault "${vault.name}": ${err?.message ?? err}`,
-            );
-          });
+        void runRefresh(vault);
       }, delayMs);
       // A pending refresh must never keep the server process alive.
       if (timer && typeof timer.unref === 'function') timer.unref();
       timers.set(vault.name, { timer, vault });
       return true;
+    },
+
+    /**
+     * Refresh NOW, through the same mutex the debounced path uses.
+     *
+     * This is the entry point the first-contact conformance repair calls. It is
+     * deliberately a method on the scheduler rather than a direct call to the
+     * refresh core: a direct call would be a second concurrent refresh path,
+     * and two full rebuilds of the same tree racing each other is precisely
+     * what the mutex above exists to prevent.
+     *
+     * A pending debounced refresh for this vault is CANCELLED first — it was
+     * scheduled to catch up with writes this run is about to cover anyway, and
+     * letting it fire afterwards would rebuild the same tree twice.
+     *
+     * Resolves with the refresh core's result, or `null` when the refresh threw
+     * (already logged). Never rejects: nav upkeep must not fail its caller.
+     */
+    runNow(vault) {
+      if (!vault || typeof vault.name !== 'string') return Promise.resolve(null);
+      const existing = timers.get(vault.name);
+      if (existing) {
+        clearTimeoutFn(existing.timer);
+        timers.delete(vault.name);
+      }
+      return runRefresh(vault);
     },
 
     /** Pending vault names (tests + diagnostics). */

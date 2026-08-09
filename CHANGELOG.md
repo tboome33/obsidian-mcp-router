@@ -4,6 +4,93 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.74.0] — 2026-08-09 — vaults keep themselves conformant, in three moments — and one race we did not close
+
+### Added — automatic vault conformance: birth, opening, contact
+
+**The gap this closes.** A router-managed vault carries two *derived* artefacts:
+the OKF navigation projections under `wiki/` and the local BM25 search index
+`wiki-meta/search-index.json`. Neither had a reliable trigger. The index was an
+opt-in nothing ever called — so on a vault without Smart Connections,
+`search_smart` had **no tier left** and failed outright instead of degrading.
+The projections drift because the debounced middleware only sees writes made *by
+the router*; a folder created by hand in Obsidian leaves them stale. Coverage is
+now the **union of three moments**, and the docs describe it with its holes
+named, not as a promise that every vault is always conformant.
+
+- **Birth (provisioning).** A vault comes out of the scaffolder carrying its OKF
+  projections *and* its `wiki-meta/search-index.json`, generated on disk (Obsidian
+  is not open yet) with a temp-file-plus-rename write so a crash mid-write cannot
+  leave a half-written index. Idempotent by fingerprint: re-scaffolding rewrites
+  nothing.
+- **Opening (the bridge plugin).** When a vault finishes loading in Obsidian, the
+  companion `obsidian-mcp-router-bridge` verifies that the generated navigation
+  files are all present and shows a Notice if any are missing. **Detection only —
+  the bridge never generates.** Per-vault switch, **default OFF** (the bridge
+  auto-updates through BRAT; a Notice appearing by itself in every vault would be
+  an unannounced change).
+- **Contact (the router).** The first time a session touches a router-managed
+  vault, the router refreshes the drifted projections and rebuilds the missing or
+  stale index. Once per vault per session, debounced, and all four rebuild paths
+  (the post-write flush, first contact, `refresh_okf_projections`,
+  `build_search_index`) go through **one per-vault lock**, so two rebuilds of the
+  same vault never race inside one process.
+
+### Fixed / hardened
+
+- **An incomplete enumeration is a retryable, *noisy* failure — not a silent
+  success.** A transient REST outage on a directory listing makes the cores
+  *return* a skip (they fail closed rather than delete an index for a directory
+  that merely did not answer). That skip now marks the maintenance pass NOT
+  successful, so first contact keeps the vault retryable and spends its bounded
+  budget; on exhaustion it logs loudly rather than leaving `search_smart` broken
+  in silence.
+- **Birth and contact write the same root-index title.** The disk generator was
+  defaulting the root `wiki/index.md` heading to the on-disk basename while the
+  registry resolves the vault by its lowercased slug, so the very first session
+  rewrote the file for a title that only differed in case. Both now stamp the
+  canonical slug.
+
+### Reserved-path writes — window **reduction** and **non-destruction** (F3-b)
+
+The refresh/rebuild paths read the vault, plan, then write. Between the read and
+the write a foreign file can appear on a reserved path (`wiki/<dir>/index.md`,
+`wiki-meta/search-index.json`) — realistically a sync client (Obsidian Sync,
+LiveSync, Dropbox, iCloud) materialising it. The old apply overwrote it blind.
+
+The automatic path now **reduces** that window and guarantees **non-destruction**:
+foreign content on a reserved path is never lost without a recoverable copy.
+Either the write is refused and the foreign file is left as it was (the
+cooperative-CAS route via the bridge, and the strict opt-in), or — when the only
+available write is unconditional — the foreign bytes are copied to a unique
+timestamped sidecar *before* regenerating, and the result names that backup. The
+mode actually used is reported (`atomic-cooperative` / `reduced-getcompare` /
+`skipped-strict`). Destructive deletes are **never** performed automatically: a
+stale generated `index.md` is reported as `pendingDeletes`, not removed.
+
+**Stated as a LIMIT, not a closure.** This does **not** close the race, and
+cannot: the check and the write are two operations against a store other writers
+touch in between. It is **not** safe against a plain native `PUT /vault` (the
+router's own default write), the open Obsidian editor, or an Obsidian Sync /
+LiveSync apply — inherent to optimistic concurrency. Two residual data-loss
+paths are documented: a file landing strictly inside the read→PUT sub-interval
+(the late read could not see it, so it is not backed up), and — for the
+*create-if-absent* case — a backend that ignores the `Apply-If-Content-Preexists`
+header, where a create in the window becomes an ordinary overwrite. Closing
+either would require every writer to cooperate, which is out of the router's
+reach.
+
+### Compatibility
+
+- `OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS` now disables only the **projections** half
+  of the flush and of first contact; the scheduler keeps maintaining the BM25
+  index.
+- New: `OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE` (off the contact moment; also off
+  under `OBSIDIAN_ROUTER_READONLY`, since repair writes) and
+  `OBSIDIAN_ROUTER_STRICT_RESERVED_CAS` (skip a racy reserved-path overwrite on a
+  backend without cooperative CAS, instead of the reduced backup path — zero
+  foreign overwrite, at the cost of skipped repairs).
+
 ## [0.73.0] — 2026-08-08 — the tools were universal, the manual was not
 
 ### Added — `AGENTS.md`, a portability audit, and a skills-index installer for four other hosts

@@ -12,7 +12,7 @@
 import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { writeFileIfMatch, assertContentMatches } from '../src/rest-client.mjs';
+import { writeFileIfMatch, assertContentMatches, attemptAtomicCas } from '../src/rest-client.mjs';
 import { getFile } from '../src/tools/get-file.mjs';
 import { writeFileTool } from '../src/tools/write-file.mjs';
 import { patchFileTool } from '../src/tools/patch-file.mjs';
@@ -270,6 +270,104 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
         `status ${status}: no fallback GET`,
       );
     }
+  });
+});
+
+// --- attemptAtomicCas: the F3-b reserved-path building block ----------------
+
+describe('attemptAtomicCas — tight feature detection (codex H2)', () => {
+  test('CAS applies → { ok: true }', async () => {
+    behaviour.vaultCas = { status: 200, body: { ok: true } };
+    const out = await attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur'));
+    assert.equal(out.ok, true);
+    assert.equal(recorded.corePut, null, 'no core PUT — the CAS route serviced it');
+  });
+
+  test('409 content-changed → THROWS conflict, NEVER routeUnusable', async () => {
+    behaviour.vaultCas = { status: 409, body: { kind: 'cas_conflict', reason: 'content-changed' } };
+    await assert.rejects(
+      () => attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur')),
+      (err) => err.kind === 'conflict' && /changed/.test(err.message),
+    );
+    assert.equal(recorded.corePut, null);
+  });
+
+  test('404 (absent bridge) → { routeUnusable: true, status: 404 }', async () => {
+    behaviour.vaultCas = { status: 404 };
+    const out = await attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur'));
+    assert.deepEqual(out, { routeUnusable: true, status: 404 });
+  });
+
+  test('400 body-not-text → routeUnusable (a shape the route cannot service)', async () => {
+    behaviour.vaultCas = { status: 400, body: { kind: 'cas_bad_request', reason: 'body-not-text' } };
+    const out = await attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur'));
+    assert.equal(out.routeUnusable, true);
+  });
+
+  test('400 BAD-PRECONDITION → THROWS, never degrades (a masked bug is worse)', async () => {
+    // The tightening (codex H2): a malformed-precondition 400 is a real bug — we
+    // compute the sha ourselves — so it must surface, not silently fall through
+    // to a weaker path where the same bug would pass.
+    behaviour.vaultCas = { status: 400, body: { kind: 'cas_bad_request', reason: 'bad-precondition' } };
+    await assert.rejects(
+      () => attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur')),
+      (err) => err.status === 400,
+    );
+  });
+
+  test('413 / 415 → routeUnusable (route present, cannot service this shape)', async () => {
+    for (const status of [413, 415]) {
+      behaviour.vaultCas = { status, body: {} };
+      const out = await attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur'));
+      assert.equal(out.routeUnusable, true, `status ${status}`);
+      assert.equal(out.status, status);
+    }
+  });
+
+  test('401 / 403 / 500 → hard-fail (throws), no degrade', async () => {
+    for (const status of [401, 403, 500]) {
+      behaviour.vaultCas = { status, body: {} };
+      await assert.rejects(() => attemptAtomicCas(vault(), 'a.md', 'new', contentSha256('cur')));
+    }
+  });
+});
+
+describe('the hash precondition — BOM / EOL cross-contract (codex H5)', () => {
+  // These pin what the precondition hash treats as identical vs different, so
+  // the reduced GET-compare and the bridge CAS agree on both sides. The known
+  // vector (tests/content-hash.test.mjs) pins the exact digest the bridge mirror
+  // must also produce.
+  const h = contentSha256;
+
+  test('CRLF vs LF are DIFFERENT (no line-ending normalization)', () => {
+    assert.notEqual(h('a\r\nb'), h('a\nb'));
+  });
+
+  test('a trailing newline is significant', () => {
+    assert.notEqual(h('x'), h('x\n'));
+  });
+
+  test('the empty file has a stable hash', () => {
+    assert.equal(h(''), h(''));
+    assert.notEqual(h(''), h('\n'));
+  });
+
+  test('unicode outside the BMP round-trips (emoji, surrogate pairs)', () => {
+    assert.equal(h('a\u{1F4A9}b'), h('a\u{1F4A9}b'));
+    assert.notEqual(h('a\u{1F4A9}b'), h('ab'));
+  });
+
+  test('a mid-content BOM (U+FEFF) IS significant — only a LEADING one is stripped', () => {
+    assert.notEqual(h('a﻿b'), h('ab'));
+  });
+
+  test('DOCUMENTED BLIND SPOT: a LEADING-BOM-only difference is INVISIBLE to the hash', () => {
+    // The leading BOM is stripped before hashing (so the two read paths — core
+    // GET which drops it, bridge adapter.read which keeps it — agree). The cost:
+    // two files that differ ONLY by a leading BOM hash identically, so a
+    // BOM-only change is not detected by the precondition. This is a deliberate,
+    // known limitation — asserted here so no future doc can claim otherwise.
+    assert.equal(h('﻿hello'), h('hello'));
   });
 });
 

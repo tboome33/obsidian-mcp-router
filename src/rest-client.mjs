@@ -520,37 +520,99 @@ function makeIfMatchConflict(vault, filePath, reason, currentSha = null) {
 }
 
 /**
- * Conditional ("compare-and-swap") full-file write — C1 optimistic
- * concurrency. Writes `content` ONLY if the file's current content still
- * hashes to `expectedSha` (the value the caller got from get_file's
- * contentSha256). Otherwise throws a 409 conflict and writes nothing.
+ * Attempt the cooperative-CAS overwrite ONLY — no fallback, tight feature
+ * detection. The building block the reserved-path writer (F3-b) uses so it can
+ * choose its OWN behaviour when the CAS route is unusable (a late-read backup,
+ * or a strict skip) instead of the generic GET-compare fallback below.
+ *
+ * ATOMIC ONLY BETWEEN COOPERATING CAS WRITERS. The bridge serialises
+ * read→compare→write against OTHER `/vault-cas` writes — NOT against a plain
+ * core `PUT /vault`, the open Obsidian editor, or a Sync/LiveSync apply. This is
+ * inherent to optimistic concurrency (see the bridge's `vault-cas.ts`).
+ *
+ * Outcomes:
+ *   - `{ ok: true, response }`            — the CAS write applied.
+ *   - THROWS `kind:'conflict'` (409)      — the precondition failed; the file
+ *                                           was left intact. NEVER masked.
+ *   - `{ routeUnusable: true, status }`   — the route cannot service this write
+ *                                           (404 absent bridge; 400 body-not-text;
+ *                                           413 too large; 415 media type). The
+ *                                           caller decides the fallback.
+ *   - THROWS the original error           — a real BUG or hard failure: a 400
+ *                                           `bad-precondition` (a malformed sha —
+ *                                           masking it would hide the bug),
+ *                                           401/403, 5xx, network. Tightened on
+ *                                           purpose (codex H2): only an
+ *                                           established route-unusable shape
+ *                                           degrades.
+ *
+ * @param {object} vault
+ * @param {string} filePath
+ * @param {string} content
+ * @param {string} expectedSha  64-hex content hash
+ * @returns {Promise<{ ok: true, response: object } | { routeUnusable: true, status: number }>}
+ */
+export async function attemptAtomicCas(vault, filePath, content, expectedSha) {
+  try {
+    const response = await request(vault, 'PUT', `/vault-cas/${encodePath(filePath)}`, {
+      headers: {
+        'If-Match-Content-Sha256': expectedSha,
+        'Content-Type': 'text/plain',
+      },
+      body: content,
+      json: true,
+    });
+    return { ok: true, response };
+  } catch (err) {
+    if (err instanceof RestApiError && err.kind === 'conflict') {
+      const isMissing = /target-missing/.test(err.message);
+      throw makeIfMatchConflict(vault, filePath, isMissing ? 'target-missing' : 'content-changed');
+    }
+    // A malformed-precondition 400 is a BUG (we compute the sha ourselves, so it
+    // should never happen) — surface it, never degrade through a weaker path
+    // where the same bug would pass silently.
+    if (err instanceof RestApiError && err.status === 400 && /bad-precondition/.test(err.message)) {
+      throw err;
+    }
+    const routeUnusable =
+      err instanceof RestApiError &&
+      (err.kind === 'not_found' || err.status === 400 || err.status === 413 || err.status === 415);
+    if (routeUnusable) return { routeUnusable: true, status: err.status };
+    throw err; // 401/403, 5xx, timeout, network — not recoverable this way
+  }
+}
+
+/**
+ * Conditional full-file write — C1 optimistic concurrency. Writes `content`
+ * ONLY if the file's current content still hashes to `expectedSha` (the value
+ * the caller got from get_file's contentSha256). Otherwise throws a 409 conflict
+ * and writes nothing. REDUCES the clobber window; does not close it.
  *
  * Two tiers, chosen at runtime by feature-detection:
- *   1. ATOMIC (preferred): PUT /vault-cas/<path> on the obsidian-mcp-router-
- *      bridge plugin (>= 0.7.0). The bridge reads-compares-writes inside the
- *      Obsidian process under a mutex. HONEST SCOPE: this makes the check and
- *      the write indivisible against OTHER /vault-cas writes — but NOT against
- *      a writer that bypasses the route: a plain core PUT /vault (the router's
- *      own DEFAULT non-ifMatch write), a save from the open Obsidian editor, or
- *      an Obsidian Sync/LiveSync apply can still interleave. C1 prevents
- *      CAS-vs-CAS clobbering; total clobber-prevention needs every writer to
- *      opt in. Content travels as text/plain, which does not change the bytes
- *      stored on disk.
- *   2. FALLBACK: if the atomic route is unusable — a 404 (older/absent bridge)
- *      OR a 400/413/415 (route present but it can't service this request shape:
- *      body-parser refusal, size limit, a proxy) — the router does
- *      GET-compare-then-core-PUT. Correct for the common case but NOT atomic: a
- *      writer could slip in between the GET and the PUT. Strictly better than
- *      the unconditional write it replaces. A genuine 409 conflict is NEVER a
- *      fallback trigger — that is the precondition actually failing, and it must
- *      surface, not be retried through a weaker path.
+ *   1. COOPERATIVE CAS (preferred): PUT /vault-cas/<path> on the
+ *      obsidian-mcp-router-bridge plugin (>= 0.7.0). The bridge
+ *      reads-compares-writes inside the Obsidian process under a mutex. ATOMIC
+ *      ONLY BETWEEN COOPERATING CAS WRITERS: it makes the check and the write
+ *      indivisible against OTHER /vault-cas writes — but NOT against a writer
+ *      that bypasses the route (a plain core PUT /vault — the router's own
+ *      DEFAULT non-ifMatch write, the open Obsidian editor, an Obsidian
+ *      Sync/LiveSync apply). Full clobber-prevention would need every writer to
+ *      opt in. Content travels as text/plain, which does not change the bytes on
+ *      disk.
+ *   2. FALLBACK: if the route is unusable — a 404 (older/absent bridge) OR a
+ *      400/413/415 (route present but cannot service this request shape) — the
+ *      router VERIFIES THE HASH IMMEDIATELY BEFORE A NON-CONDITIONAL core PUT
+ *      (GET-compare-then-PUT). This reduces the window to the interval between
+ *      that GET and the PUT; a writer landing strictly inside it is still
+ *      overwritten. Strictly better than the unconditional write it replaces,
+ *      but NOT closed. A genuine 409 conflict is NEVER a fallback trigger — the
+ *      precondition failing must surface, not be retried through a weaker path.
  *
- * The atomic path relies on the bridge's adapter.read() returning the same
- * bytes that get_file (core GET /vault) returned, so `expectedSha` is
- * comparable on both sides. Both hash cores strip a leading BOM to keep those
- * two read paths in agreement (see helpers/content-hash.mjs). The fallback path
- * is inherently consistent because it re-reads through the very same GET the
- * caller used.
+ * The CAS path relies on the bridge's adapter.read() returning the same bytes
+ * get_file (core GET /vault) returned, so `expectedSha` is comparable on both
+ * sides; both hash cores strip a leading BOM to keep the two read paths in
+ * agreement (helpers/content-hash.mjs). The fallback path re-reads through the
+ * very same GET the caller used, so it is self-consistent.
  *
  * @param {object} vault
  * @param {string} filePath
@@ -559,7 +621,8 @@ function makeIfMatchConflict(vault, filePath, reason, currentSha = null) {
  * @returns {Promise<{ casMode: 'atomic'|'fallback', response?: object }>}
  */
 export async function writeFileIfMatch(vault, filePath, content, expectedSha) {
-  // Tier 1 — atomic bridge route.
+  // Tier 1 — the cooperative-CAS bridge route (atomic only between cooperating
+  // CAS writers; the `casMode: 'atomic'` label below names that tier).
   try {
     const response = await request(vault, 'PUT', `/vault-cas/${encodePath(filePath)}`, {
       headers: {

@@ -48,6 +48,7 @@ import {
   scaffoldMigrationHint,
 } from '../src/helpers/wiki-meta-scaffolds.mjs';
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
+import { generateSearchIndexOnDisk } from '../src/helpers/bm25-index-fs.mjs';
 import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
 import {
   buildProvisionPlan,
@@ -1960,15 +1961,42 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
   // v0.59.0 — volet ②: a fresh wiki is born with its OKF projections (root
   // wiki/index.md + wiki/log.md), so the write middleware's requireInitialized
   // gate opens from day one. Conflict-safe: an unmarked homonym is preserved.
-  const projections = generateProjectionsOnDisk(vaultPath, { apply: true });
+  const projections = generateProjectionsOnDisk(vaultPath, { apply: true, vaultName: wikiOpts.vaultName });
   if (projections.conflicts.length > 0) {
     warn(`OKF projections: ${projections.conflicts.length} hand-written file(s) squat reserved paths (${projections.conflicts.join(', ')}) — left untouched.`);
   }
 
+  // BIRTH, second half: the local BM25 index. Until this call the index was an
+  // opt-in nothing ever triggered — a vault could live its whole life without
+  // one, and `search_smart` on a vault without Smart Connections then had NO
+  // tier left and failed outright instead of degrading. Built on DISK because
+  // Obsidian has never opened this vault yet, so the REST tool cannot run.
+  //
+  // A newborn wiki has no content pages (the projections are excluded from the
+  // corpus), so this writes a valid, empty, version-stamped index. That is the
+  // point: the file exists, so the first router contact of the first session
+  // sees `stale` and rebuilds it, rather than seeing `absent` and having to
+  // decide. Idempotent by fingerprint — re-running the scaffolder rewrites
+  // nothing.
+  const searchIndex = generateSearchIndexOnDisk(vaultPath, { apply: true, vaultName: wikiOpts.vaultName });
+  if (searchIndex.conflicts.length > 0) {
+    warn(`Search index: ${searchIndex.conflicts.join(', ')} is not one of ours — left untouched, no index written.`);
+  }
+
+  // Honest one-liner about the index: `chunks: 0` on a newborn vault is the
+  // expected state, not a failure, and saying so beats a silent success.
+  const indexNote = searchIndex.skipped
+    ? `search index skipped (${searchIndex.skipped})`
+    : searchIndex.written
+      ? `search index built (${searchIndex.stats?.chunks ?? 0} chunk${searchIndex.stats?.chunks === 1 ? '' : 's'}${searchIndex.stats?.chunks === 0 ? ' — no content pages yet' : ''})`
+      : searchIndex.upToDate
+        ? 'search index already current'
+        : 'search index NOT written';
+
   if (created > 0) {
-    ok(`Scaffolded wiki structure: wiki/, wiki-meta/ (+ Sessions/), OKF projections (${created} file${created > 1 ? 's' : ''} created${preserved > 0 ? `, ${preserved} preserved` : ''})`);
+    ok(`Scaffolded wiki structure: wiki/, wiki-meta/ (+ Sessions/), OKF projections, ${indexNote} (${created} file${created > 1 ? 's' : ''} created${preserved > 0 ? `, ${preserved} preserved` : ''})`);
   } else if (preserved > 0) {
-    info(`Wiki scaffolds already present (${preserved} file${preserved > 1 ? 's' : ''} preserved)`);
+    info(`Wiki scaffolds already present (${preserved} file${preserved > 1 ? 's' : ''} preserved) — ${indexNote}`);
   }
 }
 
@@ -2812,7 +2840,20 @@ function setupVault(vaultPath, opts = {}) {
   // Idempotent: existing wiki-meta/*.md files are preserved, missing ones are
   // created. The legacy-layout refusal that protects this step lives earlier
   // (just after `mkdirSync(abs)`) so a legacy vault never gets here.
-  scaffoldWikiMeta(abs, { mode: wizard.wikiMode || undefined, sections: wizard.wikiSections });
+  // F2: the disk generators must stamp the SAME name the registry will resolve
+  // this vault by, or the first REST contact rewrites wiki/index.md for a title
+  // that only differs in case. The registry slug is the custom --name (lowered)
+  // when it differs from the basename default, else defaultNameFromPath (which
+  // lowercases) — exactly the resolution setupVault performs below for
+  // vaultNames. path.basename(abs) alone would carry the on-disk case.
+  const canonicalSlug = (wizard.name && wizard.name.toLowerCase() !== defaultNameFromPath(abs))
+    ? wizard.name.toLowerCase()
+    : defaultNameFromPath(abs);
+  scaffoldWikiMeta(abs, {
+    mode: wizard.wikiMode || undefined,
+    sections: wizard.wikiSections,
+    vaultName: canonicalSlug,
+  });
 
   // Project config files
   writeEnvFile(abs, apiKey, port, opts.force);

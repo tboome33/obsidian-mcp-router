@@ -634,6 +634,93 @@ export function isUsableIndex(index) {
   return indexProblem(index) === null;
 }
 
+/**
+ * Does this parsed JSON CLAIM to be one of our search indexes?
+ *
+ * A much weaker question than `isUsableIndex`, and deliberately so. It answers
+ * "is this file ours to rewrite" — not "can it be scored". The two are
+ * different and conflating them costs data:
+ *
+ *   - a v2 index whose postings were corrupted by a sync conflict is NOT
+ *     scorable, but it IS ours, and rebuilding it is the repair;
+ *   - a hand-written `{"notes": [...]}` a user parked at that path is perfectly
+ *     valid JSON, is NOT ours, and rebuilding over it destroys their file.
+ *
+ * `indexProblem` calls both of those 'malformed', so an automatic repair path
+ * cannot use it to tell them apart. This predicate is the one it uses instead:
+ * a numeric `version` PLUS at least one structural field this builder always
+ * emits. A file that carries neither never came out of `buildSearchIndex`.
+ *
+ * Own-property lookups throughout: `{"__proto__": {...}}` parsed from vault
+ * JSON must not answer for a field it does not carry.
+ */
+export function looksLikeSearchIndex(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  const own = (key) => Object.prototype.hasOwnProperty.call(parsed, key);
+  if (!own('version') || typeof parsed.version !== 'number') return false;
+  return own('postings') || own('chunks') || own('fingerprint');
+}
+
+/**
+ * What may an AUTOMATIC rebuild do about the file currently at the index path?
+ *
+ * THE FAILURE THIS PREVENTS. Two router generations sharing a synced vault, each
+ * with a different `INDEX_VERSION`. Both consider the other's index unusable —
+ * correctly. If both then rebuild, every session on machine A rewrites the file,
+ * every session on machine B rewrites it back, and the vault's sync history
+ * fills with an index that is never right for whoever reads it next. Neither
+ * side is wrong on its own; the loop only exists because the rebuild is
+ * automatic. So an automatic path REFUSES a foreign version and says so. A
+ * version migration is an explicit act, performed once, by a human calling
+ * `build_search_index`.
+ *
+ * The other three answers follow the same rule — an unattended path may repair
+ * what is unambiguously ours, and must not touch anything else:
+ *
+ *   absent            → 'build'     nothing to lose.
+ *   ours + stale      → 'rebuild'   the corpus moved; that is the job.
+ *   ours + corrupt    → 'rebuild'   integrity or shape broken at OUR version.
+ *   ours + current    → 'skip'
+ *   numeric foreign   → 'incompatible'  another generation's index. Preserve.
+ *   anything else     → 'foreign'   unparseable, or not claiming to be an index
+ *                                   at all: somebody's file. Preserve.
+ *
+ * Pure: no I/O, no clock. `stored` is the PARSED file, or `null` for absent, or
+ * the sentinel `{__unparseable: true}` the readers use for "it is there but it
+ * is not JSON".
+ *
+ * @param {object|null} stored
+ * @param {string} corpusFingerprint the fingerprint of the CURRENT corpus
+ * @returns {{action:'build'|'rebuild'|'skip'|'incompatible'|'foreign', state:string}}
+ */
+export function automaticIndexAction(stored, corpusFingerprint) {
+  if (stored === null || stored === undefined) return { action: 'build', state: 'absent' };
+  if (stored.__unparseable === true) return { action: 'foreign', state: 'unparseable' };
+  if (!looksLikeSearchIndex(stored)) return { action: 'foreign', state: 'foreign-file' };
+  // A numeric version that is not ours: a real index from another generation.
+  if (stored.version !== INDEX_VERSION) return { action: 'incompatible', state: 'foreign-version' };
+
+  const problem = indexProblem(stored);
+  if (problem !== null) {
+    // Same version, so this IS ours — repairing it is the point. ('malformed'
+    // here means a broken shape at our own version, not a stranger's file:
+    // `looksLikeSearchIndex` already ruled that out above.)
+    return { action: 'rebuild', state: problem === 'malformed' ? 'shape-broken' : problem };
+  }
+  if (stored.fingerprint === corpusFingerprint) return { action: 'skip', state: 'current' };
+  return { action: 'rebuild', state: 'stale' };
+}
+
+/** Message for "another router generation owns this file; we will not fight it". */
+export function incompatibleIndexMessage(vaultName, found) {
+  const v = found && typeof found.version !== 'undefined' ? String(found.version) : 'unknown';
+  return (
+    `The local search index for vault "${vaultName}" is version ${v}; this router speaks version ` +
+    `${INDEX_VERSION}. It was LEFT UNTOUCHED — two router generations rebuilding each other's index ` +
+    `on every session would churn the file forever. Migrate deliberately: ${rebuildHint(vaultName)}`
+  );
+}
+
 /** Own-property lookup — never inherit from Object.prototype (a token like
  * "constructor" must not resolve to a function on parsed JSON). */
 function ownLookup(obj, key) {

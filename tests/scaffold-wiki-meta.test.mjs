@@ -18,13 +18,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+// I-3: setup-vault.mjs's bootstrap tail (maybeAutoInstallHooks) writes
+// os.homedir()/.claude/settings.json. Every spawn here MUST redirect HOME to a
+// throwaway dir or `npm test` mutates the developer's real global settings — the
+// same D1 class, on a PRE-EXISTING harness this file's tests derive from.
+import { spawnSyncHomeSafe } from './_home-safe-spawn.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'setup-vault.mjs');
+
+// One throwaway HOME for every spawn in this file. The children write
+// settings.json here, never in the real ~/.claude.
+const SCAFFOLD_FAKE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'scaffold-home-'));
+after(() => { try { fs.rmSync(SCAFFOLD_FAKE_HOME, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 // ---------------------------------------------------------------------------
 // Fixture helper: build a minimal reference vault with all REQUIRED_PLUGINS
@@ -52,15 +61,10 @@ function buildReferenceVault(refPath) {
   );
 }
 
-function spawnScript(args, env = {}) {
-  return spawnSync(
-    process.execPath,
-    [SCRIPT_PATH, ...args],
-    {
-      encoding: 'utf8',
-      env: { ...process.env, ...env },
-    },
-  );
+function spawnScript(args, env = {}, homeDir = SCAFFOLD_FAKE_HOME) {
+  // Through the D1 guard: HOME/USERPROFILE/HOMEPATH → a throwaway dir, refused if
+  // that dir is the real home.
+  return spawnSyncHomeSafe(process.execPath, [SCRIPT_PATH, ...args], { homeDir, env });
 }
 
 // ---------------------------------------------------------------------------
@@ -536,5 +540,45 @@ describe('setup-vault.mjs review+ pass 1 hardening', () => {
     assert.equal(reBind.status, 0);
     const output = (reBind.stdout || '') + (reBind.stderr || '');
     assert.doesNotMatch(output, /Rebinding workspace/i, 'no rebind warning when slug unchanged');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I-3 — the class guard for THIS harness: a scaffold spawn writes its
+// settings.json UNDER the redirected home, never the real one. Proves the
+// spawnScript redirection captures maybeAutoInstallHooks' home write.
+// ---------------------------------------------------------------------------
+
+describe('I-3 — scaffold spawns never touch the real ~/.claude', () => {
+  let workDir;
+  let referenceVault;
+  let configPath;
+  let freshHome;
+
+  before(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scaffold-i3-'));
+    referenceVault = path.join(workDir, '.template');
+    configPath = path.join(workDir, 'config.json');
+    freshHome = path.join(workDir, 'home'); // empty → maybeAutoInstallHooks WILL write here
+    fs.mkdirSync(freshHome, { recursive: true });
+    buildReferenceVault(referenceVault);
+    fs.writeFileSync(configPath, JSON.stringify({ referenceVault, portRegistry: {}, portStart: 27700 }, null, 2));
+  });
+
+  after(() => { fs.rmSync(workDir, { recursive: true, force: true }); });
+
+  test('the child hook-install lands under the throwaway home', () => {
+    const settings = path.join(freshHome, '.claude', 'settings.json');
+    assert.equal(fs.existsSync(settings), false, 'fixture sanity: the throwaway home starts empty');
+
+    const r = spawnScript([path.join(workDir, 'newborn')], { OBSIDIAN_ROUTER_CONFIG: configPath }, freshHome);
+    assert.equal(r.status, 0, `expected exit 0, got ${r.status}. stderr=${r.stderr}`);
+
+    // The redirection captured the home-dependent write. Remove it (the mutation)
+    // and this file would land in the developer's real ~/.claude instead.
+    assert.equal(
+      fs.existsSync(settings), true,
+      'setup-vault wrote settings.json OUTSIDE the throwaway home — a spawn is inheriting the real HOME',
+    );
   });
 });

@@ -31,6 +31,9 @@ import {
   isProjectionPath,
   isWikiContentPath,
 } from '../helpers/okf-projections.mjs';
+import { scaffoldCandidates } from '../helpers/wiki-meta-scaffolds.mjs';
+import { withVaultLock } from '../helpers/vault-maintenance-lock.mjs';
+import { applyReservedWrites, strictReservedCasEnabled } from '../helpers/reserved-path-write.mjs';
 import { collectMarkdown, readAll } from './build-wiki-graph.mjs';
 
 /**
@@ -104,8 +107,56 @@ function asText(res) {
  * @param {string} [opts.now] Injected ISO date (defaults to today).
  */
 export async function refreshProjectionsForVault(vault, deps, opts = {}) {
-  const { check = false, requireInitialized = false } = opts;
+  const {
+    check = false,
+    requireInitialized = false,
+    requireScaffold = false,
+    // F3-b: the AUTOMATIC callers set these. `conditionalWrites` routes writes
+    // through the reserved-path writer (backup-before-overwrite, never a blind
+    // clobber); `deferDeletes` reports stale generated files instead of deleting
+    // them; `strictReservedCas` skips a racy overwrite instead of the reduced
+    // backup path. The explicit tool leaves them off unless it opts in.
+    conditionalWrites = false,
+    deferDeletes = false,
+    strictReservedCas = false,
+    nowMs = Date.now(),
+  } = opts;
   const now = opts.now || new Date().toISOString().slice(0, 10);
+
+  // THE OPT-IN SIGNAL — two of them, and they answer different questions.
+  //
+  // `requireScaffold` (the maintenance paths): is this a ROUTER-MANAGED vault?
+  // The honest marker of that is the private `wiki-meta/` scaffold the
+  // provisioner writes — `catalog.md`, or `index.md` on a vault still on the
+  // pre-0.58.0 names. It is present from the moment the vault is provisioned and
+  // it survives a missing or damaged `wiki/index.md`.
+  //
+  // `requireInitialized` (kept, unchanged): does the ROOT PROJECTION already
+  // exist and carry the marker?
+  //
+  // Gating maintenance on the latter was a contradiction the reviewers caught:
+  // a vault whose root `wiki/index.md` had gone missing was reported as
+  // non-conformant by the bridge, whose Notice says "the router will repair it"
+  // — and `requireInitialized` refused to repair precisely that. The scaffold
+  // answers the question actually being asked, so maintenance uses it, and the
+  // safety that made the strict gate attractive is unchanged: `planProjectionWrites`
+  // still refuses to overwrite any UNMARKED file and reports it as a conflict.
+  if (requireScaffold) {
+    let seen = false;
+    for (const rel of scaffoldCandidates('catalog')) {
+      try {
+        await deps.getFileContent(vault, rel);
+        seen = true;
+        break;
+      } catch (err) {
+        // Only a true 404 means "not under this name". Anything else —
+        // unreachable, unauthorized, timeout — is about the VAULT, and mapping
+        // it onto "not a router vault" would make the skip perfectly silent.
+        if (err?.kind !== 'not_found') throw err;
+      }
+    }
+    if (!seen) return { skipped: 'no-wiki-meta-scaffold' };
+  }
 
   if (requireInitialized) {
     let rootIndex = null;
@@ -125,12 +176,33 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
   }
 
   // Enumerate the whole wiki tree once (same bounded walker as the graph).
-  const { paths, truncated } = await collectMarkdown(deps.listFilesIn, vault, 'wiki');
+  const { paths, truncated, listFailures } = await collectMarkdown(deps.listFilesIn, vault, 'wiki');
   const warnings = [];
   if (truncated) {
     // A truncated enumeration means the plan would be built from a PARTIAL
     // tree — deletions computed from it would remove valid indexes. Refuse.
     return { skipped: 'enumeration-truncated', warnings: ['enumeration-truncated'] };
+  }
+  // THE DANGEROUS ONE, and it went unread here for two releases while the BM25
+  // builder next door checked it.
+  //
+  // `collectMarkdown` distinguishes a directory that is ABSENT (a 404 — normal)
+  // from one that FAILED TO LIST (a timeout, a 500, a permission error). A
+  // subtree that failed to list contributes no paths, so it is indistinguishable
+  // from an empty one — and this planner turns "no pages under `wiki/notes/`"
+  // into "delete `wiki/notes/index.md`". Under the automatic repair that
+  // deletion is then EXECUTED, unattended, because one directory listing
+  // hiccuped. Deleting a valid index over a transient REST failure is the worst
+  // outcome this feature can produce, so: no enumeration, no plan, no writes.
+  if (listFailures > 0) {
+    return {
+      skipped: 'enumeration-failed',
+      warnings: [
+        `${listFailures} directory listing(s) failed — the vault tree could not be read in full, so a ` +
+          'plan built from it would delete indexes for directories that merely did not answer. ' +
+          'Nothing was written or deleted. Fix vault access and re-run.',
+      ],
+    };
   }
 
   const contentPaths = paths.filter((p) => isWikiContentPath(p));
@@ -175,22 +247,41 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
     plan: planCore,
   });
 
-  const result = {
-    vault: vault.name,
-    mode: check ? 'check' : 'apply',
-    pagesScanned: pages.length,
-    written: plan.writes.map((w) => w.path),
-    deleted: plan.deletes,
-    unchanged: plan.unchanged.length,
-    conflicts: plan.conflicts,
-    upToDate: plan.writes.length === 0 && plan.deletes.length === 0,
-    approvedPlanSha256,
-    warnings,
-  };
+  // PLANNED vs ACTUAL are now DISTINCT (codex H1). `plannedWrites`/`plannedDeletes`
+  // describe the plan; `written`/`deleted` describe what the apply actually did.
+  // A runtime conflict (a foreign file appeared on a reserved path between the
+  // snapshot and the write) removes that path from `written` and adds it to
+  // `conflicts`, and `conformant` is computed AFTER the apply.
+  const plannedWrites = plan.writes.map((w) => w.path);
+  const plannedDeletes = plan.deletes;
+  const snapshotConflicts = plan.conflicts; // squatters seen AT the snapshot
 
-  if (check) return result;
+  if (check) {
+    return {
+      vault: vault.name,
+      mode: 'check',
+      pagesScanned: pages.length,
+      plannedWrites,
+      plannedDeletes,
+      // `written`/`deleted` mirror the plan in check mode (nothing is written) —
+      // kept for callers that read them, but they are PLANNED, not actual.
+      written: plannedWrites,
+      deleted: plannedDeletes,
+      pendingDeletes: [],
+      unchanged: plan.unchanged.length,
+      conflicts: snapshotConflicts,
+      backups: [],
+      protectionMode: null,
+      upToDate: plannedWrites.length === 0 && plannedDeletes.length === 0,
+      conformant: plannedWrites.length === 0 && plannedDeletes.length === 0 && snapshotConflicts.length === 0,
+      approvedPlanSha256,
+      warnings,
+    };
+  }
 
-  // Refuse to apply a drifted plan — BEFORE any write.
+  // Refuse to apply a drifted plan — BEFORE any write. Especially load-bearing
+  // with conditional writes: the user approved THIS plan, and a file that
+  // appeared after the seal must not be silently clobbered (codex H4).
   if (opts.approvedPlanSha256 !== undefined) {
     verifyPlanSeal({
       op: 'refresh_okf_projections',
@@ -201,17 +292,97 @@ export async function refreshProjectionsForVault(vault, deps, opts = {}) {
     });
   }
 
-  for (const file of plan.writes) {
-    await deps.writeFile(vault, file.path, file.content);
+  // WRITES.
+  let written = [];
+  let runtimeConflicts = [];
+  let backups = [];
+  let protectionMode = null;
+  if (conditionalWrites) {
+    // Each planned write carries what we read at snapshot (undefined = the path
+    // was absent → a CREATE) and a recogniser for OUR own projection, so a
+    // foreign file earns a backup instead of a blind overwrite.
+    const plannedWithSnapshot = plan.writes.map((w) => ({
+      path: w.path,
+      content: w.content,
+      snapshotContent: current.get(w.path),
+      // No swallowing catch here BY DESIGN: `hasProjectionMarker` is imported
+      // (line 30) and string-scans — it never throws SyntaxError. So a broken
+      // import would surface as a ReferenceError that EXPLODES, never a silent
+      // "foreign" verdict that sidecars our own projection on every rebuild
+      // (the class of bug the index closure's tight catch also guards against).
+      isOurs: (c) => hasProjectionMarker(c),
+    }));
+    const applied = await applyReservedWrites({
+      deps: {
+        writeFile: deps.writeFile,
+        getFileContent: deps.getFileContent,
+        attemptAtomicCas: deps.attemptAtomicCas,
+      },
+      vault,
+      plannedWrites: plannedWithSnapshot,
+      mode: strictReservedCas ? 'strict' : 'reduced',
+      nowMs,
+    });
+    written = applied.written;
+    runtimeConflicts = applied.conflicts;
+    backups = applied.backups;
+    protectionMode = applied.protectionMode;
+    warnings.push(...applied.warnings);
+  } else {
+    for (const file of plan.writes) {
+      await deps.writeFile(vault, file.path, file.content);
+      written.push(file.path);
+    }
+    protectionMode = 'unconditional';
   }
-  for (const path of plan.deletes) {
-    try {
-      await deps.deleteFile(vault, path);
-    } catch (err) {
-      warnings.push(`delete-failed: ${path} (${err?.message ?? err})`);
+
+  // DELETES. On the AUTOMATIC path deletes are NEVER executed (codex H3): an
+  // automatic delete of a reserved-path file is irrecoverable by nature, so it
+  // is reported as `pendingDeletes` and left for an explicit action. The
+  // explicit tool (deferDeletes off) still deletes.
+  let deleted = [];
+  let pendingDeletes = [];
+  if (deferDeletes) {
+    pendingDeletes = plannedDeletes;
+  } else {
+    for (const path of plan.deletes) {
+      try {
+        await deps.deleteFile(vault, path);
+        deleted.push(path);
+      } catch (err) {
+        warnings.push(`delete-failed: ${path} (${err?.message ?? err})`);
+      }
     }
   }
-  return result;
+
+  const conflicts = [...snapshotConflicts, ...runtimeConflicts];
+  return {
+    vault: vault.name,
+    mode: 'apply',
+    pagesScanned: pages.length,
+    plannedWrites,
+    plannedDeletes,
+    written,
+    deleted,
+    pendingDeletes,
+    unchanged: plan.unchanged.length,
+    conflicts,
+    backups,
+    protectionMode,
+    // `upToDate` is a statement about WORK — "there was nothing to do" — and is
+    // computed from the PLAN, as callers/tests read it.
+    upToDate: plannedWrites.length === 0 && plannedDeletes.length === 0,
+    // `conformant` is the statement about the VAULT, POST-apply: no conflict, no
+    // foreign file backed-up-and-clobbered, no pending cleanup, and every
+    // planned write actually landed.
+    conformant:
+      conflicts.length === 0 &&
+      backups.length === 0 &&
+      pendingDeletes.length === 0 &&
+      written.length === plannedWrites.length,
+    approvedPlanSha256,
+    warnings,
+  };
 }
 
 /** MCP tool wrapper — registry resolution + response sanitization. */
@@ -221,6 +392,7 @@ export async function refreshOkfProjectionsTool(registry, args = {}, _deps = {})
     getFileContent: _deps.getFileContent || defaultRestClient.getFileContent,
     writeFile: _deps.writeFile || defaultRestClient.writeFile,
     deleteFile: _deps.deleteFile || defaultRestClient.deleteFile,
+    attemptAtomicCas: _deps.attemptAtomicCas || defaultRestClient.attemptAtomicCas,
   };
   // Validate the seal SHAPE before any network I/O — a typo must not silently
   // behave like "no seal" and let a drifted apply through.
@@ -233,10 +405,21 @@ export async function refreshOkfProjectionsTool(registry, args = {}, _deps = {})
     );
   }
   const vault = registry.resolveVault(args.vault);
-  const result = await refreshProjectionsForVault(vault, deps, {
+  // Through THE lock (helpers/vault-maintenance-lock.mjs), so an explicit
+  // refresh can no longer race the debounced flush or the first-contact repair.
+  // `check: true` takes it as well and still writes nothing: a drift report
+  // computed while a flush is halfway through describes a tree that never
+  // existed, and the C3 seal it returns would bind to it.
+  const result = await withVaultLock(vault.name, () => refreshProjectionsForVault(vault, deps, {
     check: args.check === true,
     approvedPlanSha256: args.approvedPlanSha256,
     now: _deps.now,
-  });
+    // The EXPLICIT apply is protected too (codex H4): the user approved a
+    // specific plan, and a file that appeared AFTER the approval must not be
+    // clobbered. Deletes still fire (an explicit refresh is a deliberate act).
+    conditionalWrites: true,
+    strictReservedCas: strictReservedCasEnabled(),
+    nowMs: _deps.nowMs,
+  }));
   return result; // normalized once at the wire boundary (wrapResult)
 }

@@ -25,7 +25,9 @@ import {
   getFileContent as restGetFileContent,
   writeFile as restWriteFile,
   deleteFile as restDeleteFile,
+  attemptAtomicCas as restAttemptAtomicCas,
 } from './rest-client.mjs';
+import { strictReservedCasEnabled } from './helpers/reserved-path-write.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
 import { listVaults } from './tools/list-vaults.mjs';
 import { listFiles } from './tools/list-files.mjs';
@@ -96,6 +98,7 @@ import {
 import {
   TOOL_DEFINITION as BUILD_SEARCH_INDEX_TOOL_DEFINITION,
   buildSearchIndexTool,
+  buildIndexForVault,
 } from './tools/build-search-index.mjs';
 import {
   RECORD_TOOL_DEFINITION as RECORD_SOURCE_TOOL_DEFINITION,
@@ -138,6 +141,7 @@ import {
   refreshProjectionsForVault,
 } from './tools/refresh-okf-projections.mjs';
 import { createProjectionsScheduler, DEFAULT_DEBOUNCE_MS } from './helpers/projections-refresh.mjs';
+import { createConformanceGate, createMaintenancePass } from './helpers/vault-conformance.mjs';
 
 // Single-source-of-truth for the package version (v0.13.4+). Extracted
 // to src/helpers/pkg-version.mjs so MCP tools (extract_page_metadata,
@@ -1220,35 +1224,155 @@ const projectionsDebounceMs = (() => {
   const raw = Number.parseInt(process.env.OBSIDIAN_ROUTER_PROJECTIONS_DEBOUNCE_MS ?? '', 10);
   return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_DEBOUNCE_MS;
 })();
-const projectionsScheduler = PROJECTIONS_OPTOUT.has(
+const projectionsOff = PROJECTIONS_OPTOUT.has(
   String(process.env.OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS || '').toLowerCase(),
-)
-  ? null
-  : createProjectionsScheduler({
-    refresh: async (vault) => {
-      const result = await refreshProjectionsForVault(
-        vault,
-        {
-          listFilesIn: restListFilesIn,
-          getFileContent: restGetFileContent,
-          writeFile: restWriteFile,
-          deleteFile: restDeleteFile,
-        },
-        { requireInitialized: true },
-      );
-      // Middleware writes bypass the tool layer, hence the audit trail — a
-      // one-line stderr trace keeps them observable (review v0.59.0 N4).
-      if (result && !result.skipped && (result.written?.length || result.deleted?.length)) {
-        console.error(
-          `[obsidian-mcp-router] okf-projections refreshed for "${vault.name}": ` +
-            `${result.written.length} written, ${result.deleted.length} deleted` +
-            `${result.conflicts?.length ? `, ${result.conflicts.length} conflict(s) untouched` : ''}`,
-        );
-      }
-      return result;
+);
+
+/**
+ * THE maintenance pass, shared by every automatic trigger: the debounced
+ * post-write flush and the first-contact repair. It refreshes the OKF
+ * projections and then the BM25 index, inside ONE hold of the per-vault lock —
+ * see helpers/vault-conformance.mjs for why both live in the same window, and
+ * helpers/vault-maintenance-lock.mjs for what the lock protects.
+ */
+const maintainVault = createMaintenancePass({
+  refreshProjections: projectionsOff ? null : (vault) => refreshProjectionsForVault(
+    vault,
+    {
+      listFilesIn: restListFilesIn,
+      getFileContent: restGetFileContent,
+      writeFile: restWriteFile,
+      deleteFile: restDeleteFile,
+      attemptAtomicCas: restAttemptAtomicCas,
     },
-    delayMs: projectionsDebounceMs,
-  });
+    // `requireScaffold`: the opt-in signal is the private `wiki-meta/` scaffold
+    // the provisioner writes, NOT a marked `wiki/index.md`. Gating on the latter
+    // meant refusing to repair the exact file whose absence is what needed
+    // repairing — while the bridge's Notice promised the router would fix it.
+    //
+    // F3-b: the automatic path writes CONDITIONALLY (foreign content on a
+    // reserved path is backed up, never blindly clobbered) and NEVER deletes
+    // automatically (a delete of a reserved-path file is irrecoverable — it is
+    // reported as `pendingDeletes` for an explicit action).
+    {
+      requireScaffold: true,
+      conditionalWrites: true,
+      deferDeletes: true,
+      strictReservedCas: strictReservedCasEnabled(),
+    },
+  ),
+  // `automatic: true` is the difference between this path and the explicit tool:
+  // calling `build_search_index` is consent to rewrite whatever sits at that
+  // path (including migrating a foreign version); an unattended repair is not.
+  ensureSearchIndex: (vault) => buildIndexForVault(
+    vault,
+    {
+      listFilesIn: restListFilesIn,
+      getFileContent: restGetFileContent,
+      writeFile: restWriteFile,
+      attemptAtomicCas: restAttemptAtomicCas,
+    },
+    // `requireScaffold` for the same reason as the projections half. F3-b:
+    // conditional write so a foreign file on the index path is preserved.
+    { automatic: true, requireScaffold: true, conditionalWrites: true },
+  ),
+  // Middleware writes bypass the tool layer, hence the audit trail — a one-line
+  // stderr trace keeps them observable (review v0.59.0 N4).
+  logInfo: (msg) => console.error(msg),
+});
+
+const projectionsScheduler = createProjectionsScheduler({
+  refresh: maintainVault,
+  delayMs: projectionsDebounceMs,
+});
+
+// ---------------------------------------------------------------------------
+// FIRST CONTACT — the "contact" moment of vault conformance.
+//
+// The debounced middleware above only reacts to writes MADE BY THIS ROUTER, and
+// the BM25 index had no trigger at all. So a vault could be reached all session
+// long with stale projections and no search index — which is how `search_smart`
+// on a vault without Smart Connections ended up with no tier left and an
+// outright error instead of a degraded service.
+//
+// The fix is not another background loop: it is the one moment that reliably
+// happens, the first time a session touches a vault. See
+// helpers/vault-conformance.mjs for the once-per-session contract and for what
+// this deliberately does NOT repair.
+//
+// NOT a second refresh path: it runs the SAME `maintainVault` pass the debounced
+// flush runs, which holds the same per-vault lock as the two explicit tools.
+//
+// Read-only deployments get no gate at all — repair writes, and a router told
+// not to write must not write behind the user's back either.
+// ---------------------------------------------------------------------------
+
+const CONFORMANCE_OPTOUT = new Set(['true', '1', 'yes', 'on']);
+const conformanceDisabled = CONFORMANCE_OPTOUT.has(
+  String(process.env.OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE || '').toLowerCase(),
+);
+
+function makeConformanceGate({ readonly }) {
+  if (conformanceDisabled || readonly) return null;
+  return createConformanceGate({ maintain: maintainVault });
+}
+
+/**
+ * WHICH TOOL CALLS COUNT AS "CONTACT WITH A VAULT".
+ *
+ * Derived from the tool schemas, not hand-listed: a tool is a candidate when its
+ * own `inputSchema` declares a `vault` property. A converter like
+ * `pdf_to_markdown` does not, and letting it through would have meant
+ * `resolveVault(undefined)` running maintenance on the DEFAULT vault every time
+ * somebody converted an unrelated PDF.
+ *
+ * Then four exemptions, each for its own reason:
+ *
+ *   `build_search_index`, `refresh_okf_projections` — IN BOTH MODES. `check:
+ *     true` advertises, in the tool description users read, that it reports
+ *     "WITHOUT writing"; triggering a repair alongside it would make that
+ *     sentence false. And an `apply` call already does the repair itself, so
+ *     following it with another pass is pure duplicated work.
+ *   `plan_vault`, `provision_vault` — these are ABOUT a vault that does not
+ *     exist yet. Neither carries a `vault` name in the router's sense, so the
+ *     resolution would land on whatever the old default was — maintaining the
+ *     wrong vault at the exact moment a new one is being created.
+ *   `lock_vault`, `unlock_vaults` — session routing, not vault content.
+ */
+const CONFORMANCE_TRIGGER_EXEMPT = new Set([
+  'build_search_index',
+  'refresh_okf_projections',
+  'plan_vault',
+  'provision_vault',
+  'lock_vault',
+  'unlock_vaults',
+]);
+
+/** Exported for tests: the trigger set, computed from the live tool catalog. */
+export function computeConformanceTriggers(tools) {
+  return new Set(
+    tools
+      .filter((t) => Object.prototype.hasOwnProperty.call(t.inputSchema?.properties ?? {}, 'vault'))
+      .map((t) => t.name)
+      .filter((name) => !CONFORMANCE_TRIGGER_EXEMPT.has(name)),
+  );
+}
+
+const CONFORMANCE_TRIGGER_TOOLS = computeConformanceTriggers(TOOLS);
+
+/**
+ * The one tool whose first call must WAIT for the repair.
+ *
+ * `search_smart` is the founding incident: on a vault with no Smart Connections
+ * and no BM25 index it has no tier left and fails outright. Repairing after it
+ * returns would leave the session's FIRST semantic search failing — the exact
+ * symptom this feature exists to remove — and, worse, a failing first call is
+ * also what should have triggered the repair, so the naive version loops.
+ *
+ * Everything else stays fire-and-forget. Only `search_smart` pays the latency,
+ * once per vault per session, and the trade is stated in the docs.
+ */
+const CONFORMANCE_BLOCKING_TOOLS = new Set(['search_smart']);
 
 /**
  * Subset of WRITE_TOOL_NAMES that writes a NOTE the member may want to read — the
@@ -2068,6 +2192,15 @@ export async function startServer({ configPath, watch = true } = {}) {
         [...WRITE_TOOL_NAMES].join(', '),
     );
   }
+  // The first-contact conformance gate. Built here because it is off on a
+  // read-only deployment (it repairs, and repairing writes).
+  const conformanceGate = makeConformanceGate({ readonly });
+  if (!conformanceGate) {
+    console.error(
+      '[obsidian-mcp-router] first-contact vault conformance is OFF ' +
+        (readonly ? '(read-only mode).' : '(OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE).'),
+    );
+  }
   // Tool EXPOSURE filtering. Two gates:
   //  - READONLY (v0.9.0): hide write tools.
   //  - view-agent (v0.29.0, geste 1 of the provider model): hide `get_view_link` when no
@@ -2150,6 +2283,29 @@ export async function startServer({ configPath, watch = true } = {}) {
     tools: exposedTools,
   }));
 
+  /**
+   * Fire the first-contact repair for whatever vault this call names.
+   *
+   * `blocking: false` (the default) means fire-and-forget — the caller is not
+   * delayed and the repair lands for the NEXT call on that vault. `blocking:
+   * true` awaits it, which only `search_smart` does.
+   *
+   * Never throws: an unresolvable vault (`vault: "*"` fan-out, an unknown name)
+   * is not this feature's problem, and conformance upkeep must not be able to
+   * turn a working tool call into a failing one.
+   */
+  async function noteVaultContact(reg, name, args, { blocking = false } = {}) {
+    if (!conformanceGate || !CONFORMANCE_TRIGGER_TOOLS.has(name)) return;
+    let target;
+    try {
+      target = reg.resolveVault(args.vault);
+    } catch {
+      return; // `*` fan-out, unknown vault, empty registry
+    }
+    const pass = Promise.resolve(conformanceGate.ensure(target)).catch(() => null);
+    if (blocking) await pass;
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args = {} } = request.params;
 
@@ -2182,7 +2338,37 @@ export async function startServer({ configPath, watch = true } = {}) {
       if (!handler) {
         throw new Error(`Unknown tool: ${name}`);
       }
+
+      // FIRST CONTACT, BLOCKING BRANCH. `search_smart` is the one call that must
+      // not run before the repair: on a vault without Smart Connections and
+      // without a BM25 index it has no tier at all, so a post-call repair would
+      // leave the session's first semantic search failing — the very symptom
+      // this feature exists to remove.
+      if (CONFORMANCE_BLOCKING_TOOLS.has(name)) {
+        await noteVaultContact(reg, name, args, { blocking: true });
+      }
+
       const result = await handler(reg, args);
+
+      // `list_vaults` IS the session health check, and it is the one tool that
+      // names no vault — so it gets its own rule rather than the schema-derived
+      // one. Two constraints shape it:
+      //
+      //   - it must stay FAST. Every session's startup hooks call it, and a
+      //     blocking repair here would tax every session start.
+      //   - it must not repair a vault it has just MEASURED as offline. The ping
+      //     result is right there in the response; launching a full enumerate →
+      //     read → write cycle at a vault that just failed to answer buys
+      //     nothing but a guaranteed failed pass (and, with the retry budget,
+      //     spends one of the session's three attempts on it).
+      if (conformanceGate && name === 'list_vaults' && result && typeof result === 'object') {
+        const def = result.defaultVaultStatus;
+        if (def && def.online === true) {
+          try {
+            void Promise.resolve(conformanceGate.ensure(reg.resolveVault(def.name))).catch(() => {});
+          } catch { /* the default vault vanished between ping and resolve */ }
+        }
+      }
 
       // v0.9.0 — audit log AFTER a successful write. We deliberately don't
       // log failed writes — the user already sees the error, and a failed
@@ -2245,6 +2431,14 @@ export async function startServer({ configPath, watch = true } = {}) {
         } catch { /* nav upkeep must never block or fail a user write */ }
       }
 
+      // FIRST CONTACT — verify and repair this vault's derived artefacts, once
+      // per session. AFTER the handler and NOT awaited for every tool but
+      // `search_smart`: a full corpus scan in front of the session's first
+      // `get_file` would tax every session start to save one call's worth of
+      // degradation. The consequence is stated rather than hidden — for those
+      // tools the repair lands for the SECOND call on that vault.
+      void noteVaultContact(reg, name, args);
+
       // v0.29.0 — DETERMINISTIC ephemeral view-link on note writes (Option B).
       // After a successful note write, ask the view-agent for a read link and attach it
       // to the result. Cross-cutting + async + expensive → centralized HERE (next to the
@@ -2276,6 +2470,21 @@ export async function startServer({ configPath, watch = true } = {}) {
 
       return await wrapResult(Promise.resolve(result));
     } catch (err) {
+      // FIRST CONTACT ON THE FAILURE PATH TOO — and this branch is the whole
+      // point, not a completeness flourish.
+      //
+      // The founding incident is a `search_smart` that FAILS because the vault
+      // has no search index. Triggering the repair only on success means the one
+      // call that proves the vault needs repairing is the one call that never
+      // asks for it: every subsequent attempt fails identically, forever. A
+      // feature built to end that loop would have re-created it.
+      //
+      // Wrapped so a repair problem can never replace the error the user is
+      // actually being shown.
+      try {
+        void noteVaultContact(registryRef.current, name, args);
+      } catch { /* never let upkeep rewrite the user's error */ }
+
       // THE ERROR CHANNEL, SANITISED ONCE, HERE.
       //
       // This is the only place every thrown error passes through, and for five

@@ -290,7 +290,9 @@ describe('projections scheduler (debounce)', () => {
     await timers.fire();
     await new Promise((r) => setImmediate(r)); // let the .catch run
     assert.equal(errors.length, 1);
-    assert.match(errors[0], /okf-projections refresh failed/);
+    // The flush now runs the whole maintenance pass (projections + BM25 index),
+    // so the message names the pass rather than one half of it.
+    assert.match(errors[0], /vault maintenance failed/);
   });
 
   test('pathsTouchedByWrite maps every write tool to its path args', () => {
