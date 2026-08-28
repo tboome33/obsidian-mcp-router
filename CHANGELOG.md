@@ -4,6 +4,47 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.75.0] — 2026-08-28 — the router, served: remote sessions reach the local instance over authenticated streamable HTTP
+
+**The gap this closes.** Remote Claude Code sessions (an SSH-tunneled dev box)
+need the router's full feature set, but 11 of the router's `src/` files
+legitimately touch the vaults' DISK — porting the router would ship it half
+broken. The accepted decision (vault page `http-only-comme-interface-de-backend`)
+is to not port it but **serve** it: the router stays home with its disks, and
+remote sessions consume it as a streamable-HTTP MCP server through the existing
+SSH tunnel. The measured spike behind every design constraint below lives in the
+vault roadmap `servir-le-routeur-roadmap`.
+
+### Added — `scripts/serve-http.mjs`
+
+- Serves the local router as a streamable-HTTP MCP endpoint (default
+  `127.0.0.1:27300/mcp`), **one child stdio router process per MCP session** —
+  the same isolation every stdio session already has, measured rather than
+  assumed: a vault lock taken by session A is invisible to session B.
+- **The loopback bind is deliberately not configurable**, and bearer auth is
+  enforced on POST, GET and DELETE alike — the tunneled port lands on the remote
+  box's loopback, where every local process can reach it, so the bearer is the
+  actual boundary. Constant-time comparison; the token never appears in argv,
+  in logs, or in the child's environment.
+- **Finite idle session timeout** (default 30 min, `--session-timeout-min`): a
+  tunnel drop is not a DELETE — without reaping, vanished clients leave zombie
+  children (six were measured in the spike). An explicit DELETE still terminates
+  the session and kills its child immediately.
+- Children are spawned as `process.execPath` + entry file, **never through a
+  shell** — a shell-spawned child hides behind a `cmd.exe` intermediary and
+  survives naive kills.
+- The token comes from `OBSIDIAN_ROUTER_HTTP_TOKEN` or
+  `~/.claude/obsidian-mcp-router/serve-http.token`; the script refuses to start
+  without one — an unauthenticated listener is the one state it must never reach.
+
+### Tests
+
+- `tests/serve-http.test.mjs` (5 tests, wired into `npm test`), each proven
+  against real child processes (a stateful stdio fixture, not mocks): auth
+  refused on all three verbs; two concurrent sessions isolated (distinct pids,
+  no state bleed); DELETE kills the child; the idle reaper kills the child of a
+  client that vanished without DELETE; the listener binds `127.0.0.1` only.
+
 ## [0.74.0] — 2026-08-09 — vaults keep themselves conformant, in three moments — and one race we did not close
 
 ### Added — automatic vault conformance: birth, opening, contact
