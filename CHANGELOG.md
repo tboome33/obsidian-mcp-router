@@ -4,6 +4,43 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.76.0] — 2026-08-29 — the C3 catch-22: `plan_vault` couldn't preview what `provision_vault` was about to execute
+
+**The bug, found live.** Provisioning a vault at a path outside the known
+roots needs `allowOutsideRoots: true`. `plan_vault`'s MCP schema never
+declared it (nor `open` / `probe` / `probeTimeout` / `gitInit`) — only
+`provision_vault`'s did. A client that forwards only schema-declared
+properties (Claude Code's MCP layer does) drops the field before
+`planVaultTool` ever sees it, so the preview seals `exec.allowOutsideRoots:
+null` while `provision_vault`'s own (correctly declared) schema keeps the
+caller's `true`. The security gate itself passes — only the seal comparison
+fails — so the result was a **systematic `plan_drift` refusal for the exact
+case the sealed flow exists to protect**, with no way to make preview and
+apply agree short of skipping the seal.
+
+### Fixed
+
+- `plan_vault`'s `inputSchema` now declares `open`, `probe`, `probeTimeout`,
+  `gitInit` and `allowOutsideRoots` — the same 5 exec options
+  `provisionExecOptions()` folds into the seal, mirroring `provision_vault`'s
+  declarations. They are still not *executed* during the read-only preview;
+  they only need to be present so the seal computed at preview time matches
+  the one recomputed at apply time.
+
+### Tests
+
+- A schema-symmetry invariant (`tests/provision-vault.test.mjs`): every key
+  `provisionExecOptions()` reads must be a declared property on **both**
+  tools — guards the class, not just the one flagged field, so a future exec
+  option added without updating `plan_vault`'s schema fails here instead of
+  resurfacing live.
+- An end-to-end regression (`tests/plan-seal-integration.test.mjs`) that
+  simulates a client forwarding only schema-declared properties through the
+  full `plan_vault` → `provision_vault` flow with `allowOutsideRoots: true`:
+  red before the fix (the exact reported `plan_drift`), green after.
+
+For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
+
 ## [0.75.0] — 2026-08-28 — the router, served: remote sessions reach the local instance over authenticated streamable HTTP
 
 **The gap this closes.** Remote Claude Code sessions (an SSH-tunneled dev box)

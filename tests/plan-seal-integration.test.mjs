@@ -21,6 +21,7 @@ import { PlanDriftError } from '../src/helpers/plan-seal.mjs';
 import { contentSha256 } from '../src/helpers/content-hash.mjs';
 import { projectionMarkerLine } from '../src/helpers/okf-projections.mjs';
 import { classifyError } from '../src/error-classify.mjs';
+import { _internals } from '../src/index.mjs';
 
 const notFound = () => Object.assign(new Error('404'), { kind: 'not_found' });
 
@@ -276,6 +277,48 @@ describe('provision_vault — sealed preview', () => {
       /Invalid approvedPlanSha256/,
     );
     assert.equal(planned, false);
+  });
+
+  test('regression (C3 catch-22): allowOutsideRoots survives a client that only forwards SCHEMA-DECLARED properties', async () => {
+    // Reproduces the exact live failure (2026-08-29, "Configuration vault
+    // Obsidian" session): a caller intends the SAME options — here
+    // allowOutsideRoots:true, for a path outside the known roots — on both
+    // plan_vault and provision_vault. An MCP client commonly builds the
+    // outgoing tool-call arguments from the tool's declared
+    // inputSchema.properties, so a field plan_vault's schema doesn't list
+    // never reaches planVaultTool even though the caller's intent included
+    // it. Before the fix this test fails exactly like the live bug: the
+    // outside-roots GATE inside provisionVaultTool passes (its own args do
+    // carry allowOutsideRoots:true), but verifyPlanSeal then refuses because
+    // the preview sealed `exec.allowOutsideRoots: null`.
+    const asClientWouldSend = (toolName, intent) => {
+      const declared = _internals.TOOLS.find((t) => t.name === toolName).inputSchema.properties;
+      return Object.fromEntries(Object.entries(intent).filter(([k]) => k in declared));
+    };
+    const outsideRootsPlan = () => ({
+      ...okPlan(),
+      warnings: [{ code: 'no-known-roots', message: 'no roots configured' }],
+      context: { knownRoots: [] },
+    });
+    const intent = { path: 'C:/VAULTS/outside/x', allowOutsideRoots: true };
+
+    const planned = await planVaultTool(
+      registry,
+      asClientWouldSend('plan_vault', intent),
+      { runDryRunPlan: async () => outsideRootsPlan() },
+    );
+
+    let provisioned = false;
+    const out = await provisionVaultTool(
+      registry,
+      { ...asClientWouldSend('provision_vault', intent), approvedPlanSha256: planned.approvedPlanSha256 },
+      {
+        runDryRunPlan: async () => outsideRootsPlan(),
+        runProvision: async () => { provisioned = true; return okProvisionResult(); },
+      },
+    );
+    assert.equal(provisioned, true, 'a caller who genuinely intends the same options on both calls must not get plan_drift');
+    assert.equal(out.ok, true);
   });
 
   test('backward compat: provisioning without a seal still runs', async () => {

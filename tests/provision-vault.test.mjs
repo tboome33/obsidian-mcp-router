@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { provisionVaultTool } from '../src/tools/provision-vault.mjs';
+import { provisionExecOptions } from '../src/helpers/vault-wizard-engine.mjs';
 import { _internals } from '../src/index.mjs';
 
 describe('provision_vault tool', () => {
@@ -146,5 +147,33 @@ describe('vault-wizard tools security gate', () => {
     const ro = computeExposedTools(TOOLS, { readonly: true }).map((t) => t.name);
     assert.ok(!ro.includes('provision_vault'), 'provision_vault hidden in readonly');
     assert.ok(ro.includes('plan_vault'), 'plan_vault still exposed in readonly');
+  });
+
+  test('plan_vault declares every exec option the seal folds in — schema symmetry (regression: C3 catch-22)', () => {
+    // Bug found live (2026-08-29, session "Configuration vault Obsidian"): a
+    // path outside the known vault roots needs allowOutsideRoots:true, but
+    // plan_vault's schema didn't declare it (nor open/probe/probeTimeout/
+    // gitInit) — an MCP client that only forwards schema-declared properties
+    // drops it before planVaultTool ever sees it, so the preview seals
+    // `exec.allowOutsideRoots: null` while provision_vault's apply hashes
+    // `true` → a caller who genuinely intends the SAME options on both calls
+    // gets a systematic plan_drift. Guard the INVARIANT, not the one flagged
+    // field: every key provisionExecOptions folds into the seal must be a
+    // declared property on BOTH tools, so adding a future exec option without
+    // updating plan_vault's schema fails here instead of resurfacing live.
+    const { TOOLS } = _internals;
+    const byName = Object.fromEntries(TOOLS.map((t) => [t.name, t]));
+    const execKeys = Object.keys(provisionExecOptions({}));
+    assert.ok(execKeys.length > 0, 'fixture sanity: provisionExecOptions must expose at least one key');
+    for (const key of execKeys) {
+      assert.ok(
+        Object.hasOwn(byName.provision_vault.inputSchema.properties, key),
+        `provision_vault must declare exec option "${key}" (sanity check on the fixture list itself)`,
+      );
+      assert.ok(
+        Object.hasOwn(byName.plan_vault.inputSchema.properties, key),
+        `plan_vault must declare exec option "${key}" too, or an MCP client can silently drop it before the seal — causing a systematic plan_drift`,
+      );
+    }
   });
 });

@@ -84,7 +84,11 @@ test('refuses every verb without (or with a wrong) bearer', async () => {
     { method: 'DELETE', headers: { 'mcp-session-id': 'whatever' } },
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong-token-000000' },
+      // Deliberately short/unshaped — a value the export-gate's
+      // authorization-header scanner (12+ char shaped token) won't flag as a
+      // credential-looking literal in a tracked test file. Any wrong value
+      // proves the point; it doesn't need to look like a real token.
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer nope' },
       body: initBody,
     },
   ];

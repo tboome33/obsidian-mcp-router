@@ -983,6 +983,20 @@ const TOOLS = [
         theme: { type: 'string', description: 'Theme to apply: a theme folder name cloned from the source (see plan_vault\'s themes list), or "obsidian-default" for the built-in look. Written as cssTheme in the new vault\'s appearance.json.' },
         linkWorkspace: { type: 'string', description: 'Code workspace path to bind to this vault.' },
         claudeWorkspace: { type: 'boolean' },
+        // C3 catch-22 fix (v0.76.0): these 5 are EXEC options — plan_vault
+        // never executes them (it is read-only), but they are folded into the
+        // sealed plan so provision_vault's apply-time hash matches. Omitting
+        // them here let a client that forwards only schema-declared
+        // properties drop them before the handler saw them, so the preview
+        // sealed e.g. `allowOutsideRoots: null` while provision_vault's own
+        // (correctly-declared) schema kept the caller's `true` — a systematic
+        // plan_drift for the common case of a target outside the known roots.
+        // Pass the SAME values here that you intend for provision_vault.
+        open: { type: 'boolean', description: 'Exec option — not executed during this READ-ONLY preview; sealed so it must match what you pass to provision_vault (which does execute it).' },
+        probe: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault.' },
+        probeTimeout: { type: 'number', description: 'Exec option — same as `open`: sealed here, executed by provision_vault.' },
+        gitInit: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault.' },
+        allowOutsideRoots: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault. Pass it here too when the target is outside known vault roots, matching what you will pass to provision_vault — otherwise the sealed preview will not match provision_vault\'s apply-time hash and it will refuse with plan_drift.' },
       },
       required: ['path'],
       additionalProperties: true,
