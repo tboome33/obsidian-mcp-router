@@ -40,6 +40,16 @@ import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
 import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/targz-extract.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, PlanDriftError } from '../src/helpers/plan-seal.mjs';
 import {
+  DEFAULT_INSECURE_OFFSET,
+  normalizePortEntry,
+  allocatePortPair,
+  allocateInsecurePortFor,
+  buildPortIndex,
+  migratePortRegistry,
+  detectPortCollisions,
+  summarizePortCollisions,
+} from '../src/helpers/port-registry.mjs';
+import {
   CATALOG_BASENAME,
   JOURNAL_BASENAME,
   WIKI_META_SCAFFOLDS,
@@ -230,6 +240,70 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+}
+
+/**
+ * Copy `config.json` next to itself under a timestamped name, and return that
+ * path (or null when there was nothing to copy).
+ *
+ * Taken before the port-registry migration rewrites the file's shape. The
+ * migration is designed to be lossless, but "designed to be" is not "proven
+ * on your machine": the backup is what makes the change reversible by hand,
+ * with no tooling, at 2am.
+ */
+function backupConfigFile(reason = 'backup') {
+  if (!fs.existsSync(CONFIG_PATH)) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = `${CONFIG_PATH}.${reason}-${stamp}.bak`;
+  fs.copyFileSync(CONFIG_PATH, dest);
+  return dest;
+}
+
+/**
+ * Bring `portRegistry` from the legacy HTTPS-only shape to the two-port shape,
+ * reading each vault's plaintext port from its own `data.json`.
+ *
+ * Non-destructive on three counts: a timestamped backup of the file is taken
+ * before the write; a vault whose `data.json` cannot be read keeps `http:
+ * null` (the plaintext port is recorded as UNKNOWN, never invented from
+ * `port + 10`); and an entry that resolves to nothing usable is preserved
+ * verbatim rather than replaced by nulls.
+ *
+ * Mutates and saves `cfg` only when something actually changed, so it is safe
+ * to call on every provisioning run — which is the point: a legacy registry is
+ * at its most dangerous precisely when a new vault is about to be allocated.
+ *
+ * @returns {{ changed: boolean, backup: string|null, entries: Array }}
+ */
+function migrateConfigPortRegistry(cfg, { quiet = false, dryRun = false } = {}) {
+  const onDisk = buildOnDiskPortMap(cfg);
+  const { changed, portRegistry, entries } = migratePortRegistry(cfg, { onDisk });
+  if (!changed) return { changed: false, backup: null, entries };
+  if (dryRun) {
+    if (!quiet) {
+      for (const e of entries.filter((x) => x.status !== 'unchanged')) {
+        info(`[DRY-RUN] ${e.vaultPath} — would record https=${e.after.https}, http=${e.after.http ?? 'unknown'} (${e.httpSource})`);
+      }
+    }
+    return { changed: true, backup: null, entries };
+  }
+  const backup = backupConfigFile('portRegistry');
+  cfg.portRegistry = portRegistry;
+  saveConfig(cfg);
+  if (!quiet) {
+    const migrated = entries.filter((e) => e.status === 'migrated' || e.status === 'completed');
+    const unknown = migrated.filter((e) => e.httpSource === 'unknown');
+    ok(`portRegistry migrated to the two-port shape (${migrated.length} entr${migrated.length === 1 ? 'y' : 'ies'}).`);
+    if (backup) info(`Previous config backed up to ${backup}`);
+    if (unknown.length) {
+      warn(
+        `${unknown.length} vault(s) have no readable data.json — their plaintext port is recorded as unknown ` +
+        `rather than guessed as port+${DEFAULT_INSECURE_OFFSET}. Open them in Obsidian once, then re-run ` +
+        `--sync-port-registry.`,
+      );
+    }
+  }
+  return { changed: true, backup, entries };
 }
 
 function fail(msg) {
@@ -795,14 +869,33 @@ function printStatus() {
     console.log('Configured vaults: ' + c('gray', '(none yet)'));
   } else {
     console.log(c('bold', '\nConfigured vaults:'));
-    for (const [vault, port] of entries) {
+    for (const [vault, value] of entries) {
       // disabledVaults entries can be NAME or PATH; check both, mirroring
       // src/registry.mjs.
       const name = vaultNames[vault] || defaultNameFromPath(vault);
       const isDisabled = disabled.has(name) || disabled.has(vault);
       const tag = isDisabled ? c('gray', '  (disabled)') : '';
-      console.log(`  ${c('cyan', port)}  ${vault}${tag}`);
+      // Both ports, always — the plaintext one is what every click-to-open
+      // link in the notes is pinned to, so hiding it made the fleet's real
+      // port usage invisible in the one place people look for it.
+      const { https, http } = normalizePortEntry(value);
+      const httpsCell = String(https ?? '?').padStart(5);
+      const httpCell = http === null ? c('gray', 'http ?    ') : `http ${String(http).padEnd(5)}`;
+      console.log(`  ${c('cyan', httpsCell)}  ${httpCell}  ${vault}${tag}`);
     }
+  }
+
+  // Collision report — the "make it legible" half of the two-port fix. Until
+  // now a port clash surfaced only as a vault that was mysteriously offline.
+  const collisions = detectPortCollisions(cfg, { onDisk: buildOnDiskPortMap(cfg) });
+  if (collisions.length > 0) {
+    console.log('');
+    console.log(c('bold', c('red', `⚠ Port problems detected — ${summarizePortCollisions(collisions)}:`)));
+    for (const f of collisions) {
+      const mark = f.severity === 'error' ? c('red', '  ✗ ') : c('yellow', '  ! ');
+      console.log(mark + f.message);
+    }
+    console.log(c('gray', '\n  Repair the registry side with:  node scripts/setup-vault.mjs --sync-port-registry'));
   }
   console.log('');
 }
@@ -835,8 +928,13 @@ function initReference(refPath) {
     try {
       const data = JSON.parse(fs.readFileSync(restDataPath, 'utf8'));
       if (data.port) {
-        cfg.portRegistry[abs] = data.port;
-        info(`Reserved port ${data.port} for the reference vault`);
+        // Reserve BOTH of the reference vault's ports. Reserving only the
+        // HTTPS one is how the reference's plaintext port ended up looking
+        // free to the allocator.
+        const http = Number.isInteger(data.insecurePort) && data.insecurePort > 0
+          ? data.insecurePort : null;
+        cfg.portRegistry[abs] = { https: data.port, http };
+        info(`Reserved ports ${data.port} (HTTPS) + ${http ?? 'unknown'} (plaintext) for the reference vault`);
       }
     } catch {}
   }
@@ -856,19 +954,108 @@ function generateApiKey() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function allocatePort(cfg, vaultPath) {
-  if (cfg.portRegistry[vaultPath]) return cfg.portRegistry[vaultPath];
-  const used = new Set(Object.values(cfg.portRegistry));
-  let p = cfg.portStart;
-  while (used.has(p)) p++;
-  return p;
+/**
+ * Parse a vault's Local REST API `data.json`, or null when absent/unreadable.
+ *
+ * The object it returns carries the vault's `apiKey` and TLS private key, so
+ * callers compare it in memory and NEVER print, log or serialise it — the two
+ * call sites here only read `port` and compare `apiKey` for equality.
+ */
+function readRestApiData(vaultPath) {
+  if (!vaultPath) return null;
+  const dataPath = path.join(
+    vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+  );
+  if (!fs.existsSync(dataPath)) return null;
+  try { return JSON.parse(fs.readFileSync(dataPath, 'utf8')); }
+  catch { return null; }
 }
 
-function patchRestApiData(vaultPath, port, apiKey) {
+/**
+ * Read the two ports a vault actually binds, straight from its own
+ * `data.json`. Returns null when the file is absent or unparseable.
+ *
+ * ONLY the two integers are lifted out. That file also carries the vault's
+ * `apiKey` and its TLS private key in clear — the port bookkeeping must never
+ * become a second path by which those travel (see the ticket's "note de
+ * mesure": never inventory ports through the plugin's own API).
+ */
+function readVaultPortsFromDisk(vaultPath) {
+  const dataPath = path.join(
+    vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json',
+  );
+  if (!fs.existsSync(dataPath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+    const port = Number.isInteger(data.port) && data.port > 0 ? data.port : null;
+    const insecurePort = Number.isInteger(data.insecurePort) && data.insecurePort > 0
+      ? data.insecurePort : null;
+    // An entry is returned even when BOTH fields are absent. "Readable and
+    // says nothing binds" is a different fact from "unreadable, so unknown",
+    // and collapsing them let a stale registry number be reported as an
+    // active binding (pre-release review, 2026-08-30). Only a missing or
+    // unparseable file returns null.
+    return { port, insecurePort };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the `vaultPath → { port, insecurePort }` map the pure port-registry
+ * helpers reason over: every registered vault, plus any extra path the caller
+ * names (the target being provisioned, the reference vault, an unregistered
+ * stray the user passed on the command line).
+ *
+ * This is the layer that makes `data.json` the source of truth. The registry
+ * is a cache of it, not the other way round.
+ */
+function buildOnDiskPortMap(cfg, extraPaths = []) {
+  const map = new Map();
+  const paths = [...Object.keys((cfg && cfg.portRegistry) || {})];
+  if (cfg && cfg.referenceVault) paths.push(cfg.referenceVault);
+  for (const p of extraPaths) if (p) paths.push(p);
+  for (const p of paths) {
+    if (map.has(p)) continue;
+    const ports = readVaultPortsFromDisk(p);
+    if (ports) map.set(p, ports);
+  }
+  return map;
+}
+
+/**
+ * Allocate the vault's PAIR of ports — HTTPS and plaintext — checking BOTH
+ * spaces before handing either one out.
+ *
+ * The predecessor (`allocatePort`) scanned `Object.values(portRegistry)`,
+ * which only ever held HTTPS ports, and so could hand a new vault a number
+ * already bound by another vault's plaintext server. That is the bug this
+ * whole change exists to close; see `src/helpers/port-registry.mjs`.
+ *
+ * A vault already in the registry gets its existing pair back untouched —
+ * re-running the bootstrap on a live vault must never move its ports.
+ */
+function allocatePortsFor(cfg, vaultPath, { onDisk, forceFresh = false } = {}) {
+  const diskMap = onDisk || buildOnDiskPortMap(cfg, [vaultPath]);
+  return allocatePortPair(cfg, vaultPath, { onDisk: diskMap, forceFresh });
+}
+
+/**
+ * Write port + key + plaintext port into a vault's Local REST API data.json.
+ *
+ * @returns {{ written: boolean, insecurePort: number|null }} what ACTUALLY
+ * reached the disk. The caller records the plaintext port in `portRegistry`
+ * and returns it as provisioning metadata; before this returned anything, a
+ * missing data.json produced a warning and the caller went on to persist a
+ * port that had never been written — bookkeeping describing a file that does
+ * not exist (pre-release review, 2026-08-30).
+ */
+function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
   const dataPath = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
   if (!fs.existsSync(dataPath)) {
     warn(`Local REST API data.json not found at ${dataPath} — plugin may regenerate it on first run.`);
-    return;
+    warn('  No port was written; the registry will record the plaintext port as unknown.');
+    return { written: false, insecurePort: null };
   }
   const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
   data.apiKey = apiKey;
@@ -888,10 +1075,20 @@ function patchRestApiData(vaultPath, port, apiKey) {
   // routes that DO read/write/search still require the apiKey on the
   // HTTPS port. Documented in the user's CLAUDE.md "Obsidian vault links"
   // section.
-  data.insecurePort = port + 10;
+  //
+  // The `+ 10` below is the DEFAULT the caller falls back to, not a law: the
+  // allocator now hands us the plaintext port it actually reserved, checked
+  // free in both spaces. Two vaults on this fleet already escape the offset
+  // (27131/27162, 27132/27163) — treating it as a derivable fact is precisely
+  // what let the allocator hand out ports that were already bound.
+  const effectiveInsecurePort = Number.isInteger(insecurePort) && insecurePort > 0
+    ? insecurePort
+    : port + DEFAULT_INSECURE_OFFSET;
+  data.insecurePort = effectiveInsecurePort;
   data.enableInsecureServer = true;
   fs.writeFileSync(dataPath, JSON.stringify(data, null, 2));
-  ok(`Patched Local REST API data.json (port=${port}, insecurePort=${port + 10}, HTTP enabled, fresh apiKey)`);
+  ok(`Patched Local REST API data.json (port=${port}, insecurePort=${effectiveInsecurePort}, HTTP enabled, fresh apiKey)`);
+  return { written: true, insecurePort: effectiveInsecurePort };
 }
 
 /**
@@ -996,25 +1193,29 @@ function upgradeInsecureServer(vaultPath, opts = {}) {
   if (insecurePortIsSane) {
     newInsecurePort = data.insecurePort;
   } else {
-    newInsecurePort = data.port + 10;
     // Collision-avoidance ONLY when allocating fresh — never bumps an
-    // existing sane value (see Policy note above). Scope: other vaults'
-    // `port` and `insecurePort` from the registry.
+    // existing sane value (see Policy note above). Delegated to the shared
+    // allocator so this path cannot drift from the provisioning one: the
+    // hand-rolled loop it replaces could return `data.port + 10` unchecked
+    // when no config was passed, run past 65535 (port 65530 → 65540), and
+    // stop ON a reserved 65535 (pre-release review, 2026-08-30).
     if (cfg && cfg.portRegistry) {
-      const used = new Set(Object.values(cfg.portRegistry));
-      for (const [vp] of Object.entries(cfg.portRegistry)) {
-        if (samePath(vp, vaultPath)) continue;
-        const otherData = path.join(vp, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
-        if (!fs.existsSync(otherData)) continue;
-        try {
-          const od = JSON.parse(fs.readFileSync(otherData, 'utf8'));
-          if (typeof od.insecurePort === 'number') used.add(od.insecurePort);
-          if (typeof od.port === 'number') used.add(od.port);
-        } catch { /* ignore unreadable */ }
+      try {
+        newInsecurePort = allocateInsecurePortFor(cfg, vaultPath, data.port, {
+          onDisk: buildOnDiskPortMap(cfg, [vaultPath]),
+        });
+      } catch (err) {
+        result.error = err.message;
+        if (!quiet) warn(`${vaultPath} — ${result.error}`);
+        return result;
       }
-      // Don't count this vault's OWN port as a collision against itself.
-      used.delete(data.port);
-      while (used.has(newInsecurePort)) newInsecurePort++;
+    } else {
+      newInsecurePort = data.port + DEFAULT_INSECURE_OFFSET;
+      if (newInsecurePort > 65535) {
+        result.error = `cannot derive a plaintext port from ${data.port} (+${DEFAULT_INSECURE_OFFSET} exceeds 65535)`;
+        if (!quiet) warn(`${vaultPath} — ${result.error}`);
+        return result;
+      }
     }
   }
 
@@ -2573,6 +2774,12 @@ async function probeVaultHealth(insecurePort, { timeoutMs = 15000, intervalMs = 
 
 function setupVault(vaultPath, opts = {}) {
   const cfg = loadConfig();
+  // Reconcile the registry's shape BEFORE anything reads it to allocate. A
+  // legacy HTTPS-only registry is at its most dangerous at exactly this
+  // moment: the allocator is about to trust it, and every plaintext port in
+  // the fleet is invisible in it. No-op (no backup, no write) when the
+  // registry is already two-port.
+  migrateConfigPortRegistry(cfg);
   const wizard = opts.wizard || {};
 
   // Resolve the effective source vault + plugin set from the wizard opts. The
@@ -2767,29 +2974,123 @@ function setupVault(vaultPath, opts = {}) {
     }
   }
 
-  // Decide port + apiKey: adopt pre-existing values if found, else generate fresh
-  let port, apiKey, adopted = false;
-  if (preExistingRestData) {
-    const conflict = Object.entries(cfg.portRegistry).find(
-      ([k, v]) => v === preExistingRestData.port && k !== abs
-    );
-    if (conflict) {
+  // Decide port + apiKey: adopt pre-existing values if found, else generate fresh.
+  //
+  // The on-disk map is built ONCE here — before any decision — so every branch
+  // below reasons over the same picture of what the fleet actually binds, in
+  // BOTH port spaces. `abs` is included so the target's own current ports do
+  // not read as somebody else's reservation.
+  const onDiskPorts = buildOnDiskPortMap(cfg, [abs, sourceVault]);
+  let port, insecurePort = null, apiKey, adopted = false;
+
+  // Corollary of the two-port bug: `referenceVault` is copied to create a new
+  // vault, PORTS INCLUDED. Three of the nine collisions measured on 2026-08-29
+  // were exactly this — Roblox, RECHERCHES ETUDES SUP and a second .template
+  // all sitting on the template's factory 27124/27134. Provisioning must
+  // RENUMBER the copy, never let it inherit.
+  //
+  // THE TELL IS THE API KEY, AND ONLY THE API KEY. A target whose REST key is
+  // byte-identical to the source's cannot be anything but a copy of it: the key
+  // is 32 random bytes, nobody types it, and no independent vault ever grows
+  // the same one. Renumbering such a vault is safe precisely because the
+  // plaintext port it carries is the SOURCE's — any click-to-open link written
+  // under that number belongs to the source, not to this vault.
+  //
+  // A PORT match is NOT a tell, and treating it as one was a defect (found in
+  // review, 2026-08-30, before release): an independent vault that merely
+  // happens to sit on the source's HTTPS port would be classified as a copy and
+  // renumbered — and renumbering writes a NEW `insecurePort` over the one it
+  // legitimately owns, killing every click-to-open link already written to it.
+  // Measured on a fixture: insecurePort 27199 → 27135, plus a regenerated key.
+  // That is the one invariant this whole release exists to protect.
+  //
+  // So a port-only match falls through to the adoption branch below, where the
+  // both-spaces conflict check refuses with a message naming the other holder.
+  // Refusing and asking is right here: only the user knows whether that vault
+  // is a stale copy (→ `--regenerate`) or a live vault whose links matter.
+  const sourceRestData = readRestApiData(sourceVault);
+  const inheritedFromSource = Boolean(
+    preExistingRestData && sourceRestData && !samePath(sourceVault, abs) &&
+    sourceRestData.apiKey && sourceRestData.apiKey === preExistingRestData.apiKey,
+  );
+
+  if (preExistingRestData && !inheritedFromSource) {
+    // Check the adopted port against BOTH spaces of every other vault, not
+    // just the HTTPS column — the old check compared against
+    // `Object.values(portRegistry)` and so never saw a plaintext listener.
+    const claimants = buildPortIndex(cfg, { onDisk: onDiskPorts, exclude: abs });
+    const wantedPorts = [preExistingRestData.port, preExistingRestData.insecurePort]
+      .filter((p) => Number.isInteger(p) && p > 0);
+    for (const wanted of wantedPorts) {
+      const holders = claimants.get(wanted);
+      if (!holders || holders.length === 0) continue;
+      const who = holders
+        .map((h) => `${h.vaultPath} (${h.role === 'https' ? 'HTTPS' : 'plaintext'}, per ${h.source})`)
+        .join(', ');
       fail(
-        `Vault has existing port ${preExistingRestData.port} but that port is already registered to ${conflict[0]}.\n` +
-        `  Pass --regenerate to assign a fresh port + key, or remove the conflicting entry from config.json.`
+        `Vault has existing port ${wanted} but that port is already claimed by ${who}.\n` +
+        `  Free the port on the other side, or pass --regenerate to assign a fresh port pair + key.\n` +
+        `  NOTE: --regenerate also moves this vault's plaintext insecurePort` +
+        (Number.isInteger(preExistingRestData.insecurePort) ? ` (currently ${preExistingRestData.insecurePort})` : '') +
+        `, which BREAKS every click-to-open link already written to it. Only use it on a vault whose links do not matter yet.`
       );
     }
     port = preExistingRestData.port;
+    insecurePort = Number.isInteger(preExistingRestData.insecurePort) && preExistingRestData.insecurePort > 0
+      ? preExistingRestData.insecurePort
+      : null;
     apiKey = preExistingRestData.apiKey;
     adopted = true;
-    info(`Adopted existing REST API config (port=${port}, apiKey=${apiKey.slice(0, 8)}…)`);
+    // The key itself is never echoed — not even a prefix. Eight characters
+    // identify the key well enough to correlate it across a transcript, and
+    // this file's own contract says credentials do not travel.
+    info(`Adopted existing REST API config (port=${port}, insecurePort=${insecurePort ?? 'to be assigned'}, existing apiKey kept)`);
     info('Use --regenerate to overwrite with fresh credentials.');
   } else {
-    port = allocatePort(cfg, abs);
+    if (inheritedFromSource) {
+      warn(
+        `Target carries the source vault's REST credentials (port ${preExistingRestData.port}) — ` +
+        `a copy of ${sourceVault}, not an independent vault.`,
+      );
+      info('Renumbering to a fresh port pair + key rather than inheriting them.');
+    }
+    // Never let a copy keep the source's ports: drop the target's inherited
+    // values out of the picture before allocating, or the allocator would
+    // "reuse" them as if the vault legitimately owned them.
+    // `forceFresh` as well as dropping the disk entry: a copy that is ALREADY
+    // registered carries the source's pair in `portRegistry` too, and the
+    // registry alone was enough to send the allocator down its "reuse the
+    // existing pair" branch — handing the copy exactly the ports it was
+    // supposed to be renumbered off (pre-release review, 2026-08-30).
+    const allocationDisk = new Map(onDiskPorts);
+    if (inheritedFromSource) allocationDisk.delete(abs);
+    const pair = allocatePortsFor(cfg, abs, {
+      onDisk: allocationDisk,
+      forceFresh: inheritedFromSource,
+    });
+    port = pair.https;
+    insecurePort = pair.http;
     apiKey = generateApiKey();
   }
+  // A vault adopted with a valid port + key but NO `insecurePort` (the
+  // pre-v0.10.x population) needs one created. Allocate it against both spaces
+  // rather than letting `patchRestApiData` fall back to `port + 10` — writing
+  // an unchecked plaintext port is the very defect this release closes, and it
+  // would be embarrassing to reintroduce it here. Nothing is renumbered: this
+  // only runs when there is no plaintext port to preserve.
+  if (insecurePort === null) {
+    insecurePort = allocateInsecurePortFor(cfg, abs, port, { onDisk: onDiskPorts });
+    if (insecurePort !== port + DEFAULT_INSECURE_OFFSET) {
+      info(`Plaintext port ${port + DEFAULT_INSECURE_OFFSET} is taken — assigning ${insecurePort} instead.`);
+    }
+  }
   // Always patch data.json so the values match (plugin clone may have overwritten with .template's port/key)
-  patchRestApiData(abs, port, apiKey);
+  const patched = patchRestApiData(abs, port, apiKey, insecurePort);
+  // Record only what actually reached the disk. When data.json was missing,
+  // nothing was written, and claiming a plaintext port in the registry (or in
+  // the returned metadata that drives --probe and the click-to-open hint)
+  // would describe a file that does not exist.
+  insecurePort = patched.written ? patched.insecurePort : null;
   ensureCommunityPlugins(abs, pluginsToClone);
 
   // Clone Smart Connections config + embedding cache from the source vault.
@@ -2872,8 +3173,9 @@ function setupVault(vaultPath, opts = {}) {
     }
   }
 
-  // Persist port registry
-  cfg.portRegistry[abs] = port;
+  // Persist port registry — BOTH ports. Recording only the HTTPS one is what
+  // left the plaintext space invisible to the allocator.
+  cfg.portRegistry[abs] = { https: port, http: insecurePort };
   saveConfig(cfg);
 
   // Optional workspace link (v0.12.7+) — when invoked with
@@ -2925,12 +3227,14 @@ function setupVault(vaultPath, opts = {}) {
 
   // Return provisioning metadata so the CLI dispatch can drive the optional
   // tail (--open / --probe / --git-init). Callers that ignore the return value
-  // (the pre-wizard code path) are unaffected. insecurePort mirrors the
-  // convention patchRestApiData writes (port + 10).
+  // (the pre-wizard code path) are unaffected. insecurePort is the port the
+  // allocator actually reserved and patchRestApiData actually wrote — no
+  // longer re-derived here as `port + 10`, which would have lied for any vault
+  // that escapes the offset.
   return {
     abs,
     port,
-    insecurePort: port + 10,
+    insecurePort,
     slug: (cfg.vaultNames && cfg.vaultNames[abs]) || defaultNameFromPath(abs),
     obsidianName: path.basename(abs),
   };
@@ -3978,6 +4282,15 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
                                                               Idempotent. Add --dry-run to preview.
   node setup-vault.mjs --upgrade-insecure-server-all         Same patch, run on every vault in portRegistry.
                                                               Detects insecurePort collisions across vaults.
+  node setup-vault.mjs --check-ports [--json]                v0.77.0. Report port collisions across the fleet
+                                                              in BOTH spaces (HTTPS + plaintext insecurePort),
+                                                              plus registry-vs-data.json drift. Read-only.
+                                                              Exit 1 when a collision (severity error) is found.
+  node setup-vault.mjs --sync-port-registry [--dry-run]      v0.77.0. Record each vault's plaintext insecurePort
+                                                              in portRegistry, read from its own data.json.
+                                                              Timestamped backup of config.json first; a vault
+                                                              with no readable data.json is left "unknown",
+                                                              never guessed as port+10.
   node setup-vault.mjs --discover-vaults                     v0.13.9. Scan well-known OS locations
                                                               (C:/VAULTS, ~/Documents/Obsidian, iCloud,
                                                               Google Drive desktop, etc.) and report each
@@ -4028,6 +4341,54 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
 
 if (args[0] === '--status') {
   printStatus();
+  process.exit(0);
+}
+
+// v0.77.0 — read-only collision report over BOTH port spaces. The failure it
+// makes legible is the one that used to present as a vault mysteriously
+// "offline": two servers on one port, second one loses the bind, no message
+// anywhere. Exits 1 on a real collision so a scheduled task can alert on it.
+if (args[0] === '--check-ports') {
+  const asJson = args.includes('--json');
+  const cfg = loadConfigReadOnly();
+  const findings = detectPortCollisions(cfg, { onDisk: buildOnDiskPortMap(cfg) });
+  if (asJson) {
+    console.log(JSON.stringify({
+      configPath: CONFIG_PATH,
+      vaults: Object.keys(cfg.portRegistry || {}).length,
+      summary: summarizePortCollisions(findings),
+      findings,
+    }, null, 2));
+  } else if (findings.length === 0) {
+    ok(`No port collisions across ${Object.keys(cfg.portRegistry || {}).length} registered vault(s) — HTTPS and plaintext spaces both clean.`);
+  } else {
+    console.log(c('bold', c('red', `Port problems — ${summarizePortCollisions(findings)}:\n`)));
+    for (const f of findings) {
+      console.log((f.severity === 'error' ? c('red', '✗ ') : c('yellow', '! ')) + f.message + '\n');
+    }
+    info('Repair the registry side with:  node scripts/setup-vault.mjs --sync-port-registry');
+  }
+  process.exit(findings.some((f) => f.severity === 'error') ? 1 : 0);
+}
+
+// v0.77.0 — reconcile portRegistry with each vault's data.json, recording the
+// plaintext port the registry never knew about. Never renumbers anything.
+if (args[0] === '--sync-port-registry') {
+  const dryRun = args.includes('--dry-run');
+  const cfg = loadConfig();
+  const result = migrateConfigPortRegistry(cfg, { dryRun });
+  if (!result.changed) {
+    ok('portRegistry is already in the two-port shape and matches every readable data.json — nothing to do.');
+  }
+  const after = dryRun ? { ...cfg, portRegistry: migratePortRegistry(cfg, { onDisk: buildOnDiskPortMap(cfg) }).portRegistry } : cfg;
+  const findings = detectPortCollisions(after, { onDisk: buildOnDiskPortMap(cfg) });
+  if (findings.length > 0) {
+    console.log('');
+    warn(`Reconciling the registry does not move any port. Still open — ${summarizePortCollisions(findings)}:`);
+    for (const f of findings) {
+      console.log((f.severity === 'error' ? c('red', '  ✗ ') : c('yellow', '  ! ')) + f.message);
+    }
+  }
   process.exit(0);
 }
 

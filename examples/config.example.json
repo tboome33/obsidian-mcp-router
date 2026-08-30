@@ -4,9 +4,10 @@
   "referenceVault": "C:\\VAULTS\\.template",
   "portStart": 27124,
 
+  "_comment_portRegistry": "Two ports per vault since v0.77.0: `https` is the TLS REST API port, `http` is the plaintext insecurePort the bridge's /open route serves (the one click-to-open links are pinned to). BOTH are reserved when a new vault is allocated — recording only the HTTPS port let the allocator hand out a port already bound by another vault's plaintext server. `http: null` means 'not recorded yet' (the vault's data.json was unreadable), never 'no plaintext server'; it is never guessed as https+10, because two vaults on this fleet already escape that convention. The legacy shape (a bare number) is still read, and `setup-vault.mjs --sync-port-registry` converts it in place after a timestamped backup.",
   "portRegistry": {
-    "C:\\VAULTS\\.template": 27124,
-    "C:\\VAULTS\\TradingView": 27125
+    "C:\\VAULTS\\.template": { "https": 27124, "http": 27134 },
+    "C:\\VAULTS\\TradingView": { "https": 27125, "http": 27135 }
   },
 
   "vaultNames": {

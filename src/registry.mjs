@@ -34,6 +34,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {
+  normalizePortEntry,
+  detectPortCollisions,
+  summarizePortCollisions,
+} from './helpers/port-registry.mjs';
+import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -47,6 +53,15 @@ const DEFAULT_CONFIG_PATH = path.join(
 // watcher in index.mjs's reload()), and re-logging the deprecation line on
 // each reload would spam stderr. Reset only for tests via _internals.
 let deprecationWarned = false;
+
+// Same idea for the port-collision report, but a FINGERPRINT rather than a
+// boolean: loadRegistry re-runs on every config.json hot-reload, and
+// re-printing the whole list each time would bury everything else on stderr —
+// while a plain boolean would silence a genuinely NEW collision that appeared
+// after an earlier one was repaired. Holds the last reported finding set, or
+// null when the fleet last loaded clean. The findings stay available on the
+// returned registry (and through `list_vaults`) regardless.
+let portCollisionsWarned = null;
 
 export function resolveConfigPath({ configPath } = {}) {
   return configPath || process.env.OBSIDIAN_ROUTER_CONFIG || DEFAULT_CONFIG_PATH;
@@ -73,8 +88,29 @@ export async function loadRegistry({ configPath } = {}) {
   const portRegistry = config.portRegistry || {};
   const vaultNames = config.vaultNames || {};
 
-  for (const [vaultPath, port] of Object.entries(portRegistry)) {
+  // Disk truth for the port-collision report below. Each vault's data.json is
+  // read ONCE here and reused for both the apiKey and the two ports — the read
+  // was already happening for the key, so the collision detection costs
+  // nothing extra at startup.
+  const onDiskPorts = new Map();
+
+  for (const [vaultPath, value] of Object.entries(portRegistry)) {
     const name = vaultNames[vaultPath] || defaultNameFromPath(vaultPath);
+
+    // READ PORTS FIRST, FILTER SECOND. `disabledVaults` hides a vault from the
+    // MCP tool surface — it does NOT stop Obsidian from opening it and binding
+    // its two sockets. Skipping the read for disabled vaults left the collision
+    // report reasoning from their stale registry declarations instead of what
+    // they actually bind, which both invents collisions and misses real ones
+    // (pre-release review, 2026-08-30). The `.template` vault is disabled on
+    // most fleets and is exactly the one that hands its factory ports to
+    // copies. Only the ports are kept here; the apiKey is used below, and a
+    // disabled vault still never enters `vaults[]`.
+    const restData = await readLocalRestData(vaultPath).catch(() => null);
+    if (restData) {
+      onDiskPorts.set(vaultPath, { port: restData.port, insecurePort: restData.insecurePort });
+    }
+
     // disabledVaults entries can be either the resolved vault NAME or the
     // raw PATH (the registry key). Accepting both is friendlier — users
     // rarely remember the auto-generated name (defaultNameFromPath) but
@@ -83,7 +119,15 @@ export async function loadRegistry({ configPath } = {}) {
       skipped.push({ name, type: 'local', reason: 'disabled' });
       continue;
     }
-    const apiKey = await readLocalApiKey(vaultPath).catch(() => null);
+    const apiKey = restData?.apiKey || null;
+
+    // A registry value is either the legacy number or { https, http }; the
+    // baseUrl always uses the HTTPS one. `normalizePortEntry` is the single
+    // funnel so neither shape can reach the URL template raw — an object
+    // interpolated straight into it would yield `https://127.0.0.1:[object
+    // Object]`, i.e. a vault that is unreachable for a reason nobody would
+    // guess from the error.
+    const port = normalizePortEntry(value).https;
 
     vaults.push({
       name,
@@ -95,6 +139,38 @@ export async function loadRegistry({ configPath } = {}) {
       timeoutMs: 5000,
       missingApiKey: !apiKey,
     });
+  }
+
+  // --- 1b. Port-collision report (v0.77.0) -----------------------------------
+  //
+  // Two vaults on one port is a silent failure: the second server to start
+  // fails to bind and the vault simply looks "offline", with nothing anywhere
+  // explaining why. Nine such collisions were measured on a 27-vault fleet on
+  // 2026-08-29, one of them making a vault permanently unreachable. This
+  // surfaces them at load time — logged to stderr AND carried on the registry
+  // so `list_vaults` can show them to the user rather than leaving them to be
+  // rediscovered by hand.
+  //
+  // Non-fatal by design: a collision degrades a vault, it does not make the
+  // router unsafe, and refusing to start would take away the very tool needed
+  // to diagnose it.
+  const portCollisions = detectPortCollisions(config, { onDisk: onDiskPorts });
+  // Suppress only an IDENTICAL repeat. A plain boolean latch meant that once
+  // any collision had been reported, a DIFFERENT one appearing after a config
+  // hot-reload printed nothing at all — the router would know about a new
+  // silent-bind failure and say nothing (pre-release review, 2026-08-30).
+  // Fingerprinting the finding set keeps reload spam away while letting a
+  // changed situation speak; a clean load resets it.
+  const collisionFingerprint = portCollisions.map((f) => `${f.kind}:${f.port ?? ''}:${f.vaultPath ?? ''}`).join('|');
+  if (portCollisions.length === 0) {
+    portCollisionsWarned = null;
+  } else if (portCollisionsWarned !== collisionFingerprint) {
+    portCollisionsWarned = collisionFingerprint;
+    console.error(
+      `[registry] Port problems detected — ${summarizePortCollisions(portCollisions)}. ` +
+        `Run \`node <router-repo>/scripts/setup-vault.mjs --check-ports\` for the full report.`,
+    );
+    for (const f of portCollisions) console.error(`[registry]   ${f.severity === 'error' ? '✗' : '!'} ${f.message}`);
   }
 
   // --- 2. Remote vaults from explicit array ---
@@ -291,6 +367,10 @@ export async function loadRegistry({ configPath } = {}) {
     defaultVault,
     vaults,
     skipped,
+    // Port collisions + registry drift found at load time (v0.77.0). Always
+    // an array, empty when the fleet is clean, so consumers never branch on
+    // "field missing". Surfaced to the user through `list_vaults`.
+    portCollisions,
     resolveVault(name) {
       const target = name || this.defaultVault;
       if (!target) {
@@ -325,11 +405,9 @@ export async function loadRegistry({ configPath } = {}) {
  * config). Without this, `path.basename` / `path.join` etc. on POSIX would
  * treat `\` as a literal character and produce garbage.
  */
-function isWindowsPath(p) {
-  if (!p || typeof p !== 'string') return false;
-  return /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-}
-
+// Moved to src/helpers/vault-path-identity.mjs (v0.77.0) so the port helpers
+// can reuse it without importing this module, which imports THEM. The doc
+// block above stays here because it documents why the callers below need it.
 function defaultNameFromPath(p) {
   const base = (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
   // strip leading dot (.template → template) and lowercase
@@ -377,23 +455,9 @@ function pathBasename(p) {
  * Detection is structural — it works correctly even when running under
  * WSL/Linux but the portRegistry contains Windows paths (or vice versa).
  */
-function normalizePathForCompare(p) {
-  if (!p) return p;
-  const isWindowsStyle = isWindowsPath(p);
-  const lib = isWindowsStyle ? path.win32 : path.posix;
-  let n = lib.normalize(p);
-  // Strip a trailing separator except for the root marker itself. For UNC
-  // the "root" is `\\server\share`, longer than 3 chars, so the >3 guard is
-  // safe but a UNC of just `\\s\s` (5 chars) would still be trimmed past
-  // the separator — acceptable since we only use this for vault paths,
-  // which are always deeper than the share root.
-  const sep = isWindowsStyle ? '\\' : '/';
-  while (n.length > 3 && (n.endsWith(sep) || n.endsWith('/'))) {
-    n = n.slice(0, -1);
-  }
-  if (isWindowsStyle) n = n.toLowerCase();
-  return n;
-}
+// Implementation moved to src/helpers/vault-path-identity.mjs (v0.77.0) and
+// imported at the top of this file — same function, one definition. Still
+// re-exported through `_internals` below, so existing tests reach it unchanged.
 
 /**
  * Five-tier default-vault resolution. See the call site in loadRegistry() for
@@ -638,7 +702,18 @@ function parseEnvVaults(env = {}) {
   return { envVaults, warnings };
 }
 
-async function readLocalApiKey(vaultPath) {
+/**
+ * One read of a vault's Local REST API `data.json`, yielding the three fields
+ * the registry needs: the API key and BOTH ports.
+ *
+ * Widened from the former `readLocalApiKey` so the port-collision report costs
+ * no extra I/O — the file was already being opened for the key. Only these
+ * three fields leave the function: the same file also holds the vault's TLS
+ * private key, which must never travel further than this parse.
+ *
+ * @returns {{ apiKey: string|null, port: number|null, insecurePort: number|null }}
+ */
+async function readLocalRestData(vaultPath) {
   // Same cross-platform consideration as defaultNameFromPath: vaultPath
   // may be a Windows-style string from config even when runtime is POSIX
   // (CI matrix on Linux). `path.posix.join` on `C:\VAULTS\X` would produce
@@ -656,7 +731,12 @@ async function readLocalApiKey(vaultPath) {
   );
   const raw = await fs.readFile(dataPath, 'utf8');
   const data = JSON.parse(raw);
-  return data.apiKey || null;
+  const asPort = (n) => (Number.isInteger(n) && n > 0 && n <= 65535 ? n : null);
+  return {
+    apiKey: data.apiKey || null,
+    port: asPort(data.port),
+    insecurePort: asPort(data.insecurePort),
+  };
 }
 
 // Exposed for tests only — not part of the public API. Consumers should
@@ -674,6 +754,10 @@ export const _internals = {
   // can assert the warning fires (and fires only once) deterministically.
   __resetDeprecationWarningForTests: () => {
     deprecationWarned = false;
+  },
+  // Same, for the once-per-process port-collision report.
+  __resetPortCollisionWarningForTests: () => {
+    portCollisionsWarned = null;
   },
 };
 

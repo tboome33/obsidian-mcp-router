@@ -4,6 +4,175 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.77.0] — 2026-08-30 — the allocator was blind to half the ports, and the reaper was faster than a coffee break
+
+Two defects opened on 2026-08-29, shipped together because they share a
+release and a test corpus. Both were **experienced**, not theorised.
+
+### Fixed — the port allocator only ever saw half the ports
+
+`portRegistry` recorded ONE port per vault: the HTTPS one. Every vault also
+runs a plaintext HTTP server on its `insecurePort` — the port the bridge's
+`/open/<path>` route answers on, and therefore the port every click-to-open
+link in every note is pinned to. The allocator scanned
+`Object.values(portRegistry)` and took the first absent number, so it could
+hand a brand-new vault a port **already bound by another vault's plaintext
+server**. Measured on a 27-vault fleet: **9 collisions**, one of them leaving a
+vault permanently unreachable (a TLS call landing on a plaintext listener
+returns `ERR_SSL_WRONG_VERSION_NUMBER`). The usual damage is quieter and far
+worse to diagnose — the second vault to start fails to bind and simply looks
+*offline*, with no error anywhere.
+
+- **`portRegistry` now holds `{ https, http }` per vault.** The legacy bare
+  number is still read everywhere; `setup-vault.mjs --sync-port-registry`
+  converts in place after a **timestamped backup** of `config.json`, and a
+  provisioning run reconciles a legacy registry on its own — a legacy registry
+  is at its most dangerous precisely when the allocator is about to trust it.
+- **Allocation reserves a PAIR and checks the union of both spaces.** A free
+  HTTPS port whose plaintext partner is taken is skipped. A stale registry
+  declaration keeps its port reserved alongside the disk value: one is bound
+  right now, the other is what a repair would put back.
+- **`provision_vault` renumbers a copy of the reference vault** instead of
+  inheriting its ports and API key. Three of the nine collisions were exactly
+  this — vaults folder-copied from `.template` and never renumbered, all
+  sitting on the factory 27124/27134. The tell is precise (the target's REST
+  credentials are byte-identical to the source's), so a genuinely independent
+  vault still keeps its own ports.
+- **Collision detection is now reported, not rediscovered.** At router startup
+  (surfaced on `list_vaults` as `portCollisions`, logged once per process), on
+  `--status`, and through a new read-only `--check-ports [--json]` that exits
+  `1` on a real collision so a scheduled task can alert on it. Findings name
+  the two vaults, the port, and which side may move.
+- **Adoption now checks both spaces.** The old conflict check compared an
+  existing vault's port against the HTTPS column only, so a clash with a
+  plaintext listener sailed through.
+
+### Fixed — defects in the fix itself, found by an adversarial pre-release review
+
+The change above was reviewed against its own invariants before the tag was
+published. Ten defects were found and closed. Most are the release's own defect
+class reappearing one level down: **a port written, reserved or reported
+without consulting both spaces.** They are listed because the review is the
+reason the release is trustworthy, not despite it.
+
+Violations of *"an existing `insecurePort` is never renumbered"*:
+
+- **A port clash with the reference vault was misread as "this is a copy".**
+  The copy-detection tell was `apiKey OR port` matching the source. The port
+  half was wrong: an *independent* vault that merely happens to sit on the
+  reference's HTTPS port was classified as a copy, renumbered **and re-keyed** —
+  writing a new `insecurePort` over the one it legitimately owns and killing
+  every click-to-open link written to it. Measured on a fixture: `27199 →
+  27135`. The API key is now the only tell (32 random bytes; no independent
+  vault grows the same one), and a port clash *refuses*, naming the other
+  holder and warning what `--regenerate` would cost.
+- **The reuse branch preferred a stale registry port over the disk.** For an
+  already-registered vault it returned the registry's plaintext port, which the
+  caller then *wrote* — putting a stale number back over the live one. Disk
+  truth now wins; the disagreement is reported as drift instead.
+- **A registered copy was never actually renumbered.** Dropping the target from
+  the on-disk map was not enough: its registry entry alone sent the allocator
+  down the reuse branch and handed back the very source ports it was supposed
+  to move off. Now an explicit `forceFresh`.
+
+Ports created or claimed without checking both spaces:
+
+- **A vault with no `insecurePort` at all got a blind `port + 10`** (the
+  pre-v0.10.x population). Now allocated against both spaces
+  (`allocateInsecurePortFor`). Nothing is renumbered — there is no plaintext
+  port to preserve — but the one being *created* is checked.
+- **`--upgrade-insecure-server` could emit an out-of-range or colliding port**
+  (`65530 → 65540`; the bump loop could also stop *on* a reserved `65535`). It
+  now delegates to the same allocator, so the two paths cannot drift apart.
+
+False reports — the category explicitly held to be worse than no report:
+
+- **A readable `data.json` with no `insecurePort` promoted the registry's stale
+  number to "actively bound"**, which could accuse two vaults of fighting over
+  a port only one of them listens on. "Readable and says nothing binds" is now
+  distinguished from "unreadable, so unknown"; the first is drift, not a
+  collision. The number stays held out of new allocations either way.
+- **Disabled vaults' ports were never read.** `disabledVaults` hides a vault
+  from the tool surface; it does not stop Obsidian from binding its sockets.
+  The report was reasoning from their stale registry entries — and `.template`,
+  disabled on most fleets, is exactly the vault that hands its factory ports to
+  copies. Ports are now read for every registered vault, before the filter.
+- **The once-per-process warning latch silenced genuinely new collisions.**
+  After one collision was reported and repaired, a *different* one appearing on
+  a config hot-reload printed nothing. Now fingerprinted.
+
+Honesty of what is claimed:
+
+- **`--sync-port-registry` did not synchronise stale non-null values**, while
+  its success message claimed the registry matched every readable `data.json`.
+  Disk is now authoritative in the migration (no port on disk moves; the
+  timestamped backup keeps it reversible).
+- **The migration dropped properties it did not understand** — `{https, http,
+  note: "…"}` lost `note`. A lossless rewrite keeps unknown fields.
+- **A failed `patchRestApiData` was recorded as if it had succeeded**: with
+  `data.json` missing, nothing was written, yet the caller persisted a
+  plaintext port into the registry and returned it as provisioning metadata. It
+  now reports what actually reached the disk.
+- The drift message described behaviour that had changed, and the adoption log
+  line still echoed eight characters of the API key. Both corrected.
+
+Class swept: **3 of 3** code paths that write an `insecurePort` now either
+check both port spaces or preserve an existing value.
+
+Two rules the implementation keeps throughout: **an existing `insecurePort` is
+never renumbered** (those numbers live in links already written in the user's
+notes — when a conflict must be resolved, the HTTPS port moves), and **`http`
+is never guessed as `https + 10`**. That offset is the convention applied to
+newly provisioned vaults, not a property of the fleet: **15 of the 27 vaults
+measured on 2026-08-30 escape it**. An unreadable vault records `http: null`,
+meaning *unknown*, and is completed later.
+
+### Changed — `serve-http`'s idle timeout defaults to 4 hours (was 30 minutes)
+
+A 30-minute reap threshold is shorter than an ordinary human work pause. On
+2026-08-29 a multi-hour remote session lost the router mid-flight — all 49
+tools gone, `CONNECT_TIMEOUT` — while the user was running a script on their
+own machine. The server was fine throughout (measured from the box: 200 in
+0.4 s, 53 tools, correct 404 on the stale session id); Claude Code simply does
+not restore an MCP server that dies mid-session, so the tools were gone for the
+rest of the sitting.
+
+The threshold stays **finite** — a dropped tunnel is not a `DELETE`, and the
+2026-08-28 spike left six zombie children — but its scale was wrong. The two
+failure modes are not comparable: too short costs the user their tools for
+hours with no in-session recovery; too long costs one dormant child process
+until the threshold. `--session-timeout-min` is unchanged and now documented in
+the README (EN + FR), along with the deliberate **non**-behaviour: an unknown
+session id gets a `404` and never a silently respawned child, because
+resurrecting one would reset the per-session state (vault lock, auto-enrich
+mode, once-per-session conformance) under an id the client believes is stable.
+
+### Tests
+
+- `tests/port-registry.test.mjs` (39) — the pure helpers: allocation refuses an
+  occupied plaintext port, both pair members are checked, an existing pair is
+  never renumbered, migration loses nothing and is idempotent, an unreadable
+  vault is `null` and never `+10`, and two spellings of one Windows directory
+  do not produce a phantom collision (a false positive found by running the
+  detector against the real fleet).
+- `tests/port-registry-cli.test.mjs` (14) — the same guarantees through the
+  CLI, on synthetic temp vaults: a legacy registry hiding a plaintext port, a
+  folder-copy of the template, a lossless migration with its timestamped
+  backup, `--check-ports` exit codes, `--status` showing both ports.
+- `tests/serve-http.test.mjs` (+3) — the default threshold, that the factory
+  actually reads it, and that an unknown session id creates no child.
+
+### Also
+
+- `src/helpers/vault-path-identity.mjs` — `isWindowsPath` /
+  `normalizePathForCompare` moved out of `src/registry.mjs` (which now imports
+  them) so the port helpers can answer "same vault?" without closing an import
+  cycle. Same functions, one definition, still re-exported via `_internals`.
+- `README.md` gains a "Port bookkeeping" section and a "Served mode" section,
+  both mirrored in the French half.
+
+For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
+
 ## [0.76.0] — 2026-08-29 — the C3 catch-22: `plan_vault` couldn't preview what `provision_vault` was about to execute
 
 **The bug, found live.** Provisioning a vault at a path outside the known

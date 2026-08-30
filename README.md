@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.76.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.77.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -79,6 +79,25 @@ Concrete deployment example (MCPHub `mcp_settings.json` entry):
 ```
 
 See `wiki/obsidian-mcp-router sur Dedibox et MCPHub/` in the [opsidian-mcp-router et bridge meta vault](https://github.com/tboome33/obsidian-mcp-router#related-repos) for the complete multi-tenant deployment recipe (bundle `.mcpb`, MCPHub Keys with Access Scope, NPM front, Self-hosted LiveSync, etc.).
+
+### Served mode — reaching the local router from a remote session (v0.75.0+)
+
+A remote Claude Code session (a dev box over SSH) can't just run the router: 11 of its modules legitimately touch the vaults' **disk**, so porting it ships it half-broken. Instead the router stays home and is **served** over an authenticated streamable-HTTP endpoint, reached through the existing SSH tunnel:
+
+```bash
+node scripts/serve-http.mjs [--port 27300] [--session-timeout-min 240]
+```
+
+It binds `127.0.0.1` only (deliberately not configurable), requires a bearer token on **every** verb (`OBSIDIAN_ROUTER_HTTP_TOKEN`, or `~/.claude/obsidian-mcp-router/serve-http.token`), and refuses to start without one. Each MCP session gets **its own child router process**, so a vault lock taken by one session is invisible to another — exactly the isolation stdio sessions already have.
+
+| Flag | What it does | Default |
+|---|---|---|
+| `--port <n>` | Listen port on loopback. | `27300` |
+| `--session-timeout-min <n>` | Idle threshold before a session is reaped and its child killed. Minimum 1. | **240** (4 h) |
+
+**Why the timeout defaults to four hours and not thirty minutes.** A dropped tunnel is not a `DELETE` — without reaping, vanished clients leave zombie children (six were measured in the 2026-08-28 spike), so the reaper is mandatory. But its *scale* matters more than its existence: a threshold shorter than an ordinary human pause harvests **live** sessions. With the former 30-minute default, a multi-hour session lost the router mid-flight while the user was running a script on their own machine — and Claude Code does not restore an MCP server that dies mid-session, so the tools were gone for the rest of the sitting. The two failure modes are not comparable: too short costs the user their tools for hours with no in-session recovery, too long costs one dormant child process until the threshold. Lower it if you serve many clients from one host and dormant children are your dominant cost.
+
+**An expired session answers `404`, and that is on purpose.** The server never silently respawns a child for an unknown session id. It would look seamless and it would be a lie: the per-session state (vault lock, auto-enrichment mode, the once-per-session conformance pass) would have reset under an id the client believes is stable. Recovering from the `404` by re-initializing is the client's job.
 
 ## Slash commands & skills (Claude Code plugin)
 
@@ -729,8 +748,10 @@ The router reads the existing config maintained by [`scripts/setup-vault.mjs`](.
   "referenceVault": "C:\\VAULTS\\.template",
   "portStart": 27124,
   "portRegistry": {
-    "C:\\VAULTS\\.template": 27124,
-    "C:\\VAULTS\\TradingView": 27125
+    // Two ports per vault since v0.77.0 — see "Port bookkeeping" below.
+    // The legacy shape (a bare number) is still read.
+    "C:\\VAULTS\\.template":    { "https": 27124, "http": 27134 },
+    "C:\\VAULTS\\TradingView":  { "https": 27125, "http": 27135 }
   },
 
   // --- router-specific (optional, edit freely) ---
@@ -751,6 +772,26 @@ The router reads the existing config maintained by [`scripts/setup-vault.mjs`](.
 ```
 
 See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults, and [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) for the recipe to expose a vault over a Cloudflare Tunnel with optional Cloudflare Access auth (service tokens supported via the `extraHeaders` field).
+
+### Port bookkeeping — two ports per vault (v0.77.0)
+
+Every vault runs **two** servers: the TLS REST API on `https`, and a plaintext HTTP server on `http` (its `insecurePort`) — the one the bridge's `/open/<path>` route answers on, and therefore the one every click-to-open link in your notes is pinned to.
+
+Until v0.77.0 `portRegistry` recorded only the HTTPS port, so the allocator could hand a brand-new vault a port **already bound by another vault's plaintext server**. That is not theoretical: nine such collisions were measured across a 27-vault fleet, one of them leaving a vault permanently unreachable (a TLS call landing on a plaintext listener returns `ERR_SSL_WRONG_VERSION_NUMBER`). The usual symptom is quieter and worse to diagnose — the second vault to start fails to bind and just looks *offline*, with no error anywhere.
+
+Both ports are now recorded and both spaces are checked before either is handed out.
+
+| Command | What it does |
+|---|---|
+| `node scripts/setup-vault.mjs --check-ports [--json]` | Read-only report: duplicate ports across both spaces, plus registry-vs-`data.json` drift. Exits `1` on a real collision, so a scheduled task can alert on it. |
+| `node scripts/setup-vault.mjs --sync-port-registry [--dry-run]` | Records each vault's plaintext port in the registry, read from its own `data.json`. Takes a timestamped backup of `config.json` first. |
+| `node scripts/setup-vault.mjs --status` | Now prints **both** ports per vault, and flags collisions at the bottom. |
+
+Three rules the implementation keeps, and that you should keep too if you edit `config.json` by hand:
+
+- **An existing `insecurePort` is never renumbered.** Those numbers live in click-to-open links already written in your notes. When a conflict has to be resolved, the **HTTPS** port is the one that moves.
+- **`http` is never guessed as `https + 10`.** That offset is the convention applied to *newly provisioned* vaults, not a property of the fleet — 15 of the 27 vaults measured on 2026-08-30 escape it. When a vault's `data.json` can't be read, its `http` is recorded as `null`, meaning *unknown*, and `--sync-port-registry` fills it in later.
+- **Migration is non-destructive.** The legacy shape is still read, converting is idempotent, no key is dropped, no HTTPS port moves, and the pre-migration file is kept as `config.json.portRegistry-<timestamp>.bak`.
 
 ## Tools exposed
 
@@ -977,7 +1018,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.76.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.77.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1024,6 +1065,25 @@ Le router tourne en deux modes, pilotés uniquement par variables d'environnemen
   - `OBSIDIAN_ROUTER_USER_ID=<slug>` — journal d'audit de chaque écriture réussie dans le `wiki-meta/journal.md` du vault touché (masque aussi les outils local-only `plan_vault` / `provision_vault`).
 
 Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complète : voir la section anglaise « [Deployment modes](#deployment-modes) ».
+
+#### Mode servi — atteindre le router local depuis une session distante (v0.75.0+)
+
+Une session Claude Code distante ne peut pas simplement lancer le router : 11 de ses modules touchent légitimement le **disque** des vaults, donc le porter reviendrait à le livrer à moitié cassé. Le router reste donc à la maison et se fait **servir** sur un point d'entrée streamable-HTTP authentifié, atteint par le tunnel SSH existant :
+
+```bash
+node scripts/serve-http.mjs [--port 27300] [--session-timeout-min 240]
+```
+
+Il n'écoute que sur `127.0.0.1` (délibérément non configurable), exige un jeton bearer sur **chaque** verbe (`OBSIDIAN_ROUTER_HTTP_TOKEN`, ou `~/.claude/obsidian-mcp-router/serve-http.token`), et refuse de démarrer sans jeton. Chaque session MCP obtient **son propre processus router enfant** : un verrou de vault pris par une session est invisible pour une autre — exactement l'isolation qu'ont déjà les sessions stdio.
+
+| Drapeau | Effet | Défaut |
+|---|---|---|
+| `--port <n>` | Port d'écoute sur la loopback. | `27300` |
+| `--session-timeout-min <n>` | Seuil d'inactivité avant récolte de la session et arrêt de son enfant. Minimum 1. | **240** (4 h) |
+
+**Pourquoi le seuil vaut quatre heures et non trente minutes.** Un tunnel qui tombe n'est pas un `DELETE` : sans récolte, les clients disparus laissent des enfants zombies (six mesurés lors du spike du 2026-08-28) — le moissonneur est donc obligatoire. Mais son *échelle* compte plus que son existence : un seuil plus court qu'une pause humaine ordinaire récolte des sessions **vivantes**. Avec l'ancien défaut de 30 minutes, une séance de plusieurs heures a perdu le router en plein vol pendant que l'utilisateur exécutait un script sur son poste — et Claude Code ne rétablit pas un serveur MCP tombé en cours de session : les outils ont manqué pour le reste de la séance. Les deux modes d'échec ne se valent pas : trop court coûte à l'utilisateur ses outils pendant des heures, sans récupération possible depuis la session ; trop long coûte un processus enfant dormant jusqu'au seuil. À abaisser si vous servez beaucoup de clients depuis un seul hôte et que les enfants dormants deviennent le coût dominant.
+
+**Une session périmée répond `404`, et c'est voulu.** Le serveur ne fait jamais renaître un enfant en silence sur un identifiant de session inconnu. Ce serait transparent, et ce serait un mensonge : l'état par session (verrou de vault, mode d'auto-enrichissement, conformité « une fois par session ») aurait été réinitialisé sous un identifiant que le client croit stable. Se remettre du `404` en se ré-initialisant, c'est le travail du client.
 
 ### Slash commands & skills (plugin Claude Code)
 
@@ -1568,8 +1628,10 @@ Le router lit la config existante maintenue par [`scripts/setup-vault.mjs`](./sc
   "referenceVault": "C:\\VAULTS\\.template",
   "portStart": 27124,
   "portRegistry": {
-    "C:\\VAULTS\\.template": 27124,
-    "C:\\VAULTS\\TradingView": 27125
+    // Two ports per vault since v0.77.0 — see "Port bookkeeping" below.
+    // The legacy shape (a bare number) is still read.
+    "C:\\VAULTS\\.template":    { "https": 27124, "http": 27134 },
+    "C:\\VAULTS\\TradingView":  { "https": 27125, "http": 27135 }
   },
 
   // --- spécifiques au router (optionnels, modifiables librement) ---
@@ -1590,6 +1652,26 @@ Le router lit la config existante maintenue par [`scripts/setup-vault.mjs`](./sc
 ```
 
 Voir [`examples/config.example.json`](./examples/config.example.json) pour un exemple complet commenté, [`docs/remote-vaults.md`](./docs/remote-vaults.md) pour le guide complet d'ajout d'un vault distant, et [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) pour la recette d'exposition d'un vault via Cloudflare Tunnel avec auth optionnelle Cloudflare Access (service tokens supportés via le champ `extraHeaders`).
+
+#### Comptabilité des ports — deux ports par vault (v0.77.0)
+
+Chaque vault fait tourner **deux** serveurs : l'API REST en TLS sur `https`, et un serveur HTTP en clair sur `http` (son `insecurePort`) — celui que sert la route `/open/<chemin>` du bridge, donc celui auquel est épinglé chaque lien click-to-open écrit dans vos notes.
+
+Jusqu'à la v0.77.0, `portRegistry` ne mémorisait que le port HTTPS : l'allocateur pouvait donc attribuer à un nouveau vault un port **déjà tenu par le serveur en clair d'un autre**. Ce n'est pas théorique : neuf collisions de ce type ont été relevées sur un parc de 27 vaults, dont une rendait un vault définitivement injoignable (un appel TLS qui atterrit sur un serveur en clair rend `ERR_SSL_WRONG_VERSION_NUMBER`). Le symptôme habituel est plus discret et plus pénible à diagnostiquer : le second vault à démarrer n'arrive pas à se lier au socket et paraît simplement *hors ligne*, sans erreur nulle part.
+
+Les deux ports sont désormais enregistrés, et les deux espaces sont vérifiés avant d'attribuer l'un ou l'autre.
+
+| Commande | Effet |
+|---|---|
+| `node scripts/setup-vault.mjs --check-ports [--json]` | Rapport en lecture seule : doublons de ports dans les deux espaces, plus la dérive registre-vs-`data.json`. Sort en `1` sur une vraie collision, pour qu'une tâche planifiée puisse alerter. |
+| `node scripts/setup-vault.mjs --sync-port-registry [--dry-run]` | Enregistre le port en clair de chaque vault dans le registre, lu depuis son propre `data.json`. Sauvegarde horodatée de `config.json` d'abord. |
+| `node scripts/setup-vault.mjs --status` | Affiche désormais **les deux** ports par vault, et signale les collisions en bas. |
+
+Trois règles que l'implémentation respecte — et que vous devriez respecter aussi si vous éditez `config.json` à la main :
+
+- **Un `insecurePort` existant n'est jamais renuméroté.** Ces numéros vivent dans les liens click-to-open déjà écrits dans vos notes. Quand un conflit doit être résolu, c'est le port **HTTPS** qui bouge.
+- **`http` n'est jamais deviné comme `https + 10`.** Cet offset est la convention appliquée aux vaults **nouvellement provisionnés**, pas une propriété du parc — 15 des 27 vaults mesurés le 2026-08-30 y échappent. Quand le `data.json` d'un vault n'est pas lisible, son `http` est enregistré à `null`, c'est-à-dire *inconnu*, et `--sync-port-registry` le complétera plus tard.
+- **La migration est non destructive.** L'ancienne forme est toujours lue, la conversion est idempotente, aucune clé n'est perdue, aucun port HTTPS ne bouge, et le fichier d'avant migration est conservé sous `config.json.portRegistry-<horodatage>.bak`.
 
 ### Outils exposés
 

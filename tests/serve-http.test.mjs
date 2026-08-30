@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { createServeHttp } from '../scripts/serve-http.mjs';
+import { createServeHttp, DEFAULT_SESSION_TIMEOUT_MS } from '../scripts/serve-http.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE = path.join(HERE, 'fixtures', 'fake-mcp-stdio-server.mjs');
@@ -179,4 +179,53 @@ test('idle sessions are reaped and their children killed', async () => {
 test('listener binds 127.0.0.1 only', () => {
   const addr = stack.server.address();
   assert.equal(addr.address, '127.0.0.1');
+});
+
+// --- v0.77.0: the idle threshold, and the rebirth that must NOT happen -------
+
+test('the DEFAULT idle threshold is 4 hours — longer than any human work pause', () => {
+  // A reaper set below a plausible pause harvests LIVE sessions. On 2026-08-29
+  // a 30-minute default killed a multi-hour session mid-flight while the user
+  // was running a script on their own machine, and Claude Code does not
+  // restore an MCP server that dies mid-session: the router was gone for the
+  // rest of the sitting.
+  //
+  // The asymmetry is what fixes the number. Too short costs the user their
+  // tools for hours with no in-session recovery; too long costs one dormant
+  // child until the threshold. This test exists so lowering the default is a
+  // deliberate act with a reason, not a tidy-up.
+  assert.equal(DEFAULT_SESSION_TIMEOUT_MS, 240 * 60_000, '240 minutes');
+  assert.ok(DEFAULT_SESSION_TIMEOUT_MS > 60 * 60_000, 'must exceed an hour-long pause');
+  assert.ok(Number.isFinite(DEFAULT_SESSION_TIMEOUT_MS), 'still FINITE — the spike left 6 zombie children');
+});
+
+test('a stack built with no explicit timeout actually uses that default', () => {
+  // Pins the wiring, not just the constant: a default that the factory does
+  // not read is a comment, not a behaviour.
+  const s = createServeHttp({ token: TOKEN, port: 0, childCommand: process.execPath, childArgs: [FIXTURE], log: () => {} });
+  assert.equal(s.sessionTimeoutMs, DEFAULT_SESSION_TIMEOUT_MS);
+});
+
+test('an UNKNOWN session id gets 404 and spawns NO child — no silent rebirth', async () => {
+  // A DELIBERATE NON-FEATURE, and the one a future edit is most likely to
+  // "fix". Respawning a child under an unknown id would let the client sail on
+  // — while its per-session state (the vault lock, the auto-enrich mode, the
+  // once-per-session conformance pass) had silently reset underneath an id it
+  // believes is stable. That is lying about continuity; the honest 404 is the
+  // contract, and recovering from it is the client's job.
+  const before = stack.sessions.size;
+  const res = await fetch(baseUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${TOKEN}`,
+      'mcp-session-id': 'a-session-that-was-reaped-hours-ago',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 42, method: 'tools/list' }),
+  });
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.match(body.error.message, /re-initialize/i, 'the 404 must tell the client what to do');
+  assert.equal(stack.sessions.size, before, 'no session (and so no child) may be created for an unknown id');
 });

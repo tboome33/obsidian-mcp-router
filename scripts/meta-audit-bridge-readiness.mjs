@@ -37,6 +37,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
 
 const CONFIG_PATH = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
 
@@ -230,8 +231,11 @@ async function main() {
     console.log('');
   }
 
-  const results = await Promise.all(entries.map(([p, port]) =>
-    auditVault(p, cfg.vaultNames?.[p] ?? path.basename(p), port),
+  // A portRegistry value is the legacy number OR { https, http } (v0.77.0) —
+  // normalize before use, or the object would be printed as the vault's HTTPS
+  // port in the report.
+  const results = await Promise.all(entries.map(([p, value]) =>
+    auditVault(p, cfg.vaultNames?.[p] ?? path.basename(p), normalizePortEntry(value).https),
   ));
 
   if (asJson) {

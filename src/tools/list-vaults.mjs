@@ -108,6 +108,11 @@ export async function listVaults(registry) {
     configPath: registry.configPath,
     vaults: results,
     disabled,
+    // Port collisions + registry drift detected when the config was loaded
+    // (v0.77.0). This is the ANSWER to an "online: false" above that has no
+    // other explanation: two vaults on one port means the second one to start
+    // never bound its socket. Always an array — empty when the fleet is clean.
+    portCollisions: registry.portCollisions || [],
     // Lock state — null when the router is in normal multi-vault mode,
     // a vault name when the router is restricted to a single vault for
     // the current session. See `lock_vault` / `unlock_vaults` tools.

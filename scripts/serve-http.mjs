@@ -29,6 +29,14 @@
  *   - FINITE SESSION TIMEOUT. A tunnel drop is NOT a DELETE: the spike left
  *     6 zombie children from 6 closed clients. Idle sessions are reaped and
  *     their children killed. Explicit DELETE keeps working (verified 200).
+ *     The threshold defaults to FOUR HOURS, not thirty minutes: a reaper set
+ *     below a human work pause harvests live sessions, which is what happened
+ *     on 2026-08-29. See DEFAULT_SESSION_TIMEOUT_MS for the full reasoning.
+ *   - AN UNKNOWN SESSION ID GETS A 404, NEVER A NEW CHILD. Silently respawning
+ *     would be the tempting fix and the wrong one: per-session state (the
+ *     vault lock, the auto-enrich mode, the once-per-session conformance pass)
+ *     would silently reset under an id the client believes is stable. Lying
+ *     about continuity is worse than reporting the break.
  *   - RELAYING IS RAW MESSAGE FORWARDING between the two SDK transports.
  *     SSE framing, session headers and JSON-RPC parsing belong to the SDK —
  *     re-implementing any of it was the reviewed anti-pattern.
@@ -38,7 +46,7 @@
  *
  * Run it via the scheduled task (see the roadmap's Phase 2), or by hand:
  *
- *   node scripts/serve-http.mjs [--port 27300] [--session-timeout-min 30]
+ *   node scripts/serve-http.mjs [--port 27300] [--session-timeout-min 240]
  *
  * The bearer token is read from OBSIDIAN_ROUTER_HTTP_TOKEN or from the file
  * `~/.claude/obsidian-mcp-router/serve-http.token` (trimmed). Refusing to
@@ -58,7 +66,48 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROUTER_BIN = path.join(PACKAGE_ROOT, 'bin', 'obsidian-mcp-router.mjs');
 const DEFAULT_PORT = 27300;
-const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60_000;
+/**
+ * Idle-session reap threshold, in ms. FOUR HOURS — raised from 30 minutes in
+ * v0.77.0, and the reasoning is worth keeping because the obvious reading of
+ * this constant ("shorter is tidier") is the wrong one.
+ *
+ * WHAT 30 MINUTES DID. On 2026-08-29 a multi-hour session driven from a remote
+ * `dedibox-dev` box lost the router mid-flight: all 49 tools vanished, the
+ * client reporting `CONNECT_TIMEOUT`. The server was fine throughout — measured
+ * from the box while the client called it dead: `initialize` answered 200 in
+ * 0.4 s, `tools/list` returned 53 tools, and a request carrying the OLD
+ * session id got the correct 404. What had happened is that the human paused:
+ * ran a script on their own machine, answered a question, thought. Nothing
+ * crossed the bridge for half an hour, the reaper fired, and Claude Code — which
+ * does not restore an MCP server that dies mid-session — dropped the router for
+ * the rest of the sitting.
+ *
+ * THE ASYMMETRY THAT DECIDES THE VALUE. The two failure modes are not
+ * comparable:
+ *   - Too SHORT costs the user their tools for hours, with no recovery
+ *     available from inside the session. It fires during NORMAL work.
+ *   - Too LONG costs one dormant child process per abandoned session, until
+ *     the threshold. Bounded, recoverable, and invisible to the user.
+ * When one side of a trade is unrecoverable and the other is a little memory,
+ * the default belongs on the memory side.
+ *
+ * WHY NOT INFINITE. The timeout is not decoration: a tunnel drop is not a
+ * DELETE, and the 2026-08-28 spike left six zombie children from six closed
+ * clients. Reaping stays mandatory (see the vault decision page
+ * `http-only-comme-interface-de-backend`, where it is called non-negotiable) —
+ * only its scale was wrong. Four hours is above any plausible human work pause
+ * while still guaranteeing that an abandoned session is collected the same day.
+ *
+ * WHY THIS NUMBER. It is the value already proven in production on the machine
+ * this serves, passed as `--session-timeout-min 240` in the scheduled task
+ * since 2026-08-30. Shipping a default the fleet had to override was the
+ * remaining half of the bug: the workaround fixed one machine, this fixes every
+ * other installation.
+ *
+ * Operators serving many clients from one host, for whom dormant children are
+ * the dominant cost, should lower it with `--session-timeout-min`.
+ */
+export const DEFAULT_SESSION_TIMEOUT_MS = 240 * 60_000;
 const TOKEN_FILE = path.join(
   os.homedir(),
   '.claude',
@@ -107,7 +156,8 @@ function jsonError(res, status, message) {
  *                                         cwd on purpose: no workspace .env leaks into the
  *                                         served instance; remote sessions address vaults
  *                                         explicitly or use the global default)
- * @param {number} [options.sessionTimeoutMs] idle reap threshold (default 30 min)
+ * @param {number} [options.sessionTimeoutMs] idle reap threshold (default 240 min — see
+ *                                         DEFAULT_SESSION_TIMEOUT_MS for why not 30)
  * @param {number} [options.reapIntervalMs]   reaper cadence (default min(60s, timeout/4))
  * @param {(line: string) => void} [options.log] stderr-style logger (never receives the token)
  * @returns {{ listen: () => Promise<{port:number, host:string}>, close: () => Promise<void>,
@@ -256,6 +306,10 @@ export function createServeHttp(options) {
   return {
     server,
     sessions,
+    // Surfaced so the effective threshold can be read rather than inferred —
+    // by the startup banner, by an operator, and by the test that pins the
+    // default (a constant nobody checks is a constant that drifts back).
+    sessionTimeoutMs,
     listen: () =>
       new Promise((resolvePromise, rejectPromise) => {
         server.once('error', rejectPromise);
