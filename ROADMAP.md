@@ -2,6 +2,23 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.78.0 — the key moves into the config, and the vaults' disks stop being a prerequisite (shipped 2026-08-31)
+
+Lot 1 of the "backend interface, HTTP-only profile as proof" chantier. It shipped in this order on purpose: **the measurement chose the lot**, not the plan.
+
+- **The measurement came first, and it overturned the plan's own ordering.** A 50/50 rig — every tool in an isolated process, throwaway vault, stub REST server, `node --permission` denying vault disk at the binding layer — showed that the only universal disk dependency is **credential resolution**, not the click-to-open decoration the earlier static analyses had accused. `loadRegistry()` reads the API key from the vault's `data.json` before any handler runs: one bootstrap prerequisite, paid fifty times. With the key in config, zero of the tested tools need vault disk. Lot 1 therefore stopped being "one lot among six" and became the unblocker.
+- **`portRegistry` is emitted empty, and that is the whole mechanism.** An entry there is exactly what sends the router back to the vault's disk for the key. The generator does not "add remote vaults"; it removes the local branch.
+- **The defaults assume a hostile reader.** A config with N keys grants read *and write* on N vaults to anything that can read it — on a box that also runs code agents, that is a privilege escalation, not a convenience. Hence: redacted output by default, no implicit fleet-wide export, `--out` creating at `0600` (creating, not chmod-ing after — the window between is readable), and refusal to write into the repo, into a vault, or over a looser file. Rejected outright: emitting cleartext to stdout as the default, which would have been the shortest path and would have put 22 keys into shell history.
+- **Keys are read from disk, never through the plugin API** — that `data.json` also holds the vault's TLS private key, and only the one field is lifted out.
+- **The round-trip test is the load-bearing one.** The emitted `VAULT_*` lines go back through the router's own `parseEnvVaults` with zero warnings, and a generated config is loaded by `loadRegistry` producing a `remote` vault and no local one. Without it the generator could drift from the contract it targets — the v0.76.0 seal catch-22, one layer over.
+
+### Deferred
+
+- **The key-transport arbitration is NOT settled here.** The mother decision reserved it to this lot (restricted-permission file vs Vaultwarden on demand), and it is an operational security choice, not a code choice. The generator is deliberately agnostic: it can write a `0600` file *or* emit cleartext for piping into a store. The arbitration is written up for decision in the vault.
+- **`--out` on Windows is advisory.** The POSIX mode is set but NTFS ACLs govern; the tool says so rather than implying a guarantee it cannot make.
+- **Nothing rotates or revokes.** A key exported once lives until someone regenerates it in Obsidian. A fleet-wide rotation helper is the obvious follow-up and is out of scope here.
+- **The remote-vault profile is not proven functionally equivalent.** The 50/50 rig showed no tool *requires* vault disk; 20 of 50 did not traverse their full path, and two tools degrade by design (`build_open_link` loses its link, `find_twin_pages` reports `available:false`). Equivalence remains unproven — see the vault page.
+
 ## ✅ v0.77.0 — two ports per vault, and a reaper that outlasts a coffee break (shipped 2026-08-30)
 
 Two tickets opened 2026-08-29 while resolving nine port collisions by hand on a 27-vault fleet. Both were experienced before they were written down, and both are failures of *bookkeeping*, not of mechanism: the code did exactly what it was told, about half the world.

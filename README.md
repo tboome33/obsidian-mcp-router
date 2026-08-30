@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.77.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.78.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -773,6 +773,29 @@ The router reads the existing config maintained by [`scripts/setup-vault.mjs`](.
 
 See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults, and [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) for the recipe to expose a vault over a Cloudflare Tunnel with optional Cloudflare Access auth (service tokens supported via the `extraHeaders` field).
 
+### Running the router without the vaults' disks (v0.78.0)
+
+A router that only speaks REST — on a dev box, in a container, behind a hub — cannot read the vaults' files. Measured on 2026-08-31 across all 50 tools in isolated processes: **the only universal disk dependency is credential resolution.** For a *local* vault (a `portRegistry` entry) the router reads the API key out of the vault's own `data.json` before any tool runs. Move that key into the config and the dependency disappears — no tool in the tested set needs vault disk any more.
+
+`scripts/gen-remote-config.mjs` performs that move:
+
+```bash
+node scripts/gen-remote-config.mjs --vault roland --vault tribu
+```
+
+| Flag | What it does |
+|---|---|
+| `--vault <slug>` | Vault to export. **Repeatable, and required** — there is no implicit "whole fleet". |
+| `--all` | The whole fleet, after announcing how many keys that is. |
+| `--host <host>` | Default `127.0.0.1` — the remote end of the SSH tunnel. A non-loopback, non-WireGuard host is flagged, because the global `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` guard would refuse to start. |
+| `--format json\|env` | A config file, or `VAULT_<NAME>=<json>` lines. |
+| `--out <file>` | Write cleartext; the file is **created** at mode `0600`. |
+| `--print-secrets` | Allow cleartext on stdout — for piping into a secret store. |
+
+**The defaults are cautious on purpose, because a config carrying N keys grants read *and write* access to N vaults to every process that can read it.** On a machine that also runs code agents, that is a real privilege escalation. So: output is **redacted by default** (same shape, `<apiKey>` placeholders — reviewable, pasteable, committable); the selection is explicit; `--out` **refuses** to write inside the repository, inside any vault, or over a file with looser permissions; and no key is ever logged, truncated or quoted in an error message.
+
+Keys are read **from disk**, never through the plugin's API — that same `data.json` also holds the vault's TLS private key, and only the one field ever leaves the file.
+
 ### Port bookkeeping — two ports per vault (v0.77.0)
 
 Every vault runs **two** servers: the TLS REST API on `https`, and a plaintext HTTP server on `http` (its `insecurePort`) — the one the bridge's `/open/<path>` route answers on, and therefore the one every click-to-open link in your notes is pinned to.
@@ -1018,7 +1041,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.77.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.78.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1652,6 +1675,29 @@ Le router lit la config existante maintenue par [`scripts/setup-vault.mjs`](./sc
 ```
 
 Voir [`examples/config.example.json`](./examples/config.example.json) pour un exemple complet commenté, [`docs/remote-vaults.md`](./docs/remote-vaults.md) pour le guide complet d'ajout d'un vault distant, et [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) pour la recette d'exposition d'un vault via Cloudflare Tunnel avec auth optionnelle Cloudflare Access (service tokens supportés via le champ `extraHeaders`).
+
+#### Faire tourner le routeur sans les disques des vaults (v0.78.0)
+
+Un routeur qui ne parle que REST — machine de dev, conteneur, derrière un hub — ne peut pas lire les fichiers des vaults. Mesuré le 2026-08-31 sur les 50 outils, en processus isolés : **la seule dépendance universelle au disque est la résolution de la clé d'API.** Pour un vault *local* (une entrée de `portRegistry`), le routeur va chercher la clé dans le `data.json` du vault avant que le moindre outil ne s'exécute. Déplacez cette clé dans la config et la dépendance disparaît — plus aucun outil de l'échantillon éprouvé n'a besoin du disque.
+
+`scripts/gen-remote-config.mjs` fait ce déplacement :
+
+```bash
+node scripts/gen-remote-config.mjs --vault roland --vault tribu
+```
+
+| Drapeau | Effet |
+|---|---|
+| `--vault <slug>` | Vault à exporter. **Répétable, et obligatoire** — il n'y a pas de « tout le parc » implicite. |
+| `--all` | Tout le parc, après avoir annoncé combien de clés cela représente. |
+| `--host <hôte>` | Défaut `127.0.0.1` — le bout du tunnel SSH côté distant. Un hôte ni loopback ni WireGuard est signalé : la garde globale `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` refuserait de démarrer. |
+| `--format json\|env` | Un fichier de config, ou des lignes `VAULT_<NOM>=<json>`. |
+| `--out <fichier>` | Écrire en clair ; le fichier est **créé** en `0600`. |
+| `--print-secrets` | Autoriser le clair sur stdout — pour tuyauter vers un magasin de secrets. |
+
+**Les défauts sont prudents à dessein : une config portant N clés donne à tout processus capable de la lire un accès complet en lecture *et en écriture* aux N vaults.** Sur une machine où tournent aussi des agents de code, c'est une élévation de privilège réelle. Donc : sortie **rédigée par défaut** (même forme, marque-place `<apiKey>` — relisible, collable, versionnable) ; sélection explicite ; `--out` **refuse** d'écrire dans le dépôt, dans un vault, ou par-dessus un fichier aux permissions plus larges ; et aucune clé n'est jamais journalisée, tronquée ni citée dans un message d'erreur.
+
+Les clés sont lues **sur le disque**, jamais via l'API du plugin — ce même `data.json` contient aussi la clé privée TLS du vault, et seul le champ nécessaire quitte le fichier.
 
 #### Comptabilité des ports — deux ports par vault (v0.77.0)
 

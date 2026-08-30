@@ -4,6 +4,91 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.78.0] — 2026-08-31 — the router can run without the vaults' disks: the key moves into the config
+
+**What the measurement found first.** All 50 tools were run in isolated
+processes against a throwaway vault, with `node --permission` denying vault
+disk at the binding layer — below JS, so injected/named/namespace `fs` imports
+cannot escape it. Result: **the only universal disk dependency is credential
+resolution.** For a *local* vault, `loadRegistry()` reads the API key out of the
+vault's own `data.json` before any handler runs — one bootstrap prerequisite,
+paid by all 50 tools, not fifty independent dependencies. With the key in the
+config instead, **no tool in the tested set requires vault disk**. That makes
+moving the keys the change that unblocks the HTTP-only profile, rather than one
+item among several.
+
+### Added — `scripts/gen-remote-config.mjs` (+ `npm run gen:remote-config`)
+
+Generates the configuration of a router that has no vault disks: each selected
+vault becomes a `remoteVaults` entry (or a `VAULT_<NAME>=<json>` line) with its
+key in the config. `portRegistry` is emitted **empty** — an entry there is
+precisely what would send the router back to the vault's `data.json`.
+
+- `--vault <slug>` (repeatable) or `--all`; `--host` (default `127.0.0.1`, the
+  remote end of the SSH tunnel); `--format json|env`; `--out`;
+  `--print-secrets`; `--default-vault`; `--config`.
+- Slug selection is case-insensitive (the fleet really does contain `DEDIBOX`),
+  and a genuine case-only ambiguity is refused rather than silently resolved.
+
+### Security posture — the defaults assume a hostile reading
+
+A config carrying N keys grants read **and write** access to N vaults to every
+process that can read it; on a host that also runs code agents that is a real
+privilege escalation. So:
+
+- **Output is redacted by default** — same shape, `<apiKey>` placeholders — so a
+  command run out of curiosity leaks nothing, and the structure can be reviewed
+  and committed.
+- **No implicit whole-fleet export**: the selection is explicit, and `--all`
+  announces the number of keys before acting.
+- `--out` **creates** the file at mode `0600` (created, not chmod'd after — the
+  gap between the two is readable), and **refuses** to write inside the
+  repository, inside any vault, or over a file with looser permissions.
+- **No key is ever logged, truncated, or quoted in an error message.** Eight
+  characters are enough to correlate a key across a transcript.
+- Keys are read **from disk**, never through the plugin API: the same
+  `data.json` holds the vault's TLS private key, and only the one field leaves.
+
+### Fixed before publication — four defects found by adversarial review
+
+The release was **held** on the first of these. All four are in code written for
+this very release, and all four are proven by execution rather than argued.
+
+- **API-key exfiltration through a host-prefix bypass.** The WireGuard guard
+  tested `host.startsWith('10.8.0.')`. A value of the form
+  `10.8.0.1<at>attacker.example` passes that test — and interpolated into
+  `https://<host>:<port>` the `10.8.0.1` becomes **userinfo**, so the host the
+  client actually contacts is `attacker.example` and **the API key goes there**.
+  Measured: `new URL(...).hostname === 'attacker.example'`. A string prefix is
+  not a network-membership test. Now: a bare-host check (no userinfo, no URL
+  delimiters, no glued port) refuses such a value **before interpolation**, and
+  membership is a real 10.8.0.0/24 test over a parsed literal IPv4. An honest
+  but non-WireGuard hostname is still buildable — it hijacks nothing — and is
+  flagged by the guard, because refusing it would forbid every legitimate
+  non-loopback host.
+- **Literal IPv6 produced an invalid URL** (`https://::1:27126`). Now bracketed.
+- **Silent environment-key collision**: `a-b` and `a b` both normalise to
+  `VAULT_A_B`, so one vault would disappear without a word. `buildEnvLines` now
+  refuses and names both offenders. The JSON format is unaffected.
+- **Redaction that only held for well-shaped keys**: the regex stopped at the
+  first quote, leaving a suffix in the clear for any key containing an escaped
+  quote. It now parses, replaces and re-serialises — and a line it cannot parse
+  is silenced entirely rather than half-redacted.
+
+### Tests
+
+- `tests/remote-config.test.mjs` (32) — including a **round-trip**: the emitted
+  `VAULT_*` lines are fed back through the router's own `parseEnvVaults` with
+  zero warnings, and a generated config is loaded by `loadRegistry` yielding a
+  `remote`-type vault and **no local vault at all**. That assertion is what
+  stops the generator drifting from the contract it targets — the same class of
+  defect as the v0.76.0 seal catch-22.
+- Refusal cases proven end-to-end: no selection, unknown slug, writing into the
+  repo, writing inside a vault, a vault with no readable key (excluded, never
+  emitted mute).
+
+For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
+
 ## [0.77.0] — 2026-08-30 — the allocator was blind to half the ports, and the reaper was faster than a coffee break
 
 Two defects opened on 2026-08-29, shipped together because they share a
