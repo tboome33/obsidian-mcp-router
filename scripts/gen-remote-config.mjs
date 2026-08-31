@@ -190,7 +190,20 @@ for (const [vaultPath, raw] of Object.entries(cfg.portRegistry || {})) {
   // le data.json n'écrit pas son port. Dès qu'une PAIRE est exportée, les deux
   // ports viennent du disque ou le vault est exclu : c'est la comparaison entre
   // deux sources qu'il faut empêcher, pas l'usage du registre en soi.
-  fleet.push({ name, vaultPath, port: normalizePortEntry(raw).https });
+  //
+  // `obsidianName` est le NOM DU DOSSIER, et surtout pas `name`. Le pont compare
+  // à `app.vault.getName()`, or les deux divergent sur ce parc : mesuré, 4 vaults
+  // sur 23, dont un dossier `RELEVES ET JOURNAL T1` nommé `selarl cabinet
+  // dentaire galzy r.` en config. Se servir du nom de config pour l'auto-test
+  // produirait un 404 sur ces vaults-là — et ferait conclure « mauvais pont »
+  // sur des installations parfaitement saines.
+  const isWin = /^[A-Za-z]:[\\/]/.test(vaultPath) || /^\\\\/.test(vaultPath);
+  fleet.push({
+    name,
+    vaultPath,
+    obsidianName: (isWin ? path.win32 : path.posix).basename(vaultPath),
+    port: normalizePortEntry(raw).https,
+  });
 }
 if (!fleet.length) err(`Aucun vault dans le portRegistry de ${configPath}.`);
 
@@ -263,6 +276,8 @@ for (const v of wanted) {
     port: httpsPort,
     apiKey,
     ...(clickPort !== null ? { insecurePort: clickPort } : {}),
+    // Porté pour l'auto-test seulement — jamais écrit dans la config générée.
+    _obsidianName: v.obsidianName,
   });
 }
 if (noHttpsPort.length) {
@@ -298,7 +313,7 @@ if (withPorts.length) {
   info("Si un lecteur clique AILLEURS que sur la machine qui fait tourner Obsidian, le CHEMIN de la note et son titre de section partent vers ce qui écoute sur son propre loopback. Le contenu, lui, ne sort jamais.");
 
   // ---------------------------------------------------------------------------
-  // L'AUTO-TEST — comment vérifier une hypothèse que le routeur ne peut pas mesurer
+  // L'AUTO-TEST — vérifier une hypothèse que le routeur ne peut pas mesurer
   // ---------------------------------------------------------------------------
   //
   // Déclarer `insecurePort` est une AFFIRMATION de l'opérateur : « mes lecteurs
@@ -308,37 +323,35 @@ if (withPorts.length) {
   // impasse, et une affirmation qu'on ne peut ni prouver ni infirmer est le
   // genre de chose qui se révèle fausse le jour où ça compte.
   //
-  // Mais elle est vérifiable AILLEURS, gratuitement, grâce à une propriété que
-  // le pont a déjà. Sa route `/open` applique deux gardes, dans cet ordre :
-  // d'abord l'IP source (loopback, sinon `loopback only`), ensuite le chemin
-  // (vide ou remontant, sinon `path traversal refused`). Donc une requête avec
-  // un chemin VIDE passe la première et meurt sur la seconde.
+  // Elle est vérifiable AILLEURS, et le pont porte déjà exactement l'outil :
   //
-  // `path traversal refused` est par conséquent une PREUVE D'IDENTITÉ : seul le
-  // pont répond cela, et il ne le dit qu'à un appelant en loopback. Ce message
-  // qui a l'air d'une erreur est le seul témoin fiable qu'on puisse obtenir. Un
-  // écouteur intrus répondrait autre chose, ou rien.
+  //   GET /ping?v=<nom du vault>  → 200 {"pong":true} si le nom correspond
+  //                               → 404, CORPS VIDE, sinon
   //
-  // Un port par ligne, dédupliqué : deux vaults sur le même port n'ont qu'une
-  // seule machine à prouver.
-  const testPorts = [...new Set(withPorts.map((v) => v.insecurePort))].sort((a, b) => a - b);
+  // gardé en loopback comme `/open`. Deux propriétés en une requête : que le
+  // pont répond depuis cette machine, ET que c'est celui de CE vault.
+  //
+  // POURQUOI PAS `/open/` AVEC UN CHEMIN VIDE, qui était la première version.
+  // Ce test-là s'appuyait sur `path traversal refused` — il prouvait qu'UN pont
+  // écoute, jamais lequel. Or ce parc a mesuré neuf collisions de ports
+  // (v0.77.0) : un pont voisin renvoyait le même message puis ouvrait les notes
+  // d'un AUTRE vault. `/ping?v=` tranche ce que l'ancien test devait admettre
+  // ne pas savoir, et il ne coûte rien : la route existe déjà.
+  //
+  // LE NOM ENVOYÉ EST CELUI DU DOSSIER, pas `v.name`. Le pont compare à
+  // `app.vault.getName()` ; sur ce parc les deux divergent pour 4 vaults sur 23.
+  // Envoyer le nom de config ferait répondre 404 à des vaults parfaitement sains
+  // et conclure « mauvais pont ». Mesuré avant d'écrire cette ligne.
   console.error('');
-  // « la machine où vous lisez » était imprécis (revue) : ce qui compte est la
-  // machine dont le NAVIGATEUR déréférence l'URL. Bureau à distance, navigateur
-  // délégué, téléphone : ce n'est pas toujours celle où l'œil se trouve.
   info('VÉRIFIEZ CETTE HYPOTHÈSE UNE FOIS — depuis le NAVIGATEUR qui ouvrira réellement vos liens');
   info('(pas forcément la machine où vous lisez : bureau à distance, mobile…) :');
-  for (const p of testPorts) console.error(`      http://127.0.0.1:${p}/open/`);
-  info('  → « path traversal refused » = un pont a répondu ; vos liens l\'atteindront.');
-  info('  → une page inconnue, une erreur de connexion, ou rien = NON. Relancez sans --with-click-to-open.');
-  // CE QUE CE TEST NE PROUVE PAS, et il faut le dire : il établit qu'UN pont
-  // écoute sur ce port depuis cette machine — pas que c'est celui de CE vault.
-  // Ce dépôt a mesuré neuf collisions de ports sur un parc de 27 vaults
-  // (v0.77.0) : la nuance n'est pas théorique. Un pont voisin répondrait le même
-  // message et ouvrirait ensuite les notes d'un AUTRE vault.
-  info('  ⚠ Ce test prouve qu\'un pont écoute là, pas que c\'est celui de ce vault.');
-  info('    Si votre parc a connu des collisions de ports (`setup-vault.mjs --check-ports`),');
-  info('    ouvrez ensuite UN vrai lien de note et vérifiez que c\'est la bonne qui s\'ouvre.');
+  for (const v of withPorts) {
+    console.error(`      http://127.0.0.1:${v.insecurePort}/ping?v=${encodeURIComponent(v._obsidianName)}   (${v.name})`);
+  }
+  info('  → 200 {"pong":true} = le pont de CE vault répond depuis cette machine. Vos liens marcheront.');
+  info('  → 404 = un pont répond sur ce port, mais c\'est celui d\'un AUTRE vault (collision :');
+  info('         `node scripts/setup-vault.mjs --check-ports`). N\'activez pas le drapeau ainsi.');
+  info('  → rien, une erreur, une page inconnue = ce n\'est pas un pont. NON plus.');
 }
 
 let built;

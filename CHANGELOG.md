@@ -4,6 +4,53 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.81.0] — 2026-08-31 — the self-test now proves WHICH vault answered
+
+v0.80.0 gave the operator a one-click way to check the assumption the router
+cannot measure: "my readers click from the machine running Obsidian". It used
+`/open/` with an empty path, relying on `path traversal refused` — and it had to
+admit, in its own output, that this proves *a* bridge is listening, never
+*which*. On a fleet with nine measured port collisions (v0.77.0) that gap is not
+theoretical: a neighbouring vault's bridge answers the same message and then
+opens the wrong vault's notes.
+
+### Changed — the control link targets `/ping?v=<vault>`
+
+The bridge already serves it, loopback-guarded like `/open`: **200 `{"pong":true}`
+when the name matches, 404 with an empty body when it does not** (it never echoes
+the name). One request, both questions: the bridge answers from this machine,
+**and it is this vault's bridge**. The 404 becomes an actionable outcome — "a
+bridge answered, but a different vault's" — pointing at `--check-ports`.
+
+`--with-click-to-open` now prints one link per exported vault rather than one per
+port, since the check is per-vault.
+
+**The name sent is the vault's FOLDER name, not the router's config name**, and
+that was measured before the line was written: the bridge compares against
+`app.vault.getName()`, and on this fleet **4 vaults of 23 differ** — one folder
+named `RELEVES ET JOURNAL T1` is called `selarl cabinet dentaire galzy r.` in the
+config. Sending the config name would have returned 404 for 17% of the fleet and
+led the operator to conclude "wrong bridge" about healthy vaults.
+
+### Not done, and recorded rather than forgotten
+
+The remaining gap — the link carries the note's path in clear, so a reader
+clicking where something else listens hands it that path — is **deliberately not
+closed here**. On this deployment the operator and the reader are the same person
+on the same machine, the flag is off by default, and the self-test now closes the
+collision case at setup time. An opaque handle would cost readable links every
+day (seeing which note a link points at is a feature this fleet uses, and a repo
+hook mandates their use), require a bridge route, and leave two link formats
+forever, since every link already written stays path-based.
+
+It flips where the reader is *not* the operator — the KIVES edition, whose MCP
+server runs on MCPHub. The accepted `deux-serveurs-un-coeur` decision puts
+click-to-open explicitly in the core **shared** by both editions, so the
+constraint arrives there by inheritance. It is now an item in the Kiviri unified
+roadmap, Phase 1, to be settled BEFORE that click-to-open is implemented — the
+only moment the choice is free, since the public edition's format is already
+frozen into notes.
+
 ## [0.80.0] — 2026-08-31 — closing three gaps v0.79.0 had only named
 
 v0.79.0 shipped with three limits written down honestly and left open. Naming a

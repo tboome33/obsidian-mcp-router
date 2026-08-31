@@ -460,25 +460,57 @@ describe('CLI — les garde-fous', () => {
   // `path traversal refused` sur un chemin vide — un message que SEUL le pont
   // émet, et seulement à un appelant en loopback. Vérifié par exécution contre
   // le pont vivant le 2026-08-31 : HTTP 403, corps exactement ce texte.
-  test('--with-click-to-open imprime un lien de contrôle par port, dédupliqué', () => {
+  // L'AUTO-TEST vise `/ping?v=<nom>`, pas `/open/`.
+  //
+  // La première version s'appuyait sur `path traversal refused` — elle prouvait
+  // qu'UN pont écoute, jamais lequel, et devait l'admettre en toutes lettres.
+  // Or ce parc a mesuré neuf collisions de ports : un pont voisin renvoie le
+  // même message puis ouvre les notes d'un AUTRE vault. La route `/ping?v=`
+  // existait déjà côté pont et tranche les deux questions d'un coup.
+  test('--with-click-to-open imprime un lien de contrôle qui PROUVE le vault', () => {
     const { dir, vault, cfg } = makeFleet();
     try {
       writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
       const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
       assert.equal(r.status, 0, r.stderr);
-      assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27136\/open\/\s/, 'le lien de contrôle vise le port EXPORTÉ');
-      assert.match(r.stderr, /path traversal refused/, 'la réponse attendue doit être nommée, sinon le test est inutilisable');
+      assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27136\/ping\?v=/, 'le lien vise /ping sur le port EXPORTÉ');
+      assert.match(r.stderr, /200 \{"pong":true\}/, 'la réponse attendue doit être nommée, sinon le test est inutilisable');
+      assert.match(r.stderr, /404 = un pont répond sur ce port, mais c'est celui d'un AUTRE vault/);
+      assert.ok(!/path traversal refused/.test(r.stderr), 'l\'ancien test, qui ne prouvait pas le vault, est retiré');
       // La consigne vise le NAVIGATEUR qui déréférence l'URL, pas « la machine
-      // où vous lisez » — bureau à distance et mobile dissocient les deux
-      // (précision de revue).
+      // où vous lisez » — bureau à distance et mobile dissocient les deux.
       assert.match(r.stderr, /depuis le NAVIGATEUR qui ouvrira réellement vos liens/, 'dire OÙ cliquer est le point entier');
-      // Et la limite du test doit être dite : il prouve la présence d'UN pont,
-      // pas l'identité du vault — neuf collisions de ports mesurées en v0.77.0.
-      assert.match(r.stderr, /pas que c'est celui de ce vault/);
-      // Un lien par port, pas par vault : deux vaults sur le même port n'ont
-      // qu'une seule machine à prouver.
-      const liens = (r.stderr.match(/http:\/\/127\.0\.0\.1:\d+\/open\/(?!\S)/g) || []);
-      assert.equal(liens.length, 1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // LE NOM ENVOYÉ EST CELUI DU DOSSIER, pas celui de la config. Le pont compare
+  // à `app.vault.getName()`. Mesuré sur le parc réel : 4 vaults sur 23
+  // divergent, dont un dossier `RELEVES ET JOURNAL T1` nommé `selarl cabinet
+  // dentaire galzy r.` en config. Envoyer le nom de config ferait répondre 404 à
+  // des vaults sains — un faux négatif sur 17 % du parc.
+  test('le lien de contrôle porte le nom du DOSSIER, pas celui de la config', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      // `makeFleet` nomme le dossier `Roland` et la config `roland` : la casse
+      // suffit à faire diverger la comparaison stricte du pont.
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /\/ping\?v=Roland(\s|$)/m, `le nom du dossier doit être envoyé tel quel : ${r.stderr}`);
+      assert.ok(!/\/ping\?v=roland(\s|$)/m.test(r.stderr), 'le nom de config ne doit PAS être envoyé');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('le nom du dossier ne fuit pas dans la config générée', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.ok(!r.stdout.includes('_obsidianName'), 'champ interne, jamais exporté');
+      assert.deepEqual(
+        Object.keys(JSON.parse(r.stdout).remoteVaults[0]).sort(),
+        ['apiKey', 'baseUrl', 'insecurePort', 'name', 'tlsInsecure'],
+      );
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
