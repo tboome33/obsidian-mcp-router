@@ -56,7 +56,28 @@ Copy the value from that vault's `data.json` (`insecurePort`, and only if `enabl
 
 **Declaring `insecurePort` is your assertion that the loopback your readers resolve is the host running that vault's Obsidian.** The shape where that holds is a single workstation running Obsidian, with the router or the remote session reaching it through a tunnel anchored on that same workstation. Omit it on a multi-machine or shared deployment and no link is ever emitted.
 
-**If the assertion is wrong**, the click reaches the reader's own loopback and finds nothing — or finds an *unrelated local service*, and hands it the note's path and heading. `/open` never returns file content, so what the note **says** is never disclosed. But a path can be `Patients/J. Dupont/diagnostic.md`, and that is a real disclosure to whatever owns that port on that machine. Weigh it before turning the flag on for a vault whose filenames are themselves sensitive.
+**If the assertion is wrong**, the click reaches the reader's own loopback and finds nothing — or finds an *unrelated local service*, and hands it the note's path and heading. `/open` never returns file content, so what the note **says** is never disclosed. But a path can name a person or a condition, and that is a real disclosure to whatever owns that port on that machine. Weigh it before turning the flag on for a vault whose filenames are themselves sensitive.
+
+### Verify the assertion in one click
+
+The router cannot check this for you — it observes its own hop to the REST API, never the browser that will do the clicking. But **you** can check it, from the machine that matters, using a property the bridge already has.
+
+`/open` applies two guards in order: the source IP must be loopback (else `loopback only`), then the path must be non-empty and non-traversing (else `path traversal refused`). So a request with an **empty** path passes the first and dies on the second:
+
+```
+http://127.0.0.1:27163/open/
+```
+
+Open it **from the browser that will actually dereference your links** — not necessarily the machine you are looking at, if you read through a remote desktop or on a phone.
+
+| What you see | What it means |
+|---|---|
+| **403 `path traversal refused`** | ✅ a bridge answered — your links will reach it from here |
+| an unfamiliar page, an error, or nothing | ❌ not the bridge. Do not use the flag for this vault |
+
+That error message is the identity proof available to you: **only the bridge says it, and only to a loopback caller.** `gen-remote-config.mjs --with-click-to-open` prints one such link per exported port. Open it once, on the machine where you read your chat responses, and the assumption stops being an assumption.
+
+**What it does not prove.** It establishes that *a* bridge is listening on that port from that machine — not that it is *this vault's* bridge. That distinction is not theoretical here: this project measured nine port collisions on a 27-vault fleet (v0.77.0), and a neighbouring vault's bridge would answer the same message and then open the wrong vault's notes. If your fleet has ever collided (`setup-vault.mjs --check-ports`), follow up by opening one real note link and checking that the note you expected is the one that opens.
 
 The port number itself is not a secret: it is not an authentication credential, writing it into a config opens or binds nothing, and it is only *useful* to a process already on the Obsidian host's loopback — which can find it by scanning a couple of hundred ports in milliseconds. The same file already carries that vault's bearer key, which is strictly more powerful. The risk above is about the *reader's* machine, not about the port.
 

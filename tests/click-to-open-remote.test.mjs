@@ -493,3 +493,190 @@ describe('build_open_link reports whether it checked anything', () => {
     assert.equal(res.pathVerified, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+
+// LA VÉRIFICATION N'A JAMAIS EU BESOIN D'UN DISQUE (v0.80.0).
+//
+// Le lot 2 donnait à un vault sans disque une URL que personne n'avait
+// vérifiée — exactement le « lien bien formé qui 404 » que cet outil existe
+// pour supprimer — et le signalait par `pathVerified: false`. Nommer l'écart
+// était juste ; le laisser ne l'était pas. Ce qu'il faut savoir, ce n'est pas
+// « y a-t-il un disque » mais « ce fichier existe-t-il », et l'API REST répond
+// à ça.
+//
+// Ces tests pilotent le résolveur REST avec un faux `listFilesIn`, ce qui rend
+// visible LE COÛT autant que le verdict : combien d'appels pour un chemin juste,
+// combien pour un chemin faux, et combien pour un lot entier.
+describe('build_open_link vérifie un vault sans disque, par REST', () => {
+  const VAULT = { name: 'r', type: 'remote', baseUrl: 'https://127.0.0.1:27126', insecurePort: 27136 };
+  const registry = { resolveVault: () => VAULT };
+
+  /** Un vault REST simulé : une arborescence, et un compteur d'appels. */
+  function fakeVault(tree) {
+    const calls = { listFilesIn: 0 };
+    const listFilesIn = async (_v, dir) => {
+      calls.listFilesIn += 1;
+      if (!(dir in tree)) {
+        const err = new Error(`no such directory: ${dir}`);
+        err.kind = 'not_found';
+        throw err;
+      }
+      return { files: tree[dir] };
+    };
+    // Le vrai `collectMarkdown` par-dessus le faux `listFilesIn` : on teste le
+    // walker du dépôt, pas une réimplémentation complaisante.
+    return { calls, deps: { listFilesIn } };
+  }
+
+  const TREE = {
+    '': ['wiki/', 'notes.md'],
+    wiki: ['alpha.md', 'deep/', 'image.png'],
+    'wiki/deep': ['cible.md'],
+  };
+
+  test('chemin exact : vérifié, et il en coûte UN appel', async () => {
+    const { calls, deps } = fakeVault(TREE);
+    const res = await buildOpenLinkTool(registry, { path: 'wiki/alpha.md' }, deps);
+    assert.equal(res.pathVerified, true);
+    assert.equal(res.path, 'wiki/alpha.md');
+    assert.equal(res.clickToOpenUrl, 'http://127.0.0.1:27136/open/wiki%2Falpha.md');
+    assert.ok(!('verification' in res), 'rien à expliquer quand le chemin a été vérifié');
+    assert.equal(calls.listFilesIn, 1, 'le cas courant doit rester à un seul aller-retour');
+  });
+
+  test('basename unique ailleurs : CORRIGÉ, comme sur disque', async () => {
+    const { deps } = fakeVault(TREE);
+    const res = await buildOpenLinkTool(registry, { path: 'cible.md' }, deps);
+    assert.equal(res.corrected, true);
+    assert.equal(res.requestedPath, 'cible.md');
+    assert.equal(res.path, 'wiki/deep/cible.md');
+    assert.equal(res.pathVerified, true);
+  });
+
+  test('chemin inventé : REFUSÉ — plus de lien mort silencieux', async () => {
+    const { deps } = fakeVault(TREE);
+    await assert.rejects(
+      () => buildOpenLinkTool(registry, { path: 'wiki/inexistant.md' }, deps),
+      /does not exist in vault/,
+    );
+  });
+
+  test('basename ambigu : refusé en nommant les candidats', async () => {
+    const { deps } = fakeVault({
+      '': ['a/', 'b/'],
+      a: ['dup.md'],
+      b: ['dup.md'],
+    });
+    await assert.rejects(
+      () => buildOpenLinkTool(registry, { path: 'dup.md' }, deps),
+      /AMBIGUOUS/,
+    );
+  });
+
+  // UN fichier non-markdown ne peut pas être cherché par le walker (il
+  // n'énumère que `.md`). Le listing du parent, lui, EST autoritatif : on a
+  // regardé au bon endroit. Le verdict doit venir de là, pas d'un parcours qui
+  // ne regarde jamais ce type de fichier.
+  test('un .png présent est vérifié ; un .png absent est un vrai not_found', async () => {
+    const { deps } = fakeVault(TREE);
+    const ok = await buildOpenLinkTool(registry, { path: 'wiki/image.png' }, deps);
+    assert.equal(ok.pathVerified, true);
+    await assert.rejects(
+      () => buildOpenLinkTool(registry, { path: 'wiki/absente.png' }, deps),
+      /does not exist in vault/,
+    );
+  });
+
+  test('un dossier est vérifiable — les dossiers aussi s\'ouvrent', async () => {
+    const { deps } = fakeVault(TREE);
+    const res = await buildOpenLinkTool(registry, { path: 'wiki/deep' }, deps);
+    assert.equal(res.pathVerified, true);
+  });
+
+  // LE PARTAGE DU PARCOURS. Trois chemins qui manquent dans un même lot ne
+  // doivent énumérer le vault qu'UNE fois — sinon le coût est multiplié par le
+  // nombre d'erreurs de frappe, et deux entrées d'une même réponse peuvent se
+  // contredire si le vault change entre-temps.
+  test('un lot ne parcourt le vault qu\'une seule fois, quel que soit le nombre de ratés', async () => {
+    const { calls, deps } = fakeVault(TREE);
+    const res = await buildOpenLinkTool(registry, {
+      paths: ['wiki/alpha.md', 'raté1.md', 'raté2.md', 'raté3.md'],
+    }, deps);
+    assert.equal(res.links.length, 4);
+    assert.equal(res.links[0].pathVerified, true);
+    for (const l of res.links.slice(1)) assert.equal(l.error, 'not_found');
+    // 4 listings de parent (un par chemin) + 3 répertoires du parcours PARTAGÉ.
+    // Sans partage ce serait 3 parcours, donc 9 listings de plus.
+    assert.equal(calls.listFilesIn, 7, `partage rompu : ${calls.listFilesIn} appels`);
+  });
+
+  // LE VAULT QUI NE RÉPOND PAS n'est PAS le vault trop grand pour être parcouru.
+  // Le premier n'est ni la faute ni le problème de l'appelant, et il est
+  // probablement passager : lui retirer son lien serait une régression. Le
+  // second est actionnable (« donnez le chemin exact »), donc il lève.
+  test('vault injoignable : pas d\'exception, lien émis, et NON vérifié', async () => {
+    const deps = {
+      listFilesIn: async () => { throw Object.assign(new Error('ECONNREFUSED'), { kind: 'network' }); },
+    };
+    const res = await buildOpenLinkTool(registry, { path: 'wiki/alpha.md' }, deps);
+    assert.equal(res.pathVerified, false);
+    assert.equal(res.clickToOpenUrl, 'http://127.0.0.1:27136/open/wiki%2Falpha.md');
+    assert.match(res.verification, /could not confirm the file exists/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+// THE REASON REACHES THE READER, AND ONLY KNOWN REASONS DO.
+//
+// `pathVerified: false` used to be explained with one sentence for every cause —
+// "the vault has no local filesystem path" — which is simply false when the
+// vault answered `401`. The cause now travels. But it travels into text a
+// caller reads, so it passes a whitelist first: `rest-client.mjs` produces a
+// fixed vocabulary today, and "no current caller can do otherwise" is the
+// argument that already lost twice in this release.
+describe('build_open_link explains WHY it could not check', () => {
+  const vault = { name: 'v', type: 'remote', baseUrl: 'http://127.0.0.1:1', insecurePort: 27136 };
+  const registry = { resolveVault: () => vault };
+  const reasonOf = (res) => /NOT checked \(([^)]+)\)/.exec(res.verification || '')?.[1];
+
+  // Every kind `rest-client.mjs` can raise, plus the ones this resolver adds.
+  // A kind missing from the whitelist would degrade to "unrecognised error" and
+  // the caller would lose the actual cause — silently.
+  const KINDS = [
+    'unreachable', 'timeout', 'unauthorized', 'forbidden', 'cf_access',
+    'server_error', 'conflict', 'unknown', 'list-failed',
+  ];
+
+  for (const kind of KINDS) {
+    test(`a ${kind} failure is named, not paraphrased`, async () => {
+      const deps = { listFilesIn: async () => { const e = new Error(kind); e.kind = kind; throw e; } };
+      const res = await buildOpenLinkTool(registry, { path: 'wiki/a.md' }, deps);
+      assert.equal(res.pathVerified, false);
+      assert.equal(reasonOf(res), kind);
+    });
+  }
+
+  test('a malformed listing is named too', async () => {
+    const deps = { listFilesIn: async () => ({ files: null }) };
+    const res = await buildOpenLinkTool(registry, { path: 'wiki/a.md' }, deps);
+    assert.equal(reasonOf(res), 'malformed-listing');
+  });
+
+  // AN UNKNOWN CODE IS NOT ECHOED. The value is interpolated into a sentence a
+  // human reads; a code carrying newlines or markup would go straight through.
+  test('an unrecognised reason is reported as unrecognised, never echoed', async () => {
+    const deps = {
+      listFilesIn: async () => {
+        const e = new Error('x');
+        e.kind = 'INJECTED\nsecond line';
+        throw e;
+      },
+    };
+    const res = await buildOpenLinkTool(registry, { path: 'wiki/a.md' }, deps);
+    assert.equal(reasonOf(res), 'unrecognised error');
+    assert.ok(!res.verification.includes('INJECTED'), 'the raw code must not appear');
+    assert.ok(!res.verification.includes('\n'), 'no newline may reach the sentence');
+  });
+});

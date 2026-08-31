@@ -4,6 +4,235 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.80.0] — 2026-08-31 — closing three gaps v0.79.0 had only named
+
+v0.79.0 shipped with three limits written down honestly and left open. Naming a
+gap is better than hiding it; it is not better than closing it. Two are now
+closed and the third is answered with a different instrument.
+
+### Added — a one-click proof for the assumption the router cannot check
+
+`gen-remote-config.mjs --with-click-to-open` now prints a self-test link per
+exported port.
+
+The router cannot know where its reader sits — it observes its own hop to the
+REST API, never the browser that will do the clicking — so `insecurePort` is an
+operator *assertion*. An assertion nobody can test is the kind that turns out
+wrong on the day it matters. But the bridge already carries its own proof of
+identity: `/open` checks the source IP first and the path second, so an **empty**
+path passes the first guard and dies on the second with `path traversal
+refused`. Only the bridge says that, and only to a loopback caller.
+
+So the operator opens `http://127.0.0.1:<port>/open/` once, **on the machine
+where they read their chat**, and the assumption becomes a fact. Verified
+against the live bridge while building it: HTTP 403, body exactly that string.
+
+### Changed — `build_open_link` verifies a path with no disk at all
+
+v0.79.0 gave a diskless vault a URL nobody had checked and reported it as
+`pathVerified: false`. That check never needed a *disk* — it needs to know
+whether a file exists, and the REST API answers that.
+`resolveVaultPathViaRest` now mirrors the same five verdicts over `listFilesIn`,
+so a local vault is still stat-ed (one syscall beats one round trip) and any
+other vault is verified over REST. **`pathVerified: false` now means "this vault
+did not answer", not "this vault is remote".**
+
+Two things worth knowing:
+
+- **Cost.** The exact-path check is ONE directory listing, and that is the
+  overwhelmingly common case. The basename fallback is a bounded REST walk,
+  which is *dearer* than the local `readdir` it mirrors — an earlier estimate of
+  mine claimed a single search call would do, and that was wrong: the Local REST
+  API's search reads note CONTENT, so it would return notes that mention a
+  basename rather than the file that bears it. A batch therefore shares ONE
+  enumeration: measured, four paths with three misses cost 7 listings, not 16.
+- **A vault that does not answer no longer throws.** "The vault answered but
+  could not be fully scanned" (`resolution_incomplete`, actionable — pass the
+  exact path) is now distinct from "nobody answered" (`unverifiable`, transient).
+  Withdrawing a usable link over a closed Obsidian would have been a regression;
+  that is exactly the case `pathVerified` exists to carry.
+
+### Added — the HTTP-only claim is now MEASURED, not read
+
+`tests/no-vault-disk.test.mjs` runs the router in a `node --permission` child
+with the vault's directory denied, against a stub REST server, with the key in
+the config. A denial there is pronounced by Node's C++ binding layer, **below
+JavaScript** — blind to how an import was spelled.
+
+This replaces, rather than supplements, the source-text boundary test in
+`tests/ingest-state.test.mjs`: three successive reviews walked through three
+successive versions of that test (`import * as ns`, an indirect specifier, a
+bare side-effect import), each repair naming a form and missing the next. A
+regex over source text cannot answer a question about a module graph.
+
+Lot 0 built this rig once, by hand, and threw it away — it survived only as
+prose in this file. It is now permanent, and it carries its own calibration:
+
+- **A positive control**: the harness first proves the vault really is out of
+  reach (`ERR_ACCESS_DENIED`). Without it, every other assertion could pass
+  because the flag was mis-spelled.
+- **A negative control**: the same rig, same vault, same stub, with the key
+  declared the OLD way (`portRegistry` instead of `remoteVaults`) comes back
+  **red** — the vault loads but cannot be used. An instrument that never says no
+  is not an instrument.
+- **A liveness check**: the tools must also *succeed*. "No denial" alone cannot
+  distinguish independence from a handler that swallows `ERR_ACCESS_DENIED` and
+  degrades silently. It is a lock, not a journal.
+
+Its limits are written into the file: `--permission` gates neither child
+processes nor native addons, so the twelve conversion tools (a different axis —
+local machine, not vault disk) are deliberately out of scope; and it exercises a
+curated set, not all fifty tools.
+
+### Fixed — what the pre-push review, and probing alongside it, found
+
+The review was run with the numbered claims as input. **Its two blockers were
+both about evidence, not code** — the bench certified things it had not measured:
+
+- **The negative control was confounded.** It declared the vault under
+  `portRegistry` and asserted the read tools fail. They do — but a *local*
+  vault's baseUrl is built `https://`, and this stub speaks plain HTTP, so every
+  call died on `ERR_SSL_WRONG_VERSION_NUMBER` whether the key was readable or
+  not. Proven by running a third profile (same config, vault **allowed**) which
+  failed identically: **the control would have stayed green with the coupling
+  removed.** It now asserts `missingApiKey`, the one observable that isolates
+  the disk, and that third profile is kept permanently as the arbiter. The three
+  differ at exactly one variable.
+- **"The tools must also work" was not implemented.** The harness recorded
+  success whenever a promise resolved, which a handler catching
+  `ERR_ACCESS_DENIED` and returning `{files: []}` satisfies — the denial test
+  and the liveness test would both pass over a tool doing nothing. Every case
+  now carries an oracle checking the result contains what the stub holds, and
+  the writes are asserted against what the stub **received**, which no handler
+  can fake from inside. The oracles caught a real defect on their first run: the
+  stub returned an empty `frontmatter`, so `get_frontmatter` had been "working"
+  while answering nothing.
+
+A third blocker was a claim, not a bug: this entry said the bench "covers ALL
+disk coupling" while the file said "a curated set". Both cannot be true, and a
+new tool reading vault disk would have shipped green. Every handler must now be
+**exercised, exempt with a written reason, or declared REST-only** — adding one
+without classifying it fails. And the bench does **not** replace the
+import-boundary test: an unused import performs no denied access, so it sails
+through this bench while still breaking the module boundary. Two properties, two
+tests, both kept.
+
+Also corrected: a non-404 REST error is no longer called "the vault did not
+answer" — a `401` **is** an answer, and the reason (`unauthorized`, `timeout`,
+`unreachable`, …) now travels into the `verification` message instead of being
+paraphrased; a `200` with a malformed body is a failure rather than an empty
+directory, which had let `not_found` be fabricated from an unreadable response;
+and the "one snapshot per operation" claim is withdrawn — sharing the walk bounds
+the cost and stops the fallback contradicting itself, but exact-path checks are
+still separate listings, so a batch is not consistent.
+
+Probing the resolver while the review ran found two more, by comparing the two
+backends case by case rather than reading either: a bare **non-markdown**
+basename answered `not_found` for a file that exists (the fallback leaned on the
+markdown-only walker), and a folder with a **trailing slash** answered
+`unverifiable`. Both are fixed, and the comparison is now a permanent table in
+`tests/resolve-vault-path.test.mjs`.
+
+**A second pass over those corrections found three more, all of the same kind —
+a name or a check claiming more than it measured:**
+
+- **One oracle was itself a false witness.** `list_vaults` was checked by looking
+  for the vault's NAME, which comes from the config file. Measured with the stub
+  killed: that oracle stayed TRUE while every other one failed — a tautology in
+  the middle of the machinery added to stop tautologies. It now requires
+  `online: true`, which only a real REST ping produces. And a **fourth profile**
+  now points the whole harness at a dead port and requires EVERY oracle to fail,
+  so the oracles are calibrated the way the denial is.
+- **`UNTESTED_BUT_REST_ONLY` asserted a property nothing measured.** Renamed
+  `NOT_EXERCISED_HERE`, with the value of the classification stated exactly: it
+  forces a new tool to be classified, and says nothing about the 21 in it.
+- **The three buckets overlapped.** Exercised tools were also listed as
+  unexercised, which made the classification self-contradictory. A disjointness
+  test now derives the exercised set from the RUN rather than from a second
+  hand-maintained list, and it caught `append_to_file` immediately.
+
+**A third pass found four more**, and one of them was the same defect class
+moved one function down:
+
+- **The fallback walker still coerced a malformed `200` into an empty
+  directory** — the exact rule the exact-path branch had just learned, and from
+  there `not_found` could again be fabricated from a response nobody could read.
+  Both halves now reject it, with the reason attached.
+- **A walk that never got off the ground was reported as a partial scan.** "Pass
+  the exact full path" fixes nothing when the answer was `401`. A walk that read
+  zero listings is now `unverifiable` **with the failure's reason**; one that read
+  some and stumbled later stays `resolution_incomplete`.
+- **The writes' evidence could not name its author.** Four children shared one
+  stub; only one could reach it, by accident of the others' TLS mismatch. The
+  config-key profile now has its **own stub on its own port** — isolation by
+  construction, not by coincidence — and the assertion compares the request
+  BODY, since `bytes > 0` is satisfied by sending `"x"`.
+- **`reason` reached user-facing text unfiltered.** It comes from a fixed
+  vocabulary today, but "no current caller can do that" is the argument that lost
+  twice already in this release. Unknown codes are now reported as unknown.
+
+Two claims were also narrowed to what they support: the three bench profiles do
+**not** differ at one variable — only the two local ones form a controlled pair,
+the remote one being a positive comparator — and backend parity is claimed for
+enumerations that **complete**, since the two walks cap on different quantities
+(files collected vs entries examined) and the REST side can hit its ceiling
+first. That divergence yields the cautious verdict, not a fabricated one.
+
+One review claim was **refuted by measurement**: a bare folder basename was said
+to answer `corrected` on disk and `not_found` over REST. Both answer
+`not_found` — the disk walk also excludes directories from its matches — so the
+REST walker mirrors it deliberately. The case is pinned in the parity table
+rather than left to memory.
+
+**A fourth pass found two more, and both correct a conclusion of mine.**
+
+- **A `404` on the ROOT listing was read as an empty vault.** I had measured
+  that the disk backend answers `not_found` there too and concluded the verdict
+  was proven. That reasoning was wrong: *agreement between two backends is
+  agreement, not proof.* On disk a missing root really is an absent vault; over
+  REST a `404` on `/vault/` is a route that did not answer — a wrong endpoint, a
+  proxy, an API version without that route. It is now `unverifiable`
+  (`root-listing-not-found`), and the divergence from the disk is deliberate and
+  tested: **the filesystem can prove absence, an unanswered route cannot.** A
+  root that *answers* and is empty still yields a proven `not_found`.
+- **Malformed listing MEMBERS were still coerced away.** Validating that `files`
+  is an array left `{files: [null, {...}]}` to be skipped entry by entry,
+  producing an empty enumeration and, from it, a decisive `not_found` — the same
+  defect class as the non-array case, one level finer. A junk member now marks
+  the listing failed while the valid members are still used.
+
+Also: the oracle-calibration profile no longer opens an ephemeral port and closes
+it (a release-and-reuse race in which the calibration could measure a stranger).
+It holds the port and destroys every connection, which is deterministic and is
+what that profile actually needs — "no usable response", not "nothing listening".
+
+The self-test's own limit is now stated where it is printed: it proves **a**
+bridge is listening on that port, not that it is *this vault's* bridge — this
+project measured nine port collisions on a 27-vault fleet — and the machine that
+matters is the one whose browser dereferences the URL, which a remote desktop or
+a phone can separate from the one you are reading on.
+
+### Compatibility
+
+One externally visible change beyond the additions: a reachable vault whose scan
+cannot complete (`resolution_incomplete`) now makes single-mode `build_open_link`
+**throw**, where v0.79.0 returned a URL with `pathVerified: false`; batch entries
+become error entries. An unreachable vault is unaffected — that is the
+`unverifiable` case, and it still returns the link.
+
+### Still open
+
+`find_twin_pages` remains unavailable on a diskless vault: its vector store is a
+dot-directory the REST API does not serve, and the honest fix is a bridge route,
+not a router change. Making it fall back to the BM25 index was considered and
+rejected — the whole contract of that tool is that `available: true` cannot be
+falsified, and answering a neighbouring question under the same flag would
+destroy the guarantee it protects.
+
+The reader's location still cannot be observed from the router. The self-test
+above converts it from an untestable assumption into a checkable one; it does
+not make the router omniscient.
+
 ## [0.79.0] — 2026-08-31 — the click-to-open link survives the loss of the disk
 
 Lot 2 of the "backend interface, HTTP-only profile as proof" workstream. Lot 1

@@ -287,15 +287,58 @@ if (!vaults.length) {
   if (noHttpsPort.length) causes.push(`${noHttpsPort.length} sans port HTTPS sur disque`);
   err(`Aucun vault exportable — rien à générer${causes.length ? ` (${causes.join(', ')})` : ''}.`);
 }
-const exportedPorts = vaults.filter((v) => v.insecurePort !== undefined).length;
-if (exportedPorts) {
+const withPorts = vaults.filter((v) => v.insecurePort !== undefined);
+if (withPorts.length) {
   // CE QUE CE MESSAGE NE DIT PLUS. Une première version annonçait qu'un hôte
   // non-loopback empêcherait tout lien — c'était faux, et la 2ᵉ revue l'a
   // relevé : le lien émis vaut TOUJOURS 127.0.0.1, jamais l'hôte de `baseUrl`.
   // Ce que `--host` décrit, c'est le chemin du ROUTEUR vers l'API REST ; ce qui
   // décide du clic, c'est où se trouve le LECTEUR. Deux sauts différents.
-  warn(`${exportedPorts} port(s) en clair exportés : les liens vaudront http://127.0.0.1:<port>/open/<chemin>.`);
+  warn(`${withPorts.length} port(s) en clair exportés : les liens vaudront http://127.0.0.1:<port>/open/<chemin>.`);
   info("Si un lecteur clique AILLEURS que sur la machine qui fait tourner Obsidian, le CHEMIN de la note et son titre de section partent vers ce qui écoute sur son propre loopback. Le contenu, lui, ne sort jamais.");
+
+  // ---------------------------------------------------------------------------
+  // L'AUTO-TEST — comment vérifier une hypothèse que le routeur ne peut pas mesurer
+  // ---------------------------------------------------------------------------
+  //
+  // Déclarer `insecurePort` est une AFFIRMATION de l'opérateur : « mes lecteurs
+  // cliquent depuis la machine qui fait tourner Obsidian ». Le routeur ne peut
+  // pas la vérifier — il observe son propre saut vers l'API REST, jamais la
+  // position du navigateur qui cliquera. Chercher à la mesurer d'ici est une
+  // impasse, et une affirmation qu'on ne peut ni prouver ni infirmer est le
+  // genre de chose qui se révèle fausse le jour où ça compte.
+  //
+  // Mais elle est vérifiable AILLEURS, gratuitement, grâce à une propriété que
+  // le pont a déjà. Sa route `/open` applique deux gardes, dans cet ordre :
+  // d'abord l'IP source (loopback, sinon `loopback only`), ensuite le chemin
+  // (vide ou remontant, sinon `path traversal refused`). Donc une requête avec
+  // un chemin VIDE passe la première et meurt sur la seconde.
+  //
+  // `path traversal refused` est par conséquent une PREUVE D'IDENTITÉ : seul le
+  // pont répond cela, et il ne le dit qu'à un appelant en loopback. Ce message
+  // qui a l'air d'une erreur est le seul témoin fiable qu'on puisse obtenir. Un
+  // écouteur intrus répondrait autre chose, ou rien.
+  //
+  // Un port par ligne, dédupliqué : deux vaults sur le même port n'ont qu'une
+  // seule machine à prouver.
+  const testPorts = [...new Set(withPorts.map((v) => v.insecurePort))].sort((a, b) => a - b);
+  console.error('');
+  // « la machine où vous lisez » était imprécis (revue) : ce qui compte est la
+  // machine dont le NAVIGATEUR déréférence l'URL. Bureau à distance, navigateur
+  // délégué, téléphone : ce n'est pas toujours celle où l'œil se trouve.
+  info('VÉRIFIEZ CETTE HYPOTHÈSE UNE FOIS — depuis le NAVIGATEUR qui ouvrira réellement vos liens');
+  info('(pas forcément la machine où vous lisez : bureau à distance, mobile…) :');
+  for (const p of testPorts) console.error(`      http://127.0.0.1:${p}/open/`);
+  info('  → « path traversal refused » = un pont a répondu ; vos liens l\'atteindront.');
+  info('  → une page inconnue, une erreur de connexion, ou rien = NON. Relancez sans --with-click-to-open.');
+  // CE QUE CE TEST NE PROUVE PAS, et il faut le dire : il établit qu'UN pont
+  // écoute sur ce port depuis cette machine — pas que c'est celui de CE vault.
+  // Ce dépôt a mesuré neuf collisions de ports sur un parc de 27 vaults
+  // (v0.77.0) : la nuance n'est pas théorique. Un pont voisin répondrait le même
+  // message et ouvrirait ensuite les notes d'un AUTRE vault.
+  info('  ⚠ Ce test prouve qu\'un pont écoute là, pas que c\'est celui de ce vault.');
+  info('    Si votre parc a connu des collisions de ports (`setup-vault.mjs --check-ports`),');
+  info('    ouvrez ensuite UN vrai lien de note et vérifiez que c\'est la bonne qui s\'ouvre.');
 }
 
 let built;

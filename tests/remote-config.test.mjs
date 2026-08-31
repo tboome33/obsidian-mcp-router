@@ -455,6 +455,43 @@ describe('CLI — les garde-fous', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
+  // L'AUTO-TEST. Le routeur ne peut pas savoir où sera le lecteur ; il peut lui
+  // donner de quoi le vérifier lui-même. La garde `/open` du pont répond
+  // `path traversal refused` sur un chemin vide — un message que SEUL le pont
+  // émet, et seulement à un appelant en loopback. Vérifié par exécution contre
+  // le pont vivant le 2026-08-31 : HTTP 403, corps exactement ce texte.
+  test('--with-click-to-open imprime un lien de contrôle par port, dédupliqué', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.stderr, /http:\/\/127\.0\.0\.1:27136\/open\/\s/, 'le lien de contrôle vise le port EXPORTÉ');
+      assert.match(r.stderr, /path traversal refused/, 'la réponse attendue doit être nommée, sinon le test est inutilisable');
+      // La consigne vise le NAVIGATEUR qui déréférence l'URL, pas « la machine
+      // où vous lisez » — bureau à distance et mobile dissocient les deux
+      // (précision de revue).
+      assert.match(r.stderr, /depuis le NAVIGATEUR qui ouvrira réellement vos liens/, 'dire OÙ cliquer est le point entier');
+      // Et la limite du test doit être dite : il prouve la présence d'UN pont,
+      // pas l'identité du vault — neuf collisions de ports mesurées en v0.77.0.
+      assert.match(r.stderr, /pas que c'est celui de ce vault/);
+      // Un lien par port, pas par vault : deux vaults sur le même port n'ont
+      // qu'une seule machine à prouver.
+      const liens = (r.stderr.match(/http:\/\/127\.0\.0\.1:\d+\/open\/(?!\S)/g) || []);
+      assert.equal(liens.length, 1);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('sans le drapeau, aucun lien de contrôle — il n\'y a rien à vérifier', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      assert.ok(!/path traversal refused/.test(r.stderr));
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test('--with-click-to-open exporte le port du disque, et DIT ce que ça suppose', () => {
     const { dir, vault, cfg } = makeFleet();
     try {
