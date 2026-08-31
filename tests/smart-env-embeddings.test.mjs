@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 
 import {
   parseAjsonSources,
+  parseAjsonRecordEvents,
+  reconcileSmartEnvStore,
   readSmartEnvEmbeddings,
   SOURCE_KEY_PREFIX,
 } from '../src/helpers/smart-env-embeddings.mjs';
@@ -326,5 +328,222 @@ describe('readSmartEnvEmbeddings — the store', () => {
       fs: { readdirSync: (d) => { seen = String(d); throw new Error('ENOENT'); }, readFileSync: () => '' },
     });
     assert.match(seen, /^C:\\VAULTS\\x\\\.smart-env\\multi$/);
+  });
+});
+
+/**
+ * WHERE THE TEXT WAS CUT MUST NOT CHANGE THE ANSWER.
+ *
+ * The disk backend hands the reconciler one text per file (803 on this fleet's
+ * largest vault); the REST backend hands it the whole store as ONE blob. If
+ * anything collapsed per chunk, those two would answer differently for the same
+ * store — and "parity by construction" would be a slogan, not a property.
+ *
+ * Found by adversarial review, 2026-08-31: it WAS a slogan. `parseAjsonSources`
+ * collapses to a last-wins Map per chunk, so a page re-indexed under a second
+ * model in a LATER FILE stayed alive under both models when read file-by-file,
+ * and under only the newer one when read as a blob. No measurement on this fleet
+ * could have caught it: every vault here carries a single model.
+ */
+describe('the reconciler is chunk-independent — one blob or N files, same answer', () => {
+  const OLD = 'model-old';
+  const NEW = 'model-new';
+  // Two pages that keep the old model alive, so it is a real contender…
+  const fileA = [
+    line(`${SOURCE_KEY_PREFIX}wiki/a.md`, sourceRecord('wiki/a.md', [1, 0, 0], OLD)),
+    line(`${SOURCE_KEY_PREFIX}wiki/b.md`, sourceRecord('wiki/b.md', [0, 1, 0], OLD)),
+    // …and `p`, first indexed under the OLD model.
+    line(`${SOURCE_KEY_PREFIX}wiki/p.md`, sourceRecord('wiki/p.md', [0, 0, 1], OLD)),
+  ].join('\n');
+  // A LATER file re-indexes `p` under the NEW model. The store is saying "p is
+  // now a NEW-model page" — it is not saying "p is in both".
+  const fileB = [
+    line(`${SOURCE_KEY_PREFIX}wiki/p.md`, sourceRecord('wiki/p.md', [0.5, 0.5, 0], NEW)),
+    line(`${SOURCE_KEY_PREFIX}wiki/q.md`, sourceRecord('wiki/q.md', [0, 0.5, 0.5], NEW)),
+  ].join('\n');
+
+  const asFiles = () => reconcileSmartEnvStore([fileA, fileB], { files: 2 });
+  const asBlob = () => reconcileSmartEnvStore([`${fileA}\n${fileB}`], { files: 2 });
+
+  test('the winning model, the vectors and the tallies are identical either way', () => {
+    const many = asFiles();
+    const one = asBlob();
+    assert.equal(many.model, one.model);
+    assert.deepEqual([...many.vectors.entries()].sort(), [...one.vectors.entries()].sort());
+    assert.deepEqual(many.otherModels, one.otherModels);
+    assert.deepEqual([...many.incompatible.entries()].sort(), [...one.incompatible.entries()].sort());
+  });
+
+  test('the DIAGNOSTIC counts are identical too — they are read, so they must agree', () => {
+    const many = asFiles();
+    const one = asBlob();
+    for (const k of ['records', 'tombstones', 'malformed', 'unusable', 'dimensions', 'zeroNorm', 'mixedDimensions']) {
+      assert.equal(many[k], one[k], `${k} depends on where the text was cut`);
+    }
+  });
+
+  test('a re-indexed page belongs to its NEWEST model only, not to both', () => {
+    // The substance under the parity: OLD covers a and b, NEW covers p and q.
+    // Before the fix, reading two files left `p` counted under OLD as well —
+    // 3 pages vs 2 — which hands OLD the win and puts every NEW page in
+    // `incompatible` as a minority model.
+    const r = asFiles();
+    assert.equal(r.model, NEW, 'NEW covers p and q; OLD covers only a and b');
+    assert.deepEqual(r.otherModels, [{ model: OLD, pages: 2 }]);
+    assert.ok(r.vectors.has('wiki/p.md'));
+    assert.deepEqual(r.vectors.get('wiki/p.md'), [0.5, 0.5, 0]);
+  });
+
+  test('a tombstone in a LATER file retracts the page, whichever way it is cut', () => {
+    const dead = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, null);
+    const many = reconcileSmartEnvStore([fileA, fileB, dead], { files: 3 });
+    const one = reconcileSmartEnvStore([`${fileA}\n${fileB}\n${dead}`], { files: 3 });
+    assert.ok(!many.vectors.has('wiki/p.md'));
+    assert.ok(!one.vectors.has('wiki/p.md'));
+    assert.equal(many.tombstones, one.tombstones);
+  });
+});
+
+describe('a record declaring SEVERAL models is one statement, not several', () => {
+  // Round-2 review, 2026-08-31: the first repair split a record into one event
+  // per model, and the reconciler's cross-model retraction then ate the
+  // record's own siblings — the second model deleted the page from the first.
+  // Which vector survived depended on JSON key order, which is not a fact about
+  // the store at all.
+  const rec = (path, models) => line(`${SOURCE_KEY_PREFIX}${path}`, {
+    path, class_name: 'SmartSource', embeddings: models,
+  });
+
+  test('every model the record lists keeps the page, whatever order they are in', () => {
+    const forward = rec('wiki/p.md', { X: { vec: [1, 0] }, Y: { vec: [0, 1] } });
+    const reversed = rec('wiki/p.md', { Y: { vec: [0, 1] }, X: { vec: [1, 0] } });
+    // A second page under each model, so neither is a one-page model that the
+    // coverage tie-break would decide by name alone.
+    const ballast = [
+      rec('wiki/x.md', { X: { vec: [1, 1] } }),
+      rec('wiki/y.md', { Y: { vec: [1, 1] } }),
+    ].join('\n');
+
+    for (const [label, text] of [['forward', forward], ['reversed', reversed]]) {
+      const r = reconcileSmartEnvStore([`${ballast}\n${text}`], { files: 1 });
+      const models = new Set([r.model, ...r.otherModels.map((m) => m.model)]);
+      assert.deepEqual([...models].sort(), ['X', 'Y'], `${label}: both models survive`);
+      assert.deepEqual(
+        r.otherModels, [{ model: r.model === 'X' ? 'Y' : 'X', pages: 2 }],
+        `${label}: the page counts under BOTH models, so each has two pages`,
+      );
+      assert.equal(r.records, 3, `${label}: three records in, three counted — not four`);
+    }
+  });
+
+  test('a later record RETRACTS the models it no longer lists', () => {
+    // The substance the retraction exists for: re-indexing under one model must
+    // not leave the page claimed by the model it was moved off.
+    const text = [
+      rec('wiki/p.md', { X: { vec: [1, 0] }, Y: { vec: [0, 1] } }),
+      rec('wiki/p.md', { Y: { vec: [0, 2] } }),
+      rec('wiki/y.md', { Y: { vec: [1, 1] } }),
+    ].join('\n');
+    const r = reconcileSmartEnvStore([text], { files: 1 });
+    assert.equal(r.model, 'Y');
+    assert.deepEqual(r.vectors.get('wiki/p.md'), [0, 2]);
+    // X ended up with no pages at all, so it is not a competitor to report.
+    assert.deepEqual(r.otherModels, []);
+  });
+});
+
+describe('one page has ONE spelling, whatever separator the plugin wrote', () => {
+  // The store is written by a plugin running on Windows and really does key
+  // records `wiki\Ident\x.md` — measured on this vault. Two spellings meant two
+  // pages to every Map in the reader (review round 3, 2026-08-31).
+  test('a tombstone retracts its page even when the record spelt it with backslashes', () => {
+    const text = [
+      line(`${SOURCE_KEY_PREFIX}wiki\\p.md`, sourceRecord('wiki\\p.md', [1, 0])),
+      line(`${SOURCE_KEY_PREFIX}wiki/q.md`, sourceRecord('wiki/q.md', [0, 1])),
+      `${JSON.stringify(`${SOURCE_KEY_PREFIX}wiki/p.md`)}: null,`,
+    ].join('\n');
+    const r = reconcileSmartEnvStore([text], { files: 1 });
+    assert.ok(!r.vectors.has('wiki/p.md'), 'the retraction must land on the page it names');
+    assert.ok(!r.vectors.has('wiki\\p.md'), 'and no backslash twin may survive it');
+    assert.deepEqual([...r.vectors.keys()], ['wiki/q.md']);
+  });
+
+  test('a backslash-keyed vector is reachable by the forward-slash path every caller uses', () => {
+    const text = [
+      line(`${SOURCE_KEY_PREFIX}wiki\\a\\b.md`, sourceRecord('wiki\\a\\b.md', [1, 0])),
+      line(`${SOURCE_KEY_PREFIX}wiki/c.md`, sourceRecord('wiki/c.md', [0, 1])),
+    ].join('\n');
+    const r = reconcileSmartEnvStore([text], { files: 1 });
+    assert.deepEqual(r.vectors.get('wiki/a/b.md'), [1, 0]);
+  });
+});
+
+describe('a model whose slot is CORRUPT is not a model the record dropped', () => {
+  test('an unreadable sibling slot does not retract that model', () => {
+    // Round-3 review: retracting on "absent from `models`" turned one corrupt
+    // slot into a deliberate-looking removal, changing model coverage — and
+    // possibly the winning model — because of a byte the store got wrong.
+    const good = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: [1, 0] }, B: { vec: [0, 1] } },
+    });
+    const partly = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: [2, 0] }, B: { vec: 'corrupt' } },
+    });
+    const r = reconcileSmartEnvStore([`${good}\n${partly}`], { files: 1 });
+    assert.deepEqual(r.vectors.get('wiki/p.md'), r.model === 'A' ? [2, 0] : [0, 1]);
+    const models = new Set([r.model, ...r.otherModels.map((m) => m.model)]);
+    assert.deepEqual([...models].sort(), ['A', 'B'], 'B still claims the page');
+  });
+
+  test('a record whose ONLY model is corrupt still retracts the models it dropped', () => {
+    // Round-4 review: such a record used to be discarded outright, so a model
+    // the store had just stopped listing kept claiming the page — and could win
+    // the coverage tie with a claim the store no longer made.
+    const both = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: [1, 0] }, B: { vec: [0, 1] } },
+    });
+    const onlyCorruptA = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: 'corrupt' } },
+    });
+    const ballast = line(`${SOURCE_KEY_PREFIX}wiki/b2.md`, {
+      path: 'wiki/b2.md', embeddings: { B: { vec: [1, 1] } },
+    });
+    const r = reconcileSmartEnvStore([`${both}\n${ballast}\n${onlyCorruptA}`], { files: 1 });
+    // B was NOT mentioned by the last record → it no longer claims p…
+    const bPages = r.model === 'B' ? r.vectors.size : (r.otherModels.find((m) => m.model === 'B')?.pages ?? 0);
+    assert.equal(bPages, 1, 'B keeps only its own page, not p');
+    // …and A keeps the vector it had, because A WAS mentioned — just unreadably.
+    const aPages = r.model === 'A' ? r.vectors.size : (r.otherModels.find((m) => m.model === 'A')?.pages ?? 0);
+    assert.equal(aPages, 1, 'A still claims p with its last good vector');
+  });
+
+  test('…but a model the record genuinely stops listing IS retracted', () => {
+    const both = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: [1, 0] }, B: { vec: [0, 1] } },
+    });
+    const onlyA = line(`${SOURCE_KEY_PREFIX}wiki/p.md`, {
+      path: 'wiki/p.md', embeddings: { A: { vec: [2, 0] } },
+    });
+    const r = reconcileSmartEnvStore([`${both}\n${onlyA}`], { files: 1 });
+    assert.equal(r.model, 'A');
+    assert.deepEqual(r.otherModels, [], 'B held nothing else, so it is not a competitor');
+  });
+});
+
+describe('parseAjsonRecordEvents keeps the order the log was written in', () => {
+  test('repeats are EMITTED, not collapsed — the reconciler decides, not the parser', () => {
+    const text = [
+      line(`${SOURCE_KEY_PREFIX}wiki/p.md`, sourceRecord('wiki/p.md', [1, 0])),
+      line(`${SOURCE_KEY_PREFIX}wiki/p.md`, sourceRecord('wiki/p.md', [2, 0])),
+      line(`${SOURCE_KEY_PREFIX}wiki/p.md`, null),
+    ].join('\n');
+    const { events } = parseAjsonRecordEvents(text);
+    assert.equal(events.length, 3, 'three writes to one page are three events');
+    assert.deepEqual(events.map((e) => e.path), ['wiki/p.md', 'wiki/p.md', 'wiki/p.md']);
+    assert.deepEqual([...events[0].models.values()], [[1, 0]]);
+    assert.equal(events[2].models, null);
+    // …and the Map view still collapses them, for callers that want one file's
+    // final state.
+    assert.equal(parseAjsonSources(text).records.get('wiki/p.md'), null);
   });
 });

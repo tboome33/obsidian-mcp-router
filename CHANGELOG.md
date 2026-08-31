@@ -4,6 +4,163 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.82.0] — 2026-08-31 — `find_twin_pages` stops being a local-disk tool
+
+The last named limit of the HTTP-only workstream, and the one the v0.79.0 notes
+called "not in this repo": `find_twin_pages` answered `available: false,
+reason: 'remote-vault'` for any vault whose disk this machine did not have.
+It now runs on a networked vault and returns the same answer it would on disk.
+
+### Why this needed the bridge, and not a workaround here
+
+The tool compares every page against every other by cosine, using the vectors
+Smart Connections keeps in `<vault>/.smart-env/multi/`. The Local REST API does
+not serve dot-directories — and that refusal is **structural**, not a setting:
+measured on a real vault, Obsidian's own `app.vault.getFiles()` returns **zero**
+entries under `.smart-env`, so the core API cannot see them at all. A plugin
+can, through `vault.adapter`. So the missing piece was a bridge route, and the
+fix is split across two repos.
+
+A BM25 fallback was considered in v0.79.0 and is still **refused**. The whole
+contract of this tool is that `available: true` cannot be falsified; answering a
+neighbouring question under the same flag would destroy the guarantee it exists
+to protect.
+
+### Added
+
+- **`readSmartEnvEmbeddingsViaRest`** — the store, fetched from
+  obsidian-mcp-router-bridge **0.9.0+**'s `GET /smart-env/sources`.
+- **`getSmartEnvSources` + a per-request timeout override in `rest-client`.**
+  The whole store travels in one response, and the vault default (10 s, sized
+  for single-note reads) would abort a healthy transfer.
+- **A REST page source for `find_twin_pages`** — the wiki walk and the page
+  reads go through the ordinary Local REST API, which serves ordinary
+  directories perfectly well. Reads are batched four in flight and keep input
+  order (measured: 191 pages, 519 ms sequential → 156 ms).
+
+### The design decision worth recording: parity by construction — and how it was false at first
+
+`reconcileSmartEnvStore` was extracted so **both** backends share it. Last-wins,
+tombstones, choosing one model, rejecting a minority dimension, rejecting a zero
+norm — all of it happens once, for both. The backends decide *where bytes come
+from* and nothing else, so they cannot disagree about what the store says.
+
+**That claim was refuted on its first review, and the refutation is the point.**
+The parser collapsed repeats into a Map *per chunk of text it was handed* — and
+the two backends hand it different chunks: 803 files, or one blob. A page
+re-indexed under a second model in a LATER file therefore survived under both
+models when read file-by-file and under only the newer one when read as a blob.
+Nothing measured here could have caught it: every vault on this fleet carries a
+single model. Parity was a slogan, and the measurement that "proved" it was
+blind to the only case where it fails.
+
+The repair makes the claim true rather than defending it. The parser now emits
+an **ordered list of record events** and never collapses; the reconciler applies
+them. The same event sequence arrives whether it came as one blob or eight
+hundred files, so where the text was cut cannot change the answer — and that is
+now pinned by tests that reconcile the same content both ways and compare the
+model, the vectors, `otherModels`, `incompatible`, and every diagnostic count.
+
+The bridge holds up its end by understanding nothing: it keeps the lines
+starting with `"smart_sources:` and drops the rest, which is a restatement of
+this router's own first parsing step, not a second opinion about the format.
+Verified over 1046 store files on four vaults — 0 divergences.
+
+**Measured end to end on this project's own vault, no stubs anywhere:** disk and
+remote both answer `available: true` with 4 pairs, 104 pages compared, a derived
+threshold identical to the 16th decimal (`0.9325587591708842`), the same model
+and dimensions, all six exclusion counts equal (`notOnDisk: 108`,
+`generatedNavigation: 37`, `redirect: 29`, `source: 2`, `withoutVector: 19`) and
+a byte-identical coverage sentence. The remote run costs 3.5 s against 0.6 s,
+which is the 22 MB store crossing the wire (4.3 MB gzipped, negotiated
+automatically and inflated transparently by undici).
+
+### Fixed along the way — four defects the two backends were sharing
+
+Reviewing the seam turned up things wrong on **both** sides, i.e. wrong before
+this release and still wrong after it if only the new path had been examined:
+
+- **A record was applied per model instead of per record.** Re-indexing a note
+  under a new model rewrites its record; the models the new record no longer
+  lists have stopped claiming that page. The reader only ever *added*, so the
+  page stayed counted under both — inflating the losing model's coverage, and
+  able to hand the winner-by-coverage tie to a model the store had abandoned.
+- **…but a model whose slot is CORRUPT has not been dropped**, it just cannot be
+  read, so it keeps its claim. Retracting on "no usable vector here" turned one
+  bad byte into a deliberate-looking removal.
+- **`wiki\p.md` and `wiki/p.md` were two different pages.** The store is written
+  by a plugin running on Windows and does emit OS-style keys — measured, three
+  of them on this vault. A tombstone for one did not retract the other, and the
+  backslash record's vector could never be looked up, because every consumer
+  asks in forward-slash form. Folded once now, at the parser's boundary.
+- **An unreadable page was reported as a deliberate exclusion.** `coverage`
+  lumped it in with generated navigation and exempt types, so a run that lost
+  pages read exactly like a run that skipped them on purpose. It is named
+  separately now, along with `vanishedDuringRun` for a page deleted between the
+  walk and the read — ordinary churn during an editing session, and a different
+  fact from a failure.
+
+### Changed — the ways this check declines are now ten, not five
+
+`remote-vault` is **gone**, and its absence is the deliverable: being remote is
+no longer a reason the check cannot run. Six reasons replace it, kept apart
+because they ask different things of the reader:
+
+| reason | what the reader should do |
+|---|---|
+| `bridge-route-absent` | upgrade the bridge on that machine — **this one is fixable**. The message also says a proxy can produce the same 404, because from here the two are indistinguishable |
+| `store-truncated` | only a prefix of the store arrived; a partial corpus is refused, never compared |
+| `store-inconsistent` | the response's own header contradicts its body |
+| `store-unreachable` | network, auth or timeout — says nothing about twins |
+| `wiki-enumeration-incomplete` | the file list did not come back whole, so no exclusion count can be trusted |
+| `wiki-read-incomplete` | pages were lost between the walk and the read. A pair needs BOTH halves, so a ranking built from what arrived would hide twins rather than report none |
+
+`store-inconsistent` exists because trusting `truncated: false` is not the same
+as checking it. A response claiming 803 files and 1310 records while carrying
+twenty would have been reconciled and ranked — a comparison of a fifth of the
+vault, reported as a comparison of the vault. The header is now verified against
+the body it arrived with, counts and bytes both.
+
+`wiki-enumeration-incomplete` is the lesson `resolve-vault-path.mjs` had to
+learn twice: over REST, an enumeration that *failed* and one that *found
+nothing* look identical from here, and collapsing them lets a route that never
+answered prove an empty vault.
+
+### Changed — `LOCAL_VAULT_ONLY_TOOL_NAMES` is now empty
+
+It was introduced in v0.79.0 for this one tool. The premise was never "remote
+vaults are unanswerable" but "nothing serves that dot-directory" — so the
+premise, not the tool, is what changed. The Set is **kept, empty**, with its
+reasoning intact: the distinction it draws (a deployment gate versus a per-vault
+capability) cost a review to get right, and the emptiness is now pinned by a test
+so the invariants below it cannot go vacuously green.
+
+### Tests
+
+- **A parity table, disk vs REST, on one fixture vault**: identical pairs,
+  threshold, exclusions, coverage and store diagnostics.
+- **The REST path cannot touch the filesystem** — proven by running it with an
+  `fs` that throws on every property access, and asserting it still produces a
+  real ranking. A leak would otherwise be invisible, since the fixture vault is
+  real and would simply have been read.
+- Each new decline reason gets its own case, including that the truncated-store
+  answer quotes what it actually received, and that a header lying about its own
+  body is refused rather than reconciled.
+- **Chunk-independence**: the same store content reconciled as N texts and as
+  one blob must agree on the model, the vectors, `otherModels`, `incompatible`
+  and every diagnostic count.
+
+### Method note
+
+Seven adversarial review rounds, each given the previous round's claims as
+input. The first refuted the central one. Severity decayed BLOCKER → MAJOR →
+MINOR → none, and **every round's repairs seeded the next round's defects** —
+the atomic-record fix for round 2's blocker created round 3's, whose fix created
+round 4's. The one finding deliberately *not* fixed is written down as a taken
+trade-off, not left silent: folding `\` to `/` in store keys could in principle
+merge two distinct POSIX filenames, and is done anyway because those keys are
+Obsidian vault-relative paths, which Obsidian never exposes with a backslash.
+
 ## [0.81.0] — 2026-08-31 — the self-test now proves WHICH vault answered
 
 v0.80.0 gave the operator a one-click way to check the assumption the router

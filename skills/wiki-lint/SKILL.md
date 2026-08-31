@@ -147,7 +147,7 @@ Check J compares CONCEPT LISTS (Jaccard over the digests' `concepts` arrays). Ch
 mcp__obsidian-router__find_twin_pages({ vault, limit: 10 })
 ```
 
-Read-only, one pass over the local vector store, nothing written.
+Read-only, one pass over the vector store, nothing written. Works on a **remote** vault too since v0.82.0 — the store is read through the bridge's `GET /smart-env/sources` (requires obsidian-mcp-router-bridge 0.9.0+ on the machine running that vault). Measured on the router's own vault, the disk and remote runs return the same pairs, the same threshold and the same exclusion counts; the remote run costs ~6× the wall clock, because the whole store crosses the wire.
 
 **Report in the *info* tier and never above it.** Two pages that resemble each other are not a broken state: a templated series, a decision and its record, a page deliberately split from its "gotchas" companion all look alike and are all correct. This is a deliberate divergence from Check J, which raises `concept-overlap-strong` to ERROR — do not inherit that severity here, and never phrase a finding as a merge instruction. Show, per pair, the similarity and the four evidence columns (`sameFolder`, `sameBasename`, `sharedLinks`, `linked`); they are what lets a reader dismiss a false positive in one glance.
 
@@ -161,19 +161,24 @@ Read-only, one pass over the local vector store, nothing written.
 
 **Always state the FRESHNESS.** `freshness.caveat` says it: these similarities come from an index **snapshot**, not from the pages as they are now. A page edited since the last indexing pass still carries its previous vector, and per-page staleness cannot be determined from here (`freshness.perPageStaleness: "unknown"`) — the store keeps no hash the router can recompute. Say so in the report; an unqualified similarity reads as a statement about the pages today.
 
-**`available: false` IS NOT "no twins", and `available` is THE discriminator.** Branch on it. Five reasons arrive as a response with `available: false`, a `reason`, and **no `pairs` key at all**:
+**`available: false` IS NOT "no twins", and `available` is THE discriminator.** Branch on it. Eight reasons arrive as a response with `available: false`, a `reason`, and **no `pairs` key at all**:
 
 | `reason` | what it means |
 |---|---|
 | `no-embeddings` | no Smart Connections index (or no indexed page survives the exclusions) |
-| `remote-vault` | no local disk to read the store from |
 | `no-wiki` | nothing under `wiki/` |
 | `corpus-too-small` | fewer than 30 comparable pairs (≈ 9 pages) — a median+MAD would describe nothing |
 | `no-spread` | at least half the pairs share one similarity; no outlier cut can be derived |
+| `bridge-route-absent` | remote vault, and its bridge is older than 0.9.0 — **tell the user to upgrade it**, this one is fixable |
+| `store-truncated` | the bridge sent only a prefix of the store (it hit its own budget) |
+| `store-unreachable` | the store could not be fetched at all — network, auth, timeout |
+| `wiki-enumeration-incomplete` | the vault's file list did not come back whole, so no exclusion count can be trusted |
 
-A **sixth** way to decline is a **thrown refusal**, `too-many-pages` (`err.kind: "validation"`, `err.reason: "too-many-pages"`), when the corpus is past `maxPages` — there is no response body at all. Scope with `folders`, or raise `maxPages` knowingly.
+A **ninth** way to decline is a **thrown refusal**, `too-many-pages` (`err.kind: "validation"`, `err.reason: "too-many-pages"`), when the corpus is past `maxPages` — there is no response body at all. Scope with `folders`, or raise `maxPages` knowingly.
 
-Report any of these as *"this check is unavailable on this vault, because …"* — never as a clean bill of health. `result.pairs?.length ?? 0` would read all six as "no twins", which is exactly why the key is absent rather than empty; the absence is defence in depth, the field to read is `available`. The honest fallback line: *"Check J (concept overlap) still runs wherever digests exist; cosine needs embeddings, and this vault has none."* Only `available: true` with `found: 0` means the vault was examined and nothing stood out.
+Report any of these as *"this check is unavailable on this vault, because …"* — never as a clean bill of health. `result.pairs?.length ?? 0` would read all nine as "no twins", which is exactly why the key is absent rather than empty; the absence is defence in depth, the field to read is `available`.
+
+The last four are **remote-only**, and the first of them is the one worth acting on: `bridge-route-absent` names a plugin the operator can upgrade, not a fact about topology. Do not report it as "this vault has no index" — that is a different reason with a different fix. The honest fallback line: *"Check J (concept overlap) still runs wherever digests exist; cosine needs embeddings, and this vault has none."* Only `available: true` with `found: 0` means the vault was examined and nothing stood out.
 
 **Known false-positive mode, worth saying out loud in the report:** the vectors are whole-page and the model's window is 512 tokens, so pages that share a template score very high on their common head. Measured on a real vault, two course sheets scored cosine 0.9914 with a 5-word-shingle overlap of 0.064. When `sameBasename` is true across sibling folders, say so — it is usually a series, not a duplication.
 

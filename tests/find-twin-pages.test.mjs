@@ -307,13 +307,134 @@ describe('find_twin_pages — "unavailable here" is not "zero pairs"', () => {
     assert.match(result.detail, /smart-connections/i, 'and it must say what would make it available');
   });
 
-  test('A REMOTE VAULT → its own reason, still no pairs key', async () => {
+  test('A BRIDGE WITHOUT THE ROUTE → its own reason, still no pairs key', async () => {
     const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
-    const result = await findTwinPagesTool(registry, {});
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => {
+        throw Object.assign(new Error('404 Not Found'), { status: 404, kind: 'not_found' });
+      },
+    });
     assert.equal(result.available, false);
-    assert.equal(result.reason, UNAVAILABLE.REMOTE_VAULT);
+    assert.equal(result.reason, UNAVAILABLE.BRIDGE_ROUTE_ABSENT);
     assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
     assert.match(result.detail, /NOT a finding/i);
+  });
+
+  test('A TRUNCATED STORE refuses — a prefix of the corpus is not a smaller vault', async () => {
+    const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
+    const header = {
+      kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+      files: 900, filesRead: 40, unreadableFiles: 0, recordLines: 40,
+      truncated: true, truncatedBy: 'max-bytes',
+    };
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => `${JSON.stringify(header)}\n`,
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.STORE_TRUNCATED);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
+    assert.match(result.detail, /40 of this vault's 900/);
+  });
+
+  test('EVERY PAGE DELETED MID-RUN blames the pages, not the index', async () => {
+    // A local wiki edited while this ran. Reporting `no-embeddings` would tell
+    // the user their vault is unindexed — false, and it sends them to re-index
+    // something that was fine (review round 3, 2026-08-31).
+    const v = makeVault({});
+    try {
+      const gone = new Set();
+      const registry = { resolveVault: () => ({ name: 'v', type: 'local', path: v }) };
+      const result = await findTwinPagesTool(registry, {}, {
+        fs: {
+          readdirSync: (...a) => fs.readdirSync(...a),
+          readFileSync: (p, enc) => {
+            // Every wiki page vanishes between the walk and the read; the store
+            // itself still reads perfectly.
+            if (String(p).includes(`${path.sep}wiki${path.sep}`)) {
+              gone.add(String(p));
+              throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+            }
+            return fs.readFileSync(p, enc);
+          },
+        },
+      });
+      assert.ok(gone.size > 0, 'the fixture must actually have had pages to lose');
+      assert.equal(result.available, false);
+      assert.equal(result.reason, UNAVAILABLE.WIKI_READ_INCOMPLETE);
+      assert.ok(result.pagesVanished > 0);
+      assert.match(result.detail, /The store is fine/);
+      assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
+    } finally {
+      fs.rmSync(v, { recursive: true, force: true });
+    }
+  });
+
+  test('A HEADER THAT LIES ABOUT ITS OWN BODY is refused, not reconciled', async () => {
+    // The recurring defect class of this codebase, in its newest costume: a 200
+    // with the wrong shape read as valid data. Here the response calls itself
+    // complete while carrying a fraction of what it claims — and a comparison of
+    // a fifth of the vault would be reported as a comparison of the vault.
+    const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
+    const header = {
+      kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+      files: 100, filesRead: 100, unreadableFiles: 0, recordLines: 1000, truncated: false,
+    };
+    const oneLine = `${JSON.stringify('smart_sources:wiki/a.md')}: ${JSON.stringify({ embeddings: { [MODEL]: { vec: vec(1) } } })},`;
+    header.bytes = Buffer.byteLength(oneLine, 'utf8');
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => `${JSON.stringify(header)}\n${oneLine}`,
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.STORE_INCONSISTENT);
+    assert.match(result.detail, /1 record line\(s\) but the header claims 1000/);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
+  });
+
+  test('A HEADER WHOSE FILE COUNTS DO NOT BALANCE is refused too', async () => {
+    const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
+    const header = {
+      kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+      files: 100, filesRead: 40, unreadableFiles: 0, recordLines: 0, bytes: 0, truncated: false,
+    };
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => `${JSON.stringify(header)}\n`,
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.STORE_INCONSISTENT);
+    assert.match(result.detail, /does not balance/);
+  });
+
+  test('AN UNREACHABLE STORE says so, and says it proves nothing about twins', async () => {
+    const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => {
+        throw Object.assign(new Error('connect ECONNREFUSED'), { kind: 'unreachable' });
+      },
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.STORE_UNREACHABLE);
+    assert.match(result.detail, /says nothing about whether the vault has twins/i);
+  });
+
+  test('AN INCOMPLETE FILE LIST refuses rather than reporting an empty wiki', async () => {
+    // Over REST an enumeration that fails and one that finds nothing look the
+    // same from here. On disk they do not — the lesson resolve-vault-path.mjs
+    // had to learn. A walk with failures must never become `no-wiki`.
+    const registry = { resolveVault: () => ({ name: 'remote', type: 'remote' }) };
+    const rec = `${JSON.stringify('smart_sources:wiki/a.md')}: ${JSON.stringify({ embeddings: { [MODEL]: { vec: vec(1) } } })},`;
+    const store = {
+      kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+      files: 1, filesRead: 1, unreadableFiles: 0, recordLines: 1,
+      bytes: Buffer.byteLength(rec, 'utf8'), truncated: false,
+    };
+    const result = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => `${JSON.stringify(store)}\n${rec}`,
+      listFilesIn: async () => { throw Object.assign(new Error('boom'), { kind: 'unauthorized' }); },
+      getFileContent: async () => '',
+    });
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.WIKI_ENUMERATION_INCOMPLETE);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
   });
 
   test('A VAULT WITH EMBEDDINGS AND NO TWINS → available:true, found:0, pairs:[]', async () => {
@@ -545,8 +666,16 @@ describe('find_twin_pages — what the answer admits about itself', () => {
     );
     assert.deepEqual(
       Object.values(UNAVAILABLE).sort(),
-      ['no-embeddings', 'no-wiki', 'remote-vault'],
+      [
+        'bridge-route-absent', 'no-embeddings', 'no-wiki', 'store-inconsistent',
+        'store-truncated', 'store-unreachable', 'wiki-enumeration-incomplete',
+        'wiki-read-incomplete',
+      ],
     );
+    // `remote-vault` is GONE, and its absence is the deliverable: being remote
+    // is no longer a reason this check cannot run. What replaced it names a
+    // capability of the peer's bridge, which someone can actually fix.
+    assert.ok(!Object.values(UNAVAILABLE).includes('remote-vault'));
     // Response-shaped reasons vs the thrown one.
     assert.equal(UNAVAILABLE_RESPONSE_REASONS.includes('too-many-pages'), false);
 
@@ -564,11 +693,217 @@ describe('find_twin_pages — what the answer admits about itself', () => {
 
     // And the tool's own description points the reader at `available`.
     assert.match(TOOL_DEFINITION.description, /BRANCH ON `available`/);
-    for (const reason of ['no-embeddings', 'remote-vault', 'no-wiki', 'corpus-too-small', 'no-spread', 'too-many-pages']) {
+    for (const reason of [
+      'no-embeddings', 'no-wiki', 'corpus-too-small', 'no-spread', 'too-many-pages',
+      'bridge-route-absent', 'store-truncated', 'store-inconsistent', 'store-unreachable',
+      'wiki-enumeration-incomplete', 'wiki-read-incomplete',
+    ]) {
       assert.ok(
         TOOL_DEFINITION.description.includes(reason),
         `the description does not enumerate \`${reason}\``,
       );
+    }
+  });
+});
+
+/**
+ * THE TWO BACKENDS, ON THE SAME BYTES (v0.82.0).
+ *
+ * The remote path is not a reimplementation: the bridge filters lines and the
+ * router does all the understanding, so disk and REST should produce the SAME
+ * answer for the same vault. That is a claim, and a claim about two code paths
+ * is exactly what a parity table is for — the shape `resolve-vault-path.mjs`
+ * settled on when it grew its own second backend.
+ *
+ * The "REST" here is the fixture vault served through the deps the tool calls,
+ * so the bytes are identical by construction and any divergence is the router's
+ * own. (The wire itself is proven separately, against a live bridge.)
+ */
+function restDepsForFixture(root) {
+  const abs = (rel) => path.join(root, ...rel.split('/'));
+  return {
+    listFilesIn: async (_vault, dir) => {
+      const entries = fs.readdirSync(dir ? abs(dir) : root, { withFileTypes: true });
+      // The Local REST API marks directories with a trailing slash.
+      return { files: entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)) };
+    },
+    getFileContent: async (_vault, rel) => fs.readFileSync(abs(rel), 'utf8'),
+    getSmartEnvSources: async () => {
+      const dir = path.join(root, '.smart-env', 'multi');
+      let files = [];
+      try { files = fs.readdirSync(dir).filter((f) => f.endsWith('.ajson')).sort(); } catch { /* none */ }
+      if (files.length === 0) {
+        return `${JSON.stringify({
+          kind: 'smart-env-sources', storePath: '.smart-env/multi', available: false, reason: 'store-missing',
+        })}\n`;
+      }
+      const kept = [];
+      for (const f of files) {
+        for (const line of fs.readFileSync(path.join(dir, f), 'utf8').split('\n')) {
+          if (line.startsWith('"smart_sources:')) kept.push(line);
+        }
+      }
+      const body = kept.join('\n');
+      const header = {
+        kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+        files: files.length, filesRead: files.length, unreadableFiles: 0,
+        recordLines: kept.length, bytes: Buffer.byteLength(body, 'utf8'), truncated: false,
+      };
+      return `${JSON.stringify(header)}\n${body}`;
+    },
+  };
+}
+
+/**
+ * The same deps, but backed by an IN-MEMORY snapshot taken once up front. Used
+ * where the claim is about the filesystem itself: deps that read disk on demand
+ * cannot prove a run did not read disk, however the tool's own `fs` handle is
+ * booby-trapped.
+ */
+function inMemoryDepsFrom(root) {
+  const dirs = new Map();
+  const filesByPath = new Map();
+  (function snapshot(absDir, rel) {
+    const entries = fs.readdirSync(absDir, { withFileTypes: true });
+    dirs.set(rel, entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)));
+    for (const e of entries) {
+      const child = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) snapshot(path.join(absDir, e.name), child);
+      else filesByPath.set(child, fs.readFileSync(path.join(absDir, e.name), 'utf8'));
+    }
+  }(root, ''));
+
+  const storeBody = (() => {
+    const names = [...filesByPath.keys()]
+      .filter((p) => p.startsWith('.smart-env/multi/') && p.endsWith('.ajson')).sort();
+    const kept = [];
+    for (const n of names) {
+      for (const l of filesByPath.get(n).split('\n')) {
+        if (l.startsWith('"smart_sources:')) kept.push(l);
+      }
+    }
+    const body = kept.join('\n');
+    const header = {
+      kind: 'smart-env-sources', storePath: '.smart-env/multi', available: true,
+      files: names.length, filesRead: names.length, unreadableFiles: 0,
+      recordLines: kept.length, bytes: Buffer.byteLength(body, 'utf8'), truncated: false,
+    };
+    return `${JSON.stringify(header)}\n${body}`;
+  })();
+
+  const deps = {
+    diskReadsAfterSnapshot: 0,
+    listFilesIn: async (_v, dir) => {
+      const listing = dirs.get(dir || '');
+      if (!listing) throw Object.assign(new Error('not found'), { kind: 'not_found' });
+      return { files: listing };
+    },
+    getFileContent: async (_v, rel) => {
+      const c = filesByPath.get(rel);
+      if (c === undefined) throw Object.assign(new Error('not found'), { kind: 'not_found' });
+      return c;
+    },
+    getSmartEnvSources: async () => storeBody,
+  };
+  return deps;
+}
+
+describe('find_twin_pages — disk and REST answer the same vault identically', () => {
+  let root;
+  before(() => { root = makeVault({ isolatedTwins: false }); });
+  after(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+  test('the RANKING is identical, pair for pair and score for score', async () => {
+    const onDisk = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'local', path: root }) }, {},
+    );
+    const overRest = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'remote', baseUrl: 'https://example.invalid' }) },
+      {}, restDepsForFixture(root),
+    );
+
+    assert.equal(onDisk.available, true, 'the disk run must have produced a ranking to compare');
+    assert.equal(overRest.available, true);
+    assert.equal(overRest.backend, 'rest');
+    assert.equal(onDisk.backend, 'disk');
+
+    assert.deepEqual(overRest.pairs, onDisk.pairs, 'the pairs, in order, with their evidence');
+    assert.deepEqual(overRest.threshold, onDisk.threshold, 'the per-vault cut is derived the same way');
+    assert.equal(overRest.found, onDisk.found);
+  });
+
+  test('the EXCLUSIONS and the coverage arithmetic are identical too', async () => {
+    // The ranking could match while the accounting drifted — the ghost count,
+    // the generated-navigation rule and the exempt types all run on the shell,
+    // not on the maths, so they are the part a second backend would break.
+    const onDisk = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'local', path: root }) }, {},
+    );
+    const overRest = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'remote', baseUrl: 'https://example.invalid' }) },
+      {}, restDepsForFixture(root),
+    );
+
+    assert.deepEqual(overRest.excluded, onDisk.excluded);
+    assert.equal(overRest.wikiPagesOnDisk, onDisk.wikiPagesOnDisk);
+    assert.deepEqual(overRest.coverage, onDisk.coverage);
+    assert.ok(onDisk.excluded.notOnDisk > 0, 'the fixture DOES carry a ghost — else this proves little');
+  });
+
+  test('the REST path never touches the filesystem — proven with NOTHING on disk to touch', async () => {
+    // A first version of this test injected the throwing `fs` but kept deps that
+    // read the fixture off disk themselves, so it only proved the tool had not
+    // dereferenced that one handle — while the run as a whole was still reading
+    // a real vault (review, 2026-08-31). Now the fixture is snapshotted into
+    // memory FIRST and the deps serve from those maps, so there is no path by
+    // which disk content could reach the answer at all.
+    const deps = inMemoryDepsFrom(root);
+    const forbidden = new Proxy({}, {
+      get(_t, prop) { throw new Error(`the REST backend reached for fs.${String(prop)}`); },
+    });
+    const result = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'remote', baseUrl: 'https://example.invalid' }) },
+      {},
+      { ...deps, fs: forbidden },
+    );
+    assert.equal(result.available, true, 'it must still produce a real ranking');
+    assert.equal(result.backend, 'rest');
+    assert.ok(result.pairs.length > 0);
+    assert.equal(deps.diskReadsAfterSnapshot, 0, 'nothing read the disk once the snapshot was taken');
+  });
+
+  test('a page that cannot be READ over REST refuses the run — it does not shrink the corpus', async () => {
+    // Lose pages to the network and the ranking would still be produced, from
+    // whatever arrived, under `available: true` — with every twin among the lost
+    // pages silently absent. The pair needs BOTH halves.
+    const deps = inMemoryDepsFrom(root);
+    const result = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'remote', baseUrl: 'https://example.invalid' }) },
+      {},
+      {
+        ...deps,
+        getFileContent: async (v, rel) => {
+          if (rel === TWIN_A) throw new Error('ETIMEDOUT');
+          return deps.getFileContent(v, rel);
+        },
+      },
+    );
+    assert.equal(result.available, false);
+    assert.equal(result.reason, UNAVAILABLE.WIKI_READ_INCOMPLETE);
+    assert.equal(result.pagesUnread, 1);
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'pairs'), false);
+  });
+
+  test('the store diagnostics agree on the vectors, model and dimensions', async () => {
+    const onDisk = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'local', path: root }) }, {},
+    );
+    const overRest = await findTwinPagesTool(
+      { resolveVault: () => ({ name: 'v', type: 'remote', baseUrl: 'https://example.invalid' }) },
+      {}, restDepsForFixture(root),
+    );
+    for (const k of ['model', 'dimensions', 'indexedWikiPaths', 'zeroNormVectors', 'malformedLines']) {
+      assert.deepEqual(overRest.source[k], onDisk.source[k], `source.${k} diverged`);
     }
   });
 });

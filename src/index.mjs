@@ -1139,11 +1139,11 @@ const TOOL_HANDLERS = {
   wiki_path: (reg, args) => wikiPathTool(reg, args),
   // C10 — read-only ranking of heavily-linked-but-thin "frontier" pages.
   find_boundary_pages: (reg, args) => findBoundaryPagesTool(reg, args),
-  // C11 — read-only detection of quasi-twin page pairs (cosine over the local
-  // Smart Connections vector store). LOCAL-VAULT-ONLY, which is NOT the same as
-  // LOCAL_ONLY_TOOL_NAMES: it writes nothing and stays exposed on a gated
-  // deployment; it declines per CALL for a vault with no disk (`available:
-  // false`, `reason: 'remote-vault'`). See LOCAL_VAULT_ONLY_TOOL_NAMES.
+  // C11 — read-only detection of quasi-twin page pairs (cosine over the Smart
+  // Connections vector store). NO LONGER LOCAL-VAULT-ONLY as of v0.82.0: a
+  // networked vault is read through the bridge's GET /smart-env/sources, so the
+  // tool declines only when that route is absent (`bridge-route-absent`), not
+  // because the vault is remote. See LOCAL_VAULT_ONLY_TOOL_NAMES.
   find_twin_pages: (reg, args) => findTwinPagesTool(reg, args),
   // Crawl4AI roadmap W-A — read-only BM25 relevance filter over given markdown.
   filter_relevant_blocks: (reg, args) => filterRelevantBlocksTool(reg, args),
@@ -1194,19 +1194,28 @@ const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault']);
  * If any of those stops being true, this tool belongs in a third category —
  * not silently in this one.
  *
- * What "local-only" actually means for this tool is a property of the VAULT:
+ * What "local-only" actually meant for that tool was a property of the VAULT:
  * Smart Connections' vector store is a dot-directory the REST API does not
- * serve, so a vault with no local path cannot be answered. That is decided per
- * CALL, and the tool already does it — `available: false`, `reason:
- * 'remote-vault'`, and NO `pairs` key, so "I could not look" cannot be misread
- * as "I looked and found none".
+ * serve, so a vault with no local path could not be answered.
  *
- * This Set exists so the distinction is declared rather than implied, and so
- * `tests/local-vault-only.test.mjs` can hold three invariants that no comment
- * could: the two Sets stay disjoint, every member says so in its own tool
- * description, and no member is hidden by gating.
+ * ---------------------------------------------------------------------------
+ * AND THAT IS WHY THIS SET IS NOW EMPTY (v0.82.0)
+ * ---------------------------------------------------------------------------
+ * The premise was never "remote vaults are unanswerable" — it was "nothing
+ * serves that dot-directory". The bridge now does, via `GET /smart-env/sources`,
+ * so `find_twin_pages` runs against a networked vault and has left this Set.
+ * What remains is a property of the PEER, not of locality: a bridge too old to
+ * serve the route yields `reason: 'bridge-route-absent'`, which names something
+ * the operator can fix.
+ *
+ * The Set is KEPT, empty, rather than deleted. The distinction it draws — a
+ * deployment gate versus a per-vault capability — cost a review to get right and
+ * is the first thing the next such tool will need. `tests/local-vault-only.test.mjs`
+ * pins its emptiness explicitly, and keeps the three invariants armed for
+ * whatever is added next: the two Sets stay disjoint, every member says so in
+ * its own tool description, and no member is hidden by gating.
  */
-const LOCAL_VAULT_ONLY_TOOL_NAMES = new Set(['find_twin_pages']);
+const LOCAL_VAULT_ONLY_TOOL_NAMES = new Set([]);
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
 // module load — any mismatch (typo, forgotten handler, orphan handler) is a

@@ -23,7 +23,17 @@
  *                                     disque, ce qui se décide À L'APPEL, vault
  *                                     par vault.
  *
- * Ces tests tiennent l'invariant qu'aucun commentaire ne pouvait tenir.
+ * ÉPILOGUE (v0.82.0) — LE SECOND ENSEMBLE EST DÉSORMAIS VIDE. La prémisse n'a
+ * jamais été « un vault distant est inanalysable », mais « rien ne sert ce
+ * dot-répertoire ». Le pont le sert maintenant (`GET /smart-env/sources`), donc
+ * `find_twin_pages` tourne sur un vault distant et a quitté l'ensemble. Ce qui
+ * reste est une propriété du PAIR, pas de la localité : un pont trop ancien
+ * répond `bridge-route-absent`, qui nomme quelque chose à réparer.
+ *
+ * L'ensemble est CONSERVÉ vide plutôt que supprimé : la distinction a coûté une
+ * revue, et les invariants restent armés pour le prochain outil qui en aura
+ * besoin. Un test épingle explicitement la vacuité — sans quoi les boucles
+ * ci-dessous passeraient au vert en ne vérifiant plus rien.
  */
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
@@ -44,6 +54,13 @@ const {
 } = ROUTER;
 
 describe('the two "local-only" sets are different things', () => {
+  test('LOCAL_VAULT_ONLY_TOOL_NAMES is EMPTY, deliberately — and that is asserted, not assumed', () => {
+    // Every other test in this describe iterates the set. An empty set makes
+    // them all vacuously green, so the emptiness itself has to be the claim:
+    // if a tool is ever added, this fails and the author must state why here.
+    assert.deepEqual([...LOCAL_VAULT_ONLY_TOOL_NAMES], [], 'v0.82.0 emptied it — see the header');
+  });
+
   test('they are disjoint — a tool is one or the other, never both', () => {
     const both = [...LOCAL_VAULT_ONLY_TOOL_NAMES].filter((n) => LOCAL_ONLY_TOOL_NAMES.has(n));
     assert.deepEqual(both, [], 'a deployment gate and a per-vault capability are not the same claim');
@@ -99,13 +116,21 @@ describe('a local-vault-only tool says so, and proves it at call time', () => {
     }
   });
 
-  test('find_twin_pages declines on a vault with no disk, and the decline is not zero', async () => {
+  test('a vault whose BRIDGE is too old declines by naming that, not by calling itself remote', async () => {
+    // The decline that replaced `remote-vault`. It must name the thing the
+    // operator can act on — an upgradeable bridge — rather than a fact about
+    // topology they cannot change.
     const registry = {
       resolveVault: () => ({ name: 'r', type: 'remote', baseUrl: 'https://127.0.0.1:27126' }),
     };
-    const res = await findTwinPagesTool(registry, {});
+    const notFound = Object.assign(new Error('404'), { status: 404, kind: 'not_found' });
+    const res = await findTwinPagesTool(registry, {}, {
+      getSmartEnvSources: async () => { throw notFound; },
+    });
     assert.equal(res.available, false);
-    assert.equal(res.reason, UNAVAILABLE.REMOTE_VAULT);
+    assert.equal(res.reason, UNAVAILABLE.BRIDGE_ROUTE_ABSENT);
+    assert.match(res.detail, /upgrade/i, 'the decline must say what to do about it');
+    assert.match(res.detail, /NOT a finding/i);
     // THE SHAPE IS THE GUARANTEE, and the argument has to be stated correctly:
     // an UNGUARDED `result.pairs.length` THROWS when the key is absent, which
     // is what stops "I could not look" from being read as "I looked and found

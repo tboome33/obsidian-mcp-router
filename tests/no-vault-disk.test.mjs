@@ -568,7 +568,7 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     download_page_assets: 'writes bytes into the vault through an argument path — local-machine axis',
     plan_vault: 'drives setup-vault.mjs in a child process — writes to the HOST',
     provision_vault: 'drives setup-vault.mjs in a child process — writes to the HOST',
-    find_twin_pages: 'reads the Smart Connections dot-directory the REST API does not serve; declines per call on a diskless vault (available:false, reason:remote-vault)',
+    find_twin_pages: "since v0.82.0 it HAS a diskless path (the bridge's GET /smart-env/sources), so it is no longer exempt for the old reason. It is exempt for a fixture reason: a derived threshold needs ~9 comparable pages and this bench's vault has two, so exercising it here would only ever measure `corpus-too-small`. Its disk-independence is proven in find-twin-pages.test.mjs, where the REST path runs to a real ranking with an `fs` that throws on every access",
     open_in_obsidian: 'drives the bridge / view-agent, not the vault REST surface',
     get_view_link: 'calls the optional external view-agent; absent without OBSIDIAN_ROUTER_VIEW_AGENT_URL',
     // Pure, argument-in/argument-out: they never see a vault at all.

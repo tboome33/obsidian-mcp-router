@@ -85,6 +85,31 @@ The port number itself is not a secret: it is not an authentication credential, 
 
 One more consequence: `build_open_link` normally *verifies* a path against the local disk and corrects or refuses a wrong one. It cannot do that for a vault with no disk, so its result carries **`pathVerified: false`** and a `verification` sentence. The URL is well-formed; it is not proof the file exists.
 
+## `find_twin_pages` on a remote vault (v0.82.0)
+
+`find_twin_pages` compares every page against every other by cosine, using the vectors Smart Connections keeps in `<vault>/.smart-env/multi/`. That is a **dot-directory the Local REST API does not serve** — and not by oversight: measured on a real vault, Obsidian's own `vault.getFiles()` returns zero entries under `.smart-env`, so nothing in the core API can see it.
+
+The bridge can, because it is a plugin and has `vault.adapter`. It serves those records at:
+
+```
+GET /smart-env/sources     (Bearer-authenticated, like reading a note)
+```
+
+so the tool now works on a networked vault. **This needs obsidian-mcp-router-bridge 0.9.0+ on the machine running that vault**; against an older one the tool answers `available: false, reason: "bridge-route-absent"` and tells you to upgrade.
+
+What the route sends is the store's whole-note record lines and nothing else — the bridge does not parse a record or look at a vector, so the router remains the single definition of what the store means. Both paths then run the *same* comparison. Measured on this project's own vault, disk and remote return identical pairs, an identical derived threshold (0.9325587591708842) and identical exclusion counts.
+
+The cost is real and worth knowing before you point it at a vault across a slow link:
+
+| | this vault |
+|---|---|
+| store on disk | 166 MB |
+| sent (whole-note records only) | 22.3 MB |
+| **on the wire, gzipped** | **4.3 MB** |
+| wall clock, loopback | 3.5 s (vs 0.6 s on disk) |
+
+Compression is negotiated automatically and the router's HTTP client inflates it transparently — there is nothing to configure. If the store is larger than the bridge will send in one response, the tool answers `store-truncated` rather than comparing a prefix of your vault and calling the result "no twins".
+
 ## Step 3 — production
 
 If the vault is reachable from outside your LAN (over the public Internet, or even over an untrusted Wi-Fi), do not rely on the plugin's self-signed cert + Bearer token alone. Put it behind a reverse proxy with:

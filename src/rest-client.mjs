@@ -65,14 +65,18 @@ export class RestApiError extends Error {
   }
 }
 
-function categorizeFetchError(err, vault, urlPath) {
+function categorizeFetchError(err, vault, urlPath, budgetMs) {
   // undici wraps node errors in a `cause` chain.
   const cause = err?.cause;
   const code = err?.code || cause?.code;
 
   if (err.name === 'AbortError') {
+    // The budget that actually applied, which is not always `vault.timeoutMs`:
+    // a caller may override it per request. Naming the vault's default here
+    // would misreport the deadline that was really missed.
+    const ms = Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : vault.timeoutMs;
     return new RestApiError(
-      `[${vault.name}] timed out after ${vault.timeoutMs}ms calling ${urlPath}`,
+      `[${vault.name}] timed out after ${ms}ms calling ${urlPath}`,
       {
         kind: 'timeout',
         vaultName: vault.name,
@@ -323,9 +327,14 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
   return { res, currentUrl };
 }
 
-async function request(vault, method, urlPath, { headers = {}, body, json = true } = {}) {
+async function request(vault, method, urlPath, { headers = {}, body, json = true, timeoutMs } = {}) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), vault.timeoutMs);
+  // Per-request override, for the rare endpoint whose payload is not on the
+  // scale the vault's default was chosen for. `/smart-env/sources` returns the
+  // whole vector store — 22 MB on this fleet's largest vault, 3.9 s on loopback
+  // — against a default of 10 s that was sized for single-note reads.
+  const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : vault.timeoutMs;
+  const timeout = setTimeout(() => controller.abort(), budget);
 
   let res;
   let finalUrl;
@@ -342,7 +351,7 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
   } catch (err) {
     clearTimeout(timeout);
     if (err instanceof RestApiError) throw err;
-    throw categorizeFetchError(err, vault, urlPath);
+    throw categorizeFetchError(err, vault, urlPath, budget);
   } finally {
     clearTimeout(timeout);
   }
@@ -396,6 +405,41 @@ export function listFilesIn(vault, directory = '') {
 
 export function getFileContent(vault, filePath) {
   return request(vault, 'GET', `/vault/${encodePath(filePath)}`, { json: false });
+}
+
+/**
+ * Default deadline for `/smart-env/sources`. The whole vector store travels in
+ * one response: 22 MB on this fleet's largest vault, 3.9 s over loopback with
+ * gzip negotiated. A vault's ordinary `timeoutMs` (10 s by default) is sized
+ * for single-note reads and would abort a healthy transfer on a slow link.
+ */
+export const SMART_ENV_TIMEOUT_MS = 240_000;
+
+/**
+ * GET /smart-env/sources — the Smart Connections whole-note records, as NDJSON.
+ *
+ * A BRIDGE route, not a Local REST API one: the store lives in a dot-directory
+ * the core API does not serve. Returns the raw body (`json: false`) because the
+ * payload is newline-delimited, not a JSON document — the first line is a header
+ * object and the rest are the store's own record lines, which the caller feeds
+ * to `parseAjsonSources` verbatim.
+ *
+ * A 404 here means THE ROUTE IS ABSENT — an older bridge, or none — never "this
+ * vault has no vectors"; the route itself answers that case with a 200 whose
+ * header says so. The caller must keep those two apart: one asks the user to
+ * upgrade the bridge, the other is an ordinary fact about the vault.
+ *
+ * @param {object} vault registry vault descriptor
+ * @param {{timeoutMs?: number}} [opts]
+ * @returns {Promise<string>} the NDJSON body
+ */
+export function getSmartEnvSources(vault, opts = {}) {
+  return request(vault, 'GET', '/smart-env/sources', {
+    json: false,
+    timeoutMs: Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+      ? opts.timeoutMs
+      : SMART_ENV_TIMEOUT_MS,
+  });
 }
 
 /**

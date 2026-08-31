@@ -17,7 +17,7 @@ Lot 1 of the "backend interface, HTTP-only profile as proof" chantier. It shippe
 - **The key-transport arbitration is NOT settled here.** The mother decision reserved it to this lot (restricted-permission file vs Vaultwarden on demand), and it is an operational security choice, not a code choice. The generator is deliberately agnostic: it can write a `0600` file *or* emit cleartext for piping into a store. The arbitration is written up for decision in the vault.
 - **`--out` on Windows is advisory.** The POSIX mode is set but NTFS ACLs govern; the tool says so rather than implying a guarantee it cannot make.
 - **Nothing rotates or revokes.** A key exported once lives until someone regenerates it in Obsidian. A fleet-wide rotation helper is the obvious follow-up and is out of scope here.
-- **The remote-vault profile is not proven functionally equivalent.** The 50/50 rig showed no tool *requires* vault disk; 20 of 50 did not traverse their full path, and two tools degrade by design (`build_open_link` loses its link, `find_twin_pages` reports `available:false`). Equivalence remains unproven — see the vault page.
+- **The remote-vault profile is not proven functionally equivalent.** The 50/50 rig showed no tool *requires* vault disk; 20 of 50 did not traverse their full path, and two tools degrade by design (`build_open_link` loses its link, `find_twin_pages` reports `available:false`). Equivalence remains unproven — see the vault page. — **`find_twin_pages` half closed in v0.82.0**: it no longer degrades on a remote vault (measured, identical pairs/threshold/exclusions vs disk). `build_open_link`'s `pathVerified:false` stands.
 
 ## ✅ v0.77.0 — two ports per vault, and a reaper that outlasts a coffee break (shipped 2026-08-30)
 
