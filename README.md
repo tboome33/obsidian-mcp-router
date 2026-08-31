@@ -40,10 +40,11 @@ What you get:
 | Vault provisioning (v0.35+) | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian` |
+| Wiki maintenance & sources | `write_bundle` (journaled multi-file bundle — all-or-nothing apply with rollback), `refresh_okf_projections` (regenerate the generated OKF navigation), `build_search_index` (local BM25 search tier, works on every vault), `record_source` / `audit_sources` (provenance ledger for ingested content) |
+| Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian`, `get_view_link` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
-Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. Bridge **≥ 0.7.0** also registers `PUT /vault-cas/*`, which makes `ifMatch` writes **atomic** (read-compare-write inside the Obsidian process); without it, `ifMatch` still works everywhere through a checked — but non-atomic — GET-compare fallback. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
+Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. Bridge **≥ 0.7.0** also registers `PUT /vault-cas/*`, which makes `ifMatch` writes **atomic** (read-compare-write inside the Obsidian process); without it, `ifMatch` still works everywhere through a checked — but non-atomic — GET-compare fallback. Bridge **≥ 0.9.0** additionally serves `GET /smart-env/sources` — the Smart Connections vector store, a dot-directory Local REST API itself will not serve — which is what lets `find_twin_pages` run against a **remote** vault; and its loopback-only `GET /ping?v=<vault>` answers 200 only for the vault actually listening on that port, the one-click self-test behind click-to-open port checks. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in since v0.56.0) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
 
 ## Deployment modes
 
@@ -61,7 +62,7 @@ Three independent env vars turn the router into a scoped instance — useful whe
 |---|---|---|
 | `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` | Whitelist of vault names this instance sees. Comma-separated, spaces tolerated. Vaults outside the list are moved to `skipped[]` with reason `"not in OBSIDIAN_ROUTER_ALLOWED_VAULTS whitelist"`. Applied **before** default-vault resolution, so `defaultVault` falls through to the filtered set. | All vaults visible |
 | `VAULT_<NAME>=<JSON>` | A vault defined entirely in an env var (JSON) — editable from the MCPHub dashboard. A 3rd config source merged after `portRegistry` + `remoteVaults` (overrides any same-name vault). Required: `name`, `baseUrl`, `apiKey` (the **bare token**). Optional: `description`, `tlsInsecure`, `timeoutMs`. Malformed entries are skipped with a redacted warning. See "[`VAULT_*` env-var config](#vault_-env-var-config-dashboard-editable)" below. | (none) |
-| `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 12 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`, `refresh_okf_projections`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
+| `OBSIDIAN_ROUTER_READONLY=true` | Disable write tools. The 15 write tools (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `build_search_index`) are filtered from `ListTools` **and** refused at `CallTool` time — even when a client knows the name and calls it directly. Truthy tokens: `true` / `1` / `yes` / `on` (case-insensitive). | Write tools enabled |
 | `OBSIDIAN_ROUTER_USER_ID=<slug>` | Audit log: every **successful** write call appends a line `[claude-write by <slug>] YYYY-MM-DD HH:MM — <tool> path="<path>"` to the touched vault's `wiki-meta/journal.md`. Best-effort (audit failure logs to stderr, never blocks the write). Uses the REST client directly to avoid the recursion that would happen via the `append_to_file` tool wrapper. | No audit log |
 
 The three vars compose freely: an instance can be scoped to one vault (`ALLOWED_VAULTS=karine`) AND read-only (`READONLY=true`) AND attribute writes (`USER_ID=karine-guest`). Setting none = v0.8.x behavior exactly.
@@ -107,7 +108,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **51 slash
 
 > 📖 **Feature guide (prose, by category)** — the tables in this README are a reference card; for a readable walkthrough of every feature (the need it answers, what it does, how to use it), see [`docs/features/`](./docs/features/README.md) (13 categorized pages, French).
 
-### 🔧 16 MCP wrappers — one per core vault tool
+### 🔧 17 MCP wrappers — one per core vault tool
 
 #### `discover/` (2)
 
@@ -125,7 +126,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **51 slash
 | `/obsidian-router:read-search-smart` | Semantic search via Smart Connections (cosine scores + breadcrumbs) | *"find notes about X"*, *"semantic search for X"* / *"trouve mes notes sur X"*, *"recherche sémantique sur X"* |
 | `/obsidian-router:read-frontmatter` | Read frontmatter (whole object or one key, types preserved) | *"what's the status of X"*, *"show me the metadata of X"* / *"quel est le statut de X"*, *"montre les méta de X"* |
 
-#### `write/` (5)
+#### `write/` (6)
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
@@ -134,6 +135,7 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **51 slash
 | `/obsidian-router:write-patch` | Surgical PATCH on heading / block / frontmatter | *"edit the X section in Y"*, *"replace the content under X"* / *"édite la section X dans Y"*, *"remplace le contenu sous X"* |
 | `/obsidian-router:write-frontmatter-set` | Set/replace a single frontmatter key | *"set status to closed on X"*, *"tag this with X"* / *"passe le statut de X à closed"*, *"tag ça avec X"* |
 | `/obsidian-router:write-frontmatter-merge` | Apply multiple frontmatter updates in sequence | *"on X set status=closed outcome=tp1"* / *"sur X mets status=closed outcome=tp1"* |
+| `/obsidian-router:write-bundle` | Journaled multi-file bundle — all-or-nothing apply with rollback | *"write these 4 pages atomically"* / *"écris ces pages d'un bloc"* |
 
 #### `manage/` (2)
 
@@ -177,7 +179,7 @@ See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and 
 | `/obsidian-router:meta-audit-bridge-readiness` | Audit click-to-open readiness across vaults (bridge ≥0.2.0, REST API ≥4.0.0, insecure HTTP, live `/open` probe) | *"audit bridge readiness"*, *"is click-to-open ready"* / *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* |
 | `/obsidian-router:conventions` | Install / remove / status / propagate CLAUDE.md conventions (source-type, bilingual, heading-hierarchy, ...) across vaults | *"install source-type convention on X"*, *"list conventions"* / *"installe la convention source-type sur X"*, *"liste les conventions"* |
 
-### 📚 21 knowledge-management commands (Karpathy-style LLM-wiki)
+### 📚 24 knowledge-management commands (Karpathy-style LLM-wiki)
 
 A small workflow on top of the router for an LLM-maintained, structured markdown knowledge base where pages reference each other and grow with use.
 
@@ -203,6 +205,8 @@ A small workflow on top of the router for an LLM-maintained, structured markdown
 | `/obsidian-router:okf-export` | Export a wiki subset as a shareable **OKF v0.1 knowledge bundle** — slugified filenames, relative links, per-folder indexes, conformance self-checked, optional agent README | *"export this folder as an OKF bundle"*, *"publish my wiki as a knowledge bundle"* / *"exporte ce dossier en bundle OKF"*, *"publie mon wiki en bundle"* |
 | `/obsidian-router:okf-projections` | Regenerate the **generated OKF navigation** inside `wiki/` — root `index.md` (`okf_version` only), one `index.md` per directory, newest-first `log.md`; auto-refreshed ~15 s after each write once initialised; `--check` = drift report | *"refresh the OKF projections"*, *"rebuild the wiki indexes"* / *"rafraîchis les projections OKF"*, *"regénère les index du wiki"* |
 | `/obsidian-router:okf-check` | Validate an OKF bundle (ours or third-party) against the Open Knowledge Format v0.1 conformance rules — one of the ecosystem's first OKF validators | *"validate this OKF bundle"*, *"is this bundle conformant?"* / *"valide ce bundle OKF"*, *"ce bundle est-il conforme ?"* |
+| `/obsidian-router:build-search-index` | Build/refresh the local BM25 search index — a plugin-free search tier that works on every vault, idempotent | *"build the search index"* / *"construis l'index de recherche"* |
+| `/obsidian-router:wiki-boundary` | Rank heavily-linked-but-thin "frontier" pages — the ones worth writing next | *"what should I write next"* / *"pages frontière du wiki"* |
 | `/obsidian-router:wiki-refresh-digests` | Regenerate the per-page digest sidecars (concepts/claims/keywords) used by `wiki-lint --deep` and the graph | *"refresh the digests"*, *"rebuild page digests"* / *"rafraîchis les digests"*, *"régénère les digests de page"* |
 | `/obsidian-router:who-is-speaking` | Identify the current family member in a shared vault and lock routing per-member | *"who is speaking"*, *"it's Karine"* / *"qui parle"*, *"c'est Karine"* |
 
@@ -494,7 +498,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 47 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 51 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -1071,10 +1075,11 @@ Ce que tu obtiens :
 | Provisionnement de vault (v0.35+) | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) |
 | Conversion (v0.11+) | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Aussi `pdf_to_images` (rend les pages d'un PDF en PNG que le modèle peut *voir*) et `filter_relevant_blocks` (filtre de pertinence BM25 sur du markdown déjà acquis). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian` |
+| Maintenance du wiki & sources | `write_bundle` (bundle multi-fichiers journalisé — application tout-ou-rien avec rollback), `refresh_okf_projections` (régénère la navigation OKF générée), `build_search_index` (index BM25 local, marche sur tous les vaults), `record_source` / `audit_sources` (registre de provenance du contenu ingéré) |
+| Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian`, `get_view_link` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
-La recherche sémantique (`search_smart`), l'exécution Templater (`execute_template`) et les liens click-to-open (`build_open_link`, `open_in_obsidian`, le `clickToOpenUrl` auto-émis sur les résultats d'écriture) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart`, `/templates/execute` et `/open/*` sur Local REST API. Les outils de conversion nécessitent Python 3.10+ sur le `PATH` plus un `npm run install-markitdown` explicite (opt-in depuis v0.56.0) — voir la section anglaise « Conversion tools — runtime dependencies ». Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
+La recherche sémantique (`search_smart`), l'exécution Templater (`execute_template`) et les liens click-to-open (`build_open_link`, `open_in_obsidian`, le `clickToOpenUrl` auto-émis sur les résultats d'écriture) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart`, `/templates/execute` et `/open/*` sur Local REST API. Le bridge **≥ 0.7.0** enregistre aussi `PUT /vault-cas/*`, qui rend les écritures `ifMatch` **atomiques** (lecture-comparaison-écriture dans le process Obsidian) ; sans lui, `ifMatch` marche partout via un repli vérifié mais non atomique. Le bridge **≥ 0.9.0** sert en plus `GET /smart-env/sources` — le magasin de vecteurs Smart Connections, un dot-répertoire que Local REST API refuse lui-même de servir — ce qui permet à `find_twin_pages` de tourner sur un vault **distant** ; et son `GET /ping?v=<vault>` (loopback seul) ne répond 200 que pour le vault qui écoute réellement sur ce port — l'auto-test en un clic derrière les vérifications de ports du click-to-open. Les outils de conversion nécessitent Python 3.10+ sur le `PATH` plus un `npm run install-markitdown` explicite (opt-in depuis v0.56.0) — voir la section anglaise « Conversion tools — runtime dependencies ». Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
 
 ### Modes de déploiement
 
@@ -1084,7 +1089,7 @@ Le router tourne en deux modes, pilotés uniquement par variables d'environnemen
 - **Mode multi-tenant (v0.9.0+, opt-in)** : des variables indépendantes qui composent librement —
   - `OBSIDIAN_ROUTER_ALLOWED_VAULTS=a,b,c` — whitelist des vaults que cette instance voit ;
   - `VAULT_<NOM>=<JSON>` — un vault défini entièrement en variable d'env (voir la section [Config `VAULT_*`](#config-vault_-en-variable-denvironnement-éditable-depuis-le-dashboard)) ;
-  - `OBSIDIAN_ROUTER_READONLY=true` — masque de `ListTools` **et** refuse au `CallTool` les **12 outils d'écriture** (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`, `refresh_okf_projections`) ;
+  - `OBSIDIAN_ROUTER_READONLY=true` — masque de `ListTools` **et** refuse au `CallTool` les **15 outils d'écriture** (`write_file`, `append_to_file`, `patch_file`, `set_frontmatter`, `merge_frontmatter`, `move_file`, `delete_file`, `execute_template`, `download_page_assets`, `build_wiki_graph`, `provision_vault`, `refresh_okf_projections`, `write_bundle`, `record_source`, `build_search_index`) ;
   - `OBSIDIAN_ROUTER_USER_ID=<slug>` — journal d'audit de chaque écriture réussie dans le `wiki-meta/journal.md` du vault touché (masque aussi les outils local-only `plan_vault` / `provision_vault`).
 
 Tableau détaillé, exemple d'entrée MCPHub et recette de déploiement complète : voir la section anglaise « [Deployment modes](#deployment-modes) ».
@@ -1116,7 +1121,7 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash
 
 > 📖 **Guide des features (en prose, par catégorie)** — les tables de ce README sont un aide-mémoire ; pour une explication lisible de chaque feature (le besoin auquel elle répond, ce qu'elle fait, comment l'utiliser), voir [`docs/features/`](./docs/features/README.md) (13 fiches classées par catégorie, en français).
 
-#### 🔧 16 wrappers MCP — un par outil de base du vault
+#### 🔧 17 wrappers MCP — un par outil de base du vault
 
 ##### `discover/` (2)
 
@@ -1134,7 +1139,7 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash
 | `/obsidian-router:read-search-smart` | Recherche sémantique via Smart Connections (cosine + breadcrumbs) | *"trouve mes notes sur X"*, *"recherche sémantique sur X"* / *"find notes about X"*, *"semantic search for X"* |
 | `/obsidian-router:read-frontmatter` | Lit le frontmatter (objet entier ou une clé, types préservés) | *"quel est le statut de X"*, *"montre les méta de X"* / *"what's the status of X"*, *"show me the metadata of X"* |
 
-##### `write/` (5)
+##### `write/` (6)
 
 | Commande | Effet | Phrases déclencheuses |
 |---|---|---|
@@ -1143,6 +1148,7 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash
 | `/obsidian-router:write-patch` | PATCH chirurgical sur heading / block / frontmatter | *"édite la section X dans Y"*, *"remplace le contenu sous X"* / *"edit the X section in Y"*, *"replace the content under X"* |
 | `/obsidian-router:write-frontmatter-set` | Set/remplace une seule clé du frontmatter | *"passe le statut de X à closed"*, *"tag ça avec X"* / *"set status to closed on X"*, *"tag this with X"* |
 | `/obsidian-router:write-frontmatter-merge` | Applique plusieurs updates de frontmatter en séquence | *"sur X mets status=closed outcome=tp1"* / *"on X set status=closed outcome=tp1"* |
+| `/obsidian-router:write-bundle` | Bundle multi-fichiers journalisé — application tout-ou-rien avec rollback | *"écris ces 4 pages d'un bloc"* / *"write these pages atomically"* |
 
 ##### `manage/` (2)
 
@@ -1186,7 +1192,7 @@ Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le c
 | `/obsidian-router:meta-audit-bridge-readiness` | Audite la disponibilité du click-to-open sur les vaults (bridge ≥0.2.0, REST API ≥4.0.0, HTTP insecure, probe live `/open`) | *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* / *"audit bridge readiness"*, *"is click-to-open ready"* |
 | `/obsidian-router:conventions` | Installe / retire / statut / propage les conventions CLAUDE.md (source-type, bilingual, heading-hierarchy, ...) sur les vaults | *"installe la convention source-type sur X"*, *"liste les conventions"* / *"install source-type convention on X"*, *"list conventions"* |
 
-#### 📚 21 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
+#### 📚 24 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
 
 Un petit workflow par-dessus le router pour une base de connaissances en markdown structuré, maintenue par le LLM, où les pages se référencent entre elles et croissent avec l'usage.
 
@@ -1212,6 +1218,8 @@ Un petit workflow par-dessus le router pour une base de connaissances en markdow
 | `/obsidian-router:okf-export` | Exporte un sous-ensemble du wiki en **bundle OKF v0.1** partageable — noms slugifiés, liens relatifs, index par dossier, conformité auto-vérifiée, README agent optionnel | *"exporte ce dossier en bundle OKF"*, *"publie mon wiki en bundle"* / *"export this folder as an OKF bundle"*, *"publish my wiki as a knowledge bundle"* |
 | `/obsidian-router:okf-projections` | Régénère la **navigation OKF générée** dans `wiki/` — `index.md` racine (`okf_version` seul), un `index.md` par répertoire, `log.md` newest-first ; auto-rafraîchie ~15 s après chaque écriture une fois initialisée ; `--check` = rapport de dérive | *"rafraîchis les projections OKF"*, *"regénère les index du wiki"* / *"refresh the OKF projections"* |
 | `/obsidian-router:okf-check` | Valide un bundle OKF (le nôtre ou un tiers) contre les règles de conformité Open Knowledge Format v0.1 — l'un des premiers validateurs de l'écosystème | *"valide ce bundle OKF"*, *"ce bundle est-il conforme ?"* / *"validate this OKF bundle"*, *"is this bundle conformant?"* |
+| `/obsidian-router:build-search-index` | Construit/rafraîchit l'index BM25 local — recherche sans plugin, sur tous les vaults, idempotent | *"construis l'index de recherche"* / *"build the search index"* |
+| `/obsidian-router:wiki-boundary` | Classe les pages « frontière » — très liées mais presque vides, celles qui valent d'être écrites | *"qu'est-ce que je devrais écrire ensuite"* / *"frontier pages"* |
 | `/obsidian-router:wiki-refresh-digests` | Régénère les digests sidecar par page (concepts/claims/keywords) utilisés par `wiki-lint --deep` et le graphe | *"rafraîchis les digests"*, *"régénère les digests de page"* / *"refresh the digests"*, *"rebuild page digests"* |
 | `/obsidian-router:who-is-speaking` | Identifie le membre de la famille courant dans un vault partagé et lock le routing par membre | *"qui parle"*, *"c'est Karine"* / *"who is speaking"*, *"it's Karine"* |
 
@@ -1421,7 +1429,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 48 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 51 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 
