@@ -174,16 +174,16 @@
 <p>Un seul process MCP qui connaît <strong>tous tes vaults Obsidian</strong> (locaux + distants). Chaque outil prend un paramètre <code>vault</code> (ou utilise le défaut). Plus besoin d'enregistrer un serveur MCP par vault.</p>
 
 <ul>
-  <li><strong>Depuis la v0.56.1</strong> : le plugin Claude Code <strong>embarque et lance le serveur</strong> — une installation = tout, une mise à jour = tout. Le serveur est déclaré dans le <code>.mcp.json</code> racine du plugin via <code>${CLAUDE_PLUGIN_ROOT}</code> ; <code>node_modules</code> auto-réparés au premier lancement. L'entrée manuelle <code>~/.claude.json</code> reste le parcours dev (Claude Desktop a son propre fichier, <code>claude_desktop_config.json</code>)</li>
+  <li><strong>Le plugin Claude Code embarque et lance le serveur</strong> — une installation = tout, une mise à jour = tout. Le serveur est déclaré dans le <code>.mcp.json</code> racine du plugin via <code>${CLAUDE_PLUGIN_ROOT}</code> ; <code>node_modules</code> auto-réparés au premier lancement. L'entrée manuelle <code>~/.claude.json</code> reste le parcours dev (Claude Desktop a son propre fichier, <code>claude_desktop_config.json</code>)</li>
   <li><strong>Vaults locaux + distants</strong> traités à l'identique — URL + clé API dans la config, terminé</li>
   <li><strong>Cross-vault</strong> : <code>vault: "*"</code> fan-out automatique sur tous les vaults</li>
   <li><strong>Mode lock</strong> : restreint la session à un seul vault (sécurité, focus) · <strong>Auto-enrichissement</strong> : Claude propose des saves wiki à 3 moments naturels, 4 modes (<code>ClaudeAsk</code> / <code>Hybrid</code> / <code>FullAuto</code> / <code>off</code>)</li>
-  <li><strong>Boîte à outils de conversion</strong> (v0.11+) : PDF / DOCX / XLSX / PPTX / image (OCR) / audio / YouTube / page web / dépôt git → markdown — backend <strong>MarkItDown opt-in</strong> depuis v0.56.0 (<code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque) ; <strong>Docling</strong> second opt-in (<code>npm run install-docling</code>) pour le PDF haute fidélité + <code>pdf_to_images</code> (le modèle <em>voit</em> une page de PDF) ; <strong>filtre de pertinence BM25</strong> (v0.47) qui retire les blocs hors-sujet avant synthèse</li>
+  <li><strong>Boîte à outils de conversion</strong> : PDF / DOCX / XLSX / PPTX / image (OCR) / audio / YouTube / page web / dépôt git → markdown — backend <strong>MarkItDown opt-in</strong> (<code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque) ; <strong>Docling</strong> second opt-in (<code>npm run install-docling</code>) pour le PDF haute fidélité + <code>pdf_to_images</code> (le modèle <em>voit</em> une page de PDF) ; <strong>filtre de pertinence BM25</strong> qui retire les blocs hors-sujet avant synthèse</li>
   <li><strong>Knowledge graph</strong> : graphe JSON typé + parcours de lecture + voisines + plus court chemin de liens ; export en <code>llms.txt</code> ou <strong>bundle OKF</strong> (Open Knowledge Format v0.1 de Google, avec l'un des premiers validateurs de l'écosystème)</li>
-  <li><strong>Analyse du wiki</strong> (v0.71–0.82) : <code>find_boundary_pages</code> classe les pages « frontière » (très liées, presque vides — celles qui valent d'être écrites) ; <code>find_twin_pages</code> repère les paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, avec un seuil dérivé de la distribution propre à <em>votre</em> vault — et marche aussi sur les vaults distants (bridge ≥ 0.9.0)</li>
-  <li><strong>Click-to-open</strong> : liens cliquables dans le chat via la route <code>GET /open/&lt;path&gt;</code> du bridge ; <code>open_in_obsidian</code> fait pareil côté serveur (sans navigateur — idéal Claude Desktop). Depuis la v0.79 le lien survit à la perte du disque du vault (<code>insecurePort</code> déclarable en config, exporté seulement sur <code>--with-click-to-open</code> explicite), et l'auto-test <code>GET /ping?v=&lt;vault&gt;</code> prouve en un clic <em>quel</em> vault répond sur un port</li>
-  <li><strong>Wizard de création de vault</strong> (v0.35+) : <code>plan_vault</code> → ajustements → <code>provision_vault</code>, défauts d'abord (happy path = 1 interaction)</li>
-  <li><strong>Mode multi-tenant</strong> (v0.9+, opt-in) : scoper une instance par variables d'env — whitelist de vaults, lecture seule, audit d'écriture par utilisateur — pour les déploiements MCPHub/proxy</li>
+  <li><strong>Analyse du wiki</strong> : <code>find_boundary_pages</code> classe les pages « frontière » (très liées, presque vides — celles qui valent d'être écrites) ; <code>find_twin_pages</code> repère les paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, avec un seuil dérivé de la distribution propre à <em>votre</em> vault — et marche aussi sur les vaults distants (bridge ≥ 0.9.0)</li>
+  <li><strong>Click-to-open</strong> : liens cliquables dans le chat via la route <code>GET /open/&lt;path&gt;</code> du bridge ; <code>open_in_obsidian</code> fait pareil côté serveur (sans navigateur — idéal Claude Desktop). Le lien survit à la perte du disque du vault (<code>insecurePort</code> déclarable en config, exporté seulement sur <code>--with-click-to-open</code> explicite), et l'auto-test <code>GET /ping?v=&lt;vault&gt;</code> prouve en un clic <em>quel</em> vault répond sur un port</li>
+  <li><strong>Wizard de création de vault</strong> : <code>plan_vault</code> → ajustements → <code>provision_vault</code>, défauts d'abord (happy path = 1 interaction)</li>
+  <li><strong>Mode multi-tenant</strong> (opt-in) : scoper une instance par variables d'env — whitelist de vaults, lecture seule, audit d'écriture par utilisateur — pour les déploiements MCPHub/proxy</li>
   <li><strong>10 hooks</strong> — 2 actifs d'office pour tout installeur du plugin (<code>hot-cache-load</code> + <code>decisions-recall</code>, via <code>hooks/hooks.json</code>) ; les 8 autres opt-in, auto-câblés en fin de bootstrap <code>setup-vault</code> (<code>--no-hooks</code> pour s'en passer) ou via <code>node scripts/setup-vault.mjs --install-hooks</code> : auto-journal de session, garde du hot-cache, autocommit wiki, linter de liens, détecteur de dérive doc, check de mise à jour…</li>
 </ul>
 
@@ -195,16 +195,16 @@ SERVEUR MCP (obsidian-mcp-router) — process Node sur le PC
     ↑ MCP sur stdio, spawné par Claude Code
 PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre>
 
-<p><strong>Bridge</strong> (v0.9.0) — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>/ping</code>, <code>PUT /vault-cas/*</code> depuis 0.7.0 — écritures <code>ifMatch</code> atomiques —, <code>GET /smart-env/sources</code> depuis 0.9.0 — sert le magasin de vecteurs Smart Connections, un dot-répertoire que l'API REST refuse elle-même de servir, ce qui rend <code>find_twin_pages</code> possible sur un vault distant) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater, les liens click-to-open, les écritures conditionnelles atomiques et l'analyse de jumelles à distance (sans lui, <code>ifMatch</code> retombe sur un repli vérifié non atomique) — le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
+<p><strong>Bridge</strong> — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>/ping</code>, <code>PUT /vault-cas/*</code> ≥ 0.7.0 — écritures <code>ifMatch</code> atomiques —, <code>GET /smart-env/sources</code> ≥ 0.9.0 — sert le magasin de vecteurs Smart Connections, un dot-répertoire que l'API REST refuse elle-même de servir, ce qui rend <code>find_twin_pages</code> possible sur un vault distant) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater, les liens click-to-open, les écritures conditionnelles atomiques et l'analyse de jumelles à distance (sans lui, <code>ifMatch</code> retombe sur un repli vérifié non atomique) — le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
 
-<p><strong>Serveur MCP</strong> — process Node ≥ 20.18.1 sur le PC, spawné par Claude Code (via le plugin depuis v0.56.1, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
+<p><strong>Serveur MCP</strong> — process Node ≥ 20.18.1 sur le PC, spawné par Claude Code (via le plugin — le cas normal —, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
 
-<p><strong>Plugin Claude Code</strong> — ses commands/skills orchestrent les outils MCP du serveur ; deux hooks lisent le vault directement sur disque (<code>hot-cache-load</code>, <code>decisions-recall</code>). Depuis la v0.56.1 il <strong>embarque et lance le serveur</strong> : une installation = tout, une mise à jour = tout.</p>
+<p><strong>Plugin Claude Code</strong> — ses commands/skills orchestrent les outils MCP du serveur ; deux hooks lisent le vault directement sur disque (<code>hot-cache-load</code>, <code>decisions-recall</code>). Il <strong>embarque et lance le serveur</strong> : une installation = tout, une mise à jour = tout.</p>
 
 <h2>Setup d'un vault</h2>
 
 <ol>
-  <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code</strong> = le serveur est livré et lancé automatiquement (v0.56+). Le clone + <code>npm link</code> (<code>/obsidian-router:meta-setup</code>) reste le parcours développeur uniquement.</li>
+  <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code</strong> = le serveur est livré et lancé automatiquement. Le clone + <code>npm link</code> (<code>/obsidian-router:meta-setup</code>) reste le parcours développeur uniquement.</li>
   <li>Avoir Node.js ≥ 20.18.1. Outils de conversion : <strong>MarkItDown est opt-in</strong> (<code>npm run install-markitdown</code> · Docling : <code>npm run install-docling</code>) — Python 3.10+ requis seulement pour ces extras ; sans backend, les outils renvoient un hint d'installation actionnable.</li>
   <li><strong>Chemin le plus simple</strong> : <code>/obsidian-router:meta-attach-vault</code> — wizard interactif qui attache un vault à un workspace (cas courant), bootstrappe un vault autonome, ou enregistre un vault distant. Provisionne les plugins + scaffolde le wiki + lie le <code>.env</code> + picker de conventions.</li>
   <li>Alternative CLI :
@@ -235,7 +235,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_ALLOWED_VAULTS</td>
-    <td>Multi-tenant (v0.9+) : whitelist des vaults visibles par cette instance (séparés par des virgules). Les autres sont skippés.</td>
+    <td>Multi-tenant : whitelist des vaults visibles par cette instance (séparés par des virgules). Les autres sont skippés.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
@@ -268,7 +268,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>~/.claude.json</td>
-    <td>Plus obligatoire depuis v0.56 : le plugin déclare le serveur (clé <code>router</code>) dans son <code>.mcp.json</code> racine via <code>${CLAUDE_PLUGIN_ROOT}</code> — PAS en inline dans <code>plugin.json</code> (Claude Code 2.1.220 ignore cette forme). L'entrée manuelle <code>mcpServers.obsidian-router</code> = parcours dev ; garder les deux fait tourner <strong>deux process</strong> aux outils dupliqués — certains postes dev le font exprès ; <code>claude --plugin-dir &lt;checkout&gt;</code> remplace le plugin installé pour une session.</td>
+    <td>Parcours dev uniquement : le plugin déclare le serveur (clé <code>router</code>) dans son <code>.mcp.json</code> racine via <code>${CLAUDE_PLUGIN_ROOT}</code> — PAS en inline dans <code>plugin.json</code> (Claude Code 2.1.220 ignore cette forme). L'entrée manuelle <code>mcpServers.obsidian-router</code> = parcours dev ; garder les deux fait tourner <strong>deux process</strong> aux outils dupliqués — certains postes dev le font exprès ; <code>claude --plugin-dir &lt;checkout&gt;</code> remplace le plugin installé pour une session.</td>
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
@@ -284,11 +284,11 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>&lt;vault&gt;/wiki-meta/{catalog,journal,hot,overview}.md</td>
-    <td>Scaffolds du LLM-wiki façon Karpathy (catalogue, journal append-only, cache chaud, vue d'ensemble) — sous <code>wiki-meta/</code> depuis v0.12 (les pages utilisateur vivent sous <code>wiki/</code>). Renommés <code>index→catalog</code> / <code>log→journal</code> en v0.58 car OKF réserve ces deux basenames ; les anciens noms restent lus. Scaffoldés par <code>/obsidian-router:wiki</code>.</td>
+    <td>Scaffolds du LLM-wiki façon Karpathy (catalogue, journal append-only, cache chaud, vue d'ensemble) — sous <code>wiki-meta/</code> (les pages utilisateur vivent sous <code>wiki/</code>). Nommés <code>catalog</code>/<code>journal</code> plutôt qu'<code>index</code>/<code>log</code> car OKF réserve ces deux basenames ; les anciens noms restent lus. Scaffoldés par <code>/obsidian-router:wiki</code>.</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/wiki-meta/Sessions/</td>
-    <td>Journaux détaillés par session (écrits automatiquement par le hook <code>session-auto-journal</code> ; <code>log.md</code> reste un index mince).</td>
+    <td>Journaux détaillés par session (écrits automatiquement par le hook <code>session-auto-journal</code> ; <code>journal.md</code> reste un index mince).</td>
   </tr>
   <tr>
     <td>obsidian-mcp-router/docs/</td>
@@ -339,7 +339,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
-  <tr><td class="cmd">meta-setup</td><td class="desc">Installation manuelle du router (clone + npm link) — parcours développeur ; depuis v0.56 le plugin installe le serveur</td><td class="trigger">« installe le router » / "setup obsidian-mcp-router"</td></tr>
+  <tr><td class="cmd">meta-setup</td><td class="desc">Installation manuelle du router (clone + npm link) — parcours développeur ; une installation normale reçoit le serveur via le plugin</td><td class="trigger">« installe le router » / "setup obsidian-mcp-router"</td></tr>
   <tr><td class="cmd">meta-attach-vault</td><td class="desc">Wizard — attache un vault à un workspace (courant), autonome, ou distant</td><td class="trigger">« attache un vault à ce workspace » / "connect my remote vault"</td></tr>
   <tr><td class="cmd">meta-status</td><td class="desc">Health-check de tous les vaults avec pistes de fix</td><td class="trigger">« diagnostique le router » / "are my vaults reachable"</td></tr>
   <tr><td class="cmd">meta-sync-template</td><td class="desc">Propage plugins/snippets/docs du vault de référence (picker interactif)</td><td class="trigger">« synchronise le template » / "sync the template to all vaults"</td></tr>
@@ -395,7 +395,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
-    <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer. <strong><code>ifMatch</code> (v0.60)</strong> : rejouez le <code>contentSha256</code> de <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé depuis votre lecture — atomique avec bridge ≥ 0.7.0, repli vérifié sinon.</td>
+    <td><strong>Écritures &amp; gestion de fichiers.</strong> Créer/remplacer ; append ; patch chirurgical par heading/block/frontmatter ; suppression gardée (<code>confirm: true</code>) ; une ou plusieurs clés de frontmatter ; déplacer/renommer. <strong><code>ifMatch</code></strong> : rejouez le <code>contentSha256</code> de <code>get_file</code> et l'écriture est refusée (409) si le fichier a changé depuis votre lecture — atomique avec bridge ≥ 0.7.0, repli vérifié sinon.</td>
   </tr>
   <tr>
     <td>execute_template</td>
@@ -407,11 +407,11 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>plan_vault · provision_vault</td>
-    <td><strong>Provisionnement de vault</strong> (v0.35+). Plan read-only (défauts + questionnaire + avertissements) → création en un appel (plugins, port, clé API, scaffold wiki, registre). Local uniquement.</td>
+    <td><strong>Provisionnement de vault.</strong> Plan read-only (défauts + questionnaire + avertissements) → création en un appel (plugins, port, clé API, scaffold wiki, registre). Local uniquement.</td>
   </tr>
   <tr>
     <td>pdf/docx/xlsx/pptx/image/audio_to_markdown</td>
-    <td><strong>Conversion locale</strong> (MarkItDown — opt-in depuis v0.56.0 : <code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque). Bureautique/PDF/OCR image/transcription audio → markdown ; chaîner avec <code>write_file</code>.</td>
+    <td><strong>Conversion locale</strong> (MarkItDown — opt-in : <code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque). Bureautique/PDF/OCR image/transcription audio → markdown ; chaîner avec <code>write_file</code>.</td>
   </tr>
   <tr>
     <td>pdf_to_markdown_docling · pdf_to_images</td>
@@ -423,7 +423,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>filter_relevant_blocks</td>
-    <td><strong>Filtre de pertinence</strong> (v0.47). 2ᵉ passe BM25 déterministe sur du markdown déjà acquis — retire les blocs hors-sujet, garde frontmatter/titres, plusieurs garde-fous no-op. Aucun fetch, aucun LLM.</td>
+    <td><strong>Filtre de pertinence.</strong> 2ᵉ passe BM25 déterministe sur du markdown déjà acquis — retire les blocs hors-sujet, garde frontmatter/titres, plusieurs garde-fous no-op. Aucun fetch, aucun LLM.</td>
   </tr>
   <tr>
     <td>extract_page_metadata · propose_linked_sources · download_page_assets</td>
@@ -435,7 +435,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>find_boundary_pages · find_twin_pages</td>
-    <td><strong>Analyse du wiki</strong> (v0.71–0.82). Pages « frontière » qui valent d'être écrites (très liées, presque vides) ; paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, seuil dérivé de la distribution propre au vault, chaque paire portant les indices pour l'écarter. Quand ils ne peuvent pas regarder, les deux répondent <code>available: false</code> avec un motif (jamais un faux « 0 trouvé »). <code>find_twin_pages</code> marche sur les <strong>vaults distants</strong> depuis la v0.82 (bridge ≥ 0.9.0 sert le magasin de vecteurs).</td>
+    <td><strong>Analyse du wiki.</strong> Pages « frontière » qui valent d'être écrites (très liées, presque vides) ; paires quasi-jumelles par cosinus sur les vecteurs Smart Connections, seuil dérivé de la distribution propre au vault, chaque paire portant les indices pour l'écarter. Quand ils ne peuvent pas regarder, les deux répondent <code>available: false</code> avec un motif (jamais un faux « 0 trouvé »). <code>find_twin_pages</code> marche aussi sur les <strong>vaults distants</strong> (bridge ≥ 0.9.0 sert le magasin de vecteurs).</td>
   </tr>
   <tr>
     <td>write_bundle · refresh_okf_projections · build_search_index</td>
