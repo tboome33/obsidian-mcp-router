@@ -63,12 +63,43 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..');
 const HARNESS = path.join(HERE, 'fixtures', 'no-vault-disk-harness.mjs');
+
+/**
+ * Which spelling of the permission flag THIS runtime accepts.
+ *
+ * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
+ * v22.13.0 and v23.5.0. The CI matrix pins node 20.18.1 — one patch below the
+ * rename — so every run on that leg died with `bad option: --permission`
+ * before reaching a single assertion, and the 22 subtests below were reported
+ * as "did not finish before its parent and was cancelled": a stack of failures
+ * that named neither the flag nor the version.
+ *
+ * The flag is PROBED rather than derived from process.version. A version
+ * comparison encodes today's release notes and goes stale; asking the binary
+ * what it accepts cannot. If neither spelling works the suite SKIPS LOUDLY —
+ * this file's whole value is that the OS pronounces the refusal, and a green
+ * tick without the permission model would be a lie about a security property.
+ */
+const PERMISSION_FLAG = (() => {
+  for (const flag of ['--permission', '--experimental-permission']) {
+    const probe = spawnSync(process.execPath, [flag, `--allow-fs-read=${path.join(REPO, '*')}`, '-e', '0'],
+      { encoding: 'utf8' });
+    if (probe.status === 0) return flag;
+  }
+  return null;
+})();
+
+const NO_PERMISSION_MODEL = PERMISSION_FLAG
+  ? false
+  : `this runtime (${process.version}) accepts neither --permission nor `
+    + '--experimental-permission, so the OS-level denial this file measures cannot be armed';
+
 
 // A key the leak scanner will not mistake for a real one: CONSTRUCTED, and
 // short of the 32-hex shape the plugin actually uses.
@@ -276,7 +307,7 @@ after(async () => {
 function runGated(configFile = confPath, { allowVault = false } = {}) {
   return new Promise((resolve, reject) => {
     const args = [
-      '--permission',
+      PERMISSION_FLAG,
       // FALSE POSITIVE #1: one flag per path, `*` suffix for recursion. A comma
       // list is silently invalid on Node 23 and denies everything.
       `--allow-fs-read=${path.join(REPO, '*')}`,
@@ -337,7 +368,7 @@ let gatedOnDiskAllowed;
 // ORACLES the way the third calibrates the denial. See the last describe.
 let gatedNoServer;
 
-describe('the vault disk is not needed once the key is in the config', () => {
+describe('the vault disk is not needed once the key is in the config', { skip: NO_PERMISSION_MODEL }, () => {
   test('THE CONTROL: the vault is genuinely out of reach', async () => {
     const { report } = gated;
     assert.equal(
@@ -476,7 +507,7 @@ describe('the vault disk is not needed once the key is in the config', () => {
 // `missingApiKey`, set by `loadRegistry` exactly when it could not read a local
 // vault's data.json. And the arbiter profile is kept, permanently, because it is
 // what makes the assertion a control rather than a coincidence.
-describe('the same bench, calibrated the other way', () => {
+describe('the same bench, calibrated the other way', { skip: NO_PERMISSION_MODEL }, () => {
   const only = (report) => {
     assert.equal(report.registry.length, 1, `expected one vault, got ${JSON.stringify(report.registry)}`);
     return report.registry[0];
@@ -547,7 +578,7 @@ describe('the same bench, calibrated the other way', () => {
 // EXEMPT with a written reason. Adding a tool without classifying it fails this
 // test. The exemptions are not a way to shrink the claim quietly — each one
 // names the axis it belongs to.
-describe('every tool is classified: exercised by the bench, or exempt with a reason', () => {
+describe('every tool is classified: exercised by the bench, or exempt with a reason', { skip: NO_PERMISSION_MODEL }, () => {
   // The twelve conversion tools and the vault wizard spawn child processes or
   // write to the host. `--permission` does not gate child processes, so testing
   // them here would need `--allow-child-process` — which would hand the child
@@ -666,7 +697,7 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
 // So this profile points the same harness at a port where nothing listens, and
 // requires EVERY oracle to fail. An oracle still satisfied here is measuring the
 // config, not the vault.
-describe('no oracle is satisfiable without the vault answering', () => {
+describe('no oracle is satisfiable without the vault answering', { skip: NO_PERMISSION_MODEL }, () => {
   test('with nothing listening, not one tool reports an answer', () => {
     const { report } = gatedNoServer;
     assert.equal(report.fatal, null, `harness died: ${JSON.stringify(report.fatal)}`);
@@ -698,5 +729,73 @@ describe('no oracle is satisfiable without the vault answering', () => {
     const dead = answered(gatedNoServer);
     assert.ok(live.length >= 6, `expected the live profile to answer broadly, got ${JSON.stringify(live)}`);
     assert.deepEqual(dead, [], `the dead profile answered: ${JSON.stringify(dead)}`);
+  });
+});
+
+/**
+ * v0.83.0 — the bench says out loud whether it was armed.
+ *
+ * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
+ * v22.13.0 and v23.5.0. The CI matrix pins node 20.18.1 — one patch below the
+ * rename — so on that leg the gated child died with `bad option: --permission`
+ * and all 22 measurements were reported as "did not finish before its parent
+ * and was cancelled". Nothing in that wall of output named the flag or the
+ * version.
+ *
+ * The four suites above now skip when the runtime cannot arm the permission
+ * model, which keeps the leg green. That creates a NEW risk, and it is the one
+ * worth guarding: a security bench that skips itself looks exactly like a
+ * security bench that passed. `node --test` prints `# SKIP <reason>` per suite,
+ * but its summary counts a skipped suite as neither passed nor skipped — so a
+ * reader watching totals sees `pass 0, fail 0` and no coverage.
+ *
+ * This describe therefore ALWAYS runs. It states the arming in the summary, and
+ * it FAILS on a runtime that ought to have the flag — so a future rename is a
+ * red build rather than a quiet loss of the measurement.
+ */
+describe('the permission model is armed, and says so whether it is or not', () => {
+  /** [major, minor, patch] of the running node. */
+  const version = process.versions.node.split('.').map(Number);
+  const atLeast = (maj, min, pat) => {
+    const [a, b, c] = version;
+    if (a !== maj) return a > maj;
+    if (b !== min) return b > min;
+    return c >= pat;
+  };
+
+  // The releases that carry the renamed flag. Stated once, here, next to the
+  // probe that makes the check unnecessary in the happy path.
+  const SHOULD_HAVE_FLAG = atLeast(20, 19, 0) || atLeast(22, 13, 0) || atLeast(23, 5, 0);
+
+  test('this run reports which flag armed it, or why nothing did', () => {
+    if (PERMISSION_FLAG) {
+      assert.ok(['--permission', '--experimental-permission'].includes(PERMISSION_FLAG));
+      return;
+    }
+    // Not armed. That is tolerable ONLY below the rename; above it, the probe
+    // failing means the flag moved again and the bench has gone quiet.
+    assert.equal(
+      SHOULD_HAVE_FLAG, false,
+      `node ${process.versions.node} should accept --permission (renamed in 20.19.0 / 22.13.0 / `
+      + '23.5.0) but the probe was refused — the OS-level bench is no longer running. '
+      + 'Do not silence this: find the flag it wants.',
+    );
+    // Below the rename the measurement is genuinely unavailable. Say it in the
+    // one place a reader of totals will see.
+    console.error(
+      `\n  [no-vault-disk] NOT MEASURED on node ${process.versions.node}: the permission model `
+      + 'needs >= 20.19.0. The four OS-level suites in this file were SKIPPED, not passed.\n',
+    );
+  });
+
+  test('the probe asks the binary rather than trusting a version table', () => {
+    // A version comparison encodes today's release notes. The probe is the
+    // authority; SHOULD_HAVE_FLAG only exists to catch the probe going quiet.
+    // On a runtime that has the flag, both must agree.
+    if (SHOULD_HAVE_FLAG) {
+      assert.ok(PERMISSION_FLAG, 'version says yes, probe says no — see the test above');
+    }
+    // And the comparator itself is not vacuous.
+    assert.equal(atLeast(20, 19, 0) && version[0] === 20 && version[1] === 18, false);
   });
 });

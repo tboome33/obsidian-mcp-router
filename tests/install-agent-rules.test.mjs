@@ -365,25 +365,38 @@ describe('refusals', () => {
     assert.equal(fs.existsSync(tiny.file), false, 'planning must never create the file');
   });
 
-  test('a host cap that only the compact rendering fits selects compact', () => {
+  test('a cap between two rungs selects the RICHEST rung that fits', () => {
+    // Was: "…selects compact", when the ladder had two rungs. It now has four,
+    // so naming one rung would pin an implementation detail. The invariant is
+    // what the ladder is for: never a poorer rendering than the cap allows.
     const { project } = makeSandbox();
     const skills = collectSkills(REPO_ROOT);
-    const full = wrapBlock(renderSkillsIndex(skills, {
-      mode: 'full', targetFile: path.join(project, 'AGENTS.md'), projectDir: project, repoRoot: REPO_ROOT,
+    const size = (mode) => wrapBlock(renderSkillsIndex(skills, {
+      mode, targetFile: path.join(project, 'AGENTS.md'), projectDir: project, repoRoot: REPO_ROOT,
     }), CONTRACT).length;
-    const compact = wrapBlock(renderSkillsIndex(skills, {
-      mode: 'compact', targetFile: path.join(project, 'AGENTS.md'), projectDir: project, repoRoot: REPO_ROOT,
-    }), CONTRACT).length;
-    assert.ok(compact < full, `compact (${compact}) must be smaller than full (${full})`);
 
+    const LADDER = ['full', 'rooted', 'brief', 'compact'];
+    const sizes = LADDER.map(size);
+    // The ladder must actually be ordered richest-to-smallest, or "richest that
+    // fits" is not a well-defined claim.
+    for (let i = 1; i < sizes.length; i += 1) {
+      assert.ok(sizes[i] < sizes[i - 1],
+        `${LADDER[i]} (${sizes[i]}) must be smaller than ${LADDER[i - 1]} (${sizes[i - 1]})`);
+    }
+
+    const budget = Math.floor((sizes[0] + sizes[sizes.length - 1]) / 2);
     const target = {
       hostId: 'mid', hostLabel: 'Mid', scope: 'project',
       file: path.join(project, 'AGENTS.md'), format: 'markdown',
-      charBudget: Math.floor((full + compact) / 2), provenance: 'test', source: 'test',
+      charBudget: budget, provenance: 'test', source: 'test',
     };
     const plan = planOne(target, skills, CONTRACT, { projectDir: project, repoRoot: REPO_ROOT });
-    assert.equal(plan.mode, 'compact');
     assert.equal(plan.status, 'installed');
+    assert.ok(plan.projectedBytes <= budget, `projected ${plan.projectedBytes} over budget ${budget}`);
+
+    const expected = LADDER[sizes.findIndex((n) => n <= budget)];
+    assert.equal(plan.mode, expected,
+      `budget ${budget} admits ${expected} (sizes ${LADDER.map((m, i) => `${m}=${sizes[i]}`).join(', ')})`);
   });
 });
 
@@ -421,7 +434,13 @@ describe('regressions found by adversarial review', () => {
     const plan = planOne({ ...target, charBudget: budget }, skills(), CONTRACT,
       { projectDir: project, repoRoot: REPO_ROOT });
     assert.equal(plan.status, 'installed');
-    assert.equal(plan.mode, 'compact');
+    // The rung name is not the point of this test — the point is that the
+    // fallback fired at all, sized against the FILE. With four rungs the first
+    // one below `full` is what fits here; asserting `compact` would re-pin the
+    // implementation the ladder just changed.
+    assert.notEqual(plan.mode, 'full', 'the fallback must have fired');
+    assert.ok(plan.projectedBytes <= budget,
+      `projected ${plan.projectedBytes} must fit the budget ${budget} it was sized against`);
   });
 
   test('projectedBytes equals the bytes actually written, on insert and on upgrade', () => {
@@ -997,5 +1016,184 @@ describe('helper-level plan and apply', () => {
     assert.equal(planOneUninstall(target, CONTRACT).status, 'removed');
     applyUninstallOne(planOneUninstall(target, CONTRACT), CONTRACT);
     assert.equal(planOneUninstall(target, CONTRACT).status, 'not-installed');
+  });
+});
+
+/**
+ * v0.83.0 — a host cap must not be spent on the checkout path.
+ *
+ * The bug, and why every local run said it was fine. For a user-scope target
+ * (`~/.windsurf/global_rules.md`) the skills tree is not inside the project, so
+ * each of the 47 links is rendered ABSOLUTE — 47 copies of wherever the
+ * repository happens to sit. Windsurf's cap is 6,000 characters, so the fit
+ * depended on a fact about the reader's disk — measured, as root LENGTHS,
+ * because the export gate refuses to publish a real private path:
+ *
+ *   a 36-character checkout root   →  5,081 chars   ok
+ *   a 57-character checkout root   →  6,110 chars   REFUSED
+ *
+ * Identical skills, identical host, opposite verdicts. CI checks out deep, so
+ * CI was refused — `over-budget` is a BLOCKED status, which exits 1 and took
+ * three tests down with it. Nobody could see it locally, on any platform.
+ *
+ * The fix is the `rooted` rung: the source-tree prefix is stated once in the
+ * header, where it was already printed, and lifted out of all 47 lines. The
+ * pins below assert the INVARIANT rather than the two data points — index size
+ * must be flat in the checkout depth — so a 60th skill or a deeper runner path
+ * cannot revive this quietly.
+ */
+describe('a host cap is spent on skills, not on the checkout path', () => {
+  // Synthetic roots, built to a LENGTH rather than written out: the depth is
+  // the whole variable under test, and a literal runner path in a tracked file
+  // is exactly what the export gate exists to stop.
+  const rootOfLength = (n) => {
+    const head = '/ci/w/';
+    const tail = '/checkout';
+    return head + 'd'.repeat(Math.max(1, n - head.length - tail.length)) + tail;
+  };
+  const DEEP = rootOfLength(57);    // the depth a CI runner actually produces
+  const DEEPER = rootOfLength(120); // and an absurd one, to pin the trend
+
+  /** The real skills, relocated under a pretend checkout root. */
+  const skillsUnder = (root) => collectSkills(REPO_ROOT).map((s) => ({
+    ...s,
+    file: [root, 'skills', path.basename(path.dirname(s.file)), 'SKILL.md'].join('/'),
+  }));
+
+  const render = (root, mode) => renderSkillsIndex(skillsUnder(root), {
+    mode,
+    targetFile: '/home/u/.windsurf/global_rules.md',
+    projectDir: '/home/u/project',
+    repoRoot: root,
+    version: '9.9.9',
+    generatedAt: '2020-01-01',
+  });
+
+  test('EVERY rung below full is flat in the checkout depth', () => {
+    // The defect: a rung that prints one absolute path per skill grows by
+    // 47 x the extra prefix, so the same 47 skills fit at one checkout depth
+    // and are refused at another. `full` is allowed to grow — it is the rung
+    // that deliberately prints paths, and it is only used by uncapped hosts.
+    const grownFull = render(DEEPER, 'full').length - render(DEEP, 'full').length;
+    assert.ok(grownFull > 1500,
+      `control: full must grow with the path (${grownFull} chars) or this test proves nothing`);
+
+    for (const mode of ['rooted', 'brief', 'compact']) {
+      const at = [render(DEEP, mode).length, render(DEEPER, mode).length];
+      // One header line still names the source tree, so the delta is bounded by
+      // ONE prefix, not 47 — a couple of lines' slack, not two kilobytes.
+      assert.ok(at[1] - at[0] < 200,
+        `${mode} must be ~flat in the checkout depth: ${at.join(' -> ')}`);
+    }
+  });
+
+  test('the ladder sheds plumbing before it sheds the routing signal', () => {
+    // The description is the only text that answers "is this my task?"; the
+    // path is what you need after that decision, and 47/47 of them are
+    // derivable from the name. The old ladder dropped the descriptions first
+    // and kept the paths, which is backwards: it spent the signal to save the
+    // plumbing. These are the two claims that make the order correct.
+    const skills = skillsUnder(DEEP);
+    const descChars = skills.reduce((a, x) => a + (x.description || '').length, 0);
+    assert.ok(descChars > 3000, `the descriptions must be substantial (${descChars} chars)`);
+
+    // rooted keeps every description in full...
+    const rooted = render(DEEP, 'rooted');
+    for (const x of skills) {
+      assert.ok(rooted.includes(x.description), `${x.name}: rooted must keep the full description`);
+    }
+    // ...and is still smaller than full, because the paths went instead.
+    assert.ok(rooted.length < render(DEEP, 'full').length);
+
+    // brief keeps a clipped description for EVERY skill, never zero for some.
+    const brief = render(DEEP, 'brief');
+    for (const x of skills) {
+      assert.ok(brief.includes(`\`${x.name}\``), `${x.name} missing from brief`);
+      const head = (x.description || '').slice(0, 24);
+      if (head) assert.ok(brief.includes(head), `${x.name}: brief must keep the start of the description`);
+    }
+    assert.match(brief, /ABBREVIATED/, 'a clipped index must announce that it is clipped');
+
+    // compact is the only rung that gives up the signal, and it says so.
+    const compact = render(DEEP, 'compact');
+    assert.match(compact, /DEGRADED INDEX/, 'the signal-free rung must announce itself');
+  });
+
+  test('no skill is dropped at ANY rung, and the layout is stated where paths are not', () => {
+    const skills = skillsUnder(DEEP);
+    for (const mode of ['full', 'rooted', 'brief', 'compact']) {
+      const body = render(DEEP, mode);
+      for (const s of skills) {
+        assert.ok(body.includes(`\`${s.name}\``), `${s.name} vanished from the ${mode} index`);
+      }
+      if (mode !== 'full') {
+        // The paths are omitted only because a stated rule makes them
+        // recoverable. If the rule is missing, the omission is data loss.
+        assert.match(body, /- Layout: every skill below is at/,
+          `${mode} omits per-skill paths, so it must state how to rebuild one`);
+        assert.match(body, /<name>\/SKILL\.md/, `${mode} must give the joinable shape`);
+      }
+      assert.ok(body.includes(DEEP), `${mode}: the source tree must still be stated in full`);
+    }
+  });
+
+  test('PIN: the deep-checkout windsurf target installs instead of being refused', () => {
+    const { project } = makeSandbox();
+    // Read the cap from the contract rather than restating it: a test that
+    // hardcodes 6000 keeps passing after someone edits the contract to 4000.
+    const windsurf = CONTRACT.hosts.windsurf.targets.user;
+    assert.equal(windsurf.charBudget, 6000,
+      'the tightest documented cap moved — re-derive these pins before editing them');
+
+    for (const root of [DEEP, DEEPER]) {
+      const plan = planOne(
+        {
+          ...windsurf,
+          hostId: 'windsurf', hostLabel: 'Windsurf (Cascade)', scope: 'user',
+          file: path.join(project, 'global_rules.md'),
+        },
+        skillsUnder(root), CONTRACT,
+        { projectDir: project, repoRoot: root, version: '9.9.9', generatedAt: '2020-01-01' },
+      );
+      assert.equal(plan.status, 'installed',
+        `root ${root.length} chars: ${plan.error || plan.status}`);
+      assert.ok(plan.projectedBytes <= 6000, `projected ${plan.projectedBytes} must fit the cap`);
+      // And it must still carry a routing signal: fitting by deleting every
+      // description would be a pass that made the index useless.
+      assert.notEqual(plan.mode, 'compact',
+        'the tightest real host must not have to give up its descriptions entirely');
+    }
+  });
+
+  test('the ladder still prefers the richest rendering that fits', () => {
+    // rooted exists as a last resort, not as a default: a target with room for
+    // the full index must still get descriptions.
+    const { project } = makeSandbox();
+    const skills = collectSkills(REPO_ROOT);
+    const roomy = planOne(
+      {
+        hostId: 'roomy', hostLabel: 'Roomy', scope: 'project',
+        file: path.join(project, 'AGENTS.md'), format: 'markdown',
+        charBudget: null, provenance: 'test', source: 'test',
+      },
+      skills, CONTRACT, { projectDir: project, repoRoot: REPO_ROOT },
+    );
+    assert.equal(roomy.mode, 'full', 'an uncapped host must not be downgraded');
+  });
+
+  test('a cap too small even for rooted is still refused, and says so', () => {
+    const { project } = makeSandbox();
+    const plan = planOne(
+      {
+        hostId: 'tiny', hostLabel: 'Tiny', scope: 'project',
+        file: path.join(project, 'AGENTS.md'), format: 'markdown',
+        charBudget: 500, provenance: 'test', source: 'test',
+      },
+      collectSkills(REPO_ROOT), CONTRACT, { projectDir: project, repoRoot: REPO_ROOT },
+    );
+    assert.equal(plan.status, 'over-budget');
+    assert.equal(plan.mode, 'compact', 'the refusal must name the smallest rung it tried');
+    assert.match(plan.error, /compact index/);
+    assert.match(plan.error, /--skills/, 'a refusal must name the way out');
   });
 });

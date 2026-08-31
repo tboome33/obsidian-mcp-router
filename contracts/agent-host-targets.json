@@ -204,7 +204,7 @@
           "charBudget": 6000,
           "provenance": "documented",
           "source": "Windsurf global rules at ~/.codeium/windsurf/memories/global_rules.md, 6,000 characters.",
-          "note": "The tightest budget of the seven targets, and the reason the renderer has a compact mode at all. A file that overflows its budget is REFUSED with `over-budget`, never silently truncated — a half-written index is worse than no index, because the missing half looks like a skill that does not exist."
+          "note": "The tightest budget of the seven targets, and the reason the renderer has a ladder of renderings at all (full → rooted → brief → compact). The ladder sheds PLUMBING before SIGNAL: per-skill paths go first (they are derivable from the name plus the layout line), descriptions are clipped next, and only the last rung drops them. A file that overflows even that is REFUSED with `over-budget`, never silently truncated — a half-written index is worse than no index, because the missing half looks like a skill that does not exist."
         }
       }
     }

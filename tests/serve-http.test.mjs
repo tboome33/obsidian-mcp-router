@@ -148,12 +148,23 @@ test('explicit DELETE terminates the session and kills the child', async () => {
 });
 
 test('idle sessions are reaped and their children killed', async () => {
+  // THE THRESHOLD MUST OUTLAST THE SETUP. This read `sessionTimeoutMs: 400`,
+  // which is shorter than a connect-plus-one-call handshake on a loaded CI
+  // runner. The reaper then harvested the session WHILE the `pid` request was
+  // in flight, the request never got an answer, and the test died 60 s later on
+  // the SDK's default request timeout — reported as `MCP error -32001: Request
+  // timed out`, which names neither the reaper nor the race. It only ever
+  // happened on the slowest leg (Windows), so it read as an unrelated flake.
+  //
+  // 3 s is comfortably above the handshake and still far below the wait below,
+  // so the two phases cannot overlap however slow the machine is.
+  const IDLE_MS = 3000;
   const shortStack = createServeHttp({
     token: TOKEN,
     port: 0,
     childCommand: process.execPath,
     childArgs: [FIXTURE],
-    sessionTimeoutMs: 400,
+    sessionTimeoutMs: IDLE_MS,
     reapIntervalMs: 100,
     log: () => {},
   });
@@ -167,8 +178,16 @@ test('idle sessions are reaped and their children killed', async () => {
     await client.connect(transport);
     const pid = Number(textOf(await client.callTool({ name: 'pid', arguments: {} })));
 
+    // THE CONTROL. Without it, a child that died during setup would satisfy the
+    // reaping assertion below and this test would pass for the wrong reason —
+    // which is exactly the state the old timing produced.
+    assert.doesNotThrow(() => process.kill(pid, 0),
+      'the child must still be alive after the handshake, or the reap below proves nothing');
+    assert.equal(shortStack.sessions.size, 1, 'the live session must be in the map first');
+
     // Do NOT close the client — simulate a tunnel drop (no DELETE ever sent).
-    assert.ok(await waitGone(pid, 5000), 'idle child must be reaped');
+    // Budget = the idle threshold plus generous room for a slow reap tick.
+    assert.ok(await waitGone(pid, IDLE_MS + 12000), 'idle child must be reaped');
     assert.equal(shortStack.sessions.size, 0, 'reaped session must leave the map');
     await client.close().catch(() => {});
   } finally {

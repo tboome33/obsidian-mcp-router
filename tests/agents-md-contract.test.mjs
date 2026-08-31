@@ -31,7 +31,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 const AGENTS_MD = path.join(REPO_ROOT, 'AGENTS.md');
 
-const rawDoc = fs.readFileSync(AGENTS_MD, 'utf8');
+/**
+ * Read with line endings normalized to LF.
+ *
+ * The repository has no .gitattributes, so the checkout's line endings are
+ * whatever the runner's `core.autocrlf` says — and GitHub's windows-latest
+ * defaults to `true`, i.e. CRLF on disk. Every extractor below that anchors on
+ * a literal `\n` then stops matching, which is how `handshakeCommand` returned
+ * null and the whole handshake suite failed on Windows CI while passing on a
+ * Windows developer machine configured with `autocrlf=input`. The contract is
+ * about the document's CONTENT; its bytes on disk are the checkout's business.
+ */
+const rawDoc = fs.readFileSync(AGENTS_MD, 'utf8').replace(/\r\n?/g, '\n');
 const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
 const HOST_CONTRACT = JSON.parse(
   fs.readFileSync(path.join(REPO_ROOT, 'contracts', 'agent-host-targets.json'), 'utf8'),
@@ -79,6 +90,36 @@ function referencedPaths(text) {
     && !/[<>]/.test(s)
     && (s.endsWith('/') || /\.[a-z0-9]+$/i.test(s))
   )))];
+}
+
+/**
+ * Paths the document itself declares GENERATED build output.
+ *
+ * These are the one class of path that legitimately does NOT exist in a fresh
+ * checkout — `mcpb-staging/` is written by `scripts/build-mcpb.ps1` and
+ * gitignored. The existence test used to demand every named path be on disk,
+ * which was green on any machine that had ever run a build (every developer
+ * machine) and red on every CI runner. Rather than drop the check, the
+ * exemption is made narrow and CROSS-VERIFIED: a path is excused only if its
+ * own row says **Generated** AND .gitignore agrees. A label alone excuses
+ * nothing, so this cannot become a way to park a broken path in the table.
+ */
+function generatedPaths(text) {
+  const out = new Set();
+  for (const line of text.split('\n')) {
+    if (!/\*\*Generated\*\*/.test(line)) continue;
+    // Only the row's FIRST cell names paths; the status cell is prose.
+    const firstCell = line.replace(/^\s*\|/, '').split('|')[0] || '';
+    for (const p of referencedPaths(firstCell)) out.add(p);
+  }
+  return out;
+}
+
+/** The .gitignore patterns, as written (comments and blanks dropped). */
+function gitignoreEntries() {
+  return fs.readFileSync(path.join(REPO_ROOT, '.gitignore'), 'utf8')
+    .split('\n').map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'));
 }
 
 /** `npm run <script>` and `npm test` occurrences. */
@@ -142,18 +183,43 @@ describe('AGENTS.md — the file exists where every host looks', () => {
 });
 
 describe('every claim resolves against something outside the document', () => {
-  test('every path it names exists on disk', () => {
+  test('every path it names exists on disk, or is declared generated', () => {
     const paths = referencedPaths(doc);
     assert.ok(paths.length >= 10, `expected the layout table to yield paths, extracted ${paths.length}`);
-    const missing = paths.filter((p) => !fs.existsSync(path.join(REPO_ROOT, p)));
+    const generated = generatedPaths(doc);
+    const missing = paths.filter((p) => !fs.existsSync(path.join(REPO_ROOT, p)) && !generated.has(p));
     assert.deepEqual(missing, [], `AGENTS.md names ${missing.length}/${paths.length} paths that do not exist`);
   });
 
+  test('the generated exemption is earned — .gitignore has to agree', () => {
+    // The half of the rule that keeps the exemption from being a loophole. A
+    // row cannot claim **Generated** for a path git actually tracks.
+    const generated = [...generatedPaths(doc)];
+    assert.ok(generated.length >= 1, 'the source-precedence table must still name its generated paths');
+    const ignored = gitignoreEntries();
+    for (const p of generated) {
+      const bare = p.replace(/\/$/, '');
+      assert.ok(
+        ignored.some((e) => e === p || e === bare || e === `${bare}/`),
+        `AGENTS.md calls \`${p}\` generated, but .gitignore does not list it — one of the two is wrong`,
+      );
+    }
+    // And a generated path that IS present must not be tracked by git either.
+    for (const p of generated) {
+      const tracked = spawnSync('git', ['ls-files', '--error-unmatch', p.replace(/\/$/, '')],
+        { cwd: REPO_ROOT, encoding: 'utf8' });
+      assert.notEqual(tracked.status, 0, `${p} is declared generated but git tracks it`);
+    }
+  });
+
   test('every directory it presents as a directory is one', () => {
+    const generated = generatedPaths(doc);
     const dirs = referencedPaths(doc).filter((p) => p.endsWith('/'));
     assert.ok(dirs.length >= 8, `extracted only ${dirs.length} directory references`);
     for (const d of dirs) {
-      assert.ok(fs.statSync(path.join(REPO_ROOT, d)).isDirectory(), `${d} is not a directory`);
+      const abs = path.join(REPO_ROOT, d);
+      if (!fs.existsSync(abs) && generated.has(d)) continue; // not built here
+      assert.ok(fs.statSync(abs).isDirectory(), `${d} is not a directory`);
     }
   });
 
@@ -193,8 +259,13 @@ describe('every claim resolves against something outside the document', () => {
     const withBlock = `${doc}\n${beginMarker}\n- \`x\` — d → \`wiki-meta/digests/\`\n${endMarker}\n`;
     const stripped = authoredText(withBlock);
     assert.ok(!stripped.includes('wiki-meta/digests/'));
+    // Same rule as the existence test above, generated exemption included —
+    // this is the third site that spells it, and the first two were fixed
+    // without it, which is exactly how a class defect survives a repair.
+    const generatedHere = generatedPaths(stripped);
     assert.deepEqual(
-      referencedPaths(stripped).filter((p) => !fs.existsSync(path.join(REPO_ROOT, p))),
+      referencedPaths(stripped)
+        .filter((p) => !fs.existsSync(path.join(REPO_ROOT, p)) && !generatedHere.has(p)),
       [],
     );
     // And the stripping is not a blanket truncation — the authored tail survives.
@@ -348,3 +419,59 @@ if (liveSkipReason) {
   // than a TAP summary.
   process.stderr.write(`\n[C12] live codex contract check did not run — ${liveSkipReason}\n\n`);
 }
+
+/**
+ * v0.83.0 — the contract reads the same on a CRLF checkout.
+ *
+ * `handshakeCommand` anchored on "```\n", so a checkout with CRLF line endings
+ * yielded null and the suite reported "no runnable handshake command found in
+ * AGENTS.md" — on GitHub's windows-latest, whose `core.autocrlf` defaults to
+ * `true`, while a developer machine set to `autocrlf=input` saw LF and passed.
+ * The document was never wrong; the reader was.
+ *
+ * These run the extractors over a deliberately CRLF'd copy of the real
+ * document, so the check does not depend on how THIS checkout happens to be
+ * configured — it fails on every platform if an extractor regains a bare `\n`
+ * anchor.
+ */
+describe('the extractors do not depend on the checkout line endings', () => {
+  const crlf = (s) => s.replace(/\n/g, '\r\n');
+  const normalize = (s) => s.replace(/\r\n?/g, '\n');
+
+  test('the CRLF fixture is genuinely CRLF — otherwise these pins prove nothing', () => {
+    const fixture = crlf(doc);
+    assert.ok(fixture.includes('\r\n'), 'fixture must carry CR bytes');
+    assert.ok(!/[^\r]\n/.test(fixture), 'every LF in the fixture must be preceded by CR');
+  });
+
+  test('the handshake command survives CRLF', () => {
+    const fromLf = handshakeCommand(doc);
+    assert.ok(fromLf, 'the LF document must yield a command (baseline)');
+
+    // The raw CRLF text is what the old code choked on.
+    assert.equal(handshakeCommand(crlf(doc)), null,
+      'control: the extractor itself is still \\n-anchored, which is why reading normalizes');
+    // And the normalization that the file now applies at read time repairs it.
+    assert.equal(handshakeCommand(normalize(crlf(doc))), fromLf,
+      'a CRLF checkout must produce the same command as an LF one');
+  });
+
+  test('the handshake token and paths survive CRLF', () => {
+    assert.equal(handshakeToken(normalize(crlf(doc))), handshakeToken(doc));
+    assert.deepEqual(
+      referencedPaths(normalize(crlf(doc))).sort(),
+      referencedPaths(doc).sort(),
+    );
+    assert.deepEqual(
+      [...generatedPaths(normalize(crlf(doc)))].sort(),
+      [...generatedPaths(doc)].sort(),
+    );
+  });
+
+  test('the file under test was read normalized — no CR reached the extractors', () => {
+    // Pins the fix at its source: if someone drops the .replace() at read time,
+    // this fails on a CRLF checkout and stays green on an LF one, which is
+    // honest — the other pins above are the ones that fail everywhere.
+    assert.ok(!doc.includes('\r'), 'doc must be CR-free regardless of checkout');
+  });
+});

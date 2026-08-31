@@ -267,9 +267,41 @@ export function skillLinkPath(skillFile, targetFile, projectDir) {
 /**
  * Render the body of the managed block.
  *
- * `compact` drops the per-skill sentence. It exists because Windsurf's global
- * rules file is capped at 6,000 characters and the full index does not fit —
- * a constraint discovered by reading the host's documentation, not guessed.
+ * THE LADDER, AND WHY IT DEGRADES IN THIS ORDER. This block is a routing table:
+ * an agent reads it to decide WHETHER a skill is relevant, and only then opens
+ * the `SKILL.md`. The `description` is the entire routing signal — it is the one
+ * text that answers "is this my task?". The per-skill path is plumbing: it
+ * matters only after the decision is already made.
+ *
+ * Measured on the 47 skills shipped here, for a user-scope target whose links
+ * are absolute:
+ *
+ *   descriptions   5,212 chars   the routing signal
+ *   paths          4,094 chars   plumbing, and 47/47 derivable from the name
+ *
+ * The old ladder was `full` → `compact`, and `compact` dropped the DESCRIPTIONS
+ * while keeping all 4,094 chars of paths. It spent the signal to save the
+ * plumbing — an index of 47 bare names, which tells an agent that something
+ * exists but never when to reach for it. Worse, keeping absolute paths made the
+ * fit depend on WHERE THE REPOSITORY SITS ON DISK: the same 47 skills rendered
+ * 5,081 chars under a 36-character checkout root and 6,110 under a 57-character
+ * one — one side of Windsurf's 6,000-char cap each, for identical content. A CI
+ * runner checks out deep, so CI was refused while every shorter local path
+ * passed. (Lengths, not the paths themselves: the export gate refuses to
+ * publish a tracked file that names a real private root, and it is right to.)
+ *
+ * So the rungs now shed plumbing first and signal last:
+ *
+ *   full     name + description + explicit path per skill
+ *   rooted   name + description; the layout is stated ONCE and the 47 paths
+ *            drop out, because `skills/<name>/SKILL.md` is derivable from the
+ *            name the line already carries. Nothing is lost.
+ *   compact  name + path only. The signal is gone; this is a genuine
+ *            degradation and the block says so, in the block.
+ *
+ * `rooted` is lossless and roughly flat in the checkout depth, so in practice
+ * `compact` is now unreachable for this repository — it is kept as the rung
+ * below for a host with a cap tighter than the descriptions alone.
  */
 export function renderSkillsIndex(skills, {
   mode = 'full', targetFile, projectDir, repoRoot, version = null, generatedAt = null,
@@ -294,20 +326,81 @@ export function renderSkillsIndex(skills, {
   lines.push('- Regenerate: `npm run install:agent-rules -- --apply` (preview first by omitting `--apply`).');
   lines.push('- Edits between the markers are overwritten on the next run; write your own notes outside them.');
   if (absolute) {
-    lines.push('- ⚠️ The paths below are ABSOLUTE and local to the machine that generated this file.');
+    lines.push('- ⚠️ The paths here are ABSOLUTE and local to the machine that generated this file.');
     lines.push('  If you are reading this from version control, they will not resolve for you — regenerate.');
+  }
+
+  const link = (file) => skillLinkPath(file, targetFile, projectDir);
+
+  // The layout rule, when every skill obeys it. `skills/<name>/SKILL.md` under
+  // the source tree — so the name already in each line IS the path, and 47
+  // copies of the prefix are redundant. Computed, never assumed: a skill that
+  // sits elsewhere keeps its explicit path below.
+  const layoutBase = repoRoot ? link(path.join(repoRoot, 'skills')) : null;
+  const derivable = (s) => (
+    layoutBase !== null
+    && repoRoot
+    && path.resolve(s.file) === path.resolve(path.join(repoRoot, 'skills', s.name, 'SKILL.md'))
+  );
+  // EVERY rung below `full` states the layout once instead of per line. That is
+  // what makes each degraded rung flat in the checkout depth — a rung that kept
+  // 47 absolute paths would still be refused on a deep runner, which is the
+  // defect this ladder exists to close.
+  const useLayout = mode !== 'full' && skills.length > 0 && skills.every(derivable);
+
+  /**
+   * The routing text for one skill at this rung.
+   *
+   * `brief` CLIPS rather than drops. A clipped sentence still says which domain
+   * a skill belongs to, which is most of the routing decision; a missing
+   * sentence says nothing at all. The clip lands on a word boundary, is marked
+   * with an ellipsis, and the header states that the `SKILL.md` is
+   * authoritative — an abbreviated description must not read as a complete one.
+   */
+  const BRIEF_CHARS = 80;
+  const routingText = (s) => {
+    const d = s.description || '';
+    if (mode !== 'brief' || d.length <= BRIEF_CHARS) return d;
+    const cut = d.slice(0, BRIEF_CHARS);
+    const lastSpace = cut.lastIndexOf(' ');
+    const kept = lastSpace > BRIEF_CHARS / 2 ? cut.slice(0, lastSpace) : cut;
+    return `${kept.replace(/[,;:.\s]+$/, '')}…`;
+  };
+
+  if (useLayout) {
+    lines.push(`- Layout: every skill below is at \`${layoutBase}/<name>/SKILL.md\` — join the name to that`);
+    lines.push('  base to open one. The paths are omitted per line only because they are derivable.');
+  }
+  if (mode === 'brief') {
+    lines.push('- ⚠️ ABBREVIATED: this host\'s character cap did not fit the full descriptions, so each one');
+    lines.push('  below is clipped (…). A clipped line is a hint, not a specification — the `SKILL.md` is');
+    lines.push('  authoritative, so open it before concluding that a skill does not apply.');
+  }
+  if (mode === 'compact') {
+    lines.push('- ⚠️ DEGRADED INDEX: this host\'s character cap did not fit the descriptions at all, so each');
+    lines.push('  entry below is a bare name with no statement of when to use it. Open a `SKILL.md` to');
+    lines.push('  find out what it is for, or regenerate for a host with a larger cap.');
   }
   lines.push('');
 
   if (repoRoot) {
-    const contractPath = skillLinkPath(path.join(repoRoot, 'AGENTS.md'), targetFile, projectDir);
-    lines.push(`Operating contract for that tree: \`${contractPath}\``);
+    // Under `useLayout` the source tree is already stated twice above, and a
+    // third full copy of it buys nothing: `AGENTS.md` at that root is as
+    // unambiguous as the absolute path, and one fewer copy of the prefix is
+    // real slack against a tight cap.
+    lines.push(useLayout
+      ? 'Operating contract for that tree: `AGENTS.md` at the source-tree root.'
+      : `Operating contract for that tree: \`${link(path.join(repoRoot, 'AGENTS.md'))}\``);
     lines.push('');
   }
+
   for (const s of skills) {
-    const link = skillLinkPath(s.file, targetFile, projectDir);
-    if (mode === 'compact') lines.push(`- \`${s.name}\` — \`${link}\``);
-    else lines.push(`- **\`${s.name}\`** — ${s.description} → \`${link}\``);
+    // The path is printed only when it cannot be derived — that is the whole
+    // saving, and it is why `useLayout` is computed from the files on disk
+    // rather than assumed from a convention.
+    const tail = useLayout ? '' : ` → \`${link(s.file)}\``;
+    if (mode === 'compact') lines.push(`- \`${s.name}\`${tail}`);
+    else lines.push(`- **\`${s.name}\`** — ${routingText(s)}${tail}`);
   }
   // Deliberately no "N skills indexed" footer. Two reasons, and the second is
   // the load-bearing one. A count printed next to the list it counts is a fact
@@ -539,7 +632,7 @@ export function planOne(target, skills, contract, {
     // instead of falling back to the smaller form that would have fitted.
     let chosen = null;
     let lastProjected = 0;
-    for (const mode of ['full', 'compact']) {
+    for (const mode of ['full', 'rooted', 'brief', 'compact']) {
       const body = renderSkillsIndex(skills, { mode, targetFile: target.file, projectDir, repoRoot, version, generatedAt });
       const block = wrapBlock(body, contract);
       const projected = composeNext(existing, { ...plan, body: block, format: target.format }, contract).length;
@@ -554,9 +647,10 @@ export function planOne(target, skills, contract, {
       plan.status = 'over-budget';
       plan.mode = 'compact';
       plan.projectedBytes = lastProjected;
-      plan.error = `even the compact index would leave ${lastProjected} chars, over this host's `
-        + `${target.charBudget}-char cap. Refusing: a truncated index is worse than none, because `
-        + 'the skills past the cut look like skills that do not exist.';
+      plan.error = `even the compact index — bare skill names, no descriptions — would leave `
+        + `${lastProjected} chars, over this host's ${target.charBudget}-char cap. Refusing: a `
+        + 'truncated index is worse than none, because the skills past the cut look like skills '
+        + 'that do not exist. Install fewer with `--skills a,b,c`.';
       return plan;
     }
 

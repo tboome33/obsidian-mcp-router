@@ -4733,3 +4733,112 @@ describe('PIN: execute_template drops an unusable targetPath instead of forwardi
     }
   });
 });
+
+/**
+ * v0.83.0 — a file: URL becomes a path through `fileURLToPath`, never by hand.
+ *
+ * `scripts/gen-remote-config.mjs` computed its REPO_ROOT as
+ *
+ *     path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(...)), '..')
+ *
+ * where the stripped prefix was a leading slash. That replace is a Windows
+ * fixup: on win32 the pathname of a file: URL is `/C:/x`, and the slash has to
+ * go before `path` will read the drive letter. On POSIX the pathname is
+ * ALREADY absolute, so the same replace turned an absolute runner path into a
+ * RELATIVE one. `path.resolve` re-anchored it under the cwd, and
+ * REPO_ROOT landed inside a doubled path that contains nothing at all.
+ *
+ * The consequence was not cosmetic. REPO_ROOT has exactly one consumer: the
+ * `--out` guard that refuses to write API keys into the versioned tree. On
+ * Linux and macOS that guard never fired — `gen-remote-config.mjs --vault X
+ * --out ./leak.json` wrote the fleet's plaintext keys into the repo, and
+ * reported success.
+ *
+ * WHY THE SUITE DID NOT CATCH IT. The functional test existed and was green:
+ * it ran on Windows, the one platform where the broken line was correct. A
+ * test that cannot fail on the platform carrying the defect is not a test of
+ * that defect. So the defence here is a GUARD, not one more case — the idiom
+ * itself is banned tree-wide, and the check reads the same on every OS.
+ */
+describe('GUARD: file: URLs become paths through fileURLToPath, not string surgery', () => {
+  const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const SCANNED_DIRS = ['src', 'scripts'];
+
+  const scanFiles = () => {
+    const out = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); }
+        else if (e.name.endsWith('.mjs')) out.push(p);
+      }
+    };
+    for (const d of SCANNED_DIRS) walk(path.join(ROOT, d));
+    return out;
+  };
+
+  // Any file: URL turned into a path by reading `.pathname` off it — the whole
+  // family, not just the one line that shipped.
+  const BAD = /(?:new\s+URL\s*\(\s*import\.meta\.url\s*\)|pathToFileURL\s*\([^;]*\))\s*\.pathname/;
+
+  const relPath = (p) => path.relative(ROOT, p).split(path.sep).join('/');
+
+  test('no file in src/ or scripts/ hand-rolls a file: URL into a path', () => {
+    const offenders = [];
+    for (const f of scanFiles()) {
+      fs.readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+        if (BAD.test(line)) offenders.push(`${relPath(f)}:${i + 1}`);
+      });
+    }
+    assert.deepEqual(offenders, [],
+      'use fileURLToPath(import.meta.url) — .pathname becomes RELATIVE on POSIX once the Windows leading slash is stripped');
+  });
+
+  test('the guard is not vacuous — it matches the line that actually shipped', () => {
+    const slash = String.fromCharCode(92); // a lone backslash, spelled without escaping
+    const shipped =
+      "const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^"
+      + slash + "//, '')), '..');";
+    assert.ok(BAD.test(shipped), 'the regex must match the historical defect');
+    assert.ok(BAD.test('const d = pathToFileURL(process.argv[1]).pathname;'),
+      'the sibling spelling must match too');
+    assert.ok(!BAD.test("const R = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');"),
+      'the corrected idiom must NOT match');
+  });
+
+  test('PIN: on POSIX the broken idiom loses the repo, and the fix recovers it', () => {
+    // The control the functional test could never express, because it only ever
+    // ran where the bug was invisible.
+    // A synthetic POSIX root: the export gate refuses a tracked file that names
+    // a real private path, and only the SHAPE matters to this pin.
+    const cwd = '/ci/w/repo/repo';
+    const pathname = new URL(`file://${cwd}/scripts/gen-remote-config.mjs`).pathname;
+    const stripped = pathname.replace(/^\//, '');
+
+    assert.equal(path.posix.isAbsolute(pathname), true, 'a POSIX file: pathname is already absolute');
+    assert.equal(path.posix.isAbsolute(stripped), false, 'and the Windows fixup destroys that');
+
+    const brokenRoot = path.posix.resolve(cwd, path.posix.dirname(stripped), '..');
+    const fixedRoot = path.posix.resolve(path.posix.dirname(pathname), '..');
+    assert.equal(fixedRoot, cwd, 'the fix names the repository');
+    assert.notEqual(brokenRoot, cwd, 'the broken form does not');
+
+    const under = (root, abs) => {
+      const r = path.posix.relative(root, abs);
+      return r === '' || (!r.startsWith('..') && !path.posix.isAbsolute(r));
+    };
+    const target = path.posix.join(cwd, 'fuite.json');
+    assert.equal(under(brokenRoot, target), false, 'this is the hole that shipped: keys land in the repo');
+    assert.equal(under(fixedRoot, target), true, 'and this is it closed');
+  });
+
+  test('PIN: on win32 the fix keeps working — the drive letter still survives', () => {
+    const url = 'file:///I:/repo/scripts/gen-remote-config.mjs';
+    const recovered = fileURLToPath(url);
+    // fileURLToPath returns POSIX separators when the host runtime is POSIX, so
+    // compare on the shape that is platform-stable: the drive and the tail.
+    const norm = recovered.split(path.sep).join('/').replace(/^\/+/, '');
+    assert.match(norm, /^I:\/repo\/scripts\/gen-remote-config\.mjs$/i,
+      `fileURLToPath must recover the drive-letter path, got ${recovered}`);
+  });
+});

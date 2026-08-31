@@ -54,8 +54,16 @@ import {
 } from '../src/helpers/remote-config.mjs';
 import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
 import { normalizePathForCompare } from '../src/helpers/vault-path-identity.mjs';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\//, '')), '..');
+// `fileURLToPath`, jamais `new URL(...).pathname` : sur POSIX le `pathname`
+// d'une file: URL est DÉJÀ absolu, et le `.replace(/^\//, '')` qui vivait ici
+// — un correctif pensé pour la lettre de lecteur Windows (`/C:/x` → `C:/x`) —
+// le rendait RELATIF. `path.resolve` le réancrait alors sous le cwd, et
+// REPO_ROOT pointait dans un chemin doublé qui ne contient rien : la garde
+// `--out` de la ligne ~385 ne s'est jamais déclenchée sur Linux ni macOS,
+// pendant que les tests la voyaient verte sur Windows.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_CONFIG = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
 
 const C = { red: '\x1b[31m', yellow: '\x1b[33m', green: '\x1b[32m', gray: '\x1b[90m', bold: '\x1b[1m', reset: '\x1b[0m' };
