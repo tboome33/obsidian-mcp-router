@@ -1056,7 +1056,8 @@
         "set_frontmatter"
       ],
       "toolsMentionedNotCalled": [
-        "record_source"
+        "record_source",
+        "search_smart"
       ],
       "writeMode": "mutating",
       "requires": {

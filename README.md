@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.82.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.83.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -828,7 +828,7 @@ Three rules the implementation keeps, and that you should keep too if you edit `
 | `list_files` | List files in a directory of a specific vault. |
 | `get_file` | Read full file content (markdown + frontmatter). |
 | `search` | Plain-text (substring) search. Pass `vault: "*"` to fan-out across all vaults. |
-| `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `obsidian-mcp-router-bridge` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. |
+| `search_smart` | Semantic (meaning-based) search via Smart Connections embeddings. Returns ranked chunks with cosine scores and breadcrumbs. Requires `obsidian-mcp-router-bridge` + `smart-connections` plugins enabled in the target vault. Supports `vault: "*"` for cross-vault semantic search. On the semantic tier it also returns a **`freshness`** block naming the hits whose page has been modified since it was indexed (see below). |
 | `write_file` | Create a new file or replace the entire content of an existing one. Pass `ifNew: true` to refuse to overwrite. |
 | `append_to_file` | Append content at the end of a file. Auto-creates the file unless `requireExisting: true`. |
 | `patch_file` | Surgical edit by `heading` / `block` / `frontmatter` target — insert under a heading without rewriting the whole file, replace a block by id, update a single frontmatter key. |
@@ -940,6 +940,33 @@ Once the router is registered in Claude, you'd typically prompt Claude in natura
 { "vault": "*", "query": "what did I learn this week?" }
 ```
 
+#### Freshness — when a semantic hit is older than the page it names
+
+Smart Connections embeds a note on its own schedule. A note edited afterwards
+still answers with its **previous** vector, and until v0.83.0 nothing said so:
+a stale hit and a current one arrived looking identical.
+
+On the semantic tier `search_smart` now returns a `freshness` block, and
+`get_wiki_context_pack` annotates each chunk plus raises
+`semantic-results-possibly-stale`. Each page gets one verdict:
+
+| Verdict | Means |
+|---|---|
+| `fresh` | No evidence it differs from what was indexed. |
+| `changed` | It does differ — a different byte size (proof), or a moved mtime. `sizeEvidence` says which. |
+| `touched` | The mtime moved but the size is **proven identical** — a same-length edit, or a sync client touching the clock. Reported apart because it is weaker evidence. |
+| `page-missing` | The page this hit names is not on disk any more. |
+| `not-indexed` | No store record for it at all. |
+| `unknown` | We could not tell — always with a `reason`. |
+
+The comparison is the note's mtime and size against the ones Smart Connections
+recorded **at import** (`last_import`), so it is like-for-like rather than a
+heuristic. It reads the local `.smart-env` store directly and therefore works
+only on a vault whose disk this machine has: a remote vault answers
+`checkable: false` with a `reason` and **no warning** — never a false positive.
+The block always says whether it looked, because "no warning" and "nothing to
+check" are different facts.
+
 ### Write
 
 ```jsonc
@@ -1045,7 +1072,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.82.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.83.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1815,6 +1842,34 @@ Une fois le router enregistré dans Claude, tu prompteras Claude en langage natu
 // Fan-out sémantique cross-vaults :
 { "vault": "*", "query": "qu'est-ce que j'ai appris cette semaine ?" }
 ```
+
+##### Fraîcheur — quand un résultat sémantique est plus vieux que la page qu'il nomme
+
+Smart Connections calcule le vecteur d'une note à son propre rythme. Une note
+éditée ensuite répond encore avec son vecteur **précédent**, et jusqu'à la
+v0.83.0 rien ne le disait : un résultat périmé et un résultat à jour arrivaient
+identiques.
+
+Sur le tier sémantique, `search_smart` renvoie désormais un bloc `freshness`, et
+`get_wiki_context_pack` annote chaque chunk et lève
+`semantic-results-possibly-stale`. Un verdict par page :
+
+| Verdict | Signification |
+|---|---|
+| `fresh` | Aucune preuve d'écart avec ce qui a été indexé. |
+| `changed` | Il y a écart — taille en octets différente (preuve), ou mtime déplacé. `sizeEvidence` dit lequel. |
+| `touched` | Le mtime a bougé mais la taille est **prouvée identique** — édition de même longueur, ou client de synchro qui touche l'horloge. Rapporté à part, car la preuve est plus faible. |
+| `page-missing` | La page nommée par ce résultat n'est plus sur le disque. |
+| `not-indexed` | Aucun enregistrement de store pour elle. |
+| `unknown` | On n'a pas pu savoir — toujours avec une `reason`. |
+
+La comparaison porte sur le mtime et la taille de la note face à ceux que Smart
+Connections a enregistrés **à l'import** (`last_import`) : c'est du comparable à
+comparable, pas une heuristique. Elle lit le store `.smart-env` local, donc ne
+fonctionne que sur un vault dont cette machine a le disque : un vault distant
+répond `checkable: false` avec une `reason` et **aucun avertissement** — jamais
+de faux positif. Le bloc dit toujours s'il a regardé, parce que « pas
+d'avertissement » et « rien à vérifier » sont deux faits différents.
 
 #### Écriture
 

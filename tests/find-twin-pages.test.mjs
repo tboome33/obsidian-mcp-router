@@ -485,7 +485,8 @@ describe('find_twin_pages — what the answer admits about itself', () => {
     assert.equal(result.freshness.basis, 'index-snapshot');
     assert.equal(
       result.freshness.perPageStaleness, 'unknown',
-      'per-page staleness is UNKNOWN, not "fresh" — the store keeps no hash the router can recompute',
+      'per-page staleness is UNKNOWN for THIS answer, not "fresh" — it compares vectors, not timestamps '
+      + '(search_smart checks freshness per hit; this tool does not)',
     );
     assert.equal(result.freshness.caveat, INDEX_SNAPSHOT_CAVEAT, 'one wording, shared with the store reader');
     assert.match(result.freshness.caveat, /snapshot/i);

@@ -36,6 +36,7 @@ import { rankAndPick, scoreCandidates } from '../helpers/idf-score.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-meta-scaffolds.mjs';
 import { isMissingReadError } from '../helpers/missing-read-guard.mjs';
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
+import { freshnessFor, freshnessNote, isDoubtful } from '../helpers/embedding-staleness.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -588,6 +589,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // 4. Semantic chunks via search_smart — degrades gracefully when missing
   // -------------------------------------------------------------------------
   let semanticChunks = [];
+  let semanticFreshness = null;
   if (chunkCap > 0) {
     try {
       const sm = await deps.searchSmart(vault, query, { limit: chunkCap });
@@ -597,8 +599,30 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
           ? sm.chunks
           : Array.isArray(sm)
             ? sm
-            : [];
-      semanticChunks = rawChunks.slice(0, chunkCap).map((chunk) => ({
+            : null;
+      // A 200 WITH THE WRONG SHAPE IS NOT AN EMPTY RESULT SET — the rule the
+      // rest of this codebase applies to listings, missing here. A successful
+      // response the router cannot read (`{error: "index still loading"}`,
+      // `{results: {...}}`) was coerced to `[]` and presented as a semantic
+      // search that ran and found nothing. That is the same lie this item exists
+      // to remove, one layer up. Found in adversarial review.
+      if (rawChunks === null) warnings.push('semantic-payload-unrecognised');
+      // AN ENTRY THAT CARRIES NEITHER A PATH NOR TEXT IS NOT A CHUNK. Mapped
+      // anyway it became `{path:'', text:'', score:0}` — a fabricated result
+      // indistinguishable from a real one that happened to be empty. The
+      // container being an array was checked; its members were not.
+      const nonBlank = (v) => typeof v === 'string' && v.trim() !== '';
+      const usable = (rawChunks || []).filter((c) => {
+        // TRIMMED, not merely truthy: `{path: "   ", text: ""}` passed a
+        // truthiness test and became a chunk made of whitespace.
+        const p = nonBlank(c?.path) || nonBlank(c?.filename);
+        const t = nonBlank(c?.text) || nonBlank(c?.excerpt) || nonBlank(c?.content);
+        return p || t;
+      });
+      if (rawChunks && usable.length !== rawChunks.length) {
+        warnings.push('semantic-payload-unrecognised');
+      }
+      semanticChunks = usable.slice(0, chunkCap).map((chunk) => ({
         path:
           (typeof chunk?.path === 'string' && chunk.path) ||
           (typeof chunk?.filename === 'string' && chunk.filename) ||
@@ -639,6 +663,47 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   }
 
   // -------------------------------------------------------------------------
+  // 4bis. A1 — freshness of the pages those chunks came from
+  // -------------------------------------------------------------------------
+  // OUTSIDE the try above, deliberately. In it, any throw here would be
+  // classified by that catch as a semantic-search failure — a wrong diagnosis
+  // written into the envelope, which is the failure mode this whole item exists
+  // to remove. `freshnessFor` reads local disk only, answers `null` rather than
+  // guessing for a vault this machine has no disk for, and never throws.
+  if (semanticChunks.length > 0) {
+    semanticFreshness = freshnessFor(
+      vault,
+      semanticChunks.map((c) => c.path).filter(Boolean),
+      { fs: _deps.fs },
+    );
+    if (semanticFreshness?.checkable) {
+      // JOIN ON WHAT WAS ASKED, NOT ON WHAT WAS RESOLVED. A row is keyed by the
+      // PAGE its record is about, while a chunk carries whatever the bridge
+      // returned — possibly a block anchor, possibly a non-canonical spelling
+      // the assessor normalised. Matching those by string dropped the
+      // annotation from the very chunk that had raised the warning. Each row
+      // now lists the requested paths that reached it, so the join is exact.
+      const byPath = new Map();
+      for (const p of semanticFreshness.pages) {
+        byPath.set(p.path, p.state);
+        for (const requested of p.requested || []) byPath.set(requested, p.state);
+      }
+      for (const chunk of semanticChunks) {
+        const state = byPath.get(chunk.path);
+        if (state) chunk.freshness = state;
+      }
+      if (semanticFreshness.summary.doubtful > 0) {
+        warnings.push('semantic-results-possibly-stale');
+        const note = freshnessNote(semanticFreshness);
+        if (note) suggestedActions.push(note);
+      }
+      if (semanticFreshness.summary.pageMissing > 0) {
+        warnings.push('semantic-hit-page-missing');
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // 5. Compose the v1 envelope
   // -------------------------------------------------------------------------
   // sanitizeResponse strips ANSI/control chars from every string field in
@@ -653,6 +718,12 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
     semanticChunks,
     graphNeighbors,
     citations,
+    // ADDITIVE, and present only when there is something to say — the v1
+    // contract makes every DECLARED field mandatory and allows new optional
+    // ones. A `checkable: false` block is still worth emitting (it tells the
+    // consumer the silence is "could not look", not "looked and found nothing");
+    // `null` is not, so the key is simply absent then.
+    ...(semanticFreshness ? { semanticFreshness } : {}),
     warnings: [...new Set(warnings)],
     suggestedActions,
   });

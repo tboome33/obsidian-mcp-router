@@ -2,6 +2,54 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.83.0 — A1: the semantic tier stops implying its results are current (shipped 2026-09-01)
+
+First item of the §1 quick-wins lot from the borrowings register — `A1` of
+`claude-code-large-codebases-roadmap`, the entry its own table ranks highest for ROI.
+
+- **The signal was in the store the whole time, and this repo said it was not.**
+  `smart-env-embeddings.mjs` asserted per-page staleness "cannot be determined from
+  here". That is true of the *hash* and false of *staleness*: every record carries
+  `last_import: {mtime, size}` — the note's own mtime and size as Smart Connections
+  saw them — so the comparison against the file on disk is like-for-like, not a
+  heuristic. Found by opening a record, not by reasoning about one; corrected at all
+  five sites that repeated it.
+- **Measurement chose every constant and killed the obvious shortcut.** Statting the
+  store file instead of reading it disagrees with the record's own timestamp by a
+  median of 12.5 hours (329 of 803 agree within a minute). `touched` exists because
+  61 of 244 modified pages fleet-wide have an unchanged byte size, clustered on the
+  Google Drive vaults. The filename derivation needs a case-folded index for 25 of
+  2915 records and resolves 0 unresolvable.
+- **Size outranks the clock.** A differing byte size proves the bytes are not the
+  ones embedded; an unmoved mtime cannot overturn that. Ranked the other way round
+  (as it was until round 2), a page restored with `touch -r` read `fresh`.
+- **Local disk only, by the roadmap's own rule.** A vault with no disk here answers
+  `checkable: false` with a reason and raises no warning. The block always states
+  whether it looked — "no warning" and "nothing to check" are different facts.
+
+### Verification
+
+Three adversarial rounds found **39 defects**, and rounds 2 and 3 were dominated by
+defects the previous round's *repairs* had introduced — the pattern this repo has
+now seen at every chantier. Two tests written for the feature pinned a wrong
+behaviour (an unreadable file read as `not-indexed`) and were corrected as findings
+in their own right. The first end-to-end run on the real vault then found what none
+of the rounds could: an anchored path that failed lookup was being statted with its
+anchor and declared `page-missing` about a file that never had to exist. Suite 4245
+→ 4311; `validate` and `gate` clean.
+
+### Deferred
+
+- **No remote backend.** The bridge's `GET /smart-env/sources` could serve these
+  records for a diskless vault, but it ships the whole store (4.3 MB gzipped on the
+  largest vault, 240 s budget) — not something to put on a search's hot path.
+- **The byte cap is a pre-check, not a hard read bound** — `readFileSync` takes no
+  limit, so a file that grows between the stat and the read is still read whole.
+  Bounded in aggregate per page instead.
+- **`libFor` inherits the repo-wide convention's limit** (a Windows-style path on a
+  POSIX runtime declines as `store-missing` rather than resolving). Diverging from
+  its two sibling modules would cost more than the limit does.
+
 ## ✅ v0.78.0 — the key moves into the config, and the vaults' disks stop being a prerequisite (shipped 2026-08-31)
 
 Lot 1 of the "backend interface, HTTP-only profile as proof" chantier. It shipped in this order on purpose: **the measurement chose the lot**, not the plan.

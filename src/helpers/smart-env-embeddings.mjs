@@ -72,19 +72,28 @@ export const SOURCE_KEY_PREFIX = 'smart_sources:';
  * they are NOW, and it is not.
  *
  * The store is written by Smart Connections on its own schedule. A page edited
- * since the last indexing pass still carries its OLD vector, and there is no way
- * from here to tell which pages those are: the records hold a `last_embed.hash`,
- * but it is the plugin's own content hash over its own extraction, not something
- * this router can recompute from the page to compare. So per-page staleness is
- * genuinely UNKNOWN, not merely unmeasured — and saying so is the only honest
- * option. (Wholesale drift IS observable and is reported separately: an indexed
+ * since the last indexing pass still carries its OLD vector, and THIS reader
+ * does not work out which pages those are: it compares vectors, not timestamps.
+ *
+ * A CORRECTION, KEPT VISIBLE. This block used to say per-page staleness was
+ * "genuinely UNKNOWN, not merely unmeasured", on the grounds that `last_embed.hash`
+ * is the plugin's own hash over its own extraction and cannot be recomputed here.
+ * The premise is right about the HASH and wrong about STALENESS: opening a record
+ * (rather than reasoning about one) shows it also carries
+ * `last_import: {mtime, size}` — the note's OWN mtime and size as Smart
+ * Connections saw them, both of which this router can compare against the file on
+ * disk. `embedding-staleness.mjs` does exactly that, per hit, for `search_smart`.
+ * So the honest statement is narrower: this answer does not check, and the field
+ * below says `unknown` about THIS ANSWER rather than about the format.
+ * (Wholesale drift was already observable and reported separately: an indexed
  * path with no page on disk shows up in `excluded.notOnDisk`.)
  */
 export const INDEX_SNAPSHOT_CAVEAT =
   'These similarities come from a Smart Connections index SNAPSHOT, not from the pages as they are '
-  + 'right now: a page edited since the last indexing pass still carries its previous vector, and '
-  + 'per-page staleness cannot be determined from here (the store keeps no hash this router can '
-  + 'recompute). Re-index the vault in Obsidian for an up-to-date answer.';
+  + 'right now: a page edited since the last indexing pass still carries its previous vector. This '
+  + 'answer does not check which pages those are — it compares vectors, not timestamps. (search_smart '
+  + 'does check, per hit, against the mtime the store recorded at import.) Re-index the vault in '
+  + 'Obsidian for an up-to-date answer.';
 
 /** The freshness descriptor every answer built on this store must carry. */
 export const INDEX_SNAPSHOT_FRESHNESS = Object.freeze({
@@ -138,6 +147,59 @@ function libFor(vaultPath) {
  *   record declares, together, because a record is one statement about the page.
  *   `models: null` is a TOMBSTONE and retracts the path.
  */
+/**
+ * ONE record line → the `smart_sources:` entries it declares.
+ *
+ * Extracted so the FORMAT RULES live in exactly one place. Two readers now need
+ * them — {@link parseAjsonRecordEvents} wants the vectors, `embedding-staleness`
+ * wants `last_import` / `last_embed` — and a second hand-rolled copy of "skip
+ * unless the line starts with a quoted prefix, drop the trailing comma, wrap in
+ * braces, fold backslashes in the key" is precisely how the two would drift
+ * apart. Each rule below is load-bearing and is explained at its original site.
+ *
+ * @param {string} rawLine
+ * @returns {{malformed: boolean, entries: Array<[string, any, string]>}|null}
+ *   Each entry is `[foldedPath, value, rawPath]`. The RAW path travels because
+ *   the fold is lossy: on a case-sensitive filesystem a page genuinely named
+ *   `a\b.md` folds onto `a/b.md`, and a caller that must not confuse the two
+ *   (freshness borrows a page's mtime) needs to see that a fold happened.
+ *   `null` when the line is not a whole-note record at all (the 96% of the store
+ *   that is `smart_blocks:`), which is the prefix filter that makes reading a
+ *   166 MB store affordable.
+ */
+export function parseSourceRecordLine(rawLine) {
+  if (typeof rawLine !== 'string') return null;
+  // PREFIX FILTER BEFORE PARSE. A leading quote is part of the test: a
+  // `smart_blocks:` record also contains the substring `smart_sources:` inside
+  // its own `key` field, so a bare `includes()` re-admits every block line.
+  if (!rawLine.startsWith(`"${SOURCE_KEY_PREFIX}`)) return null;
+  const trimmed = rawLine.trim();
+  if (!trimmed) return null;
+  const body = trimmed.endsWith(',') ? trimmed.slice(0, -1) : trimmed;
+  let parsed;
+  try {
+    parsed = JSON.parse(`{${body}}`);
+  } catch {
+    return { malformed: true, entries: [] };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { malformed: true, entries: [] };
+  }
+  const entries = [];
+  // `Object.entries` on a parsed object is safe (JSON.parse never sets a real
+  // prototype), but a key literally named `__proto__` would still be an ordinary
+  // own property here — so callers must land it in a Map, never an object.
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!key.startsWith(SOURCE_KEY_PREFIX)) continue;
+    // ONE SPELLING PER PAGE — see the long note at the original site: the store
+    // is written by a plugin running on Windows and it does key records
+    // `wiki\Ident\x.md`. Folded once, here, so nothing downstream remembers.
+    const rawPath = key.slice(SOURCE_KEY_PREFIX.length);
+    entries.push([rawPath.replace(/\\/g, '/'), value, rawPath]);
+  }
+  return { malformed: false, entries };
+}
+
 export function parseAjsonRecordEvents(text) {
   const events = [];
   let lines = 0;
@@ -153,48 +215,17 @@ export function parseAjsonRecordEvents(text) {
   if (typeof text !== 'string' || !text) return { events, lines, malformed, unusable };
 
   for (const rawLine of text.split('\n')) {
-    // PREFIX FILTER BEFORE PARSE — this is the 54% (see header). A leading
-    // quote is part of the test: `smart_blocks:` records also contain the
-    // substring `smart_sources:` inside their `key` field, so a bare
-    // `includes()` would re-admit every block line.
-    if (!rawLine.startsWith(`"${SOURCE_KEY_PREFIX}`)) continue;
-    const trimmed = rawLine.trim();
-    if (!trimmed) continue;
+    // The prefix filter, the trailing comma, the brace wrap and the backslash
+    // folding of the key all live in `parseSourceRecordLine` — the 54% saving
+    // (see header) is its prefix test, applied BEFORE any JSON.parse.
+    const line = parseSourceRecordLine(rawLine);
+    if (line === null) continue;
     lines += 1;
-    const body = trimmed.endsWith(',') ? trimmed.slice(0, -1) : trimmed;
-    let parsed;
-    try {
-      parsed = JSON.parse(`{${body}}`);
-    } catch {
+    if (line.malformed) {
       malformed += 1;
       continue;
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      malformed += 1;
-      continue;
-    }
-    // `Object.entries` on a parsed object is safe (JSON.parse never sets a real
-    // prototype), but a key literally named `__proto__` would still be an
-    // ordinary own property here and lands in a Map — never an object — below.
-    for (const [key, value] of Object.entries(parsed)) {
-      if (!key.startsWith(SOURCE_KEY_PREFIX)) continue;
-      // ONE SPELLING PER PAGE. The store is written by a plugin running on
-      // Windows, and it does key records `wiki\Ident\x.md` — measured on this
-      // vault. Left as-is, `wiki\p.md` and `wiki/p.md` are two different pages
-      // to every Map here: the tombstone for one does not retract the other, and
-      // the backslash record's vector can never be looked up (every consumer
-      // asks in forward-slash form). Folded once, at the boundary, so nothing
-      // downstream has to remember (review round 3, 2026-08-31).
-      //
-      // THE TRADE-OFF IS KNOWN AND TAKEN. On a POSIX filesystem a backslash is a
-      // legal character in a filename, so a page genuinely named `a\b.md` folds
-      // onto `a/b.md` (review round 4). It is taken because these keys are
-      // OBSIDIAN VAULT-RELATIVE PATHS, and Obsidian normalises those to forward
-      // slashes everywhere it exposes them: a literal backslash is not a shape
-      // Obsidian produces, whereas the OS-style keys this recovers were measured
-      // on a real vault. Folding restores the intended key far more often than
-      // it could merge two real ones.
-      const pagePath = key.slice(SOURCE_KEY_PREFIX.length).replace(/\\/g, '/');
+    for (const [pagePath, value] of line.entries) {
       if (!pagePath) { unusable += 1; continue; }
       // TOMBSTONE. Emitted, not skipped — see the return contract.
       if (value === null) {

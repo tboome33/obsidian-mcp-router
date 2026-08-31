@@ -4,6 +4,109 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.83.0] — 2026-09-01 — A1: a semantic hit now says whether its page has moved on
+
+Item **A1** of the large-codebases borrowings (`claude-code-large-codebases-roadmap`,
+"warning de staleness", the one its own table ranks highest for ROI). `search_smart`
+ranks against vectors Smart Connections computed on its own schedule; a note edited
+afterwards still answers with its previous vector, and nothing said so — a stale hit
+and a current one arrived looking identical. That is the exact RAG failure mode the
+Anthropic article names, and the router was trusting it blindly.
+
+### Added
+
+- **`freshness` on the semantic tier of `search_smart`** — per-page verdicts
+  (`fresh` · `changed` · `touched` · `page-missing` · `not-indexed` · `unknown`),
+  a summary, and one sentence naming what to do. **Only the semantic tier**: the
+  local BM25 tier keeps its own, differently-meant `index.freshness`, and giving
+  two tiers one field name for two measurements is how a reader ends up comparing
+  incomparable things.
+- **`get_wiki_context_pack`**: each `semanticChunks[]` entry carries its page's
+  verdict, `semanticFreshness` carries the detail, and a doubtful result raises
+  `semantic-results-possibly-stale` with an actionable `suggestedActions[]` entry.
+  A hit pointing at a deleted page raises `semantic-hit-page-missing`.
+- **`src/helpers/embedding-staleness.mjs`** — the deterministic core, plus
+  `parseSourceRecordLine` extracted from `smart-env-embeddings.mjs` so the store
+  format is defined in exactly one place rather than copied.
+
+### The measurement chose the design, three times
+
+- **A claim this repo made was false.** `smart-env-embeddings.mjs` stated that
+  per-page staleness "cannot be determined from here". True about the *hash*
+  (`last_embed.hash` is the plugin's own, not recomputable); false about staleness:
+  every record also carries `last_import: {mtime, size}` — **the note's own mtime
+  and size as Smart Connections saw them** — which this router *can* compare against
+  the file on disk. Found by opening a record rather than reasoning about one. The
+  claim is corrected at all five sites that carried it (module doc, the caveat string
+  `find_twin_pages` emits, the tool description, `wiki-lint`'s SKILL.md, a test's
+  assertion message).
+- **The cheap shortcut is refuted.** Statting the store file instead of reading it
+  looks equivalent and is not: on 803 files its mtime agrees with the record's own
+  `last_embed.at` within a minute for only **329**, median disagreement **12.5 hours**.
+  So the records are read — 9.4 ms for the ten files a default page of hits touches.
+- **`touched` exists because a quarter of the signal would otherwise be unearned.**
+  Fleet-wide, **61 of 244** modified pages have the *same byte size* they had at
+  import, clustered on the two Google Drive vaults (21 of 30 on one). That is a sync
+  client touching mtime. It is reported as its own verdict rather than folded into
+  "edited".
+- **Filename lookup is a hint, never proof.** Smart Connections flattens `/`, `.`
+  and ` ` to `_`, so `a/b.md`, `a.b.md` and `a b.md` collide. Whatever file the
+  derived name opens, the record's own key must equal the path asked about.
+  Measured over 19 vaults / 2915 records: 2890 found by the exact name, **25 need a
+  case-folded index** of the real listing (21 on one vault, a directory renamed after
+  indexing), **0 unresolvable**.
+
+### Verification — three adversarial rounds, and the third paid again
+
+**39 defects** were found and fixed across three review rounds, plus a first
+end-to-end run on the real vault. The shape of them is the finding: **round 2 and
+round 3 were dominated by defects the previous round's repairs had introduced.**
+
+- **Round 1 (11)** — the worst were this codebase's own recurring class, committed
+  again: an unreadable store file reported as `not-indexed` (a claim about the vault
+  built from our own failure to look), and a `statSync` failure reported as a deleted
+  page. **Two of the tests written for this feature pinned that wrong behaviour.**
+  Also: a path from the wire statted outside the vault root, and 50 anchors of one
+  note counted as 50 changed pages.
+- **Round 2 (14)** — mostly in the round-1 fixes. A traversing *fragment*
+  (`safe.md#../../../outside.md`) still reached `statSync`; `canonicalVaultPath`'s
+  return value was computed and discarded, so `wiki/a.md` and `wiki//a.md` were two
+  pages; and a page whose size went 100 → 999 under an unchanged mtime read **`fresh`**
+  — currency asserted against proof to the contrary. Size now outranks the clock.
+- **Round 3 (14)** — again mostly in round 2's fixes. A `NaN` mtime passed a
+  `typeof === 'number'` test, made every comparison false, and came back `fresh`. A
+  single readable record was returned as conclusive while a competing file was
+  unreadable. Examining every candidate (round 2's own fix) had made the aggregate
+  read unbounded. Two candidates that *agree* were refused as a disagreement.
+- **The first real call found what no round could.** Run against the live vault:
+  25 ms for 7 pages, correct verdicts, and the case-folded lookup firing on real
+  data (`LLM-WIKI-COMPILER`). It also showed an anchored path that failed lookup was
+  being statted *with its anchor* and declared `page-missing` — about a file that
+  never had to exist.
+
+Suite **4245 → 4311** (+66, 82 in the two new files); `validate` and `gate` both
+clean.
+
+### Deferred
+
+- **Local disk only.** A vault this machine has no disk for answers
+  `checkable: false` with a reason and no warning — never a false positive, the rule
+  the roadmap set. The bridge's `GET /smart-env/sources` *could* serve these records
+  remotely (C11 uses it that way) but it ships the whole store — 4.3 MB gzipped on
+  the largest vault, against a 240 s budget — which is not a thing to do on a
+  search's hot path.
+- **The byte cap is a pre-check, not a hard read bound.** A store file that grows
+  between the `statSync` and the `readFileSync` is still read in full; `readFileSync`
+  offers no limit. Bounded in aggregate per page instead.
+- **`libFor` follows the repo convention and inherits its limit**: a Windows-style
+  path on a POSIX runtime is manipulated as a Windows string and the native `fs` call
+  then fails, reported as `store-missing`. That is the safe direction (a decline, not
+  a wrong verdict), and diverging here from `resolve-vault-path.mjs` and
+  `smart-env-embeddings.mjs` would be worse than the limit.
+- **A UNC path written `//server/share`** is classified POSIX-style, so a
+  fold-assisted record match on it is refused rather than accepted — again the safe
+  direction, and it costs an `unknown`, never a wrong answer.
+
 ## [0.82.0] — 2026-08-31 — `find_twin_pages` stops being a local-disk tool
 
 The last named limit of the HTTP-only workstream, and the one the v0.79.0 notes

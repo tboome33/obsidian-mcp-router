@@ -43,6 +43,7 @@ import {
   TIER_LOCAL,
 } from '../helpers/local-search.mjs';
 import { validateQuery, clampLimit } from '../helpers/bm25-index.mjs';
+import { freshnessFor, freshnessNote } from '../helpers/embedding-staleness.mjs';
 
 /** Overfetch margin: enough that a handful of archive chunks in the top of
  * the ranking cannot empty the page, small enough to stay cheap. */
@@ -116,11 +117,30 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
       includeArchives,
       limit: filter.limit,
     });
+    // A1 — SAY WHEN A HIT COMES FROM A PAGE THAT HAS MOVED ON.
+    //
+    // Cosine ranks against vectors Smart Connections computed on its own
+    // schedule, and until now a hit from a page edited since then looked
+    // exactly like a fresh one. `freshnessFor` compares each hit's page mtime
+    // against the mtime the store recorded at import; it reads local disk only,
+    // returns `checkable: false` rather than guessing for a vault this machine
+    // has no disk for, and never throws — a freshness check that could fail a
+    // search would be a worse trade than not knowing. Only the SEMANTIC tier
+    // gets this: the local BM25 tier carries its own `index.freshness`, and
+    // giving two tiers the same field name for two different measurements is
+    // how a reader ends up comparing incomparable things.
+    // NOT pre-filtered: a malformed entry is something the assessor COUNTS
+    // (`refusedPaths`). Dropping it here hid it from the only place that
+    // reports it.
+    const paths = Array.isArray(data?.results) ? data.results.map((r) => r?.path) : [];
+    const freshness = freshnessFor(vault, paths, { fs: _deps.fs });
+    const note = freshnessNote(freshness);
     return {
       tier: TIER_SEMANTIC,
       scoreScale: 'cosine',
       ...data,
       ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
+      ...(freshness ? { freshness: note ? { ...freshness, note } : freshness } : {}),
       ...collectClickToOpenLinks(vault, data),
     };
   };

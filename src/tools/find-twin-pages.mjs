@@ -159,7 +159,8 @@ export const TOOL_DEFINITION = {
     + '(how many ELIGIBLE pages actually carried a vector and were compared, stated as a sentence — '
     + '`available: true` is not "the whole vault was analysed") and `freshness` (the vectors are an index '
     + 'SNAPSHOT: a page edited since the last indexing pass still carries its previous vector, and '
-    + 'per-page staleness cannot be determined). Works on remote vaults too: the store is a '
+    + 'this answer does not check which pages those are — it compares vectors, not timestamps). '
+    + 'Works on remote vaults too: the store is a '
     + 'dot-directory the Local REST API does not serve, so a networked vault is read through the '
     + "bridge's `GET /smart-env/sources` — which requires obsidian-mcp-router-bridge 0.9.0+ on the "
     + 'machine running that vault, and answers `bridge-route-absent` when it is older.',
