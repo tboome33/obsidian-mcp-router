@@ -22,7 +22,7 @@
  */
 import * as defaultRestClient from '../rest-client.mjs';
 import { randomBytes } from 'node:crypto';
-import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
+import { buildClickToOpenUrl, resolveInsecurePort } from '../helpers/click-to-open.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
 import { classifyError } from '../error-classify.mjs';
@@ -605,8 +605,12 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
   // click-to-open walker carried the same bug. See `decision-lint
   // .countByStatus` for why this is a Map rather than `Object.create(null)`.
   const linkPairs = new Map();
+  // ONE port for the whole bundle. There is no port memo since v0.79.0, so
+  // resolving per file would read data.json once per entry and — worse — a
+  // rewrite mid-loop would split one bundle's links across two ports.
+  const insecurePort = resolveInsecurePort(vault);
   for (const p of paths) {
-    const url = buildClickToOpenUrl(vault, p);
+    const url = buildClickToOpenUrl(vault, p, { port: insecurePort });
     if (url) linkPairs.set(p, url);
   }
   const clickToOpenLinks = Object.fromEntries(linkPairs);

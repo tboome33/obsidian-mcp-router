@@ -8,16 +8,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   computeSourceHash,
   normaliseUrl,
-  getStatePath,
-  loadIngestState,
-  saveIngestState,
   checkSourceFreshness,
   recordIngest,
 } from '../src/helpers/ingest-state.mjs';
+// The disk half lives in its own module since v0.79.0 — see the note there.
+import {
+  getStatePath,
+  loadIngestState,
+  saveIngestState,
+} from '../src/helpers/ingest-state-fs.mjs';
 
 // ---------------------------------------------------------------------------
 // computeSourceHash
@@ -555,5 +559,114 @@ describe('recordIngest', () => {
       () => recordIngest({ sourceId: 'k', hash: 'a'.repeat(64), page: 'p' }),
       /state must be an object/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The HTTP-only boundary (lot 2, v0.79.0)
+// ---------------------------------------------------------------------------
+//
+// Lot 2 was estimated as including "port ingest-state to REST". Measurement said
+// there was nothing to port: the state file is read and written only by the
+// `wiki-ingest` skill, which runs on the machine that has the disks, and by
+// these tests. No MCP tool touches it, so a diskless router never calls it.
+//
+// TWO EARLIER VERSIONS OF THIS TEST WERE WRONG, and the way they were wrong is
+// the reason the code moved. The first grepped for the three function names in
+// `import { … } from '…ingest-state.mjs'`. A review walked through it with
+// `import * as ingest from '…'`, which names none of them. The second inverted
+// the rule to a whitelist of allowed import forms; a third review walked through
+// THAT with a template-literal specifier, a computed specifier and a `?query`
+// suffix, and also showed it would reject a legitimate import carrying a comment
+// between its braces. A regex over source text cannot settle a question about
+// module boundaries — it can only enumerate the evasions its author imagined.
+//
+// So the boundary became STRUCTURAL: the disk functions live in
+// `ingest-state-fs.mjs`, which nothing under `src/` imports, and the invariant
+// is now a SUBSTRING no router source file may contain.
+//
+// WHAT THIS TEST IS FOR, stated so nobody over-trusts it. It catches the
+// ACCIDENT — a future maintainer wiring the state file back into a tool because
+// it was convenient. It is not proof against an author deliberately hiding an
+// import: `'ingest-state-' + 'fs.mjs'` passed to a dynamic `import()` would
+// evade any substring rule, and settling that would need a real parsed import
+// graph. A fourth review named those evasions; they are left unclosed on
+// purpose, because the threat here is forgetfulness, not malice, and a test
+// that pretends to more than it does is worse than one that says its limits.
+describe('ingest-state disk I/O stays out of the tool surface', () => {
+  const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+  // Every source extension, not just `.mjs`: a `.js`/`.cjs` file under `src/`
+  // would have been invisible to the walk (fourth review).
+  const SOURCE_EXT = ['.mjs', '.js', '.cjs'];
+  const walk = (dir, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) walk(abs, out);
+      else if (SOURCE_EXT.some((ext) => e.name.endsWith(ext))) out.push(abs);
+    }
+    return out;
+  };
+
+  // Two files may name it: the module itself, and its pure sibling, whose
+  // docblock has to be able to say where the disk half went. The sibling is
+  // separately proven not to IMPORT it, below — so this exemption buys a
+  // readable pointer, not a hole.
+  const MAY_NAME_IT = [
+    `helpers${path.sep}ingest-state-fs.mjs`,
+    `helpers${path.sep}ingest-state.mjs`,
+  ];
+
+  test('no router source file so much as mentions ingest-state-fs', () => {
+    const offenders = walk(srcRoot)
+      .map((abs) => [path.relative(srcRoot, abs), abs])
+      .filter(([rel]) => !MAY_NAME_IT.includes(rel))
+      .filter(([, abs]) => fs.readFileSync(abs, 'utf8').includes('ingest-state-fs'))
+      .map(([rel]) => rel);
+    assert.deepEqual(
+      offenders, [],
+      'the disk half must stay unreachable from the router — port the state to REST instead, '
+      + 'and update the lot-2 note in the CHANGELOG',
+    );
+  });
+
+  // WITHOUT THIS, the test above passes for a vault-sized reason: it would also
+  // be green if `ingest-state-fs.mjs` had been deleted, or renamed, or emptied.
+  test('the module exists and really is the disk half', () => {
+    const diskModule = path.join(srcRoot, 'helpers', 'ingest-state-fs.mjs');
+    assert.ok(fs.existsSync(diskModule), 'the disk module must exist for the rule above to mean anything');
+    const text = fs.readFileSync(diskModule, 'utf8');
+    assert.match(text, /from 'node:fs'/, 'it is the half that touches a disk');
+    for (const fn of ['getStatePath', 'loadIngestState', 'saveIngestState']) {
+      assert.match(text, new RegExp(`export function ${fn}\\b`), `${fn} must live here`);
+    }
+  });
+
+  // The pure half stays importable BY the router — and stays pure. If `node:fs`
+  // ever reappears here, every importer silently re-acquires a disk dependency.
+  test('the pure half imports no filesystem module', () => {
+    const pure = fs.readFileSync(path.join(srcRoot, 'helpers', 'ingest-state.mjs'), 'utf8');
+    assert.ok(!/from 'node:fs'/.test(pure), 'ingest-state.mjs must not import node:fs');
+    assert.ok(!/from 'node:path'/.test(pure), 'ingest-state.mjs must not import node:path');
+
+    // ONE RULE INSTEAD OF THREE REGEXES, and the reason is instructive. The
+    // pure module is exempt from the repo-wide substring rule so its docblock
+    // can say where the disk half went — which makes THIS the check carrying
+    // the weight. Three successive drafts each named a form and each missed
+    // one: `from '…'` missed dynamic imports; adding a dynamic-import check
+    // missed an indirect specifier; both missed a bare side-effect
+    // `import './ingest-state-fs.mjs';`, which needs no `from` at all (fifth
+    // review). Enumerating import syntaxes is the losing move.
+    //
+    // So: strip the comments, and require the CODE to contain no occurrence of
+    // the name at all. No import form can name a module without naming it.
+    const code = pure
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')   // block comments
+      .replace(/^\s*\/\/.*$/gm, ' ');      // line comments
+    assert.ok(
+      !code.includes('ingest-state-fs'),
+      'ingest-state.mjs may point AT the disk half in prose, never name it in code',
+    );
+    assert.match(pure, /export function computeSourceHash\b/, 'the pure exports stay where importers expect them');
   });
 });

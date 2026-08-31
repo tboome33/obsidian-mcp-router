@@ -118,8 +118,9 @@ export function envKeyForVault(name) {
  * Une entrée `remoteVaults`, à partir d'un vault du parc local.
  *
  * @param {{name:string, port:number, apiKey:string, host?:string,
- *          tlsInsecure?:boolean, description?:string, timeoutMs?:number}} v
- * @returns {{name,baseUrl,apiKey,tlsInsecure,description?,timeoutMs?}}
+ *          insecurePort?:number, tlsInsecure?:boolean, description?:string,
+ *          timeoutMs?:number}} v
+ * @returns {{name,baseUrl,apiKey,tlsInsecure,insecurePort?,description?,timeoutMs?}}
  */
 export function buildRemoteVaultEntry(v) {
   const name = String(v?.name ?? '').trim();
@@ -149,14 +150,61 @@ export function buildRemoteVaultEntry(v) {
   const hostForUrl = host.includes(':') ? `[${host}]` : host;
   const entry = {
     name,
-    // HTTPS : le plugin Local REST API sert le TLS sur `port`; le port en clair
-    // (`insecurePort`) n'est PAS exporté ici — il ne sert qu'au click-to-open
-    // local, et l'exposer à distance élargirait la surface pour rien.
+    // HTTPS : le plugin Local REST API sert le TLS sur `port`.
     baseUrl: `https://${hostForUrl}:${v.port}`,
     apiKey: v.apiKey,
     // Certificat auto-signé du plugin : la vérification échouerait toujours.
     tlsInsecure: v.tlsInsecure ?? true,
   };
+  // LE PORT EN CLAIR, ET POURQUOI IL SORT MAINTENANT (lot 2, v0.79.0).
+  //
+  // La v0.78.0 refusait de l'exporter : « il ne sert qu'au click-to-open local,
+  // et l'exposer à distance élargirait la surface pour rien ». La première
+  // moitié était fausse et la seconde reposait dessus. Sans ce champ, un vault
+  // déclaré ici n'a AUCUNE source pour son port en clair — pas de disque à lire
+  // — donc les 13 outils qui émettent `clickToOpenUrl` émettent `null`, et le
+  // profil HTTP-only perd ses liens cliquables. C'est la dégradation que le
+  // banc 50/50 avait mesurée sur `build_open_link`.
+  //
+  // Quant à la « surface » — et l'argument mérite d'être exact, la revue ayant
+  // eu raison de trouver la première formulation trop commode. Ce n'est PAS
+  // « c'est déjà écrit partout » : ces liens vivent surtout dans des résultats
+  // d'outil et des transcriptions, pas nécessairement dans les notes. Le vrai
+  // argument tient en deux temps :
+  //
+  //   1. Ce n'est pas un identifiant d'authentification. Le publier n'ouvre ni
+  //      ne lie aucune socket : le serveur en clair écoute, ou non, sans rapport.
+  //   2. Il ne confère aucune capacité nouvelle À LA MACHINE QUI FAIT TOURNER
+  //      OBSIDIAN : ce port n'y est utile qu'à un processus déjà sur sa
+  //      loopback, lequel balaie 27100-27200 en quelques millisecondes. Le
+  //      fichier qui porte ce nombre porte par ailleurs la clé bearer du vault,
+  //      strictement plus puissante.
+  //
+  // CE QUE CET ARGUMENT NE COUVRE PAS, et que la 3ᵉ revue a eu raison de
+  // pointer : le risque n'est pas côté Obsidian, il est côté LECTEUR. Le lien
+  // émis vaut `http://127.0.0.1:<port>/…` ; si le lecteur clique ailleurs que
+  // sur la machine Obsidian, le CHEMIN de la note et son titre de section
+  // partent vers ce qui écoute sur SON loopback. Le contenu ne sort jamais
+  // (`/open` ne le renvoie pas), mais un chemin peut déjà être une information.
+  // C'est pourquoi `gen-remote-config.mjs` exige `--with-click-to-open` au lieu
+  // de poser ce champ dès qu'il trouve un port.
+  //
+  // Reste OPTIONNEL : sans lui, tout fonctionne comme en v0.78.0.
+  if (v.insecurePort !== undefined && v.insecurePort !== null) {
+    if (!Number.isInteger(v.insecurePort) || v.insecurePort < 1 || v.insecurePort > 65535) {
+      throw new Error(`buildRemoteVaultEntry: insecurePort invalide pour "${name}"`);
+    }
+    if (v.insecurePort === v.port) {
+      // Les deux serveurs ne peuvent pas partager une socket : la valeur est
+      // fausse quelque part, et l'émettre produirait un lien click-to-open
+      // pointant sur le port HTTPS — une poignée de main TLS ratée, pas une note.
+      throw new Error(
+        `buildRemoteVaultEntry: "${name}" déclare le même port ${v.port} en HTTPS et en clair. ` +
+        `Un des deux est faux — relisez le data.json du vault.`,
+      );
+    }
+    entry.insecurePort = v.insecurePort;
+  }
   if (v.description) entry.description = String(v.description);
   if (Number.isInteger(v.timeoutMs)) entry.timeoutMs = v.timeoutMs;
   return entry;

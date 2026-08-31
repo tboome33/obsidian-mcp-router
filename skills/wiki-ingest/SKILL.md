@@ -48,7 +48,7 @@ Before processing the acquired content further, check whether this source has be
 
 2. **Compute content hash** with `computeSourceHash(content)`. **For URLs, hash the post-defuddle markdown**, NOT the raw HTML — otherwise transient ads, JS-injected timestamps, or rendering quirks produce false-positive "changed" detections. For local files, hash the raw bytes read.
 
-3. **Load the per-vault state** via `loadIngestState(vaultAbsolutePath)`. The function returns `{}` when the file doesn't exist yet (first ingest into the vault).
+3. **Load the per-vault state** via `loadIngestState(vaultAbsolutePath)` (from `src/helpers/ingest-state-fs.mjs`). The function returns `{}` when the file doesn't exist yet (first ingest into the vault).
 
 4. **Call `checkSourceFreshness({state, sourceId, hash})`** — returns one of three sentinels :
    - **`'new'`** → source never ingested; proceed normally (and `recordIngest({...})` at the end of step 7 so the next call sees it).
@@ -78,7 +78,7 @@ Before processing the acquired content further, check whether this source has be
 
 **Synergy with future agent-de-veille (#3)** — the `wiki-meta/ingest-state.json` file is the substrate the future veille agent will scan to detect "this source ingested >6 months ago, has the upstream hash changed?". Maintaining clean hashes now pays off later.
 
-**Reference**: convention documented in `src/helpers/ingest-state.mjs`. Tests in `tests/ingest-state.test.mjs`.
+**Reference**: convention documented in `src/helpers/ingest-state.mjs` (pure half) and `src/helpers/ingest-state-fs.mjs` (the state file). Tests in `tests/ingest-state.test.mjs`.
 
 ### 1.6 Relevance filter — keep only on-topic blocks (v0.47.0+, Crawl4AI W-A)
 

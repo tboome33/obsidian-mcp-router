@@ -42,9 +42,37 @@ describe('buildRemoteVaultEntry', () => {
     assert.equal(e.tlsInsecure, true, 'le certificat du plugin est auto-signé');
   });
 
-  test("n'exporte JAMAIS le port en clair — il ne sert qu'au click-to-open local", () => {
+  // RENVERSEMENT ASSUMÉ (lot 2, v0.79.0). Ce test affirmait l'inverse : « le
+  // port en clair n'est JAMAIS exporté ». La raison invoquée en v0.78.0 — « il
+  // ne sert qu'au click-to-open local » — était fausse : c'est précisément le
+  // click-to-open DISTANT qui en a besoin, et sans lui un vault déclaré en
+  // config n'a aucune source pour ce nombre. Le port n'est pas un secret : il
+  // est déjà écrit en clair dans chaque lien de chaque note.
+  test('exporte le port en clair quand il est fourni — le lien distant en dépend', () => {
     const e = buildRemoteVaultEntry({ name: 'a', port: 27126, apiKey: fakeKey('a'), insecurePort: 27136 });
-    assert.ok(!JSON.stringify(e).includes('27136'));
+    assert.equal(e.insecurePort, 27136);
+  });
+
+  test('reste OPTIONNEL : sans lui, la sortie est celle de la v0.78.0', () => {
+    const e = buildRemoteVaultEntry({ name: 'a', port: 27126, apiKey: fakeKey('a') });
+    assert.ok(!('insecurePort' in e), 'aucune clé ajoutée quand rien n’est fourni');
+  });
+
+  test('refuse un port en clair hors plage plutôt que de le taire', () => {
+    for (const bad of [0, 65536, -1, 27136.5, '27136']) {
+      assert.throws(
+        () => buildRemoteVaultEntry({ name: 'a', port: 27126, apiKey: fakeKey('a'), insecurePort: bad }),
+        /insecurePort invalide/,
+        `insecurePort=${JSON.stringify(bad)} aurait dû être refusé`,
+      );
+    }
+  });
+
+  test('refuse un vault dont les deux ports sont identiques — une socket, deux serveurs', () => {
+    assert.throws(
+      () => buildRemoteVaultEntry({ name: 'a', port: 27126, apiKey: fakeKey('a'), insecurePort: 27126 }),
+      /même port 27126 en HTTPS et en clair/,
+    );
   });
 
   test('refuse un vault sans clé, et son message ne cite aucune valeur', () => {
@@ -392,6 +420,168 @@ describe('CLI — les garde-fous', () => {
       assert.equal(r.status, 0, r.stderr);
       assert.match(r.stderr, /EXCLUS : orphelin/);
       assert.ok(!r.stdout.includes('orphelin'), 'aucune entrée muette dans la sortie');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // -------------------------------------------------------------------------
+  // BLOQUANT trouvé en revue (2026-08-31) : le générateur avait PERDU la règle
+  // des trois états que `click-to-open.mjs` applique. Il rendait `null` aussi
+  // bien pour « serveur en clair ÉTEINT » que pour « fichier illisible », et
+  // repliait sur le registre dans les deux cas — exportant donc le port d'un
+  // serveur délibérément coupé vers un routeur qui n'a aucun disque pour se
+  // corriger. Ces trois tests sont la règle, tenue.
+  // -------------------------------------------------------------------------
+  const writeData = (vault, data) => fs.writeFileSync(
+    path.join(vault, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+    JSON.stringify(data),
+  );
+
+  // LE DÉFAUT EST L'OMISSION (3ᵉ revue, BLOQUANT). La doc appelait
+  // `insecurePort` « une affirmation de l'opérateur » pendant que le générateur
+  // le posait tout seul dès qu'il trouvait un port activé — l'opérateur
+  // n'affirmait rien du tout. Or si un lecteur clique ailleurs que sur la
+  // machine Obsidian, le CHEMIN de la note part vers ce qui écoute sur son
+  // loopback. Un chemin comme `Patients/…/diagnostic.md` est déjà une
+  // information. Il faut donc le demander.
+  test('par défaut, AUCUN port en clair n\'est exporté', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      const entry = JSON.parse(r.stdout).remoteVaults[0];
+      assert.ok(!('insecurePort' in entry), `rien ne doit sortir sans le drapeau : ${JSON.stringify(entry)}`);
+      assert.ok(!r.stdout.includes('27136'), 'le nombre lui-même ne doit pas apparaître');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('--with-click-to-open exporte le port du disque, et DIT ce que ça suppose', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(JSON.parse(r.stdout).remoteVaults[0].insecurePort, 27136);
+      // L'avertissement doit nommer le risque CONCRET, pas se contenter d'un
+      // « attention » : ce qui part est le chemin de la note.
+      assert.match(r.stderr, /CHEMIN de la note/);
+      assert.match(r.stderr, /Le contenu, lui, ne sort jamais/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('serveur en clair ÉTEINT : AUCUN port, et surtout pas celui du registre', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      // Le registre, lui, se souvient de 27136 : c'est exactement le repli qui
+      // ne doit PAS se produire quand le disque a parlé.
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: false });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      const entry = JSON.parse(r.stdout).remoteVaults[0];
+      assert.ok(!('insecurePort' in entry), `le port d'un serveur éteint ne doit pas sortir : ${JSON.stringify(entry)}`);
+      assert.match(r.stderr, /sans port en clair utilisable : roland/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // 3ᵉ REVUE, IMPORTANT 3 : un data.json lisible mais sans port HTTPS valide
+  // faisait reprendre le port du REGISTRE tout en gardant le port en clair du
+  // DISQUE — la comparaison entre deux sources, revenue par la fenêtre. Le
+  // vault est désormais EXCLU : un baseUrl construit sur un port supposé
+  // produit une config qui a l'air bonne et ne joint rien.
+  test('data.json sans port HTTPS utilisable : le vault est EXCLU, pas deviné', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.notEqual(r.status, 0, 'plus aucun vault exportable → échec explicite');
+      assert.match(r.stderr, /sans port HTTPS lisible, donc EXCLUS : roland/);
+      // Le message d'échec doit nommer la VRAIE cause : la clé était lisible.
+      assert.match(r.stderr, /Aucun vault exportable/);
+      assert.ok(!/Aucune clé lisible/.test(r.stderr), 'ne pas envoyer chercher au mauvais endroit');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // 4ᵉ REVUE, IMPORTANT 3 : exiger les deux ports du disque n'a de sens que
+  // lorsqu'on exporte une PAIRE. Sans le drapeau il n'y a pas de paire, donc
+  // aucune comparaison entre sources — et refuser le vault était une régression
+  // gratuite. Un plugin qui n'écrit que ce qui diffère du défaut est un cas
+  // ordinaire, pas une anomalie.
+  test('sans le drapeau, un data.json sans port HTTPS retombe sur le registre', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      const entry = JSON.parse(r.stdout).remoteVaults[0];
+      assert.equal(entry.baseUrl, 'https://127.0.0.1:27126', 'le registre reste utilisable quand aucune paire n’est en jeu');
+      assert.ok(!('insecurePort' in entry));
+      assert.match(r.stderr, /n'écrit pas de port HTTPS — le registre \(27126\) est utilisé/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // Le drapeau doit valoir pour TOUS les formats de sortie, pas seulement le
+  // JSON — c'est la sortie `env` qui part dans un dashboard MCPHub.
+  test('format env : le port suit le drapeau, dans les deux sens', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const sans = run(['--vault', 'roland', '--format', 'env'], cfg);
+      assert.equal(sans.status, 0, sans.stderr);
+      assert.ok(!sans.stdout.includes('insecurePort'), `aucun port par défaut : ${sans.stdout}`);
+      assert.ok(!sans.stdout.includes('27136'));
+
+      const avec = run(['--vault', 'roland', '--format', 'env', '--with-click-to-open'], cfg);
+      assert.equal(avec.status, 0, avec.stderr);
+      assert.match(avec.stdout, /^VAULT_ROLAND=/m);
+      const json = JSON.parse(avec.stdout.slice(avec.stdout.indexOf('=') + 1));
+      assert.equal(json.insecurePort, 27136, 'la ligne env porte le port comme la config JSON');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test("deux ports identiques : signalé, non exporté, et l'export ENTIER survit", () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27126, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      const entry = JSON.parse(r.stdout).remoteVaults[0];
+      assert.ok(!('insecurePort' in entry));
+      assert.match(r.stderr, /27126 déclaré à la fois en HTTPS et en clair/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // 2ᵉ REVUE, IMPORTANT 2 : le contrôle « ports égaux » comparait le port EN
+  // CLAIR du disque au port HTTPS du REGISTRE. Un registre périmé faisait donc
+  // accuser à tort un vault sain. Ici le disque lie 27126/27136 — deux ports
+  // bien distincts — pendant que le registre se souvient de 27136 en HTTPS.
+  test('un registre périmé ne fait plus accuser à tort un vault sain', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const conf = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+      conf.portRegistry[vault] = { https: 27136, http: 27136 }; // périmé, et faux
+      fs.writeFileSync(cfg, JSON.stringify(conf));
+      const r = run(['--vault', 'roland', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      const entry = JSON.parse(r.stdout).remoteVaults[0];
+      assert.equal(entry.insecurePort, 27136, 'le port en clair du disque doit sortir');
+      assert.equal(entry.baseUrl, 'https://127.0.0.1:27126', 'le baseUrl doit viser le port que le plugin LIE');
+      assert.ok(!/à la fois en HTTPS et en clair/.test(r.stderr), 'aucune accusation : les deux ports du DISQUE diffèrent');
+      assert.match(r.stderr, /le registre déclare 27136 en HTTPS, son data\.json lie 27126/);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  test('les ports en clair exportés sont annoncés avec ce qu\'ils supposent', () => {
+    const { dir, vault, cfg } = makeFleet();
+    try {
+      writeData(vault, { apiKey: fakeKey('roland'), port: 27126, insecurePort: 27136, enableInsecureServer: true });
+      const r = run(['--vault', 'roland', '--host', '10.8.0.10', '--with-click-to-open'], cfg);
+      assert.equal(r.status, 0, r.stderr);
+      // Le message ne prétend PLUS qu'un hôte non-loopback empêche tout lien —
+      // c'était faux (2ᵉ revue) : le lien vaut toujours 127.0.0.1 et ce qui
+      // compte est où se trouve le lecteur.
+      assert.match(r.stderr, /clique AILLEURS que sur la machine qui fait tourner Obsidian/);
+      assert.ok(!/AUCUN lien/.test(r.stderr));
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });

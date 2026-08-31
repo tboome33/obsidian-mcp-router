@@ -18,22 +18,43 @@
  *   - exact miss, no/ambiguous     → single mode THROWS a clear error; batch
  *                                    mode marks that entry with `error` and a
  *                                    null URL (the good entries still resolve)
- * Local vaults only — a remote vault has no local disk to stat, so it keeps the
- * prior behaviour (null URL, unverified). See helpers/resolve-vault-path.mjs.
+ * VERIFICATION IS LOCAL-DISK-ONLY, AND SINCE v0.79.0 THAT IS SAID OUT LOUD.
+ * A vault with no local disk cannot be stat-ed, so nothing above can run for
+ * it. Until lot 2 that did not matter — such a vault got a `null` URL anyway,
+ * so there was no unverified link to warn about. Now that click-to-open works
+ * from a configured port, a remote vault DOES get a URL, and it is one nobody
+ * checked: the exact "well-formed URL that 404s at the bridge" this tool was
+ * written to eliminate. Every result therefore carries `pathVerified`, on EVERY
+ * branch including the error entries — a caller that has to infer the
+ * difference from which OTHER keys are absent will not. `not_found` and
+ * `ambiguous` are `true`: the check RAN and reached a conclusion. Only
+ * `resolution_incomplete` (the scan could not finish) and the diskless case are
+ * `false`.
+ *
+ * THE FIELD IS NAMED `pathVerified`, NOT `verified`, AND THE NAME IS THE POINT
+ * (pre-release review, 2026-08-31). It answers exactly one question: was this
+ * path checked against a disk? It does NOT mean the link works. A local file
+ * that exists in a vault whose plaintext server is off is `pathVerified: true`
+ * with a `null` URL. The unverified explanation likewise only mentions the URL
+ * when there IS one — the first draft told callers "the URL is well-formed but
+ * may 404" in a result whose URL was `null`.
+ * See helpers/resolve-vault-path.mjs.
  *
  * Two modes:
  *   - single: `{ vault?, path, anchor? }` → `{ vault, path, clickToOpenUrl, markdownLink }`
  *   - batch:  `{ vault?, paths: [a, b, c] }` → `{ vault, links: [...] }`
  *
- * `clickToOpenUrl` is `null` (and `markdownLink` absent) when the vault is
- * remote or the insecure HTTP server isn't enabled — same semantics as
- * `buildClickToOpenUrl`.
+ * `clickToOpenUrl` is `null` (and `markdownLink` absent) when no plaintext port
+ * is known, or when the vault's `data.json` says the insecure server is off —
+ * same semantics as `buildClickToOpenUrl`. The vault's `baseUrl` plays no part:
+ * the emitted host is always `127.0.0.1`.
  */
 
 import {
   buildClickToOpenUrl,
   buildClickToOpenMarkdownLink,
   normalizeAnchor,
+  resolveInsecurePort,
 } from '../helpers/click-to-open.mjs';
 import { resolveVaultPathOnDisk } from '../helpers/resolve-vault-path.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
@@ -50,7 +71,7 @@ import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
  *   batch mode (false) returns an `{ error }` entry instead so one bad path
  *   doesn't sink the whole batch.
  */
-function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}) {
+function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false, port } = {}) {
   // `resolveVaultPathOnDisk` strips leading slashes and does NOT reject `..`,
   // then stats the joined result — so an unguarded caller path made this an
   // EXISTENCE ORACLE for files outside the vault: `../secret.md` came back as
@@ -75,7 +96,10 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
       `Check the folder and basename, or use list_files / search to find the real path — ` +
       `do NOT hand-compose the URL.`;
     if (throwOnMiss) throw new Error(message);
-    return { path: requestedPath, error: 'not_found', message, clickToOpenUrl: null };
+    // `pathVerified: true` — the check RAN and its answer is "no such file".
+    // A checked absence is not the same as an unchecked path, and the batch
+    // entries must carry the field too or "always present" is a false promise.
+    return { path: requestedPath, error: 'not_found', message, clickToOpenUrl: null, pathVerified: true };
   }
 
   if (verdict.status === 'ambiguous') {
@@ -89,6 +113,7 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
       matches: verdict.matches,
       message,
       clickToOpenUrl: null,
+      pathVerified: true,
     };
   }
 
@@ -97,7 +122,9 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
       `build_open_link: could not verify "${safeForMessage(requestedPath, 200)}" — the vault is too large to prove ` +
       `the basename is unique within the scan budget. Pass the exact full path.`;
     if (throwOnMiss) throw new Error(message);
-    return { path: requestedPath, error: 'resolution_incomplete', message, clickToOpenUrl: null };
+    // The scan ran but could not FINISH, so uniqueness was never established:
+    // this is the one error branch where the path is genuinely unverified.
+    return { path: requestedPath, error: 'resolution_incomplete', message, clickToOpenUrl: null, pathVerified: false };
   }
 
   // 'ok' → use the requested path verbatim (preserves exact encoding).
@@ -107,11 +134,18 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
   const effectivePath = verdict.status === 'corrected' ? verdict.path : requestedPath;
 
   const clean = normalizeAnchor(anchor);
-  const opts = clean ? { anchor: clean } : {};
+  // ONE port for the URL and its markdown twin. Without this the two builders
+  // each resolved the port independently — two disk reads per entry, and a
+  // rewrite between them could hand back a result whose `clickToOpenUrl` and
+  // `markdownLink` named DIFFERENT ports (third pre-release review).
+  const opts = { ...(clean ? { anchor: clean } : {}), port };
   const clickToOpenUrl = buildClickToOpenUrl(vault, effectivePath, opts);
   const markdownLink = clickToOpenUrl
     ? buildClickToOpenMarkdownLink(vault, effectivePath, undefined, opts)
     : null;
+
+  // 'unverifiable' is the ONLY status that reaches here without a disk check.
+  const pathVerified = verdict.status !== 'unverifiable';
 
   return {
     path: effectivePath,
@@ -119,6 +153,17 @@ function buildOneLink(vault, requestedPath, { anchor, throwOnMiss = false } = {}
     ...(clean ? { anchor: clean } : {}),
     clickToOpenUrl,
     ...(markdownLink && { markdownLink }),
+    pathVerified,
+    ...(pathVerified ? {} : {
+      verification:
+        `The path was NOT checked: vault "${safeForMessage(vault.name, 80)}" has no local filesystem `
+        + 'path, so this tool could not confirm the file exists'
+        // Only claim something about a URL when one was actually produced.
+        + (clickToOpenUrl
+          ? ', and the URL below is well-formed but may 404 at the bridge'
+          : '')
+        + '. Use list_files or search to confirm the path before citing it.',
+    }),
   };
 }
 
@@ -148,6 +193,9 @@ export async function buildOpenLinkTool(registry, args = {}) {
   }
 
   const vault = registry.resolveVault(name);
+  // Resolved ONCE for this call — see the note in buildOneLink. A 200-path
+  // batch reads data.json once, not 400 times, and every link in it agrees.
+  const port = resolveInsecurePort(vault);
 
   if (isBatch) {
     // Reject non-string / empty entries up front. A typo in the batch
@@ -162,13 +210,13 @@ export async function buildOpenLinkTool(registry, args = {}) {
     // gets an `error` field + null URL, the rest still resolve.
     return ({
       vault: vault.name,
-      links: paths.map((p) => buildOneLink(vault, p, { throwOnMiss: false })),
+      links: paths.map((p) => buildOneLink(vault, p, { throwOnMiss: false, port })),
     });
   }
 
   // Single: a bad path THROWS — the caller cannot walk away with a dead URL.
   return ({
     vault: vault.name,
-    ...buildOneLink(vault, filePath, { anchor, throwOnMiss: true }),
+    ...buildOneLink(vault, filePath, { anchor, throwOnMiss: true, port }),
   });
 }

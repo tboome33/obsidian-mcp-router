@@ -74,6 +74,9 @@ gen-remote-config — config d'un routeur SANS disque de vault (profil HTTP-only
 
   --vault <slug>       vault à exporter (RÉPÉTABLE). La sélection est explicite.
   --all                tout le parc — annonce le nombre de clés avant d'agir.
+  --with-click-to-open exporter aussi le port EN CLAIR de chaque vault, pour
+                       que le routeur distant émette des liens click-to-open.
+                       ABSENT PAR DÉFAUT : voir plus bas ce que ça suppose.
   --host <hôte>        défaut 127.0.0.1 (le bout du tunnel SSH côté distant).
   --format json|env    'json' = fichier config ; 'env' = lignes VAULT_<NOM>=…
   --out <fichier>      écrire en clair, fichier créé en 0600.
@@ -84,6 +87,14 @@ gen-remote-config — config d'un routeur SANS disque de vault (profil HTTP-only
 Sans --out ni --print-secrets, la sortie est RÉDIGÉE : même forme, clés
 remplacées par un marque-place. C'est le défaut, pour qu'une commande lancée
 par curiosité ne divulgue rien.
+
+--with-click-to-open, et pourquoi ce n'est PAS le défaut. Le lien émis vaut
+toujours http://127.0.0.1:<port>/open/<chemin> : il ne fonctionne que si vos
+lecteurs cliquent DEPUIS la machine qui fait tourner Obsidian. Sinon le clic
+part vers LEUR loopback — et si un service sans rapport y écoute, il reçoit le
+CHEMIN de la note et son titre de section. Le contenu n'est jamais transmis
+(/open ne le renvoie pas), mais un chemin peut déjà être une information.
+Poser ce drapeau, c'est affirmer que vos lecteurs sont bien sur cette machine.
 `.trim());
   process.exit(0);
 }
@@ -94,6 +105,7 @@ const many = (n) => argv.reduce((a, x, i) => (x === `--${n}` && argv[i + 1] && !
 
 const selected = many('vault');
 const wantAll = flag('all');
+const withClickToOpen = flag('with-click-to-open');
 const host = val('host', '127.0.0.1');
 const format = val('format', 'json');
 const outPath = val('out');
@@ -120,20 +132,64 @@ const defaultNameFromPath = (p) => {
   return (isWin ? path.win32 : path.posix).basename(p).replace(/^\./, '').toLowerCase();
 };
 
-/** Lit UNIQUEMENT l'apiKey du data.json. La clé privée TLS n'est jamais extraite. */
-function readApiKeyFromDisk(vaultPath) {
+/**
+ * Lit du data.json l'apiKey ET le port en clair — rien d'autre.
+ *
+ * La clé privée TLS est dans le même fichier et n'est JAMAIS extraite. Le port
+ * en clair sert au click-to-open du profil distant (lot 2) : sans lui, un vault
+ * déclaré en `remoteVaults` n'a aucune source pour ce nombre et les 13 outils
+ * qui émettent un lien émettent `null`.
+ *
+ * LE DISQUE DÉCIDE QUAND IL PARLE. Trois revues ont porté sur cette fonction et
+ * son appelant. La première a montré qu'elle confondait « serveur en clair
+ * ÉTEINT » et « fichier illisible », ce qui faisait exporter le port mémorisé
+ * d'un serveur délibérément coupé. La deuxième a montré que le repli mélangeait
+ * les sources — port en clair du disque, port HTTPS du registre — et pouvait
+ * accuser à tort un vault sain. La réparation a d'abord exclu tout vault sans
+ * port HTTPS sur disque ; la troisième revue a montré que c'était trop large.
+ *
+ * La règle finale tient à la notion de PAIRE. Comparer deux ports n'a de sens
+ * que s'ils viennent de la même source, donc :
+ *   - avec `--with-click-to-open` (une paire est exportée) → les deux ports
+ *     viennent du disque, ou le vault est exclu ;
+ *   - sans le drapeau (seul le HTTPS sort, aucune comparaison) → le registre
+ *     reste un repli légitime, signalé.
+ * `readable` reste exposé pour dire l'état, mais l'appelant n'en a plus besoin :
+ * un fichier illisible n'a pas non plus de clé, et le vault sort avant.
+ */
+function readVaultSecretsFromDisk(vaultPath) {
+  const unreadable = { apiKey: null, port: null, insecurePort: null, readable: false };
   const p = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
-  if (!fs.existsSync(p)) return null;
+  if (!fs.existsSync(p)) return unreadable;
+  const asPort = (n) => (Number.isInteger(n) && n > 0 && n <= 65535 ? n : null);
   try {
     const d = JSON.parse(fs.readFileSync(p, 'utf8'));
-    return typeof d.apiKey === 'string' && d.apiKey ? d.apiKey : null;
-  } catch { return null; }
+    return {
+      apiKey: typeof d.apiKey === 'string' && d.apiKey ? d.apiKey : null,
+      // LES DEUX PORTS, depuis LA MÊME SOURCE. La première version ne lisait que
+      // le port en clair, puis le comparait au port HTTPS du REGISTRE — deux
+      // sources différentes (trouvé en 2ᵉ revue). Un registre périmé faisait
+      // alors accuser à tort un vault parfaitement sain d'avoir deux ports
+      // égaux, et laissait passer le cas inverse. Une comparaison entre deux
+      // sources ne compare rien.
+      port: asPort(d.port),
+      // Lisible : ce fichier DÉCIDE. Serveur éteint, ou port absent/aberrant →
+      // pas de port, et surtout pas de repli.
+      insecurePort: d.enableInsecureServer === true ? asPort(d.insecurePort) : null,
+      readable: true,
+    };
+  } catch { return unreadable; }
 }
 
 const names = cfg.vaultNames || {};
 const fleet = [];
 for (const [vaultPath, raw] of Object.entries(cfg.portRegistry || {})) {
   const name = names[vaultPath] || defaultNameFromPath(vaultPath);
+  // Seul le port HTTPS du registre est retenu. Il sert à SIGNALER un désaccord
+  // avec le disque, et — sans `--with-click-to-open` seulement — de repli quand
+  // le data.json n'écrit pas son port. Dès qu'une PAIRE est exportée, les deux
+  // ports viennent du disque ou le vault est exclu : c'est la comparaison entre
+  // deux sources qu'il faut empêcher, pas l'usage du registre en soi.
   fleet.push({ name, vaultPath, port: normalizePortEntry(raw).https });
 }
 if (!fleet.length) err(`Aucun vault dans le portRegistry de ${configPath}.`);
@@ -162,17 +218,85 @@ if (wantAll) {
 // ---------------------------------------------------------------------------
 const vaults = [];
 const noKey = [];
+const noLink = [];
+const noHttpsPort = [];
 for (const v of wanted) {
-  const apiKey = readApiKeyFromDisk(v.vaultPath);
+  const { apiKey, port: diskPort, insecurePort } = readVaultSecretsFromDisk(v.vaultPath);
+  // Un data.json illisible n'a pas de clé non plus : le vault sort ici, ce qui
+  // rend TOUT le reste de cette boucle conditionné à `readable === true`. (Un
+  // repli « registre » pour un fichier illisible serait donc du code mort —
+  // relevé en 3ᵉ revue, et retiré plutôt que commenté.)
   if (!apiKey) { noKey.push(v.name); continue; }
   if (!looksLikeApiKey(apiKey)) warn(`${v.name} : la clé lue n'a pas la forme attendue — exportée telle quelle, à vérifier.`);
-  vaults.push({ name: v.name, port: v.port, apiKey });
+
+  // LE DISQUE DÉCIDE QUAND IL PARLE. La règle « les deux ports ou aucun » n'a de
+  // sens que si l'on exporte une PAIRE : c'est elle qui interdit de comparer un
+  // port en clair venu du disque à un port HTTPS venu du registre. Sans
+  // `--with-click-to-open` il n'y a pas de paire, donc pas de comparaison, donc
+  // aucune raison de refuser un vault dont le data.json n'écrit pas son `port`
+  // — ce qu'un plugin fait couramment quand la valeur est celle par défaut.
+  // Exclure ce cas était une régression gratuite (4ᵉ revue).
+  if (diskPort === null && withClickToOpen) {
+    noHttpsPort.push(v.name);
+    continue;
+  }
+  const httpsPort = diskPort ?? v.port;
+  if (diskPort === null) {
+    warn(`${v.name} : son data.json n'écrit pas de port HTTPS — le registre (${v.port}) est utilisé.`);
+  } else if (diskPort !== v.port) {
+    warn(`${v.name} : le registre déclare ${v.port} en HTTPS, son data.json lie ${diskPort} — c'est ${diskPort} qui est exporté.`);
+    info('Réconciliez avec `node scripts/setup-vault.mjs --sync-port-registry`.');
+  }
+
+  let clickPort = withClickToOpen ? insecurePort : null;
+  // Deux ports identiques, comparés DEPUIS LA MÊME SOURCE : la donnée est
+  // fausse quelque part. On le signale et on n'exporte PAS le port, plutôt que
+  // de laisser le constructeur lever et faire échouer l'export entier à cause
+  // d'un seul vault mal configuré.
+  if (clickPort !== null && clickPort === diskPort) {
+    warn(`${v.name} : ${clickPort} déclaré à la fois en HTTPS et en clair — port en clair NON exporté, à corriger dans Obsidian.`);
+    clickPort = null;
+  }
+  if (withClickToOpen && clickPort === null) noLink.push(v.name);
+  vaults.push({
+    name: v.name,
+    port: httpsPort,
+    apiKey,
+    ...(clickPort !== null ? { insecurePort: clickPort } : {}),
+  });
+}
+if (noHttpsPort.length) {
+  warn(`--with-click-to-open exige les DEUX ports depuis le data.json ; sans port HTTPS lisible, donc EXCLUS : ${noHttpsPort.join(', ')}`);
+  info("Comparer un port en clair venu du disque à un port HTTPS venu du registre, c'est comparer deux sources. Relancez sans le drapeau pour les exporter quand même.");
 }
 if (noKey.length) {
   warn(`Sans clé lisible sur disque, donc EXCLUS : ${noKey.join(', ')}`);
   info('Ouvrez ces vaults dans Obsidian une fois, plugin Local REST API activé, puis relancez.');
 }
-if (!vaults.length) err("Aucune clé lisible — rien à générer.");
+if (noLink.length) {
+  warn(`--with-click-to-open demandé mais sans port en clair utilisable : ${noLink.join(', ')}`);
+  info("Ces vaults fonctionneront normalement ; seuls leurs `clickToOpenUrl` resteront à null.");
+}
+if (!vaults.length) {
+  // Le message nomme la VRAIE cause : avec `--with-click-to-open`, un vault peut
+  // avoir une clé parfaitement lisible et sortir quand même faute de port HTTPS
+  // sur disque. Annoncer « aucune clé lisible » enverrait chercher au mauvais
+  // endroit (4ᵉ revue).
+  const causes = [];
+  if (noKey.length) causes.push(`${noKey.length} sans clé lisible`);
+  if (noHttpsPort.length) causes.push(`${noHttpsPort.length} sans port HTTPS sur disque`);
+  err(`Aucun vault exportable — rien à générer${causes.length ? ` (${causes.join(', ')})` : ''}.`);
+}
+const exportedPorts = vaults.filter((v) => v.insecurePort !== undefined).length;
+if (exportedPorts) {
+  // CE QUE CE MESSAGE NE DIT PLUS. Une première version annonçait qu'un hôte
+  // non-loopback empêcherait tout lien — c'était faux, et la 2ᵉ revue l'a
+  // relevé : le lien émis vaut TOUJOURS 127.0.0.1, jamais l'hôte de `baseUrl`.
+  // Ce que `--host` décrit, c'est le chemin du ROUTEUR vers l'API REST ; ce qui
+  // décide du clic, c'est où se trouve le LECTEUR. Deux sauts différents.
+  warn(`${exportedPorts} port(s) en clair exportés : les liens vaudront http://127.0.0.1:<port>/open/<chemin>.`);
+  info("Si un lecteur clique AILLEURS que sur la machine qui fait tourner Obsidian, le CHEMIN de la note et son titre de section partent vers ce qui écoute sur son propre loopback. Le contenu, lui, ne sort jamais.");
+}
 
 let built;
 try { built = buildRemoteConfig({ vaults, host, defaultVault }); }

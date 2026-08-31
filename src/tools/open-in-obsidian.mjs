@@ -154,10 +154,11 @@ export async function openInObsidianTool(registry, args = {}) {
     }
   }
 
-  // NOTE: deliberately NOT restricted to `vault.type === 'local'`. A review
-  // flagged parity with `buildClickToOpenUrl` (which IS local-only) — but that
-  // helper is local-only only because it must read the LOCAL data.json to find
-  // the insecure port; a different reason. `open_in_obsidian` targets
+  // NOTE: deliberately NOT restricted to `vault.type === 'local'`. A review once
+  // flagged parity with `buildClickToOpenUrl`, which WAS local-only — because it
+  // had to read the LOCAL data.json to find the insecure port. v0.79.0 removed
+  // that reason (the port can come from config), so the two are no longer
+  // asymmetric in the way the old note described. `open_in_obsidian` targets
   // `vault.baseUrl` directly. The bridge /open navigates whichever Obsidian
   // serves baseUrl. (For a configured + reachable view-agent the branch above
   // already returned a view-link; this is the local / no-view-agent path.)

@@ -4,6 +4,250 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.79.0] — 2026-08-31 — the click-to-open link survives the loss of the disk
+
+Lot 2 of the "backend interface, HTTP-only profile as proof" workstream. Lot 1
+(v0.78.0) removed the one universal disk dependency — credential resolution.
+What remained was **decoration that had become unavailable**: 13 tools emit a
+`clickToOpenUrl`, and every one of them emitted `null` for a vault whose disk
+the router cannot read, because the plaintext port could only ever be read out
+of that disk. `open-in-obsidian.mjs` had recorded the reason verbatim: *"that
+helper is local-only only because it must read the LOCAL data.json to find the
+insecure port"*. This release removes that reason.
+
+### Added — the plaintext port travels with the vault declaration
+
+Every vault descriptor now carries `insecurePort`, resolved per source:
+
+- **local** — `data.json` first (it is what the plugin binds), then
+  `portRegistry[path].http`, which v0.77.0 started recording;
+- **`remoteVaults` / `VAULT_*`** — a new **optional** `insecurePort` field, which
+  `gen-remote-config.mjs` fills from the source vault's `data.json` **only under
+  `--with-click-to-open`**. It is not the default, and the flag prints what it
+  assumes: the emitted link is `http://127.0.0.1:<port>/…`, so a reader clicking
+  it anywhere other than the machine running that vault's Obsidian sends the
+  note's **path and heading** to whatever owns that port on their own loopback.
+  `/open` never returns file content, so what the note says never leaves — but a
+  path can be `Patients/J. Dupont/diagnostic.md`, and that is a disclosure worth
+  opting into rather than inheriting.
+
+v0.78.0 declined to export the number at all, on a surface-area argument resting
+on a false premise ("it only serves the *local* click-to-open"). The test
+asserting that refusal has been inverted, with the reversal recorded next to it.
+
+### Changed — declaring the port IS the opt-in; `baseUrl` decides nothing
+
+The emitted link is always `http://127.0.0.1:<insecurePort>/…` — the vault's own
+host is never interpolated. The bridge's `/open` route accepts only loopback
+source IPs, and **that request comes from the reader's browser**, not from the
+router. So whether a click works depends on one question the router cannot
+answer: is the person reading the chat sitting at the machine running that
+vault's Obsidian?
+
+A first draft of this release gated emission on `baseUrl` being loopback. That
+was wrong in both directions and review caught it: `baseUrl` describes how the
+*router* reaches the REST API — a different hop entirely. A WireGuard-reached
+vault whose reader is at the Obsidian machine has a perfectly good link (refused
+by the gate); a loopback-reached vault whose reader is elsewhere does not (waved
+through by it). The gate is gone. `insecurePort` is optional, and declaring it
+is the operator's assertion about their own topology.
+
+A side effect worth naming: with no host test, no vault-supplied string is
+examined or interpolated at all — so the userinfo class of defect that held
+v0.78.0 for an API-key exfiltration has no surface here to begin with.
+
+When the assertion is wrong the cost is bounded: the click reaches the reader's
+own loopback and finds nothing, or finds an unrelated local service and hands it
+a note *path*. `/open` never returns file content.
+
+### Changed — `data.json` now has three states, not two
+
+"The file says the plaintext server is off" and "I could not open the file" are
+different facts, and only the second one licenses falling back to a remembered
+port. Collapsing them (which the old `catch` did) is what made the recorded port
+unreachable. A readable-and-disabled vault still yields `null`, with no
+fallback — there is nothing listening to fall back to.
+
+### Changed — `build_open_link` now says whether it verified anything
+
+Its whole promise was that a wrong path is corrected or refused rather than
+returned as a well-formed URL that 404s. That check needs a local disk. Now that
+a diskless vault gets a URL, every result carries **`verified`** (always
+present, both ways) and, when false, a `verification` sentence explaining that
+the path was not checked.
+
+### Fixed — `find_twin_pages`: a claim the code did not apply
+
+It was documented `LOCAL-ONLY` beside its handler while being absent from
+`LOCAL_ONLY_TOOL_NAMES`. The obvious repair is wrong: that Set means *"writes to
+the host filesystem, so it must be unreachable on a gated deployment"*, and
+`find_twin_pages` writes nothing — adding it would delete a working read-only
+tool from a gated-but-local router (the profile this fleet runs) to protect
+against nothing. What "local-only" means for it is a property of the **target
+vault**, decided per call, which it already reports (`available: false`,
+`reason: 'remote-vault'`, and no `pairs` key at all). The distinction is now a
+declared `LOCAL_VAULT_ONLY_TOOL_NAMES` set with tests holding three invariants
+no comment could: the sets stay disjoint, each member declares the constraint in
+its own description, and no member is hidden by gating.
+
+### Measured, not built — `ingest-state`, and a boundary made structural
+
+The estimate listed "`ingest-state` on REST" as lot-2 work. The import graph says
+there is nothing to port: the state file is touched only by the `wiki-ingest`
+skill, which runs on the machine that has the disks, and by tests. Of the 50
+tools, exactly three modules import `node:fs` directly — `lock` and
+`set_auto_enrich_mode` write the **router's own** dotenv (not a vault), and
+`find_twin_pages` reads the vault and declines cleanly.
+
+Proving that claim took three attempts, and the third stopped trying. Two
+successive test versions grepped source text for import forms, and two successive
+reviews walked through them (`import * as ns`, then a template-literal specifier
+and a `?query` suffix) — a regex over source text cannot settle a question about
+module boundaries. So the **disk half moved into `src/helpers/ingest-state-fs.mjs`**,
+following the convention already used by `okf-projections-fs.mjs` and
+`bm25-index-fs.mjs`. `ingest-state.mjs` keeps the pure half (hashing, URL
+normalisation, freshness) and deliberately does **not** re-export the disk
+functions — that would put `node:fs` back in its import graph. The invariant is
+now a substring no router source file may contain, which no import syntax can
+hide. Callers: the `wiki-ingest` skill and the tests import from the new path.
+
+### Fixed — three defects this release introduced, caught before it shipped
+
+An adversarial review was run over the change with its own claims as input.
+Three of them were false:
+
+- **The generator lost the three-state rule it was written to enforce.** It
+  returned `insecurePort: null` for both "the file says the plaintext server is
+  off" and "I could not read the file", and fell back to the registry in both
+  cases — so a vault that had deliberately turned its plaintext server OFF got
+  the remembered port exported to a router with no disk to correct it. That is
+  precisely the state the rule exists to prevent, reintroduced one layer up.
+- **The port cache made "a stale value can never win" false.** Introduced in
+  v0.14.9, it kept every successful read for the life of the process with no
+  invalidation, so a user who disabled the plaintext server, or moved it, kept
+  getting the old number until restart. The suite could not see it: every cache
+  test resets it in a `beforeEach`. **The cache is now gone.** An intermediate
+  repair validated the entry against the file's mtime; a second review rejected
+  that too, correctly — two writes inside one filesystem timestamp tick share an
+  mtime, so the invariant still could not be *stated*, and the test defending
+  the cache had to restore an mtime by hand, engraving the collision into the
+  contract. Every call now reads the file. That read is a few-KB JSON against a
+  tool call already paying a 68–76 ms HTTPS round trip to the vault; buying an
+  unstatable invariant with it was a bad trade. `_resetCache` is kept as a
+  documented no-op. The old test asserting the pinning behaviour is inverted,
+  with the reversal recorded next to it.
+- **`build_open_link` explained a URL that did not exist.** With no plaintext
+  port, the result carried `clickToOpenUrl: null` and a sentence reading "the
+  URL is well-formed but may 404". The field was also renamed `verified` →
+  **`pathVerified`**: it answers whether the PATH was checked, and a real file
+  in a vault whose plaintext server is off is `pathVerified: true` with a null
+  URL. "Always present" is now actually true — the error branches carry it too.
+
+A **second review of the repairs** then found more, which is why the host gate
+above is gone rather than merely re-documented, and the cache removed rather
+than mtime-validated. It also found:
+
+- **The generator's equal-port check compared two different sources** — the
+  plaintext port from `data.json` against the HTTPS port from the *registry*. A
+  stale registry entry therefore accused a perfectly healthy vault of binding
+  one port twice, and dropped its link; the inverse case slipped through. The
+  generator now reads **both** ports from disk, compares like with like, and
+  reports a registry-vs-disk disagreement instead of silently using the stale
+  number for `baseUrl`.
+- **The `ingest-state` boundary test was a blacklist** of the import forms its
+  author happened to think of, and `import * as ingest from '…'` walked straight
+  through it. It is now a whitelist: every reference from `src/` must be a static
+  named import of one of the module's pure functions, so namespace, dynamic,
+  default and re-export forms all fail without anyone having had to predict them.
+- **The orphan-naming test passed for the wrong reason.** Its fixture produced no
+  pairs at all, so "the deleted page is not named" was true because *nothing* was
+  named. It now asserts first that live pages ARE named, and that control caught
+  the flaw immediately when added.
+
+A **third review** then found the defect the second round had created, and it is
+the one worth naming: the docs called `insecurePort` an operator assertion while
+the generator **added it automatically** wherever it found an enabled port — so
+the operator asserted nothing, and a note path could reach an unrelated loopback
+listener without anyone choosing that. Hence `--with-click-to-open`, off by
+default. The same review also found that removing the memo made
+`build_open_link` resolve the port **twice per entry** (once for the URL, once
+for its markdown twin) and could return a single result naming two different
+ports, or a bundle split across two; the port is now resolved **once per
+operation** and passed down. Measured rather than asserted: a 50-path
+`build_open_link` batch performs **1** read of `data.json`, not 50, and emits 50
+links all on one port; single mode performs 1 read for the URL and its markdown
+twin together, not 2; the response walker, 1 read for 50 paths. And
+the generator's repaired equal-port check still mixed sources when `data.json`
+had no usable HTTPS port.
+
+A **fourth review** found no blocker and four more real defects, all fixed:
+`opts.port` — the escape hatch the previous round had just exported — was
+trusted for merely being defined, so a caller could have built
+`http://127.0.0.1:80@evil.example/open/<note path>`; it is now range-checked
+whatever its source, because "no current caller does that" is not a guard and
+this fleet has met that defect class three times. The exclusion rule from round
+3 turned out **overbroad**: requiring both ports from disk only matters when a
+PAIR is exported, so without `--with-click-to-open` a `data.json` that omits
+`port` (plugins commonly persist only non-default settings) falls back to the
+registry with a warning instead of losing the vault. The new boundary test used
+`new URL(import.meta.url).pathname`, which breaks on any checkout path
+containing a space, and scanned only `.mjs`. And the final error said "no
+readable key" for a vault whose key was perfectly readable.
+
+The case for exporting the port was also rewritten: not "it is already written
+everywhere" (these links live mostly in tool results, not in notes) but that it
+is not an authentication credential, opens no socket, and is only useful to
+something already on the Obsidian host's loopback — in a file that also carries
+the strictly more powerful bearer key.
+
+Also: a vault declaring the same port for HTTPS and plaintext is reported and
+skipped by the generator rather than aborting the whole export; and the
+`find_twin_pages` exposure argument now states three checkable premises instead
+of asserting harmlessness.
+
+### Compatibility
+
+Additive, with three shape changes worth knowing: vault descriptors now carry
+`insecurePort` (often `null`); `build_open_link` results carry `pathVerified`;
+and a vault declared with an `insecurePort` now returns a non-null, unverified
+`clickToOpenUrl` where it previously returned `null`. `buildRemoteVaultEntry`
+also now throws on an `insecurePort` equal to the HTTPS port, where the field
+was previously ignored. `_resetCache` still exists but does nothing.
+
+One behaviour change with no config involved: a local vault's `data.json` is now
+re-read on every call rather than memoised per process, so an Obsidian-side port
+or `enableInsecureServer` change takes effect without restarting the router.
+
+### Still not done
+
+No key rotation or revocation. No per-token authorisation. Functional
+equivalence of the remote profile is still unproven — a diskless vault's
+`build_open_link` no longer loses its link, but it also no longer verifies the
+path, and `find_twin_pages` remains unavailable there. The router still cannot
+know where its reader is sitting: a link is correct only under the co-location
+assumption the operator makes by declaring the port.
+
+Three gaps named rather than closed. With no cache the router keeps no memory of
+a previous disk observation, so a vault whose `data.json` said "disabled" and
+then became *unreadable* falls back to the declared port — reviving a value the
+disk had refuted. Building a negative tombstone to prevent that would reintroduce
+the cross-call state just removed, to save a dead click; a test pins the
+behaviour so it cannot change by accident. `build_open_link`'s
+`resolution_incomplete` branch is covered by inspection, not by a test: reaching
+it needs a vault past the 20 000-file scan budget, which would cost seconds of CI
+to cover a literal. And the `ingest-state` boundary test catches an *accidental*
+re-coupling, not a deliberately concealed one — `'ingest-state-' + 'fs.mjs'` fed
+to a dynamic `import()` would evade any substring rule, and settling that needs a
+parsed import graph. The test says so rather than implying more.
+
+A **fifth review** closed the last hole in that test: a bare side-effect
+`import './ingest-state-fs.mjs';` needs no `from`, so it slipped past all three
+of the checks guarding the pure module. Three drafts had each named an import
+form and each missed one — enumerating syntaxes is the losing move. The three
+regexes are replaced by one rule: strip the comments, and require the *code* to
+contain no occurrence of the name. No import form can name a module without
+naming it. Proven in the red: adding that exact line makes the test fail.
+
 ## [0.78.0] — 2026-08-31 — the router can run without the vaults' disks: the key moves into the config
 
 **What the measurement found first.** All 50 tools were run in isolated

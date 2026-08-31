@@ -813,7 +813,7 @@ const TOOLS = [
   {
     name: 'build_open_link',
     description:
-      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. Returns null URL when the vault is remote or the bridge\'s insecure HTTP server isn\'t enabled.',
+      'Build a click-to-open URL (and a ready-to-paste markdown link) for one or many vault files WITHOUT reading or writing them. Use this when you need to cite a vault file in a chat response and you don\'t already have the URL from a previous tool call (write/get/patch all return clickToOpenUrl). Single mode: pass `path`. Batch mode: pass `paths` (array). Mutually exclusive — exactly one of `path` / `paths` must be provided. CHECK `pathVerified`, present on every result: true when the path was checked against a local disk (so a wrong path was corrected, or refused with an error), false when there was no disk to check it against — a URL you get then is well-formed but unproven, and `verification` says so. It is about the PATH, not the link: a file that exists in a vault whose plaintext server is off is `pathVerified: true` with a null URL. Returns a null URL when no plaintext port is known for the vault, or when its data.json says the insecure HTTP server is off. The emitted link is always http://127.0.0.1:<port>/open/... — it opens the note only for a reader sitting at the machine that runs that vault\'s Obsidian.',
     // v0.19.1: the `path` xor `paths` mutual exclusion is enforced at
     // RUNTIME (src/tools/build-open-link.mjs rejects both/neither with a
     // clear message) and documented in the description above — NOT in the
@@ -1140,8 +1140,10 @@ const TOOL_HANDLERS = {
   // C10 — read-only ranking of heavily-linked-but-thin "frontier" pages.
   find_boundary_pages: (reg, args) => findBoundaryPagesTool(reg, args),
   // C11 — read-only detection of quasi-twin page pairs (cosine over the local
-  // Smart Connections vector store). LOCAL-ONLY: the store is a dot-directory
-  // the REST API does not serve.
+  // Smart Connections vector store). LOCAL-VAULT-ONLY, which is NOT the same as
+  // LOCAL_ONLY_TOOL_NAMES: it writes nothing and stays exposed on a gated
+  // deployment; it declines per CALL for a vault with no disk (`available:
+  // false`, `reason: 'remote-vault'`). See LOCAL_VAULT_ONLY_TOOL_NAMES.
   find_twin_pages: (reg, args) => findTwinPagesTool(reg, args),
   // Crawl4AI roadmap W-A — read-only BM25 relevance filter over given markdown.
   filter_relevant_blocks: (reg, args) => filterRelevantBlocksTool(reg, args),
@@ -1157,6 +1159,54 @@ const TOOL_HANDLERS = {
 // on any gated/multi-tenant deployment (OBSIDIAN_ROUTER_USER_ID set). Same
 // spirit as the MD_ALLOWED_PATHS sandbox gate. Exported for testing.
 const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault']);
+
+/**
+ * Tools that need the TARGET VAULT to have a local disk — a different question,
+ * and NOT a deployment gate.
+ *
+ * THE ÉCART THIS SETTLES (found by the lot-0 bench, 2026-08-30). `find_twin_pages`
+ * was documented "LOCAL-ONLY" in a comment beside its handler while being absent
+ * from `LOCAL_ONLY_TOOL_NAMES` — a statement the code did not apply. The obvious
+ * repair, adding it to that Set, is WRONG, and the reason is worth writing down:
+ *
+ *   `LOCAL_ONLY_TOOL_NAMES` means "writes to the HOST filesystem, so it must be
+ *   unreachable on a gated deployment". That is a property of the DEPLOYMENT.
+ *   `find_twin_pages` writes nothing. Hiding it whenever OBSIDIAN_ROUTER_USER_ID
+ *   is set would remove a working, read-only tool from a gated router that has
+ *   its disks — exactly the C′ profile this fleet runs.
+ *
+ * "READ-ONLY" IS NOT BY ITSELF A REASON TO LEAVE A TOOL EXPOSED, and a reviewer
+ * was right to say so: a tool that reads a store the REST API deliberately does
+ * not serve could disclose more than the caller's REST access already grants,
+ * or burn the host's CPU. So the premises are stated rather than assumed, and
+ * each is checkable:
+ *
+ *   1. The caller is ALREADY authorised for that vault — a gated deployment
+ *      filters vaults through OBSIDIAN_ROUTER_ALLOWED_VAULTS before any handler
+ *      runs, so `find_twin_pages` can only ever be pointed at a vault whose
+ *      whole content the caller can already read over REST.
+ *   2. It names only pages that EXIST ON DISK. Vectors for moved or deleted
+ *      pages are held out and reported as a COUNT (`excluded.notOnDisk`), never
+ *      as paths — so the store's memory of deleted pages does not leak.
+ *   3. Its corpus is bounded: past `maxPages` it refuses rather than spend the
+ *      time, so it is not an unbounded CPU sink.
+ *
+ * If any of those stops being true, this tool belongs in a third category —
+ * not silently in this one.
+ *
+ * What "local-only" actually means for this tool is a property of the VAULT:
+ * Smart Connections' vector store is a dot-directory the REST API does not
+ * serve, so a vault with no local path cannot be answered. That is decided per
+ * CALL, and the tool already does it — `available: false`, `reason:
+ * 'remote-vault'`, and NO `pairs` key, so "I could not look" cannot be misread
+ * as "I looked and found none".
+ *
+ * This Set exists so the distinction is declared rather than implied, and so
+ * `tests/local-vault-only.test.mjs` can hold three invariants that no comment
+ * could: the two Sets stay disjoint, every member says so in its own tool
+ * description, and no member is hidden by gating.
+ */
+const LOCAL_VAULT_ONLY_TOOL_NAMES = new Set(['find_twin_pages']);
 
 // Cross-check: every TOOLS entry must have a handler, and vice-versa. Runs at
 // module load — any mismatch (typo, forgotten handler, orphan handler) is a
@@ -2683,6 +2733,7 @@ export const _internals = {
   WRITE_TOOL_NAMES,
   VIEW_LINK_TOOLS,
   LOCAL_ONLY_TOOL_NAMES,
+  LOCAL_VAULT_ONLY_TOOL_NAMES,
   computeExposedTools,
   PKG_VERSION,
   isMcpContentPayload,

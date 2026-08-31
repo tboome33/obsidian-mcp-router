@@ -67,6 +67,11 @@ export function resolveConfigPath({ configPath } = {}) {
   return configPath || process.env.OBSIDIAN_ROUTER_CONFIG || DEFAULT_CONFIG_PATH;
 }
 
+/** A valid TCP port, or null. Used for both ports, from all three sources. */
+function asPort(n) {
+  return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
+}
+
 export async function loadRegistry({ configPath } = {}) {
   const cfgPath = resolveConfigPath({ configPath });
   const raw = await fs.readFile(cfgPath, 'utf8').catch((err) => {
@@ -127,7 +132,8 @@ export async function loadRegistry({ configPath } = {}) {
     // interpolated straight into it would yield `https://127.0.0.1:[object
     // Object]`, i.e. a vault that is unreachable for a reason nobody would
     // guess from the error.
-    const port = normalizePortEntry(value).https;
+    const entry = normalizePortEntry(value);
+    const port = entry.https;
 
     vaults.push({
       name,
@@ -138,6 +144,13 @@ export async function loadRegistry({ configPath } = {}) {
       tlsInsecure: true,
       timeoutMs: 5000,
       missingApiKey: !apiKey,
+      // The PLAINTEXT port, carried so click-to-open can still emit a link when
+      // this vault's disk cannot be read (unplugged drive, permissions). Disk
+      // first — the plugin binds what data.json says — then the registry's
+      // remembered number. `click-to-open.mjs` re-reads data.json itself and
+      // only reaches for this when that read fails, so a stale registry value
+      // can never override a live one. v0.79.0, lot 2.
+      insecurePort: asPort(restData?.insecurePort) ?? entry.http ?? null,
     });
   }
 
@@ -207,6 +220,16 @@ export async function loadRegistry({ configPath } = {}) {
         r.extraHeaders && typeof r.extraHeaders === 'object'
           ? { ...r.extraHeaders }
           : undefined,
+      // OPTIONAL, and it only ever buys back a click-to-open link. A vault with
+      // no local disk has no data.json to read the plaintext port from, so
+      // without this field the 13 tools that emit `clickToOpenUrl` emit `null`
+      // for it. DECLARING IT IS AN ASSERTION: the emitted link is always
+      // `http://127.0.0.1:<port>/…`, so it only works for a reader sitting at
+      // the machine running that vault's Obsidian. `baseUrl` says nothing about
+      // that — it describes the router's own hop — so it is not consulted.
+      // `gen-remote-config.mjs` therefore requires `--with-click-to-open`
+      // rather than adding this wherever it finds a port. v0.79.0, lot 2.
+      insecurePort: asPort(r.insecurePort),
     });
   }
 
@@ -694,6 +717,9 @@ function parseEnvVaults(env = {}) {
         parsed.extraHeaders && typeof parsed.extraHeaders === 'object'
           ? { ...parsed.extraHeaders }
           : undefined,
+      // Parity with remoteVaults — see the note there. Optional, and declaring
+      // it asserts that readers sit at the machine running this vault's Obsidian.
+      insecurePort: asPort(parsed.insecurePort),
     };
 
     envVaults.push(descriptor);
@@ -731,7 +757,6 @@ async function readLocalRestData(vaultPath) {
   );
   const raw = await fs.readFile(dataPath, 'utf8');
   const data = JSON.parse(raw);
-  const asPort = (n) => (Number.isInteger(n) && n > 0 && n <= 65535 ? n : null);
   return {
     apiKey: data.apiKey || null,
     port: asPort(data.port),

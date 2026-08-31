@@ -179,7 +179,12 @@ describe('buildClickToOpenUrl — anchor (v0.22.0)', () => {
 });
 
 describe('buildClickToOpenUrl — null-return conditions', () => {
-  test('remote vault returns null (no local data.json to read)', () => {
+  // Since v0.79.0 the reason is NOT "remote": a vault carrying an
+  // `insecurePort` gets a URL whatever its baseUrl says (see
+  // tests/click-to-open-remote.test.mjs — the host plays no part). This one
+  // stays null purely because no plaintext port is known for it. The public
+  // `baseUrl` in the fixture is incidental, not the cause.
+  test('a vault with no declared plaintext port returns null', () => {
     writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
     const url = buildClickToOpenUrl(
       { type: 'remote', baseUrl: 'https://example.com', name: 'r' },
@@ -306,33 +311,44 @@ describe('buildClickToOpenMarkdownLink', () => {
 });
 
 describe('cache behaviour', () => {
-  test('repeated calls don\'t reread data.json on success (cache hit)', () => {
+  // REVERSED IN v0.79.0, deliberately. This test used to assert that a mutated
+  // data.json kept returning the OLD port — "cache should pin the original port
+  // on success". That was the cache's defect written down as its contract: a
+  // user who moved their plaintext port, or turned the server off, kept getting
+  // the stale number until the router process restarted. Pre-release review
+  // caught it. A second review rejected the first repair (an mtime-validated
+  // cache) too: two writes inside one filesystem tick share an mtime, so the
+  // invariant still could not be stated. THE CACHE IS GONE — every call reads
+  // the file, which is why this test needs no timestamp fiddling.
+  test('a rewritten data.json is followed, not pinned', () => {
     writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
     const vault = { type: 'local', path: vaultPath, name: 't' };
-    // First call seeds the cache
     const u1 = buildClickToOpenUrl(vault, 'a.md');
     assert.equal(u1, 'http://127.0.0.1:27142/open/a.md');
-    // Mutate data.json — without cache reset, the next call MUST still
-    // return the old port (proves the cache is in effect for successes).
     fs.writeFileSync(
       dataJsonPath,
       JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
     );
     const u2 = buildClickToOpenUrl(vault, 'b.md');
-    assert.equal(u2, 'http://127.0.0.1:27142/open/b.md', 'cache should pin the original port on success');
+    assert.equal(u2, 'http://127.0.0.1:27999/open/b.md', 'the live file wins, immediately');
   });
 
-  test('_resetCache forces a fresh read', () => {
+  // `_resetCache` survives as a NO-OP so callers and tests that reference it
+  // keep working. What it must not do is change any answer — this test now
+  // proves the API is inert rather than that it flushes something.
+  test('_resetCache is inert: the answer is the same with or without it', () => {
     writeDataJson({ insecurePort: 27142, enableInsecureServer: true });
     const vault = { type: 'local', path: vaultPath, name: 't' };
-    buildClickToOpenUrl(vault, 'a.md'); // seed
+    assert.equal(buildClickToOpenUrl(vault, 'a.md'), 'http://127.0.0.1:27142/open/a.md');
     fs.writeFileSync(
       dataJsonPath,
       JSON.stringify({ insecurePort: 27999, enableInsecureServer: true }),
     );
+    const withoutReset = buildClickToOpenUrl(vault, 'b.md');
     _resetCache();
-    const u = buildClickToOpenUrl(vault, 'b.md');
-    assert.equal(u, 'http://127.0.0.1:27999/open/b.md');
+    const withReset = buildClickToOpenUrl(vault, 'b.md');
+    assert.equal(withoutReset, 'http://127.0.0.1:27999/open/b.md');
+    assert.equal(withReset, withoutReset, 'nothing is being flushed — there is nothing to flush');
   });
 
   test('v0.14.9: failures (enabled:false) are NOT cached — retry on next call', () => {

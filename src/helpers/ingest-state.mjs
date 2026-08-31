@@ -4,7 +4,12 @@
  * upstream Wikipedia article that was edited since you last grabbed it)
  * triggers a re-ingest with a "source has evolved" flag.
  *
- * Storage: per-vault JSON file at `wiki-meta/ingest-state.json` with shape
+ * THIS MODULE IS PURE (v0.79.0). The state-file reads and writes moved to
+ * `ingest-state-fs.mjs`; what remains is hashing, URL normalisation and the
+ * freshness comparison, none of which touches a disk.
+ *
+ * Storage (in `ingest-state-fs.mjs`): per-vault JSON file at
+ * `wiki-meta/ingest-state.json` with shape
  *   {
  *     "<source-id>": {
  *       "hash": "<sha256 hex>",
@@ -29,9 +34,10 @@
  * Reference: roadmap item #4 from llm-wiki-compiler-roadmap.
  */
 
+// PURE. `node:fs` and `node:path` left with the state-file I/O in v0.79.0 —
+// see the "State file I/O — MOVED OUT" note below. Adding either back here
+// would silently re-couple every importer of this module to a disk.
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Hash computation
@@ -279,118 +285,24 @@ export function normaliseUrl(url) {
 }
 
 // ---------------------------------------------------------------------------
-// State file I/O
+// State file I/O — MOVED OUT in v0.79.0
 // ---------------------------------------------------------------------------
-
-const STATE_FILENAME = 'ingest-state.json';
-const STATE_DIR = 'wiki-meta';
-
-/**
- * Resolve the absolute path to a vault's ingest-state.json file.
- *
- * @param {string} vaultPath Absolute filesystem path to the vault root
- * @returns {string} Absolute path to wiki-meta/ingest-state.json
- */
-export function getStatePath(vaultPath) {
-  if (typeof vaultPath !== 'string' || !vaultPath) {
-    throw new TypeError('getStatePath: vaultPath must be a non-empty string');
-  }
-  return path.join(vaultPath, STATE_DIR, STATE_FILENAME);
-}
-
-/**
- * Load the ingest state for a vault. Returns an empty object if the file
- * doesn't exist yet (first ingest into this vault) OR if it's corrupt.
- *
- * Corruption handling (review+ pass 2 fix for Reviewer A IMP-6) — silent
- * recovery would mean the next `saveIngestState` overwrites the broken
- * file with a fresh empty state, erasing the entire ingestion history
- * invisibly. To prevent that, on corruption we :
- *   1. Log a clear warning to stderr (user sees it).
- *   2. Backup the corrupted file as `<path>.corrupted-<timestamp>` so
- *      the data isn't lost — user can inspect and recover.
- *   3. Then return `{}` so processing continues.
- *
- * If the rename fails (permissions, etc.), the warning still fires but
- * the corrupted file is left in place — the caller will see the next
- * load attempt also fail in the same way until they intervene.
- *
- * @param {string} vaultPath Absolute filesystem path to the vault root
- * @returns {Record<string, { hash: string, ingestedAt: string, page: string }>}
- */
-export function loadIngestState(vaultPath) {
-  const statePath = getStatePath(vaultPath);
-  if (!fs.existsSync(statePath)) return {};
-  let raw;
-  try {
-    raw = fs.readFileSync(statePath, 'utf8');
-  } catch (err) {
-    process.stderr.write(
-      `[ingest-state] WARN: failed to read ${statePath}: ${err.message} — treating as empty.\n`,
-    );
-    return {};
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    // Corrupted JSON — back up the file before we overwrite it.
-    const backupPath = `${statePath}.corrupted-${Date.now()}`;
-    try {
-      fs.renameSync(statePath, backupPath);
-      process.stderr.write(
-        `[ingest-state] WARN: corrupted JSON at ${statePath} (${err.message}). ` +
-          `Backed up to ${backupPath} and treating as empty.\n`,
-      );
-    } catch (renameErr) {
-      process.stderr.write(
-        `[ingest-state] WARN: corrupted JSON at ${statePath} (${err.message}). ` +
-          `Backup failed (${renameErr.message}); leaving file in place. Manual cleanup may be required.\n`,
-      );
-    }
-    return {};
-  }
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    return parsed;
-  }
-  // Valid JSON but wrong shape (array, scalar, null). Treat as empty
-  // but warn — same recovery path as full corruption.
-  const backupPath = `${statePath}.corrupted-${Date.now()}`;
-  try {
-    fs.renameSync(statePath, backupPath);
-    process.stderr.write(
-      `[ingest-state] WARN: wrong shape at ${statePath} (expected object, got ${typeof parsed}). ` +
-        `Backed up to ${backupPath} and treating as empty.\n`,
-    );
-  } catch {
-    // Best-effort backup.
-  }
-  return {};
-}
-
-/**
- * Save the ingest state for a vault atomically (write to tmp file then
- * rename, so a crash mid-write can't leave a corrupted JSON). Creates
- * `wiki-meta/` if it doesn't exist.
- *
- * @param {string} vaultPath Absolute filesystem path to the vault root
- * @param {Record<string, { hash: string, ingestedAt: string, page: string }>} state
- */
-export function saveIngestState(vaultPath, state) {
-  if (!state || typeof state !== 'object' || Array.isArray(state)) {
-    throw new TypeError('saveIngestState: state must be a plain object');
-  }
-  const statePath = getStatePath(vaultPath);
-  const stateDir = path.dirname(statePath);
-  if (!fs.existsSync(stateDir)) {
-    fs.mkdirSync(stateDir, { recursive: true });
-  }
-  const tmpPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-  const json = `${JSON.stringify(state, null, 2)}\n`;
-  fs.writeFileSync(tmpPath, json, 'utf8');
-  fs.renameSync(tmpPath, statePath);
-}
-
+//
+// `getStatePath` / `loadIngestState` / `saveIngestState` now live in
+// `ingest-state-fs.mjs`. They are NOT re-exported from here, deliberately: a
+// re-export would put `node:fs` back into this module's import graph and undo
+// the reason for the split.
+//
+// The reason is a claim the HTTP-only workstream has to be able to state — no
+// MCP tool reads a vault's disk to track ingestion state. Proving it by grepping
+// for three function names failed a review (`import * as ns` names none of
+// them), and no regex over source text can settle a question about module
+// boundaries. Moving the disk half into its own file turns the claim into a
+// substring nothing under `src/` may contain, which is checkable and cannot be
+// evaded by import syntax. Same convention as `okf-projections-fs.mjs` and
+// `bm25-index-fs.mjs`.
+//
+// Importers (the `wiki-ingest` skill, tests) use `ingest-state-fs.mjs`.
 // ---------------------------------------------------------------------------
 // Freshness check
 // ---------------------------------------------------------------------------

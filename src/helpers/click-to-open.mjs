@@ -15,33 +15,119 @@
  * has to think about the format.
  *
  * Returns `null` (not throws) whenever a URL can't be produced. Reasons:
- *   - remote vault (no local `.obsidian/...` path to read)
- *   - data.json missing or unreadable
- *   - data.json doesn't have `enableInsecureServer: true`
- *   - data.json doesn't have a valid `insecurePort` number
+ *   - no port known: neither `data.json` nor the config could supply one
+ *   - data.json is READABLE and says `enableInsecureServer: false`
  *
  * Returning `null` instead of throwing lets the caller fold the URL field
  * conditionally (`...(url && { clickToOpenUrl: url })`) without making the
  * tool result fail when the bridge isn't ready. The user sees no URL — they
  * still get the tool result with the path — and the hook nudge will point
  * at the data.json setup as the missing piece.
+ *
+ * ---------------------------------------------------------------------------
+ * LOT 2 (v0.79.0) — THE PORT NO LONGER HAS TO COME FROM A DISK
+ * ---------------------------------------------------------------------------
+ * Until now this helper refused outright for any vault it could not stat, and
+ * `open-in-obsidian.mjs` recorded exactly why: *"that helper is local-only only
+ * because it must read the LOCAL data.json to find the insecure port"*. That
+ * reason is now removable. Since v0.77.0 `config.json`'s `portRegistry` carries
+ * `{ https, http }` per vault, and a remote vault entry may declare its own
+ * `insecurePort` — so `registry.mjs` puts the number on EVERY vault descriptor
+ * and this helper reads `vault.insecurePort` when the disk cannot answer.
+ *
+ * THREE STATES, NOT TWO — the same distinction `effectivePortsOf` had to make
+ * in `port-registry.mjs`. `data.json` can be:
+ *   - readable and enabled   → its port wins, always. It is what the plugin
+ *                              actually binds; a registry that disagrees is
+ *                              stale bookkeeping.
+ *   - readable and DISABLED  → `null`, and NO fallback. The plaintext server is
+ *                              genuinely off; falling back to a remembered
+ *                              number would emit a link to a dead socket.
+ *   - unreadable             → the port is unknown, not absent. THIS is where
+ *                              the descriptor's number is used.
+ * Collapsing the last two (which the pre-v0.79.0 `catch` did) is what made the
+ * remembered port unreachable.
+ *
+ * WHAT THE FALLBACK CAN GET WRONG, said plainly: a vault that was set up, got
+ * its plaintext port recorded, and has since turned `enableInsecureServer` off
+ * WHILE its disk is unreachable will produce a link that the bridge answers
+ * with a 404. That is the failure mode of every click-to-open link already
+ * written in the user's notes, and it is bounded — `/open` never returns file
+ * content, so a stale link is a dead click, never a leak.
+ *
+ * ---------------------------------------------------------------------------
+ * THE HOST IS ALWAYS 127.0.0.1, AND NOTHING ABOUT baseUrl CHANGES THAT
+ * ---------------------------------------------------------------------------
+ * The accepted decision `click-to-open-access-modes` (2026-06-03) keeps the
+ * bridge's `/open` guard STRICTLY loopback: the request's SOURCE IP must be
+ * loopback, or it is refused `loopback only`. That request comes from the
+ * READER'S BROWSER, not from this process.
+ *
+ * A FIRST DRAFT OF LOT 2 GOT THIS WRONG, and the correction is worth keeping.
+ * It gated emission on `baseUrl` being loopback, reasoning that a WireGuard
+ * `baseUrl` would produce a dead link. That conflated two different hops. This
+ * helper never interpolates the vault's host — the URL is always
+ * `http://127.0.0.1:<port>/…` — so what decides whether a click works is
+ * whether the READER is sitting at the machine running that vault's Obsidian.
+ * `baseUrl` describes how the ROUTER reaches the REST API, over a tunnel or a
+ * mesh, and answers a different question entirely. The guard was therefore
+ * neither necessary nor sufficient: it refused a perfectly good link for a
+ * WireGuard-reached vault whose reader is on the Obsidian host, and it passed
+ * an unusable one for a loopback-reached vault whose reader is elsewhere.
+ * (Found in the second pre-release review, 2026-08-31.)
+ *
+ * SO THE OPT-IN IS THE WHOLE GATE. `insecurePort` is optional; declaring it IS
+ * the operator's assertion that "the loopback my readers resolve is the host
+ * running this vault's Obsidian". Omit it on a multi-machine deployment and no
+ * link is ever emitted. A local vault reads the port from its own disk, which
+ * carries the same assertion implicitly — as it always has.
+ *
+ * When that assertion is wrong, the click reaches the reader's own loopback and
+ * finds nothing — or finds an UNRELATED local service, and hands it the note's
+ * path and heading. `/open` never returns file content, so what the note SAYS
+ * is never disclosed; but a path can be `Patients/J. Dupont/diagnostic.md`, and
+ * that is a real disclosure to whatever owns that port. It is why the generator
+ * refuses to export these ports unless asked (`--with-click-to-open`) rather
+ * than adding them wherever it finds one.
+ *
+ * ---------------------------------------------------------------------------
+ * RESOLVE ONCE PER OPERATION
+ * ---------------------------------------------------------------------------
+ * There is no memo, so each call to `buildClickToOpenUrl` reads the file. That
+ * is right for ONE link beside an HTTPS round trip, and wrong for a hundred:
+ * `write_bundle` and `build_open_link`'s batch mode would pay N reads, and —
+ * worse — a rewrite mid-batch could put half the links on the old port and half
+ * on the new one, or make a result's `clickToOpenUrl` and its `markdownLink`
+ * disagree with each other (both were real, found in the third pre-release
+ * review). Callers emitting more than one link therefore call
+ * `resolveInsecurePort` ONCE and pass the result as `opts.port`, so an operation
+ * is a single snapshot. Freshness lives BETWEEN operations, not inside one.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Module-level cache: vault.path → { port: number, enabled: true } (only
-// successful reads are cached). Cleared by `_resetCache()` in tests.
+// THERE IS NO CACHE ANY MORE, AND THAT IS THE FIX (v0.79.0).
 //
-// Why only successful reads: a user who starts the router BEFORE enabling
-// `enableInsecureServer:true` (very plausible during onboarding) would
-// otherwise see `{ port: null, enabled: false }` cached for the lifetime
-// of the process — every tool call would then suppress the URL even after
-// the user fixed data.json + reloaded Obsidian. By only caching successes
-// we re-attempt the disk read on every miss, paying a cheap sync read when
-// the bridge is not yet configured but transitioning to cached fast-path
-// the moment it works. v0.14.9 hardening (Reviewer A IMPORTANT-1).
-const CACHE = new Map();
+// v0.14.9 memoised every successful read for the lifetime of the process. It
+// solved the onboarding direction (a user who ENABLES the plaintext server
+// mid-session is picked up, because failures were never cached) and left the
+// opposite one broken: a user who DISABLES it, or moves the port, kept getting
+// the old number until the router restarted. The suite could not see it — every
+// cache test calls `_resetCache()` in a `beforeEach`.
+//
+// The first repair attempt validated the entry against the file's `mtimeMs`.
+// The second review rejected that too, correctly: two writes inside one
+// filesystem timestamp tick keep one mtime, so the invariant "a stale value can
+// never win over a live one" still could not be stated as a guarantee — and the
+// test written to defend the cache had to restore an mtime by hand, which
+// engraved the collision INTO the contract rather than testing anything.
+//
+// So the memo is gone. Every call reads the file. The cost is a sync read of a
+// few-KB JSON, against a tool call that is already paying an HTTPS round trip
+// to the vault's REST API (68–76 ms, measured on this fleet) — the read is
+// noise beside it, and buying an unstatable invariant with it was a bad trade.
+// `_resetCache` is kept as a no-op so existing callers and tests keep working.
 
 /**
  * URL-encode a vault-relative path component for use in the `/open/<path>`
@@ -95,23 +181,23 @@ function encodeUriMarkdownSafe(s) {
 
 /**
  * Read `<vaultPath>/.obsidian/plugins/obsidian-local-rest-api/data.json` and
- * return `{ port: number|null, enabled: boolean }`. Cached per vaultPath.
+ * return `{ port: number|null, enabled: boolean, readable: boolean }`. NOT
+ * cached — see the note where the memo used to live.
  *
- * Errors (missing file, JSON parse) collapse to `{ port: null, enabled: false }`
- * — the caller will return `null` from `buildClickToOpenUrl` in that case.
- * No throws; this helper is on the hot path of EVERY mutating tool and a
- * disk read failure must not break the tool result.
+ * `readable` is the field that makes the registry fallback possible, and it is
+ * NOT cosmetic: "the file says the plaintext server is off" and "I could not
+ * open the file" are different facts, and only the second one licenses using a
+ * remembered port. Before v0.79.0 both collapsed into `{port:null,
+ * enabled:false}`, so a vault on an unplugged drive was indistinguishable from
+ * one that had deliberately disabled its plaintext server.
+ *
+ * No throws; this helper is on the hot path of EVERY mutating tool and a disk
+ * read failure must not break the tool result.
  */
 function readInsecurePortConfig(vaultPath) {
   if (!vaultPath || typeof vaultPath !== 'string') {
-    return { port: null, enabled: false };
+    return { port: null, enabled: false, readable: false };
   }
-  const cached = CACHE.get(vaultPath);
-  // Cache only holds successful reads (enabled:true with a valid port).
-  // On a `null` cache entry we deliberately re-read disk so a user who
-  // fixed their `data.json` mid-session starts producing URLs immediately.
-  if (cached !== undefined) return cached;
-
   // Determine path separator: the registry stores Windows paths verbatim
   // even when the runtime is POSIX (CI matrix, WSL). path.join would pick
   // the runtime's separator, which would produce a path that Node's fs
@@ -127,7 +213,7 @@ function readInsecurePortConfig(vaultPath) {
     'data.json',
   );
 
-  let result = { port: null, enabled: false };
+  let result = { port: null, enabled: false, readable: false };
   try {
     const raw = fs.readFileSync(dataPath, 'utf8');
     const data = JSON.parse(raw);
@@ -137,19 +223,17 @@ function readInsecurePortConfig(vaultPath) {
     // typically uses 27123-27143 but a user could set anything. Reject
     // anything outside the valid TCP port range, treat as "not configured".
     if (port !== null && (port < 1 || port > 65535)) {
-      result = { port: null, enabled: false };
+      result = { port: null, enabled: false, readable: true };
     } else {
-      result = { port, enabled };
+      result = { port, enabled, readable: true };
     }
   } catch {
-    // file missing / JSON broken / permission denied → all collapse to
-    // null. Caller will treat as "no click-to-open available".
+    // file missing / JSON broken / permission denied → we learned NOTHING
+    // about this vault's plaintext server. `readable:false` says exactly that,
+    // and is what lets the caller reach for the registry's remembered port
+    // instead of treating silence as a refusal.
   }
 
-  // Only cache successful reads — see CACHE declaration comment for why.
-  if (result.enabled && result.port !== null) {
-    CACHE.set(vaultPath, result);
-  }
   return result;
 }
 
@@ -173,12 +257,41 @@ export function normalizeAnchor(anchor) {
 }
 
 /**
- * Build the click-to-open URL for a vault file. Returns `null` if the URL
- * can't be produced (remote vault, no local data.json, insecure server
- * disabled, etc.).
+ * The plaintext port to use for a vault, or `null`.
  *
- * @param {object} vault - A registry vault descriptor (must have `path` for
- *   local vaults; remote vaults always return null).
+ * Order — and each step is a different question:
+ *   1. `data.json`, when it can be read. It is what the plugin binds. A
+ *      readable file that says the plaintext server is OFF ends the search:
+ *      no fallback, because there is nothing listening to fall back TO.
+ *   2. `vault.insecurePort`, put on the descriptor by `registry.mjs` from
+ *      `portRegistry[path].http` (local) or the vault entry's own
+ *      `insecurePort` (remote). Used only when the disk could not answer.
+ *
+ * Exported for tests and for callers that want the number without the URL.
+ */
+export function resolveInsecurePort(vault) {
+  if (!vault || typeof vault !== 'object') return null;
+  const declared = Number.isInteger(vault.insecurePort)
+    && vault.insecurePort >= 1 && vault.insecurePort <= 65535
+    ? vault.insecurePort
+    : null;
+
+  if (vault.type === 'local' && vault.path) {
+    const { port, enabled, readable } = readInsecurePortConfig(vault.path);
+    if (readable) return enabled && port !== null ? port : null;
+  }
+  return declared;
+}
+
+/**
+ * Build the click-to-open URL for a vault file. Returns `null` if the URL
+ * can't be produced (no port known, or the plaintext server explicitly
+ * disabled — see the module docblock).
+ *
+ * @param {object} vault - A registry vault descriptor. `path` for local vaults;
+ *   a vault declared in config needs `insecurePort`, and declaring it is the
+ *   operator's assertion about where their readers sit. `baseUrl` is NOT
+ *   consulted: the emitted host is always `127.0.0.1`.
  * @param {string} filePath - The vault-relative path of the file (e.g.
  *   `wiki/Divers/LIGHTRAG/lightrag.md`). Slashes can be `/` or `\`.
  * @param {object} [opts]
@@ -186,15 +299,27 @@ export function normalizeAnchor(anchor) {
  *   as a `?h=<encoded-heading>` query param (NOT a `#fragment` — browsers
  *   never send the fragment to the server, so the bridge couldn't see it).
  *   The bridge scrolls to that heading on open. Empty/non-string → ignored.
+ * @param {number|null} [opts.port] - A port already resolved for this vault by
+ *   `resolveInsecurePort`. Pass it when emitting MANY links in one operation:
+ *   it makes the whole batch consistent and costs one disk read instead of N.
+ *   See RESOLVE ONCE PER OPERATION in the module docblock.
  * @returns {string|null}
  */
 export function buildClickToOpenUrl(vault, filePath, opts = {}) {
   if (!vault || typeof vault !== 'object') return null;
-  if (vault.type !== 'local') return null; // remote vaults have no local data.json
-  if (!vault.path || !filePath) return null;
+  if (!filePath) return null;
+  if (vault.type === 'local' && !vault.path) return null;
 
-  const { port, enabled } = readInsecurePortConfig(vault.path);
-  if (!enabled || port === null) return null;
+  // VALIDATED WHATEVER ITS SOURCE. `resolveInsecurePort` already range-checks
+  // what it returns, so an earlier draft trusted `opts.port` merely for being
+  // defined — and `opts` is an exported escape hatch. A caller passing
+  // `'80'+'@'+'evil.example'` would have produced
+  // `http://127.0.0.1:80@evil.example/open/…`, whose real host is the
+  // attacker's and which carries the note's PATH there. No current caller can
+  // do it, but "no current caller" is not a guard, and this is the third time
+  // this fleet has met that exact defect class. (Fourth pre-release review.)
+  const port = opts && opts.port !== undefined ? opts.port : resolveInsecurePort(vault);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
 
   const base = `http://127.0.0.1:${port}/open/${encodeVaultPath(filePath)}`;
   const anchor = normalizeAnchor(opts && opts.anchor);
@@ -209,7 +334,7 @@ export function buildClickToOpenUrl(vault, filePath, opts = {}) {
  * @param {string} filePath - Same as buildClickToOpenUrl.
  * @param {string} [label] - Optional label override. Default = basename
  *   without the file extension.
- * @param {object} [opts] - Forwarded to buildClickToOpenUrl (e.g. `anchor`).
+ * @param {object} [opts] - Forwarded to buildClickToOpenUrl (`anchor`, `port`).
  */
 export function buildClickToOpenMarkdownLink(vault, filePath, label, opts = {}) {
   const url = buildClickToOpenUrl(vault, filePath, opts);
@@ -245,8 +370,11 @@ function basenameNoExt(p) {
   return dot > 0 ? base.slice(0, dot) : base;
 }
 
-// Test-only: clear the per-vaultPath cache. Called by tests that mutate
-// data.json mid-test to verify cache invalidation semantics.
-export function _resetCache() {
-  CACHE.clear();
-}
+/**
+ * NO-OP since v0.79.0 — the per-vaultPath memo it used to clear no longer
+ * exists (see the note where it used to be declared). Kept because tests and
+ * callers reference it, and because removing it would turn a harmless call into
+ * an import error for anyone who upgraded without reading. Every read is fresh,
+ * so there is nothing left to reset.
+ */
+export function _resetCache() {}

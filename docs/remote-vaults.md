@@ -42,6 +42,26 @@ Edit `~/.claude/obsidian-mcp-router/config.json` and add an entry to `remoteVaul
 
 Restart Claude Desktop. Run `list_vaults` to confirm the new vault is online.
 
+### Optional — `insecurePort`, and when it buys you anything (v0.79.0)
+
+Thirteen tools return a `clickToOpenUrl`: `http://127.0.0.1:<insecurePort>/open/<path>`, a link that opens the note in Obsidian. For a local vault the router reads that port out of the vault's own `data.json`. A remote vault has no disk to read, so the field can be declared instead:
+
+```json
+{ "name": "qnap", "baseUrl": "https://127.0.0.1:27125", "apiKey": "…", "insecurePort": 27135 }
+```
+
+Copy the value from that vault's `data.json` (`insecurePort`, and only if `enableInsecureServer` is `true`). `gen-remote-config.mjs` will do it for you, but only when asked: `--with-click-to-open`. It is deliberately not the default, and the next two paragraphs are why.
+
+**What declaring it means.** The emitted link is always `http://127.0.0.1:<insecurePort>/…`, never the vault's `baseUrl` host. The bridge's `/open` route accepts only loopback source IPs (see the vault decision `click-to-open-access-modes`), and that request comes from *your browser*, not from the router. So whether a click works depends on one thing: **is the person reading the chat sitting at the machine running that vault's Obsidian?** The router cannot see your topology, and `baseUrl` does not answer this — it describes how the *router* reaches the REST API, over a tunnel or a mesh, which is a different hop entirely.
+
+**Declaring `insecurePort` is your assertion that the loopback your readers resolve is the host running that vault's Obsidian.** The shape where that holds is a single workstation running Obsidian, with the router or the remote session reaching it through a tunnel anchored on that same workstation. Omit it on a multi-machine or shared deployment and no link is ever emitted.
+
+**If the assertion is wrong**, the click reaches the reader's own loopback and finds nothing — or finds an *unrelated local service*, and hands it the note's path and heading. `/open` never returns file content, so what the note **says** is never disclosed. But a path can be `Patients/J. Dupont/diagnostic.md`, and that is a real disclosure to whatever owns that port on that machine. Weigh it before turning the flag on for a vault whose filenames are themselves sensitive.
+
+The port number itself is not a secret: it is not an authentication credential, writing it into a config opens or binds nothing, and it is only *useful* to a process already on the Obsidian host's loopback — which can find it by scanning a couple of hundred ports in milliseconds. The same file already carries that vault's bearer key, which is strictly more powerful. The risk above is about the *reader's* machine, not about the port.
+
+One more consequence: `build_open_link` normally *verifies* a path against the local disk and corrects or refuses a wrong one. It cannot do that for a vault with no disk, so its result carries **`pathVerified: false`** and a `verification` sentence. The URL is well-formed; it is not proof the file exists.
+
 ## Step 3 — production
 
 If the vault is reachable from outside your LAN (over the public Internet, or even over an untrusted Wi-Fi), do not rely on the plugin's self-signed cert + Bearer token alone. Put it behind a reverse proxy with:

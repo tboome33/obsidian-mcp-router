@@ -28,7 +28,7 @@
  *   3. Lookup-by-path is O(1) for the caller.
  */
 
-import { buildClickToOpenUrl } from './click-to-open.mjs';
+import { buildClickToOpenUrl, resolveInsecurePort } from './click-to-open.mjs';
 
 const PATH_KEY_NAMES = new Set(['filename', 'path', 'file']);
 // MAX_DEPTH guards against pathological cycles AND deep nesting. v0.14.9
@@ -117,9 +117,14 @@ export function collectClickToOpenLinks(vault, payload) {
   // named `__proto__` (the WHOLE path, extensionless; `wiki/__proto__.md` was
   // never affected) lost its link, silently. Same defect class as the one
   // fixed in `sanitizeResponse` for v0.69.2.
+  // ONE resolution for the whole map. Since v0.79.0 there is no port memo, so
+  // resolving per path would read data.json once per file AND could straddle a
+  // rewrite — half the links on the old port, half on the new (third
+  // pre-release review). A map is one operation and gets one snapshot.
+  const port = resolveInsecurePort(vault);
   const links = Object.fromEntries(
     [...pathSet]
-      .map((p) => [p, buildClickToOpenUrl(vault, p)])
+      .map((p) => [p, buildClickToOpenUrl(vault, p, { port })])
       .filter(([, url]) => url),
   );
   if (Object.keys(links).length === 0) return {};
