@@ -161,7 +161,7 @@ Read-only, one pass over the vector store, nothing written. Works on a **remote*
 
 **Always state the FRESHNESS.** `freshness.caveat` says it: these similarities come from an index **snapshot**, not from the pages as they are now. A page edited since the last indexing pass still carries its previous vector, and per-page staleness cannot be determined from here (`freshness.perPageStaleness: "unknown"`) — the store keeps no hash the router can recompute. Say so in the report; an unqualified similarity reads as a statement about the pages today.
 
-**`available: false` IS NOT "no twins", and `available` is THE discriminator.** Branch on it. Eight reasons arrive as a response with `available: false`, a `reason`, and **no `pairs` key at all**:
+**`available: false` IS NOT "no twins", and `available` is THE discriminator.** Branch on it. Ten reasons arrive as a response with `available: false`, a `reason`, and **no `pairs` key at all**:
 
 | `reason` | what it means |
 |---|---|
@@ -169,16 +169,18 @@ Read-only, one pass over the vector store, nothing written. Works on a **remote*
 | `no-wiki` | nothing under `wiki/` |
 | `corpus-too-small` | fewer than 30 comparable pairs (≈ 9 pages) — a median+MAD would describe nothing |
 | `no-spread` | at least half the pairs share one similarity; no outlier cut can be derived |
-| `bridge-route-absent` | remote vault, and its bridge is older than 0.9.0 — **tell the user to upgrade it**, this one is fixable |
+| `bridge-route-absent` | remote vault, and nothing served the store route (404) — usually a bridge older than 0.9.0, **tell the user to upgrade it**, though a proxy masking auth or not routing the path looks identical |
 | `store-truncated` | the bridge sent only a prefix of the store (it hit its own budget) |
+| `store-inconsistent` | the store response's own header contradicts its body — counts that do not balance, or fewer records/bytes than claimed |
 | `store-unreachable` | the store could not be fetched at all — network, auth, timeout |
 | `wiki-enumeration-incomplete` | the vault's file list did not come back whole, so no exclusion count can be trusted |
+| `wiki-read-incomplete` | pages were lost between the walk and the read — a pair needs BOTH halves, so a ranking from what arrived would hide twins rather than report none |
 
-A **ninth** way to decline is a **thrown refusal**, `too-many-pages` (`err.kind: "validation"`, `err.reason: "too-many-pages"`), when the corpus is past `maxPages` — there is no response body at all. Scope with `folders`, or raise `maxPages` knowingly.
+An **eleventh** way to decline is a **thrown refusal**, `too-many-pages` (`err.kind: "validation"`, `err.reason: "too-many-pages"`), when the corpus is past `maxPages` — there is no response body at all. Scope with `folders`, or raise `maxPages` knowingly.
 
-Report any of these as *"this check is unavailable on this vault, because …"* — never as a clean bill of health. `result.pairs?.length ?? 0` would read all nine as "no twins", which is exactly why the key is absent rather than empty; the absence is defence in depth, the field to read is `available`.
+Report any of these as *"this check is unavailable on this vault, because …"* — never as a clean bill of health. `result.pairs?.length ?? 0` would read every one of them as "no twins", which is exactly why the key is absent rather than empty; the absence is defence in depth, the field to read is `available`.
 
-The last four are **remote-only**, and the first of them is the one worth acting on: `bridge-route-absent` names a plugin the operator can upgrade, not a fact about topology. Do not report it as "this vault has no index" — that is a different reason with a different fix. The honest fallback line: *"Check J (concept overlap) still runs wherever digests exist; cosine needs embeddings, and this vault has none."* Only `available: true` with `found: 0` means the vault was examined and nothing stood out.
+The last six arise on a vault reached **over the network** (one exception: `wiki-read-incomplete` can also fire on a local vault, when every candidate page was deleted between the walk and the read — the detail then says the store is fine). The first of them is the one worth acting on: `bridge-route-absent` names a plugin the operator can upgrade, not a fact about topology. Do not report it as "this vault has no index" — that is a different reason with a different fix. The honest fallback line: *"Check J (concept overlap) still runs wherever digests exist; cosine needs embeddings, and this vault has none."* Only `available: true` with `found: 0` means the vault was examined and nothing stood out.
 
 **Known false-positive mode, worth saying out loud in the report:** the vectors are whole-page and the model's window is 512 tokens, so pages that share a template score very high on their common head. Measured on a real vault, two course sheets scored cosine 0.9914 with a 5-word-shingle overlap of 0.064. When `sameBasename` is true across sibling folders, say so — it is usually a series, not a duplication.
 
