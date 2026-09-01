@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.82.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
+  <div class="meta">v0.85.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -393,7 +393,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>get_file · search · search_smart · get_frontmatter</td>
-    <td><strong>Reads.</strong> Full file (returns <code>contentSha256</code> — the <code>ifMatch</code> token); substring search; semantic search (Smart Connections embeddings, cosine scores); typed frontmatter. <code>vault: "*"</code> = cross-vault fan-out.</td>
+    <td><strong>Reads.</strong> Full file (returns <code>contentSha256</code> — the <code>ifMatch</code> token); substring search; semantic search (Smart Connections embeddings, cosine scores); typed frontmatter. <code>vault: "*"</code> = cross-vault fan-out. <strong><code>search_smart</code> tells you two things about its own answer.</strong> <code>freshness</code> flags each hit whose page has been modified since it was indexed (<code>changed</code> / <code>touched</code>) or has gone (<code>page-missing</code>) — open the page before quoting such a hit; a vault with no disk here answers <code>checkable: false</code> rather than implying currency. <code>folderExclusion</code> reports what was left out: <strong>by default <code>wiki-meta/Sessions</code></strong> (chronological logs, 41.6% of the indexed pages on this fleet). Pass <code>excludeFolders: []</code> to get them back.</td>
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
@@ -421,7 +421,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>
-    <td><strong>Remote conversion.</strong> URL → markdown (SSRF-guarded); YouTube transcripts; git repo → single markdown bundle (repomix, optional Tree-sitter compression). <code>webpage_to_markdown</code> accepts <code>relevanceQuery</code> (BM25).</td>
+    <td><strong>Remote conversion.</strong> URL → markdown (SSRF-guarded); YouTube transcripts; git repo → single markdown bundle (repomix, optional Tree-sitter compression). <code>webpage_to_markdown</code> accepts <code>relevanceQuery</code> (BM25) and <code>citations: true</code> — inline links move into numbered footnotes with a reference list, one per destination, leaving code, images and wikilinks alone. With both, the filter runs first, so markers and definitions match one-to-one.</td>
   </tr>
   <tr>
     <td>filter_relevant_blocks</td>
@@ -433,7 +433,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>get_wiki_context_pack · build_wiki_graph · build_wiki_tour · get_page_neighbors · wiki_path</td>
-    <td><strong>Context &amp; graph.</strong> Structured context envelope for external agents; typed knowledge graph; reading tours; per-page neighbors; shortest link path.</td>
+    <td><strong>Context &amp; graph.</strong> Structured context envelope for external agents; typed knowledge graph; reading tours; per-page neighbors; shortest link path. Every item of the context pack carries its <code>source</code> — <code>index</code> (the vault's own catalog) and <code>graph</code> (a wikilink) are <strong>navigation, authoritative</strong>; <code>semantic</code> is augmentation and never the sole support for a factual claim. A pack with no navigational anchor says so: <code>answer-relies-on-semantic-only</code>.</td>
   </tr>
   <tr>
     <td>find_boundary_pages · find_twin_pages</td>

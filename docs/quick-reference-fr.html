@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.82.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
+  <div class="meta">v0.85.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -391,7 +391,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>get_file · search · search_smart · get_frontmatter</td>
-    <td><strong>Lectures.</strong> Fichier complet (renvoie <code>contentSha256</code> — le jeton <code>ifMatch</code>) ; recherche substring ; recherche sémantique (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = fan-out cross-vault.</td>
+    <td><strong>Lectures.</strong> Fichier complet (renvoie <code>contentSha256</code> — le jeton <code>ifMatch</code>) ; recherche substring ; recherche sémantique (embeddings Smart Connections, scores cosinus) ; frontmatter typé. <code>vault: "*"</code> = fan-out cross-vault. <strong><code>search_smart</code> dit deux choses sur sa propre réponse.</strong> <code>freshness</code> signale chaque résultat dont la page a été modifiée depuis son indexation (<code>changed</code> / <code>touched</code>) ou a disparu (<code>page-missing</code>) — ouvre la page avant de citer un tel résultat ; un vault sans disque ici répond <code>checkable: false</code> au lieu de laisser croire à la fraîcheur. <code>folderExclusion</code> dit ce qui a été laissé de côté : <strong>par défaut <code>wiki-meta/Sessions</code></strong> (journaux chronologiques, 41,6 % des pages indexées du parc). <code>excludeFolders: []</code> les remet.</td>
   </tr>
   <tr>
     <td>write_file · append_to_file · patch_file · delete_file · set_frontmatter · merge_frontmatter · move_file</td>
@@ -419,7 +419,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>
-    <td><strong>Conversion distante.</strong> URL → markdown (garde SSRF) ; transcripts YouTube ; dépôt git → bundle markdown unique (repomix, compression Tree-sitter optionnelle). <code>webpage_to_markdown</code> accepte <code>relevanceQuery</code> (BM25).</td>
+    <td><strong>Conversion distante.</strong> URL → markdown (garde SSRF) ; transcripts YouTube ; dépôt git → bundle markdown unique (repomix, compression Tree-sitter optionnelle). <code>webpage_to_markdown</code> accepte <code>relevanceQuery</code> (BM25) et <code>citations: true</code> — les liens inline passent en notes de bas de page numérotées avec une liste de références, une par destination, sans toucher au code, aux images ni aux wikilinks. Avec les deux, le filtre passe d'abord : marqueurs et définitions se correspondent un pour un.</td>
   </tr>
   <tr>
     <td>filter_relevant_blocks</td>
@@ -431,7 +431,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>get_wiki_context_pack · build_wiki_graph · build_wiki_tour · get_page_neighbors · wiki_path</td>
-    <td><strong>Contexte &amp; graphe.</strong> Enveloppe de contexte structurée pour agents externes ; knowledge-graph typé ; parcours de lecture ; voisines par page ; plus court chemin de liens.</td>
+    <td><strong>Contexte &amp; graphe.</strong> Enveloppe de contexte structurée pour agents externes ; knowledge-graph typé ; parcours de lecture ; voisines par page ; plus court chemin de liens. Chaque élément du pack porte sa <code>source</code> — <code>index</code> (le catalogue du vault) et <code>graph</code> (un wikilink) sont de la <strong>navigation, qui fait autorité</strong> ; <code>semantic</code> est une augmentation, jamais l'unique support d'une affirmation factuelle. Un pack sans ancrage de navigation le dit : <code>answer-relies-on-semantic-only</code>.</td>
   </tr>
   <tr>
     <td>find_boundary_pages · find_twin_pages</td>
