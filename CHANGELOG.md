@@ -197,6 +197,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   also now state that one decline ends the offer for the conversation, and that
   `conversionToolbox` measures the machine rather than the answer the user gave.
 
+- **A session that resumed one minute later opened a second journal — and logged
+  itself twice.** The journal filename embeds the `HHMM` at which `SessionStart`
+  fired, and that same basename is the dedup key `appendLogMdEntry` greps for. So
+  the invariant the code claimed — *same `session_id` resolves to the same filename
+  (idempotent on resume)* — only ever held **within one clock minute**. A
+  crash-recovery resume whose `SessionStart` landed after the minute rolled over
+  minted a second file and appended a second `journal.md` line for one session.
+  `SessionStart` now reuses an **open** journal already on disk for the same
+  (date, workspace, session-id) triple before minting a new name. A closed journal
+  is never resumed: that occurrence is finished, and appending past its recap would
+  contradict the `status: closed` its own `SessionEnd` wrote.
+- **The test that was meant to prove the dedup was proving the clock.**
+  `tests/session-auto-journal.test.mjs` forced its second append by re-running
+  `SessionStart`+`SessionEnd`, which re-derived the dedup key from the current
+  minute — so when the two starts straddled a boundary the key differed, a
+  legitimate second line appeared, and the assertion failed at something other than
+  the dedup it names. It now restores the state JSON and re-fires `SessionEnd`: a
+  real dual-fired event, same key by construction. The timezone test compared
+  against a `new Date()` read *after* its spawns and now checks the window they
+  actually spanned. Rare when idle and common under load — concurrent `npm test`
+  runs slow every hook spawn — which is what made a clock boundary look like shared
+  state racing between test runs.
+
 ## [0.85.0] — 2026-09-01 — W-C citations, chunk-level sourcing, and four tool descriptions that were wrong
 
 The last three items of the §1 quick-wins lot: **W-C** (Crawl4AI's markdown-with-

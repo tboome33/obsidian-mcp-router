@@ -256,6 +256,62 @@ function buildOpeningContent(state) {
   return fm;
 }
 
+// Read only the head of a journal file. A journal can carry ~100 KB of
+// verbatim prompt per entry, and all we need is its frontmatter block.
+function readHead(absPath, bytes = 4096) {
+  let fd;
+  try {
+    fd = fs.openSync(absPath, 'r');
+    const buf = Buffer.alloc(bytes);
+    const n = fs.readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, n).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+  }
+}
+
+function isOpenJournal(absPath) {
+  const head = readHead(absPath);
+  if (!head || !head.startsWith('---\n')) return false;
+  const end = head.indexOf('\n---', 3);
+  if (end === -1) return false; // frontmatter longer than the head slice
+  return /^status:[ \t]*open[ \t]*$/m.test(head.slice(4, end));
+}
+
+// The filename embeds `HHMM` read at SessionStart, and that same
+// basename is the dedup key `appendLogMdEntry` greps for. So the "same
+// session_id resolves to the same filename (idempotent on resume)" invariant
+// claimed below only ever held WITHIN one clock minute: a resume that lands
+// after the minute rolls over (state JSON lost to a crash) used to mint a
+// second journal file — and then a second journal.md line — for one session.
+// Before minting a new name, reuse an OPEN journal already on disk for this
+// (date, workspace, session-id) triple. Only an open one is resumable: a
+// closed journal belongs to a finished occurrence, and appending to it would
+// corrupt the recap and frontmatter SessionEnd already wrote.
+function findResumableJournal(sessionsDir, dateIso, slug, sessionIdShort) {
+  const prefix = `${dateIso}-`;
+  const suffix = `-${slug}-${sessionIdShort}.md`;
+  let names;
+  try { names = fs.readdirSync(sessionsDir); }
+  catch { return null; }
+  const candidates = names
+    .filter((n) => {
+      if (!n.startsWith(prefix) || !n.endsWith(suffix)) return false;
+      if (n.length <= prefix.length + suffix.length) return false;
+      // The only variable slot between prefix and suffix is `HHMM`.
+      return /^\d{4}$/.test(n.slice(prefix.length, n.length - suffix.length));
+    })
+    .sort()
+    .reverse(); // most recent HHMM first
+  for (const name of candidates) {
+    const abs = path.join(sessionsDir, name);
+    if (isOpenJournal(abs)) return abs;
+  }
+  return null;
+}
+
 function ensureJournalForSession(payload) {
   const cwd = resolveCwd(payload);
   // v0.12.5 (review+ pass 2 — Reviewer A + codex pass 2 P3): when Claude
@@ -303,10 +359,14 @@ function ensureJournalForSession(payload) {
   // v0.12.0 separation. Migration of legacy `wiki/Sessions/` is opt-in via
   // `setup-vault.mjs --migrate-sessions-to-wiki-meta`.
   const sessionsDir = path.join(ctx.vaultPath, 'wiki-meta', 'Sessions');
-  const journalPath = path.join(sessionsDir, filename);
 
   try { fs.mkdirSync(sessionsDir, { recursive: true }); }
   catch { return null; }
+
+  // Resume an open journal for this session if one exists (see
+  // `findResumableJournal`), else mint the current-minute name.
+  const journalPath = findResumableJournal(sessionsDir, dateIso, slug, sessionIdShort)
+    || path.join(sessionsDir, filename);
 
   const state = {
     sessionId,

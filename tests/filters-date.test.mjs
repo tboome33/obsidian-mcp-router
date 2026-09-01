@@ -14,9 +14,16 @@ describe('date — default format YYYY-MM-DD', () => {
   });
 
   test('"now" returns today in YYYY-MM-DD', () => {
-    const today = new Date();
-    const expected = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-    assert.equal(date('now'), expected);
+    const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    // Read the clock on BOTH sides of the call. `date('now')` takes its own
+    // reading, so a single `expected` computed beforehand fails whenever
+    // midnight lands between the two — rejecting a date that was correct when
+    // it was produced.
+    const before = ymd(new Date());
+    const actual = date('now');
+    const after = ymd(new Date());
+    assert.ok(actual === before || actual === after,
+      `expected "${actual}" to be today (${before}${after === before ? '' : ` or ${after}`})`);
   });
 
   test('empty string returns empty', () => {

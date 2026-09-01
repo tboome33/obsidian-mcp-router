@@ -119,6 +119,23 @@ function runHook({
   });
 }
 
+// Where the hook parks its per-session state JSON, given the redirected
+// HOME/USERPROFILE above.
+function stateFile(sessionId) {
+  return path.join(
+    stateDirOverride, '.claude', 'obsidian-mcp-router',
+    'session-journals', `${sessionId}.json`,
+  );
+}
+
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+// `YYYY-MM-DD HH:MM` in LOCAL time — the format the hook stamps into journal.md.
+function localStamp(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} `
+    + `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 function findJournal() {
   const sessionsDir = path.join(vaultDir, 'wiki-meta', 'Sessions');
   if (!fs.existsSync(sessionsDir)) return null;
@@ -247,8 +264,8 @@ describe('session-auto-journal — cwd-is-vault mode', () => {
     assert.match(content, /Session closed/);
 
     // State JSON cleaned up
-    const stateFile = path.join(stateDirOverride, '.claude', 'obsidian-mcp-router', 'session-journals', 'end-session.json');
-    assert.equal(fs.existsSync(stateFile), false, 'state file should be deleted after SessionEnd');
+    assert.equal(fs.existsSync(stateFile('end-session')), false,
+      'state file should be deleted after SessionEnd');
   });
 });
 
@@ -471,18 +488,71 @@ describe('session-auto-journal — review+ pass 1 regressions', () => {
 
     // Simulate a crash-recovery scenario: state JSON wiped, journal file
     // still on disk. Second SessionStart for the same session_id must
-    // NOT overwrite the journal file.
-    const stateFile = path.join(
-      stateDirOverride, '.claude', 'obsidian-mcp-router',
-      'session-journals', 'resume-test-session.json',
-    );
-    fs.unlinkSync(stateFile);
+    // NOT overwrite the journal file — and must not open a second one either,
+    // even if the clock has since rolled into the next minute (the journal
+    // basename embeds HHMM; the hook resumes the open journal instead).
+    fs.unlinkSync(stateFile('resume-test-session'));
 
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'resume-test-session' });
     const after = readJournal();
     const filesAfter = listJournals();
     assert.equal(filesAfter.length, 1, 'still exactly one journal file');
     assert.equal(after, before, 'journal file content must not change on idempotent resume');
+  });
+
+  // Rename the journal's HHMM slot instead of waiting for the clock, so the
+  // "resume landed in a later minute" case is exercised deterministically.
+  // Returns the new basename.
+  function shiftJournalMinute(sessionId) {
+    const sessionsDir = path.join(vaultDir, 'wiki-meta', 'Sessions');
+    const original = listJournals()[0];
+    const hhmm = original.match(/^\d{4}-\d{2}-\d{2}-(\d{4})-/)[1];
+    // Any other valid HHMM slot for the same (today's) date works — the hook
+    // matches the slot by shape, not by ordering.
+    const shifted = original.replace(`-${hhmm}-`, hhmm === '0000' ? '-0101-' : '-0000-');
+    fs.renameSync(path.join(sessionsDir, original), path.join(sessionsDir, shifted));
+    fs.unlinkSync(stateFile(sessionId)); // crash: state JSON lost
+    return shifted;
+  }
+
+  test('resume in a LATER minute reuses the open journal (no second file, no second log line)', () => {
+    const sessionId = 'resume-min-1';
+    const logPath = path.join(vaultDir, 'wiki-meta', 'journal.md');
+    fs.writeFileSync(logPath, '---\ntype: wiki-log\n---\n\n# Journal\n\nAppend-only.\n', 'utf8');
+
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    const shifted = shiftJournalMinute(sessionId);
+
+    // The journal basename embeds HHMM, and it is ALSO the dedup key for the
+    // journal.md line. Before the fix this minted a second journal file, and
+    // SessionEnd then wrote a second journal.md line for one session.
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    const files = listJournals();
+    assert.deepEqual(files, [shifted],
+      `resume must reuse the open journal, got: ${files.join(', ')}`);
+
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.equal((log.match(/— session —/g) || []).length, 1,
+      'one journal.md line for one session, whatever minute the resume landed in');
+    assert.match(log, new RegExp(`\\[\\[${shifted.replace(/\.md$/, '')}\\]\\]`),
+      'the log line must point at the resumed journal');
+  });
+
+  test('a CLOSED journal is never resumed — a later SessionStart opens a new one', () => {
+    const sessionId = 'resume-min-2';
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    const shifted = shiftJournalMinute(sessionId);
+
+    // Mark it closed, as SessionEnd would have. That session is over: appending
+    // to it would land after its recap and contradict `status: closed`.
+    const abs = path.join(vaultDir, 'wiki-meta', 'Sessions', shifted);
+    fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8').replace(/^status: open$/m, 'status: closed'), 'utf8');
+
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    const files = listJournals();
+    assert.equal(files.length, 2,
+      `a closed journal must not be resumed, got: ${files.join(', ')}`);
   });
 });
 
@@ -535,23 +605,30 @@ describe('session-auto-journal — v0.12.8 journal auto-append', () => {
 
   test('SessionEnd journal append is idempotent (basename grep dedup)', () => {
     const logPath = ensureLogMd();
-    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'idemp-test-1' });
-    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'idemp-test-1', reason: 'logout' });
-    const after1 = fs.readFileSync(logPath, 'utf8');
-    const count1 = (after1.match(/— session —/g) || []).length;
+    const sessionId = 'idemp-test-1';
+    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId });
+    // SessionEnd deletes the state JSON, so snapshot it first: putting it back
+    // is what lets us fire a genuine SECOND SessionEnd for the same session.
+    const stateSnapshot = fs.readFileSync(stateFile(sessionId), 'utf8');
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+    const count1 = (fs.readFileSync(logPath, 'utf8').match(/— session —/g) || []).length;
     assert.equal(count1, 1, 'one session line after first SessionEnd');
 
-    // Re-trigger SessionEnd somehow (e.g., dual-fired event): we manually call
-    // the hook handler again. The dedup grep on the basename should prevent dup.
-    // Note: in practice the state JSON has been deleted, so this 2nd call would
-    // be a no-op anyway — but the dedup is an additional safety net we want.
-    // Simulate the un-deleted-state case by re-creating state from disk and
-    // re-running. Simpler: just run a 2nd SessionStart+SessionEnd for the same
-    // session_id to force a 2nd append attempt.
-    runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'idemp-test-1' });
-    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'idemp-test-1', reason: 'logout' });
-    const after2 = fs.readFileSync(logPath, 'utf8');
-    const count2 = (after2.match(/— session —/g) || []).length;
+    // Re-trigger SessionEnd on the SAME state (a dual-fired event). The dedup
+    // grep on the journal basename must swallow the second append.
+    //
+    // Restoring the snapshot is what makes this deterministic. This used to
+    // run a 2nd SessionStart+SessionEnd instead, which re-derived the journal
+    // basename — and therefore the dedup key — from the clock at that moment.
+    // A run whose two SessionStarts straddled a minute boundary got a
+    // different key and a legitimate second line, so the test failed for a
+    // reason that had nothing to do with the dedup it claims to cover. That
+    // was rare when idle and common under load (concurrent `npm test` runs
+    // slow each hook spawn), which is what made it look like a shared-state
+    // race between test runs.
+    fs.writeFileSync(stateFile(sessionId), stateSnapshot, 'utf8');
+    runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId, reason: 'logout' });
+    const count2 = (fs.readFileSync(logPath, 'utf8').match(/— session —/g) || []).length;
     assert.equal(count2, 1, 'still one session line after re-trigger (dedup by basename)');
   });
 
@@ -678,23 +755,37 @@ describe('session-auto-journal — v0.12.9 review+ pass 1 regressions', () => {
     // that the date and time both correspond to the same local moment by
     // checking they agree with `new Date().toLocaleString()` semantics.
     const logPath = ensureLogMd();
+    const startedAt = new Date();
     runHook({ event: 'SessionStart', cwd: vaultDir, sessionId: 'tz-test-1' });
     runHook({ event: 'SessionEnd', cwd: vaultDir, sessionId: 'tz-test-1', reason: 'logout' });
+    const endedAt = new Date();
     const log = fs.readFileSync(logPath, 'utf8');
     const m = log.match(/\n- (\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}) — session — \[\[[^\]]+\]\]/);
     assert.ok(m, 'should find a session entry with date+time');
-    const [, y, mo, d, h, mi] = m.map((x) => Number(x));
-    const now = new Date();
-    // Sanity: the recorded date must equal today's local date (we just ran).
-    assert.equal(y, now.getFullYear(), 'year must match local today');
-    assert.equal(mo, now.getMonth() + 1, 'month must match local today');
-    assert.equal(d, now.getDate(), 'day must match local TODAY (not UTC)');
-    // Hours should match local now (within ±1 minute tolerance for slow tests).
-    assert.ok(Math.abs(h - now.getHours()) <= 1, `hour ${h} should be within ±1 of local now ${now.getHours()}`);
-    // Bonus: the date in log must match the date prefix in the filename (also local).
-    const files = listJournals();
-    const filenameDate = files[0].match(/^(\d{4}-\d{2}-\d{2})/)[1];
-    assert.equal(`${m[1]}-${m[2]}-${m[3]}`, filenameDate, 'log entry date must match filename date');
+
+    // Every local-time minute stamp the hook could legitimately have written,
+    // i.e. the window this test just spanned. Stepping 30s can't skip a minute.
+    // Comparing against a window rather than one `new Date()` read after the
+    // fact keeps the assertion exact while surviving a minute — or midnight —
+    // rollover landing between the two spawns.
+    const stamps = new Set();
+    for (let t = startedAt.getTime(); t <= endedAt.getTime(); t += 30_000) {
+      stamps.add(localStamp(new Date(t)));
+    }
+    stamps.add(localStamp(endedAt));
+
+    // A UTC date paired with a local time (the bug this guards) falls outside
+    // the window in every zone offset from UTC by at least a day boundary.
+    const stamped = `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
+    assert.ok(stamps.has(stamped),
+      `log stamp ${stamped} should be a local-time stamp from this run's window (${[...stamps].join(' | ')})`);
+
+    // Bonus: the filename's date prefix is stamped at SessionStart and must be
+    // a local date from the same window (not a UTC one).
+    const localDates = new Set([...stamps].map((s) => s.slice(0, 10)));
+    const filenameDate = listJournals()[0].match(/^(\d{4}-\d{2}-\d{2})/)[1];
+    assert.ok(localDates.has(filenameDate),
+      `journal filename date ${filenameDate} should be local (window: ${[...localDates].join(' | ')})`);
   });
 
   test('A1 — pipe chars still escaped (regression from v0.12.8)', () => {
