@@ -1898,11 +1898,24 @@ describe('GUARD: the audit journal records ONE attribution per write', () => {
 
     // 2. WHICH IS WHY THE TOOL REFUSES. Every shape the renderer would rewrite,
     //    plus the unpaired surrogate the difference test alone cannot see.
+    //
+    //    THE ROOT HAS TO BE ABSOLUTE ON THE RUNNING PLATFORM, not on the one
+    //    this was written on. `download_page_assets` checks `path.isAbsolute`
+    //    BEFORE it reaches the audit guard, and `C:/out` is not absolute on
+    //    Linux — so on every POSIX runner the tool refused with "outputDir must
+    //    be absolute" and this loop never exercised the guard it exists for.
+    //    `path.resolve('/out')` is absolute by construction on both: `/out` on
+    //    POSIX, `<drive>:\out` on Windows. (The claim in the comment above is
+    //    still about NTFS; only the fixture is platform-neutral.)
+    const ABS_OUT = path.resolve('/out');
     for (const bad of ['\u2028', '\u2029', '\u0085', '\t', '\n', '\r', '\u0000', '\u001b', '\u009b', '\uD800', '\uDC00']) {
-      assert.equal(isAuditStable(`C:/out/a${bad}b`), false,
+      const hostile = `${ABS_OUT}${path.sep}a${bad}b`;
+      assert.ok(path.isAbsolute(hostile.replace(/[\u0000]/g, '')),
+        'the fixture root must be absolute here, or the tool refuses for the wrong reason');
+      assert.equal(isAuditStable(hostile), false,
         `isAuditStable accepted U+${bad.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}`);
       await assert.rejects(
-        () => handleDownloadPageAssets({ html: '<p/>', baseUrl: 'https://e.example', outputDir: `C:/out/a${bad}b` }),
+        () => handleDownloadPageAssets({ html: '<p/>', baseUrl: 'https://e.example', outputDir: hostile }),
         (err) => {
           assert.match(err.message, /audit journal cannot record/, `refused for the wrong reason: ${err.message}`);
           return true;
