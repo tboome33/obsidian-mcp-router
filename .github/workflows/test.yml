@@ -1,6 +1,6 @@
 # Run the test suite on every push to main and on every PR.
 # Tests are pure Node (no external services) — should pass anywhere
-# Node 20.18.1+ is available.
+# Node 20.19.0+ is available.
 name: tests
 
 on:
@@ -32,7 +32,15 @@ jobs:
         # logic (case-insensitive samePath, UNC, etc.) that should be
         # exercised on actual Windows runners.
         os: [ubuntu-latest, windows-latest]
-        node: ['20.18.1', '22']
+        # The low leg is the published engines.node floor, exactly — pinning it
+        # is the point: a floor nothing runs at is a claim, not a guarantee.
+        # 20.19.0 rather than 20.18.1 because Node renamed
+        # `--experimental-permission` to `--permission` in 20.19.0, and
+        # tests/no-vault-disk.test.mjs measures the HTTP-only claim by taking
+        # the vault's disk away with that flag. On 20.18.1 the flag was refused,
+        # the four OS-level suites skipped, and the security property this repo
+        # advertises went unmeasured on a leg that reported green.
+        node: ['20.19.0', '22']
 
     steps:
       # v5: GitHub is retiring the Node 20 runtime these actions target, and

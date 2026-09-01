@@ -2,6 +2,24 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## 🔜 Unreleased — the Node floor moves to 20.19.0, so the security bench actually runs
+
+- [x] **`engines.node` → `>=20.19.0`, and the low CI leg pinned to exactly that.**
+      Node renamed `--experimental-permission` to `--permission` in 20.19.0 (22.13.0,
+      23.5.0). The matrix pinned `20.18.1` — one patch below — so on that leg the gated
+      child died with `bad option: --permission`, the four OS-level suites of
+      `tests/no-vault-disk.test.mjs` skipped, and the HTTP-only security claim went
+      unmeasured while the leg reported green.
+      **Why a floor and not a skip.** The skip stays (a runtime without the flag must
+      not fake coverage), but a skip is a hole in the measurement, and this measurement
+      is the whole reason the file exists. Pinning the low leg to the published floor
+      makes the two agree: what the package says it supports is what CI proves.
+      **Cost accepted:** 20.18.x users must update Node. `undici@7` already required
+      20.18.1, so this is one patch on an LTS line, not a major.
+      **Not done here:** no version bump — v0.85.0 had just shipped and a second
+      session was mid-flight in the repo, so the entry sits under `[Unreleased]` for
+      the next bump to promote.
+
 ## ✅ v0.85.0 — W-C citations, chunk-level sourcing, and four descriptions that were wrong (shipped 2026-09-01)
 
 The last three items of the §1 quick-wins lot. The small one turned out to be the

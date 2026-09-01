@@ -111,7 +111,7 @@ export function resolveRepomixPath(projectRoot) {
  * **Why this exists** — Node 20.12.0 shipped the CVE-2024-27980 fix: spawning
  * a `.cmd` / `.bat` file through `execFile` (or `spawn` without `shell:true`)
  * now throws `ERR_CHILD_PROCESS_BAD_NAME`. Our `engines.node` constraint
- * (`>=20.18.1`) means EVERY supported Windows install hits this path. The
+ * (`>=20.19.0`) means EVERY supported Windows install hits this path. The
  * pre-v0.11.1 code preferred `repomix.cmd` and called `execFile` directly,
  * so `git_repo_to_markdown` was broken out-of-the-box on Windows — codex
  * pass 3 spotted the missing `node_modules/.bin/repomix` (we used

@@ -4,6 +4,92 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [Unreleased]
+
+### Added
+
+- **`list_vaults` now reports whether the conversion toolbox is provisioned.** The
+  response carries a `conversionToolbox` block — `available`, `via`
+  (`bundled-venv` / `env-override` / `path`), `path`, `optedOut`, `toolsAffected`,
+  `toolsDegraded`, `hint`. Eight tools shell out to the `markitdown` Python CLI, which
+  is installed by an explicit opt-in and **never automatically** (there is no npm
+  `postinstall` — a written decision: the router imposes a Python install on nobody).
+  The cost of that refusal was a silence: nothing told a new installer those tools were
+  dormant, so the first signal was an `ENOENT` in the middle of a real task, which reads
+  as "these tools are broken" rather than "these tools are not switched on". This rides
+  the discovery call `meta-status` already makes, and runs **no subprocess**.
+- **`src/helpers/conversion-readiness.mjs`** — the single definition of "is markitdown
+  usable here", and of "is there a Python new enough to install it". The Python probe
+  used to exist twice (`install-markitdown.mjs`, and a copy in `install-docling.mjs`
+  whose comment said *"same logic as install-markitdown.mjs"* — a copy admitting it is
+  one); the runtime error path needed it as well, and a third copy is how a rule ends up
+  fixed in one place and stale in the others.
+- **`meta-setup` asks the question once**, while the user is already provisioning, and
+  takes "not now" as a complete answer. `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` silences it
+  permanently — the same courtesy the auto-update notice already extended.
+
+### Changed
+
+- **The `markitdown` ENOENT message now says WHICH problem the reader has.** It checks
+  for a Python interpreter first and distinguishes three answers, because they call for
+  three different actions: Python 3.10+ is present (*one command fixes this*, with the
+  exact path for **this** install), Python is present but too old (*upgrade, then run…*
+  — naming the version found), or the check could not run at all (*this could not be
+  determined here*). The previous wording listed three fixes and left the reader to work
+  out which one their machine could take; sending someone to an installer that will
+  refuse is worse than saying nothing.
+- **Nothing claims a fact about the machine it did not measure.** "We could not look" —
+  a timeout, a permission error, a broken shim — is never reported as "no Python found".
+  Both installers print a distinct third message for it. The `findPython()` convenience
+  wrapper that collapsed *too old* and *could not look* into a single `null` was deleted
+  rather than kept: leaving a shorter name that models the defect is how the defect
+  comes back.
+- **`docs/features/05-conversion-de-documents.md` said the opposite of what the router
+  does.** It advertised *"Postinstall automatique"* two paragraphs after correctly
+  calling the step opt-in since v0.56.0. There has never been a `postinstall` in the
+  package. The `README` and the English cheat sheet already had it right; the French
+  feature sheet was the only surface carrying the false claim (1/1 corrected).
+
+### Fixed
+
+- **The readiness probe and the runtime can no longer disagree about which `markitdown`
+  will run.** The probe trimmed `MARKITDOWN_PATH` while `resolveMarkitdownPath` does
+  not, so `MARKITDOWN_PATH=" /opt/bin/markitdown "` was reported ready at the trimmed
+  path and then failed at the padded one. The probe now mirrors the runtime's resolution
+  exactly, and a test pins the two together for the same inputs.
+- **A count that pushed toward a ~150 MB install.** The first version of this work said
+  ten tools depend on markitdown. `git_repo_to_markdown` never did (it goes through
+  repomix) and `youtube_to_markdown` degrades to its yt-dlp captions instead of dying.
+  Eight is the real number — and the messages now also refuse the opposite over-promise,
+  since yt-dlp is *itself* an executable the router does not install, so that fallback
+  is qualified rather than guaranteed.
+- **PATH scanning is bounded in allocation, not just in I/O.** Capping entries after
+  `split()` still allocated every substring first; the string is now truncated before
+  the split. UNC entries stay skipped, and the remaining hang risk — a disconnected
+  mapped drive looks exactly like a local path — is documented as accepted rather than
+  described as solved.
+- **On POSIX, a file without an execute bit is no longer reported as available** (mode
+  0644 gives `EACCES`, not a working tool); on Windows, `.cmd` / `.bat` shims stay
+  excluded because `execFile` cannot spawn them since the CVE-2024-27980 fix.
+- **No generated command can be broken by its own path.** A `"` is legal in a POSIX
+  directory name, and `node "<root>"` around one breaks out of the quoting; both the
+  hint and the ENOENT message fall back to the generic wording instead of emitting
+  something unpasteable.
+- **Command/skill parity.** The rules first landed only in `skills/meta-*/SKILL.md`, so
+  a user invoking the documented slash command got the original silence. Both surfaces
+  now carry every load-bearing rule, and the test checks each rule separately rather
+  than searching for one keyword per file.
+
+- **BREAKING (runtime): the required Node floor moves from `20.18.1` to `20.19.0`.** `undici@7` still
+  only asks for 20.18.1; the extra patch buys the test suite Node's `--permission` flag, renamed from
+  `--experimental-permission` in 20.19.0 (and in 22.13.0 / 23.5.0). `tests/no-vault-disk.test.mjs`
+  proves the HTTP-only claim — *with the API key in the config, no tool needs the vault's disk* — by
+  running the tool surface with the vault's directory denied at the OS level. On 20.18.1 that flag was
+  refused, so the four OS-level suites skipped and the security property this project advertises went
+  **unmeasured on a CI leg that reported green**. The low matrix leg is now pinned to `20.19.0`
+  exactly: a floor nothing runs at is a claim, not a guarantee. If you are on 20.18.x, update Node;
+  nothing else about the runtime changed.
+
 ## [0.85.0] — 2026-09-01 — W-C citations, chunk-level sourcing, and four tool descriptions that were wrong
 
 The last three items of the §1 quick-wins lot: **W-C** (Crawl4AI's markdown-with-

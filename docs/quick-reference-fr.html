@@ -197,7 +197,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <p><strong>Bridge</strong> — tourne <em>dans</em> Obsidian ; il greffe ses routes (<code>/search/smart</code>, <code>/templates/execute</code>, <code>/open/*</code>, <code>/ping</code>, <code>PUT /vault-cas/*</code> ≥ 0.7.0 — écritures <code>ifMatch</code> atomiques —, <code>GET /smart-env/sources</code> ≥ 0.9.0 — sert le magasin de vecteurs Smart Connections, un dot-répertoire que l'API REST refuse elle-même de servir, ce qui rend <code>find_twin_pages</code> possible sur un vault distant) sur le serveur HTTP de Local REST API. <strong>Optionnel</strong> : requis pour <code>search_smart</code>, <code>execute_template</code>/Templater, les liens click-to-open, les écritures conditionnelles atomiques et l'analyse de jumelles à distance (sans lui, <code>ifMatch</code> retombe sur un repli vérifié non atomique) — le CRUD de base marche toujours. Se met à jour via BRAT depuis les releases GitHub.</p>
 
-<p><strong>Serveur MCP</strong> — process Node ≥ 20.18.1 sur le PC, spawné par Claude Code (via le plugin — le cas normal —, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
+<p><strong>Serveur MCP</strong> — process Node ≥ 20.19.0 sur le PC, spawné par Claude Code (via le plugin — le cas normal —, ou via une entrée manuelle <code>~/.claude.json</code> — setups dev). Requiert le plugin <strong>Local REST API</strong> dans <strong>chaque</strong> vault (obligatoire : tout le CRUD passe par lui) ; son registre vit dans <code>~/.claude/obsidian-mcp-router/config.json</code>.</p>
 
 <p><strong>Plugin Claude Code</strong> — ses commands/skills orchestrent les outils MCP du serveur ; deux hooks lisent le vault directement sur disque (<code>hot-cache-load</code>, <code>decisions-recall</code>). Il <strong>embarque et lance le serveur</strong> : une installation = tout, une mise à jour = tout.</p>
 
@@ -205,7 +205,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <ol>
   <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code</strong> = le serveur est livré et lancé automatiquement. Le clone + <code>npm link</code> (<code>/obsidian-router:meta-setup</code>) reste le parcours développeur uniquement.</li>
-  <li>Avoir Node.js ≥ 20.18.1. Outils de conversion : <strong>MarkItDown est opt-in</strong> (<code>npm run install-markitdown</code> · Docling : <code>npm run install-docling</code>) — Python 3.10+ requis seulement pour ces extras ; sans backend, les outils renvoient un hint d'installation actionnable.</li>
+  <li>Avoir Node.js ≥ 20.19.0. Outils de conversion : <strong>MarkItDown est opt-in</strong> (<code>npm run install-markitdown</code> · Docling : <code>npm run install-docling</code>) — Python 3.10+ requis seulement pour ces extras ; sans backend, les outils renvoient un hint d'installation actionnable.</li>
   <li><strong>Chemin le plus simple</strong> : <code>/obsidian-router:meta-attach-vault</code> — wizard interactif qui attache un vault à un workspace (cas courant), bootstrappe un vault autonome, ou enregistre un vault distant. Provisionne les plugins + scaffolde le wiki + lie le <code>.env</code> + picker de conventions.</li>
   <li>Alternative CLI :
     <pre>npm run setup-vault -- "C:\VAULTS\MonVault"</pre>

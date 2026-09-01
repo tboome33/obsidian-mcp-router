@@ -74,11 +74,17 @@ const HARNESS = path.join(HERE, 'fixtures', 'no-vault-disk-harness.mjs');
  * Which spelling of the permission flag THIS runtime accepts.
  *
  * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
- * v22.13.0 and v23.5.0. The CI matrix pins node 20.18.1 — one patch below the
- * rename — so every run on that leg died with `bad option: --permission`
- * before reaching a single assertion, and the 22 subtests below were reported
- * as "did not finish before its parent and was cancelled": a stack of failures
- * that named neither the flag nor the version.
+ * v22.13.0 and v23.5.0. The CI matrix used to pin node 20.18.1 — one patch
+ * below the rename — so every run on that leg died with `bad option:
+ * --permission` before reaching a single assertion, and the 22 subtests below
+ * were reported as "did not finish before its parent and was cancelled": a
+ * stack of failures that named neither the flag nor the version.
+ *
+ * That is why `engines.node` is now `>=20.19.0` and the low matrix leg is
+ * pinned to exactly that: the floor exists so this bench RUNS, and a floor
+ * nothing runs at is a claim rather than a guarantee. The probe and the skip
+ * below are therefore expected to be dead code on any supported runtime — they
+ * stay because the alternative to a loud skip is a silent one.
  *
  * The flag is PROBED rather than derived from process.version. A version
  * comparison encodes today's release notes and goes stale; asking the binary
@@ -736,22 +742,25 @@ describe('no oracle is satisfiable without the vault answering', { skip: NO_PERM
  * v0.83.0 — the bench says out loud whether it was armed.
  *
  * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
- * v22.13.0 and v23.5.0. The CI matrix pins node 20.18.1 — one patch below the
- * rename — so on that leg the gated child died with `bad option: --permission`
- * and all 22 measurements were reported as "did not finish before its parent
- * and was cancelled". Nothing in that wall of output named the flag or the
- * version.
+ * v22.13.0 and v23.5.0. The CI matrix used to pin node 20.18.1 — one patch
+ * below the rename — so on that leg the gated child died with `bad option:
+ * --permission` and all 22 measurements were reported as "did not finish
+ * before its parent and was cancelled". Nothing in that wall of output named
+ * the flag or the version.
  *
- * The four suites above now skip when the runtime cannot arm the permission
- * model, which keeps the leg green. That creates a NEW risk, and it is the one
- * worth guarding: a security bench that skips itself looks exactly like a
+ * TWO FIXES, AND THIS FILE IS THE SECOND. The first raised `engines.node` to
+ * `>=20.19.0` and pinned the low matrix leg to exactly that, so the bench runs
+ * everywhere the package claims to work. The second is this describe, because
+ * the skip that keeps an unsupported runtime green creates a new risk and it is
+ * the worse one: a security bench that skips itself looks exactly like a
  * security bench that passed. `node --test` prints `# SKIP <reason>` per suite,
  * but its summary counts a skipped suite as neither passed nor skipped — so a
  * reader watching totals sees `pass 0, fail 0` and no coverage.
  *
  * This describe therefore ALWAYS runs. It states the arming in the summary, and
- * it FAILS on a runtime that ought to have the flag — so a future rename is a
- * red build rather than a quiet loss of the measurement.
+ * it FAILS on a runtime that ought to have the flag — so the next rename, or a
+ * floor quietly lowered back below it, is a red build rather than a silent loss
+ * of the measurement.
  */
 describe('the permission model is armed, and says so whether it is or not', () => {
   /** [major, minor, patch] of the running node. */
@@ -797,5 +806,48 @@ describe('the permission model is armed, and says so whether it is or not', () =
     }
     // And the comparator itself is not vacuous.
     assert.equal(atLeast(20, 19, 0) && version[0] === 20 && version[1] === 18, false);
+  });
+
+  /**
+   * GUARD: the published floor and the floor CI runs are the same number.
+   *
+   * This is the drift that produced the whole incident. `engines.node` said
+   * `>=20.18.1`, the matrix's low leg said `'20.18.1'`, and both were one patch
+   * below the flag this file needs — so the leg ran, skipped its four OS-level
+   * suites, and reported green for weeks. Nothing compared the two facts,
+   * because they AGREED with each other; they just both disagreed with what the
+   * bench required.
+   *
+   * So the guard is not "engines equals the matrix" alone. It is three claims at
+   * once: the two agree, they are at or above the rename, and the matrix really
+   * pins an exact version rather than a floating major (`'20'` would resolve to
+   * whatever is newest and silently stop testing the floor).
+   */
+  test('GUARD: engines.node, the CI matrix low leg, and the flag rename agree', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
+    const workflow = fs.readFileSync(path.join(REPO, '.github', 'workflows', 'test.yml'), 'utf8');
+
+    const floor = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(pkg.engines.node);
+    assert.ok(floor, `engines.node must be a plain >=x.y.z floor, got ${pkg.engines.node}`);
+
+    const nodeLine = /^\s*node:\s*\[(.+)\]\s*$/m.exec(workflow);
+    assert.ok(nodeLine, 'could not find the matrix `node:` list in .github/workflows/test.yml');
+    const legs = nodeLine[1].split(',').map((s) => s.trim().replace(/^'|'$/g, ''));
+    assert.ok(legs.length >= 2, `expected at least two matrix legs, got ${JSON.stringify(legs)}`);
+
+    // The low leg must be the floor, spelled exactly.
+    const [, maj, min, pat] = floor;
+    assert.equal(legs[0], `${maj}.${min}.${pat}`,
+      `the matrix's low leg (${legs[0]}) must pin engines.node (${pkg.engines.node}) exactly — `
+      + 'a floor no CI leg runs at is a claim, not a guarantee');
+
+    // And the floor must be at or above the release that renamed the flag this
+    // file cannot run without.
+    const n = (a, b, c) => (a * 1e6) + (b * 1e3) + c;
+    assert.ok(
+      n(+maj, +min, +pat) >= n(20, 19, 0),
+      `engines.node is ${pkg.engines.node}, below the 20.19.0 that renamed `
+      + '--experimental-permission to --permission. Lower it and this file stops measuring.',
+    );
   });
 });

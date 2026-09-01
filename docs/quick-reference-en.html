@@ -191,7 +191,7 @@
 
 <pre>Obsidian  ←  Local REST API (community plugin)  ←  BRIDGE (mcp-router-bridge)
     ↑ HTTP per vault (port + apiKey from the Local REST API plugin)
-MCP SERVER (obsidian-mcp-router) — Node ≥ 20.18.1 process on the PC
+MCP SERVER (obsidian-mcp-router) — Node ≥ 20.19.0 process on the PC
     ↑ MCP over stdio, spawned by Claude Code
 CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
     · the plugin SHIPS and LAUNCHES the server itself</pre>
@@ -207,7 +207,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 <h2>Vault setup</h2>
 
 <ol>
-  <li>Have Node.js ≥ 20.18.1. Conversion backends are opt-in (no npm <code>postinstall</code>): <code>npm run install-markitdown</code> (needs Python 3.10+ on <code>PATH</code>), <code>npm run install-docling</code> — until installed, the conversion tools stay listed and return an actionable install hint</li>
+  <li>Have Node.js ≥ 20.19.0. Conversion backends are opt-in (no npm <code>postinstall</code>): <code>npm run install-markitdown</code> (needs Python 3.10+ on <code>PATH</code>), <code>npm run install-docling</code> — until installed, the conversion tools stay listed and return an actionable install hint</li>
   <li><strong>Easiest path</strong>: <code>/obsidian-router:meta-attach-vault</code> — interactive wizard that attaches a vault to a workspace (common case), bootstraps a standalone vault, or registers a remote one. Provisions plugins + scaffolds the wiki + binds <code>.env</code> + conventions picker.</li>
   <li>CLI alternative:
     <pre>npm run setup-vault -- "C:\VAULTS\MyVault"</pre>

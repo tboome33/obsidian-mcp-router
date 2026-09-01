@@ -1060,7 +1060,7 @@ export function auditArchive(buffer, options = {}) {
       if (content.length !== e.size) {
         note('size-mismatch', `inflated to ${content.length} bytes, directory says ${e.size}`, e.name);
       }
-      // CRC-32 comes from zlib (Node >= 20.15; `engines` pins >= 20.18.1).
+      // CRC-32 comes from zlib (Node >= 20.15; `engines` pins >= 20.19.0).
       const crc = zlib.crc32(content) >>> 0;
       if (crc !== e.crc32) {
         note('crc-mismatch',

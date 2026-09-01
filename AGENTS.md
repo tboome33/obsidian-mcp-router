@@ -15,7 +15,7 @@ have not run.
 
 An MCP server that routes tool calls to one or more Obsidian vaults over each vault's Local REST
 API, packaged together with the skills, slash commands, agents and hooks that drive it. Node
-`>=20.18.1`, ESM only (`"type": "module"`), no build step — the source in `src/` is what runs.
+`>=20.19.0`, ESM only (`"type": "module"`), no build step — the source in `src/` is what runs.
 
 Layout, all paths relative to the repository root:
 

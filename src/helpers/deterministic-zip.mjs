@@ -55,7 +55,7 @@
  * failure mode this module exists to prevent.
  *
  * `zlib.crc32` requires Node >= 20.15.0; `package.json` engines pins
- * >= 20.18.1, so it is always present.
+ * >= 20.19.0, so it is always present.
  */
 
 import zlib from 'node:zlib';

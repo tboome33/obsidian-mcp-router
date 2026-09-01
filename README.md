@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
   <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.85.0-blueviolet.svg" alt="version"></a>
 </p>
 
@@ -341,7 +341,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks,
 ```
 
 - **The bridge** runs *inside Obsidian*. It requires Obsidian plus the Local REST API plugin: it registers extra routes on Local REST API's HTTP server (`/search/smart`, `/templates/execute`, `/open/*`, presence heartbeat). The server's `search_smart`, `execute_template` and click-to-open links depend on it. **Without it**, the server's core file CRUD still works (plain Local REST API routes) — smart search, Templater execution and clickable links do not. It updates itself via BRAT from GitHub releases.
-- **The MCP server** runs on the PC, spawned by Claude Code — via the plugin (the normal case), or via a manual `~/.claude.json` entry on dev setups. It requires Node ≥ 20.18.1, the Local REST API plugin in each vault (mandatory), the bridge in each vault (optional — needed for smart search / Templater / click-to-open), and its registry at `~/.claude/obsidian-mcp-router/config.json` (maintained by `setup-vault.mjs`). The Claude Code plugin's commands and skills orchestrate its MCP tools.
+- **The MCP server** runs on the PC, spawned by Claude Code — via the plugin (the normal case), or via a manual `~/.claude.json` entry on dev setups. It requires Node ≥ 20.19.0, the Local REST API plugin in each vault (mandatory), the bridge in each vault (optional — needed for smart search / Templater / click-to-open), and its registry at `~/.claude/obsidian-mcp-router/config.json` (maintained by `setup-vault.mjs`). The Claude Code plugin's commands and skills orchestrate its MCP tools.
 - **The Claude Code plugin** runs in Claude Code and **ships the server** (one install = everything; one update = everything). Its skills and commands drive the server's tools; two hooks (`hot-cache-load`, `decisions-recall`) read vault files directly from disk, no server involved. The tool-name prefix depends on how the server was registered — see [Tool names depend on how the server was registered](#tool-names-depend-on-how-the-server-was-registered).
 
 ## Prerequisites
@@ -355,7 +355,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks,
 
 You also need:
 
-- **Node.js ≥ 20.18.1** (required by `undici@7`)
+- **Node.js ≥ 20.19.0** (`undici@7` requires 20.18.1; the extra patch is Node's `--permission` flag, renamed from `--experimental-permission` in 20.19.0, which the test suite uses to prove no tool needs the vault's disk)
 - At least one vault provisioned in `~/.claude/obsidian-mcp-router/config.json`. If you've never set this up, run `npm run setup-vault -- "<vault-path>"` from a clone of this repo, or invoke [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directly — it'll bootstrap the config interactively. Schema reference: [`examples/config.example.json`](./examples/config.example.json).
 - A **reference vault** registered with the router. It holds the canonical plugin set + config that `setup-vault.mjs` clones into every new vault. Fast path: `node scripts/setup-vault.mjs --bootstrap-reference <path>` scaffolds it from the shipped skeleton ([`templates/reference-vault-skeleton/`](./templates/reference-vault-skeleton/)) and auto-downloads the bridge plugin. Full procedure (manual + troubleshooting): [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md).
 
@@ -1117,7 +1117,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
 <p align="center">
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
-  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
   <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.85.0-blueviolet.svg" alt="version"></a>
 </p>
 
@@ -1345,7 +1345,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commandes + skills + agents + hooks,
 ```
 
 - **Le bridge** tourne *dans Obsidian*. Il requiert Obsidian plus le plugin Local REST API : il enregistre des routes supplémentaires sur le serveur HTTP de Local REST API (`/search/smart`, `/templates/execute`, `/open/*`, heartbeat de présence). Le `search_smart`, l'`execute_template` et les liens click-to-open du serveur en dépendent. **Sans lui**, le CRUD de fichiers du serveur fonctionne toujours (routes Local REST API standard) — la recherche sémantique, l'exécution Templater et les liens cliquables, non. Il se met à jour via BRAT depuis les releases GitHub.
-- **Le serveur MCP** tourne sur le PC, lancé par Claude Code — via le plugin (le cas normal), ou via une entrée manuelle `~/.claude.json` sur les setups de dev. Il requiert Node ≥ 20.18.1, le plugin Local REST API dans chaque vault (obligatoire), le bridge dans chaque vault (optionnel — nécessaire pour recherche sémantique / Templater / click-to-open), et son registre `~/.claude/obsidian-mcp-router/config.json` (maintenu par `setup-vault.mjs`). Les commandes et skills du plugin Claude Code orchestrent ses outils MCP.
+- **Le serveur MCP** tourne sur le PC, lancé par Claude Code — via le plugin (le cas normal), ou via une entrée manuelle `~/.claude.json` sur les setups de dev. Il requiert Node ≥ 20.19.0, le plugin Local REST API dans chaque vault (obligatoire), le bridge dans chaque vault (optionnel — nécessaire pour recherche sémantique / Templater / click-to-open), et son registre `~/.claude/obsidian-mcp-router/config.json` (maintenu par `setup-vault.mjs`). Les commandes et skills du plugin Claude Code orchestrent ses outils MCP.
 - **Le plugin Claude Code** tourne dans Claude Code et **embarque le serveur** (une installation = tout ; une mise à jour = tout). Ses skills et commandes pilotent les outils du serveur ; deux hooks (`hot-cache-load`, `decisions-recall`) lisent les fichiers du vault directement sur disque, sans passer par le serveur. Le préfixe des noms d'outils dépend du mode d'enregistrement du serveur — voir [Les noms d'outils dépendent du mode d'enregistrement](#les-noms-doutils-dépendent-du-mode-denregistrement).
 
 ### Prérequis
@@ -1359,7 +1359,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commandes + skills + agents + hooks,
 
 Il te faut aussi :
 
-- **Node.js ≥ 20.18.1** (required by `undici@7`)
+- **Node.js ≥ 20.19.0** (`undici@7` exige 20.18.1 ; le patch supplémentaire, c'est le drapeau `--permission` de Node — renommé depuis `--experimental-permission` en 20.19.0 — dont la suite de tests se sert pour prouver qu'aucun outil n'a besoin du disque du vault)
 - Au moins un vault provisionné dans `~/.claude/obsidian-mcp-router/config.json`. Si tu n'as jamais fait ce setup, lance `npm run setup-vault -- "<vault-path>"` depuis un clone de ce repo, ou invoque [`scripts/setup-vault.mjs`](./scripts/setup-vault.mjs) directement — il bootstrappe la config interactivement. Référence du schéma : [`examples/config.example.json`](./examples/config.example.json).
 - Un **vault de référence** enregistré auprès du router. Il contient le set canonique de plugins + config que `setup-vault.mjs` clone dans chaque nouveau vault. Voie rapide : `node scripts/setup-vault.mjs --bootstrap-reference <path>` scaffolde depuis le skeleton livré ([`templates/reference-vault-skeleton/`](./templates/reference-vault-skeleton/)) et télécharge automatiquement le bridge plugin. Procédure complète (manuelle + troubleshooting) : [`docs/reference-vault-setup.md`](./docs/reference-vault-setup.md) (en anglais).
 

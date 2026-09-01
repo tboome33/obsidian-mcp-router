@@ -40,7 +40,7 @@ For doc-only commits (README, ROADMAP, comment-only edits, plugin manifest versi
 
 ## Code style
 
-- ESM Node 20.18.1+. No CommonJS, no transpilation step.
+- ESM Node 20.19.0+. No CommonJS, no transpilation step.
 - Prefer 2-space indent, single quotes, trailing commas.
 - Comments explain *why*, not *what*. The codebase already follows this — please match.
 - Async / await over `.then()`. No callbacks.
