@@ -76,9 +76,10 @@ const HARNESS = path.join(HERE, 'fixtures', 'no-vault-disk-harness.mjs');
  * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
  * v22.13.0 and v23.5.0. The CI matrix used to pin node 20.18.1 — one patch
  * below the rename — so every run on that leg died with `bad option:
- * --permission` before reaching a single assertion, and the 22 subtests below
- * were reported as "did not finish before its parent and was cancelled": a
- * stack of failures that named neither the flag nor the version.
+ * --permission` before reaching a single assertion, and the 18 subtests of the
+ * four suites below (6 + 4 + 5 + 3, counted) were reported as "did not finish
+ * before its parent and was cancelled": a stack of failures that named neither
+ * the flag nor the version.
  *
  * That is why `engines.node` is now `>=20.19.0` and the low matrix leg is
  * pinned to exactly that: the floor exists so this bench RUNS, and a floor
@@ -744,9 +745,14 @@ describe('no oracle is satisfiable without the vault answering', { skip: NO_PERM
  * Node renamed `--experimental-permission` to `--permission` in v20.19.0,
  * v22.13.0 and v23.5.0. The CI matrix used to pin node 20.18.1 — one patch
  * below the rename — so on that leg the gated child died with `bad option:
- * --permission` and all 22 measurements were reported as "did not finish
+ * --permission` and all 18 measurements were reported as "did not finish
  * before its parent and was cancelled". Nothing in that wall of output named
  * the flag or the version.
+ *
+ * (18, counted per suite: 6 + 4 + 5 + 3. The commit messages for `a862aed` and
+ * `59be380` say 22 — an estimate I wrote without counting, in a file whose
+ * whole subject is not asserting what you have not measured. Corrected here
+ * rather than by rewriting pushed history.)
  *
  * TWO FIXES, AND THIS FILE IS THE SECOND. The first raised `engines.node` to
  * `>=20.19.0` and pinned the low matrix leg to exactly that, so the bench runs
