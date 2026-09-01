@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.85.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
+  <div class="meta">v0.86.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -206,6 +206,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 <ol>
   <li><strong>Installer le plugin <code>obsidian-router</code> dans Claude Code</strong> = le serveur est livré et lancé automatiquement. Le clone + <code>npm link</code> (<code>/obsidian-router:meta-setup</code>) reste le parcours développeur uniquement.</li>
   <li>Avoir Node.js ≥ 20.19.0. Outils de conversion : <strong>MarkItDown est opt-in</strong> (<code>npm run install-markitdown</code> · Docling : <code>npm run install-docling</code>) — Python 3.10+ requis seulement pour ces extras ; sans backend, les outils renvoient un hint d'installation actionnable.</li>
+  <li>Savoir si cet opt-in est fait <em>avant</em> qu'un appel échoue : chaque réponse de <code>list_vaults</code> porte <code>conversionToolbox</code> (<code>available</code>, <code>via</code>, <code>verified</code>, <code>hint</code>), et <code>meta-status</code> l'affiche en une ligne. <strong>Huit</strong> outils cessent de fonctionner sans markitdown ; <code>youtube_to_markdown</code> se rabat sur les sous-titres yt-dlp (seulement si yt-dlp est lui-même installé), et <code>git_repo_to_markdown</code> (repomix) et <code>pdf_to_markdown_docling</code> ne sont pas concernés. Pour ne plus se le faire proposer : <code>OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1</code>.</li>
   <li><strong>Chemin le plus simple</strong> : <code>/obsidian-router:meta-attach-vault</code> — wizard interactif qui attache un vault à un workspace (cas courant), bootstrappe un vault autonome, ou enregistre un vault distant. Provisionne les plugins + scaffolde le wiki + lie le <code>.env</code> + picker de conventions.</li>
   <li>Alternative CLI :
     <pre>npm run setup-vault -- "C:\VAULTS\MonVault"</pre>

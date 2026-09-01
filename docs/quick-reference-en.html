@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.85.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
+  <div class="meta">v0.86.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -208,6 +208,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <ol>
   <li>Have Node.js ≥ 20.19.0. Conversion backends are opt-in (no npm <code>postinstall</code>): <code>npm run install-markitdown</code> (needs Python 3.10+ on <code>PATH</code>), <code>npm run install-docling</code> — until installed, the conversion tools stay listed and return an actionable install hint</li>
+  <li>Check whether that opt-in is done <em>before</em> a call fails: every <code>list_vaults</code> response carries <code>conversionToolbox</code> (<code>available</code>, <code>via</code>, <code>verified</code>, <code>hint</code>), and <code>meta-status</code> renders it in one line. <strong>Eight</strong> tools stop working without markitdown; <code>youtube_to_markdown</code> falls back to yt-dlp captions (only where yt-dlp is itself installed), and <code>git_repo_to_markdown</code> (repomix) and <code>pdf_to_markdown_docling</code> are unaffected. Silence the offer for good with <code>OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1</code>.</li>
   <li><strong>Easiest path</strong>: <code>/obsidian-router:meta-attach-vault</code> — interactive wizard that attaches a vault to a workspace (common case), bootstraps a standalone vault, or registers a remote one. Provisions plugins + scaffolds the wiki + binds <code>.env</code> + conventions picker.</li>
   <li>CLI alternative:
     <pre>npm run setup-vault -- "C:\VAULTS\MyVault"</pre>
