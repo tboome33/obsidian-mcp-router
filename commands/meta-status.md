@@ -53,7 +53,59 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
 | `missingApiKey: true` AND `type: local` | Local REST API plugin never enabled for this vault, so no `data.json` to read | Open Obsidian on this vault, enable Local REST API plugin, then re-run `setup-vault.mjs` |
 | `online: true` AND `latencyMs > 500` AND `type: remote` | Functional but slow; might cause timeouts on large operations | Note it as a soft warning; consider Tailscale Funnel for a closer relay or moving to a Cloudflare Tunnel |
 
-4. End with one of two endings:
+4. **Report the conversion toolbox**, from the `conversionToolbox` field of the same
+   `list_vaults` response. Eight tools go through the `markitdown` Python CLI, which is
+   installed by an explicit opt-in and **never automatically** — so on a fresh install
+   they are dormant, and nothing else says so until the first call fails mid-task. One
+   line, after the vault table:
+
+   Check `verified` BEFORE `available`, or the two rules below contradict each other
+   for an unverified-but-available override.
+
+   - `available: true` and `verified: true` → `✅ Conversion toolbox: ready (<via>)`,
+     where `via` is one of `bundled-venv`, `env-override` or `path`. Say nothing more.
+   - `available: true` and `verified: false` → `○ Conversion toolbox: configured
+     (<via>), not verified` — taken on the user's word (a bare command name resolved by
+     `PATH` at call time, or a UNC path unsafe to stat here). Never say "ready", and do
+     not offer to install anything.
+   - `available: false` and `optedOut: true` → `○ Conversion toolbox: off by choice
+     (OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1)`. **Do not** suggest installing it — the user
+     already answered that question.
+   - `available: false` and `verified: false` and `optedOut: false` → the probe could
+     not answer (it never throws; this is how it says so). Say `? Conversion toolbox:
+     state unknown — the check could not run`. Never "not installed", and offer no
+     install: absence was never established. *(Key this on `verified`, not on a null
+     `hint` — an opted-out machine with nothing installed also has `hint: null`, which
+     made the two rules overlap.)*
+   - `available: false`, `optedOut: false` and `via: "env-override"` → this is NOT
+     "not installed". `MARKITDOWN_PATH` points at something that will not run and
+     **masks** any working install underneath. Say `⚠️ Conversion toolbox:
+     MARKITDOWN_PATH points at something unusable`, quote the `hint` **verbatim**, and
+     do **not** offer to install anything — nothing is missing.
+   - `available: false`, `optedOut: false`, **`verified: true`**, any other `via` →
+     `⚠️ Conversion toolbox: not installed — 8 tools dormant`, then quote the `hint`
+     field **verbatim** (it
+     carries the exact command for THIS install, which a generic "run it in the router
+     directory" does not for a plugin-cache install). Offer to run it; do not run it
+     unasked (see **Don't**).
+   **ONE OFFER PER CONVERSATION.** `optedOut` records only the permanent env-var
+   answer; a spoken "not now" is written down nowhere. If the user already declined in
+   this conversation, report the state in one line and do not re-offer — mention
+   `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` once as the way to make it stick, then let it go.
+
+   **Do not inflate the count.** `toolsAffected` and `toolsDegraded` in the response are
+   the two lists — read them rather than counting from memory. `git_repo_to_markdown`
+   never used markitdown at all (it goes through repomix), and `youtube_to_markdown`
+   falls back to yt-dlp captions — which keeps it working **only if yt-dlp is
+   installed**, itself another executable the router does not install.
+
+   **Where the state travels vs. where you surface it.** `conversionToolbox` rides on
+   EVERY `list_vaults` response, including the automatic one the default-vault
+   health-check convention makes at session start — it is data, cheap, and always there.
+   Surfacing it is this command's job: do not raise it unprompted at session start, and
+   do not mention it in an unrelated answer just because you saw the field.
+
+5. End with one of two endings:
 
 - **All healthy**:
   > 🎉 All <n> vaults online. Ready to use.
@@ -64,6 +116,7 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
 ## Don't
 
 - Don't try to fix issues automatically — this skill is a diagnostic, not a fixer. Surface the problem and let the user choose how to proceed.
+- Don't install markitdown on your own initiative, even if the user says "fix the issues". It is a 30-180 s download of ~100 MB of Python wheels, and the router's refusal to impose a Python install is a written decision. Offer, wait for a yes, then run it.
 - Don't expose API keys in the output.
 - Don't dump the full raw JSON to the user — render the table and the issue blocks. The raw JSON is for your own consumption.
 - Don't run write/delete tools as part of this skill. Read-only diagnostic.

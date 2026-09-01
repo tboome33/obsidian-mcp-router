@@ -16,6 +16,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import net from 'node:net';
+import { isRunnableFile } from '../helpers/conversion-readiness.mjs';
 import dns from 'node:dns/promises';
 import { URL } from 'node:url';
 
@@ -42,6 +43,16 @@ export function expandHome(filepath) {
  *      the router's `scripts/install-markitdown.mjs` (`npm run install-markitdown`).
  *   3. Bare `markitdown` — let `execFile` look it up on `PATH` (POSIX execvp /
  *      Windows search). Fails with ENOENT at call time if not installed.
+ *
+ * TIER 2 ASKS "CAN I RUN IT", NOT "IS THERE SOMETHING THERE". It used to use
+ * `existsSync`, which says yes to a DIRECTORY named `markitdown` and to a
+ * mode-0644 file — both of which then fail to spawn, *while a perfectly good
+ * `markitdown` sat on `PATH` one tier below*. A half-finished or interrupted
+ * `install-markitdown` run is exactly how such a `.venv` comes to exist. The
+ * readiness probe in `conversion-readiness.mjs` asks the stricter question, so
+ * this one must too, or the two disagree about which binary will run — and a
+ * readiness check that names a different path than the runtime is a check that
+ * lies.
  */
 export function resolveMarkitdownPath(projectRoot) {
   if (process.env.MARKITDOWN_PATH) return process.env.MARKITDOWN_PATH;
@@ -52,7 +63,7 @@ export function resolveMarkitdownPath(projectRoot) {
     isWin ? 'Scripts' : 'bin',
     `markitdown${isWin ? '.exe' : ''}`,
   );
-  if (fs.existsSync(venvBin)) return venvBin;
+  if (isRunnableFile(venvBin, fs)) return venvBin;
   return 'markitdown';
 }
 

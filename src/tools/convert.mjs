@@ -1,12 +1,24 @@
 /**
  * Conversion tools — vendor port of markdownify-mcp (MIT, Zach Caceres).
  *
- * Ten MCP tools that turn an external source (PDF, DOCX, image, audio,
- * YouTube transcript, web page, git repo, …) into markdown text. The router
- * just returns the converted markdown — it deliberately does NOT write the
- * output into any vault. Composition is left to the caller: a client (or a
- * skill like `wiki-ingest`) chains a `*_to_markdown` call with a separate
- * `write_file` / `append_to_file` to land the artifact wherever it wants.
+ * ELEVEN handlers turn an external source (PDF, DOCX, image, audio, YouTube
+ * transcript, web page, git repo, …) into markdown text, plus `pdf_to_images`,
+ * which returns MCP image blocks rather than markdown. The router just returns
+ * the converted output — it deliberately does NOT write it into any vault.
+ * Composition is left to the caller: a client (or a skill like `wiki-ingest`)
+ * chains a `*_to_markdown` call with a separate `write_file` /
+ * `append_to_file` to land the artifact wherever it wants.
+ *
+ * The count matters because it is quoted at people, so here is the breakdown —
+ * three different backends, and confusing them is how a reader gets told to
+ * install ~150 MB of Python they do not need (see
+ * `src/helpers/conversion-readiness.mjs`):
+ *   - EIGHT go through the `markitdown` Python CLI and stop working without it:
+ *     pdf, docx, xlsx, pptx, image, audio, bing_search, webpage.
+ *   - `youtube_to_markdown` tries markitdown first and DEGRADES to yt-dlp
+ *     captions — which is itself an executable this package does not install.
+ *   - `git_repo_to_markdown` uses repomix (Node, a normal npm dependency) and
+ *     `pdf_to_markdown_docling` uses Docling. Neither touches markitdown.
  *
  * Why these handlers don't take a `vault` argument:
  *   They're not vault-routed. The conversion happens on the router host,

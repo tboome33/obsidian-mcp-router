@@ -2,7 +2,7 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
-## 🔜 Unreleased — the Node floor moves to 20.19.0, so the security bench actually runs
+## 🔜 Unreleased — the Node floor moves so the security bench runs, and the conversion toolbox stops being a silence
 
 - [x] **`engines.node` → `>=20.19.0`, and the low CI leg pinned to exactly that.**
       Node renamed `--experimental-permission` to `--permission` in 20.19.0 (22.13.0,
@@ -19,6 +19,125 @@ A living list of what's coming next, ordered roughly by priority.
       **Not done here:** no version bump — v0.85.0 had just shipped and a second
       session was mid-flight in the repo, so the entry sits under `[Unreleased]` for
       the next bump to promote.
+
+- [x] **The router PROPOSES markitdown, on three surfaces, and still imposes nothing.**
+      Eight tools shell out to the `markitdown` Python CLI, installed by an explicit
+      opt-in and never automatically — a written decision (`serveur-mcp-porte-par-le-
+      plugin`). The cost of that refusal was a **silence**: `meta-setup` did not mention
+      it, `meta-status` did not check it, and the auto-update notice only fires for
+      someone who *used to* have it. The single signal was an `ENOENT` at the first
+      conversion call — the worst possible moment, and easily read as "these tools are
+      broken" rather than "not switched on".
+      **What shipped:** `list_vaults` carries a `conversionToolbox` block (no
+      subprocess — it rides the discovery call `meta-status` already makes);
+      `meta-setup` asks once during provisioning and takes "not now" as a complete
+      answer; the ENOENT message checks Python and distinguishes *one command away* /
+      *too old* / *could not determine*. `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` silences
+      all of it.
+      **Where the difficulty actually was.** Not the plumbing — the claims. Seven
+      adversarial rounds found 11, 12, 10, 14, 11, 9 and 8 defects, and nearly every one was a
+      sentence that said more than the code could keep: a count of *ten* tools that
+      pushed toward a ~150 MB install (`git_repo_to_markdown` uses repomix; the real
+      number is eight); a promise that `youtube_to_markdown` "still works" through
+      yt-dlp, which is itself an executable the router does not install; a probe that
+      trimmed `MARKITDOWN_PATH` while the runtime did not, so it could report a path
+      that would never be spawned; a green tick for an override pointing at nothing;
+      and an installer that printed "No Python found" when what actually happened was
+      that the check never ran. The `findPython()` wrapper that collapsed *too old* into
+      *absent* was **deleted** rather than kept — leaving a shorter name that models the
+      defect is how the defect comes back.
+      **Each round's repairs were the next round's defect surface**, exactly as this
+      repo keeps demonstrating. Fixing the permission-error lie ("could not determine")
+      immediately created its mirror image — a machine with genuinely no Python was told
+      the check had failed — until `ENOENT` was recognised as an *answer* rather than a
+      failure to answer. Adding the POSIX execute-bit test to the PATH scan left the
+      venv tier answering the older, weaker question. And rejecting a literal `"` in a
+      generated command looked complete until the review pointed out that `$` and
+      backticks survive double quotes: a directory named `/tmp/router$(id)` yielded a
+      hint that would EXECUTE something when pasted. That one was found the honest way —
+      PowerShell expanded `$(id)` inside the very command written to test for it.
+      **A runtime fix came out of it too.** `resolveMarkitdownPath` used `existsSync`,
+      so a `.venv` left half-built by an interrupted install could shadow a perfectly
+      good `markitdown` on `PATH` and fail every conversion. Making the probe stricter
+      than the runtime would have been a readiness check that lies; the fix was to make
+      the runtime ask the same question, through one shared `isRunnableFile`. Round 4
+      then found the other half of that loop: both installers still asked `existsSync`
+      for "already present", so the repair the hint recommended could not perform it —
+      probe says run the installer, installer says "already present", nothing changes.
+      **Round 4 also caught a regression the round-3 fix had introduced**, which is the
+      cleanest statement of the pattern this repo keeps reproducing. Verifying
+      `MARKITDOWN_PATH` removed a false green tick and, in the same stroke, broke
+      `MARKITDOWN_PATH=markitdown` — a bare command name the runtime resolves through
+      `PATH` perfectly well, which the new check statted against the CWD and declared
+      dead. Bare names and UNC paths are now delegated rather than measured, and a
+      `verified` field says which answers were measured at all, so no surface has to
+      guess how much a tick is worth.
+      **Round 5 then caught the CHANGELOG lying about round 4.** The entry said both
+      installers "rebuild" a broken venv; they did not — removing the early return only
+      moved the dead end one step along, into a `python -m venv` that cannot replace
+      what already sits at the marker. They now say plainly that a rerun will not fix
+      it and print the command that will, because deleting inside someone's venv is not
+      an installer's call to make unasked. The same round found the opt-out being
+      ignored on the one path that fires on every call (each failed conversion still
+      spawned a Python probe and pitched the install at someone who had already said
+      no), and a test of mine pinning the wrong behaviour again — an interpreter that
+      ran without revealing its version was being counted as proof of absence.
+      **Round 6 found the worst defect of the lot, and it was one round 5 had just
+      created.** The new "remove the broken venv" advice built `rm -rf "<dir>"` by
+      interpolation and skipped `isShellSafePath` — the exact guard added three rounds
+      earlier for the *install* command, now missing from a **recursive delete**. A
+      project root named `/srv/router$(touch X)` turned a diagnostic into command
+      execution. That is the class-defect rule failing in its own instance: the fix was
+      applied to the file where the defect was found and not to the next command
+      written. Both removal paths now go through one helper that uses `-LiteralPath`
+      and emits no command at all when the path is not shell-safe. Round 6 also caught
+      round 5 over-correcting the Windows name rule into rejecting a working bare
+      `MARKITDOWN_PATH=markitdown`, and a Python version on stderr (which is where 2.x
+      prints it) being discarded as unreadable.
+      **Round 7 ended the deletion-command experiment, and that is the lesson worth
+      keeping.** Round 6's guarded `rm -rf` was attacked again and fell again: the
+      quoting check answers *can this be interpolated*, which is not *is this a
+      legitimate deletion target*. It happily accepted `/`, `-rf` (an option, the command
+      having no `--`), `../.venv`, `~`, and a trailing backslash that escapes the closing
+      quote in bash. A third hardening pass would have needed path resolution, a
+      required `.venv` basename and a root refusal — real validation logic inside a
+      message. So the generator was **deleted**: the installer names the broken directory
+      and prints no command of any kind. Escaping the path turned out to need its own
+      correction — the first version escaped only C0 (`\x00-\x1f`), leaving U+0085,
+      U+2028 and U+2029 through, and terminals break lines on those, so the impersonation
+      survived one range past where the fix stopped. Found by attacking my own repair
+      before the reviewer reported; C0, DEL, C1 and the Unicode separators are all
+      escaped now. This is the same shape as the v0.79.0 cache
+      — *if you cannot write the invariant as a sentence that is simply true, the repair
+      is wrong; removing the thing beats every attempt to fix it*. "This code never emits
+      a deletion command" is that sentence. Round 7 also caught round 6's stderr fix
+      taking a wrapper's `install Python 3.12 for support` as the interpreter's own
+      answer over the real `Python 2.7.18` beneath it.
+      **Swept, not spot-fixed:** `docs/features/05-conversion-de-documents.md`
+      advertised *"Postinstall automatique"* two paragraphs after correctly calling the
+      step opt-in since v0.56.0. There has never been a `postinstall`. README and the
+      English cheat sheet were already right — 1/1 surface corrected. The two remaining
+      `postinstall` mentions in this file are historical (v0.11.0, v0.37.0), true of
+      their versions, and deliberately left alone.
+      **Deferred, with the reason written down rather than left silent:**
+      - **The synchronous PATH scan can still stall `list_vaults`.** UNC entries are
+        skipped and both ends are bounded (`MAX_PATH_CHARS`, `MAX_PATH_ENTRIES`), but a
+        *disconnected mapped drive* (`Z:\tools`) and a dead POSIX network mount are
+        indistinguishable from local paths by their string, and `statSync` on one waits
+        for an OS timeout — on the call the session-start health check makes. Three
+        exits were considered and none is free: an async stat moves the block off the
+        event loop but stalls the `list_vaults` response itself; dropping the PATH tier
+        would mis-report every pipx install (markitdown on `PATH`, no venv) as missing;
+        memoising the result would make the probe report a stale fact after a
+        mid-session install, which is the class of defect this whole lot removed. The
+        tier only runs when neither the override nor the bundled venv answered, so a
+        normal install never reaches it. Revisit if it is ever observed in practice.
+      - **The POSIX execute-bit test is necessary, not sufficient.** A `mode 0100` file
+        owned by another uid passes and still gives `EACCES`; answering "may THIS
+        process run it" needs the uid/gid comparison `access()` does, which is more than
+        this hot path should spend per candidate. The case worth catching — no execute
+        bit at all, what a half-finished install leaves — is caught.
+      **Not done here:** no version bump, for the same reason as above.
 
 ## ✅ v0.85.0 — W-C citations, chunk-level sourcing, and four descriptions that were wrong (shipped 2026-09-01)
 

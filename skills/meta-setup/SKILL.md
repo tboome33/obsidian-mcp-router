@@ -148,11 +148,55 @@ If any hook becomes noisy or unwanted after install, the user can disable it WIT
 
 Run `node scripts/setup-vault.mjs --hooks-status` from the router repo. Should show all installed hooks as `✓ active`.
 
+## Conversion toolbox (optional — say it out loud, install only if asked)
+
+**Eight of the tools do nothing until a separate opt-in step**: `pdf`, `docx`, `xlsx`,
+`pptx`, `image`, `audio`, `bing_search` and `webpage` → markdown all shell out to the
+`markitdown` Python CLI. Two neighbours are often miscounted with them and should not
+be: `youtube_to_markdown` **degrades** to its yt-dlp caption fallback rather than dying
+(so it survives — but only where yt-dlp is itself installed, which the router also does
+not do), and `git_repo_to_markdown` is **unaffected** — it goes through repomix. The
+router **never installs markitdown on its own** — no `postinstall`, and the
+auto-updater will not run it either. That is a written decision
+(`serveur-mcp-porte-par-le-plugin`): no imposed Python install.
+
+**CHECK THE OPT-OUT FIRST.** If `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` is set (it shows as
+`optedOut: true` in `list_vaults`' `conversionToolbox`), **skip this whole section** —
+say nothing about markitdown at all. The user set that variable precisely so they would
+stop being asked; a setup flow that asks anyway makes the opt-out a lie.
+
+Otherwise tell them ONCE, here, while they are already provisioning — otherwise the
+first thing they learn is a failing tool call in the middle of a real task, which
+reads as "these tools are broken" rather than "these tools are not switched on".
+
+Ask, and act on the answer:
+
+- **"Yes"** → `npm run install-markitdown` from the router repo. It needs Python
+  3.10+ on `PATH`, checks that itself, and refuses cleanly with a readable message
+  if it is missing — so it is safe to attempt. Budget 30-180 s and ~100 MB of wheels.
+- **"Not now"** → fine, and nothing breaks: vault routing, search, reads and writes
+  are all unaffected. The tools stay dormant and say why when called.
+- **"Never ask again"** → set `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`. `meta-status` will
+  then report the toolbox as off-by-choice instead of flagging it.
+
+Already have it via `pipx install "markitdown[all]"`? Point `MARKITDOWN_PATH` at it
+instead of installing a second copy.
+
+*(Docling — the higher-fidelity PDF backend — is a separate, heavier opt-in behind
+`OBSIDIAN_ROUTER_ENABLE_DOCLING=1` and `npm run install-docling`. Do not bundle the
+two questions: most users need neither, and the ones who need markitdown rarely need
+Docling as well.)*
+
 ## Verify
 
 1. Restart Claude Desktop / Claude Code.
 2. Run `/mcp` to confirm `obsidian-router` is connected.
 3. Type `/obsidian-router:discover-list-vaults` — it should call `list_vaults` and return every vault with online status.
+4. That same response carries `conversionToolbox`. It measures the MACHINE, not the
+   answer the user gave — a "yes" can still read `available: false` (Python missing, or
+   the install failed), and a "not now" can read `available: true` when markitdown is
+   already on `PATH` from an earlier `pipx install`. Report it as a fact; never treat it
+   as a check on whether they consented.
 
 ## Bulk-bootstrap existing vaults (recommended on fresh machines) — v0.13.9+
 

@@ -457,7 +457,10 @@
       "tools": [
         "list_vaults"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "git_repo_to_markdown",
+        "youtube_to_markdown"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": true,
@@ -486,7 +489,10 @@
       "tools": [
         "list_vaults"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "git_repo_to_markdown",
+        "youtube_to_markdown"
+      ],
       "writeMode": "read-only",
       "requires": {
         "shell": false,

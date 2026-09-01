@@ -53,8 +53,22 @@ La conversion est déléguée à `markitdown` (l'outil open source de Microsoft)
 
 Le résumé des prérequis et des points de réglage de toute la famille :
 
-- **Python 3.10+** requis pour markitdown et Docling. Postinstall automatique ; relançable via `npm run install-markitdown` / `npm run install-docling`.
-- Sauter l'installation : `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` ou `npm install --ignore-scripts`.
+- **Python 3.10+** requis pour markitdown et Docling. **Rien n'est installé
+  automatiquement** : il n'existe aucun script `postinstall` dans le paquet, et
+  l'auto-updater ne relance pas l'installation non plus. C'est une décision
+  écrite — le router n'impose une installation Python à personne. L'étape est
+  explicite : `npm run install-markitdown` / `npm run install-docling`.
+- Savoir où on en est **sans attendre le premier échec** : la réponse de
+  `list_vaults` porte un champ `conversionToolbox` (`available`, `via`, `path`,
+  `verified`, `optedOut`, `toolsAffected`, `toolsDegraded`, `hint`), que la skill
+  `meta-status` affiche en une ligne. `verified: false` signale une réponse prise
+  **sur parole** et non mesurée — un nom de commande nu que `execFile` résout via le
+  `PATH` au moment de l'appel, ou un chemin UNC qu'il serait dangereux de `stat` sur ce
+  chemin chaud. À lire « configuré », pas « prêt ». Huit outils cessent de
+  fonctionner sans markitdown ; `youtube_to_markdown` se rabat sur ses
+  sous-titres yt-dlp, et `git_repo_to_markdown` n'est pas concerné (il passe par
+  repomix).
+- Ne plus se le faire proposer : `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`.
 - Utiliser une installation système plutôt que le venv embarqué : `pipx install "markitdown[all]"` + `MARKITDOWN_PATH=/chemin/vers/markitdown` (idem `DOCLING_PATH`, `PDF_IMAGES_PYTHON`).
 
 | Variable | Rôle |
@@ -63,6 +77,6 @@ Le résumé des prérequis et des points de réglage de toute la famille :
 | `MD_SHARE_DIR` | Alias historique mono-répertoire de `MD_ALLOWED_PATHS` (compatibilité markdownify-mcp). |
 | `MARKITDOWN_PATH` / `DOCLING_PATH` / `PDF_IMAGES_PYTHON` | Chemins explicites vers les exécutables quand on n'utilise pas les venvs embarqués. |
 | `OBSIDIAN_ROUTER_ENABLE_DOCLING` | `1` avant install = active le backend Docling. |
-| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | `1` = rend `npm run install-markitdown` inopérant (environnements scriptés). |
+| `OBSIDIAN_ROUTER_SKIP_MARKITDOWN` | `1` = rend `npm run install-markitdown` inopérant (environnements scriptés) **et** fait taire la proposition d'installation dans `list_vaults` / `meta-status`. Strictement la chaîne `"1"`. |
 
 Les outils orientés **URL** (`webpage_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `git_repo_to_markdown`) appartiennent à la même famille technique mais servent l'ingestion web — ils sont documentés en [fiche 6](06-ingestion-web.md).

@@ -21,6 +21,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
+import {
+  findPythonDetailed, isRunnableFile, removalInstruction,
+} from '../src/helpers/conversion-readiness.mjs';
+
 const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,27 +51,22 @@ export function doclingOptedIn(env = process.env) {
 }
 
 /**
- * Resolve a Python interpreter (3.10+). Tries `python3` then `python`.
- * Returns { cmd, version } or null. (Same logic as install-markitdown.mjs.)
+ * Resolve a Python interpreter (3.10+) — ONE DEFINITION, in
+ * `src/helpers/conversion-readiness.mjs`.
+ *
+ * The comment that used to sit here said "same logic as install-markitdown.mjs",
+ * which is a copy admitting it is one. Both installers and the runtime error
+ * path now call the same function.
  */
 async function findPython() {
-  for (const candidate of ['python3', 'python']) {
-    try {
-      const { stdout } = await execFileAsync(candidate, ['--version']);
-      const m = stdout.match(/Python (\d+)\.(\d+)/);
-      if (m) {
-        const major = parseInt(m[1], 10);
-        const minor = parseInt(m[2], 10);
-        if ((major === 3 && minor >= 10) || major > 3) {
-          return { cmd: candidate, version: `${major}.${minor}` };
-        }
-        warn(`Found ${candidate} ${major}.${minor} — docling needs Python 3.10+.`);
-      }
-    } catch {
-      // Not on PATH — try the next candidate.
-    }
+  const r = await findPythonDetailed({ execFile: execFileAsync });
+  // Same warning the local copy printed — see install-markitdown.mjs.
+  for (const { cmd, version } of r.rejected) {
+    warn(`Found ${cmd} ${version} — docling needs Python 3.10+.`);
   }
-  return null;
+  // The full result travels — `checked` separates "nothing suitable answered"
+  // from "we never got an answer". See install-markitdown.mjs.
+  return r;
 }
 
 /**
@@ -102,16 +101,35 @@ async function main() {
     IS_WIN ? 'Scripts' : 'bin',
     `docling${IS_WIN ? '.exe' : ''}`,
   );
-  if (fs.existsSync(venvMarker)) {
+  // RUNNABLE, not merely existing — same reason as install-markitdown.mjs: an
+  // "already present" that is not runnable is a loop with no exit.
+  if (isRunnableFile(venvMarker, fs)) {
     log(`docling already present at ${venvMarker} — skipping reinstall.`);
+    return;
+  }
+  if (fs.existsSync(venvMarker)) {
+    // Say it and stop — see install-markitdown.mjs: re-running cannot replace
+    // what is already at the marker, and deleting inside a user's venv is not
+    // this script's call.
+    warn(
+      `${venvMarker} exists but cannot be run (a directory, or missing its execute bit). ` +
+        `Re-running this script will NOT fix that. Remove the broken venv and run it again.\n` +
+        removalInstruction(VENV_DIR),
+    );
     return;
   }
 
   // 2. Find a usable Python.
   const py = await findPython();
-  if (!py) {
+  if (!py.ok) {
+    // WHICH problem — see install-markitdown.mjs for why "no Python found" is
+    // the wrong sentence when nothing ever answered.
+    const diagnosis = py.checked
+      ? 'No Python 3.10+ found on PATH.'
+      : 'Could NOT determine whether Python 3.10+ is available here (nothing answered '
+        + '— a permission error, a timeout, or a broken shim). If it IS installed, re-run this script.';
     warn(
-      'No Python 3.10+ found on PATH. `pdf_to_markdown_docling` will fail at ' +
+      `${diagnosis} \`pdf_to_markdown_docling\` will fail at ` +
         'call time until you install Python and re-run `npm run install-docling`, ' +
         'or `pipx install docling` and set DOCLING_PATH. The rest of the router ' +
         '(and pdf_to_markdown via MarkItDown) works without it.',

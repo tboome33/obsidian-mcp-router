@@ -23,6 +23,10 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
+import {
+  findPythonDetailed, isRunnableFile, removalInstruction,
+} from '../src/helpers/conversion-readiness.mjs';
+
 const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -46,36 +50,29 @@ if (process.env.OBSIDIAN_ROUTER_SKIP_MARKITDOWN === '1') {
 }
 
 /**
- * Resolve a Python interpreter. Tries `python3` first (POSIX convention),
- * then `python` (Windows + some Linux distros that aliased python3→python).
- * Returns null when neither is found — the script bails gracefully in that
- * case.
+ * Resolve a Python interpreter — ONE DEFINITION, in
+ * `src/helpers/conversion-readiness.mjs`.
+ *
+ * This function used to live here and was copied into `install-docling.mjs`
+ * ("same logic as install-markitdown.mjs", said its comment). The runtime error
+ * path needed it too, and a third copy is how a rule ends up fixed in one place
+ * and stale in the others — the defect class this repo keeps sweeping. The
+ * helper depends only on node builtins, so importing it costs this script
+ * nothing it did not already have.
  */
 async function findPython() {
-  for (const candidate of ['python3', 'python']) {
-    try {
-      const { stdout } = await execFileAsync(candidate, ['--version']);
-      // Sanity: must be Python 3.10+ for markitdown[all] to install.
-      // Match both `python --version` (writes to stdout on 3.4+) and the
-      // older `python -V` form that wrote to stderr on Python 2 — execFile
-      // only captures stdout here, but Python 3 always uses stdout for
-      // `--version`, so this is fine.
-      const m = stdout.match(/Python (\d+)\.(\d+)/);
-      if (m) {
-        const major = parseInt(m[1], 10);
-        const minor = parseInt(m[2], 10);
-        // Accept 3.10+ on the 3.x line OR any future 4.x+ (avoids rejecting
-        // Python 4.0 the day it ships just because `minor < 10`).
-        if ((major === 3 && minor >= 10) || major > 3) {
-          return { cmd: candidate, version: `${major}.${minor}` };
-        }
-        warn(`Found ${candidate} ${major}.${minor} — markitdown needs Python 3.10+.`);
-      }
-    } catch {
-      // Not on PATH — try the next candidate.
-    }
+  const r = await findPythonDetailed({ execFile: execFileAsync });
+  // The "found 3.9, needs 3.10+" line the local copy used to print. Losing it
+  // would have told a user with only Python 3.9 that NO Python was found —
+  // true of nothing, and it hides the one action that would fix their machine.
+  for (const { cmd, version } of r.rejected) {
+    warn(`Found ${cmd} ${version} — markitdown needs Python 3.10+.`);
   }
-  return null;
+  // The FULL result travels, not a `{cmd, version} | null` that collapses "too
+  // old" and "could not look" into the same nothing. `checked` is the field
+  // that separates "we asked and nothing suitable answered" from "we never got
+  // an answer at all", and the caller prints a different sentence for each.
+  return r;
 }
 
 /**
@@ -100,16 +97,42 @@ async function main() {
     IS_WIN ? 'Scripts' : 'bin',
     `markitdown${IS_WIN ? '.exe' : ''}`,
   );
-  if (fs.existsSync(venvMarker)) {
+  // "Present" must mean the same thing here as it does to the readiness probe
+  // and to the runtime — RUNNABLE, not merely existing. With `existsSync`, a
+  // venv left as a directory or a non-executable file by an interrupted install
+  // put the user in a loop with no exit: the probe said "run the installer",
+  // and the installer said "already present" and did nothing.
+  if (isRunnableFile(venvMarker, fs)) {
     log(`markitdown already present at ${venvMarker} — skipping reinstall.`);
+    return;
+  }
+  if (fs.existsSync(venvMarker)) {
+    // SAY IT AND STOP — do not pretend to repair it. Running `python -m venv`
+    // over the existing tree does not remove whatever is sitting at the marker,
+    // so pip then fails trying to write its entry point there and the next run
+    // repeats the whole thing: the same loop with no exit, one step further
+    // along. Deleting inside someone's `.venv` is also not this script's call.
+    warn(
+      `${venvMarker} exists but cannot be run (a directory, or missing its execute bit). ` +
+        `Re-running the installer will NOT fix that — it cannot replace what is already there. ` +
+        `Remove the broken venv and run this script again.\n` +
+        removalInstruction(VENV_DIR),
+    );
     return;
   }
 
   // 1. Find a usable Python.
   const py = await findPython();
-  if (!py) {
+  if (!py.ok) {
+    // WHICH problem, not just "no". A permission error or a hung shim means we
+    // never got to look — saying "no Python found on PATH" there states a fact
+    // about the user's machine that was never established.
+    const diagnosis = py.checked
+      ? 'No Python 3.10+ found on PATH.'
+      : 'Could NOT determine whether Python 3.10+ is available here (nothing answered '
+        + '— a permission error, a timeout, or a broken shim). If it IS installed, re-run this script.';
     warn(
-      'No Python 3.10+ found on PATH. The conversion tools (pdf_to_markdown, ' +
+      `${diagnosis} The conversion tools (pdf_to_markdown, ` +
         'docx_to_markdown, image_to_markdown, audio_to_markdown, …) will fail at ' +
         'call time until you either install Python and re-run ' +
         '`node scripts/install-markitdown.mjs`, or `pipx install "markitdown[all]"` ' +

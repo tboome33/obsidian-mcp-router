@@ -25,6 +25,9 @@ import { fileURLToPath } from 'node:url';
 import { Agent } from 'undici';
 
 import {
+  findPythonDetailed, isShellSafePath, MARKITDOWN_TOOLS, SKIP_ENV,
+} from '../helpers/conversion-readiness.mjs';
+import {
   expandHome,
   validateUrl,
   validateRepoUrl,
@@ -51,7 +54,10 @@ const execFileAsync = promisify(execFile);
 // Used to locate the bundled `.venv/bin/markitdown` and `node_modules/.bin/repomix`.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+// EXPORTED so `list_vaults` can probe the same `.venv` this module would run
+// from. A second `path.resolve(…, '..', '..')` computed from a different file's
+// depth is exactly how the two would come to disagree about where the router is.
+export const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 
 /**
  * Convert a local file or remote URL to markdown via `markitdown`.
@@ -196,6 +202,98 @@ export async function fromRepo({ repoUrl, branch, compress, projectRoot = DEFAUL
 }
 
 /**
+ * The message for "markitdown is not here", which CHECKS PYTHON FIRST.
+ *
+ * The previous wording named three fixes and left the reader to discover which
+ * one their machine could actually take. Those are different problems: with
+ * Python 3.10+ present the toolbox is one command away; without it, sending
+ * someone to `install-markitdown` points them at a script that will refuse.
+ * This is the one place where spawning is worth it — an error path, once, where
+ * the answer changes what the reader does next.
+ *
+ * The probe is best-effort by construction: if it cannot run, the message falls
+ * back to naming all three routes, which is exactly what it said before.
+ */
+export async function missingMarkitdownMessage(markitdownPath, deps = {}) {
+  // Read defensively: this runs ON the error path, and an options object that
+  // throws while being read must not replace a useful ENOENT explanation with
+  // an unrelated stack trace.
+  let projectRoot = DEFAULT_PROJECT_ROOT;
+  try {
+    if (deps && typeof deps.projectRoot === 'string' && deps.projectRoot) projectRoot = deps.projectRoot;
+  } catch { /* keep the default */ }
+  const script = path.join(projectRoot, 'scripts', 'install-markitdown.mjs');
+  // Same rule as `conversionHint`, and for the same reason: a path carrying
+  // `$`, a backtick or a quote does not just look wrong inside a double-quoted
+  // command — pasted into a shell it targets the wrong place, or runs something
+  // else entirely. Decline to emit it.
+  const install = isShellSafePath(script)
+    ? `node "${script}"`
+    : '`npm run install-markitdown` from the router install directory';
+  const head = `markitdown executable not found (looked up "${markitdownPath}"). `
+    + `${MARKITDOWN_TOOLS.length} conversion tools depend on it; the router never installs it on its own.`;
+  const alternatives = 'Alternatives: `pipx install "markitdown[all]"`, '
+    + 'or point MARKITDOWN_PATH at an existing install.';
+
+  // THE OPT-OUT IS HONOURED HERE TOO. `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1` means
+  // "I know, stop offering" — and until now every failed conversion call still
+  // spawned a Python probe and printed install commands at someone who had
+  // already answered. The one-offer rule was written into the two prose
+  // surfaces and silently skipped the one place that fires on EVERY call.
+  //
+  // The error still has to say what went wrong, so the tool name and the cause
+  // stay. What goes is the probe, the sales pitch, and the subprocess.
+  const env = (deps && deps.env) || process.env;
+  if (env[SKIP_ENV] === '1') {
+    return `${head} ${SKIP_ENV}=1 is set, so this is expected — unset it, or `
+      + `set MARKITDOWN_PATH, if you want these tools working.`;
+  }
+
+  // A FAILURE TO LOOK IS "WE DID NOT LOOK", never "there is no Python".
+  // Reading `deps.execFile` can itself throw (a hostile or lazily-computed
+  // options object), and the previous `catch { py = null }` sent that straight
+  // to the categorical "NO Python answered on PATH" branch — fabricating the
+  // exact fact this function exists to stop fabricating.
+  let py = { ok: false, rejected: [], checked: false };
+  try {
+    py = await findPythonDetailed({ execFile: deps.execFile || execFileAsync, timeoutMs: deps.timeoutMs })
+      || py;
+  } catch {
+    py = { ok: false, rejected: [], checked: false };
+  }
+
+  if (py?.ok) {
+    return `${head} Python ${py.version} IS available (\`${py.cmd}\`), so one command fixes this: `
+      + `${install}. ${alternatives}`;
+  }
+  if (py?.rejected?.length) {
+    // Python IS there, just too old — a different problem from "no Python",
+    // and one the reader can act on directly.
+    //
+    // A REJECTION DOES NOT MEAN WE SAW EVERYTHING. python3 reporting 3.9 while
+    // `python` returns EACCES is BOTH "too old" and "one we could not read";
+    // testing `rejected.length` first used to swallow the second half and send
+    // the reader to upgrade an interpreter that may not even be the one that
+    // would have worked.
+    const found = py.rejected.map((r) => `${r.cmd} ${r.version}`).join(', ');
+    const caveat = py.checked === false
+      ? ' (another interpreter could not be inspected, so there may be a newer one here)'
+      : '';
+    return `${head} Python is installed but too old (${found})${caveat}; markitdown needs 3.10+. `
+      + `Upgrade, then run ${install}. ${alternatives}`;
+  }
+  if (py && py.checked === false) {
+    // WE COULD NOT LOOK — a timeout, a permission error, a broken shim. Saying
+    // "no Python was found" here would be a fabricated fact about the machine,
+    // which is the failure this whole file exists to stop making.
+    return `${head} Whether Python 3.10+ is available could NOT be determined here. `
+      + `If it is installed, run ${install}. ${alternatives}`;
+  }
+  return `${head} NO Python 3.10+ answered on PATH, so install that first — `
+    + `${install} will refuse without it. ${alternatives}`;
+}
+
+/**
  * Internal: spawn `markitdown <filePath>` and return its stdout. Throws
  * descriptive errors for the two common failure modes (binary missing →
  * how-to-install hint; SPA returned raw HTML that markitdown couldn't
@@ -219,13 +317,7 @@ async function runMarkitdown(filePath, projectRoot) {
     }));
   } catch (e) {
     if (e?.code === 'ENOENT') {
-      throw new Error(
-        `markitdown executable not found (looked up "${markitdownPath}"). ` +
-          `Set MARKITDOWN_PATH to its absolute location, install it on PATH ` +
-          `(\`pipx install "markitdown[all]"\`), ` +
-          `or run setup in the project root: ` +
-          `\`node scripts/install-markitdown.mjs\`.`,
-      );
+      throw new Error(await missingMarkitdownMessage(markitdownPath));
     }
     throw e;
   }

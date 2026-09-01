@@ -10,8 +10,11 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 - **`list_vaults` now reports whether the conversion toolbox is provisioned.** The
   response carries a `conversionToolbox` block — `available`, `via`
-  (`bundled-venv` / `env-override` / `path`), `path`, `optedOut`, `toolsAffected`,
-  `toolsDegraded`, `hint`. Eight tools shell out to the `markitdown` Python CLI, which
+  (`bundled-venv` / `env-override` / `path`), `path`, `verified`, `optedOut`,
+  `toolsAffected`, `toolsDegraded`, `hint`. `verified: false` marks an answer taken on
+  the user's word rather than measured (a bare command name resolved through `PATH` at
+  call time, or a UNC path unsafe to stat on this hot path), so a surface can say
+  "configured" instead of overstating it as "ready". Eight tools shell out to the `markitdown` Python CLI, which
   is installed by an explicit opt-in and **never automatically** (there is no npm
   `postinstall` — a written decision: the router imposes a Python install on nobody).
   The cost of that refusal was a silence: nothing told a new installer those tools were
@@ -30,6 +33,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ### Changed
 
+- **BREAKING (runtime): the required Node floor moves from `20.18.1` to `20.19.0`.** `undici@7` still
+  only asks for 20.18.1; the extra patch buys the test suite Node's `--permission` flag, renamed from
+  `--experimental-permission` in 20.19.0 (and in 22.13.0 / 23.5.0). `tests/no-vault-disk.test.mjs`
+  proves the HTTP-only claim — *with the API key in the config, no tool needs the vault's disk* — by
+  running the tool surface with the vault's directory denied at the OS level. On 20.18.1 that flag was
+  refused, so the four OS-level suites skipped and the security property this project advertises went
+  **unmeasured on a CI leg that reported green**. The low matrix leg is now pinned to `20.19.0`
+  exactly: a floor nothing runs at is a claim, not a guarantee. If you are on 20.18.x, update Node;
+  nothing else about the runtime changed.
 - **The `markitdown` ENOENT message now says WHICH problem the reader has.** It checks
   for a Python interpreter first and distinguishes three answers, because they call for
   three different actions: Python 3.10+ is present (*one command fixes this*, with the
@@ -79,16 +91,111 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   a user invoking the documented slash command got the original silence. Both surfaces
   now carry every load-bearing rule, and the test checks each rule separately rather
   than searching for one keyword per file.
-
-- **BREAKING (runtime): the required Node floor moves from `20.18.1` to `20.19.0`.** `undici@7` still
-  only asks for 20.18.1; the extra patch buys the test suite Node's `--permission` flag, renamed from
-  `--experimental-permission` in 20.19.0 (and in 22.13.0 / 23.5.0). `tests/no-vault-disk.test.mjs`
-  proves the HTTP-only claim — *with the API key in the config, no tool needs the vault's disk* — by
-  running the tool surface with the vault's directory denied at the OS level. On 20.18.1 that flag was
-  refused, so the four OS-level suites skipped and the security property this project advertises went
-  **unmeasured on a CI leg that reported green**. The low matrix leg is now pinned to `20.19.0`
-  exactly: a floor nothing runs at is a claim, not a guarantee. If you are on 20.18.x, update Node;
-  nothing else about the runtime changed.
+- **`MARKITDOWN_PATH` is verified, not merely trusted.** Any non-empty value used to
+  report `available: true`, so `meta-status` printed a green tick for
+  `MARKITDOWN_PATH=Z:\gone\markitdown.exe` — a claim about the machine that nothing had
+  checked. The override still decides *which* path runs (that is trusted, and `path`
+  mirrors the runtime byte-for-byte); whether it runs is now measured, and a broken one
+  gets a hint that says to fix the variable rather than to install anything, which would
+  be advice for a problem the reader does not have.
+- **A generated command can no longer be reinterpreted by the shell it is pasted into.**
+  Rejecting a literal `"` was not enough: inside double quotes both PowerShell and POSIX
+  still expand `$…`, and POSIX runs backticks, so a directory legally named
+  `/tmp/router$(id)` produced a "hint" that would execute something else. Any path
+  containing `"`, `$`, a backtick or a control character is now declined outright in
+  favour of wording that names no path at all.
+- **`resolveMarkitdownPath` asks whether it can RUN the bundled venv binary**, not
+  merely whether something exists at that path. `existsSync` says yes to a directory and
+  to a mode-0644 file — both of which fail to spawn, *while a working `markitdown` sat
+  on `PATH` one tier below*. An interrupted `install-markitdown` is exactly how such a
+  `.venv` comes to exist. One definition (`isRunnableFile`) now answers that question
+  for the PATH tier, the venv tier and the runtime resolver alike.
+- **"No Python found" is again a measured fact, in both directions.** The first repair
+  overshot: routing every failed probe to "could not determine" fixed the permission-
+  error lie by telling a new one to the machine that genuinely has no Python. `ENOENT`
+  is the OS answering, not refusing to; only `EACCES`, a timeout or a broken shim leaves
+  the question open — and one such candidate now invalidates the whole conclusion, which
+  an interim `answered || conclusive` had quietly stopped doing.
+- **A bare-command override is no longer reported as broken.** `MARKITDOWN_PATH=markitdown`
+  is a working configuration — the runtime hands it to `execFile`, which searches `PATH`.
+  Verifying it as a filesystem path resolved it against the CWD and told a healthy install
+  that all eight tools would fail; a regression introduced by the verification that fixed
+  the false green tick. Bare names and UNC paths are now delegated rather than statted
+  (the latter because that stat can block the session-start call), and a new `verified`
+  field records which answers were measured and which were taken on the user's word.
+- **`.cmd` / `.bat` are rejected in every tier, not just the PATH scan.** `execFile`
+  cannot spawn them since the CVE-2024-27980 fix, and the PATH scan never met one because
+  it only tries `.exe`/`.com` — but the override and venv tiers took whatever the user
+  named, so `MARKITDOWN_PATH=…\markitdown.cmd` was reported ready for a call guaranteed
+  to fail with an untranslated spawn error.
+- **The loop with no exit is broken, by saying so rather than pretending to fix it.**
+  Both installers checked `existsSync` for "already present", so a venv left as a
+  directory by an interrupted install produced a dead end: the probe said run the
+  installer, the installer said "already present" and did nothing. They now ask the same
+  runnable-or-not question — and when the marker exists but cannot run, they say plainly
+  that re-running will *not* repair it and **name the directory to remove**, without
+  generating any command for it (see below). An earlier version of this entry claimed
+  they "rebuild"; they do not, because `python -m venv` cannot replace what already sits
+  at the marker, and deleting inside someone's venv is not an installer's call to make
+  unasked.
+- **The opt-out is honoured on the error path too.** `OBSIDIAN_ROUTER_SKIP_MARKITDOWN=1`
+  silenced the two prose surfaces while every failed conversion call still spawned a
+  Python probe and printed install commands at someone who had already answered. The
+  error now states what failed and that the opt-out explains it — no probe, no pitch.
+- **Windows stops reporting names it certainly cannot spawn.** The `.cmd` / `.bat`
+  exclusion was an extension check that ran after a `stat`, so it never applied to the
+  two tiers the probe deliberately does not stat — `MARKITDOWN_PATH=markitdown.cmd` came
+  back available. It is now a string rule covering every tier, and it also refuses an
+  explicit extension that is not an executable image (a `.ps1` is a script for a shell to
+  read; `execFile` answers `EFTYPE`). This is a **name** check, not an image check: a
+  text file named `markitdown.exe` still passes it and fails at spawn with
+  `ERROR_BAD_EXE_FORMAT`. Proving otherwise means reading the PE header, which this hot
+  path does not do — the same shape as the POSIX execute bit, which says a bit is set,
+  not that *this* process may use it.
+- **"Too old" no longer hides an interpreter that could not be inspected**, and an
+  interpreter that ran without revealing its version is treated as inconclusive rather
+  than as proof of absence — a test had pinned the wrong behaviour there.
+- **The installers no longer generate a deletion command at all.** The message telling a
+  user how to clear an unusable `.venv` first built `rm -rf "<dir>"` by interpolation,
+  skipping the safety check added earlier for the *install* command — in a recursive
+  delete, so a project root legally named `/srv/router$(touch X)` turned a diagnostic
+  into command execution. Adding that check and `-LiteralPath` was not enough either:
+  "can this be interpolated" is a different question from "is this a legitimate deletion
+  target", and the guarded version still accepted `/` (→ `rm -rf "/"`), `-rf` (parsed as
+  an option, the command having no `--`), `../.venv`, `~`, and a trailing backslash that
+  escapes the closing quote in bash. Making it genuinely safe needs target validation an
+  installer message has no business doing, so the generator is **gone**: the user is told
+  which directory is broken, with control characters escaped so a path cannot impersonate
+  an instruction, and removes it however they like. The invariant is now checkable at a
+  glance — this code never emits a deletion command — and a test enforces it against
+  every hostile input, including `null` and `/`.
+- **A bare `MARKITDOWN_PATH=markitdown` works again on Windows.** Closing the `.ps1`
+  hole had required the configured *string* to end in `.exe`, which rejected a
+  configuration `execFile` resolves perfectly well through `PATH` + `PATHEXT`. An
+  extension-less name is now delegated; an explicit `.cmd`/`.bat` is refused in every
+  tier including the ones the probe declines to stat; and the rule no longer trims, so a
+  padded `" markitdown.exe "` fails here exactly as it does at spawn.
+- **A Python version printed on stderr is read — but only when the interpreter is the one
+  saying it.** `python --version` writes to stderr on 2.x, so reading stdout alone
+  reported "could not determine" for a machine whose interpreter had answered plainly
+  that it was 2.7. Reading both streams then introduced its own false positive: an
+  unanchored search took `warning: install Python 3.12 for support` from a wrapper as the
+  answer, over the real `Python 2.7.18` on the next line. The match is now anchored to the
+  start of a line, which is where an interpreter states its own version.
+- **An extension-less path works on Windows again.** `execFile('C:\Tools\markitdown')`
+  succeeds when `markitdown.exe` is present — CreateProcess appends the extension — but
+  the probe statted the bare path, found nothing and called a working install broken.
+  (`where` in System32 is the counterexample that proved it.)
+- **`meta-setup` checks the opt-out before offering anything**, and `meta-status` has an
+  honest rendering for the probe's own unknown state (`via: null`, `hint: null`) instead
+  of reporting it as confirmed absence and quoting an empty hint.
+- **`%TEMP%` and `!NAME!` join `$` and backticks in the shell-safety refusal** — `cmd.exe`
+  expands both inside double quotes, and the reader's shell is not ours to choose.
+- **`meta-status` no longer calls a broken override "not installed".** When
+  `MARKITDOWN_PATH` points at something unusable it *masks* a working install underneath;
+  the diagnosis is to fix or unset one variable, not to install anything. Both surfaces
+  also now state that one decline ends the offer for the conversation, and that
+  `conversionToolbox` measures the machine rather than the answer the user gave.
 
 ## [0.85.0] — 2026-09-01 — W-C citations, chunk-level sourcing, and four tool descriptions that were wrong
 

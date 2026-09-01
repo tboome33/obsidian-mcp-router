@@ -16,6 +16,8 @@
  */
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
+import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
+import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 /**
  * Build the `defaultVaultStatus` summary for the list_vaults response.
  *
@@ -102,9 +104,29 @@ export async function listVaults(registry) {
   // mutation; let the convention layer surface the inconsistency).
   const defaultVaultStatus = buildDefaultVaultStatus(registry.defaultVault, results);
 
+  // Is the conversion toolbox provisioned? Eight tools go through markitdown
+  // (a ninth, youtube, only degrades), and it is installed by an explicit
+  // opt-in and never on its own — so a fresh install has them dormant with
+  // nothing saying so until the first call ENOENTs mid-task. This is the
+  // discovery call `meta-status` already makes, which is why the answer belongs
+  // here rather than in a new tool. The counts live in one place,
+  // `MARKITDOWN_TOOLS` / `MARKITDOWN_DEGRADED_TOOLS`, so prose like this cannot
+  // drift away from them again.
+  //
+  // FILESYSTEM ONLY, no subprocess: the default-vault health-check convention
+  // calls list_vaults at session start, and a Python probe on that path would
+  // be a real cost paid by everyone to inform the few. `probeConversionToolbox`
+  // never throws — a readiness check that could break discovery would be a far
+  // worse trade than not knowing.
+  const conversionToolbox = probeConversionToolbox({
+    projectRoot: PROJECT_ROOT,
+    env: process.env,
+  });
+
   return ({
     defaultVault: registry.defaultVault,
     defaultVaultStatus,
+    conversionToolbox,
     configPath: registry.configPath,
     vaults: results,
     disabled,
