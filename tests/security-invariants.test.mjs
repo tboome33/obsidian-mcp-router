@@ -4213,7 +4213,7 @@ describe('PIN: get_view_link canonicalises `note` before it crosses to the view-
 });
 
 describe('PIN: open_in_obsidian USES the canonical path, it does not merely compute it', () => {
-  test('five spellings of one note yield ONE identity and ONE signed link', async () => {
+  test('five spellings of one note yield ONE identity, in the result AND inside the signed token', async () => {
     // The wire guard one describe up cannot see this. It drives
     // `../../../active/`, which `canonicalVaultPath` REFUSES \u2014 so a tool that
     // calls the guard and then throws the result away still refuses the hostile
@@ -4277,8 +4277,42 @@ describe('PIN: open_in_obsidian USES the canonical path, it does not merely comp
 
     assert.deepEqual([...identities], ['wiki/note.md'],
       `one note came back under ${identities.size} identities: ${[...identities].join(', ')}`);
-    assert.equal(links.size, 1,
-      `one note was signed into ${links.size} distinct 30-day replayable links`);
+
+    // WHY NOT `links.size === 1`. That is what this asserted, and it is not a
+    // property of the code: the token bakes `exp = floor(Date.now()/1000) + ttl`,
+    // taken independently per call. Five calls, each with its own HTTP
+    // round-trip, straddle a one-second boundary whenever the machine is slow
+    // enough — and then two legitimately-correct tokens differ in `exp` alone.
+    // It passed for months on fast runners and failed on Windows node 20 the
+    // first time the loop crossed a second: `one note was signed into 2
+    // distinct 30-day replayable links`, which reads like the canonicalisation
+    // defect this test exists to catch, and was not.
+    //
+    // So assert the thing the defect actually moved: the IDENTITY inside the
+    // signed payload. Then assert that `exp` is the ONLY field allowed to vary,
+    // which keeps the test as strong as the byte-comparison was without
+    // borrowing the clock's nondeterminism.
+    const claimsOf = (link) => {
+      const token = new URL(link).pathname.split('/').filter(Boolean).pop();
+      const [payload] = token.split('.');
+      return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    };
+    const claims = [...links].map(claimsOf);
+    assert.ok(claims.length >= 1, 'no signed link was produced at all');
+    assert.deepEqual(
+      [...new Set(claims.map((c) => JSON.stringify({ v: c.v, n: c.n })))],
+      [JSON.stringify({ v: 'v', n: 'wiki/note.md' })],
+      `the signed identity differs across spellings: ${JSON.stringify(claims)}`,
+    );
+    for (const c of claims) {
+      assert.deepEqual(Object.keys(c), ['v', 'n', 'exp'],
+        'the payload gained a field — decide whether it is identity or metadata before ignoring it here');
+    }
+    // And the residual variation must be nothing but a clock tick: a couple of
+    // seconds across five local round-trips, not a different claim.
+    const exps = claims.map((c) => c.exp);
+    assert.ok(Math.max(...exps) - Math.min(...exps) <= 60,
+      `exp spread ${Math.max(...exps) - Math.min(...exps)}s is too wide to be a clock tick`);
   });
 });
 
