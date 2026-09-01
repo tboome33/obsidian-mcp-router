@@ -4,6 +4,93 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.84.0] — 2026-09-01 — A3 + C4: where a result came from, and what the search left out
+
+Items **A3** (agentic-first guardrails) and **C4** (default folder exclusion) of the
+large-codebases borrowings — the rest of the "honesty about the semantic tier" trio
+that A1 opened. A1 said whether a result was *current*; these say where it *came
+from* and what was *left out*.
+
+### Added — A3
+
+- **`source` on every item of `get_wiki_context_pack`**: `index` (ranked out of
+  `wiki-meta/catalog.md`), `graph` (a wikilink from a page that was actually read),
+  `semantic` (a Smart Connections chunk). The envelope declares the closed
+  vocabulary in `provenance`, naming which half is authoritative.
+- **`answer-relies-on-semantic-only`** — raised when the navigational half comes
+  back empty and semantic chunks did not. A **placeholder does not count as an
+  anchor**: a catalogue entry whose page could not be read names a gap, it carries
+  no content, so it cannot silence the guard.
+- **`skills/wiki-query/SKILL.md`** now forbids answering out of semantic chunks
+  alone, requires opening a page whose freshness is doubtful, and cites at the
+  section (`breadcrumbs`) rather than the page.
+
+### Added — C4
+
+- **A default `excludeFolders`** on `search_smart` and `get_wiki_context_pack`:
+  `['wiki-meta/Sessions']`. An explicit array replaces it; **`[]` means "exclude
+  nothing"** and is deliberately distinct from omitting the argument;
+  `OBSIDIAN_ROUTER_DEFAULT_EXCLUDE_FOLDERS` overrides it per host.
+- **`folderExclusion`** on every response: the folders, `chosenBy`
+  (`caller` | `default`), `excludedHits`, and `shortPage` when the page came back
+  under `limit` because of the cut.
+
+### The default was measured, and the roadmap's guess was wrong
+
+The roadmap proposed `.trash` and `Templates`. **Neither exists on any of the 23
+vaults** — both would have shipped as decoration. Three other plausible candidates
+(`wiki-meta/graph`, `wiki-meta/digests`, `wiki-meta/presence`) hold nothing the index
+carries: measured contribution, zero pages on zero vaults. They are not shipped
+either, because a default that excludes nothing is worse than no default — it reads
+as protection.
+
+What the sweep did find is one folder, and it is large: **`wiki-meta/Sessions` is
+1212 of the 2915 indexed pages across the fleet (41.6%)**, and 498 of 803 on the
+router's own vault. Raw chronological logs by construction, which no navigational
+path visits. Because the cut is that big it is never applied silently.
+
+### Verification — one review round on A3, one on C4, 13 defects
+
+- **A3 (5 defects).** Two were false claims made by *documentation*: the skill told
+  the reader to apply the 0.55 cosine threshold to results that may have silently
+  fallen back to BM25, and asserted that each hit carries a `clickToOpenUrl` (it
+  does not — the URL is in a top-level `clickToOpenLinks` map). Two were real code
+  defects: A1's freshness rows were keyed by the *canonical* path while the join
+  held the raw one, so a chunk whose path needed normalising lost its annotation;
+  and a `[[link]]` inside a fenced block or an HTML comment was emitted as an
+  authoritative `graph` neighbour — a long-standing looseness that A3's label
+  turned into a false claim.
+- **C4 (8 defects).** The worst was structural: a **constant** over-fetch margin
+  cannot fill a page when the filter removes 41.6% of the corpus. With `limit: 5`
+  and eleven excluded hits at the top, four results came back while eligible
+  matches sat just past the window. The margin now scales, and — since no backend
+  here takes an offset — a page that is still short **says so** rather than looking
+  full. Also: `get_wiki_context_pack` had no over-fetch at all and never applied
+  the archive filter, so the two tools answered differently about the same vault;
+  a hit shaped `{filename: …}` (a shape the click-to-open walker already
+  recognises) slipped past the exclusion entirely; and the code-fence mask
+  understood only exactly three backticks, so a four-backtick fence and a
+  ``double``-backtick span still leaked example links.
+
+Suite **4311 → 4356**; `validate` and `gate` clean. One pre-existing test that
+hard-coded the archive filter's flat `+10` margin was re-anchored to the exported
+constant rather than to a number.
+
+### Deferred
+
+- **The over-fetch is a mitigation, not a guarantee.** Refilling a short page needs
+  either an offset on the backend or an exclusion-aware bridge; neither exists.
+  The response reports the shortfall instead of hiding it.
+- **`excludedHits` counts what THIS filter removed** from what the backend returned
+  — not the cost of the exclusion overall. A bridge that honoured the forwarded
+  hint and dropped the hits itself leaves it at 0, and a hit the archive filter
+  would also have removed is still counted here. Named in the field's own docs
+  rather than left to be inferred.
+- **The two tools still differ on the BM25 fallback.** `search_smart` degrades to
+  the local index when the semantic tier cannot serve; `get_wiki_context_pack`
+  calls the REST helper directly and does not. Making the pack share the tool's
+  tier logic is a real change to its error contract, not a tidy-up.
+
 ## [0.83.0] — 2026-09-01 — A1: a semantic hit now says whether its page has moved on
 
 Item **A1** of the large-codebases borrowings (`claude-code-large-codebases-roadmap`,

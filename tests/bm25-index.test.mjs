@@ -42,6 +42,7 @@ import {
 } from '../src/helpers/local-search.mjs';
 import { buildIndexForVault } from '../src/tools/build-search-index.mjs';
 import { searchSmartTool } from '../src/tools/search-smart.mjs';
+import { MAX_OVERFETCH } from '../src/helpers/search-exclusions.mjs';
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -578,7 +579,14 @@ describe('C4 — fallback doctrine (never mixed)', () => {
       searchSmart: async (_v, _q, f) => { sentLimit = f.limit; return { results: [] }; },
       ...localDeps,
     });
-    assert.ok(sentLimit <= 100 + 10, `forwarded limit ${sentLimit} must be clamped`);
+    // Bound taken from the EXPORTED constant rather than written out: this
+    // assertion used to hard-code `100 + 10`, the archive filter's flat margin,
+    // and broke when the C4 over-fetch started scaling with the limit. The
+    // intent — an absurd limit never reaches a backend — is what is pinned.
+    assert.ok(
+      sentLimit <= MAX_OVERFETCH,
+      `forwarded limit ${sentLimit} must be clamped to at most ${MAX_OVERFETCH}`,
+    );
   });
 
   test('a crash message that merely QUOTES a Smart-Connections-ish page title is NOT a gap', async () => {

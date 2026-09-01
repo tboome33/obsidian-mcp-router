@@ -1137,7 +1137,10 @@
         "search",
         "search_smart"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "build_search_index",
+        "get_wiki_context_pack"
+      ],
       "writeMode": "read-only",
       "requires": {
         "shell": false,

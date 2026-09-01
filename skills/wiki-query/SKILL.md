@@ -84,7 +84,21 @@ If still insufficient → tier 4.
 mcp__obsidian-router__search_smart({ vault, query: "<question>", limit: 8 })
 ```
 
-For each result above score 0.55 that you haven't already read, fetch the page and incorporate. Bridge plugin must be active in the vault for this to work — if you get a 503 with a "missing bridge" hint, fall back to standard `mcp__obsidian-router__search` (keyword search) with `vault: <name>`.
+**Read `tier` in the response BEFORE reading the scores.** The default is `tier: "auto"`, and when the semantic tier cannot serve this vault the tool *silently and deliberately* answers from the local BM25 index instead — `tier: "local-bm25"`, `scoreScale: "bm25"`, plus a `fallback` block saying so. BM25 scores are **not** cosine scores and are not on the same scale, so:
+
+- `tier: "semantic"` → the 0.55 cut below applies, and a `freshness` block accompanies the hits **when there are hits and the vault's disk is on this machine** (a remote vault answers `checkable: false`; an empty result set carries none, because there is nothing to assess).
+- `tier: "local-bm25"` → **do not apply 0.55**; rank by relative order within the response, and expect no `freshness` block (the local tier carries its own `index.freshness`, which means something else). If the index is missing, the tool refuses with a message naming `build_search_index` — that refusal is the actionable answer, not an error to work around.
+
+For each result above score 0.55 (semantic tier only) that you haven't already read, fetch the page and incorporate. If the tool *throws* rather than falling back — an auth failure, a timeout, an unreachable vault — that is a real failure: report it, and use `mcp__obsidian-router__search` (keyword) if you still need coverage.
+
+**The semantic tier is an AUGMENTATION, and this is a rule, not a preference.** Tiers 1-3 (hot → catalog → drill) are *navigation*: they answer from the vault's own map, and they are authoritative. Tier 4 answers by similarity of meaning, which is genuinely useful on notes and genuinely fallible. Two consequences you must honour:
+
+- **Never let a semantic chunk be the sole support for a factual claim.** Fetch the page it names and read it. A cosine score is a reason to *look*, not evidence of what a page says. If you cannot open the page, say the claim is unverified rather than citing the chunk.
+- **Read the `freshness` block the response carries** (v0.83.0+). Smart Connections embeds a note on its own schedule, so a hit whose page reads `changed` or `touched` reflects the *index*, not the page as it is now — open it before quoting it. `page-missing` means the page is gone entirely: do not cite it. A `checkable: false` block means the check could not run (typically a vault whose disk this machine does not have) — that is **not** evidence the results are current.
+
+**Cite at the section, not just the page.** A semantic hit carries `breadcrumbs` — the heading path of the chunk inside its page. Use it: *"per [[page]] § Seuils"* is checkable in seconds; *"per [[page]]"* on a 400-line page is not. Keep the page-level citation format below, and add the section whenever the claim came from a chunk.
+
+The clickable URL is **not on the hit**: `search_smart` returns one `clickToOpenLinks` map at the TOP LEVEL of the response, keyed by path (`clickToOpenLinks["wiki/a.md"]`). Look the path up there. A hit with no `path` at all (some bridge payloads carry text only) cannot be opened or verified — say so rather than citing it.
 
 ### Step 5: synthesize (with confidence-aware citations)
 
@@ -127,6 +141,8 @@ If the user is in deep mode AND the synthesized answer is non-trivial:
 - Don't read all 4 tiers when tier 1 or 2 sufficed. The whole point is cheap-first.
 - Don't pretend the wiki has more than it does. Always cite, and admit gaps.
 - Don't use semantic search before checking the index — the index is faster and the user probably named pages on purpose.
+- **Don't answer out of semantic chunks alone.** If tiers 1-3 produced nothing and only tier 4 has content, say the answer rests on similarity with no navigational anchor, and open the pages before claiming anything about them. (`get_wiki_context_pack` raises `answer-relies-on-semantic-only` for exactly this shape.)
+- **Don't cite a chunk whose page reads `changed`, `touched` or `page-missing` without opening the page.** The chunk describes the index; the page is the fact.
 - Don't fall back to general knowledge silently. If the wiki lacks coverage, say so and offer to ingest.
 - Don't file every answer back. Only do tier-6 in deep mode and only when the answer adds knowledge to the wiki (not when it's a trivial lookup).
 

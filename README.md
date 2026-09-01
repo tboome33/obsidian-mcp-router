@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.83.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.84.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -967,6 +967,39 @@ only on a vault whose disk this machine has: a remote vault answers
 The block always says whether it looked, because "no warning" and "nothing to
 check" are different facts.
 
+#### Session logs are excluded by default
+
+Omit `excludeFolders` and semantic search leaves out `wiki-meta/Sessions` — the
+chronological session journals the `log-discipline` convention parks there.
+That folder is **41.6% of the indexed pages across this fleet** (1212 of 2915;
+498 of 803 on the router's own vault), it is raw log by construction, and no
+navigational path (hot → catalog → page) ever visits it.
+
+The default was measured, not guessed: `.trash` and `Templates` exist on none of
+the 23 vaults, and `wiki-meta/graph`, `wiki-meta/digests` and
+`wiki-meta/presence` hold nothing the index carries — so none of them ships. A
+default that excludes nothing is worse than no default: it reads as protection.
+
+Because the cut is large it is never silent. Every response carries
+`folderExclusion` with the folders, `chosenBy` (`caller` or `default`) and
+`excludedHits`; if the page still comes back short, `shortPage` says so rather
+than letting it look full. Pass `excludeFolders` explicitly to replace the
+default, `excludeFolders: []` to exclude nothing, or set
+`OBSIDIAN_ROUTER_DEFAULT_EXCLUDE_FOLDERS` (comma-separated; empty disables it)
+for a vault whose conventions differ. The BM25 tier applies the same exclusion,
+so a fallback never surfaces what the tier it replaced was hiding.
+
+#### `get_wiki_context_pack` — provenance on every item
+
+Each entry of the pack now carries `source`: `index` (ranked out of
+`wiki-meta/catalog.md`), `graph` (a wikilink from a page that was read), or
+`semantic` (a Smart Connections chunk). The envelope declares the closed
+vocabulary in `provenance`, naming which half is authoritative — navigation
+is primary, the semantic tier is augmentation. When the navigational half comes
+back **empty** while semantic chunks did not, the pack raises
+`answer-relies-on-semantic-only`: that answer has no navigational anchor and
+must not be the sole support for a factual claim.
+
 ### Write
 
 ```jsonc
@@ -1072,7 +1105,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.83.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.84.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1870,6 +1903,41 @@ fonctionne que sur un vault dont cette machine a le disque : un vault distant
 répond `checkable: false` avec une `reason` et **aucun avertissement** — jamais
 de faux positif. Le bloc dit toujours s'il a regardé, parce que « pas
 d'avertissement » et « rien à vérifier » sont deux faits différents.
+
+##### Les journaux de session sont exclus par défaut
+
+Sans `excludeFolders`, la recherche sémantique laisse de côté
+`wiki-meta/Sessions` — les journaux chronologiques que la convention
+`log-discipline` range là. Ce dossier représente **41,6 % des pages indexées du
+parc** (1212 sur 2915 ; 498 sur 803 pour le vault du routeur lui-même), c'est du
+log brut par construction, et aucun chemin de navigation (hot → catalog → page)
+n'y passe.
+
+Le défaut est **mesuré, pas deviné** : `.trash` et `Templates` n'existent sur
+aucun des 23 vaults, et `wiki-meta/graph`, `wiki-meta/digests`,
+`wiki-meta/presence` ne portent rien que l'index contienne — aucun des quatre
+n'est livré. Un défaut qui n'exclut rien est pire que pas de défaut : il se lit
+comme une protection.
+
+Parce que la coupe est grosse, elle n'est jamais silencieuse. Chaque réponse
+porte `folderExclusion` — les dossiers, `chosenBy` (`caller` ou `default`),
+`excludedHits` — et si la page revient quand même courte, `shortPage` le dit au
+lieu de la laisser paraître pleine. Passez `excludeFolders` explicitement pour
+remplacer le défaut, `excludeFolders: []` pour n'exclure rien, ou réglez
+`OBSIDIAN_ROUTER_DEFAULT_EXCLUDE_FOLDERS` (séparé par virgules ; vide = désactivé)
+pour un vault dont les conventions diffèrent. Le tier BM25 applique la même
+exclusion : un repli ne fait jamais remonter ce que le tier remplacé cachait.
+
+##### `get_wiki_context_pack` — la provenance sur chaque élément
+
+Chaque entrée du pack porte désormais `source` : `index` (classée depuis
+`wiki-meta/catalog.md`), `graph` (un wikilink d'une page effectivement lue) ou
+`semantic` (un chunk Smart Connections). L'enveloppe déclare le vocabulaire
+fermé dans `provenance` et dit quelle moitié fait autorité — la navigation est
+primaire, le sémantique est une augmentation. Quand la moitié navigationnelle
+revient **vide** alors que des chunks sémantiques existent, le pack lève
+`answer-relies-on-semantic-only` : cette réponse n'a aucun ancrage de
+navigation et ne doit pas être l'unique support d'une affirmation factuelle.
 
 #### Écriture
 

@@ -161,9 +161,16 @@ export async function searchLocalIndex(vault, deps, params = {}) {
   // Filtering happens DURING ranking (see queryIndex): post-filtering a capped
   // page could hand back nothing while eligible matches sat just past the cap.
   let archivesExcluded = 0;
+  // COUNTED, not merely applied. The folder cut is the caller's or the C4
+  // default's, and either way a response that narrows the corpus without saying
+  // by how much reads as a complete answer over a smaller vault.
+  let folderExcluded = 0;
   const keep = (chunk) => {
     if (includeFolders && !underAny(chunk.path, includeFolders)) return false;
-    if (denyFolders && underAny(chunk.path, denyFolders)) return false;
+    if (denyFolders && underAny(chunk.path, denyFolders)) {
+      folderExcluded += 1;
+      return false;
+    }
     if (!includeArchives && isArchivePath(chunk.path)) {
       archivesExcluded += 1;
       return false;
@@ -180,6 +187,7 @@ export async function searchLocalIndex(vault, deps, params = {}) {
     scoreScale: 'bm25',
     results,
     ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
+    ...(folderExcluded > 0 ? { folderExcluded } : {}),
     matched: scored,
     queryTokens: tokens,
     // A truncated index does NOT cover the whole vault, so this tier cannot

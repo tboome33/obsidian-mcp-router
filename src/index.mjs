@@ -508,7 +508,13 @@ const TOOLS = [
         excludeFolders: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Exclude chunks whose path starts with one of these folders (e.g. [".trash", "Templates"]).',
+          description:
+            'Exclude chunks whose path starts with one of these folders. OMIT to apply the measured '
+            + 'default `["wiki-meta/Sessions"]` — chronological session logs, 41.6% of the indexed '
+            + 'pages across this fleet, and never what a conceptual query is looking for. Pass an '
+            + 'explicit array to replace the default, or `[]` to exclude nothing. Whatever applies '
+            + 'is reported in `folderExclusion` together with the number of hits it removed, so the '
+            + 'cut is never silent.',
         },
         limit: {
           type: 'number',

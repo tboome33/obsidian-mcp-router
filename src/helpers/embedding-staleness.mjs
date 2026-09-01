@@ -462,6 +462,8 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
   // wikilinks — rather than a second hand-rolled list that would drift from it.
   // A refused path is COUNTED, never silently dropped.
   const paths = [];
+  /** canonical path → every original spelling that produced it */
+  const originalOf = new Map();
   let refusedPaths = 0;
   for (const p of Array.isArray(pagePaths) ? pagePaths : []) {
     // A non-string or blank entry is a REFUSAL like any other. Dropping it
@@ -486,7 +488,15 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
       const canonicalFragment = fragment
         ? `#${canonicalVaultPath(fragment.slice(1), 'semantic hit fragment')}`
         : '';
-      paths.push(canonical + canonicalFragment);
+      // BOTH SPELLINGS ARE KEPT. The canonical one is what everything downstream
+      // reasons about; the ORIGINAL is what the caller will hold when it tries to
+      // join its own results back onto these rows. Recording only the canonical
+      // one silently dropped the annotation from any hit whose path needed
+      // normalising — the caller looked up `wiki//a.md` and found nothing.
+      const canonicalPath = canonical + canonicalFragment;
+      paths.push(canonicalPath);
+      if (!originalOf.has(canonicalPath)) originalOf.set(canonicalPath, new Set());
+      originalOf.get(canonicalPath).add(p);
     } catch {
       refusedPaths += 1;
     }
@@ -548,7 +558,7 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
     if (byPage.has(pageId)) {
       // The row already exists; record that THIS spelling also led to it, so a
       // caller can join its own results back onto the row it belongs to.
-      byPage.get(pageId).requested.push(pagePath);
+      for (const o of originalOf.get(pagePath) || [pagePath]) byPage.get(pageId).requested.push(o);
       continue;
     }
 
@@ -665,7 +675,7 @@ export function assessEmbeddingFreshness(vault, pagePaths, deps = {}) {
       // its own results back onto these rows cannot do it by string equality:
       // the row is keyed by the resolved PAGE, while a hit may carry a block
       // anchor or a non-canonical spelling.
-      requested: [pagePath],
+      requested: [...(originalOf.get(pagePath) || [pagePath])],
       state,
       ...(reason ? { reason } : {}),
       indexedMtime,

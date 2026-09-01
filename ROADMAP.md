@@ -2,6 +2,56 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.84.0 — A3 + C4: where a result came from, and what the search left out (shipped 2026-09-01)
+
+Items two and three of the §1 quick-wins lot, closing the "honesty about the
+semantic tier" trio A1 opened. A1 said whether a result was *current*; A3 says where
+it *came from*, C4 says what was *left out*.
+
+- **Provenance survives flattening (A3).** The envelope already ordered navigation
+  before augmentation, but ordering is a convention a consumer can ignore — and many
+  flatten the pack into one score-sorted list, at which point a middling semantic
+  chunk reads exactly like a page reached by navigating the catalogue. Every item
+  now carries `source`, and the vocabulary is declared rather than inferred from
+  whatever happened to appear. `hot` and `plain-search` are deliberately NOT
+  declared: they are tiers of the `wiki-query` skill, and listing values nothing
+  emits teaches a consumer to branch on cases that never arrive.
+- **An answer with no navigational anchor says so (A3).** And a placeholder is not
+  an anchor: a catalogue entry whose page could not be read names a gap and carries
+  no content, so it cannot silence the guard.
+- **The C4 default is measured, and the roadmap's guess was wrong.** `.trash` and
+  `Templates` exist on none of the 23 vaults; `wiki-meta/graph|digests|presence`
+  hold nothing the index carries. Shipping any of them would have been decoration —
+  and a default that excludes nothing is worse than none, because it reads as
+  protection. What the sweep found instead is `wiki-meta/Sessions`: **41.6% of the
+  indexed pages fleet-wide**, raw chronological logs no navigational path visits.
+- **A cut that large is never silent, and `[]` really opts out.** `folderExclusion`
+  names the folders, who chose them and what they cost; an explicit empty array is
+  a legitimate answer meaning "nothing", distinct from omitting the argument.
+- **Enforced router-side.** Whether Smart Connections honours `excludeFolders` could
+  not be verified here (the plugin was offline), and a default whose effect depends
+  on an unverified remote behaviour is not a default. The hint is still forwarded.
+
+### Verification
+
+Two review rounds, 13 defects. **Two of the five A3 findings were false claims made
+by documentation, not by code** — the skill told the reader to apply a cosine
+threshold to results that may have silently fallen back to BM25, and promised a
+per-hit field that lives in a top-level map. The worst C4 finding was structural: a
+*constant* over-fetch margin cannot fill a page when the filter removes 41.6% of the
+corpus (measured: `limit: 5` returned four results with eligible matches just past
+the window). The margin now scales, and a page that is still short says so.
+
+### Deferred
+
+- **The over-fetch is a mitigation, not a guarantee** — refilling needs an offset
+  the backends do not offer. Reported rather than hidden.
+- **`excludedHits` counts what this filter removed**, not the exclusion's total
+  cost; a bridge that honoured the hint leaves it at 0.
+- **`get_wiki_context_pack` still has no BM25 fallback** while `search_smart` does.
+  Sharing the tier logic would change the pack's error contract — a decision, not a
+  tidy-up.
+
 ## ✅ v0.83.0 — A1: the semantic tier stops implying its results are current (shipped 2026-09-01)
 
 First item of the §1 quick-wins lot from the borrowings register — `A1` of

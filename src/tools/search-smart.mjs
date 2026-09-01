@@ -44,10 +44,12 @@ import {
 } from '../helpers/local-search.mjs';
 import { validateQuery, clampLimit } from '../helpers/bm25-index.mjs';
 import { freshnessFor, freshnessNote } from '../helpers/embedding-staleness.mjs';
-
-/** Overfetch margin: enough that a handful of archive chunks in the top of
- * the ranking cannot empty the page, small enough to stay cheap. */
-const ARCHIVE_OVERFETCH = 10;
+import {
+  resolveExcludeFolders,
+  partitionByFolders,
+  exclusionReport,
+  overfetchLimit,
+} from '../helpers/search-exclusions.mjs';
 
 /** Requested tier. `auto` = semantic, degrading to local when it cannot serve. */
 const TIER_MODES = new Set(['auto', 'semantic', 'local']);
@@ -98,22 +100,43 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   // tests drive both tiers without touching the network.
   const localDeps = { getFileContent: _deps.getFileContent || getFileContent };
 
+  // C4 — the effective exclusion, resolved ONCE and used by both tiers. An
+  // explicit `excludeFolders` (including `[]`, which means "nothing") wins over
+  // the measured default; see helpers/search-exclusions.mjs for why the default
+  // is one folder and not the four the roadmap sketched.
+  const exclusion = resolveExcludeFolders(excludeFolders, _deps.env);
+
   const filter = {};
   if (Array.isArray(folders) && folders.length) filter.folders = folders;
-  if (Array.isArray(excludeFolders) && excludeFolders.length) {
-    filter.excludeFolders = excludeFolders;
-  }
+  if (exclusion.folders.length) filter.excludeFolders = [...exclusion.folders];
   filter.limit = boundedLimit;
 
-  // The filter reported in the response keeps the caller's limit; the one
-  // sent to Smart Connections overfetches so dropping archive hits does not
-  // return fewer results than asked for.
-  const scFilter = includeArchives ? filter : { ...filter, limit: boundedLimit + ARCHIVE_OVERFETCH };
+  // The filter REPORTED in the response keeps the caller's limit; the one sent
+  // to the bridge over-fetches so a router-side cut does not shrink the page.
+  // Overfetch when ANY router-side cut may follow — archives, or the C4 folder
+  // exclusion. Filtering a page that was already trimmed to `limit` hands back
+  // fewer results than were asked for while matches sit just past the cut.
+  const fetchLimit = overfetchLimit(boundedLimit, {
+    excluding: exclusion.folders.length > 0,
+    archives: !includeArchives,
+  });
+  const scFilter = fetchLimit === boundedLimit ? filter : { ...filter, limit: fetchLimit };
 
   /** The semantic tier, unchanged from v0.8.8 behaviour. */
   const searchSemantic = async (vault) => {
     const raw = await deps.searchSmart(vault, query, scFilter);
-    const { data, archivesExcluded } = filterArchiveResults(raw, {
+    // C4 APPLIED ROUTER-SIDE, BEFORE the archive trim. `excludeFolders` is also
+    // forwarded to the bridge above, but the guarantee cannot rest on that:
+    // whether Smart Connections honours it is unverified here, and a default
+    // whose effect depends on an unverified remote behaviour is not a default.
+    let folderExcluded = 0;
+    let payload = raw;
+    if (exclusion.folders.length && Array.isArray(raw?.results)) {
+      const { kept, excluded } = partitionByFolders(raw.results, exclusion.folders);
+      folderExcluded = excluded;
+      if (excluded > 0) payload = { ...raw, results: kept };
+    }
+    const { data, archivesExcluded } = filterArchiveResults(payload, {
       includeArchives,
       limit: filter.limit,
     });
@@ -135,26 +158,47 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
     const paths = Array.isArray(data?.results) ? data.results.map((r) => r?.path) : [];
     const freshness = freshnessFor(vault, paths, { fs: _deps.fs });
     const note = freshnessNote(freshness);
+    const report = exclusionReport({
+      ...exclusion,
+      excluded: folderExcluded,
+      // A SHORT PAGE THAT ADMITS IT beats a full-looking one. The over-fetch
+      // makes the common case whole; it cannot guarantee it, and no backend
+      // here takes an offset to refill from.
+      shortPage: folderExcluded > 0 && (data?.results?.length ?? 0) < boundedLimit,
+    });
     return {
       tier: TIER_SEMANTIC,
       scoreScale: 'cosine',
       ...data,
       ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
+      ...(report ? { folderExclusion: report } : {}),
       ...(freshness ? { freshness: note ? { ...freshness, note } : freshness } : {}),
       ...collectClickToOpenLinks(vault, data),
     };
   };
 
-  /** The local deterministic tier (C4). */
+  /** The local deterministic BM25 tier. */
   const searchLocal = async (vault) => {
     const local = await searchLocalIndex(vault, localDeps, {
       query,
       limit: boundedLimit,
       folders,
-      excludeFolders,
+      // The SAME effective exclusion as the semantic tier. A fallback that
+      // surfaces what the tier it replaced was hiding would make the degrade
+      // visible as a content change rather than as a change of engine.
+      excludeFolders: exclusion.folders,
       includeArchives,
     });
-    return { ...local, ...collectClickToOpenLinks(vault, local.results) };
+    const report = exclusionReport({
+      ...exclusion,
+      excluded: local.folderExcluded ?? 0,
+      shortPage: (local.folderExcluded ?? 0) > 0 && (local.results?.length ?? 0) < boundedLimit,
+    });
+    return {
+      ...local,
+      ...(report ? { folderExclusion: report } : {}),
+      ...collectClickToOpenLinks(vault, local.results),
+    };
   };
 
   /**

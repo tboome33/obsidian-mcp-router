@@ -160,8 +160,11 @@ describe('search_smart — the freshness block', () => {
 });
 
 describe('get_wiki_context_pack — the freshness warning', () => {
+  // The catalogue entry MATCHES the query on purpose: these tests are about
+  // freshness, and a pack with no navigational anchor legitimately raises A3's
+  // `answer-relies-on-semantic-only`, which would be noise here.
   const packDeps = (extra = {}) => ({
-    getFileContent: async () => '# Catalog\n\n- [[alpha]] — the alpha page\n',
+    getFileContent: async () => '# Catalog\n\n- [[plugins]] — the plugins page\n',
     getNote: async () => ({ content: 'body about plugins', frontmatter: {} }),
     searchSmart: async () => ({ results: [{ path: 'wiki/a.md', text: 'chunk', score: 0.8 }] }),
     ...extra,
@@ -251,6 +254,21 @@ describe('get_wiki_context_pack — the freshness warning', () => {
     }));
     assert.ok(out.warnings.includes('semantic-results-possibly-stale'));
     assert.equal(out.semanticChunks[0].freshness, 'changed', 'the chunk that caused the warning carries it');
+  });
+
+  test('a chunk whose path needed NORMALISING still gets its annotation', async () => {
+    // Found in the A3 review: the assessor canonicalises `wiki//a.md` to
+    // `wiki/a.md` and keyed its row by the canonical spelling, so the join —
+    // which holds the raw one — found nothing. The warning fired while the
+    // chunk that caused it carried no `freshness` at all.
+    const out = await getWikiContextPack(registryFor(LOCAL), { query: 'plugins' }, packDeps({
+      searchSmart: async () => ({ results: [{ path: 'wiki//a.md', text: 'c', score: 0.8 }] }),
+      fs: fsFor({
+        'wiki/a.md': { indexed: { size: 100 }, note: { mtimeMs: INDEXED_AT + 86_400_000, size: 900 } },
+      }),
+    }));
+    assert.ok(out.warnings.includes('semantic-results-possibly-stale'));
+    assert.equal(out.semanticChunks[0].freshness, 'changed');
   });
 
   test('a well-formed EMPTY result is NOT flagged — it is a real answer', async () => {

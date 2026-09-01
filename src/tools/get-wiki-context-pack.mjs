@@ -37,6 +37,13 @@ import { scaffoldCandidates, shouldTryLegacyScaffold } from '../helpers/wiki-met
 import { isMissingReadError } from '../helpers/missing-read-guard.mjs';
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 import { freshnessFor, freshnessNote, isDoubtful } from '../helpers/embedding-staleness.mjs';
+import {
+  resolveExcludeFolders,
+  partitionByFolders,
+  exclusionReport,
+  overfetchLimit,
+} from '../helpers/search-exclusions.mjs';
+import { filterArchiveResults } from '../helpers/archive-filter.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -67,11 +74,54 @@ export const TOOL_DEFINITION = {
         type: 'boolean',
         description: 'When true (default), expand wikilinks from primary pages into graphNeighbors[].',
       },
+      excludeFolders: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Folder prefixes to keep OUT of the semantic chunks. Omit to apply the measured default '
+          + '(`wiki-meta/Sessions` — chronological session logs, 41.6% of the indexed pages across '
+          + 'this fleet). Pass `[]` to exclude nothing. Whatever applies is reported in '
+          + '`folderExclusion`, with the count of hits it cost.',
+      },
     },
     required: ['query'],
     additionalProperties: false,
   },
 };
+
+// ---------------------------------------------------------------------------
+// A3 — provenance, per item
+// ---------------------------------------------------------------------------
+/**
+ * WHERE A RESULT CAME FROM, ON THE RESULT ITSELF.
+ *
+ * The envelope already separated navigation from augmentation by ARRAY —
+ * `primaryPages` before `semanticChunks` — but nothing said so on the items, and
+ * a consumer that flattens the pack (many do: one list, sorted by score) lost
+ * the distinction entirely. Then a semantic chunk of middling cosine reads
+ * exactly like a page reached by navigating the catalogue, which is the inverse
+ * of the risk A1 addresses: not trusting a stale index, but OVER-WEIGHTING the
+ * index against navigation that is authoritative.
+ *
+ * A CLOSED VOCABULARY, AND IT SAYS WHAT THIS TOOL ACTUALLY DOES:
+ *
+ *   index      ranked out of `wiki-meta/catalog.md` — the vault's own map.
+ *   graph      a wikilink found in a page that `index` had already reached.
+ *   semantic   a Smart Connections chunk. AUGMENTATION: useful for fit-by-meaning,
+ *              never the sole support for a factual claim, and possibly stale
+ *              (see the per-chunk `freshness` A1 adds).
+ *
+ * The roadmap sketched `hot` and `plain-search` too. THEY ARE NOT EMITTED HERE
+ * and are deliberately absent rather than declared-and-unused: they are tiers of
+ * the `wiki-query` SKILL, not of this tool, and a vocabulary listing values
+ * nothing produces teaches a consumer to branch on cases that never arrive.
+ */
+export const SOURCE_INDEX = 'index';
+export const SOURCE_GRAPH = 'graph';
+export const SOURCE_SEMANTIC = 'semantic';
+
+/** The provenances that are NAVIGATION — authoritative, not augmentation. */
+const NAVIGATIONAL = new Set([SOURCE_INDEX, SOURCE_GRAPH]);
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -94,6 +144,23 @@ function stripFrontmatter(text) {
 function extractWikilinks(text) {
   if (typeof text !== 'string' || text.length === 0) return [];
   const out = new Set();
+  // A `[[link]]` INSIDE CODE OR A COMMENT IS NOT AN EDGE. Obsidian does not
+  // create one, and since A3 labels these `graph` — declared authoritative
+  // navigation — emitting them turns a long-standing looseness into a false
+  // claim: a link shown as an EXAMPLE in a fenced block, or parked in an HTML
+  // comment, would be presented as a page the vault actually points at. The
+  // masks preserve length so nothing else shifts.
+  // The delimiters are counted, not assumed to be three: CommonMark allows a
+  // fence of N ≥ 3 backticks (a four-backtick fence legitimately CONTAINS a
+  // triple one), and an inline span of N backticks closes only on N. Matching
+  // exactly ``` and exactly ` left both shapes leaking example links into the
+  // graph — found in review, with `` `[[ghost]]` `` as the smallest case.
+  const mask = (s) => s.replace(/[^\n]/g, ' ');
+  text = text
+    .replace(/(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\3[ \t]*(?=\n|$)|$)/g,
+      (m, lead) => lead + mask(m.slice(lead.length)))
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, mask)
+    .replace(/(`+)(?:(?!\1)[\s\S])*\1/g, mask);
   // `[` excluded — this tool is a CORE READ PATH with no per-file byte cap,
   // and `includeNeighbors` defaults true, so this runs on every page body of
   // every call. The v0.71.0 bracket-bomb fix reached boundary-score,
@@ -166,6 +233,7 @@ function neighbourEntry(target, viaPath) {
     path: target.endsWith('.md') ? target : `${target}.md`,
     title: target,
     via: viaPath,
+    source: SOURCE_GRAPH,
   };
 }
 
@@ -476,6 +544,10 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
           source_type: null,
           snippet: '',
           score,
+          // Provenance travels on the PLACEHOLDER too: a dead catalogue link is
+          // still a catalogue link, and a consumer filtering by source must
+          // not lose the gap it is being shown.
+          source: SOURCE_INDEX,
           missing: true,
           fetchError: nonNotFoundError, // null when truly not-found
         };
@@ -493,6 +565,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
             : null,
         snippet: bestSnippet(body, queryTokens),
         score,
+        source: SOURCE_INDEX,
         _body: body,
         _frontmatter: frontmatter,
       };
@@ -590,10 +663,22 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   // -------------------------------------------------------------------------
   let semanticChunks = [];
   let semanticFreshness = null;
+  let folderExcludedHits = 0;
+  let archivesExcludedHits = 0;
+  const exclusion = resolveExcludeFolders(args.excludeFolders, _deps.env);
   if (chunkCap > 0) {
     try {
-      const sm = await deps.searchSmart(vault, query, { limit: chunkCap });
-      const rawChunks = Array.isArray(sm?.results)
+      // C4 — the same default exclusion the `search_smart` tool applies. This
+      // path calls the REST helper DIRECTLY, so it does not inherit the tool's
+      // behaviour: without this it would surface exactly what the tool hides,
+      // and the two would disagree about the same vault.
+      // OVER-FETCH, like the tool does. Asking for exactly  and then
+      // cutting router-side returned a short pack while eligible hits sat just
+      // past the window — the cut is 41.6% of the corpus by default.
+      const scArgs = { limit: overfetchLimit(chunkCap, { excluding: exclusion.folders.length > 0, archives: true }) };
+      if (exclusion.folders.length) scArgs.excludeFolders = [...exclusion.folders];
+      const sm = await deps.searchSmart(vault, query, scArgs);
+      let rawChunks = Array.isArray(sm?.results)
         ? sm.results
         : Array.isArray(sm?.chunks)
           ? sm.chunks
@@ -611,6 +696,22 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
       // anyway it became `{path:'', text:'', score:0}` — a fabricated result
       // indistinguishable from a real one that happened to be empty. The
       // container being an array was checked; its members were not.
+      // Router-side, for the same reason the tool does it: the guarantee cannot
+      // rest on the bridge honouring a filter we could not verify.
+      if (exclusion.folders.length && Array.isArray(rawChunks)) {
+        const { kept, excluded } = partitionByFolders(rawChunks, exclusion.folders);
+        folderExcludedHits = excluded;
+        if (excluded > 0) rawChunks = kept;
+      }
+      // ARCHIVED DELIBERATION IS EXCLUDED HERE TOO. `search_smart` has dropped
+      // it since v0.54.0; this path calls the REST helper directly and never
+      // did, so the same vault answered differently through the two tools —
+      // the pack resurfacing exactly what consolidation moved out of the way.
+      if (Array.isArray(rawChunks)) {
+        const { data: trimmed } = filterArchiveResults({ results: rawChunks }, { includeArchives: false });
+        archivesExcludedHits = rawChunks.length - trimmed.results.length;
+        rawChunks = trimmed.results;
+      }
       const nonBlank = (v) => typeof v === 'string' && v.trim() !== '';
       const usable = (rawChunks || []).filter((c) => {
         // TRIMMED, not merely truthy: `{path: "   ", text: ""}` passed a
@@ -641,6 +742,7 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
             : typeof chunk?.similarity === 'number'
               ? chunk.similarity
               : 0,
+        source: SOURCE_SEMANTIC,
       }));
     } catch (err) {
       // Smart Connections / bridge missing → graceful empty array + warning.
@@ -704,6 +806,45 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   }
 
   // -------------------------------------------------------------------------
+  // 4ter. A3 — the agentic-first guard
+  // -------------------------------------------------------------------------
+  // NAVIGATION IS PRIMARY; THE INDEX IS AUGMENTATION. The envelope has always
+  // ordered it that way, but ordering is a convention a consumer can ignore,
+  // and nothing said anything when the navigational half came back EMPTY. A
+  // pack whose only content is semantic chunks is not a weaker answer of the
+  // same kind — it is an answer with no navigational anchor at all, and the
+  // whole point of the borrowing is that such an answer must not be the sole
+  // support for a factual claim.
+  //
+  // A page that could NOT be read does not count as an anchor: a placeholder
+  // names a gap, it does not carry content. `included` is exactly that subset,
+  // which is why it is used here rather than `primaryPages`.
+  const navigationalAnchors = included.length + graphNeighbors.length;
+  if (navigationalAnchors === 0 && semanticChunks.length > 0) {
+    warnings.push('answer-relies-on-semantic-only');
+    // THE ACTION MUST BE PERFORMABLE. "Open the pages they name" is impossible
+    // for a chunk that names none — some bridge payloads carry text only — and
+    // an instruction the reader cannot follow is worse than none, because it
+    // reads as though verification were available.
+    // TRIMMED. A whitespace path is truthy and is not a page anyone can open,
+    // so counting it as "named" put back the unperformable instruction the
+    // previous round removed, one shape narrower (found in review).
+    const named = semanticChunks.filter((c) => typeof c.path === 'string' && c.path.trim()).length;
+    const pathless = semanticChunks.length - named;
+    suggestedActions.push(
+      'Nothing in this pack came from navigation — no catalogue page was read and no wikilink was '
+      + 'followed; every result is a semantic chunk. Treat these as pointers to verify, not as '
+      + 'support for a factual claim: '
+      + (named > 0
+        ? `open the ${named} page(s) they name (get_file), or search for the terms directly (search), before relying on them.`
+        : 'search for the terms directly (search), because none of them names a page to open.')
+      + (pathless > 0
+        ? ` ${pathless} chunk(s) carry no path at all and cannot be opened or verified — do not cite them.`
+        : ''),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // 5. Compose the v1 envelope
   // -------------------------------------------------------------------------
   // sanitizeResponse strips ANSI/control chars from every string field in
@@ -724,6 +865,33 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
     // consumer the silence is "could not look", not "looked and found nothing");
     // `null` is not, so the key is simply absent then.
     ...(semanticFreshness ? { semanticFreshness } : {}),
+    ...(chunkCap > 0 && exclusionReport({
+      ...exclusion,
+      excluded: folderExcludedHits,
+      shortPage: folderExcludedHits > 0 && semanticChunks.length < chunkCap,
+    })
+      ? {
+        folderExclusion: exclusionReport({
+          ...exclusion,
+          excluded: folderExcludedHits,
+          shortPage: folderExcludedHits > 0 && semanticChunks.length < chunkCap,
+        }),
+      }
+      : {}),
+    ...(archivesExcludedHits > 0 ? { archivesExcluded: archivesExcludedHits } : {}),
+    // A3 — the provenance vocabulary, stated rather than left to be inferred
+    // from the values that happen to appear. A consumer branching on `source`
+    // can see the whole closed set and which half of it is authoritative,
+    // without having to receive an example of each first.
+    provenance: {
+      values: [SOURCE_INDEX, SOURCE_GRAPH, SOURCE_SEMANTIC],
+      navigational: [...NAVIGATIONAL],
+      augmentation: [SOURCE_SEMANTIC],
+      note:
+        'Navigation (index, graph) is primary and authoritative; semantic chunks are an '
+        + 'augmentation — good for fit-by-meaning, never the sole support for a factual claim, '
+        + 'and possibly older than the page (see each chunk\'s `freshness`).',
+    },
     warnings: [...new Set(warnings)],
     suggestedActions,
   });

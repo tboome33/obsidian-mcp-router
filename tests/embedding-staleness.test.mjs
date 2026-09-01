@@ -749,7 +749,11 @@ describe('the defects an adversarial review found — each pinned', () => {
     });
     const r = assessEmbeddingFreshness(LOCAL_VAULT, ['wiki//a.md', 'wiki/a.md#H1'], { fs: io });
     assert.equal(r.pages.length, 1);
-    assert.ok(r.pages[0].requested.includes('wiki/a.md'), 'the canonicalised spelling');
+    // THE ORIGINAL SPELLINGS, not the canonical ones. A caller joining its own
+    // results onto these rows holds what it sent, not what we normalised it to —
+    // recording only the canonical form silently dropped the annotation from
+    // every hit whose path needed normalising (found in the A3 review).
+    assert.ok(r.pages[0].requested.includes('wiki//a.md'), 'the spelling as it arrived');
     assert.ok(r.pages[0].requested.includes('wiki/a.md#H1'), 'and the anchored one');
   });
 
