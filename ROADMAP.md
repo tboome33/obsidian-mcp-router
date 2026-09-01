@@ -2,7 +2,7 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
-## 🔜 Unreleased — the Node floor moves so the security bench runs, and the conversion toolbox stops being a silence
+## ✅ v0.86.0 — three silences: a dormant toolbox, a bench that skipped, a journal that split (shipped 2026-09-01)
 
 - [x] **`engines.node` → `>=20.19.0`, and the low CI leg pinned to exactly that.**
       Node renamed `--experimental-permission` to `--permission` in 20.19.0 (22.13.0,
@@ -16,9 +16,9 @@ A living list of what's coming next, ordered roughly by priority.
       makes the two agree: what the package says it supports is what CI proves.
       **Cost accepted:** 20.18.x users must update Node. `undici@7` already required
       20.18.1, so this is one patch on an LTS line, not a major.
-      **Not done here:** no version bump — v0.85.0 had just shipped and a second
-      session was mid-flight in the repo, so the entry sits under `[Unreleased]` for
-      the next bump to promote.
+      **Shipped in v0.86.0.** The change landed on `main` before the bump (`59be380`,
+      while a second session was mid-flight in the repo), so it sat under
+      `[Unreleased]` until this version promoted it.
 
 - [x] **The router PROPOSES markitdown, on three surfaces, and still imposes nothing.**
       Eight tools shell out to the `markitdown` Python CLI, installed by an explicit
@@ -137,7 +137,39 @@ A living list of what's coming next, ordered roughly by priority.
         process run it" needs the uid/gid comparison `access()` does, which is more than
         this hot path should spend per candidate. The case worth catching — no execute
         bit at all, what a half-finished install leaves — is caught.
-      **Not done here:** no version bump, for the same reason as above.
+      - **A CHANGELOG heading has been mislabelled since v0.11.4, and this is not a
+        duplicate to delete.** `## [0.11.3] — 2026-05-23` appears twice. Both blocks were
+        added by `69fd108` (`feat(v0.11.4)`), which introduced a `## [0.11.4]` heading
+        AND a second `## [0.11.3]` in the same commit. The upper block describes the
+        **doc-propagation-checker**, which shipped in v0.11.4; the lower one is the real
+        v0.11.3 (vault-link-linter), and a `## [0.11.4]` section already exists
+        elsewhere. So the repair is to FOLD the upper block's content into that existing
+        `[0.11.4]` section — deleting a block would lose the checker's description
+        entirely. Predates both lots (two occurrences at `9509e67`, `c532c1d`,
+        `59be380`, `011063b`), so it is nobody's regression; flagged by the concurrent
+        session as a duplicate, re-traced here to its actual cause. Worth doing at the
+        next bump, while the file is open anyway.
+
+      **Shipped in v0.86.0**, promoted from `[Unreleased]` by this bump.
+
+      **Still open, deliberately NOT folded into this release:** the `[0.11.3]`
+      mislabelling above. The repair moves content between two historical CHANGELOG
+      sections, and mixing an archaeology edit into a version commit makes the release
+      diff unreadable. It carries no risk while it waits — the diagnosis is written
+      down, which is the part that was missing.
+
+- [x] **A resume one minute later opened a second journal — and the test hid it.**
+      `hooks/session-auto-journal.mjs` derives the journal filename from `HHMM` and then
+      uses that filename as the DEDUP KEY. Two cycles straddling a minute boundary
+      therefore produce two keys, and a resumed session opened a fresh journal instead
+      of continuing its own. `findResumableJournal` now looks for an existing journal to
+      continue rather than trusting the clock to name the same file twice.
+      **The root cause first proposed was wrong**, and the correction matters more than
+      the fix: "shared state, hard-coded `session_id`" was refuted — the suite already
+      redirects `HOME` per process. The real cause reproduces with **no concurrency at
+      all**. A cause asserted without being reproduced is not a cause.
+      Landed as `9f3fb4f` on a side branch, reintegrated into `main` as `31bb5a2`
+      (blob verified byte-identical, CHANGELOG auto-merge checked for silent loss).
 
 ## ✅ v0.85.0 — W-C citations, chunk-level sourcing, and four descriptions that were wrong (shipped 2026-09-01)
 

@@ -6,6 +6,14 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.86.0] — 2026-09-01 — three silences: a dormant toolbox, a bench that skipped, a journal that split
+
+Nothing here was broken loudly. A conversion toolbox that was never installed said
+nothing until an `ENOENT` mid-task; a security bench skipped its own measurement on a
+CI leg that reported green; and a session resumed one minute later opened a second
+journal. Each was invisible because the thing that would have reported it was the
+thing that was missing.
+
 ### Added
 
 - **`list_vaults` now reports whether the conversion toolbox is provisioned.** The
