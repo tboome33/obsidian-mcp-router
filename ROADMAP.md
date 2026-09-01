@@ -147,8 +147,23 @@ A living list of what's coming next, ordered roughly by priority.
         `[0.11.4]` section — deleting a block would lose the checker's description
         entirely. Predates both lots (two occurrences at `9509e67`, `c532c1d`,
         `59be380`, `011063b`), so it is nobody's regression; flagged by the concurrent
-        session as a duplicate, re-traced here to its actual cause. Worth doing at the
-        next bump, while the file is open anyway.
+        session as a duplicate, re-traced here to its actual cause.
+
+        **DONE — and the diagnosis needed one correction.** Two things only showed up
+        on measurement. First, the test-count chain is continuous — 271 → 308 → 341
+        → **355** → 376 → 391 → 416 — so the mislabelled block is a real intermediate
+        step, not a stray copy: `[0.11.4]`'s own "was 355" depends on it existing.
+        Second, its prose was a **corrupted splice**: it opened with v0.11.3's exact
+        sentence (still present, intact, in the real block) and continued mid-sentence
+        into doc-propagation-checker text already carried by `[0.11.4]` L5084. So it
+        could not be moved verbatim, as "fold the block's content" implies — both
+        halves were already duplicated, in two different places.
+        The repair actually applied: the block's **one unique element**, the
+        `tests/doc-propagation-checker.test.mjs` bullet, was re-homed into `[0.11.4]`
+        directly beneath the hook it tests; the spliced prose was dropped as duplicated
+        twice over; the empty heading was removed; and `[0.11.4]`'s count line now
+        explains the 355 so the chain stays readable with no section to point at.
+        No `v0.11.*` tag exists, so no published release is contradicted.
 
       **Shipped in v0.86.0**, promoted from `[Unreleased]` by this bump.
 
