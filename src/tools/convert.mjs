@@ -26,6 +26,7 @@ import { pdfToImages } from '../markdownify/pdf-images.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 import { bm25FilterBlocks, MAX_DROP_FRACTION } from '../helpers/bm25-filter.mjs';
+import { linksToFootnotes } from '../helpers/citations-format.mjs';
 function assertString(value, fieldName) {
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`Missing required argument: ${fieldName}`);
@@ -186,6 +187,17 @@ function bm25StatsComment(filtered, stats) {
 }
 
 /**
+ * The one-line stats comment for the W-C citation pass. Same shape and same
+ * place as the BM25 one — a single trailing line, so the H1-first document
+ * shape downstream validators expect is never disturbed.
+ */
+function citationsStatsComment(s) {
+  return `<!-- citations: ${s.converted} inline link(s) → ${s.references} footnote(s)`
+    + `${s.skipped > 0 ? `, ${s.skipped} non-http link(s) left inline` : ''}`
+    + `${s.startedAt > 1 ? `, numbered from ${s.startedAt} (the page already used lower numbers)` : ''} -->`;
+}
+
+/**
  * Convert a webpage to markdown, with an OPT-IN BM25 relevance second-pass.
  *
  * Without `relevanceQuery` the output is byte-identical to the historical
@@ -194,22 +206,52 @@ function bm25StatsComment(filtered, stats) {
  * HTML comment. The heavy lifting is delegated to the shared bm25-filter helper,
  * the same one behind the `filter_relevant_blocks` tool.
  */
-export async function webpageToMarkdown(_registry, { url, relevanceQuery, relevanceThreshold } = {}, _deps = {}) {
+export async function webpageToMarkdown(
+  _registry,
+  { url, relevanceQuery, relevanceThreshold, citations } = {},
+  _deps = {},
+) {
   // `_deps.convert` is an injection seam for tests (production callers pass only
   // `(registry, args)`), mirroring youtubeToMarkdown's `_deps`.
   const convert = _deps.convert || ((u) => convertUrl(u, { transformContent: mathPreservingTransform }));
   const markdown = await convert(url);
+
+  const footnote = (md) => {
+    if (citations !== true) return { md, stats: null };
+    const res = linksToFootnotes(md);
+    return { md: res.markdown, stats: res };
+  };
+
   // Strict no-op path: no (or blank) relevanceQuery → return unchanged. Catches
   // undefined AND whitespace-only so passing an empty query never mutates output.
   if (typeof relevanceQuery !== 'string' || relevanceQuery.trim() === '') {
-    return markdown;
+    const { md, stats } = footnote(markdown);
+    return stats ? `${md}\n\n${citationsStatsComment(stats)}` : md;
   }
+
   const { markdown: filteredMd, filtered, stats } = bm25FilterBlocks({
     markdown,
     query: relevanceQuery,
     threshold: typeof relevanceThreshold === 'number' ? relevanceThreshold : undefined,
   });
-  return `${filteredMd}\n\n${bm25StatsComment(filtered, stats)}`;
+
+  // W-C — FOOTNOTES ARE COMPUTED ON WHAT SURVIVED THE FILTER, and the first
+  // version had this the other way round.
+  //
+  // The reasoning that put citations first was that a reference list built from
+  // the survivors would omit links the reader "can no longer see" — but that is
+  // exactly right: a link in a dropped block has no marker left in the document,
+  // so listing it produces an ORPHAN reference. Worse, the reference block
+  // itself scores nothing against the query, so the filter DROPPED IT, leaving
+  // `[^1]` markers with no definitions at all. Found only because an adversarial
+  // review noticed the test never triggered the filter; once it did, the claim
+  // fell over immediately. Filtering first makes markers and definitions
+  // one-to-one, which is the property that matters.
+  const { md, stats: citationStats } = footnote(filteredMd);
+  const trailer = citationStats
+    ? `${citationsStatsComment(citationStats)}\n${bm25StatsComment(filtered, stats)}`
+    : bm25StatsComment(filtered, stats);
+  return `${md}\n\n${trailer}`;
 }
 
 /* ---------- File-input tools (binary formats) ---------- */

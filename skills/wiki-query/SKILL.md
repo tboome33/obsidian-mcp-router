@@ -154,7 +154,19 @@ For a standard query:
 >
 > **Detail.** Paragraph(s) with `[[wikilinks]]` to the pages used.
 >
-> _Sources: [[Page A]], [[Page B]]_
+> _Sources: [[Page A]] (extracted), [[Page B]] § Seuils (inferred)_
+
+**Cite as precisely as you actually looked.** The `_Sources_` line carries, for each
+page: its provenance (`source_type`), and — when the claim came from a semantic
+chunk rather than from reading the whole page — the **section** that chunk's
+`breadcrumbs` named. `[[page]] § Seuils` is checkable in seconds; `[[page]]` on a
+400-line note sends the reader hunting.
+
+**When there are no `breadcrumbs`, cite the page.** Not every bridge payload carries
+them, and inventing a section would be worse than omitting one. The rule is "as
+precisely as you looked", not "always a section": if you opened the page and read it
+whole, the page IS the right citation, and adding a section you did not use would be
+precision theatre.
 
 For a deep query that filed back:
 
@@ -162,5 +174,5 @@ For a deep query that filed back:
 >
 > **Detail.** ...
 >
-> _Sources: [[Page A]], [[Page B]]_  
+> _Sources: [[Page A]] (extracted), [[Page B]] § Formule (synthesized)_  
 > _Filed answer at `wiki/answers/<slug>.md`._

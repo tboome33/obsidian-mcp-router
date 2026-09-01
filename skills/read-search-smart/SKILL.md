@@ -67,4 +67,19 @@ Render the results as a markdown list, one entry per chunk:
 
 Lead with the tier when it isn't plain semantic. Local hits carry `title`, `section` (the heading path) and `description` — use them as the breadcrumb.
 
+**When you carry one of these hits into an answer, cite the SECTION, not just the
+page — when the response gives you one.** The breadcrumb is the whole reason a chunk
+is more useful than a page reference: `[[page]] § Formule` is checkable in seconds,
+`[[page]]` on a long note is not. But not every payload carries `breadcrumbs`; when
+it does not, cite the page and stop. Never invent a section the response did not
+give you.
+
+**Two things the response says that the answer must not swallow.** `freshness`
+names the hits whose page has been modified since it was indexed (`changed`,
+`touched`) or has gone entirely (`page-missing`) — open the page before quoting
+such a hit, and never cite a missing one. `folderExclusion` says which folders were
+left out and what that cost: by default `wiki-meta/Sessions` is excluded, so "I
+found nothing" may mean "nothing outside the session logs". Say so, or re-run with
+`excludeFolders: []`.
+
 If no results, suggest the substring `read-search` skill instead, or to broaden the query.

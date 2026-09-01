@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.84.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.85.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -989,6 +989,19 @@ default, `excludeFolders: []` to exclude nothing, or set
 for a vault whose conventions differ. The BM25 tier applies the same exclusion,
 so a fallback never surfaces what the tier it replaced was hiding.
 
+#### `webpage_to_markdown` — inline links as footnotes
+
+Pass `citations: true` and a captured page's inline links move out of the prose
+into numbered footnotes with a `## References` list at the end — one footnote per
+**destination**, numbered by first appearance, starting above any footnote the
+page already uses. Left alone: links inside code or HTML comments, images,
+wikilinks, and non-http targets (an in-document `#anchor` is navigation, not a
+citation). Without the flag the output is **byte-identical** to before.
+
+Combined with `relevanceQuery`, the filter runs **first**: markers and
+definitions then match one-to-one, with no orphan reference to a block the
+reader can no longer see.
+
 #### `get_wiki_context_pack` — provenance on every item
 
 Each entry of the pack now carries `source`: `index` (ranked out of
@@ -1105,7 +1118,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.18.1-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.84.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.85.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1927,6 +1940,20 @@ remplacer le défaut, `excludeFolders: []` pour n'exclure rien, ou réglez
 `OBSIDIAN_ROUTER_DEFAULT_EXCLUDE_FOLDERS` (séparé par virgules ; vide = désactivé)
 pour un vault dont les conventions diffèrent. Le tier BM25 applique la même
 exclusion : un repli ne fait jamais remonter ce que le tier remplacé cachait.
+
+##### `webpage_to_markdown` — les liens inline en notes de bas de page
+
+Avec `citations: true`, les liens inline d'une page capturée sortent de la prose
+et deviennent des notes numérotées, avec une liste `## References` à la fin —
+une note par **destination**, numérotée par première apparition, en démarrant
+au-dessus des notes que la page utilise déjà. Laissés tranquilles : les liens
+dans du code ou un commentaire HTML, les images, les wikilinks, et les cibles
+non-http (une ancre `#section` est de la navigation, pas une citation). Sans le
+drapeau, la sortie est **identique à l'octet** près.
+
+Combiné à `relevanceQuery`, le filtre passe **d'abord** : marqueurs et
+définitions se correspondent alors un pour un, sans référence orpheline vers un
+bloc que le lecteur ne voit plus.
 
 ##### `get_wiki_context_pack` — la provenance sur chaque élément
 

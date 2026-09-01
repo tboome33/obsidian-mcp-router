@@ -44,6 +44,7 @@ import {
   overfetchLimit,
 } from '../helpers/search-exclusions.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
+import { maskCodeAndComments } from '../helpers/markdown-mask.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -150,17 +151,12 @@ function extractWikilinks(text) {
   // claim: a link shown as an EXAMPLE in a fenced block, or parked in an HTML
   // comment, would be presented as a page the vault actually points at. The
   // masks preserve length so nothing else shifts.
-  // The delimiters are counted, not assumed to be three: CommonMark allows a
-  // fence of N ≥ 3 backticks (a four-backtick fence legitimately CONTAINS a
-  // triple one), and an inline span of N backticks closes only on N. Matching
-  // exactly ``` and exactly ` left both shapes leaking example links into the
-  // graph — found in review, with `` `[[ghost]]` `` as the smallest case.
-  const mask = (s) => s.replace(/[^\n]/g, ' ');
-  text = text
-    .replace(/(^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:\n[ \t]*\3[ \t]*(?=\n|$)|$)/g,
-      (m, lead) => lead + mask(m.slice(lead.length)))
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, mask)
-    .replace(/(`+)(?:(?!\1)[\s\S])*\1/g, mask);
+  // The rule lives in `markdown-mask`, shared with the citation formatter that
+  // needs the same question answered for the opposite reason (it must not
+  // REWRITE a link that is being displayed as code). A second copy of "which
+  // backticks close which" is the class of defect this repo has swept three
+  // times; there is one now.
+  text = maskCodeAndComments(text);
   // `[` excluded — this tool is a CORE READ PATH with no per-file byte cap,
   // and `includeNeighbors` defaults true, so this runs on every page body of
   // every call. The v0.71.0 bracket-bomb fix reached boundary-score,

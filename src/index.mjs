@@ -578,7 +578,7 @@ const TOOLS = [
   {
     name: 'pdf_to_markdown',
     description:
-      'Convert a local PDF file to markdown via the bundled `markitdown` Python CLI. Returns the markdown text — does NOT write to any vault. Chain with `write_file` to persist the output. Set `MD_ALLOWED_PATHS` to restrict which directories can be read.',
+      'Convert a local PDF file to markdown via the bundled `markitdown` Python CLI. Returns the markdown text — does NOT write to any vault. Chain with `write_file` to persist the output. Set `MD_ALLOWED_PATHS` to restrict which directories can be read. FIDELITY — the installed backend (markitdown 0.1.5) extracts tables into aligned markdown via pdfplumber, and falls back to pdfminer.six plain-text extraction when pdfplumber is missing or throws; that fallback keeps no table or column structure, so a table then arrives as run-together text. Neither path does layout ANALYSIS: a multi-column page can still interleave. For a scanned PDF, or one whose layout must be reconstructed, use `pdf_to_markdown_docling` (opt-in, ~10x slower, needs OBSIDIAN_ROUTER_ENABLE_DOCLING=1).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -638,7 +638,7 @@ const TOOLS = [
   {
     name: 'docx_to_markdown',
     description:
-      'Convert a local DOCX file to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+      'Convert a local DOCX file to markdown via `markitdown`. Returns markdown text only — does not write to any vault. FIDELITY — DOCX is read NATIVELY (mammoth → HTML → markdown), so headings, styles and tables survive where the document expresses them structurally. There is deliberately no Docling alternative for DOCX: Docling models are PDF-first, and a native reader beats them on Office formats. What does NOT survive is anything carried by visual layout alone — text boxes, floating shapes, multi-column sections.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -651,7 +651,7 @@ const TOOLS = [
   {
     name: 'xlsx_to_markdown',
     description:
-      'Convert a local XLSX spreadsheet to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+      'Convert a local XLSX spreadsheet to markdown via `markitdown`. Returns markdown text only — does not write to any vault. FIDELITY — each sheet becomes a markdown table, read natively via pandas/openpyxl. You get the CACHED VALUES, not the formulas that produced them, and nothing that lives outside the cell grid: charts, images, conditional formatting, and cell comments are dropped.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -664,7 +664,7 @@ const TOOLS = [
   {
     name: 'pptx_to_markdown',
     description:
-      'Convert a local PPTX presentation to markdown via `markitdown`. Returns markdown text only — does not write to any vault.',
+      'Convert a local PPTX presentation to markdown via `markitdown`. Returns markdown text only — does not write to any vault. FIDELITY — PPTX is read NATIVELY: headings, tables (detected and converted per shape) and image alt text all survive. What is lost is everything that is only in the RENDERING — slide layout and reading order across shapes, animations, and speaker-notes formatting.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -729,11 +729,22 @@ const TOOLS = [
   {
     name: 'webpage_to_markdown',
     description:
-      'Convert an arbitrary webpage to markdown. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-rendered SPAs prefer the `defuddle` skill which uses a headless browser. Optionally pass `relevanceQuery` to apply a BM25 relevance second-pass (see filter_relevant_blocks) that drops blocks unrelated to your topic — no re-fetch; the output stays a markdown string with a one-line HTML stats comment appended.',
+      'Convert an arbitrary webpage to markdown. URL must be http(s); private/loopback hosts are refused (SSRF guard). For JS-rendered SPAs prefer the `defuddle` skill which uses a headless browser. Optionally pass `relevanceQuery` to apply a BM25 relevance second-pass (see filter_relevant_blocks) that drops blocks unrelated to your topic — no re-fetch; the output stays a markdown string with a one-line HTML stats comment appended. Optionally pass `citations: true` to move inline links into numbered footnotes with a reference list at the end.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL of the webpage to convert.' },
+        citations: {
+          type: 'boolean',
+          description:
+            'Optional. When true, inline links `[text](https://…)` become `text[^N]` with a `## References` '
+            + 'list of the destinations at the end — the prose reads cleanly and the page\'s references '
+            + 'become a scannable list. One footnote per DESTINATION, numbered by first appearance, and '
+            + 'numbering starts above any footnote the page already uses. Left alone: links inside code or '
+            + 'HTML comments, images, wikilinks, and non-http targets (`#anchor`, relative paths, `mailto:`) '
+            + '— an in-document anchor is navigation, not a citation. Default false: the output is then '
+            + 'byte-identical to before.',
+        },
         relevanceQuery: {
           type: 'string',
           description:

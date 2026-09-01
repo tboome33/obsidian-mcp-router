@@ -2,6 +2,53 @@
 
 A living list of what's coming next, ordered roughly by priority.
 
+## ✅ v0.85.0 — W-C citations, chunk-level sourcing, and four descriptions that were wrong (shipped 2026-09-01)
+
+The last three items of the §1 quick-wins lot. The small one turned out to be the
+one worth doing carefully.
+
+- **W-C — `citations: true` on `webpage_to_markdown`.** Inline links become numbered
+  footnotes with a reference list; one footnote per destination; opt-in, and the
+  output is byte-identical without it. It rests on a new shared `markdown-mask`,
+  extracted rather than copied because `get_wiki_context_pack` needs the same
+  question answered for the opposite reason (it must not REPORT a link shown as an
+  example; the formatter must not REWRITE one).
+- **Docling #5 — the item's premise had expired, and the first pass shipped it
+  anyway.** The roadmap said MarkItDown does plain-text extraction with no table
+  recognition. markitdown 0.1.5 extracts PDF tables via pdfplumber; DOCX goes
+  through mammoth with tables preserved; PPTX converts table shapes explicitly.
+  Three of the four descriptions I first wrote were false, and a shell heredoc had
+  eaten a tool name so the PDF one read "use  instead". Both caught in review,
+  against the installed converters' own source. The lesson is the one this repo
+  keeps relearning: **check the source of truth, do not restate the summary.**
+- **Chunk-level citations (LightRAG) — skill-only, as scoped.** `wiki-query` and
+  `read-search-smart` now cite the section a chunk's `breadcrumbs` names *when the
+  response gives one*, and must read the `freshness` and `folderExclusion` blocks
+  rather than swallow them.
+
+### Verification
+
+12 defects. Two were performance: the mask was **quadratic** (582 ms on 32 000
+backticks) on a path with no byte cap, now linear and pinned; and the repo's own
+bracket-bomb guard caught the citation regex on its first run. Four were precedence
+bugs between the masking passes, all of the same shape — something inside code
+opening a construct outside it — fixed by resolving block structure first.
+
+**And one claim of mine was refuted by making its own test real.** The test for
+"citations run before the relevance filter" never triggered BM25 at all. Once it
+did, the ordering collapsed: the reference block scores nothing against the query,
+so the filter dropped it, leaving footnote markers with no definitions. Filtering
+first makes markers and definitions one-to-one — and the reasoning that had
+justified the original order was simply wrong.
+
+### Deferred
+
+- **Not a CommonMark parser**, and it says so: labels containing `[`, labels across
+  a line break, deeply nested parentheses in a destination, reference-style links
+  and link reference definitions are all left alone. Every gap costs a reference not
+  collected, never a document corrupted — the asymmetry that makes stopping here
+  defensible.
+
 ## ✅ v0.84.0 — A3 + C4: where a result came from, and what the search left out (shipped 2026-09-01)
 
 Items two and three of the §1 quick-wins lot, closing the "honesty about the

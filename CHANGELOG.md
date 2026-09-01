@@ -4,6 +4,81 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [0.85.0] — 2026-09-01 — W-C citations, chunk-level sourcing, and four tool descriptions that were wrong
+
+The last three items of the §1 quick-wins lot: **W-C** (Crawl4AI's markdown-with-
+citations variant), **chunk-level citations** (the LightRAG borrowing, skill-only),
+and **Docling #5** (documenting the MarkItDown limits) — which turned out to be the
+interesting one.
+
+### Added
+
+- **`citations: true` on `webpage_to_markdown`** — inline `[text](https://…)` become
+  `text[^N]` with a `## References` list. One footnote per DESTINATION, numbered by
+  first appearance, starting above any numeric footnote the page already uses.
+  Default false, and the output is then **byte-identical** to before.
+- **`src/helpers/markdown-mask.mjs`** — blanks fenced code, indented code, inline
+  spans and HTML comments, length- and line-preserving, so a caller runs its regex
+  over the mask and cuts the original. Shared with `get_wiki_context_pack`, which
+  needed the same question answered for the opposite reason.
+- **`wiki-query` and `read-search-smart` SKILLs**: cite the SECTION a chunk's
+  `breadcrumbs` names — when the response gives one — and read the `freshness` and
+  `folderExclusion` blocks rather than swallowing them.
+
+### Docling #5 — the item's own premise had expired
+
+The roadmap item said to document that MarkItDown "does plain text extraction with
+NO table-structure recognition" and to point users at Docling. **That is no longer
+true of the installed version.** markitdown 0.1.5 extracts PDF tables into aligned
+markdown via **pdfplumber** (0.11.9, installed), falling back to pdfminer.six only
+when pdfplumber is missing or throws; DOCX goes through mammoth with tables
+preserved; PPTX detects table shapes and converts them explicitly.
+
+A first pass shipped the roadmap's wording verbatim into all four converter
+descriptions — false for three of them — **and a shell heredoc had eaten the tool
+name, so the PDF description literally read "use  instead"**. Both were caught by
+adversarial review, which cited the installed converters' own source. The four
+descriptions now state what the installed code does, with the limits that remain
+(pdfminer fallback keeps no structure; no path does layout analysis; XLSX gives
+cached values, not formulas; PPTX loses reading order across shapes).
+
+### Verification — 12 defects, and one refuted claim of my own
+
+- **The mask was QUADRATIC** and this is a hot path: `get_wiki_context_pack` runs it
+  on every page body with no byte cap. Measured on the regex version: 2.3 ms at 2000
+  backticks, 35.5 ms at 8000, **582 ms at 32000**. Rewritten as a linear scanner —
+  128 000 backticks now cost 5.2 ms — and pinned by a test.
+- **The repo's own bracket-bomb guard caught the citation regex** on its first run
+  (107 ms), the same class as the v0.71.0 sweep. `[` is excluded from the label
+  class; the cost is that `[see [1]](url)` stays inline, which is the safe direction.
+- **Three independent masking passes get precedence wrong.** Review produced four
+  inputs where a construct inside code opened one outside it — a `<!--` shown in a
+  fence, a fence marker inside a comment, a backtick in a comment pairing with prose,
+  an inline opener pairing across a block. Block structure is now resolved first and
+  everything else is confined by it.
+- **`\[not-a-link](url)` was being converted** into `\not-a-link[^1]`; balanced
+  parentheses in a URL and angle-bracket destinations were silently missed; a
+  `[^99]:` shown inside code pushed our numbering to 100. All fixed and pinned.
+- **A claim of mine was refuted by making its own test real.** The test for "citations
+  run before the filter" never triggered BM25 (too few blocks, then the over-filter
+  guard, then a query term too common to score). Once it did, the ordering fell over:
+  the reference block scores nothing against the query, so **the filter dropped it**,
+  leaving `[^1]` markers with no definitions. The order is now filter-then-footnote,
+  which makes markers and definitions one-to-one — and the reasoning that justified
+  the original order was simply wrong.
+
+Suite **4356 → 4395**; `validate` and `gate` clean.
+
+### Deferred
+
+- **The citation formatter is not a CommonMark parser** and says so: a label
+  containing `[`, a label across a line break, a destination with nested
+  parentheses more than one deep, and reference-style links are all left inline.
+  Every gap costs a reference not collected, never a document corrupted.
+- **The mask does not model** link reference definitions, HTML blocks, or lists that
+  change the indented-code rule. Same asymmetry: a missed mask, never a rewrite of
+  real code.
+
 ## [0.84.0] — 2026-09-01 — A3 + C4: where a result came from, and what the search left out
 
 Items **A3** (agentic-first guardrails) and **C4** (default folder exclusion) of the
