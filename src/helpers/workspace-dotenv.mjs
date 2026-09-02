@@ -261,6 +261,9 @@ export function envKeyOrigin(key, env = process.env) {
   if (!workspaceFileConsulted) return ENV_ORIGINS.UNKNOWN;
   const applied = APPLIED_FROM_WORKSPACE.get(String(key));
   if (!applied) return ENV_ORIGINS.HOST;
+  // The record describes the object it was written into. Asked about another
+  // one, this module cannot say — and must not answer from the value alone.
+  if (applied.env !== env) return ENV_ORIGINS.UNKNOWN;
   return env[key] === applied.value ? ENV_ORIGINS.WORKSPACE_DOTENV : ENV_ORIGINS.RUNTIME;
 }
 

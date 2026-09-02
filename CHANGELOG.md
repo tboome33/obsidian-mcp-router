@@ -6,6 +6,39 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.88.1] — 2026-09-02 — one line of v0.88.0 never reached the commit
+
+v0.88.0 shipped without a single line of `envKeyOrigin`, and CI went red on all four jobs
+within minutes. The line was written, reviewed, tested green locally and verified present by a
+grep after the mutation bench — and is absent from the published commit. What is certain: the
+tree that was tested and the tree that was committed differed by one line, and only the CI
+noticed.
+
+### Fixed
+
+- **`envKeyOrigin` checks WHICH environment a record was made against again.** A provenance
+  record describes the object the loader wrote into; asked about a different object, the answer
+  must be `unknown`, not an inference from the value alone. Without that line the router would
+  claim `workspace-dotenv` for a key it had never seen set in the environment being asked about
+  — a false attribution, which is the one thing the provenance lot exists to avoid. Its test
+  (`a record made against ANOTHER environment object answers "unknown", never a guess`) was in
+  the same release and is what failed.
+
+### Changed
+
+- The release routine now verifies the COMMITTED bytes, not the working tree:
+  `git show <sha>:<file>` for each invariant the lot rests on, before `npm run release`. A
+  green local run proves what is on disk at that moment, and that is not the same statement as
+  "the commit contains it". Cause of the divergence unestablished — most likely an edit made
+  while the mutation bench held the file, since the bench restores from its own snapshot; a
+  concurrent session on the same worktree would do it too.
+
+### Verification
+
+- `tests/setting-provenance.test.mjs` 16/16 (the failing case included); full suite
+  **4 530 tests, 4 529 green, 0 failed, 1 opt-in skip**; `npm run validate` and `npm run gate`
+  green; release-grade leak scan of the changed files: 0 findings; and `git show` on the new
+  commit confirms the line is in it.
 ## [0.88.0] — 2026-09-02 — the router says WHO chose the vault, the lock and the mode
 
 v0.87.0 closed what a workspace `.env` may *set*: only the keys the router's own writers put

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 51 commands total: 18 router-tool wrappers, 3 router-state commands (lock / unlock for single-vault mode, auto-mode for wiki auto-enrichment mode toggle), 7 conversational helpers (meta-setup / meta-attach-vault / meta-status / meta-sync-template / meta-audit-bridge-readiness / conventions / sync-from-github), and a 22-command Karpathy-style LLM-wiki workflow (wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold / wiki-graph / wiki-tour / wiki-export / okf-export / okf-check / okf-projections / save / decision-consolidate / autoresearch / canvas / defuddle / obsidian-bases / ...). Since v0.56.0 the plugin also SHIPS the MCP server itself — one install, one update, for server + commands + skills + hooks.",
-    "version": "0.88.0"
+    "version": "0.88.1"
   },
   "plugins": [
     {
@@ -17,7 +17,7 @@
         "ref": "main"
       },
       "description": "Slash commands, skills, sub-agents, and hooks for the obsidian-mcp-router multi-vault MCP server. 51 /obsidian-router:* commands: (1) 18 wrappers for the router primitives (vault discovery, reads, writes, frontmatter, file management, Templater, PDF conversion); (2) 3 router-state commands (lock / unlock for single-vault mode, auto-mode for wiki auto-enrichment mode toggle); (3) 7 conversational helpers (meta-setup, meta-attach-vault, meta-status, meta-sync-template, meta-audit-bridge-readiness, conventions, sync-from-github); (4) a 22-command Karpathy-style LLM-wiki workflow stack (wiki / wiki-ingest / wiki-query / wiki-lint / wiki-fold / wiki-graph / wiki-tour / wiki-export / okf-export / okf-check / okf-projections / save / decision-consolidate / autoresearch / canvas / defuddle / obsidian-bases / ...). Since v0.56.0 the plugin also SHIPS the MCP server itself — one install, one update, for server + commands + skills + hooks.",
-      "version": "0.88.0",
+      "version": "0.88.1",
       "author": {
         "name": "tboome33",
         "url": "https://github.com/tboome33"
