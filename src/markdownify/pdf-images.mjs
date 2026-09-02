@@ -31,6 +31,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { expandHome, assertPathAllowed } from './utils.mjs';
+import { subprocessOptions, absolutizeExecutableOverride } from '../helpers/subprocess-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -92,7 +93,9 @@ const DEFAULT_PROJECT_ROOT = path.resolve(__dirname, '..', '..');
  *      package is importable, surfaced as an actionable hint by `pdfToImages`.
  */
 export function resolvePdfImagesPython(projectRoot) {
-  if (process.env.PDF_IMAGES_PYTHON) return process.env.PDF_IMAGES_PYTHON;
+  // A relative override is resolved against the router's cwd NOW — the render
+  // script runs in its private output directory (subprocess-env.mjs).
+  if (process.env.PDF_IMAGES_PYTHON) return absolutizeExecutableOverride(process.env.PDF_IMAGES_PYTHON);
   const isWin = process.platform === 'win32';
   const binDir = isWin ? 'Scripts' : 'bin';
   const exe = isWin ? 'python.exe' : 'python';
@@ -179,10 +182,13 @@ export function readProducedImages(outDir, fsDeps = fs) {
 async function defaultRun(python, scriptPath, { filePath, first, last, scale }) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-images-'));
   try {
+    // Same shape as docling.mjs: `outDir` is the working directory, the
+    // environment is the Python allowlist (subprocess-env.mjs), and a relative
+    // `filePath` stays anchored to the router's cwd through `path.resolve`.
     await execFileAsync(
       python,
-      buildRenderArgs(scriptPath, outDir, filePath, { first, last, scale }),
-      { maxBuffer: MAX_TOTAL_BYTES },
+      buildRenderArgs(scriptPath, outDir, path.resolve(filePath), { first, last, scale }),
+      subprocessOptions('pdf-images', { cwd: outDir, maxBuffer: MAX_TOTAL_BYTES }),
     );
     return readProducedImages(outDir);
   } finally {

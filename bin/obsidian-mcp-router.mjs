@@ -8,6 +8,8 @@ import {
   formatFailure,
   PACKAGE_ROOT as packageRoot,
 } from '../src/helpers/ensure-deps.mjs';
+import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
+import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
 
 // NOTE: `../src/index.mjs` is imported DYNAMICALLY at the bottom of this
 // file, after ensureDependencies() has had a chance to repair the install.
@@ -18,46 +20,40 @@ import {
 // src/helpers/ensure-deps.mjs for the full rationale (Lot 5).
 
 /**
- * Tiny .env loader — no dependency on `dotenv`.
+ * Workspace .env loader — no dependency on `dotenv`.
  *
  * The router needs to honor per-workspace env vars like VAULT_PATH and
  * OBSIDIAN_ROUTER_DEFAULT_VAULT to support per-project default vault
  * resolution. Claude Code does not auto-load .env files into the spawned
  * MCP process, so we do it here.
  *
- * Behavior:
+ * Behavior (the policy and the parser live in src/helpers/workspace-dotenv.mjs,
+ * shared with the two hooks that load the same file):
  * - Reads .env from process.cwd() if present.
  * - Existing env vars (set by the parent) win — never overwrite.
- * - Lines: KEY=VALUE. Comments (#) and blank lines ignored. Quoted values
- *   ("..." or '...') are unquoted. No expansion of $VAR or ${VAR}, no
- *   multiline values — keep it boring.
+ * - ONLY the keys the router's own writers put in a workspace .env are
+ *   taken (OBSIDIAN_ROUTER_DEFAULT_VAULT, _LOCKED, _AUTO_ENRICH, VAULT_PATH,
+ *   the MD_* sandbox, the enumerated OBSIDIAN_ROUTER_NO_* opt-outs). A
+ *   workspace is often a cloned repository, and a repository's .env used to
+ *   be able to set GIT_CONFIG_GLOBAL, NODE_OPTIONS, MARKITDOWN_PATH — or
+ *   OBSIDIAN_ROUTER_CONFIG — in this process (v0.87.0). Anything else is
+ *   ignored and named once on stderr, which for an MCP server is its log.
+ * - What WAS taken is named too, on one line. A cloned repository's file can
+ *   pick which of the user's REGISTERED vaults this session reads, locks and
+ *   enriches (every value is checked against the registry; an unregistered
+ *   vault cannot be named into existence), and the log should say the choice
+ *   came from the file rather than from the host.
  * - Silently no-ops if .env is missing or unreadable. Never throws.
  */
 function loadDotenvSync(cwd) {
-  const envPath = join(cwd, '.env');
-  if (!existsSync(envPath)) return;
-  let raw;
-  try {
-    raw = readFileSync(envPath, 'utf8');
-  } catch {
-    return;
-  }
-  for (const line of raw.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    const eq = trimmed.indexOf('=');
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) {
-      process.env[key] = value;
-    }
+  const { applied } = applyWorkspaceDotenv({ cwd });
+  if (applied.length) {
+    // The names are the router's own — the policy admits no other — so they
+    // are safe to print as they are. Nothing else is: not the values, not
+    // the path (the operator knows the server's cwd).
+    try {
+      process.stderr.write(`[obsidian-mcp-router] .env: applied ${applied.join(', ')}\n`);
+    } catch { /* a closed stderr is not our problem */ }
   }
 }
 
@@ -193,7 +189,9 @@ if (process.argv[2] === '--attach') {
   // Spawned rather than imported on purpose: setup-vault.mjs runs its CLI only
   // when it IS the process entrypoint (it compares import.meta.url to argv[1]),
   // so an in-process import would define helpers and do nothing at all. The
-  // child inherits stdio and its exit code is propagated verbatim.
+  // child inherits stdio, receives the `setup-vault` allowlist as its
+  // environment (subprocess-env.mjs — not this shell's, whole), and its exit
+  // code is propagated verbatim.
   const setupScript = join(packageRoot, 'scripts', 'setup-vault.mjs');
   if (!existsSync(setupScript)) {
     process.stderr.write(
@@ -201,9 +199,9 @@ if (process.argv[2] === '--attach') {
     );
     process.exit(1);
   }
-  const res = spawnSync(process.execPath, [setupScript, ...process.argv.slice(2)], {
+  const res = spawnSync(process.execPath, [setupScript, ...process.argv.slice(2)], subprocessOptions('setup-vault', {
     stdio: 'inherit',
-  });
+  }));
   process.exit(res.status === null ? 1 : res.status);
 }
 

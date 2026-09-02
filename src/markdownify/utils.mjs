@@ -19,6 +19,7 @@ import net from 'node:net';
 import { isRunnableFile } from '../helpers/conversion-readiness.mjs';
 import dns from 'node:dns/promises';
 import { URL } from 'node:url';
+import { absolutizeExecutableOverride } from '../helpers/subprocess-env.mjs';
 
 /**
  * Expand a leading `~` to the user's home directory.
@@ -55,7 +56,9 @@ export function expandHome(filepath) {
  * lies.
  */
 export function resolveMarkitdownPath(projectRoot) {
-  if (process.env.MARKITDOWN_PATH) return process.env.MARKITDOWN_PATH;
+  // A relative override is resolved NOW, against the router's cwd: the spawn
+  // runs in a throwaway directory where it would otherwise mean nothing.
+  if (process.env.MARKITDOWN_PATH) return absolutizeExecutableOverride(process.env.MARKITDOWN_PATH);
   const isWin = process.platform === 'win32';
   const venvBin = path.join(
     projectRoot,
@@ -78,7 +81,7 @@ export function resolveMarkitdownPath(projectRoot) {
  *   3. Bare `docling` — `PATH` lookup. ENOENT at call time if not installed.
  */
 export function resolveDoclingPath(projectRoot) {
-  if (process.env.DOCLING_PATH) return process.env.DOCLING_PATH;
+  if (process.env.DOCLING_PATH) return absolutizeExecutableOverride(process.env.DOCLING_PATH);
   const isWin = process.platform === 'win32';
   const venvBin = path.join(
     projectRoot,
@@ -100,7 +103,7 @@ export function resolveDoclingPath(projectRoot) {
  *   3. Bare `repomix` — `PATH` lookup.
  */
 export function resolveRepomixPath(projectRoot) {
-  if (process.env.REPOMIX_PATH) return process.env.REPOMIX_PATH;
+  if (process.env.REPOMIX_PATH) return absolutizeExecutableOverride(process.env.REPOMIX_PATH);
   const isWin = process.platform === 'win32';
   // npm on Windows installs both `repomix` (shim) and `repomix.cmd`. Prefer
   // the .cmd because execFile won't auto-resolve the extensionless shim
@@ -137,7 +140,7 @@ export function resolveRepomixPath(projectRoot) {
  */
 export function resolveRepomixCommand(projectRoot) {
   if (process.env.REPOMIX_PATH) {
-    return { cmd: process.env.REPOMIX_PATH, prefixArgs: [] };
+    return { cmd: absolutizeExecutableOverride(process.env.REPOMIX_PATH), prefixArgs: [] };
   }
   const isWin = process.platform === 'win32';
   if (isWin) {
@@ -176,7 +179,11 @@ export function resolveRepomixCommand(projectRoot) {
  * neither is set — meaning "no sandbox, every absolute path is allowed".
  */
 export function getAllowedPaths() {
-  const raw = process.env.MD_ALLOWED_PATHS ?? process.env.MD_SHARE_DIR;
+  // An EMPTY MD_ALLOWED_PATHS falls through to the alias, exactly as the
+  // start-up check (index.mjs assertSandboxConsistent) reads the pair — the
+  // two readers used to disagree: `??` took '' as "set", and a host that
+  // sandboxed through MD_SHARE_DIR lost its sandbox to an empty value.
+  const raw = (process.env.MD_ALLOWED_PATHS || '').trim() || process.env.MD_SHARE_DIR;
   if (!raw) return null;
   const dirs = raw
     .split(path.delimiter)

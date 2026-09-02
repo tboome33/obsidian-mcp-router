@@ -138,6 +138,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
+
 // ---- Load workspace .env (without clobbering process.env) -------------
 // The hook runs as a separate Node subprocess invoked by Claude Code,
 // so it does NOT inherit the workspace `.env` file that the router
@@ -149,34 +151,13 @@ import path from 'node:path';
 // wrong vault in multi-vault setups. Codex P2 review pass 3 finding.
 //
 // Standard dotenv semantics: file values fill in only UNSET keys —
-// `process.env` always wins. Minimal parser (KEY=VALUE / # comments /
-// optional `export ` prefix / optional surrounding quotes), no
-// interpolation, no multi-line.
-function loadWorkspaceDotenv() {
-  const dir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const envPath = path.join(dir, '.env');
-  let content;
-  try {
-    content = fs.readFileSync(envPath, 'utf8');
-  } catch {
-    return; // no .env, nothing to do
-  }
-  for (const rawLine of content.split(/\r?\n/)) {
-    let line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    if (line.startsWith('export ')) line = line.slice('export '.length).trim();
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
-loadWorkspaceDotenv();
+// `process.env` always wins — under the workspace policy of
+// src/helpers/workspace-dotenv.mjs (the handful of keys the router's own
+// writers put in a workspace .env, plus the enumerated NO_* opt-outs; the
+// rest is ignored, v0.87.0). Silent here on purpose: this hook's stderr IS
+// the block message Claude reads on exit 2, and a line about ignored .env
+// keys in front of the real reason would be read as an instruction.
+applyWorkspaceDotenv({ cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), warn: () => {} });
 
 // ---- Opt-out ----------------------------------------------------------
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);

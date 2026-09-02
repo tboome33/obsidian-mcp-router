@@ -57,3 +57,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Scratch corner for tests that must create files under the repository root
+# (a relative executable override in tests/subprocess-env.test.mjs). Never committed.
+tests/fixtures/.tmp/

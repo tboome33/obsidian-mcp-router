@@ -344,7 +344,10 @@ describe('probeConversionToolbox — what is installed, without running anything
     // the trimmed path and then ENOENTed at the padded one.
     const saved = process.env.MARKITDOWN_PATH;
     try {
-      for (const value of ['/opt/bin/markitdown', ' /opt/bin/markitdown ', '   ', 'C:\\Tools\\markitdown.exe']) {
+      // v0.87.0: a RELATIVE override is resolved against the router's cwd before
+      // the spawn (the child runs in a throwaway directory), by the runtime AND
+      // by the probe — through the same resolver, or they disagree again.
+      for (const value of ['/opt/bin/markitdown', ' /opt/bin/markitdown ', '   ', 'C:\\Tools\\markitdown.exe', './tools/markitdown', 'venv/bin/markitdown', 'markitdown']) {
         process.env.MARKITDOWN_PATH = value;
         const runtime = resolveMarkitdownPath('/root');
         const probe = probeConversionToolbox({ projectRoot: '/root', env: process.env, fs: fsWith() });

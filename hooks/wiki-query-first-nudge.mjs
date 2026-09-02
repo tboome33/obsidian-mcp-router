@@ -90,11 +90,7 @@ function readInsecurePort(vaultPath) {
   }
 }
 
-// ---- Opt-out ----------------------------------------------------------
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
-if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST || '').toLowerCase())) {
-  process.exit(0);
-}
 
 // ---- Read hook input from stdin ---------------------------------------
 let stdinRaw = '';
@@ -109,6 +105,13 @@ const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
 // `OBSIDIAN_ROUTER_DEFAULT_VAULT` from `<cwd>/.env` participate in the
 // detection without requiring it to be set in the parent shell.
 loadWorkspaceDotenv(cwd);
+
+// ---- Opt-out ----------------------------------------------------------
+// Read AFTER the workspace .env is loaded, so a NO_* set in that file is
+// honored here and not only when the parent shell carries it.
+if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST || '').toLowerCase())) {
+  process.exit(0);
+}
 
 // ---- Detect vault context (dual-mode) --------------------------------
 const cfg = readRouterConfig();

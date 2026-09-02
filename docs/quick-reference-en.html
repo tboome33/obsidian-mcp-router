@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.86.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
+  <div class="meta">v0.87.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 50 MCP tools · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -217,7 +217,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <li>Verify: <code>/obsidian-router:meta-status</code> or just say <em>"diagnose the router"</em></li>
 </ol>
 
-<h2>Configuration <span class="count">— environment variables (workspace <code>.env</code>)</span></h2>
+<h2>Configuration <span class="count">— the workspace <code>.env</code> (v0.87.0+: the ONLY keys the router takes from a repository's file — anything else in it is ignored and named on the router's stderr)</span></h2>
 
 <table class="config">
   <tr>
@@ -237,6 +237,19 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
     <td>Wiki auto-enrichment mode: <code>ClaudeAsk</code> (default) | <code>Hybrid</code> | <code>FullAuto</code> | <code>off</code>. Set via <code>/obsidian-router:auto-mode &lt;Mode&gt; --persist</code>.</td>
   </tr>
   <tr>
+    <td>MD_ALLOWED_PATHS · MD_SHARE_DIR</td>
+    <td>Conversion sandbox: the local paths the markdownify tools may read, and where they may write. Absent = no sandbox. The two names are one setting, and a workspace file may only NARROW it: its value is taken only when the host set neither and the instance is not gated (READONLY / ALLOWED_VAULTS / USER_ID) — otherwise it is withheld and named on stderr.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_NO_*</td>
+    <td>The 14 opt-outs enumerated in <code>src/helpers/workspace-dotenv.mjs</code>, accepted by name and never by shape (an unlisted NO_* is ignored): NO_WATCH (config hot-reload), NO_HOT_CACHE_LOAD, NO_DECISIONS_RECALL, NO_WIKI_QUERY_FIRST, NO_WIKI_AUTOCOMMIT, NO_SESSION_JOURNAL, NO_HOT_CACHE_GUARD, NO_LINT_VAULT_LINKS, NO_DOC_STARTUP_CHECK, NO_DOC_PROPAGATION_CHECK, NO_UPDATE_CHECK, NO_AUTO_INSTALL_HOOKS, NO_AUTO_CONFORMANCE, NO_OKF_PROJECTIONS. Each switches a convenience off, none a guard; all accept <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
+  </tr>
+</table>
+
+<h2>Configuration <span class="count">— host / shell variables (never taken from a workspace <code>.env</code>: set them in the MCP host's server declaration, in the launcher of a served instance, or in the shell)</span></h2>
+
+<table class="config">
+  <tr>
     <td>OBSIDIAN_ROUTER_ALLOWED_VAULTS</td>
     <td>Multi-tenant: comma-separated whitelist of vaults this instance sees. Others are skipped.</td>
   </tr>
@@ -253,12 +266,8 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
     <td>A whole vault defined in one env var (JSON: <code>name</code>, <code>baseUrl</code>, <code>apiKey</code>…) — dashboard-editable on MCPHub deployments.</td>
   </tr>
   <tr>
-    <td>OBSIDIAN_ROUTER_NO_WATCH</td>
-    <td>Disables hot-reload of the config file (useful for debugging).</td>
-  </tr>
-  <tr>
-    <td>OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD · …NO_DECISIONS_RECALL · …NO_WIKI_AUTOCOMMIT · …NO_SESSION_JOURNAL</td>
-    <td>Per-hook opt-outs: disable the hot-cache load, decisions recall, wiki autocommit and session journal hooks respectively. All accept <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
+    <td>OBSIDIAN_ROUTER_CONFIG · MARKITDOWN_PATH · DOCLING_PATH · REPOMIX_PATH · YTDLP_PATH · HTTPS_PROXY · HF_HOME…</td>
+    <td>Config path and tool overrides: read from the host's environment only (README § environment). A spawned tool receives a named allowlist of variables, never the router's whole environment (v0.87.0).</td>
   </tr>
 </table>
 
@@ -279,7 +288,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
-    <td>Environment variables for the current workspace (above). Auto-loaded at router boot.</td>
+    <td>Auto-loaded at router boot — but only the workspace keys above are taken, and the parent environment always wins; every other key is ignored and named once on the router's stderr, and the keys applied are named too (v0.87.0+).</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/CLAUDE.md</td>

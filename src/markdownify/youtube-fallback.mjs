@@ -27,6 +27,9 @@
  *   - key=value argv form for our option values; output template constrained
  *     to the private mkdtemp dir.
  *   - `maxBuffer` cap + per-call `AbortSignal.timeout`.
+ *   - an allowlisted environment and a private cwd (`subprocess-env.mjs`): the
+ *     child never sees the router's process.env, and never reads a
+ *     `yt-dlp.conf` out of the user's workspace.
  *   - `validateUrl` (textual SSRF guard) + best-effort DNS pre-flight via
  *     `assertHostnameNotPrivate` (same caveat as `fromRepo`/repomix: yt-dlp
  *     resolves its own DNS in-subprocess, so the pinned-IP dispatcher used by
@@ -45,6 +48,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 
 import { validateUrl, assertHostnameNotPrivate } from './utils.mjs';
+import { subprocessOptions, absolutizeExecutableOverride } from '../helpers/subprocess-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -76,7 +80,9 @@ const MAX_SUBTITLE_BYTES = 10 * 1024 * 1024;
  * `ERR_CHILD_PROCESS_BAD_NAME` and the caller surfaces a clear hint.
  */
 export function resolveYtdlpPath() {
-  return process.env.YTDLP_PATH || 'yt-dlp';
+  // A relative override is resolved against the router's cwd NOW — the spawn
+  // runs in the private caption directory (subprocess-env.mjs).
+  return absolutizeExecutableOverride(process.env.YTDLP_PATH) || 'yt-dlp';
 }
 
 const YT_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
@@ -319,10 +325,17 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
 
     let execErr = null;
     try {
-      await execFileImpl(cmd, args, {
+      // `tempDir` is also the working directory. MEASURED: yt-dlp reads a
+      // `yt-dlp.conf` from its cwd (its "home configuration"), and the
+      // router's cwd is the user's workspace — a repository carrying that
+      // file could have appended `--exec …` to every caption fetch. The
+      // environment is the yt-dlp allowlist (proxies, CA bundles, the profile
+      // roots for its own config), never the router's (subprocess-env.mjs).
+      await execFileImpl(cmd, args, subprocessOptions('yt-dlp', {
+        cwd: tempDir,
         maxBuffer: MAX_YTDLP_STDOUT_BYTES,
         signal: AbortSignal.timeout(YTDLP_TIMEOUT_MS),
-      });
+      }));
     } catch (e) {
       if (e?.code === 'ENOENT') {
         throw new Error(

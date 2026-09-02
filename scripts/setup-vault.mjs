@@ -39,6 +39,7 @@ import { resolvePluginsToClone } from './plugin-resolver.mjs';
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
 import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/targz-extract.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, PlanDriftError } from '../src/helpers/plan-seal.mjs';
+import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
 import {
   DEFAULT_INSECURE_OFFSET,
   normalizePortEntry,
@@ -440,7 +441,7 @@ function moveScaffold(vaultPath, filename, useGit) {
   const newRel = path.posix.join('wiki-meta', filename);
   if (useGit) {
     const res = spawnSync('git', ['-C', vaultPath, 'mv', oldRel, newRel],
-      { encoding: 'utf8', stdio: 'pipe' });
+      subprocessOptions('git', { encoding: 'utf8', stdio: 'pipe' }));
     if (res.status === 0) return { ok: true, mode: 'git' };
     return { ok: false, mode: 'git', err: (res.stderr || res.stdout || '').trim() };
   }
@@ -740,9 +741,9 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
     if (!fs.existsSync(wikiMetaParent)) fs.mkdirSync(wikiMetaParent, { recursive: true });
 
     if (useGit) {
-      const gitRes = spawnSync('git', ['mv', 'wiki/Sessions', 'wiki-meta/Sessions'], {
+      const gitRes = spawnSync('git', ['mv', 'wiki/Sessions', 'wiki-meta/Sessions'], subprocessOptions('git', {
         cwd: vaultPath, encoding: 'utf8',
-      });
+      }));
       if (gitRes.status !== 0) {
         // Fallback: fs.rename (history won't preserve as nicely but works).
         try { fs.renameSync(srcDir, dstDir); result.mode = 'fs (git fallback)'; }
@@ -805,9 +806,9 @@ function migrateSessionsToWikiMeta(vaultPath, opts = {}) {
         // explicitly. Git accepts both on Windows but forward-slash is
         // unambiguous and matches the textual rename semantics git uses
         // internally — avoids any quoting surprises on paths with spaces.
-        const gitRes = spawnSync('git', ['mv', `wiki/Sessions/${f}`, `wiki-meta/Sessions/${f}`], {
+        const gitRes = spawnSync('git', ['mv', `wiki/Sessions/${f}`, `wiki-meta/Sessions/${f}`], subprocessOptions('git', {
           cwd: vaultPath, encoding: 'utf8',
-        });
+        }));
         if (gitRes.status !== 0) {
           try { fs.renameSync(srcFile, dstFile); result.sessionsMoved.push({ file: f, mode: 'fs (git fallback)' }); }
           catch (err) { result.sessionsSkipped.push({ file: f, reason: `move failed: ${err.message}` }); continue; }
@@ -2732,14 +2733,37 @@ export function obsidianOpenUri(obsidianName) {
 function openObsidianVault(obsidianName) {
   const uri = obsidianOpenUri(obsidianName);
   try {
+    // THESE THREE PASS THIS PROCESS'S ENVIRONMENT THROUGH ON PURPOSE. They
+    // launch the user's desktop application through the OS protocol handler,
+    // and that application has to see the user's session. What "this
+    // process's environment" is depends on who started setup-vault: from the
+    // user's shell it is the shell's; from the MCP server (`provision_vault`
+    // with `--open`) it is the `setup-vault` allowlist of subprocess-env.mjs,
+    // which names the session's display and bus variables for exactly this
+    // hand-off (DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, DBUS_SESSION_BUS_ADDRESS).
+    // They are the only spawns in this file outside `subprocessOptions`; the
+    // guard in tests/subprocess-env.test.mjs lists them by count and by
+    // command, so a fourth cannot join them unnoticed.
+    // Under an Electron host the engine itself runs with ELECTRON_RUN_AS_NODE
+    // (named in its allowlist for that reason); the desktop app launched here
+    // must NOT inherit it, or an Obsidian whose runAsNode fuse is open would
+    // start as a mute Node process instead of as the application.
+    // Removed by name, case-insensitively: Windows environment names are, and
+    // a lowercase spelling from the parent would survive a `delete` of the
+    // uppercase one while Electron still read it.
+    const launcherEnv = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (/^electron_(?:run_as_node|no_attach_console)$/i.test(name)) continue;
+      launcherEnv[name] = value;
+    }
     if (process.platform === 'win32') {
       // `cmd /c start "" <uri>` dispatches the protocol handler. (Not spawning a
       // .cmd file — this is cmd.exe with /c, which is allowed.)
-      spawnSync('cmd', ['/c', 'start', '', uri], { stdio: 'ignore' });
+      spawnSync('cmd', ['/c', 'start', '', uri], { stdio: 'ignore', env: launcherEnv });
     } else if (process.platform === 'darwin') {
-      spawnSync('open', [uri], { stdio: 'ignore' });
+      spawnSync('open', [uri], { stdio: 'ignore', env: launcherEnv });
     } else {
-      spawnSync('xdg-open', [uri], { stdio: 'ignore' });
+      spawnSync('xdg-open', [uri], { stdio: 'ignore', env: launcherEnv });
     }
     ok(`Opened Obsidian on vault "${obsidianName}"`);
   } catch (e) {
@@ -5605,11 +5629,14 @@ maybeAutoInstallHooks({ quiet, noHooks: args.includes('--no-hooks') });
 // an initial commit. Off by default (vaults often live under Google Drive /
 // iCloud where a repo is undesirable). Operates ONLY inside the new vault dir.
 if (wizardOpts.gitInit && provisionResult && provisionResult.abs) {
-  const gi = spawnSync('git', ['init'], { cwd: provisionResult.abs, encoding: 'utf8' });
+  // git runs with the git allowlist as its environment (subprocess-env.mjs):
+  // when this script is the child of the MCP server, process.env here is the
+  // server's — trimmed already, but a child's child must not re-widen it.
+  const gi = spawnSync('git', ['init'], subprocessOptions('git', { cwd: provisionResult.abs, encoding: 'utf8' }));
   if (gi.status === 0) {
-    spawnSync('git', ['add', '-A'], { cwd: provisionResult.abs });
+    spawnSync('git', ['add', '-A'], subprocessOptions('git', { cwd: provisionResult.abs }));
     spawnSync('git', ['commit', '-m', 'Initial vault scaffold (setup-vault.mjs --git-init)'],
-      { cwd: provisionResult.abs, encoding: 'utf8' });
+      subprocessOptions('git', { cwd: provisionResult.abs, encoding: 'utf8' }));
     ok(`Initialized a git repo in ${provisionResult.abs}`);
   } else {
     warn(`--git-init: \`git init\` failed (${(gi.stderr || gi.error?.message || '').trim()}). Skipped.`);

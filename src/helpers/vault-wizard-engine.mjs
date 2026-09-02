@@ -11,6 +11,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { subprocessOptions } from './subprocess-env.mjs';
+
 const SELF_DIR = path.dirname(fileURLToPath(import.meta.url));
 export const SETUP_VAULT_SCRIPT = path.resolve(SELF_DIR, '..', '..', 'scripts', 'setup-vault.mjs');
 
@@ -82,20 +84,31 @@ export function composeSetupVaultArgs(input = {}) {
  *   OBSIDIAN_ROUTER_CONFIG so the child computes roots/registration against the
  *   SAME config the running server uses (review+ W2 P2). Falls back to whatever
  *   is already in process.env when omitted.
+ * @param {string} [opts.scriptPath] Test seam: the script to run instead of
+ *   the real engine (one that prints what it received). Production callers
+ *   omit it.
  */
-export function runSetupVault(args, { extraEnv = {}, configPath } = {}) {
+export function runSetupVault(args, { extraEnv = {}, configPath, scriptPath = SETUP_VAULT_SCRIPT } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [SETUP_VAULT_SCRIPT, ...args], {
-      env: {
-        ...process.env,
+    // The child's environment is the `setup-vault` allowlist (subprocess-env.mjs):
+    // the three OBSIDIAN_ROUTER_* variables the engine reads, the git family
+    // it spawns with, the Node and proxy variables, and the platform basics —
+    // built FROM process.env, never a copy of it. The MCP server's own
+    // environment carries the workspace `.env` and the smart-link secret; a
+    // vault provisioning run has no use for either.
+    const child = spawn(process.execPath, [scriptPath, ...args], subprocessOptions('setup-vault', {
+      extraEnv: {
+        // The caller's additions go FIRST, so the two imposed values below
+        // cannot be overridden by them — "must never" has to hold against a
+        // caller too, not only against the environment.
+        ...extraEnv,
         // An MCP tool must never silently mutate the user's global
         // ~/.claude/settings.json — hooks are wired separately (skill / CLI).
         OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS: '1',
         // Use the server's active config, not setup-vault's default.
         ...(configPath ? { OBSIDIAN_ROUTER_CONFIG: configPath } : {}),
-        ...extraEnv,
       },
-    });
+    }));
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });

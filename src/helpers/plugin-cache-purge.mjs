@@ -71,6 +71,7 @@ import { spawnSync } from 'node:child_process';
 
 import { compareSemver, parseSemver } from './semver-compare.mjs';
 import { computePlanSeal, verifyPlanSeal } from './plan-seal.mjs';
+import { subprocessOptions } from './subprocess-env.mjs';
 
 /** Seal domain tag for this operation (see plan-seal.mjs). */
 export const PURGE_OP = 'plugin-cache-purge';
@@ -184,15 +185,20 @@ export function directorySize(dir) {
 // ---------------------------------------------------------------------------
 
 function defaultProcessScan(platform) {
+  // The scanner's environment is the `process-scan` allowlist
+  // (subprocess-env.mjs): PATH and the system roots. Measured on Windows:
+  // `Get-CimInstance` lists every process with just those. It does not need
+  // the host's environment — and this runs inside a Claude Code hook, so "the
+  // host's" is exactly what it used to receive.
   if (platform === 'win32') {
     // -NoProfile so a slow user profile cannot stall a SessionStart hook.
     const ps = spawnSync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
       'Get-CimInstance Win32_Process | Select-Object -ExpandProperty CommandLine',
-    ], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+    ], subprocessOptions('process-scan', { encoding: 'utf8', timeout: 20000, windowsHide: true }));
     return ps;
   }
-  return spawnSync('ps', ['-eo', 'args'], { encoding: 'utf8', timeout: 20000 });
+  return spawnSync('ps', ['-eo', 'args'], subprocessOptions('process-scan', { encoding: 'utf8', timeout: 20000 }));
 }
 
 /**

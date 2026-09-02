@@ -36,8 +36,9 @@
  *
  * CONTRACT
  * ------------------------------------------------------------------
- *   - Zero dependencies: node: builtins only. This module is imported
- *     BEFORE any dependency is known to exist.
+ *   - Zero dependencies: node: builtins only (plus `subprocess-env.mjs`,
+ *     which is itself builtins-only). This module is imported BEFORE any
+ *     dependency is known to exist.
  *   - Never writes to stdout. stdout is the MCP stdio channel; a single
  *     stray byte corrupts the protocol. Diagnostics go to stderr.
  *   - Fast path is free: when the specifiers already resolve, the only
@@ -53,6 +54,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+import { subprocessOptions } from './subprocess-env.mjs';
 
 /**
  * The specifiers to probe. These are the exact bare specifiers the startup
@@ -164,8 +167,11 @@ export function runInstall(packageRoot, { runner = defaultNpmRunner } = {}) {
   return runner(NPM_INSTALL_ARGS, {
     cwd: packageRoot,
     timeout: INSTALL_TIMEOUT_MS,
-    env: {
-      ...process.env,
+    // The child's environment is the `npm` allowlist (subprocess-env.mjs) —
+    // npm's own `npm_config_*`, proxies and CA bundles, the profile roots for
+    // `.npmrc` and its cache — built by the runner. This used to spread the
+    // router's WHOLE process.env here, workspace .env included.
+    extraEnv: {
       // Belt-and-braces: even if some future npm honours a lifecycle script
       // despite --ignore-scripts, the Python installers self-skip on this.
       OBSIDIAN_ROUTER_SKIP_MARKITDOWN: '1',
@@ -178,12 +184,12 @@ function defaultNpmRunner(args, opts) {
   // is what makes `npm` resolvable through PATH on both. (Node refuses to
   // spawn a .cmd without a shell since the 2024 argument-injection fix, so
   // dropping the shell is not an option here.)
-  const res = spawnSync('npm', args, {
+  const res = spawnSync('npm', args, subprocessOptions('npm', {
     ...opts,
     shell: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8',
-  });
+  }));
 
   // On timeout Node signals only the DIRECT child. With a shell that child
   // is `cmd.exe /c npm …` on Windows, which has no process group to carry
@@ -205,7 +211,7 @@ function defaultNpmRunner(args, opts) {
 function killProcessTree(pid) {
   try {
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', shell: false });
+      spawnSync('taskkill', ['/T', '/F', '/PID', String(pid)], subprocessOptions('taskkill', { stdio: 'ignore', shell: false }));
     } else {
       // Negative pid targets the process group the shell child leads.
       try { process.kill(-pid, 'SIGKILL'); } catch { process.kill(pid, 'SIGKILL'); }

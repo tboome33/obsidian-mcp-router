@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.86.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
+  <div class="meta">v0.87.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -215,7 +215,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <li>Vérifier : <code>/obsidian-router:meta-status</code> ou dire simplement <em>« diagnostique le router »</em></li>
 </ol>
 
-<h2>Configuration <span class="count">— variables d'environnement (<code>.env</code> du workspace)</span></h2>
+<h2>Configuration <span class="count">— le <code>.env</code> du workspace (v0.87.0+ : les SEULES clés que le router prend dans le fichier d'un dépôt — tout le reste y est ignoré et nommé sur le stderr du router)</span></h2>
 
 <table class="config">
   <tr>
@@ -235,6 +235,19 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
     <td>Mode d'auto-enrichissement wiki : <code>ClaudeAsk</code> (défaut) | <code>Hybrid</code> | <code>FullAuto</code> | <code>off</code>. Posé via <code>/obsidian-router:auto-mode &lt;Mode&gt; --persist</code>.</td>
   </tr>
   <tr>
+    <td>MD_ALLOWED_PATHS · MD_SHARE_DIR</td>
+    <td>Bac à sable de conversion : les chemins locaux que les outils markdownify peuvent lire, et là où ils peuvent écrire. Absent = pas de bac à sable. Les deux noms sont UN réglage, et un fichier de workspace ne peut que le RESSERRER : sa valeur n'est prise que si l'hôte n'a posé ni l'un ni l'autre et que l'instance n'est pas gated (READONLY / ALLOWED_VAULTS / USER_ID) — sinon elle est retenue et nommée sur stderr.</td>
+  </tr>
+  <tr>
+    <td>OBSIDIAN_ROUTER_NO_*</td>
+    <td>Les 14 opt-outs énumérés dans <code>src/helpers/workspace-dotenv.mjs</code>, acceptés par nom et jamais par forme (un NO_* absent de la liste est ignoré) : NO_WATCH (hot-reload de la config), NO_HOT_CACHE_LOAD, NO_DECISIONS_RECALL, NO_WIKI_QUERY_FIRST, NO_WIKI_AUTOCOMMIT, NO_SESSION_JOURNAL, NO_HOT_CACHE_GUARD, NO_LINT_VAULT_LINKS, NO_DOC_STARTUP_CHECK, NO_DOC_PROPAGATION_CHECK, NO_UPDATE_CHECK, NO_AUTO_INSTALL_HOOKS, NO_AUTO_CONFORMANCE, NO_OKF_PROJECTIONS. Chacun coupe une commodité, aucun un garde ; tous acceptent <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
+  </tr>
+</table>
+
+<h2>Configuration <span class="count">— variables d'hôte / de shell (jamais prises dans un <code>.env</code> de workspace : à poser dans la déclaration du serveur côté hôte MCP, dans le lanceur d'une instance servie, ou dans le shell)</span></h2>
+
+<table class="config">
+  <tr>
     <td>OBSIDIAN_ROUTER_ALLOWED_VAULTS</td>
     <td>Multi-tenant : whitelist des vaults visibles par cette instance (séparés par des virgules). Les autres sont skippés.</td>
   </tr>
@@ -251,12 +264,8 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
     <td>Un vault entier défini dans une variable d'env (JSON : <code>name</code>, <code>baseUrl</code>, <code>apiKey</code>…) — éditable depuis le dashboard sur les déploiements MCPHub.</td>
   </tr>
   <tr>
-    <td>OBSIDIAN_ROUTER_NO_WATCH</td>
-    <td>Désactive le hot-reload du fichier de config (utile en debug).</td>
-  </tr>
-  <tr>
-    <td>OBSIDIAN_ROUTER_NO_&lt;HOOK&gt;</td>
-    <td>Opt-outs par hook : <code>NO_HOT_CACHE_LOAD</code> · <code>NO_DECISIONS_RECALL</code> · <code>NO_WIKI_AUTOCOMMIT</code> · <code>NO_SESSION_JOURNAL</code> — chacune désactive le hook correspondant ; acceptent <code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>.</td>
+    <td>OBSIDIAN_ROUTER_CONFIG · MARKITDOWN_PATH · DOCLING_PATH · REPOMIX_PATH · YTDLP_PATH · HTTPS_PROXY · HF_HOME…</td>
+    <td>Chemin de config et overrides d'outils : lus dans l'environnement de l'hôte uniquement (README § environment). Un outil lancé reçoit une allowlist nommée de variables, jamais l'environnement entier du router (v0.87.0).</td>
   </tr>
 </table>
 
@@ -277,7 +286,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
-    <td>Variables d'environnement du workspace courant (ci-dessus). Auto-chargées au boot du router.</td>
+    <td>Auto-chargé au boot du router — mais seules les clés de workspace ci-dessus sont prises, et l'environnement parent gagne toujours ; toute autre clé est ignorée et nommée une fois sur le stderr du router, et les clés appliquées sont nommées aussi (v0.87.0+).</td>
   </tr>
   <tr>
     <td>&lt;vault&gt;/CLAUDE.md</td>

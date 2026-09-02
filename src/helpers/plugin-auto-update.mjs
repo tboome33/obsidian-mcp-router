@@ -29,6 +29,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { planCachePurge, applyCachePurge } from './plugin-cache-purge.mjs';
+import { subprocessOptions } from './subprocess-env.mjs';
 
 const NPM_INSTALL_TIMEOUT_MS = 180 * 1000;
 
@@ -488,15 +489,24 @@ function escapeRegexStrict(s) {
 
 // ─── Default subprocess runners (real git / npm) ──────────────────────
 
+// Both build the child's environment from its allowlist (subprocess-env.mjs)
+// rather than spreading process.env: this runs inside a Claude Code hook,
+// whose environment is the host's, and neither git nor npm has any use for
+// what the host keeps there.
 function defaultGitRun(args, opts) {
-  return spawnSync('git', args, { ...opts, encoding: 'utf8' });
+  return spawnSync('git', args, subprocessOptions('git', { ...opts, encoding: 'utf8' }));
 }
 
 function defaultNpmRun(args, opts) {
   const cmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  return spawnSync(cmd, args, {
+  return spawnSync(cmd, args, subprocessOptions('npm', {
     ...opts,
     encoding: 'utf8',
     shell: process.platform === 'win32',
-  });
+  }));
 }
+
+// The real runners, for the test that spawns a real executable through them
+// (tests/subprocess-env.test.mjs). Production callers go through
+// `tryAutoUpdate`, which picks them up as the defaults.
+export const _internals = { defaultGitRun, defaultNpmRun };

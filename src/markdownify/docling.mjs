@@ -25,6 +25,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { expandHome, assertPathAllowed, resolveDoclingPath } from './utils.mjs';
+import { subprocessOptions } from '../helpers/subprocess-env.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,9 +103,15 @@ export function readProducedMarkdown(outDir, fsDeps = fs) {
 async function defaultRun(doclingPath, filePath) {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docling-'));
   try {
-    await execFileAsync(doclingPath, buildDoclingArgs(outDir, filePath), {
+    // `outDir` doubles as the working directory (private, ours, removed in
+    // `finally`), and the environment is Docling's allowlist — Python basics,
+    // the model-cache variables (HF_HOME and friends), proxies — never the
+    // router's process.env (subprocess-env.mjs). `path.resolve` keeps a
+    // relative `filePath` anchored to the router's cwd, as before.
+    await execFileAsync(doclingPath, buildDoclingArgs(outDir, path.resolve(filePath)), subprocessOptions('docling', {
+      cwd: outDir,
       maxBuffer: MAX_OUTPUT_BYTES,
-    });
+    }));
     return readProducedMarkdown(outDir);
   } finally {
     try { fs.rmSync(outDir, { recursive: true, force: true }); } catch {}

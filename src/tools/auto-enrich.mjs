@@ -37,9 +37,9 @@ export const VALID_MODES = ['ClaudeAsk', 'Hybrid', 'FullAuto', 'off'];
  *   - mode (required): one of "ClaudeAsk" | "Hybrid" | "FullAuto" | "off".
  *     Case-insensitive — we normalize to the canonical capitalization.
  *   - persist (optional): if true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode>
- *     to <cwd>/.env so the mode survives router restarts. If "off" with
- *     persist:true, removes the line instead of writing "off" — that way
- *     a future env-var lookup falls cleanly through to the default.
+ *     to <cwd>/.env so the mode survives router restarts — "off" included,
+ *     written as the literal: a REMOVED line would read as the default
+ *     (ClaudeAsk) at the next start and silently bring suggestions back.
  */
 export async function setAutoEnrichMode(registry, args = {}) {
   const { mode: rawMode, persist } = args;

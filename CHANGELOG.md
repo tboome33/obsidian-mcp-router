@@ -6,6 +6,355 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.87.0] — 2026-09-02 — every child process gets a named environment, and stops eating the accents
+
+Nothing the router spawned was ever told what it may see. Not one `execFile` / `spawn` in
+the tree passed an `env` option, so markitdown, Docling, repomix, yt-dlp, git, npm and a
+`python --version` probe each inherited the router's entire `process.env` — which
+`bin/obsidian-mcp-router.mjs` had just filled from the workspace `.env`, and which the MCP
+host had filled from the server declaration. Confirmed 2026-09-02 by an adversarial Codex
+review of the DonSeTch study (lot W-0, point P3). Sweeping it turned up a second, older
+defect in the same pipe: on Windows, every accented character a Python child wrote came
+back as `�`.
+
+### Security
+
+- **`src/helpers/subprocess-env.mjs` — the one place a child's environment is built, from a
+  per-tool allowlist of NAMES.** `subprocessOptions('markitdown', { cwd, maxBuffer })`
+  returns the options object with `env` built from named variables: a platform base
+  (`PATH`, the temp and profile roots, the locale family written out, `SystemRoot` /
+  `ComSpec` / `PATHEXT` on Windows, `HOME` and the XDG roots on POSIX) plus what the tool
+  actually reads — proxies and CA bundles for the networked ones (git included: it fetches
+  in `plugin-auto-update`), `HF_HOME` / `TORCH_HOME` / `DOCLING_ARTIFACTS_PATH` for Docling,
+  the commit identity, `GIT_CONFIG_GLOBAL` and the SSH/GPG agent sockets for git and
+  repomix, `npm_config_cache` and the chatter knobs for npm, the two Electron switches for
+  a Node child started under a Claude Desktop host (`ELECTRON_RUN_AS_NODE` — without it
+  `process.execPath` launches the application, not the script; it used to arrive by
+  inheritance), the graphical session's display and bus variables for the `--open` hand-off
+  of the provisioning engine, and the three `OBSIDIAN_ROUTER_*` variables that engine
+  reads, each by name. **There is no prefix rule at all** — not `OBSIDIAN_ROUTER_*`
+  (shared by the secrets and the configuration), and not `GIT_*` / `SSH_*` / `npm_config_*`
+  either: those would have carried `GIT_SSH_COMMAND` (a command), `GIT_CONFIG_VALUE_n`
+  (arbitrary config), `GIT_DIR` (another repository), `npm_config__authToken` (a secret)
+  and `npm_config_registry` (a supply-chain redirect) — all settable from a workspace
+  `.env`, which the router loads at startup. A second fence, the **NEVER list**, refuses
+  those shapes from every origin whatever a table says (`NODE_OPTIONS`, `LD_PRELOAD`,
+  `PYTHONPATH`, `GIT_SSH_COMMAND`, `GIT_DIR`, `npm_config_registry`, anything matching
+  `TOKEN` / `SECRET` / `PASSWORD` / `API_KEY` / `PRIVATE_KEY` / `ASKPASS` / `_COMMAND`…), and
+  the module throws at load if an allowlist ever names one. The helper REFUSES an `env`
+  option, so a site cannot hand the environment over whole; additions go through
+  `extraEnv`, and an `extraEnv` key is accepted ONLY if the tool's allowlist already names
+  it — the side door is as narrow as the front one. Fixed values are applied last. An
+  unknown tool name throws. Not passed, on purpose: `HF_TOKEN`, `NPM_TOKEN`, `PYTHONPATH` /
+  `PYTHONHOME` / `PYTHONSTARTUP`, `NODE_OPTIONS` and `NODE_TLS_REJECT_UNAUTHORIZED`, and
+  everything that merely happens to be in the parent — the smart-link secret, the
+  view-agent token, any `*_API_KEY` from the workspace `.env`.
+- **The sweep: 37 `child_process` spawn sites across `src/`, `scripts/`, `hooks/` and
+  `bin/` — 22 now go through the allowlist, 15 inherit by name — plus 1 process started
+  through the MCP SDK, counted apart.** Guarded (22): the five markdownify sites the review
+  named (markitdown, repomix, Docling, the `pdf_to_images` render script, yt-dlp), the
+  `python --version` probe, npm and `taskkill` in `ensure-deps`, git and npm in
+  `plugin-auto-update`, the PowerShell / `ps` process scan in `plugin-cache-purge`, the
+  provisioning engine as spawned by the MCP server, by `--attach` and by the SessionStart
+  sync hook, the six git calls inside `scripts/setup-vault.mjs`, and git in
+  `hooks/wiki-autocommit.mjs`. Inheriting, each with a written reason (15): release tooling
+  run from the developer's own shell (`build-mcpb`, `bump-version`, `create-release`,
+  `export-gate` — git, `gh` and `npm ci` need that shell's credential helpers and proxies,
+  and the parent holds no router secret), the two interactive installers (pip's mirrors,
+  proxies and CA bundles are open-ended, and the parent IS the user's shell), and the three
+  desktop-app launchers (`cmd /c start`, `open`, `xdg-open` — the application must see the
+  user's session; when the engine runs under the MCP server they receive its `setup-vault`
+  allowlist, which names that session's variables). The one SDK start is
+  `scripts/serve-http.mjs`, which starts one ROUTER per HTTP session through
+  `StdioClientTransport` with the parent's environment — the child IS the router and needs
+  its own configuration and secrets; it is listed as such. The guard in
+  `tests/subprocess-env.test.mjs` pins the exemptions by file, by exact count AND by the
+  command each spawn runs, pins the three totals exactly (a finder that loses a site is as
+  red as a site that loses its guard), judges the OPTIONS argument of a call rather than any
+  mention of the helper in its argv, refuses an `env:` next to the helper, and reports a
+  file that imports `child_process` in a form it cannot follow instead of skipping it.
+- **A workspace `.env` may set only what the router documents for it — the other half of the
+  fence.** The per-tool allowlist filters what a CHILD receives, by name; it cannot know where
+  a value came from, and the router's own process was still taking ANY absent key from the
+  `.env` of the current workspace — which is very often a cloned repository. Through that file
+  a stranger could set `GIT_CONFIG_GLOBAL=./x.gitconfig` (git then reads a config that runs a
+  command at the next commit the wiki-autocommit hook makes), `HOME` or `XDG_CONFIG_HOME`
+  into the repository, `NODE_OPTIONS=--require=./x.js`, `MARKITDOWN_PATH=./tools/x` (run
+  directly by the router), `HF_ENDPOINT` or a proxy plus a CA bundle. Found by the Code
+  Reviewer in review pass 2 as the gap between what the README promised and what the fence
+  held — and in pass 3 it caught the first draft of the fix accepting the whole
+  `OBSIDIAN_ROUTER_*` family, which would have let that same file set
+  `OBSIDIAN_ROUTER_CONFIG=./evil.json` (every tool call, session journal and auto-commit
+  then working against the attacker's vault registry, remote vaults included) or
+  `OBSIDIAN_ROUTER_VIEW_AGENT_URL` (a fetch to his host on every write). Now
+  `src/helpers/workspace-dotenv.mjs` is the one parser and the one policy the three loaders
+  share (`bin/obsidian-mcp-router.mjs`, `hooks/_helpers/workspace-vault.mjs`,
+  `hooks/vault-link-linter.mjs`), and the accepted keys are WRITTEN OUT: exactly what the
+  router's own writers put in a workspace `.env` — `OBSIDIAN_ROUTER_DEFAULT_VAULT`
+  (`--attach`, `--link-workspace`), `OBSIDIAN_ROUTER_LOCKED` (`lock_vault --persist`),
+  `OBSIDIAN_ROUTER_AUTO_ENRICH` (`auto-mode --persist`), `VAULT_PATH` (setup-vault),
+  `MD_ALLOWED_PATHS` / `MD_SHARE_DIR` — plus the fourteen `OBSIDIAN_ROUTER_NO_*` opt-outs,
+  enumerated, each of which switches a convenience off and none a guard; a test pins that
+  list against the names the tree actually reads, so a new opt-out is added by hand, never
+  accepted by shape. Host-level settings (`OBSIDIAN_ROUTER_CONFIG`, `VIEW_AGENT_*`,
+  `SMART_LINK_*`, `USER_ID`, `ALLOWED_VAULTS`, `READONLY`, …) are never taken from a
+  workspace file. Every other key is ignored; the router binary names them once on its
+  stderr — the MCP log — with where to set them instead, and the two hooks stay silent,
+  because a hook's stderr is the block message Claude reads on exit 2 and a line about a
+  `.env` in front of the real reason would be read as an instruction. `OBSIDIAN_API_KEY` and
+  `OBSIDIAN_BASE_URL`, which setup-vault writes into a bootstrapped vault's `.env` for
+  companion tools and the router never reads, are skipped without a word. The parent still
+  wins, always. The binary also names, on one stderr line, what it DID take from the file:
+  a cloned repository's `.env` can pick which of the user's REGISTERED vaults the session
+  reads, locks and enriches (never an unregistered one — every value is checked against the
+  registry), and the log should say that choice came from the file rather than from the
+  host. A leading byte-order mark (a file re-saved by Notepad) was already dropped — `trim()`
+  counts U+FEFF as whitespace — and a test now pins it. Two guards in
+  `tests/workspace-dotenv.test.mjs`: the three loaders delegate (the hook ones silent, the
+  binary NOT silent, and naming what it applied), and no file under `bin/`, `hooks/`, `src/`
+  or `scripts/` writes a computed key into `process.env`, `Object.assign`s onto it, writes
+  to it reflectively, aliases it under another name (`const env = process.env;` — the form
+  the policy module itself uses, which is why that module is excepted by path, never by
+  mention), or imports the `dotenv` package — so a cousin of the old any-key loop cannot
+  come back. The opt-out pin counts the names the tree READS (`process.env.OBSIDIAN_ROUTER_NO_*`
+  in code, not in comments or strings) and carries a second, host-only list, so a future
+  opt-out that must not come from a workspace file is refused by name rather than accepted
+  because acceptance was the only green exit. `tests/subprocess-env.test.mjs` adds the
+  matching rule for spawns: no `...process.env` spread outside the exempted files.
+  Two more fences, from the last two passes. **The conversion sandbox is one setting a
+  workspace file may only NARROW**: `MD_ALLOWED_PATHS` and `MD_SHARE_DIR` are two spellings
+  of one thing, and the file's value is taken only when the host set neither and the
+  instance is not gated (`READONLY`, `ALLOWED_VAULTS`, `USER_ID` — the signals of
+  `assertSandboxConsistent`, mirrored in the policy module). Otherwise it is *withheld* and
+  named in the same single warning. Both reviewers found the hole from different sides: a
+  host that sandboxed through the legacy alias saw a repository's `MD_ALLOWED_PATHS=/`
+  (or `MD_ALLOWED_PATHS=`, which the runtime reader took as "set, empty, no sandbox")
+  replace its sandbox; a gated instance with NO sandbox — which must refuse to start —
+  started on the file's word instead. The runtime reader (`getAllowedPaths`) now treats an
+  empty `MD_ALLOWED_PATHS` as unset, as the start-up check always did. **And the hooks
+  honour the file's opt-outs**: five of them read their `OBSIDIAN_ROUTER_NO_*` before
+  loading the workspace `.env` (or never loaded it), so a `NO_WIKI_AUTOCOMMIT=1` in a
+  project's file was a dead letter for the very hook it names. Every hook now loads the
+  file before its first opt-out read, and a structural pin holds the order. Two last pins
+  keep the loader unique: any file naming the `dotenv` package in any form (import,
+  require, dynamic import, `dotenv/config`) and any file naming a `.env` file outside the
+  loader, the three writers and two bystanders, listed by path, fails the suite.
+- **A relative executable override no longer breaks under the private working directory.**
+  `MARKITDOWN_PATH`, `DOCLING_PATH`, `REPOMIX_PATH`, `YTDLP_PATH` and `PDF_IMAGES_PYTHON`
+  used to be handed to the spawn verbatim; now that markitdown, repomix and the others run
+  in a throwaway directory, a relative value (`./venv/bin/markitdown`) is resolved against
+  the router's cwd BEFORE the spawn. A bare name and an absolute path are returned
+  byte-for-byte — padding included — so the readiness probe still names the exact path the
+  runtime will run.
+- **A private, empty working directory for the tools that do not need the router's.**
+  Measured: yt-dlp reads `yt-dlp.conf` from its current directory, and the router's cwd is
+  the user's WORKSPACE — a repository carrying that file could have appended `--exec …` to
+  every caption fetch. repomix reads `repomix.config.json` from cwd the same way. markitdown
+  and repomix now run in a throwaway `mkdtemp` directory removed afterwards; Docling, the
+  render script and yt-dlp run in the private output directory they already had. A relative
+  `filepath` still means what it meant: it is resolved against the router's cwd before the
+  child is spawned.
+
+### Fixed
+
+- **Accented characters in every Python-backed conversion on Windows.** Measured on the
+  shipped tree, with the full inherited environment: `markitdown -- accents.html` returned
+  `�l�ve � caf� na�ve ?? ok` for `Élève — café naïve 日本 ok`, and the quick-reference PDF
+  came back with U+FFFD in it. A piped Python stdout uses the ANSI code page unless told
+  otherwise, and the router decodes UTF-8. The allowlist sets `PYTHONIOENCODING=utf-8` for
+  every Python child as a FIXED value — a source value does not override it, because the
+  pipe's decoder is not negotiable. The same document now round-trips intact, and so does
+  the PDF. (Docling and the render script write files with an explicit encoding and were
+  never affected.)
+
+### Verification — measured, then mutated
+
+- The "needs" list was measured on the real toolchain under the allowlist, not written from
+  memory: markitdown on an accented HTML file and on a 29 KB PDF; a full Docling conversion
+  (38.5 s, layout and table models loaded from the HF cache, no replacement character); the
+  render script producing a page; `yt-dlp --version` and `--list-extractors`; repomix
+  `--version`; the PowerShell CIM scan (311 processes — the same count as with the full
+  environment — so `PSModulePath` is not passed, and since it is where PowerShell auto-loads
+  its modules from, it joined the NEVER list); and `python --version` under
+  `PATH` + `SystemRoot` alone. Also measured: libuv resolves a bare command through the
+  CHILD's `PATH`, which is why `PATH` is in every allowlist.
+- `tests/subprocess-env.test.mjs` (34 tests) proves the property with a REAL executable,
+  not a captured options object. On Windows it compiles `tests/fixtures/env-echo/EnvEcho.cs`
+  with the `csc.exe` every .NET Framework install carries (≈300 ms); on POSIX it writes a
+  shebang script. Copies of it stand in for markitdown, repomix, docling, python, yt-dlp,
+  npm, git and the process scanner, and eleven pins drive the PRODUCTION entry points
+  (`toMarkdown` — twice, once with a relative override —, `fromRepo`, `toMarkdownDocling`,
+  `pdfToImages`, `fetchYoutubeTranscriptViaYtdlp`, `findPythonDetailed`, `runInstall`, the
+  auto-update git runner, `findLiveSnapshotVersions`, `runSetupVault`) with sentinels set in
+  the router — a plain one, one named like a real secret, and the dangerous names a prefix
+  rule would have carried (`GIT_SSH_COMMAND`, `GIT_CONFIG_VALUE_0`, `npm_config__authToken`,
+  `SSH_ASKPASS`, `NODE_OPTIONS`) — then read the dump the child wrote. The remaining eleven
+  guarded sites (`--attach`, the sync hook, the wiki-autocommit git, the six git calls of
+  the engine, `taskkill`, the auto-update npm runner) are covered by the structural guard,
+  not by an executable pin. A CONTROL test spawns the same fake WITHOUT the helper and
+  requires every sentinel to arrive, so a green pin cannot be the instrument failing to
+  look. When `csc.exe` is absent the pins skip on a developer machine, and say why — and
+  FAIL under CI, because the Windows leg is where the defect lived.
+- Mutation, before shipping (re-run after the review corrections): the allowlist replaced by
+  the whole source environment → 18/29 red (all 11 pins and 7 unit tests; the control
+  stayed green, as it must); one guarded site stripped of `subprocessOptions` → the guard
+  red, naming `hooks/wiki-autocommit.mjs … spawnSync@89`. Both restored by copy and
+  confirmed by hash. The pass-4 guards had their own run: 7 mutations (an alias of
+  `process.env`, a destructured one, a reflective write, a silent binary, the "applied" line
+  renamed, an opt-out read in a form the pin cannot see, the byte-order mark through a
+  space-only trim), 7 red, every file restored by bytes. The pass-3/pass-5 guards had theirs:
+  12 mutations (the sandbox pair rule removed, the gated signals ignored, a computed-key
+  write through an `env` default parameter in a hook, `dotenv/config` imported, a second
+  `.env` reader, a hook never loading the file, a hook loading it after its opt-out,
+  `PSModulePath` back in an allowlist, `PYTHONWARNINGS` back in the Python group,
+  `SSL_CERT_DIR` resolved as one path, the guard back to the last argument, the guard
+  accepting an object literal as argv), 12 red — the last two only after the witnesses
+  without `env` exposed the argument-count flaw above. Final tree: the two new test files
+  47/47, the full suite **4 514 tests, 4 513 green, 0 failed, 1 opt-in skip**;
+  `npm run validate` and `npm run gate` green; release-grade leak scan of the 42 changed
+  files: 0 findings.
+- Path-valued variables keep their meaning under the private working directory: a relative
+  `DOCLING_ARTIFACTS_PATH=./artifacts`, `SSL_CERT_FILE=ca.pem`, `NODE_EXTRA_CA_CERTS`,
+  `GIT_CONFIG_GLOBAL`, `HF_HOME`, `npm_config_cache` (each group names its path-valued
+  members) is made absolute against the router's cwd before the spawn, exactly like a
+  relative executable override; absolute and empty values pass byte-for-byte. The readiness
+  probe resolves `MARKITDOWN_PATH` through the same function as the runtime, so a relative
+  override is reported at the path that will actually run.
+- Measured on Windows, exercised on POSIX: the "needs" list above was measured on this
+  machine's real toolchain; the CI ubuntu leg runs the same pins through the fake
+  instrument, which proves the FILTERING on POSIX but not that markitdown, Docling or yt-dlp
+  find every variable they want there. The POSIX names come from the tools' documentation.
+  A regression of that kind would show as an ENOENT-shaped error naming the tool, not as a
+  silent wrong answer.
+- `blankStringsAndComments` moved out of `tests/security-invariants.test.mjs` into
+  `tests/_source-scan.mjs` so the new guard could share it instead of copying it.
+
+### Changed
+
+- `runSetupVault` takes a `scriptPath` seam (default: the real engine) so the pin above can
+  spawn a printing stand-in through the production function.
+- `README.md` says what a spawned tool can and cannot see, under the conversion-tools
+  environment table.
+
+### Compatibility
+
+- A tool that needs a variable outside its allowlist no longer gets it — that is the point,
+  not a side effect. Three cases are known and deliberate: a gated Hugging Face model for
+  Docling (`HF_TOKEN`), a private npm registry (`NPM_TOKEN`, `npm_config_registry`), and an
+  operator's `NODE_OPTIONS` (`--max-old-space-size`, a proxy shim) for repomix and the
+  provisioning engine — it executes code at start-up and a workspace `.env` can set it, so
+  it no longer reaches any child. Adding a variable means adding its name to
+  `SUBPROCESS_TOOLS` in `src/helpers/subprocess-env.mjs`, in a change that says which tool
+  reads it and why; a name on the NEVER list cannot be added at all.
+- `PYTHONIOENCODING=utf-8` is fixed for the five Python children the helper guards. The two
+  interactive installers are exempt and keep whatever the user's shell carries.
+- A workspace `.env` that carried other variables for the router's benefit — a
+  `MARKITDOWN_PATH`, a `HTTPS_PROXY`, a `HF_HOME`, an `OBSIDIAN_ROUTER_CONFIG`, or one of the
+  four multi-tenant settings the cheat sheet used to file under the workspace `.env`
+  (`OBSIDIAN_ROUTER_ALLOWED_VAULTS`, `OBSIDIAN_ROUTER_READONLY`, `OBSIDIAN_ROUTER_USER_ID`,
+  `VAULT_<NAME>`) — no longer sets them: the router names them on its stderr at start-up,
+  and they belong in the MCP host's server declaration, in the launcher of a served
+  instance, or in the shell. The cheat sheet (`docs/quick-reference-{en,fr}.html`, PDFs
+  re-rendered) now keeps the workspace keys and the host keys in two tables.
+- `PYTHONWARNINGS` no longer reaches the Python children, and `PSModulePath` no longer
+  reaches the process scan: both are on the NEVER list. A warnings filter can name a module
+  the interpreter IMPORTS to resolve the category (`-W default::pkg.Cls`), and
+  `PSModulePath` is where PowerShell auto-loads its modules from, `CimCmdlets` included —
+  the CIM scan was measured to work without it, and the shell rebuilds its default path
+  when the variable is absent. An operator who quiets Python warnings through the
+  environment loses that for the router's children only.
+- `SSL_CERT_DIR` is resolved as the LIST OpenSSL reads (`:` on POSIX, `;` on Windows):
+  every relative entry is made absolute on its own, empty entries and the delimiter kept.
+  It used to be treated as one path, and `ca-one;ca-two` became a single nonexistent
+  directory.
+- `LD_LIBRARY_PATH` is on the NEVER list: a Docling install that relied on a system CUDA
+  found through it (rather than through the libraries the torch wheels carry) would lose it.
+  The wheels ship their own; if a setup needs the system path, that is a named addition to
+  discuss, not a silent pass-through to restore.
+
+### Review
+
+- Two adversarial reviewers, two passes each, every pass handed the invariants the change
+  claims. Pass 1 — Codex: 16 findings (4 blocking, 10 major, 2 minor); the Code Reviewer
+  agent: 5 important, 3 minor, its own mutation run and an independent recount of 37/22/15 —
+  24 findings. Folded in: no prefix rule, the NEVER list, `extraEnv` restricted to listed
+  names, fixed values applied last, `NODE_OPTIONS` refused, `ELECTRON_RUN_AS_NODE` and the
+  session variables named, the SDK-started router counted, the guard judging the options
+  argument and pinning exact totals and commands, the CI-fail on a missing instrument,
+  relative overrides resolved, and the wording of README and this entry. Refuted on the
+  code: the export allowlist already covers `src/**` (`npm run gate` green, release-grade
+  scan of the changed files clean). Accepted as residual: eleven of the 22 guarded sites are
+  proven by the structural guard rather than by an executable pin.
+- Pass 2 — the Code Reviewer agent re-ran the file (29/29), verified the eight corrections
+  one by one, and found the gap that mattered: the workspace `.env` loaders. Folded in: the
+  `.env` policy above, `GIT_SSL_CAINFO` / `GIT_SSL_CAPATH` for git, `XDG_DATA_DIRS` /
+  `XDG_CURRENT_DESKTOP` / `DESKTOP_SESSION` for the `--open` hand-off, the desktop launchers
+  no longer forwarding `ELECTRON_RUN_AS_NODE`, the test's scratch directory moved under a
+  git-ignored corner of `tests/`, and two wording fixes.
+- Pass 2 — Codex, on the intermediate tree: 10 findings (1 blocking — the same
+  `OBSIDIAN_ROUTER_*` family in the `.env` loader, already closed by the explicit list — 2
+  major, 7 minor). Folded in: the guard now requires the options argument to be EXACTLY one
+  `subprocessOptions(...)` call (no `.env` property access, no `|| opts` after it) naming no
+  `env` property in any spelling (`env:`, the `{ env }` shorthand, `'env':`, `['env']:`);
+  path-valued variables resolved (above); the credential shapes of the NEVER list match on
+  word boundaries, so `TOKENIZERS_PARALLELISM` — a real Hugging Face knob Docling's stack
+  reads, now named for it — is not mistaken for a secret; an `extraEnv` KEY is judged before
+  its value (a null under a forbidden name still throws); the CONTROL test requires every
+  dangerous sentinel to arrive; the `.env` warning shows ignored names through a strict
+  alphabet, clipped to 64 characters and capped at 20, so a hostile file cannot drive a
+  terminal through it; the provisioning engine's two imposed values are applied AFTER a
+  caller's `extraEnv`, so `OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS=1` cannot be overridden by
+  a caller either; the readiness probe shares the override resolver; the measures in this
+  entry were re-taken on the final tree.
+- Pass 3 — the Code Reviewer agent, on the `.env` policy: one blocker (the whole
+  `OBSIDIAN_ROUTER_*` family accepted from a workspace file — fixed by the explicit list
+  above), two important (the hooks' warning on the stderr Claude reads — the hooks are silent
+  now; the loader guard blind to eight forms of the same loop — replaced by the
+  "no computed-key write into `process.env` anywhere" rule), and the spread rule for spawns.
+  Left as they were, on purpose: the `.env` WRITERS still match `KEY=` lines without an
+  `export ` prefix (pre-existing, cosmetic), and `delete launcherEnv.ELECTRON_RUN_AS_NODE`
+  is case-sensitive on a plain object (Electron writes the name in upper case).
+- Pass 4 — the Code Reviewer agent confirmed the pass-3 blocker closed (no accepted key can
+  point the router at an endpoint outside the user's own registry) and found three more, all
+  folded in: the cheat sheet filed four host settings under the workspace `.env` (two tables
+  now); the loader guard was blind to an alias of `process.env` (two rules added, plus
+  reflective writes); the binary discarded what the loader applied (it now names the applied
+  keys — a `lockSource` / `autoEnrichModeSource` field on `list_vaults`, so Claude can say
+  "FullAuto came from the repository's file", is a follow-up, not in this lot). Minor, also
+  done: the opt-out pin counting reads rather than mentions with its host-only list, a
+  stale docstring in the hooks' loader, and a test that the binary is not silent. Refuted
+  on the code: the byte-order mark was never a problem — `trim()` strips U+FEFF — so that
+  one became a pin instead of a fix.
+- Pass 3 — Codex, on the final diff: 11 findings (1 blocking, 6 major, 4 minor). Folded
+  in: the sandbox from a workspace file (the blocking one, above); the guard judging the
+  LAST argument where Node reads a FIXED position — `spawnSync(cmd, argv, { env:
+  process.env }, subprocessOptions('git'))` passed as guarded while Node used the third
+  argument and ignored the fourth: the guard now refuses more than three arguments, an
+  object literal where the argv goes, and an `env` spelling in any argument but the
+  options, with that exact call as a red witness — and the witnesses without any `env`
+  exposed a second flaw on the way: the argument count was taken on the blanked text,
+  where a string-literal command (`'git'`) is all spaces and vanished from the count, so
+  arguments are now counted on the raw source at the same offsets; `PYTHONWARNINGS` and `PSModulePath` to
+  the NEVER list (a probe showed `-W default::this.X` running the module's side effects);
+  `SSL_CERT_DIR` as a list; the five hooks reading an opt-out before loading the file; the
+  loader-uniqueness pins; the applied line no longer printing the path; the Electron
+  variables removed from the `--open` launcher case-insensitively; the `set_auto_enrich_mode`
+  descriptions still saying `off` removes the line (it writes the literal, since v0.13);
+  the measures re-taken. Not folded in, on purpose: the observation that a cloned
+  repository's `.env` still CHOOSES which of the user's registered vaults a session reads,
+  locks and enriches (the binding could live in a per-user store outside the repository,
+  or require an approval) — a design decision for the owner, recorded as a proposal, not a
+  patch in a security lot.
+- Pass 5 — the Code Reviewer agent confirmed the four pass-4 corrections and the
+  byte-order-mark refutation on the code, and found the sandbox hole from the alias side
+  (fixed above, with `getAllowedPaths` aligned on the start-up reader), the default-parameter
+  alias the guard could not see (`({ env = process.env } = {})` is the house style, so the
+  guard now stands on the WRITE side: `env[key] = value` through an identifier named `env`
+  is refused outside the policy module), the cheat sheets' opt-out line (five of fourteen
+  in one language, "by hook" in the other — now the fourteen by name, identically), the
+  cheat sheets' header still saying v0.86.0, and the "hooks are silent" pin generalised to
+  every direct call under `hooks/`.
+
 ## [0.86.0] — 2026-09-01 — three silences: a dormant toolbox, a bench that skipped, a journal that split
 
 Nothing here was broken loudly. A conversion toolbox that was never installed said

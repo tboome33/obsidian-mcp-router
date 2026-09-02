@@ -788,7 +788,7 @@ const TOOLS = [
   {
     name: 'set_auto_enrich_mode',
     description:
-      'Set the wiki auto-enrichment mode for the current session. Auto-enrichment is the layer where Claude proactively proposes wiki saves at three triggers (validation pins, result-obtained digests, topic-switch checkpoints). Modes: "ClaudeAsk" (default — propose, user always confirms), "Hybrid" (auto-save type-safe items like facts and URLs, ask on high-stakes like decisions / ADRs / techniques), "FullAuto" (auto-save everything with audit log + sensitivity filter + hard cap), "off" (no auto-suggestions; user invokes /save manually). Pass `persist: true` to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> into <cwd>/.env so the mode survives restarts. Persist with mode "off" removes the line entirely. Note: persist:true is refused when the current working directory IS the user home directory (avoids creating a stray ~/.env). The in-memory mode still applies.',
+      'Set the wiki auto-enrichment mode for the current session. Auto-enrichment is the layer where Claude proactively proposes wiki saves at three triggers (validation pins, result-obtained digests, topic-switch checkpoints). Modes: "ClaudeAsk" (default — propose, user always confirms), "Hybrid" (auto-save type-safe items like facts and URLs, ask on high-stakes like decisions / ADRs / techniques), "FullAuto" (auto-save everything with audit log + sensitivity filter + hard cap), "off" (no auto-suggestions; user invokes /save manually). Pass `persist: true` to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> into <cwd>/.env so the mode survives restarts — "off" included, written as the literal (a removed line would read as the default at the next start). Note: persist:true is refused when the current working directory IS the user home directory (avoids creating a stray ~/.env). The in-memory mode still applies.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -800,7 +800,7 @@ const TOOLS = [
         persist: {
           type: 'boolean',
           description:
-            'If true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to <cwd>/.env (or remove the line if mode is "off"). Default: false (volatile, this session only).',
+            'If true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to <cwd>/.env — "off" included, as the literal. Default: false (volatile, this session only).',
         },
       },
       required: ['mode'],

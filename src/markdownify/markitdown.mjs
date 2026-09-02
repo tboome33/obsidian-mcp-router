@@ -27,6 +27,7 @@ import { Agent } from 'undici';
 import {
   findPythonDetailed, isShellSafePath, MARKITDOWN_TOOLS, SKIP_ENV,
 } from '../helpers/conversion-readiness.mjs';
+import { subprocessOptions, withIsolatedCwd } from '../helpers/subprocess-env.mjs';
 import {
   expandHome,
   validateUrl,
@@ -181,9 +182,17 @@ export async function fromRepo({ repoUrl, branch, compress, projectRoot = DEFAUL
   let stdout;
   let stderr;
   try {
-    ({ stdout, stderr } = await execFileAsync(cmd, args, {
-      maxBuffer: 100 * 1024 * 1024,
-    }));
+    // A private, EMPTY working directory: repomix reads `repomix.config.json`
+    // and `.repomixignore` from its cwd, and the router's cwd is the user's
+    // workspace — so a repository carrying one used to reconfigure this tool.
+    // The environment is the repomix allowlist, never the router's
+    // (subprocess-env.mjs): repomix clones with git, so it gets the git
+    // family and the proxy/CA variables, and nothing else.
+    ({ stdout, stderr } = await withIsolatedCwd('repomix-cwd-', (cwd) =>
+      execFileAsync(cmd, args, subprocessOptions('repomix', {
+        cwd,
+        maxBuffer: 100 * 1024 * 1024,
+      }))));
   } catch (e) {
     if (e?.code === 'ENOENT') {
       throw new Error(
@@ -312,9 +321,19 @@ async function runMarkitdown(filePath, projectRoot) {
     // a filename that begins with `-` as an option. Without it, a filename
     // like `--version` or `-h` would trigger help output and ship that string
     // back as "markdown" (cheap prompt-injection / info-leak surface).
-    ({ stdout } = await execFileAsync(markitdownPath, ['--', filePath], {
-      maxBuffer: 50 * 1024 * 1024,
-    }));
+    //
+    // The child runs in a private throwaway directory with the markitdown
+    // allowlist as its environment (subprocess-env.mjs) — not the router's
+    // cwd, not the router's process.env. That allowlist also fixes
+    // `PYTHONIOENCODING=utf-8`: on Windows a piped Python stdout used the
+    // ANSI code page, and every accented character came back as U+FFFD.
+    // `path.resolve` keeps a RELATIVE `filePath` meaning what it meant before
+    // the cwd moved: a path against the router's own working directory.
+    ({ stdout } = await withIsolatedCwd('markitdown-cwd-', (cwd) =>
+      execFileAsync(markitdownPath, ['--', path.resolve(filePath)], subprocessOptions('markitdown', {
+        cwd,
+        maxBuffer: 50 * 1024 * 1024,
+      }))));
   } catch (e) {
     if (e?.code === 'ENOENT') {
       throw new Error(await missingMarkitdownMessage(markitdownPath));

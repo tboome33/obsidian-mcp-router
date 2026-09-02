@@ -68,7 +68,10 @@
  */
 
 import fs from 'node:fs';
+import { absolutizeExecutableOverride } from './subprocess-env.mjs';
 import path from 'node:path';
+
+import { subprocessOptions, withIsolatedCwd } from './subprocess-env.mjs';
 
 /**
  * Tools that STOP WORKING without markitdown — verified against their handlers,
@@ -364,8 +367,11 @@ export function probeConversionToolbox(opts) {
     const optedOut = env[SKIP_ENV] === '1';
 
     // WHICH path is selected mirrors `resolveMarkitdownPath` exactly — same
-    // truthiness test, same UNTRIMMED value. It must, because that function is
-    // what actually runs, and a probe naming a different path than the one that
+    // truthiness test, same value, through the SAME resolver: a bare name or
+    // an absolute path byte-for-byte (padding included), a relative path made
+    // absolute against the router's cwd (v0.87.0, because the child now runs
+    // in a throwaway directory). It must, because that function is what
+    // actually runs, and a probe naming a different path than the one that
     // will be spawned is a readiness check that lies. Trimming here looked like
     // a courtesy and was a divergence: `MARKITDOWN_PATH=" /opt/markitdown "`
     // got reported ready at the trimmed path while the runtime spawned the
@@ -374,7 +380,8 @@ export function probeConversionToolbox(opts) {
     //
     // WHETHER it will run is deliberately NOT mirrored — the runtime finds that
     // out by failing, and this exists to say so first.
-    const rawOverride = env.MARKITDOWN_PATH;
+    const configured = env.MARKITDOWN_PATH;
+    const rawOverride = typeof configured === 'string' && configured ? absolutizeExecutableOverride(configured) : configured;
     if (typeof rawOverride === 'string' && rawOverride) {
       // Measured, not assumed. Reporting `available: true` for
       // `MARKITDOWN_PATH=Z:\gone\markitdown.exe` put a ✅ in front of the user
@@ -620,6 +627,19 @@ export async function findPythonDetailed(deps = {}) {
   const execFileAsync = deps && deps.execFile;
   const rejected = [];
   if (typeof execFileAsync !== 'function') return { ok: false, rejected, checked: false };
+  // THE PROBE'S OWN ENVIRONMENT IS THE `python-probe` ALLOWLIST, and its cwd a
+  // private throwaway directory (subprocess-env.mjs). This is the one child
+  // this module spawns, and it inherited the router's whole process.env like
+  // every other site did — a `--version` call carrying the workspace `.env`.
+  return withIsolatedCwd('python-probe-', (cwd) => probeCandidates(execFileAsync, rejected, {
+    cwd,
+    // A bounded wait: a broken shim that hangs must not stall an error
+    // message, which is the one place this runs on a user-visible path.
+    timeout: Number.isFinite(deps.timeoutMs) ? deps.timeoutMs : 5000,
+  }));
+}
+
+async function probeCandidates(execFileAsync, rejected, probeOptions) {
   // Every candidate must produce a CONCLUSIVE outcome — an answer, or an ENOENT
   // that means "this interpreter is not here". One inconclusive failure is
   // enough to make the whole result "we could not look".
@@ -629,11 +649,7 @@ export async function findPythonDetailed(deps = {}) {
       // BOTH STREAMS. `python --version` writes to stderr on Python 2.x, so
       // reading stdout alone turned "2.7 is here and is too old" — an
       // actionable, measured fact — into "could not determine".
-      const { stdout, stderr } = await execFileAsync(candidate, ['--version'], {
-        // A bounded wait: a broken shim that hangs must not stall an error
-        // message, which is the one place this runs on a user-visible path.
-        timeout: Number.isFinite(deps.timeoutMs) ? deps.timeoutMs : 5000,
-      });
+      const { stdout, stderr } = await execFileAsync(candidate, ['--version'], subprocessOptions('python-probe', probeOptions));
       // ANCHORED TO A LINE START, and stdout is consulted first. An
       // unanchored search over both streams read
       // `warning: install Python 3.12 for support\nPython 2.7.18` as 3.12 —

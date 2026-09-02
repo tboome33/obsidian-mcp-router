@@ -46,6 +46,11 @@ import {
   readPackageVersion,
   renderDriftNudge,
 } from './_helpers/doc-drift-detector.mjs';
+import { loadWorkspaceDotenv } from './_helpers/workspace-vault.mjs';
+
+// The workspace .env is loaded before the opt-out is read, so a NO_* set in
+// that file is honored here and not only when the parent shell carries it.
+loadWorkspaceDotenv(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_DOC_PROPAGATION_CHECK || '').toLowerCase())) {

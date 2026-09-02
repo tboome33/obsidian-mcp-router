@@ -53,6 +53,7 @@ import { fileURLToPath } from 'node:url';
 
 import { compareSemver, parseSemver } from '../src/helpers/semver-compare.mjs';
 import { tryAutoUpdate } from '../src/helpers/plugin-auto-update.mjs';
+import { loadWorkspaceDotenv } from './_helpers/workspace-vault.mjs';
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 const PACKAGE_JSON_URL =
@@ -71,6 +72,9 @@ function isTruthy(value) {
 }
 
 // ─── Opt-out checks ──────────────────────────────────────────────────
+// The workspace .env is loaded first, so a NO_UPDATE_CHECK set in that file
+// is honored here and not only when the parent shell carries it.
+loadWorkspaceDotenv(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 if (isTruthy(process.env.OBSIDIAN_ROUTER_NO_UPDATE_CHECK)) process.exit(0);
 if (process.env.OBSIDIAN_ROUTER_USER_ID) process.exit(0);
 

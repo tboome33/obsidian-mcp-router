@@ -28,19 +28,24 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
+import { applyWorkspaceDotenv } from '../../src/helpers/workspace-dotenv.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
 // ---------------------------------------------------------------------------
 
 /**
- * Load `<cwd>/.env` into process.env with standard dotenv semantics:
- * file values fill only UNSET keys (process.env always wins). Never
- * throws — silent no-op if the file doesn't exist or can't be parsed.
- *
- * Minimal parser supports: KEY=VALUE, # comments, optional `export `
- * prefix, optional surrounding double or single quotes. No
- * interpolation, no multi-line, no escaped quote support.
+ * Load `<cwd>/.env` into process.env with standard dotenv semantics —
+ * file values fill only UNSET keys (process.env always wins) — under the
+ * workspace policy of src/helpers/workspace-dotenv.mjs: exactly the keys the
+ * router's own writers put in a workspace file (OBSIDIAN_ROUTER_DEFAULT_VAULT,
+ * OBSIDIAN_ROUTER_LOCKED, OBSIDIAN_ROUTER_AUTO_ENRICH, VAULT_PATH,
+ * MD_ALLOWED_PATHS, MD_SHARE_DIR) plus the enumerated OBSIDIAN_ROUTER_NO_*
+ * opt-outs. Anything else — a repository's GIT_CONFIG_GLOBAL, a NODE_OPTIONS,
+ * a tool override, a host setting such as OBSIDIAN_ROUTER_CONFIG — is
+ * ignored, and ignored SILENTLY here (see the function body; the router
+ * binary is the one that names it). Never throws — silent no-op if the file
+ * doesn't exist or can't be read.
  *
  * Hooks call this once at startup before reading any
  * `process.env.OBSIDIAN_ROUTER_*` so workspace-scoped variables (notably
@@ -49,27 +54,10 @@ import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
  * inherit dotenv loading from the router binary.
  */
 export function loadWorkspaceDotenv(cwd) {
-  const envPath = path.join(cwd, '.env');
-  let content;
-  try {
-    content = fs.readFileSync(envPath, 'utf8');
-  } catch {
-    return; // no .env — nothing to do
-  }
-  for (const rawLine of content.split(/\r?\n/)) {
-    let line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    if (line.startsWith('export ')) line = line.slice('export '.length).trim();
-    const eq = line.indexOf('=');
-    if (eq <= 0) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
+  // Silent on purpose: a hook's stderr is the message Claude reads when the
+  // hook blocks (exit 2), and a line about ignored .env keys in front of the
+  // real reason would be read as an instruction. The router binary warns.
+  return applyWorkspaceDotenv({ cwd, warn: () => {} });
 }
 
 // ---------------------------------------------------------------------------

@@ -44,10 +44,15 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { detectVaultContext, readRouterConfig, loadWorkspaceDotenv } from './_helpers/workspace-vault.mjs';
+import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
 
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 
 const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+
+// The workspace .env is loaded FIRST: the opt-out below must be honored when
+// that file carries it, not only when the parent shell does.
+loadWorkspaceDotenv(cwd);
 
 // ── Opt-out ──────────────────────────────────────────────────────────
 // This hook writes to the user's git history. It must be switchable off
@@ -71,7 +76,6 @@ if (!fs.existsSync(gitDir)) process.exit(0);
 // identifies a real vault. Workspace-bound sessions are deliberately
 // excluded: there the vault lives elsewhere and the cwd's own wiki/ is
 // somebody else's, which is exactly the case this hook must not touch.
-loadWorkspaceDotenv(cwd);
 const ctx = detectVaultContext(cwd, readRouterConfig());
 if (!ctx || ctx.mode !== 'cwd-is-vault') process.exit(0);
 
@@ -82,7 +86,10 @@ const trackedDirs = ['wiki', 'wiki-meta', '.raw', '.vault-meta'].filter((d) =>
 if (trackedDirs.length === 0) process.exit(0);
 
 function git(args) {
-  return spawnSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' });
+  // git's environment is its allowlist (subprocess-env.mjs) — HOME and the
+  // GIT_* / SSH_* / GPG_* families it reads — not this hook's, which is Claude
+  // Code's own and has no business in a commit.
+  return spawnSync('git', args, subprocessOptions('git', { cwd, encoding: 'utf8', stdio: 'pipe' }));
 }
 
 function warn(msg) {

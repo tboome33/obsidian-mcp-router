@@ -67,11 +67,13 @@ import {
   formatRecallBlock,
 } from './_helpers/decisions-recall-core.mjs';
 
-// The opt-out is re-checked after loadWorkspaceDotenv below, so that a
-// project can disable this hook from its own `.env` like every other
-// OBSIDIAN_ROUTER_* setting. This first check is the cheap parent-env
-// path — it lets an opt-out short-circuit before we even read stdin.
+// The workspace .env is loaded BEFORE the first opt-out check — from the
+// project directory the host names, since stdin (and its cwd) is not read
+// yet — so a NO_* set in that file short-circuits as early as one set in the
+// parent shell. It is loaded again below with the cwd stdin carries, and the
+// opt-out re-checked, for the case where the two differ.
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
+loadWorkspaceDotenv(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 const optedOut = () =>
   TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_DECISIONS_RECALL || '').trim().toLowerCase());
 if (optedOut()) process.exit(0);

@@ -24,6 +24,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 
+import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const setupScript = resolve(__dirname, 'setup-vault.mjs');
 
@@ -41,10 +43,13 @@ if (!fs.existsSync(join(cwd, '.obsidian'))) process.exit(0);
 // SessionStart hooks should be silent on the happy path. We drop the child's
 // stdout (which prints "[obsidian-mcp-router] Synced N plugin(s)..." on
 // changes) but keep stderr so genuine failures still surface.
+// The engine gets the `setup-vault` allowlist (subprocess-env.mjs), not this
+// hook's environment — which is Claude Code's own, carrying whatever the host
+// was started with.
 const result = spawnSync(
   process.execPath,
   [setupScript, cwd, '--sync-plugins', '--quiet'],
-  { stdio: ['ignore', 'ignore', 'inherit'], timeout: 10000 }
+  subprocessOptions('setup-vault', { stdio: ['ignore', 'ignore', 'inherit'], timeout: 10000 })
 );
 
 process.exit(0);
