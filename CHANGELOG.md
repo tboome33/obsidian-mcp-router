@@ -6,6 +6,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.87.1] — 2026-09-02 — the environment proof runs on the GitHub runners too
+
+v0.87.0's CI was red on all four legs (node 20.19 / 22 × ubuntu / windows) while the
+full suite was green on the developer's Windows machine. Three causes, none in what a
+child process receives — two in the test harness, one in the resolver of a configured
+executable path.
+
+### Fixed
+
+- **A UNC or a drive path configured on a POSIX host is left alone.**
+  `absolutizeExecutableOverride` (`MARKITDOWN_PATH` & co.) and the path-valued variables
+  of the allowlist decided "relative" with the HOST's `path.isAbsolute`, so on Linux a
+  `\\server\share\markitdown.exe` or a `C:\tools\x` counted as relative, was resolved
+  against the cwd — mangled — and, for the UNC form, escaped the readiness probe's
+  "never stat a UNC path" rule (the stat that can hang a session start). A path that is
+  absolute on EITHER platform is now returned byte-for-byte, everywhere.
+- **The Windows leg of `tests/subprocess-env.test.mjs` compared an 8.3 short path with a
+  long one.** The GitHub Windows runner's temp root is an 8.3 short path (a `RUNNERADMIN~1`
+  segment under its profile); the instrument reports its cwd in the long form, and every
+  pin — the CONTROL included —
+  failed on that comparison. Paths are canonicalised (`fs.realpathSync.native` on their
+  deepest existing ancestor, so a private cwd already removed still compares) before any
+  comparison.
+- **The POSIX fake was loaded as an ES module.** It is a CommonJS script (`require`,
+  `__dirname`); the relative-override pin puts it under the repository, whose
+  `package.json` says `"type": "module"`, and Node 20.19/22 loads an extensionless file
+  in that scope as ESM — `require is not defined`. A `package.json` pinning `commonjs`
+  now sits beside every POSIX fake (harmless under the system temp root, where the other
+  pins put theirs and passed). Reproduced and fixed locally on an extensionless script
+  under the repository before pushing.
+
+### Verification
+
+- `tests/subprocess-env.test.mjs` + `tests/conversion-readiness.test.mjs` +
+  `tests/workspace-dotenv.test.mjs` 116/116 on Windows; the Linux leg is proven by this
+  commit's CI run (the local WSL carries Node 18, below the engines floor).
+
 ## [0.87.0] — 2026-09-02 — every child process gets a named environment, and stops eating the accents
 
 Nothing the router spawned was ever told what it may see. Not one `execFile` / `spawn` in

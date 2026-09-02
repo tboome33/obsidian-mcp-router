@@ -394,9 +394,19 @@ export function allowlistFor(tool, platform = process.platform) {
  * or `ca.pem` would mean nothing. An absolute value, or an empty one, is
  * returned byte-for-byte.
  */
+/**
+ * Absolute on EITHER platform: a `\\server\share\x` or `C:\x` configured on a
+ * POSIX host is not "relative" (POSIX just does not spell absolute paths that
+ * way), and resolving it against the cwd would mangle it — and, for the UNC
+ * form, hide it from the readiness probe's "never stat a UNC path" rule.
+ */
+function isAbsoluteOnAnyPlatform(p) {
+  return path.win32.isAbsolute(p) || path.posix.isAbsolute(p);
+}
+
 function absolutizePathValue(value) {
   const t = String(value).trim();
-  if (!t || path.isAbsolute(t)) return value;
+  if (!t || isAbsoluteOnAnyPlatform(t)) return value;
   return path.resolve(t);
 }
 
@@ -533,7 +543,7 @@ export function absolutizeExecutableOverride(value) {
   // verbatim (a check that names a different path than the one that runs is
   // a check that lies). Only a genuinely relative path changes.
   const t = s.trim();
-  if (!/[\\/]/.test(t) || path.isAbsolute(t)) return s;
+  if (!/[\\/]/.test(t) || isAbsoluteOnAnyPlatform(t)) return s;
   return path.resolve(t);
 }
 

@@ -183,6 +183,12 @@ function installFake(dir, name) {
   }
   const target = path.join(dir, name);
   fs.writeFileSync(target, POSIX_FAKE, { mode: 0o755 });
+  // The fake is CommonJS (`require`, `__dirname`). Under the repository —
+  // where the relative-override pin puts it — the nearest package.json says
+  // `"type": "module"`, and Node 22 loads an extensionless file in that scope
+  // as ESM: `require is not defined`. A package.json beside the fake pins its
+  // own scope; under the system temp root it is harmless.
+  fs.writeFileSync(path.join(dir, 'package.json'), '{ "type": "commonjs" }\n');
   return target;
 }
 
@@ -206,7 +212,28 @@ function assertScrubbed(dump, label) {
   assert.ok(dump.has('PATH'), `${label}: PATH must reach the child (it is how the executable and its helpers are found)`);
 }
 
-const foldPath = (p) => (IS_WIN ? path.resolve(p).toLowerCase() : path.resolve(p));
+/**
+ * The canonical form of a path: resolved, then the real path of its deepest
+ * EXISTING ancestor (a private cwd may be gone by the time it is compared),
+ * case-folded on Windows. `realpathSync.native` expands 8.3 short names —
+ * the GitHub Windows runner's temp root is one (a `RUNNERADMIN~1` segment under
+ * its profile), and a child reports the long form as its cwd.
+ */
+function canonicalPath(p) {
+  const resolved = path.resolve(p);
+  let existing = resolved;
+  const rest = [];
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) return resolved;
+    rest.unshift(path.basename(existing));
+    existing = parent;
+  }
+  let real;
+  try { real = fs.realpathSync.native(existing); } catch { real = existing; }
+  return path.join(real, ...rest);
+}
+const foldPath = (p) => (IS_WIN ? canonicalPath(p).toLowerCase() : canonicalPath(p));
 const samePath = (a, b) => foldPath(a) === foldPath(b);
 const isUnderTmp = (p) => foldPath(p).startsWith(foldPath(os.tmpdir()));
 
@@ -468,6 +495,14 @@ describe('buildSubprocessEnv — the allowlist, not the parent', () => {
     assert.equal(absolutizeExecutableOverride(''), '');
     assert.equal(absolutizeExecutableOverride('markitdown'), 'markitdown');
     assert.equal(absolutizeExecutableOverride('yt-dlp.exe'), 'yt-dlp.exe');
+    // Absolute on EITHER platform stays byte-for-byte on every host: a UNC
+    // path or a drive path configured on a POSIX host is not relative, and
+    // resolving it against the cwd would mangle it (CI, ubuntu leg).
+    for (const foreign of ['\\\\server\\share\\markitdown.exe', 'C:\\tools\\markitdown.exe', '/opt/markitdown/bin/markitdown', '//server/share/markitdown']) {
+      assert.equal(absolutizeExecutableOverride(foreign), foreign, foreign);
+    }
+    const listWithDrive = buildSubprocessEnv('docling', { source: { PATH: 'p', SSL_CERT_DIR: 'C:\\certs;/etc/ssl/certs;\\\\nas\\ca' }, platform: 'win32' });
+    assert.equal(listWithDrive.SSL_CERT_DIR, 'C:\\certs;/etc/ssl/certs;\\\\nas\\ca', 'every entry absolute on some platform: none resolved');
     const rel = IS_WIN ? '.\\venv\\Scripts\\markitdown.exe' : './venv/bin/markitdown';
     const abs = absolutizeExecutableOverride(rel);
     assert.ok(path.isAbsolute(abs), abs);
