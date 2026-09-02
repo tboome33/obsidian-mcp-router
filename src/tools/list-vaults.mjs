@@ -18,6 +18,18 @@ import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
+
+/**
+ * The complete vocabulary of `*Source.origin` — the ONE authoritative list.
+ * The tool description explains every one of these, a test proves it does, and
+ * `listVaults` refuses to emit anything outside it. A tenth value is added
+ * here first, and the test says where else it has to be explained.
+ */
+export const SETTING_ORIGINS = Object.freeze([
+  'workspace-dotenv', 'host', 'runtime', 'config',
+  'first-healthy', 'first-active', 'default', 'unset', 'unknown',
+]);
+const SETTING_ORIGIN_SET = new Set(SETTING_ORIGINS);
 /**
  * Build the `defaultVaultStatus` summary for the list_vaults response.
  *
@@ -123,9 +135,60 @@ export async function listVaults(registry) {
     env: process.env,
   });
 
+  // WHERE each session setting came from (v0.88.0) — the "provenance" lot of
+  // the accepted decision `liaison-workspace-vault-hors-depot`. A workspace is
+  // very often a cloned repository, and its `.env` travels with it: until the
+  // binding moves out of the repository, the router must at least be able to
+  // say "this mode was chosen by this project's file, not by you" instead of
+  // applying it silently. Each field is `{ origin, variable }`:
+  //
+  //   origin 'workspace-dotenv' — applied from `<cwd>/.env` by this process
+  //          'host'             — already in the environment at start-up (the
+  //                               MCP host's server declaration, a launcher, a shell)
+  //          'runtime'          — set during this session by lock_vault /
+  //                               set_auto_enrich_mode
+  //          'config'           — the router's own config.json (default vault only)
+  //          'first-healthy' / 'first-active' — no one chose: the cascade fell
+  //                               back to a vault (default vault only)
+  //          'default'          — nothing set it; the documented default applies
+  //          'unset'            — no value at all (not locked, no vault resolved)
+  //          'unknown'          — a registry that predates this field, or one
+  //                               built by a path that does not record it
+  //   variable — the environment variable that carried it, or null
+  //
+  // The values are validated against the registry either way: a workspace file
+  // can only ever name a vault the user already registered.
+  // Written as literals rather than built from a variable, so the guard in
+  // tests/setting-provenance.test.mjs — which collects `origin: '<literal>'`
+  // across the producers and requires the tool description to explain every
+  // one of them — can actually see these three. A fallback assembled from an
+  // argument was invisible to it, and `unknown` went undocumented.
+  const UNKNOWN = Object.freeze({ origin: 'unknown', variable: null });
+  const UNSET = Object.freeze({ origin: 'unset', variable: null });
+  const BY_DEFAULT = Object.freeze({ origin: 'default', variable: null });
+  // The recorded source is VALIDATED at the boundary, not trusted: a registry
+  // built by another path could carry a malformed object or an origin outside
+  // the documented vocabulary, and this response is a contract. Anything that
+  // does not typecheck becomes `unknown` — the answer for "cannot say".
+  const sourceOr = (recorded, fallback) => {
+    const ok = recorded
+      && typeof recorded === 'object'
+      && SETTING_ORIGIN_SET.has(recorded.origin)
+      && (recorded.variable === null || typeof recorded.variable === 'string');
+    if (ok) return recorded;
+    return recorded ? UNKNOWN : fallback;
+  };
+
   return ({
     defaultVault: registry.defaultVault,
     defaultVaultStatus,
+    defaultVaultSource: sourceOr(registry.defaultVaultSource, registry.defaultVault ? UNKNOWN : UNSET),
+    lockSource: sourceOr(registry.lockSource, registry.lockedVault ? UNKNOWN : UNSET),
+    // A mode is present but nobody recorded WHO set it: `ClaudeAsk` is the
+    // documented default, but it is also a value a host, a workspace file or a
+    // tool call can set explicitly — so a mode with no source is `unknown`,
+    // and only a registry carrying no mode at all is `default`.
+    autoEnrichModeSource: sourceOr(registry.autoEnrichModeSource, registry.autoEnrichMode ? UNKNOWN : BY_DEFAULT),
     conversionToolbox,
     configPath: registry.configPath,
     vaults: results,

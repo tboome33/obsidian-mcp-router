@@ -988,11 +988,16 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     const out = await listVaults(registry);
     assert.deepEqual(Object.keys(out).sort(), [
       'autoEnrichMode',
+      // v0.88.0 — WHERE each of the three session settings came from. Added
+      // here deliberately, which is the whole point of pinning the set.
+      'autoEnrichModeSource',
       'configPath',
       'conversionToolbox',
       'defaultVault',
+      'defaultVaultSource',
       'defaultVaultStatus',
       'disabled',
+      'lockSource',
       'lockedTo',
       'portCollisions',
       'vaults',

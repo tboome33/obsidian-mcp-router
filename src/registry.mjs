@@ -40,6 +40,7 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
+import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -383,11 +384,17 @@ export async function loadRegistry({ configPath } = {}) {
   // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
   // so a router with no explicit configuration prefers a healthy vault.
   const configuredDefault = config.defaultVault;
-  const defaultVault = resolveDefaultVault({ vaults, configuredDefault });
+  const resolvedDefault = resolveDefaultVaultWithSource({ vaults, configuredDefault });
+  const defaultVault = resolvedDefault.name;
 
   return {
     configPath: cfgPath,
     defaultVault,
+    // WHICH tier of the cascade answered, and — when it read an environment
+    // variable — whether that variable came from the workspace `.env` or from
+    // the host. Surfaced by `list_vaults`; see the decision
+    // `liaison-workspace-vault-hors-depot`.
+    defaultVaultSource: { origin: resolvedDefault.origin, variable: resolvedDefault.variable },
     vaults,
     skipped,
     // Port collisions + registry drift found at load time (v0.77.0). Always
@@ -493,12 +500,29 @@ function pathBasename(p) {
  * was disabled/removed since the override was written).
  */
 function resolveDefaultVault({ vaults, configuredDefault }) {
+  return resolveDefaultVaultWithSource({ vaults, configuredDefault }).name;
+}
+
+/**
+ * The same cascade, saying WHICH tier answered — the "provenance" lot of the
+ * accepted decision `liaison-workspace-vault-hors-depot`. Two of the five
+ * tiers read an environment variable, and a variable can come from the
+ * workspace `.env` of a cloned repository as easily as from the MCP host; the
+ * `origin` says which, through the loader's own record.
+ *
+ * `resolveDefaultVault` stays the name-only function it always was: a dozen
+ * cascade tests call it directly, and the cascade is not what changes here.
+ *
+ * @returns {{ name: string|undefined, origin: string, variable: string|null }}
+ */
+function resolveDefaultVaultWithSource({ vaults, configuredDefault }) {
   const isActive = (name) => name && vaults.some((v) => v.name === name);
+  const fromEnv = (variable) => ({ origin: envKeyOrigin(variable), variable });
 
   // 1. Explicit per-process override
   const envOverride = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
   if (envOverride) {
-    if (isActive(envOverride)) return envOverride;
+    if (isActive(envOverride)) return { name: envOverride, ...fromEnv('OBSIDIAN_ROUTER_DEFAULT_VAULT') };
     console.error(
       `[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="${envOverride}" does not match any active vault — ` +
         `falling through to other resolution tiers. Active vaults: ` +
@@ -513,20 +537,24 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
     const matched = vaults.find(
       (v) => v.type === 'local' && v.path && normalizePathForCompare(v.path) === target,
     );
-    if (matched) return matched.name;
+    if (matched) return { name: matched.name, ...fromEnv('VAULT_PATH') };
     // Don't warn — VAULT_PATH might be set by other tools for other purposes;
     // a non-match here is not necessarily a router config error.
   }
 
   // 3. Global default from config file
-  if (isActive(configuredDefault)) return configuredDefault;
+  if (isActive(configuredDefault)) return { name: configuredDefault, origin: 'config', variable: null };
 
   // 4. First healthy local vault
   const healthyLocal = vaults.find((v) => v.type === 'local' && !v.missingApiKey);
-  if (healthyLocal) return healthyLocal.name;
+  if (healthyLocal) return { name: healthyLocal.name, origin: 'first-healthy', variable: null };
 
-  // 5. First active vault of any type — last resort
-  return vaults[0]?.name;
+  // 5. First active vault of any type — last resort.
+  // Decided on the ARRAY, not on the truthiness of the name: the function this
+  // one replaces returned `vaults[0]?.name` verbatim, so an empty-string or
+  // null name must come back unchanged rather than collapse to undefined.
+  if (vaults.length > 0) return { name: vaults[0].name, origin: 'first-active', variable: null };
+  return { name: undefined, origin: 'unset', variable: null };
 }
 
 /**
@@ -768,6 +796,7 @@ async function readLocalRestData(vaultPath) {
 // only use the named exports above (loadRegistry, resolveConfigPath).
 export const _internals = {
   resolveDefaultVault,
+  resolveDefaultVaultWithSource,
   normalizePathForCompare,
   defaultNameFromPath,
   pathBasename,

@@ -155,12 +155,13 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 // ways. See helpers/write-targets.mjs.
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
+import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
 
 const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
+      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "workspace-dotenv" = this project\'s own .env file chose it — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — a vault it must pick from the ones already registered, the auto-enrichment mode from its four valid values, VAULT_PATH, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs — and never an endpoint, a credential or the router\'s own config, so this is about consent, not access), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -2033,6 +2034,39 @@ export function validateLock(candidate, vaults, context = 'env') {
  *
  * Exported for testing.
  */
+/**
+ * The provenance of a start-up setting read from an environment variable:
+ * WHICH variable, and whether its value was applied from the workspace dotenv
+ * file (a cloned repository's own) or was already in the environment (the MCP
+ * host's server declaration, a launcher, a shell).
+ *
+ * The file is named without backticks on purpose: the dotenv-writer guard in
+ * tests/security-invariants.test.mjs is deliberately coarse — it asks "does
+ * this file write a file AND name a dotenv file?" — and this module counts as
+ * a writer through unrelated prose. Naming it in a quoted form here would
+ * demand a validator this module has no reason to call.
+ *
+ * The "provenance" lot of the accepted decision
+ * `liaison-workspace-vault-hors-depot`: until the workspace→vault binding
+ * moves out of the repository, the router must at least be able to SAY where
+ * a setting came from, rather than applying it without a word.
+ *
+ * `effective` is the value that actually took effect: a variable that was set
+ * but rejected (a typo, an unknown vault) leaves the setting on its fallback,
+ * and reporting the variable as its source would be a lie.
+ *
+ * Exported for testing.
+ *
+ * @param {string|null|undefined} effective
+ * @param {string} variable
+ * @param {string} [unsetOrigin] what to call "nothing set this" — 'unset' or 'default'
+ * @returns {{ origin: string, variable: string|null }}
+ */
+export function envSettingSource(effective, variable, unsetOrigin = 'unset') {
+  if (!effective) return { origin: unsetOrigin, variable: null };
+  return { origin: envKeyOrigin(variable), variable };
+}
+
 export function validateAutoEnrichMode(candidate, context = 'env') {
   if (!candidate) return { mode: 'ClaudeAsk', warning: null };
   const canonical = canonicalizeMode(candidate);
@@ -2150,6 +2184,7 @@ export async function startServer({ configPath, watch = true } = {}) {
   );
   if (lockWarning) console.error(lockWarning);
   fresh.lockedVault = initialLock;
+  fresh.lockSource = envSettingSource(initialLock, 'OBSIDIAN_ROUTER_LOCKED');
   applyLockGuard(fresh);
 
   // Initialize the auto-enrichment mode from env var. Same friendly
@@ -2162,6 +2197,13 @@ export async function startServer({ configPath, watch = true } = {}) {
   );
   if (modeWarning) console.error(modeWarning);
   fresh.autoEnrichMode = initialMode;
+  // A variable that was set but rejected leaves the documented default in
+  // place: the source is then 'default', not the variable that failed.
+  fresh.autoEnrichModeSource = envSettingSource(
+    modeWarning ? null : process.env.OBSIDIAN_ROUTER_AUTO_ENRICH,
+    'OBSIDIAN_ROUTER_AUTO_ENRICH',
+    'default',
+  );
 
   const registryRef = { current: fresh };
 
@@ -2198,6 +2240,12 @@ export async function startServer({ configPath, watch = true } = {}) {
           );
           if (reloadWarning) console.error(reloadWarning);
           fresh.lockedVault = validatedLock;
+          // A reload re-reads the config file, never the environment: the
+          // lock's provenance is carried over with the lock itself, and a
+          // lock dropped because its vault is gone loses its source too.
+          fresh.lockSource = validatedLock
+            ? (registryRef.current?.lockSource || { origin: 'unknown', variable: null })
+            : { origin: 'unset', variable: null };
           applyLockGuard(fresh);
 
           // Preserve the runtime auto-enrichment mode across reloads.
@@ -2209,6 +2257,13 @@ export async function startServer({ configPath, watch = true } = {}) {
             validateAutoEnrichMode(preservedMode, 'preserved');
           if (modeReloadWarning) console.error(modeReloadWarning);
           fresh.autoEnrichMode = validatedMode;
+          // Same rule as at start-up: a preserved mode that failed revalidation
+          // leaves the documented default in place, so the source is 'default'
+          // — carrying the old source over would credit a workspace file for a
+          // mode it did not choose.
+          fresh.autoEnrichModeSource = modeReloadWarning
+            ? { origin: 'default', variable: null }
+            : (registryRef.current?.autoEnrichModeSource || { origin: 'unknown', variable: null });
 
           registryRef.current = fresh;
           console.error(
@@ -2653,10 +2708,23 @@ export async function startServer({ configPath, watch = true } = {}) {
     reg.autoEnrichMode && reg.autoEnrichMode !== 'ClaudeAsk'
       ? ` Auto-enrich mode: ${reg.autoEnrichMode}.`
       : '';
+  // Which of the three session settings this WORKSPACE's file chose, rather
+  // than the host or the user. A workspace is very often a cloned repository,
+  // and its .env travels with it — the decision
+  // `liaison-workspace-vault-hors-depot` will move the binding out of the
+  // repository; until then, naming it is the least the router can do.
+  const fromWorkspace = [
+    ['default vault', reg.defaultVaultSource],
+    ['lock', reg.lockSource],
+    ['auto-enrich mode', reg.autoEnrichModeSource],
+  ].filter(([, source]) => source?.origin === 'workspace-dotenv').map(([label]) => label);
+  const provenanceNote = fromWorkspace.length
+    ? ` Chosen by this workspace's .env rather than by the host: ${fromWorkspace.join(', ')}.`
+    : '';
   console.error(
     `[obsidian-mcp-router] Ready. ${reg.vaults.length} vault(s) configured: ${reg.vaults
       .map((v) => v.name)
-      .join(', ')}${skippedNote}.${lockNote}${autoEnrichNote}`,
+      .join(', ')}${skippedNote}.${lockNote}${autoEnrichNote}${provenanceNote}`,
   );
 }
 

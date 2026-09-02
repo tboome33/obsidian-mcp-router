@@ -57,6 +57,9 @@ export async function lockVault(registry, args = {}) {
   // in-memory lock takes effect. The user can still re-run with persist
   // pointing at a sensible directory.
   registry.lockedVault = vault;
+  // Provenance: from here on the lock is this session's doing, whatever a
+  // workspace file said at start-up (decision `liaison-workspace-vault-hors-depot`).
+  registry.lockSource = { origin: 'runtime', variable: null };
 
   let persisted = false;
   let envPath = null;
@@ -120,6 +123,7 @@ export async function unlockVaults(registry, args = {}) {
 
   const wasLocked = registry.lockedVault;
   registry.lockedVault = null;
+  registry.lockSource = { origin: 'unset', variable: null };
 
   let persistRemoved = false;
   let envPath = null;

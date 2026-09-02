@@ -69,6 +69,9 @@ export async function setAutoEnrichMode(registry, args = {}) {
   // session-local mode takes effect.
   const previousMode = registry.autoEnrichMode;
   registry.autoEnrichMode = mode;
+  // Provenance: the mode is now this session's doing, whatever a workspace
+  // file said at start-up (decision `liaison-workspace-vault-hors-depot`).
+  registry.autoEnrichModeSource = { origin: 'runtime', variable: null };
 
   let persisted = false;
   let envPath = null;

@@ -152,10 +152,22 @@ function jsonError(res, status, message) {
  * @param {string} [options.childCommand]  executable for the child (default process.execPath)
  * @param {string[]} [options.childArgs]   argv for the child (default [bin/obsidian-mcp-router.mjs])
  * @param {object} [options.childEnv]      extra env for the child (merged over process.env)
- * @param {string} [options.childCwd]      cwd for the child (default PACKAGE_ROOT — a NEUTRAL
- *                                         cwd on purpose: no workspace .env leaks into the
- *                                         served instance; remote sessions address vaults
- *                                         explicitly or use the global default)
+ * @param {string} [options.childCwd]      cwd for the child (default PACKAGE_ROOT — chosen so
+ *                                         that no CALLER's workspace file reaches the served
+ *                                         instance; remote sessions address vaults explicitly
+ *                                         or use the global default).
+ *                                         CAVEAT, measured 2026-09-02: PACKAGE_ROOT is this
+ *                                         repository's own root, and a development checkout
+ *                                         keeps a dotenv file there — which the child DOES
+ *                                         load. So the default vault of a served instance can
+ *                                         come from that file, and v0.88.0's provenance fields
+ *                                         will say so (`workspace-dotenv`, truthfully). The
+ *                                         launcher's own variables still win, because the
+ *                                         parent always beats the file. A genuinely empty
+ *                                         directory is the fix; it is a behaviour change for
+ *                                         served deployments and belongs to the binding-registry
+ *                                         lot of the decision liaison-workspace-vault-hors-depot,
+ *                                         not to a doc comment.
  * @param {number} [options.sessionTimeoutMs] idle reap threshold (default 240 min — see
  *                                         DEFAULT_SESSION_TIMEOUT_MS for why not 30)
  * @param {number} [options.reapIntervalMs]   reaper cadence (default min(60s, timeout/4))

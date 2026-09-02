@@ -6,6 +6,116 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.88.0] — 2026-09-02 — the router says WHO chose the vault, the lock and the mode
+
+v0.87.0 closed what a workspace `.env` may *set*: only the keys the router's own writers put
+there, never an endpoint, a credential or a tool override. What it could not close is subtler,
+and both reviewers of that release reached it independently at the very end — a cloned
+repository's `.env` may still name one of the user's **registered** vaults, and the router
+obeyed without a word, because that setting exists precisely so the user can write it himself.
+Nothing distinguished "the user attached this project to this vault" from "this binding arrived
+with a `git clone`". The accepted decision `liaison-workspace-vault-hors-depot` moves that
+binding out of the repository; this release ships the first of its two lots, the one that can
+stand alone: **the router can now say where each session setting came from.**
+
+### Added
+
+- **`list_vaults` returns `defaultVaultSource`, `lockSource` and `autoEnrichModeSource`**, each
+  `{ origin, variable }`. `origin` is `workspace-dotenv` when this project's own file chose it,
+  `host` when the value was already in the environment (the MCP host's server declaration, a
+  launcher, a shell), `runtime` when `lock_vault` / `set_auto_enrich_mode` set it in this
+  session, `config` when it comes from the router's own `config.json`, `first-healthy` /
+  `first-active` when nobody chose and the cascade fell back to a vault, `default` when nothing
+  set it, `unset` when there is no value, and `unknown` for a registry built by a path that
+  does not record it — a guess is never dressed up as a fact. `variable` names the environment
+  variable that carried the value, or is null. The tool's description explains every one of
+  those values, and a test fails if the code can emit an origin the description does not name.
+- **The boot line names them too.** When a workspace file chose any of the three, the `Ready.`
+  line ends with `Chosen by this workspace's .env rather than by the host: …`. The MCP log is
+  not where consent belongs — that is why `list_vaults` carries it — but a log that says it is
+  better than one that does not.
+
+### Changed
+
+- `src/helpers/workspace-dotenv.mjs` keeps a per-process record of what it applied, so
+  `envKeyOrigin(name)` can answer for any variable. It is filled by the loader itself, not by
+  its callers, so every entry point that reads a workspace file records it and none can forget.
+  A key the **parent** already carried is the host's — the parent always wins, and the
+  provenance agrees with that rather than blaming the file for the host's choice; a sandbox key
+  that was *withheld* is not recorded, because it never took effect.
+- The default-vault cascade gained a sibling that says which of its five tiers answered
+  (`resolveDefaultVaultWithSource`). `resolveDefaultVault` keeps its name-only signature — a
+  dozen cascade tests call it directly, and the cascade itself is unchanged. A tier that read an
+  environment variable reports **that** variable, and an override that was rejected (a typo, a
+  vault since removed) is never reported as the source of what replaced it.
+
+### Verification
+
+- `tests/setting-provenance.test.mjs` (16 tests): every origin, every tier, the
+  never-consulted precondition, the parent-wins case, the withheld-sandbox case, the
+  rejected-value case, a record made against another environment object, a malformed source at
+  the boundary, tier 5's verbatim name, and `list_vaults`'s pass-through and fallbacks — plus
+  three structural guards: no setting is assigned on the registry without its source beside it
+  (start-up **and** config hot-reload, with the literals checked and a commented-out copy
+  unable to satisfy them), the runtime tools mark their own changes, and the documented
+  vocabulary equals what the producers emit.
+- Mutation run, 23 mutations, **23 red**. Sixteen of them come from the two reviewers rather
+  than from the author: the loader recording a parent-set key, `envKeyOrigin` ignoring a later
+  change or the environment a record was made against, a withheld key recorded as applied, the
+  wrong variable reported by a tier, a rejected override credited for its successor, a tier
+  renamed, `list_vaults` guessing where it does not know or trusting whatever the registry
+  carries, a recorded source dropped, the start-up or reload wiring deleted or ungated, a
+  rejected mode credited to its variable, an unlock that keeps its source, a runtime change
+  called `host`, tier 5 collapsing a falsy name, the never-consulted precondition removed, and
+  three ways of letting the documentation drift from the code. Every file restored by bytes and
+  hash-checked.
+- Two guards already in the tree fired on the first full run, both correctly. The pin on
+  `list_vaults`'s top-level field SET refused three fields it had not been told about — that is
+  what it is for, and the contract was updated by hand. The dotenv-writer guard flagged
+  `src/index.mjs`, which writes no dotenv file: it asks the coarsest question it can ("does this
+  file write a file at all, and does it name a dotenv file?"), a new comment named one in a
+  quoted form, and the file counts as a writer through unrelated prose. The comment was
+  reworded rather than the guard weakened, and it now says why.
+- Full suite **4 530 tests, 4 529 green, 0 failed, 1 opt-in skip**; `npm run validate` and
+  `npm run gate` green; release-grade leak scan of the 15 changed files: 0 findings.
+
+### Review
+
+Two independent reviewers, each handed the numbered invariants rather than only the diff.
+
+- **Round 1 (Code Reviewer)** — three blockers, all real. `unknown` was emitted by the code and
+  explained in neither the tool description nor the README, and the vocabulary guard could not
+  see it (it scanned for `origin: '<literal>'`, and that one was built from an argument) —
+  worse, the guard asserted "at least 8" against exactly 8, so it had no margin at all. On a
+  config hot-reload, a preserved mode that failed revalidation kept the source of the mode it
+  replaced — the exact mirror of the case start-up already handled. And two reload fallbacks
+  invented `host` and `default` where nothing was recorded.
+- **Round 2 (Codex)** — five more that survived round 1. Absence of a record only means "the
+  file did not set it" once a file has been LOOKED FOR: an entry point that never loads one now
+  answers `unknown` instead of assuming the host. The refactored cascade was not exactly
+  equivalent for a falsy-but-present vault name. `list_vaults` trusted whatever source object
+  the registry carried, so a malformed one could leave through a documented field. An explicit
+  `ClaudeAsk` with no recorded source was called `default`, when it is also a value a host, a
+  file or a tool call can set. And a sentence of mine claimed a workspace file "could only ever
+  name a vault", which understates the allow-list — the mode, `VAULT_PATH`, a sandbox narrowing
+  and the opt-outs are on it too.
+- Found on the way, outside this lot and left as it is: `scripts/serve-http.mjs` starts a served
+  instance in this repository's own root, whose dotenv file the child **does** load, while its
+  comment promises a neutral directory. The new fields report that truthfully
+  (`workspace-dotenv`); the comment now says what actually happens, and a genuinely empty
+  directory belongs to the binding-registry lot, being a behaviour change for served
+  deployments.
+- Recorded for the second lot: distinguishing "named by the file **and confirmed** in the
+  registry" from "named and not confirmed" should be a separate field, not a tenth origin.
+
+### Compatibility
+
+- Additive: three new fields on one tool's response, and one clause on the boot line. No
+  existing field changed shape, and nothing changed about what a workspace `.env` is *allowed*
+  to do — that was v0.87.0's subject, and it stands as it was. What a repository's file can
+  still choose is unchanged too; it can now be **named**, which is what the second lot
+  (the binding registry outside the repository) will act on.
+
 ## [0.87.1] — 2026-09-02 — the environment proof runs on the GitHub runners too
 
 v0.87.0's CI was red on all four legs (node 20.19 / 22 × ubuntu / windows) while the

@@ -186,6 +186,112 @@ export function parseDotenv(text) {
 export const WORKSPACE_DOTENV_POLICY = `${WORKSPACE_DOTENV_KEYS.join(', ')} and the OBSIDIAN_ROUTER_NO_* opt-outs`;
 
 /**
+ * What THIS process took from a workspace .env, so a later reader can say
+ * WHERE a setting came from instead of applying it without a word — the
+ * "provenance" lot of the accepted decision `liaison-workspace-vault-hors-depot`
+ * (a cloned repository's file may still pick which REGISTERED vault a session
+ * reads, locks and enriches; until the binding moves out of the repository,
+ * the least the router can do is name the source).
+ *
+ * Filled by `applyWorkspaceDotenv` itself rather than by its callers, so any
+ * entry point that loads a workspace file records it — the binary, a hook, a
+ * test. Per-process and never persisted: it describes THIS run.
+ *
+ * The entry keeps the environment OBJECT it wrote into, not only the value:
+ * this module's public signature takes an `env`, so two calls in one process
+ * can target two different objects, and a record made against one of them
+ * says nothing about the other. Asked about a different object, the answer is
+ * `unknown` rather than a plausible-looking guess.
+ *
+ * Not keyed by cwd: two loads from two different working directories in one
+ * process leave the first one's keys in place. No entry point does that today
+ * (the binary loads once, each hook is its own process); if one ever does, the
+ * later load overwrites the keys it shares and the rest stay as they were.
+ *
+ * @type {Map<string, { file: string, value: string, env: object }>}
+ */
+const APPLIED_FROM_WORKSPACE = new Map();
+
+/**
+ * Whether a workspace file was ever CONSULTED in this process — set once the
+ * loader has tried to read one, whether it found it or not.
+ *
+ * Absence of a record only means "the file did not set this key" if a file was
+ * looked for at all. Without this flag, an entry point that never loads one
+ * (`startServer` imported directly by a test) would have every variable
+ * reported as the host's, which is an assumption, not an observation.
+ */
+let workspaceFileConsulted = false;
+
+/** Where an environment variable's current value came from, as far as this process can tell. */
+export const ENV_ORIGINS = Object.freeze({
+  /** applied by this process from the workspace dotenv file */
+  WORKSPACE_DOTENV: 'workspace-dotenv',
+  /** already in the environment at start-up: the MCP host's server declaration, a launcher, a shell */
+  HOST: 'host',
+  /** the value changed after the file was read — only this process can have done that */
+  RUNTIME: 'runtime',
+  /** recorded against a different environment object: this process cannot say */
+  UNKNOWN: 'unknown',
+});
+
+/**
+ * The origin of `key`'s CURRENT value.
+ *
+ * A key this process applied from a workspace file, whose value is still the
+ * one the file carried, is `workspace-dotenv`. A key the file never set — or
+ * one whose value the parent already carried, since the parent always wins —
+ * is `host`. A key the file set into THIS environment and whose value has
+ * changed since is `runtime`: no other process can reach in here. A key
+ * recorded against a DIFFERENT environment object is `unknown` — the record
+ * describes that object, not this one. And when no workspace file was ever
+ * consulted, EVERY answer is `unknown`: "the file did not set it" is only a
+ * fact once a file has been looked for.
+ *
+ * Known and accepted: a value moved away from what the file carried and then
+ * back to it reads as `workspace-dotenv` again. That is the file's value, so
+ * the answer is defensible; distinguishing it would need a write barrier this
+ * module has no way to install.
+ *
+ * @param {string} key
+ * @param {object} [env]
+ * @returns {'workspace-dotenv'|'host'|'runtime'|'unknown'}
+ */
+export function envKeyOrigin(key, env = process.env) {
+  if (!workspaceFileConsulted) return ENV_ORIGINS.UNKNOWN;
+  const applied = APPLIED_FROM_WORKSPACE.get(String(key));
+  if (!applied) return ENV_ORIGINS.HOST;
+  return env[key] === applied.value ? ENV_ORIGINS.WORKSPACE_DOTENV : ENV_ORIGINS.RUNTIME;
+}
+
+/**
+ * The workspace file a key came from, or null. For a message that names the
+ * file rather than only the fact ("posé par le .env de ce dépôt").
+ *
+ * @param {string} key
+ * @returns {string|null}
+ */
+export function envKeySourceFile(key) {
+  return APPLIED_FROM_WORKSPACE.get(String(key))?.file || null;
+}
+
+/** The keys this process took from a workspace file, in the order it took them. */
+export function appliedWorkspaceDotenvKeys() {
+  return [...APPLIED_FROM_WORKSPACE.keys()];
+}
+
+/** True once a workspace file has been looked for in this process. */
+export function workspaceDotenvWasConsulted() {
+  return workspaceFileConsulted;
+}
+
+/** Test seam: forget what was recorded. Never called by the router itself. */
+export function _resetWorkspaceDotenvProvenance() {
+  APPLIED_FROM_WORKSPACE.clear();
+  workspaceFileConsulted = false;
+}
+
+/**
  * Load `<cwd>/.env` into `env` under the policy above. Never throws: a
  * missing or unreadable file is a silent no-op. Returns what happened so a
  * caller (or a test) can see it; warns ONCE, through `warn`, when the file
@@ -214,7 +320,13 @@ export function applyWorkspaceDotenv({
   let text;
   try {
     text = readFile(path.join(cwd, '.env'));
+    // A file was CONSULTED — from here on, "no record for this key" is an
+    // observation ("the file did not set it") rather than an assumption.
+    workspaceFileConsulted = true;
   } catch {
+    // Missing or unreadable is still a consultation: there is no file to take
+    // anything from, so the environment is the host's.
+    workspaceFileConsulted = true;
     return result;
   }
   // Judged once, against the PARENT: a sandbox the host set (either
@@ -230,6 +342,9 @@ export function applyWorkspaceDotenv({
     if (sandboxIsTheHosts && WORKSPACE_DOTENV_SANDBOX_KEYS.includes(key)) { result.withheld.push(key); continue; }
     env[key] = value;
     result.applied.push(key);
+    // Recorded here, not by the caller: every entry point that loads a
+    // workspace file gets the provenance, and none can forget to.
+    APPLIED_FROM_WORKSPACE.set(key, { file: path.join(cwd, '.env'), value, env });
   }
   if (result.ignored.length || result.withheld.length) {
     const parts = [];
