@@ -14,7 +14,13 @@
  *
  * Mirrors the lock-mode architecture: state lives on `registry.autoEnrichMode`,
  * persistence is opt-in via `OBSIDIAN_ROUTER_AUTO_ENRICH=<mode>` in
- * `<cwd>/.env` so the mode survives router restarts.
+ * `<cwd>/.env` so the mode survives router restarts — with ONE exception,
+ * since v0.89.0: "FullAuto" is refused there. The router no longer reads that
+ * mode back from a workspace file (accepted option 4 of the decision
+ * `liaison-workspace-vault-hors-depot`), so writing it would leave a line the
+ * next start-up ignores. The mode still applies to the session; only the write
+ * is refused, and the refusal names the two places the router does take it
+ * from. The other three modes persist exactly as before.
  *
  * The actual behavior change happens in Claude's reasoning — the mode
  * value is surfaced via `list_vaults` (field `autoEnrichMode`) and the
@@ -28,7 +34,40 @@ import path from 'node:path';
 import os from 'node:os';
 import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
-export const VALID_MODES = ['ClaudeAsk', 'Hybrid', 'FullAuto', 'off'];
+import { VALID_MODES, canonicalizeMode } from '../helpers/auto-enrich-mode.mjs';
+
+// The vocabulary and its alias table moved to helpers/auto-enrich-mode.mjs so
+// that helpers/workspace-dotenv.mjs — which runs before any dependency is
+// known to exist, and must therefore not import this file — can ask the SAME
+// table whether a value carried by a workspace file means FullAuto. Re-exported
+// here because this module has been the import site since v0.8.2; there is one
+// definition, and this is a view of it, never a copy.
+export { VALID_MODES, canonicalizeMode };
+
+/**
+ * The one mode a workspace file may not choose, and the two places it may
+ * legitimately come from. Named here so the refusal message, the tool
+ * description and the policy module all say the same thing.
+ *
+ * Accepted option 4 of the decision `liaison-workspace-vault-hors-depot`
+ * (Roland, 2026-09-03): FullAuto is the only mode that turns a file which
+ * travels with a cloned repository into standing permission to write into a
+ * vault without asking. It keeps both of its honest homes and loses the one
+ * that nobody signed for.
+ */
+export const FILE_REFUSED_MODE = 'FullAuto';
+/**
+ * Where to put the mode so that it OUTLIVES this session. Both spellings are
+ * the same origin — `host`, the environment the router starts in — which is
+ * why this constant does not claim to list "the two homes" of the mode: the
+ * second home, a call during the session, is precisely the one that does not
+ * survive a restart, so naming it in a message about persistence would answer
+ * a question nobody asked. The loader's own stderr message names both homes,
+ * because there the reader has not asked for persistence at all.
+ */
+export const MODE_PERSISTENT_HOMES =
+  "the MCP host's server declaration (an `env` entry beside the router's command), "
+  + 'or the variable in your shell or profile';
 
 /**
  * Set the auto-enrichment mode for the current session.
@@ -40,6 +79,11 @@ export const VALID_MODES = ['ClaudeAsk', 'Hybrid', 'FullAuto', 'off'];
  *     to <cwd>/.env so the mode survives router restarts — "off" included,
  *     written as the literal: a REMOVED line would read as the default
  *     (ClaudeAsk) at the next start and silently bring suggestions back.
+ *     Refused for "FullAuto", which no workspace file may set: the mode is
+ *     applied to the session anyway and the returned `persistRefused` says
+ *     where to set it instead.
+ *
+ * Returns `{ mode, previousMode, persisted, envPath?, persistRefused, message }`.
  */
 export async function setAutoEnrichMode(registry, args = {}) {
   const { mode: rawMode, persist } = args;
@@ -75,7 +119,34 @@ export async function setAutoEnrichMode(registry, args = {}) {
 
   let persisted = false;
   let envPath = null;
-  if (persist) {
+  // Why the mode was not written to the workspace file, when it was not. Null
+  // when it was written, and null when nobody asked for persistence.
+  let persistRefused = null;
+
+  // FullAuto is never persisted into a workspace file, because the router no
+  // longer READS it from one (accepted option 4 of the decision
+  // `liaison-workspace-vault-hors-depot`). Writing a line the next start-up
+  // would refuse is not persistence, it is a promise the file cannot keep —
+  // so the refusal happens here, at the moment the promise would be made.
+  //
+  // A STRUCTURED RESULT, not an exception. The homedir refusal below throws,
+  // and that shape has a cost: an exception reads as "the call failed", which
+  // invites a retry, when in fact the mode IS active for this session and the
+  // only thing that did not happen is the file write. The two refusals differ
+  // in kind — one is "you are almost certainly in the wrong directory", the
+  // other is "this mode does not come from files any more" — and only the
+  // second one is a permanent property of the mode, worth reporting calmly.
+  if (persist && mode === FILE_REFUSED_MODE) {
+    persistRefused = {
+      mode,
+      variable: 'OBSIDIAN_ROUTER_AUTO_ENRICH',
+      reason:
+        `"${FILE_REFUSED_MODE}" is never read back from a workspace file, so it is never written to one either. `
+        + `The mode IS active for this session — nothing else is needed to use it now. `
+        + `To make it survive a restart, set OBSIDIAN_ROUTER_AUTO_ENRICH=${FILE_REFUSED_MODE} in the environment the router starts in: ${MODE_PERSISTENT_HOMES}. `
+        + `The other three modes (${VALID_MODES.filter((m) => m !== FILE_REFUSED_MODE).join(', ')}) still persist here as before.`,
+    };
+  } else if (persist) {
     const cwd = process.cwd();
     // Same homedir refusal as lock_vault: writing OBSIDIAN_ROUTER_AUTO_ENRICH
     // to ~/.env when Claude Code was launched from $HOME is almost always
@@ -115,48 +186,28 @@ export async function setAutoEnrichMode(registry, args = {}) {
     previousMode: previousMode ?? null,
     persisted,
     envPath: persisted ? envPath : undefined,
+    // Present (an object) only when persistence was ASKED FOR and refused.
+    // Null both when it succeeded and when it was never requested, so a caller
+    // can branch on it without also having to check `persist`.
+    persistRefused,
     message:
       `Auto-enrichment mode set to "${mode}". ` +
       (persisted
         ? `OBSIDIAN_ROUTER_AUTO_ENRICH=${mode} written to ${envPath} — mode survives restart.`
-        : `Mode is volatile (this session only). Use persist:true to make it survive restarts.`),
+        : persistRefused
+          ? `Not persisted: ${persistRefused.reason}`
+          // The advice has to match the mode. Telling a FullAuto caller to
+          // "use persist:true" would send them at the one path that now
+          // refuses — advice guaranteed to fail, which is worse than none.
+          : mode === FILE_REFUSED_MODE
+            ? `Mode is volatile (this session only). "${FILE_REFUSED_MODE}" is not written to a workspace .env — to make it survive a restart, set OBSIDIAN_ROUTER_AUTO_ENRICH=${FILE_REFUSED_MODE} in the environment the router starts in: ${MODE_PERSISTENT_HOMES}.`
+            : `Mode is volatile (this session only). Use persist:true to make it survive restarts.`),
   });
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Canonicalize a user-provided mode string. Returns the canonical form
- * (matching VALID_MODES exactly) if recognized, null otherwise. Accepts
- * any case, and a couple of natural-language synonyms.
- */
-export function canonicalizeMode(input) {
-  if (!input || typeof input !== 'string') return null;
-  const lower = input.trim().toLowerCase();
-  // Direct case-insensitive match
-  for (const m of VALID_MODES) {
-    if (m.toLowerCase() === lower) return m;
-  }
-  // A few NL synonyms — we keep this list small to avoid surprise.
-  const aliases = {
-    ask: 'ClaudeAsk',
-    'ask-mode': 'ClaudeAsk',
-    'claude-ask': 'ClaudeAsk',
-    auto: 'FullAuto',
-    full: 'FullAuto',
-    'full-auto': 'FullAuto',
-    fullauto: 'FullAuto',
-    semi: 'Hybrid',
-    'semi-auto': 'Hybrid',
-    hybride: 'Hybrid',
-    none: 'off',
-    disabled: 'off',
-    disable: 'off',
-  };
-  return aliases[lower] || null;
-}
 
 /**
  * Set or update KEY=VALUE in the .env file at envPath. Creates the file
@@ -231,6 +282,7 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Exported for tests only. canonicalizeMode is a top-level named export
-// (above) — don't re-export it here too, that's redundant.
+// Exported for tests only. `canonicalizeMode` and `VALID_MODES` are re-exported
+// at the top of this file from helpers/auto-enrich-mode.mjs, where they now
+// live — don't add them here too.
 export const _internals = { upsertDotenvVar, removeDotenvVar };

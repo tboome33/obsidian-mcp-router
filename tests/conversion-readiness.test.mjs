@@ -988,6 +988,10 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     const out = await listVaults(registry);
     assert.deepEqual(Object.keys(out).sort(), [
       'autoEnrichMode',
+      // v0.89.0 — the mode a workspace .env asked for and did NOT get. A
+      // separate field on purpose: a refused value is not the source of what
+      // replaced it, so it must not be reachable through autoEnrichModeSource.
+      'autoEnrichModeRefused',
       // v0.88.0 — WHERE each of the three session settings came from. Added
       // here deliberately, which is the whole point of pinning the set.
       'autoEnrichModeSource',

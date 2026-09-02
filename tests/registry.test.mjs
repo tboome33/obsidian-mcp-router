@@ -1297,10 +1297,13 @@ describe('setAutoEnrichMode — tool handler', () => {
     // silently revert to ClaudeAsk after restart. Now we write the literal.
     const reg = { autoEnrichMode: 'ClaudeAsk' };
 
-    // First set a non-default mode persisted
-    await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: true });
+    // First set a non-default mode persisted. Hybrid, not FullAuto: since
+    // v0.89.0 FullAuto is the one mode `persist` refuses to write, so using it
+    // here would test the refusal instead of the literal-"off" regression this
+    // test exists for. The refusal has its own tests, below.
+    await setAutoEnrichMode(reg, { mode: 'Hybrid', persist: true });
     let envContent = await fs.readFile(path.join(tmpDir, '.env'), 'utf8');
-    assert.match(envContent, /OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto/);
+    assert.match(envContent, /OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid/);
 
     // Now persist "off" — must WRITE off, not remove
     const result = await setAutoEnrichMode(reg, { mode: 'off', persist: true });
@@ -1313,6 +1316,99 @@ describe('setAutoEnrichMode — tool handler', () => {
 
     // Confirm round-trip: simulate boot with this .env value would resolve to "off"
     assert.deepEqual(canonicalizeMode('off'), 'off');
+  });
+
+  /**
+   * v0.89.0 — persistence is symmetrical with reading.
+   *
+   * The router no longer READS FullAuto back from a workspace file (accepted
+   * option 4 of the decision `liaison-workspace-vault-hors-depot`), so writing
+   * it there would leave a line the next start-up refuses: persistence that
+   * does not persist. The refusal is a RESULT, not an exception, because the
+   * mode really is active — an exception reads as "the call failed" and invites
+   * a retry that would change nothing.
+   */
+  test('persist:true + FullAuto: the mode applies, the file is NOT written, and the refusal names both legitimate homes', async () => {
+    for (const written of ['FullAuto', 'fullauto', 'FULLAUTO', 'auto', 'full', 'full-auto']) {
+      const envPath = path.join(tmpDir, '.env');
+      await fs.rm(envPath, { force: true });
+      const reg = { autoEnrichMode: 'ClaudeAsk' };
+      const result = await setAutoEnrichMode(reg, { mode: written, persist: true });
+
+      // The mode IS active for the session — that is the whole point of not
+      // throwing, and the message has to say so or Claude will retry.
+      assert.equal(reg.autoEnrichMode, 'FullAuto', written);
+      assert.equal(result.mode, 'FullAuto', written);
+      assert.deepEqual(reg.autoEnrichModeSource, { origin: 'runtime', variable: null }, written);
+      assert.equal(result.persisted, false, written);
+      assert.equal(result.envPath, undefined, written);
+
+      // The refusal, in full.
+      assert.ok(result.persistRefused, `${written}: a refusal must be reported, not silence`);
+      assert.equal(result.persistRefused.mode, 'FullAuto', written);
+      assert.equal(result.persistRefused.variable, 'OBSIDIAN_ROUTER_AUTO_ENRICH', written);
+      assert.match(result.persistRefused.reason, /mode IS active for this session/, written);
+      assert.match(result.persistRefused.reason, /MCP host's server declaration/, written);
+      assert.match(result.persistRefused.reason, /shell or profile/, written);
+      assert.match(result.message, /Not persisted:/, written);
+      // The success message's own claim, which must not appear here. (Not a
+      // bare "written to": the refusal legitimately contains the words "never
+      // written to one either", and a test that forbade them would be
+      // forbidding the explanation rather than the false claim.)
+      assert.doesNotMatch(result.message, /survives restart/, `${written}: the message must not promise persistence`);
+
+      // And nothing was written. The artifact assertion, not the return value:
+      // the same shape as the homedir refusal test below.
+      await assert.rejects(() => fs.access(envPath), `${written}: no file may be created`);
+    }
+  });
+
+  test('persist:true + FullAuto leaves an EXISTING file byte-for-byte alone', async () => {
+    const envPath = path.join(tmpDir, '.env');
+    const before = 'VAULT_PATH=/vaults/x\nOBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid\n';
+    await fs.writeFile(envPath, before, 'utf8');
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    const result = await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: true });
+    assert.equal(result.persisted, false);
+    assert.equal(await fs.readFile(envPath, 'utf8'), before,
+      'the refusal must not rewrite, reorder or re-terminate the file');
+    await fs.rm(envPath, { force: true });
+  });
+
+  test('the three other modes persist exactly as before — the rule is about ONE value, not about persistence', async () => {
+    for (const mode of ['ClaudeAsk', 'Hybrid', 'off']) {
+      await fs.rm(path.join(tmpDir, '.env'), { force: true });
+      const reg = { autoEnrichMode: 'FullAuto' };
+      const result = await setAutoEnrichMode(reg, { mode, persist: true });
+      assert.equal(result.persisted, true, mode);
+      assert.equal(result.persistRefused, null, mode);
+      assert.match(await fs.readFile(path.join(tmpDir, '.env'), 'utf8'), new RegExp(`^OBSIDIAN_ROUTER_AUTO_ENRICH=${mode}$`, 'm'), mode);
+    }
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+  });
+
+  test('persist:false + FullAuto is not a refusal — nobody asked for a write', async () => {
+    const reg = { autoEnrichMode: 'ClaudeAsk' };
+    const result = await setAutoEnrichMode(reg, { mode: 'FullAuto' });
+    assert.equal(reg.autoEnrichMode, 'FullAuto');
+    assert.equal(result.persisted, false);
+    assert.equal(result.persistRefused, null, 'null means "not refused", including "never requested"');
+    assert.match(result.message, /volatile/);
+    // Found by review: the volatile message used to end with "Use persist:true
+    // to make it survive restarts" for EVERY mode — advice that, for this one,
+    // now leads straight to a refusal. Advice guaranteed to fail is worse than
+    // no advice, so this mode gets the answer that actually works.
+    assert.doesNotMatch(result.message, /Use persist:true/,
+      'must not send a FullAuto caller down the one path that refuses');
+    assert.match(result.message, /MCP host's server declaration/);
+    assert.match(result.message, /shell or profile/);
+  });
+
+  test('the OTHER three modes keep the ordinary volatile advice — the rule is about one value', async () => {
+    for (const mode of ['ClaudeAsk', 'Hybrid', 'off']) {
+      const result = await setAutoEnrichMode({ autoEnrichMode: 'FullAuto' }, { mode });
+      assert.match(result.message, /Use persist:true to make it survive restarts/, mode);
+    }
   });
 
   test('persist:true preserves other .env entries', async () => {

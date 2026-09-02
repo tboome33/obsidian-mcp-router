@@ -86,6 +86,8 @@ Cette séparation garantit que les fichiers de machinerie ne se mélangent jamai
 
 > « passe en mode Hybrid », « sauve tout automatiquement » (→ FullAuto), « arrête de sauver auto » (→ off) — ou `/obsidian-router:auto-mode <Mode>`, avec `--persist` pour l'écrire dans le `.env` du workspace
 
+**Une exception à `--persist`, depuis la v0.89.0.** `FullAuto` n'est pas écrit dans le `.env` d'un workspace, et n'y est pas relu non plus : ce mode est une autorisation permanente d'écrire dans un vault sans redemander, et un dépôt cloné arrive avec son `.env`. Le mode s'applique quand même à la session ; pour qu'il survive à un redémarrage, il se pose dans la déclaration du serveur côté hôte MCP ou dans le shell. Les trois autres modes se persistent comme avant.
+
 **À savoir.** La consigne d'auto-enrichissement peut vivre à quatre endroits (CLAUDE.md du vault, instructions de Projet Claude Desktop, Memory, CLAUDE.md global) — le guide détaillé avec les boilerplates à copier-coller est dans [`docs/auto-enrichment.md`](../auto-enrichment.md).
 
 ## `/wiki-lint` — le contrôle santé

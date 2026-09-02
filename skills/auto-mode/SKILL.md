@@ -1,7 +1,7 @@
 ---
 name: auto-mode
 description: |
-  Set the wiki auto-enrichment mode for the current session — `ClaudeAsk` (default, propose + always confirm), `Hybrid` (auto-save type-safe items, ask on high-stakes), `FullAuto` (auto-save everything with safety nets), or `off` (no proactive suggestions). Pass "persist" to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to the workspace `.env`. Triggers on natural-language phrasings like "switch to Hybrid mode" / "passe en mode Hybrid", "save everything automatically" / "sauve tout automatiquement" → `FullAuto`, "stop auto-saving" / "arrête de sauver auto" → `off`.
+  Set the wiki auto-enrichment mode for the current session — `ClaudeAsk` (default, propose + always confirm), `Hybrid` (auto-save type-safe items, ask on high-stakes), `FullAuto` (auto-save everything with safety nets), or `off` (no proactive suggestions). Pass "persist" to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to the workspace `.env` — refused for `FullAuto`, which no workspace file may set (the mode still applies to the session). Triggers on natural-language phrasings like "switch to Hybrid mode" / "passe en mode Hybrid", "save everything automatically" / "sauve tout automatiquement" → `FullAuto`, "stop auto-saving" / "arrête de sauver auto" → `off`.
 ---
 
 # auto-mode
@@ -12,7 +12,7 @@ Invoke the `set_auto_enrich_mode` MCP tool.
 
 - **`ClaudeAsk`** (default — propose, always confirm). Best for: discovering the feature, mixed-importance long sessions, vaults where false positives would be costly to clean up, calibration period.
 - **`Hybrid`** (auto-save type-safe items like facts/URLs, ask on decisions/ADRs/techniques/rules). Best for: power-user sweet spot after a calibration week, active development with frequent URL ingestion, research with citations to pile up but conclusions to vet.
-- **`FullAuto`** (auto-save everything; audit log in `wiki-meta/journal.md` + sensitivity filter + hard cap that degrades to `ClaudeAsk` after 5 saves/session). Best for: high-trust sessions, family chronicle / personal journal, long unsupervised flows (autoresearch, batch ingestion), solo brain-dumps where the wiki IS the conversation log.
+- **`FullAuto`** (auto-save everything; audit log in `wiki-meta/journal.md` + sensitivity filter + hard cap that degrades to `ClaudeAsk` after 5 saves/session). Best for: high-trust sessions, family chronicle / personal journal, long unsupervised flows (autoresearch, batch ingestion), solo brain-dumps where the wiki IS the conversation log. **Session-scoped or host-scoped only (v0.89.0):** this is the one mode a workspace `.env` may not set. Ask for it here, or have it declared in the MCP host — `persist` will not write it, and a `FullAuto` sitting in a project's file is refused at start-up (see below).
 - **`off`** (no auto-suggestions; manual `/save` only). Best for: debugging sessions you don't want polluting the wiki, sensitive conversations, control-freak preference, default for legal/medical/financial vaults.
 
 ## Argument parsing from $ARGUMENTS
@@ -53,6 +53,10 @@ When the user's intent is the BEHAVIOR rather than the mode name:
 ## Homedir refusal caveat (persist mode only)
 
 If the user asks for a persistent mode change from their home directory (Claude Code launched from `~` rather than a project folder), the tool refuses with an explicit error and the in-memory mode still applies for the session. Surface the message verbatim — it tells them how to fix (run from a real project directory, or set `OBSIDIAN_ROUTER_AUTO_ENRICH=<mode>` in their shell profile / PowerShell `$PROFILE`). Do not retry the persist call from the same cwd.
+
+**Persisting `FullAuto` is refused everywhere, and it is not an error (v0.89.0).** The router no longer reads `FullAuto` back from a workspace `.env`, so writing it there would leave a line the next start-up ignores. The tool therefore returns normally with `persisted: false` and a `persistRefused` object: the mode **is** active for the session, and nothing more is needed to use it now. Do NOT retry, do not offer to write the file another way, and do not report the call as a failure. Relay `persistRefused.reason`, which names the two places the mode does survive a restart — the MCP host's server declaration, or the variable in the user's shell or profile. `ClaudeAsk`, `Hybrid` and `off` persist exactly as before.
+
+**If `list_vaults` carries a non-null `autoEnrichModeRefused`**, this project's own `.env` asked for `FullAuto` at start-up and was refused. Tell the user plainly: their project file asked for the most permissive mode, the router did not apply it, and the session is running on whatever `autoEnrichModeSource` reports instead. If they want that mode, offer to set it for the session here; if the line is stale (written by an older `--persist`), suggest removing it from the file.
 
 ## Examples
 

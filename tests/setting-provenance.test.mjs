@@ -31,9 +31,10 @@ import {
   ENV_ORIGINS,
 } from '../src/helpers/workspace-dotenv.mjs';
 import { _internals } from '../src/registry.mjs';
-import { envSettingSource } from '../src/index.mjs';
+import { envSettingSource, autoEnrichModeRefusal, validateAutoEnrichMode, validateLock } from '../src/index.mjs';
 import { listVaults, SETTING_ORIGINS } from '../src/tools/list-vaults.mjs';
 import { blankStringsAndComments } from './_source-scan.mjs';
+import { spawnSyncHomeSafe } from './_home-safe-spawn.mjs';
 
 const { resolveDefaultVaultWithSource, resolveDefaultVault } = _internals;
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -106,16 +107,20 @@ describe('envKeyOrigin — what this process took from a workspace file', () => 
     consultAnEmptyWorkspace(env);
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), ENV_ORIGINS.HOST, 'looked for, not found');
 
-    const dir = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\nOBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    // The mode in this fixture is Hybrid, not FullAuto: since v0.89.0 a
+    // workspace file that names FullAuto is refused rather than applied, so
+    // FullAuto here would prove the opposite of what this test is about.
+    // The refusal has its own tests, below.
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\nOBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid\n');
     const r = applyWorkspaceDotenv({ cwd: dir, env, warn: () => {} });
     assert.deepEqual(r.applied, ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_AUTO_ENRICH']);
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), ENV_ORIGINS.WORKSPACE_DOTENV);
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.WORKSPACE_DOTENV);
-    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT'), path.join(dir, '.env'));
-    assert.deepEqual(appliedWorkspaceDotenvKeys(), ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_AUTO_ENRICH']);
+    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), path.join(dir, '.env'));
+    assert.deepEqual(appliedWorkspaceDotenvKeys(env), ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_AUTO_ENRICH']);
 
     // The value moved since the file was read — only this process can do that.
-    env.OBSIDIAN_ROUTER_AUTO_ENRICH = 'Hybrid';
+    env.OBSIDIAN_ROUTER_AUTO_ENRICH = 'ClaudeAsk';
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.RUNTIME);
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), ENV_ORIGINS.WORKSPACE_DOTENV, 'the other key is untouched');
   });
@@ -130,7 +135,7 @@ describe('envKeyOrigin — what this process took from a workspace file', () => 
     assert.deepEqual(r.applied, []);
     assert.equal(env.OBSIDIAN_ROUTER_DEFAULT_VAULT, 'from-the-host');
     assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), ENV_ORIGINS.HOST);
-    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT'), null);
+    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT', env), null);
   });
 
   test('a record made against ANOTHER environment object answers "unknown", never a guess', () => {
@@ -154,7 +159,7 @@ describe('envKeyOrigin — what this process took from a workspace file', () => 
     const dir = tmpWorkspace('MD_ALLOWED_PATHS=/\n');
     const r = applyWorkspaceDotenv({ cwd: dir, env, warn: () => {} });
     assert.deepEqual(r.withheld, ['MD_ALLOWED_PATHS']);
-    assert.deepEqual(appliedWorkspaceDotenvKeys(), []);
+    assert.deepEqual(appliedWorkspaceDotenvKeys(env), []);
     assert.equal(envKeyOrigin('MD_ALLOWED_PATHS', env), ENV_ORIGINS.HOST);
   });
 });
@@ -318,6 +323,216 @@ describe('list_vaults — the three fields reach the caller', () => {
   });
 });
 
+/**
+ * v0.89.0 — the refused mode is a FOURTH field, not a tenth origin.
+ *
+ * The distinction is the whole point, and it is easy to get wrong in a way
+ * that looks helpful: a reviewer's instinct is to report "the file chose it"
+ * on `autoEnrichModeSource`. That would be false twice over — the file chose
+ * nothing, and the mode actually in force came from somewhere else — which is
+ * exactly the class of lie the provenance lot was built to stop telling.
+ */
+describe('autoEnrichModeRefused — a refused value is reported beside the source, never inside it', () => {
+  test('a file that names FullAuto: the SOURCE says the default took effect, and the REFUSAL is its own field', () => {
+    _resetWorkspaceDotenvProvenance();
+    const env = {};
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    applyWorkspaceDotenv({ cwd: dir, env, warn: () => {} });
+
+    // The refusal, read back against the very object it was judged against.
+    const refusal = autoEnrichModeRefusal(env);
+    assert.deepEqual(refusal, {
+      value: 'FullAuto',
+      canonical: 'FullAuto',
+      origin: 'workspace-dotenv',
+      variable: 'OBSIDIAN_ROUTER_AUTO_ENRICH',
+      reason: refusal.reason,
+    });
+    assert.match(refusal.reason, /not applied from a workspace file/);
+    assert.ok(SETTING_ORIGINS.includes(refusal.origin), 'the refusal names a documented origin');
+
+    // The SOURCE, built the way start-up builds it: no effective value, so the
+    // documented default — and the variable is NOT named, because it did not
+    // set what is in force.
+    assert.deepEqual(
+      envSettingSource(env.OBSIDIAN_ROUTER_AUTO_ENRICH, 'OBSIDIAN_ROUTER_AUTO_ENRICH', 'default'),
+      { origin: 'default', variable: null },
+    );
+  });
+
+  test('host FullAuto + a file that repeats it: the source is the host and there is NO refusal to report', () => {
+    _resetWorkspaceDotenvProvenance();
+    const env = { OBSIDIAN_ROUTER_AUTO_ENRICH: 'FullAuto' };
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    applyWorkspaceDotenv({ cwd: dir, env, warn: () => {} });
+    assert.equal(autoEnrichModeRefusal(env), null, 'a false alarm about a mode legitimately in force');
+    assert.deepEqual(
+      envSettingSource(env.OBSIDIAN_ROUTER_AUTO_ENRICH, 'OBSIDIAN_ROUTER_AUTO_ENRICH', 'default'),
+      { origin: 'host', variable: 'OBSIDIAN_ROUTER_AUTO_ENRICH' },
+    );
+  });
+
+  test('nothing refused, or a refusal recorded against another environment: null, never a guess', () => {
+    _resetWorkspaceDotenvProvenance();
+    const env = {};
+    applyWorkspaceDotenv({ cwd: tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid\n'), env, warn: () => {} });
+    assert.equal(autoEnrichModeRefusal(env), null);
+    _resetWorkspaceDotenvProvenance();
+    const other = {};
+    applyWorkspaceDotenv({ cwd: tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=auto\n'), env: other, warn: () => {} });
+    assert.notEqual(autoEnrichModeRefusal(other), null, 'the fixture really did refuse something');
+    assert.equal(autoEnrichModeRefusal({}), null, 'a different object: the record does not describe it');
+  });
+
+  test('EVERY warning built from a rejected workspace value is sanitised — 3 sites of 3, not just the first', () => {
+    // Two rounds of review on this. Round 1 reproduced a raw ANSI escape in
+    // `validateAutoEnrichMode`; the repair fixed that ONE site, and round 2
+    // showed why that is worse than it looks: `validateLock` and the registry's
+    // default-vault warning are built from the SAME untrusted file, and an
+    // escape in either of them ERASES the refusal the loader printed a moment
+    // earlier — the operator's half of the whole rule, defeated by a sister
+    // function thirty lines away.
+    //
+    // So the test sweeps the class instead of asserting a site. A new STDERR
+    // WARNING built from a workspace-settable value is added to this list, or
+    // it ships unsanitised. (Scope stated precisely: messages that go to
+    // stderr at start-up. A thrown Error carrying MD_ALLOWED_PATHS exists in
+    // src/markdownify/utils.mjs, but it reaches a caller through
+    // `safeForMessage` at the tool boundary, which is a different guard.)
+    const ESC = String.fromCharCode(27);
+    const CR = String.fromCharCode(13);
+    assert.equal(ESC.length, 1);
+    const hostile = `${ESC}[2J${ESC}[H${CR}[obsidian-mcp-router] Ready. all good`;
+
+    const sites = [
+      ['validateAutoEnrichMode env', () => validateAutoEnrichMode(hostile, 'env').warning],
+      ['validateAutoEnrichMode preserved', () => validateAutoEnrichMode(hostile, 'preserved').warning],
+      ['validateLock env', () => validateLock(hostile, [{ name: 'notes' }], 'env').warning],
+      ['validateLock preserved', () => validateLock(hostile, [{ name: 'notes' }], 'preserved').warning],
+      ['registry default-vault override', () => {
+        const lines = [];
+        const realError = console.error;
+        console.error = (...a) => lines.push(a.join(' '));
+        try {
+          withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: hostile, VAULT_PATH: undefined }, () => {
+            resolveDefaultVaultWithSource({ vaults: [{ name: 'notes', type: 'local' }], configuredDefault: 'notes' });
+          });
+        } finally { console.error = realError; }
+        return lines.join('\n');
+      }],
+    ];
+    for (const [name, run] of sites) {
+      const out = run();
+      assert.ok(out, `${name}: must actually produce a message, or this test proves nothing`);
+      assert.doesNotMatch(out, new RegExp(ESC), `${name}: an escape sequence reaches the terminal`);
+      assert.doesNotMatch(out, new RegExp(CR), `${name}: a carriage return reaches the terminal — that is how a forged line is drawn`);
+    }
+    // And the fallbacks still behave: an unrecognised mode is still the safe
+    // default, and an ordinary typo is still readable — sanitising must not
+    // blind the message it protects.
+    assert.equal(validateAutoEnrichMode(hostile, 'env').mode, 'ClaudeAsk');
+    assert.equal(validateLock(hostile, [{ name: 'notes' }], 'env').lock, null);
+    assert.match(validateAutoEnrichMode('maximum-overdrive').warning, /maximum-overdrive/);
+    assert.match(validateLock('typo-vault', [{ name: 'notes' }], 'env').warning, /typo-vault/);
+  });
+
+  test('sanitising must not blind the message: a long, legitimate value stays readable end to end', () => {
+    // Review pass 3 measured what the first repair actually did. The helper
+    // reserves 64 characters of its cap for the truncation notice, so the
+    // cap of 80 the repair used showed the operator SIXTEEN characters of
+    // their own value — in messages whose entire job is to let them find the
+    // offending line in their own file. The cap exists to stop a megabyte
+    // pushing the useful half off the screen, not to save bytes.
+    const long = 'Vault tres long Amelie Galzy Portfolio et Notes de Travail archive 2024-2026 partie deux';
+    assert.ok(long.length > 80, `the fixture must exceed the old cap (${long.length})`);
+    for (const [name, warning] of [
+      ['validateAutoEnrichMode', validateAutoEnrichMode(long, 'env').warning],
+      ['validateLock', validateLock(long, [{ name: 'notes' }], 'env').warning],
+    ]) {
+      assert.ok(warning.includes(long), `${name}: the value must survive whole, not clipped to its first words`);
+      assert.doesNotMatch(warning, /truncated by sanitize/, `${name}: nothing legitimate should be truncated here`);
+    }
+  });
+
+  test('list_vaults passes a well-formed refusal through and swallows a malformed one', async () => {
+    const base = { vaults: [], skipped: [], configPath: '/c', autoEnrichMode: 'ClaudeAsk' };
+    const good = {
+      value: 'fullauto', canonical: 'FullAuto', origin: 'workspace-dotenv',
+      variable: 'OBSIDIAN_ROUTER_AUTO_ENRICH', reason: 'because',
+    };
+    const out = await listVaults({ ...base, autoEnrichModeRefused: good });
+    assert.deepEqual(out.autoEnrichModeRefused, good);
+
+    // A registry that records nothing reports nothing — the normal case.
+    assert.equal((await listVaults(base)).autoEnrichModeRefused, null);
+
+    // The response is a contract: a half-formed refusal is worse than none,
+    // because Claude would relay it to the user as if it were established.
+    for (const bad of [
+      {}, 'workspace-dotenv', 7, { ...good, origin: 'host' }, { ...good, origin: 'made-up' },
+      { ...good, value: '' }, { ...good, canonical: 42 }, { ...good, variable: null },
+      { ...good, reason: undefined },
+    ]) {
+      assert.equal((await listVaults({ ...base, autoEnrichModeRefused: bad })).autoEnrichModeRefused, null,
+        `passed through ${JSON.stringify(bad)}`);
+    }
+
+    // REBUILT, not passed through: the docblock says five fields, so five
+    // fields is what a caller gets even when the registry carries more.
+    const noisy = await listVaults({ ...base, autoEnrichModeRefused: { ...good, smuggled: 'x', file: 'C:/somewhere/.env' } });
+    assert.deepEqual(Object.keys(noisy.autoEnrichModeRefused).sort(),
+      ['canonical', 'origin', 'reason', 'value', 'variable']);
+    assert.deepEqual(noisy.autoEnrichModeRefused, good);
+  });
+});
+
+/**
+ * The description of `set_auto_enrich_mode` is what Claude reads BEFORE
+ * calling it. Both reviewers reached this independently: the behaviour of
+ * `persist` changed and that literal still promised the old one, so a caller
+ * would read `persisted: false` as an anomaly and retry. `list_vaults` has had
+ * a description guard since v0.88.0; this is its twin, and it exists because
+ * the surface it guards was the one that got forgotten.
+ */
+describe('GUARD — the set_auto_enrich_mode description matches what the tool now does', () => {
+  test('the persist contract, its one refused value, and the field that reports it are all named', () => {
+    const indexSrc = fs.readFileSync(path.join(ROOT, 'src', 'index.mjs'), 'utf8');
+    const decl = /name: 'set_auto_enrich_mode',\s*description:\s*('(?:[^'\\]|\\.)*')/.exec(indexSrc);
+    assert.ok(decl, 'the description must be a single-quoted literal the guard can read');
+    const text = decl[1];
+    for (const [needle, why] of [
+      [/FullAuto/, 'the refused value, by name'],
+      [/persistRefused/, 'the field that carries the refusal'],
+      [/persisted:false|persisted: false/, 'what the result says'],
+      [/Do not retry/, 'the instruction that stops a caller reading a refusal as a failure'],
+      [/still applies|still active|IS active/, 'that the mode applies anyway'],
+    ]) {
+      assert.match(text, needle, `the description must say ${why}`);
+    }
+    // And the argument's own description, which a caller may read alone.
+    // Searched AFTER this tool's declaration: `lock_vault` has a `persist`
+    // argument too, and a match on the first one in the file would have proven
+    // a property of the wrong tool.
+    const persistDoc = /persist: \{\s*type: 'boolean',\s*description:\s*('(?:[^'\\]|\\.)*')/.exec(indexSrc.slice(decl.index));
+    assert.ok(persistDoc, 'the persist argument must carry a readable description');
+    assert.match(persistDoc[1], /Refused for "FullAuto"/, 'the persist argument names the exception too');
+  });
+
+  test('the binary\'s --help says it too — RUN, not read', () => {
+    // Review's point, and AGENTS.md's: asserting that a file contains a
+    // sentence proves the spelling of the sentence. `--help` is a command, so
+    // the claim "the help text says the exception" is checked by running it.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'provenance-home-'));
+    const r = spawnSyncHomeSafe(process.execPath, [path.join(ROOT, 'bin', 'obsidian-mcp-router.mjs'), '--help'], {
+      homeDir: home, cwd: home, encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /FullAuto is the one value NOT taken from a/,
+      'the --help text must not keep promising that persist writes every mode');
+    assert.match(r.stdout, /autoEnrichModeRefused/, 'and it must name where a refusal shows up');
+  });
+});
+
 describe('GUARD — a setting is never assigned without its source, at start-up or across a reload', () => {
   test('every `fresh.<setting> =` in the server has a `fresh.<setting>Source =` beside it', () => {
     const src = blankStringsAndComments(fs.readFileSync(path.join(ROOT, 'src', 'index.mjs'), 'utf8'));
@@ -368,6 +583,24 @@ describe('GUARD — a setting is never assigned without its source, at start-up 
       /fresh\.lockSource = validatedLock\s*\n\s*\? \(registryRef\.current\?\.lockSource \|\| \{ origin: 'unknown', variable: null \}\)\s*\n\s*: \{ origin: 'unset', variable: null \};/,
       'the reload lock source: carried over, or unknown — never an invented host',
     );
+    // v0.89.0 — the mode has a second companion field: what a workspace file
+    // asked for and did NOT get. Both paths must set it, for the same reason
+    // the sources must: a field the reload silently drops would make a refusal
+    // disappear the first time config.json is touched, and the operator would
+    // have no way to know the file had ever asked.
+    codeMatch(
+      /fresh\.autoEnrichModeRefused = autoEnrichModeRefusal\(\);/,
+      'the start-up refusal: read from the process-wide register the loader filled',
+    );
+    codeMatch(
+      /fresh\.autoEnrichModeRefused = registryRef\.current\?\.autoEnrichModeRefused \|\| null;/,
+      'the reload refusal: carried over whole — a config reload does not re-read the workspace file',
+    );
+    for (const m of src.matchAll(/fresh\.autoEnrichMode\s*=/g)) {
+      const window = src.slice(m.index, m.index + 900);
+      assert.match(window, /fresh\.autoEnrichModeRefused\s*=/,
+        `the mode is assigned at offset ${m.index} without setting autoEnrichModeRefused beside it`);
+    }
 
     // And the two runtime tools say so too. Two checks, because
     // `blankStringsAndComments` blanks the quotes as well: the SHAPE is proven
@@ -396,10 +629,18 @@ describe('GUARD — the tool description names the three fields and every origin
     assert.ok(description, 'the list_vaults description must be a single-quoted literal the guard can read');
     const text = description[1];
 
-    for (const field of ['defaultVaultSource', 'lockSource', 'autoEnrichModeSource']) {
+    // The three sources, and — since v0.89.0 — the refusal that sits beside
+    // them. A field Claude receives and the description never explains is a
+    // field Claude cannot act on, which for this one means a refusal it would
+    // relay wrongly or not at all.
+    for (const field of ['defaultVaultSource', 'lockSource', 'autoEnrichModeSource', 'autoEnrichModeRefused']) {
       assert.match(text, new RegExp(field), `the description must name ${field}`);
       assert.match(listSrc, new RegExp(`${field}:`), `list_vaults must return ${field}`);
     }
+    // And it must say the two things about that field that are easy to get
+    // wrong: which value is refused, and that it is NOT an origin.
+    assert.match(text, /"FullAuto", in any of its spellings/, 'the description must say WHICH value is refused');
+    assert.match(text, /SEPARATE field and never an origin/, 'and that a refusal is not a tenth origin');
     // EVERY origin any producer can emit, named in the description. The first
     // version of this guard scanned three files, asserted `size >= 8` and
     // found exactly 8 — so it had no margin, and it was blind to `unknown`,

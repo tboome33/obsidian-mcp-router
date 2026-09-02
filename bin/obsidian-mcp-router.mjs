@@ -38,6 +38,13 @@ import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
  *   be able to set GIT_CONFIG_GLOBAL, NODE_OPTIONS, MARKITDOWN_PATH — or
  *   OBSIDIAN_ROUTER_CONFIG — in this process (v0.87.0). Anything else is
  *   ignored and named once on stderr, which for an MCP server is its log.
+ * - One accepted key has a value it may not carry: OBSIDIAN_ROUTER_AUTO_ENRICH
+ *   is fine, OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto (in any of its spellings) is
+ *   not applied from a workspace file (v0.89.0, accepted option 4 of the
+ *   decision `liaison-workspace-vault-hors-depot`). That refusal reaches this
+ *   stderr through the same single warning as the ignored and withheld keys —
+ *   the binary keeps the default `warn` precisely so it does — and it carries
+ *   the migration line for a file written by an earlier `auto-mode persist`.
  * - What WAS taken is named too, on one line. A cloned repository's file can
  *   pick which of the user's REGISTERED vaults this session reads, locks and
  *   enriches (every value is checked against the registry; an unregistered
@@ -149,6 +156,19 @@ ENVIRONMENT
                                   persist: true }) which writes this var to
                                   <cwd>/.env. Surfaced in list_vaults under
                                   field autoEnrichMode.
+                                  FullAuto is the one value NOT taken from a
+                                  workspace .env (v0.89.0), in any of its
+                                  spellings: that mode is standing permission
+                                  to write into a vault without asking, and a
+                                  cloned repository's file must not grant it.
+                                  It still comes from this environment (an env
+                                  entry in the MCP host's server declaration,
+                                  or your shell), or from a call during the
+                                  session. persist:true therefore refuses to
+                                  write it and applies it to the session
+                                  instead. A refusal is named on this stderr
+                                  and in list_vaults under field
+                                  autoEnrichModeRefused.
 
 The router auto-loads a .env file from the cwd at startup, so the
 variables above can be set per-workspace without touching ~/.claude.

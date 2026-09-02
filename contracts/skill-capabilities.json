@@ -11,7 +11,9 @@
       "tools": [
         "set_auto_enrich_mode"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "list_vaults"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": false,

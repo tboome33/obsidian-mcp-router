@@ -70,12 +70,34 @@
  * Parent wins, always: a key already present in the environment is never
  * overwritten by the file — the semantics the three loaders had before.
  *
+ * ---------------------------------------------------------------------------
+ * AND ONE VALUE THAT IS REFUSED EVEN UNDER AN ACCEPTED KEY
+ * ---------------------------------------------------------------------------
+ * OBSIDIAN_ROUTER_AUTO_ENRICH stays an accepted key — a project may perfectly
+ * well carry its own ClaudeAsk, Hybrid or off. What it may not carry is the
+ * value FullAuto, which is the one mode that turns a file travelling with a
+ * cloned repository into standing permission to write into one of the user's
+ * vaults without asking again. That is accepted option 4 of the decision
+ * `liaison-workspace-vault-hors-depot` (Roland, 2026-09-03): the mode keeps
+ * its two honest homes — the MCP host's server declaration, and a call to
+ * set_auto_enrich_mode during the session — and loses the one nobody signed
+ * for.
+ *
+ * The rule is on the VALUE, not on the key, and it is applied after
+ * canonicalisation: auto, full, full-auto, fullauto and FULLAUTO all mean
+ * FullAuto, and a rule that compared raw strings would refuse the obvious
+ * spelling while letting the others through, which is worse than no rule at
+ * all because it would read as closed. The alias table is the authority, and
+ * it lives in ONE place — helpers/auto-enrich-mode.mjs, which imports nothing.
+ *
  * Node builtins only: bin/obsidian-mcp-router.mjs imports this before any
- * dependency is known to exist.
+ * dependency is known to exist. The one local import below is dependency-free
+ * for exactly that reason; keep it so.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { canonicalizeMode } from './auto-enrich-mode.mjs';
 
 /** The keys the router's own writers put into a workspace .env, and the two sandbox keys. */
 export const WORKSPACE_DOTENV_KEYS = Object.freeze([
@@ -134,6 +156,78 @@ export const WORKSPACE_DOTENV_OPTOUTS = Object.freeze([
 
 /** Written by setup-vault for companion tools; the router does not read them — skipped silently. */
 export const WORKSPACE_DOTENV_COMPANION_KEYS = Object.freeze(['OBSIDIAN_API_KEY', 'OBSIDIAN_BASE_URL']);
+
+/**
+ * The one value an accepted key may not carry, and why. A table rather than an
+ * `if`, so a second refused value is added by name here and inherited by every
+ * loader, and so the tests can enumerate what the rule covers.
+ *
+ * `canonicalize` turns the file's text into the vocabulary the rule speaks;
+ * `refused` is compared against its OUTPUT, never against the raw text.
+ */
+export const WORKSPACE_DOTENV_REFUSED_VALUES = Object.freeze({
+  OBSIDIAN_ROUTER_AUTO_ENRICH: Object.freeze({
+    refused: 'FullAuto',
+    canonicalize: canonicalizeMode,
+    why:
+      'the most permissive auto-enrichment mode is not taken from a project file — '
+      + "set it in the MCP host's server declaration, or call set_auto_enrich_mode during the session",
+  }),
+});
+
+/**
+ * How many ignored KEY names the single warning lists, and how long each may
+ * be. Declared HERE, above their first use, rather than at the foot of the
+ * file where they used to sit: `safeValueForMessage` below reads
+ * WARN_MAX_NAME_LENGTH, and while nothing calls it during module evaluation
+ * today, a `const` read before its declaration is a temporal-dead-zone
+ * ReferenceError waiting for the first caller that does.
+ */
+const WARN_MAX_NAMES = 20;
+const WARN_MAX_NAME_LENGTH = 64;
+
+/**
+ * The alphabet a value from an untrusted file is shown through, and its clip.
+ * Same treatment as the ignored KEY names further down: a workspace file must
+ * not be able to drive a terminal — or a tool response — through a message
+ * about itself. Every legitimate spelling of a mode is letters and hyphens,
+ * so nothing readable is lost.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function safeValueForMessage(value) {
+  return String(value).replace(/[^A-Za-z0-9_.-]/g, '?').slice(0, WARN_MAX_NAME_LENGTH);
+}
+
+/**
+ * Whether `value`, read from a workspace file under `key`, is a value that key
+ * may not carry from that source.
+ *
+ * Returns null when the pair is fine — an unlisted key, or a listed key with
+ * any other value. Returns a record when it is not: the spelling as written
+ * (sanitised for display), what it canonicalises to, and why it is refused.
+ *
+ * @param {string} key
+ * @param {string} value
+ * @returns {{ key: string, value: string, canonical: string, reason: string }|null}
+ */
+export function workspaceDotenvValueRefusal(key, value) {
+  const rule = Object.hasOwn(WORKSPACE_DOTENV_REFUSED_VALUES, String(key))
+    ? WORKSPACE_DOTENV_REFUSED_VALUES[String(key)]
+    : null;
+  if (!rule) return null;
+  if (rule.canonicalize(value) !== rule.refused) return null;
+  return {
+    key: String(key),
+    value: safeValueForMessage(value),
+    canonical: rule.refused,
+    // The reason does NOT repeat the assignment: the warning that carries it
+    // already leads with `KEY=value refused (canonicalises to …)`, and the
+    // first version said the same thing twice with three em-dashes between.
+    reason: `not applied from a workspace file — ${rule.why}`,
+  };
+}
 
 const ACCEPTED = new Set([...WORKSPACE_DOTENV_KEYS, ...WORKSPACE_DOTENV_OPTOUTS]);
 
@@ -213,6 +307,29 @@ export const WORKSPACE_DOTENV_POLICY = `${WORKSPACE_DOTENV_KEYS.join(', ')} and 
 const APPLIED_FROM_WORKSPACE = new Map();
 
 /**
+ * What THIS process REFUSED to take from a workspace file because of its
+ * value — the other half of the register above. Kept for the same reason the
+ * applied half is kept: so a later reader can say what happened instead of
+ * the router silently doing something else.
+ *
+ * It carries the environment OBJECT it was judged against, exactly like the
+ * applied register, and for the same reason: this module's public signature
+ * takes an `env`, so a refusal recorded while loading into one object says
+ * nothing about another. Asked about a different object, the accessor reports
+ * nothing rather than a plausible-looking claim — the identity-before-value
+ * rule that v0.88.1 had to restore.
+ *
+ * Keyed by variable NAME, not by cwd — the same reserve the applied register
+ * carries: two loads from two different working directories in one process
+ * leave the first one's refusals in place for the keys the second does not
+ * name, and the later load overwrites the keys it shares. No entry point does
+ * that today (the binary loads once, each hook is its own process).
+ *
+ * @type {Map<string, { file: string, value: string, canonical: string, reason: string, env: object }>}
+ */
+const REFUSED_FROM_WORKSPACE = new Map();
+
+/**
  * Whether a workspace file was ever CONSULTED in this process — set once the
  * loader has tried to read one, whether it found it or not.
  *
@@ -220,6 +337,29 @@ const APPLIED_FROM_WORKSPACE = new Map();
  * looked for at all. Without this flag, an entry point that never loads one
  * (`startServer` imported directly by a test) would have every variable
  * reported as the host's, which is an assumption, not an observation.
+ *
+ * PROCESS-WIDE, and deliberately not per-environment-object — the one accessor
+ * of this register that is not. The four that answer ABOUT a key
+ * (`envKeyOrigin`, `envKeySourceFile`, `appliedWorkspaceDotenvKeys`,
+ * `workspaceDotenvRefusals`) all check which environment their record was made
+ * against; this one answers a question about the PROCESS ("has a workspace file
+ * been looked for at all"), so an `env` parameter would suggest a precision it
+ * does not have.
+ *
+ * THE KNOWN LIMIT, named in full rather than half. `envKeyOrigin` uses this
+ * flag as its PRECONDITION while checking record identity per object, so the
+ * two halves disagree for one case: after a load against environment A, asking
+ * `envKeyOrigin` about a key that is NOT in the register, for environment B,
+ * answers `host` — a positive claim about an object no file was ever read
+ * into. That is the assumption-dressed-as-fact this flag exists to prevent,
+ * surviving in the corner where the flag itself is consulted. It is not
+ * reachable in production (every entry point records and asks about
+ * `process.env` itself, where consultation and records coincide), and the fix
+ * is a per-object consultation set, which changes `envKeyOrigin`'s documented
+ * v0.88.0 precondition — a contract change belonging to the provenance lot,
+ * not to this one. `tests/workspace-dotenv.test.mjs` pins the behaviour so the
+ * limit is measured rather than assumed, and so the day someone fixes it, the
+ * pin says what they are changing.
  */
 let workspaceFileConsulted = false;
 
@@ -271,16 +411,37 @@ export function envKeyOrigin(key, env = process.env) {
  * The workspace file a key came from, or null. For a message that names the
  * file rather than only the fact ("posé par le .env de ce dépôt").
  *
+ * Takes an `env` and checks the record's identity against it, exactly like
+ * `envKeyOrigin` and `workspaceDotenvRefusals`. THE SAME RULE IN ALL FOUR
+ * PLACES, on purpose: v0.88.1 had to restore this check on `envKeyOrigin`
+ * after it shipped missing, and a fix that reaches only its first call site is
+ * the defect this repository keeps rediscovering. A record made against a
+ * different environment object describes that object, so the answer here is
+ * null rather than a file name that would be true of somebody else's run.
+ *
  * @param {string} key
+ * @param {object} [env]
  * @returns {string|null}
  */
-export function envKeySourceFile(key) {
-  return APPLIED_FROM_WORKSPACE.get(String(key))?.file || null;
+export function envKeySourceFile(key, env = process.env) {
+  const applied = APPLIED_FROM_WORKSPACE.get(String(key));
+  if (!applied || applied.env !== env) return null;
+  return applied.file || null;
 }
 
-/** The keys this process took from a workspace file, in the order it took them. */
-export function appliedWorkspaceDotenvKeys() {
-  return [...APPLIED_FROM_WORKSPACE.keys()];
+/**
+ * The keys this process took from a workspace file INTO `env`, in the order it
+ * took them. Same identity rule as the three accessors above.
+ *
+ * @param {object} [env]
+ * @returns {string[]}
+ */
+export function appliedWorkspaceDotenvKeys(env = process.env) {
+  const out = [];
+  for (const [key, rec] of APPLIED_FROM_WORKSPACE) {
+    if (rec.env === env) out.push(key);
+  }
+  return out;
 }
 
 /** True once a workspace file has been looked for in this process. */
@@ -288,9 +449,36 @@ export function workspaceDotenvWasConsulted() {
   return workspaceFileConsulted;
 }
 
+/**
+ * What a workspace file tried to set into `env` and was refused for its value.
+ *
+ * Returns the records made against THIS environment object, in the order they
+ * were made. A record made against another object is not returned: it
+ * describes that object, and answering from it would be the mistake v0.88.1
+ * fixed on the applied half of the register. An empty array therefore means
+ * "nothing was refused for this environment" — which, like every other answer
+ * of this module, is only an observation once a file has actually been looked
+ * for. `workspaceDotenvWasConsulted` answers that question for the PROCESS and
+ * not for a given object, so it confirms "a file was looked for somewhere",
+ * never "a file was looked for into THIS env"; read its docblock before
+ * leaning on it.
+ *
+ * @param {object} [env]
+ * @returns {Array<{ key: string, value: string, canonical: string, reason: string, file: string }>}
+ */
+export function workspaceDotenvRefusals(env = process.env) {
+  const out = [];
+  for (const [key, rec] of REFUSED_FROM_WORKSPACE) {
+    if (rec.env !== env) continue;
+    out.push({ key, value: rec.value, canonical: rec.canonical, reason: rec.reason, file: rec.file });
+  }
+  return out;
+}
+
 /** Test seam: forget what was recorded. Never called by the router itself. */
 export function _resetWorkspaceDotenvProvenance() {
   APPLIED_FROM_WORKSPACE.clear();
+  REFUSED_FROM_WORKSPACE.clear();
   workspaceFileConsulted = false;
 }
 
@@ -309,8 +497,15 @@ export function _resetWorkspaceDotenvProvenance() {
  * gated — a workspace file may only narrow an UNSET sandbox, never widen or
  * replace one. Named in the same single warning.
  *
+ * `refused` carries the accepted keys whose VALUE a workspace file may not
+ * choose (today: OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto). Unlike the other
+ * three, its entries are objects rather than names, because the name alone
+ * would not say what happened: the key is fine, the value is not. Named in
+ * the same single warning, and remembered for the session so `list_vaults`
+ * can show Claude a refusal the operator's stderr already carried.
+ *
  * @param {{ cwd: string, env?: object, warn?: (message: string) => void, readFile?: (p: string) => string }} opts
- * @returns {{ applied: string[], ignored: string[], skipped: string[], withheld: string[] }}
+ * @returns {{ applied: string[], ignored: string[], skipped: string[], withheld: string[], refused: Array<{ key: string, value: string, canonical: string, reason: string }> }}
  */
 export function applyWorkspaceDotenv({
   cwd,
@@ -318,7 +513,7 @@ export function applyWorkspaceDotenv({
   warn = (message) => { try { process.stderr.write(`${message}\n`); } catch { /* a closed stderr is not our problem */ } },
   readFile = (p) => fs.readFileSync(p, 'utf8'),
 } = {}) {
-  const result = { applied: [], ignored: [], skipped: [], withheld: [] };
+  const result = { applied: [], ignored: [], skipped: [], withheld: [], refused: [] };
   if (!cwd) return result;
   let text;
   try {
@@ -337,10 +532,47 @@ export function applyWorkspaceDotenv({
   // A file that sets both spellings itself, on a host that set none, is the
   // narrowing case and goes through.
   const sandboxIsTheHosts = isGatedDeployment(env) || WORKSPACE_DOTENV_SANDBOX_KEYS.some((k) => k in env);
+  /** Keys already reported as refused during THIS load — see the loop below. */
+  const reportedRefusals = new Set();
   for (const { key, value } of parseDotenv(text)) {
     const verdict = classifyWorkspaceDotenvKey(key);
     if (verdict === 'ignore') { result.ignored.push(key); continue; }
     if (verdict === 'companion') { result.skipped.push(key); continue; }
+    // The value rule comes BEFORE the parent rule, on purpose and with one
+    // exemption. A refused line is never applied either way, so the ORDER only
+    // decides whether the operator is TOLD about it — and the answer has to be
+    // yes even when the parent holds some other value, because that is exactly
+    // the case where the line in the file is dead and its owner has no other
+    // way to find out (R4: nothing changes in silence).
+    //
+    // The exemption: a parent that already chose the SAME refused value chose
+    // it deliberately, from a place this rule does not govern. A file that
+    // merely repeats it has changed nothing, so reporting a refusal there
+    // would be a false alarm about a mode that is legitimately in force.
+    const refusal = workspaceDotenvValueRefusal(key, value);
+    if (refusal) {
+      const rule = WORKSPACE_DOTENV_REFUSED_VALUES[key];
+      const parentAlreadyChoseIt = key in env && rule.canonicalize(env[key]) === refusal.canonical;
+      // ONE report per key per LOAD, whatever the file repeats. A workspace
+      // file that names the same refused assignment a thousand times is a
+      // 37 KB file; without this it produced a single ~460 KB stderr line,
+      // which is a cloned repository slowing or wedging the MCP start-up
+      // through a message about itself. The register was already keyed by
+      // name and so already deduplicated; the report was not.
+      //
+      // Per load and not per process: the counter is local to this call, so a
+      // second load — another cwd, another test — reports its own file's
+      // refusals rather than falling silent because an earlier one already did.
+      if (!parentAlreadyChoseIt && !reportedRefusals.has(key)) {
+        reportedRefusals.add(key);
+        result.refused.push(refusal);
+        // NOT recorded as applied — the provenance register describes what took
+        // effect, and this did not. `envKeyOrigin` therefore keeps answering for
+        // this key the way it would if the file had never named it.
+        REFUSED_FROM_WORKSPACE.set(key, { file: path.join(cwd, '.env'), value: refusal.value, canonical: refusal.canonical, reason: refusal.reason, env });
+      }
+      continue;
+    }
     if (key in env) continue; // the parent wins, always
     if (sandboxIsTheHosts && WORKSPACE_DOTENV_SANDBOX_KEYS.includes(key)) { result.withheld.push(key); continue; }
     env[key] = value;
@@ -349,7 +581,7 @@ export function applyWorkspaceDotenv({
     // workspace file gets the provenance, and none can forget to.
     APPLIED_FROM_WORKSPACE.set(key, { file: path.join(cwd, '.env'), value, env });
   }
-  if (result.ignored.length || result.withheld.length) {
+  if (result.ignored.length || result.withheld.length || result.refused.length) {
     const parts = [];
     if (result.ignored.length) {
       // The names come from an untrusted file: they are shown through a strict
@@ -370,10 +602,20 @@ export function applyWorkspaceDotenv({
           '(it set MD_ALLOWED_PATHS or MD_SHARE_DIR, or runs gated); a workspace file may only narrow an unset one.',
       );
     }
+    for (const r of result.refused) {
+      // The key and the canonical value are the router's own constants; the
+      // spelling comes from the file and went through the same strict alphabet
+      // as the ignored names. The migration line is the point of naming this
+      // at all: a file written by `auto-mode --persist` before this rule
+      // existed keeps working in every other respect, and the operator has to
+      // be told why THIS line stopped, and what to do instead — nothing
+      // changes in silence.
+      parts.push(
+        `${r.key}=${r.value} refused (canonicalises to ${r.canonical}) — ${r.reason}. ` +
+          `If this line was written by an earlier \`auto-mode persist\`, remove it: the mode now comes from the host or from a call during the session.`,
+      );
+    }
     warn(`[obsidian-mcp-router] .env: ${parts.join(' ')}`);
   }
   return result;
 }
-
-const WARN_MAX_NAMES = 20;
-const WARN_MAX_NAME_LENGTH = 64;

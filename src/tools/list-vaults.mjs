@@ -178,6 +178,30 @@ export async function listVaults(registry) {
     if (ok) return recorded;
     return recorded ? UNKNOWN : fallback;
   };
+  // The refusal has its own shape, so it has its own validator. Five string
+  // fields, all required, and an origin that can only be the one origin a
+  // refusal can have: a file is the only thing this rule refuses. Anything
+  // else — a missing field, a number, an origin from somewhere else — is not
+  // reported at all rather than reported half-true.
+  const refusalOrNull = (recorded) => {
+    const str = (v) => typeof v === 'string' && v !== '';
+    const ok = recorded
+      && typeof recorded === 'object'
+      && str(recorded.value) && str(recorded.canonical) && str(recorded.reason)
+      && recorded.origin === 'workspace-dotenv'
+      && str(recorded.variable);
+    // REBUILT, not passed through: a registry built by another path could
+    // carry extra fields, and this response is a contract that says five. The
+    // three source fields above are passed through because their shape is two
+    // keys checked exhaustively; this one is wider and worth reconstructing.
+    return ok ? {
+      value: recorded.value,
+      canonical: recorded.canonical,
+      origin: recorded.origin,
+      variable: recorded.variable,
+      reason: recorded.reason,
+    } : null;
+  };
 
   return ({
     defaultVault: registry.defaultVault,
@@ -189,6 +213,18 @@ export async function listVaults(registry) {
     // tool call can set explicitly — so a mode with no source is `unknown`,
     // and only a registry carrying no mode at all is `default`.
     autoEnrichModeSource: sourceOr(registry.autoEnrichModeSource, registry.autoEnrichMode ? UNKNOWN : BY_DEFAULT),
+    // What a workspace file asked for and did NOT get (v0.89.0) — the accepted
+    // option 4 of the same decision. A SEPARATE field, deliberately, and not a
+    // tenth value of SETTING_ORIGINS: `autoEnrichModeSource` answers "who chose
+    // the mode in force", and a refused value chose nothing. Naming it there
+    // would credit a file for the default that replaced it, which is the exact
+    // lie the provenance lot was built to stop telling.
+    //
+    // Validated at the boundary like the sources above: a registry built by
+    // another path could carry anything, and this response is a contract.
+    // Anything that does not typecheck becomes null — "no refusal to report" —
+    // because a half-formed refusal is worse than none.
+    autoEnrichModeRefused: refusalOrNull(registry.autoEnrichModeRefused),
     conversionToolbox,
     configPath: registry.configPath,
     vaults: results,

@@ -110,6 +110,8 @@ Each channel handles a different surface; they compose cleanly because the consi
 
 Phase 1 (v0.8.2) ships four modes. Switch with `/obsidian-router:auto-mode <Mode>` (volatile) or with `--persist` to write `OBSIDIAN_ROUTER_AUTO_ENRICH=<Mode>` into the workspace `.env`.
 
+> **One exception since v0.89.0: `FullAuto` does not live in a workspace file.** `--persist` writes `ClaudeAsk`, `Hybrid` and `off` as before, but for `FullAuto` it applies the mode to the session and refuses the write — and a `FullAuto` already sitting in a workspace `.env` is not applied at start-up either, in any of its spellings (`fullauto`, `full`, `full-auto`, `auto`, any casing). The reason is that a workspace is very often a cloned repository whose `.env` came with it, and `FullAuto` is the one mode that turns such a file into standing permission to write into one of your vaults without asking again. The two places it still comes from are the MCP host's server declaration (an `env` entry beside the router's command) and a `set_auto_enrich_mode` call during the session. When a file asked and was refused, the router says so on its stderr and `list_vaults` carries `autoEnrichModeRefused`. This is the accepted option 4 of the decision `liaison-workspace-vault-hors-depot`.
+
 ### `ClaudeAsk` (default) — propose, always confirm
 
 **Behavior**: at each trigger (validation / result / topic-switch), Claude lists candidates and waits for your selection ("all", "none", numbers, "skip"). Nothing is saved without your explicit OK.
@@ -293,6 +295,8 @@ Chaque canal gère une surface différente ; ils se composent proprement parce q
 ### Les quatre modes — quel mode pour quel usage
 
 La Phase 1 (v0.8.2) ship quatre modes. Switch avec `/obsidian-router:auto-mode <Mode>` (volatile) ou avec `--persist` pour écrire `OBSIDIAN_ROUTER_AUTO_ENRICH=<Mode>` dans le `.env` du workspace.
+
+> **Une exception depuis la v0.89.0 : `FullAuto` n'habite pas dans un fichier de workspace.** `--persist` écrit `ClaudeAsk`, `Hybrid` et `off` comme avant, mais pour `FullAuto` il applique le mode à la session et refuse l'écriture — et un `FullAuto` déjà présent dans un `.env` de workspace n'est pas appliqué au démarrage non plus, quelle que soit son orthographe (`fullauto`, `full`, `full-auto`, `auto`, n'importe quelle casse). La raison : un workspace est très souvent un dépôt cloné dont le `.env` est arrivé avec lui, et `FullAuto` est le seul mode qui transforme un tel fichier en autorisation permanente d'écrire dans un de tes vaults sans redemander. Les deux endroits d'où il vient encore sont la déclaration du serveur dans l'hôte MCP (une entrée `env` à côté de la commande du router) et un appel à `set_auto_enrich_mode` pendant la session. Quand un fichier a demandé et s'est vu refuser, le router le dit sur sa sortie d'erreur et `list_vaults` porte `autoEnrichModeRefused`. C'est l'option n°4, acceptée, de la décision `liaison-workspace-vault-hors-depot`.
 
 #### `ClaudeAsk` (défaut) — propose, confirme toujours
 

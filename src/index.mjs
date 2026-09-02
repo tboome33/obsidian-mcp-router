@@ -155,13 +155,13 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 // ways. See helpers/write-targets.mjs.
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
-import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, workspaceDotenvRefusals } from './helpers/workspace-dotenv.mjs';
 
 const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "workspace-dotenv" = this project\'s own .env file chose it — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — a vault it must pick from the ones already registered, the auto-enrichment mode from its four valid values, VAULT_PATH, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs — and never an endpoint, a credential or the router\'s own config, so this is about consent, not access), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
+      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "workspace-dotenv" = this project\'s own .env file chose it — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — a vault it must pick from the ones already registered, the auto-enrichment mode from its four valid values, VAULT_PATH, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs — and never an endpoint, a credential or the router\'s own config, so this is about consent, not access), autoEnrichModeRefused (null in the normal case; otherwise the auto-enrichment mode this workspace\'s .env asked for and did NOT get, as { value, canonical, origin, variable, reason }. Exactly one value is refused this way: "FullAuto", in any of its spellings, when it comes from a workspace file — the mode that lets Claude write into a vault without asking again is not something a file travelling with a cloned repository may turn on. It is a SEPARATE field and never an origin: autoEnrichModeSource keeps naming what actually took effect, because a refused value is not the source of what replaced it. When this is non-null, tell the user their project file asked for FullAuto and was refused, and that the two places the mode is still taken from are the MCP host\'s server declaration and a set_auto_enrich_mode call in this session), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -789,7 +789,7 @@ const TOOLS = [
   {
     name: 'set_auto_enrich_mode',
     description:
-      'Set the wiki auto-enrichment mode for the current session. Auto-enrichment is the layer where Claude proactively proposes wiki saves at three triggers (validation pins, result-obtained digests, topic-switch checkpoints). Modes: "ClaudeAsk" (default — propose, user always confirms), "Hybrid" (auto-save type-safe items like facts and URLs, ask on high-stakes like decisions / ADRs / techniques), "FullAuto" (auto-save everything with audit log + sensitivity filter + hard cap), "off" (no auto-suggestions; user invokes /save manually). Pass `persist: true` to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> into <cwd>/.env so the mode survives restarts — "off" included, written as the literal (a removed line would read as the default at the next start). Note: persist:true is refused when the current working directory IS the user home directory (avoids creating a stray ~/.env). The in-memory mode still applies.',
+      'Set the wiki auto-enrichment mode for the current session. Auto-enrichment is the layer where Claude proactively proposes wiki saves at three triggers (validation pins, result-obtained digests, topic-switch checkpoints). Modes: "ClaudeAsk" (default — propose, user always confirms), "Hybrid" (auto-save type-safe items like facts and URLs, ask on high-stakes like decisions / ADRs / techniques), "FullAuto" (auto-save everything with audit log + sensitivity filter + hard cap), "off" (no auto-suggestions; user invokes /save manually). Pass `persist: true` to write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> into <cwd>/.env so the mode survives restarts — "off" included, written as the literal (a removed line would read as the default at the next start). TWO CASES WHERE persist IS REFUSED, and in both the in-memory mode still applies for the session: (1) "FullAuto" is never written to a workspace .env, because since v0.89.0 the router never reads that mode back from one — a workspace is often a cloned repository, and that mode is standing permission to write into a vault without asking. The call SUCCEEDS: it returns persisted:false with persistRefused: { mode, variable, reason }, the mode IS active now, and the reason names the two places that make it survive a restart (the MCP host\'s server declaration, or the variable in the shell/profile). Do not retry, do not report a failure, and do not offer to write the file another way; relay the reason. The other three modes persist exactly as before, and persistRefused is null for them. (2) the current working directory IS the user home directory (avoids creating a stray ~/.env) — that one throws, and its message says the mode is still active.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -801,7 +801,7 @@ const TOOLS = [
         persist: {
           type: 'boolean',
           description:
-            'If true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to <cwd>/.env — "off" included, as the literal. Default: false (volatile, this session only).',
+            'If true, write OBSIDIAN_ROUTER_AUTO_ENRICH=<mode> to <cwd>/.env — "off" included, as the literal. Default: false (volatile, this session only). Refused for "FullAuto", which no workspace file may set: the call still succeeds, the mode still applies to the session, and the result carries persisted:false plus persistRefused explaining where to set it instead.',
         },
       },
       required: ['mode'],
@@ -2008,10 +2008,23 @@ export function validateLock(candidate, vaults, context = 'env') {
     return { lock: candidate, warning: null };
   }
   const active = vaults.map((v) => v.name).join(', ') || '(none)';
+  // Sanitised for the same reason as the mode below: OBSIDIAN_ROUTER_LOCKED is
+  // written by the same workspace file, so this value is untrusted too. Fixing
+  // only the mode would have been a fix that reached its first call site —
+  // worse than none here, because an escape sequence in THIS message erases
+  // the refusal the loader printed a moment earlier, which is the operator's
+  // half of the whole rule.
+  //
+  // 200, not 80: `safeForMessage` reserves 64 characters of its cap for the
+  // truncation notice, so a cap of 80 shows the operator SIXTEEN characters of
+  // their own value — and the entire job of this message is to let them find
+  // the offending line in their file. The cap is here to stop a megabyte
+  // pushing the useful half off the screen, not to save bytes.
+  const shown = safeForMessage(candidate, 200);
   const prefix =
     context === 'preserved'
-      ? `[obsidian-mcp-router] Locked vault "${candidate}" is no longer in the active set after config reload`
-      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_LOCKED="${candidate}" does not match any active vault`;
+      ? `[obsidian-mcp-router] Locked vault "${shown}" is no longer in the active set after config reload`
+      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_LOCKED="${shown}" does not match any active vault`;
   return {
     lock: null,
     warning: `${prefix} — falling back to normal multi-vault mode. Active vaults: ${active}.`,
@@ -2067,15 +2080,52 @@ export function envSettingSource(effective, variable, unsetOrigin = 'unset') {
   return { origin: envKeyOrigin(variable), variable };
 }
 
+/**
+ * The auto-enrichment mode a workspace file tried to set and did not get,
+ * shaped for the `list_vaults` response — or null when no file named a refused
+ * value in this process.
+ *
+ * A REFUSAL IS NOT AN ORIGIN. `autoEnrichModeSource` answers "who chose the
+ * mode that is in force", and a value that was refused chose nothing: crediting
+ * it there would name a file as the source of the default that replaced it. So
+ * the two live side by side and say different things — the source says what
+ * took effect, this says what was turned away.
+ *
+ * Exported for testing.
+ *
+ * @param {object} [env]
+ * @returns {{ value: string, canonical: string, origin: string, variable: string, reason: string }|null}
+ */
+export function autoEnrichModeRefusal(env = process.env) {
+  const refusal = workspaceDotenvRefusals(env).find((r) => r.key === 'OBSIDIAN_ROUTER_AUTO_ENRICH');
+  if (!refusal) return null;
+  return {
+    value: refusal.value,
+    canonical: refusal.canonical,
+    origin: 'workspace-dotenv',
+    variable: 'OBSIDIAN_ROUTER_AUTO_ENRICH',
+    reason: refusal.reason,
+  };
+}
+
 export function validateAutoEnrichMode(candidate, context = 'env') {
   if (!candidate) return { mode: 'ClaudeAsk', warning: null };
   const canonical = canonicalizeMode(candidate);
   if (canonical) return { mode: canonical, warning: null };
   const valid = VALID_MODES.join(', ');
+  // The rejected value comes from an untrusted file more often than not — a
+  // workspace .env, which a cloned repository carries. Raw, it reached this
+  // stderr with whatever it contained: a reviewer built a value carrying an
+  // ANSI clear-screen sequence and a carriage return, watched it wipe the
+  // terminal and forge a plausible-looking "Ready." line underneath. It is not
+  // a spelling of any mode, so the v0.89.0 refusal never sees it — it is
+  // applied, rejected here, and printed. Same treatment as every other
+  // untrusted value the router names.
+  const shown = safeForMessage(candidate, 200);
   const prefix =
     context === 'preserved'
-      ? `[obsidian-mcp-router] Preserved auto-enrichment mode "${candidate}" is not recognized after config reload`
-      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_AUTO_ENRICH="${candidate}" is not a recognized mode`;
+      ? `[obsidian-mcp-router] Preserved auto-enrichment mode "${shown}" is not recognized after config reload`
+      : `[obsidian-mcp-router] OBSIDIAN_ROUTER_AUTO_ENRICH="${shown}" is not a recognized mode`;
   return {
     mode: 'ClaudeAsk',
     warning: `${prefix} — falling back to "ClaudeAsk" (always-confirm). Valid modes: ${valid}.`,
@@ -2204,6 +2254,9 @@ export async function startServer({ configPath, watch = true } = {}) {
     'OBSIDIAN_ROUTER_AUTO_ENRICH',
     'default',
   );
+  // And what a workspace file tried to set and was refused (v0.89.0). Recorded
+  // beside the source, never inside it: the source names what took effect.
+  fresh.autoEnrichModeRefused = autoEnrichModeRefusal();
 
   const registryRef = { current: fresh };
 
@@ -2264,6 +2317,10 @@ export async function startServer({ configPath, watch = true } = {}) {
           fresh.autoEnrichModeSource = modeReloadWarning
             ? { origin: 'default', variable: null }
             : (registryRef.current?.autoEnrichModeSource || { origin: 'unknown', variable: null });
+          // Carried over whole: a config reload does not re-read the workspace
+          // file, so what that file asked for is unchanged — including when
+          // the mode itself failed revalidation.
+          fresh.autoEnrichModeRefused = registryRef.current?.autoEnrichModeRefused || null;
 
           registryRef.current = fresh;
           console.error(
@@ -2721,10 +2778,18 @@ export async function startServer({ configPath, watch = true } = {}) {
   const provenanceNote = fromWorkspace.length
     ? ` Chosen by this workspace's .env rather than by the host: ${fromWorkspace.join(', ')}.`
     : '';
+  // And what that file asked for and did not get. The loader already said this
+  // once on stderr; it is repeated here because the Ready line is the one line
+  // an operator actually reads, and a refusal nobody sees is the "aveu rangé
+  // dans un tiroir" the decision was written against.
+  const refusalNote = reg.autoEnrichModeRefused
+    ? ` This workspace's .env asked for auto-enrich mode ${reg.autoEnrichModeRefused.canonical}`
+      + ` (written "${reg.autoEnrichModeRefused.value}") and was refused: that mode is not taken from a project file.`
+    : '';
   console.error(
     `[obsidian-mcp-router] Ready. ${reg.vaults.length} vault(s) configured: ${reg.vaults
       .map((v) => v.name)
-      .join(', ')}${skippedNote}.${lockNote}${autoEnrichNote}${provenanceNote}`,
+      .join(', ')}${skippedNote}.${lockNote}${autoEnrichNote}${provenanceNote}${refusalNote}`,
   );
 }
 

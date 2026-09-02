@@ -6,6 +6,162 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+## [0.89.0] — 2026-09-03 — `FullAuto` never comes from a project's file
+
+v0.88.0 gave the router a voice: it can say which of the three session settings a workspace
+`.env` chose. It still obeyed all three. For two of them — the default vault and the lock —
+saying so is arguably enough for now, and the accepted decision
+`liaison-workspace-vault-hors-depot` moves that binding out of the repository in a later lot.
+For the third, the auto-enrichment mode, one value was never worth arguing about.
+
+**The problem.** `FullAuto` is the mode in which Claude saves into a vault without asking
+again. A workspace is very often a cloned repository, and a cloned repository carries whatever
+`.env` its author put in it. So a line somebody else wrote could put a user's session into the
+one mode that writes to their notes unprompted — and until v0.88.0 it did so in silence. The
+other three modes are ordinary per-project preferences and nobody has ever been harmed by one;
+this is about the single value that converts a file into standing permission.
+
+Roland accepted the decision's option 4 on 2026-09-03, as a second acceptance beside the one of
+2026-09-02, which had deliberately left this point open. This release implements it.
+
+### Changed
+
+- **A value of `OBSIDIAN_ROUTER_AUTO_ENRICH` read from a workspace `.env` that canonicalises to
+  `FullAuto` is no longer applied** — `FullAuto`, `fullauto`, `FULLAUTO`, `full`, `full-auto`,
+  `auto`, any casing, and any alias the shared table may gain later. The rule is on the VALUE,
+  not the key: `OBSIDIAN_ROUTER_AUTO_ENRICH` stays an accepted workspace key and `ClaudeAsk`,
+  `Hybrid` and `off` still work from a file exactly as before. It lives in
+  `src/helpers/workspace-dotenv.mjs`, the one module that decides what a workspace file may
+  set, so the binary and the two hooks that read that file inherit it without knowing about it.
+  `FullAuto` still comes from the MCP host's server declaration and from a
+  `set_auto_enrich_mode` call during the session.
+- **`set_auto_enrich_mode` with `persist: true` refuses to write `FullAuto`** — and returns
+  normally rather than throwing, because the mode IS applied to the session and only the file
+  write did not happen. The result carries `persistRefused: { mode, variable, reason }`, whose
+  reason names both places the mode does survive a restart. `ClaudeAsk`, `Hybrid` and `off`
+  persist unchanged. (The pre-existing homedir refusal still throws; it means something else —
+  "you are almost certainly in the wrong directory" — and its shape is untouched.)
+- **The parent still wins.** A `FullAuto` already in the environment when the router starts is
+  the host's, reads as `origin: "host"`, and works. The value rule is evaluated *before* the
+  parent-wins rule — which changes nothing about what applies, only about what is SAID: a
+  refused line is never applied either way, and running the check first is what lets a dead
+  `FullAuto` line be named even when the host set some other mode. It is suppressed in exactly
+  one case: the parent chose the *same* refused value, where reporting it would be a false alarm
+  about a mode legitimately in force.
+
+### Added
+
+- **`list_vaults` returns `autoEnrichModeRefused`** — `null` in the normal case, otherwise
+  `{ value, canonical, origin, variable, reason }` describing what the workspace file asked for
+  and did not get. A **separate field, never a tenth `origin`**: `autoEnrichModeSource` keeps
+  reporting what actually took effect, because a refused value is not the source of the default
+  that replaced it. Validated at the boundary like the three source fields — a half-formed
+  refusal becomes `null` rather than reaching Claude as if it were established.
+- **`src/helpers/auto-enrich-mode.mjs`** — `VALID_MODES`, the alias table and
+  `canonicalizeMode`, moved out of `src/tools/auto-enrich.mjs` (which re-exports them, so no
+  import site changed) into a module that imports nothing. `workspace-dotenv.mjs` runs before
+  the dependency self-heal and could not reach the old home; a copy of the alias table would
+  have drifted the first time a synonym was added to one and not the other, and a rule that
+  refused `FullAuto` while letting `auto` through would read as closed and be open.
+- **The refusal is visible on both channels.** The operator gets it on the router's stderr,
+  through the same single `.env` warning that already names ignored and withheld keys — so the
+  hooks stay silent, since a hook's stderr is the message Claude reads when it blocks — plus a
+  sentence on the `Ready` line. The warning also carries the migration hint for a line an
+  earlier `auto-mode --persist` wrote: remove it, or set the variable host-side. Nothing about
+  an existing setup changes without being named. **One report per key per load**, whatever the
+  file repeats: a `.env` naming the same refused assignment a thousand times is 37 KB, and the
+  first version turned it into a single ~460 KB stderr line at start-up — a cloned repository
+  slowing the MCP handshake through a message about itself.
+
+### Fixed
+
+All six came out of the review of this very lot, over three rounds. Two of them are older than
+the lot — the raw start-up warnings date from v0.8.2, the missing identity checks from
+v0.88.0 — and are named here because this lot is what surfaced them. The other four are defects
+this lot introduced and its own review caught.
+
+- **Three start-up warnings printed an untrusted workspace value raw — 3 of 3 now sanitised.**
+  `validateAutoEnrichMode`, `validateLock` and the registry's default-vault warning are built
+  from three keys the same workspace `.env` writes, and all three interpolated the value into
+  stderr as it came. Reproduced end to end: a value carrying an ANSI clear-screen wipes the
+  terminal and draws a convincing fake `Ready.` line under it — and, worse for this release, it
+  **erases the refusal the loader printed a moment earlier**, which is the operator's half of the
+  whole rule. Predates this lot (v0.8.2). Worth recording how it was found: the first repair
+  fixed only `validateAutoEnrichMode`, the one the new code sat next to, and the second review
+  round showed that a fix reaching one of three sites was worse than none here, because it read
+  as closed. The test now sweeps the class rather than asserting a site.
+- **The four accessors of the provenance register that answer ABOUT A KEY now all check which
+  environment their record was made against — 4 of 5 accessors, and the fifth is not one.**
+  `envKeySourceFile` and `appliedWorkspaceDotenvKeys` answered from the register with no `env`
+  at all, the third home of the defect v0.88.1 had to repair on `envKeyOrigin`. No production
+  caller today, so it was latent rather than exploitable — but an exported accessor is a caller
+  waiting to happen. The fifth, `workspaceDotenvWasConsulted`, stays process-wide **on purpose**,
+  and its known cost is now written down and pinned by a test rather than left as folklore:
+  `envKeyOrigin` uses that flag as its precondition while checking record identity per object, so
+  after a load against one environment object it answers `host` — a positive claim — for a key
+  absent from the register, asked about a different object. Not reachable in production (every
+  entry point records into `process.env` and asks about `process.env`), and the fix is a
+  per-object consultation set, which changes `envKeyOrigin`'s documented v0.88.0 precondition —
+  a contract change that belongs to the provenance lot, not to this one.
+- **`persist: false` with `FullAuto` advised "use `persist: true`"** — advice that now leads
+  straight to a refusal. It points at the host environment instead. The other three modes keep
+  the ordinary wording.
+- **The `set_auto_enrich_mode` description, its `persist` argument and the `--help` text still
+  promised that every mode is written to `<cwd>/.env`.** Both reviewers reached this
+  independently: that description is what Claude reads *before* calling, so a caller would have
+  met `persisted: false` with no warning and read a normal refusal as an anomaly to retry. All
+  three surfaces updated, and the description now carries a guard of its own — the twin of the
+  one `list_vaults` has had since v0.88.0, added because the surface it guards is the one that
+  got forgotten.
+- **`templates/wiki/CLAUDE.md` said the opposite of the new rule**, and that file is copied into
+  the user's vault and re-read every session — the documentation surface with the longest reach
+  and the only one no update reaches retroactively.
+- **A refusal went unreported whenever the parent held any value for the key.** Safe (the mode
+  never applied), but it silenced exactly the case the migration hint exists for: host set to
+  `Hybrid`, project file still carrying a `FullAuto` line written by an older `--persist`, and
+  not one word about the dead line. The refusal is now evaluated before the parent-wins rule and
+  suppressed only when the parent chose the *same* refused value — where reporting it would be a
+  false alarm about a mode legitimately in force.
+
+### Verification
+
+- Full suite **4 560 tests, 4 559 green, 0 failed, 1 opt-in skip** (4 530 before this lot;
+  30 tests added). `npm run validate` and `npm run gate` green on the same tree.
+- **Twenty-one mutations, each seen red and each restored by copying a snapshot back and comparing
+  the sha256** — no `git checkout`, because another session works on this repository. Nine for
+  the rule as first written: comparing the raw value instead of canonicalising (5 tests red),
+  moving the value rule ahead of the parent-wins rule (5), recording a refused value as applied
+  (1), dropping the refusal from the warning (3), dropping the migration hint (2), making
+  `list_vaults` swallow every refusal (1), removing the persist refusal (2), making the refusal
+  lookup always answer null (2), deleting the start-up wiring (1). Seven for the first round of
+  repairs: widening the parent exemption to any value, removing the per-load deduplication,
+  un-sanitising the rejected mode, silencing the `Ready` line, dropping the identity check from
+  `appliedWorkspaceDotenvKeys`, passing the refusal object through verbatim, softening the new
+  description guard. Four for the second: un-sanitising `validateLock`, un-sanitising the
+  registry's warning (two separate mutations, because one test that catches both is the point),
+  restoring the advice that leads to a refusal, and altering the `--help` text. One for the
+  third: putting the sanitiser's cap back to 80, which is what made a long legitimate value
+  unreadable.
+- **Executed, not grepped.** The binary's stderr, a hook's silence, the `--help` text and the
+  whole start-up chain are proven by spawning real processes against a hostile workspace: one
+  test starts the actual server and reads the `Ready.` line an operator would read. Everything
+  between the loader and `list_vaults` had been pinned only by regexes over the source, and a
+  regex cannot see the junction it depends on — the loader writing into `process.env` and the
+  start-up reading it back.
+- Three existing guards went red for the right reason and were updated by hand, never weakened:
+  the pin on the exact top-level field set of `list_vaults`, six accessor call sites that now
+  name the environment they are asking about, and three fixtures that used `FullAuto` as an
+  incidental example of "a mode from a file".
+- Both quick-reference PDFs re-rendered from their HTML sources and read page by page — the
+  rendered text was checked visually, since the fonts are subset-encoded and no extractor here
+  can read them.
+
+### What this does not do
+
+The `.env` of a project still chooses the default vault and the lock — that is the second lot
+of the same decision, the workspace-binding registry, which is not started. This release
+narrows one value from one source; it does not move the binding out of the repository.
+
 ## [0.88.1] — 2026-09-02 — one line of v0.88.0 never reached the commit
 
 v0.88.0 shipped without a single line of `envKeyOrigin`, and CI went red on all four jobs

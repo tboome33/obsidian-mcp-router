@@ -18,13 +18,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync, spawn } from 'node:child_process';
 
 import {
   WORKSPACE_DOTENV_KEYS, WORKSPACE_DOTENV_OPTOUTS, WORKSPACE_DOTENV_COMPANION_KEYS, WORKSPACE_DOTENV_POLICY,
-  WORKSPACE_DOTENV_SANDBOX_KEYS, isGatedDeployment,
-  classifyWorkspaceDotenvKey, parseDotenv, applyWorkspaceDotenv,
+  WORKSPACE_DOTENV_SANDBOX_KEYS, WORKSPACE_DOTENV_REFUSED_VALUES, isGatedDeployment,
+  classifyWorkspaceDotenvKey, parseDotenv, applyWorkspaceDotenv, workspaceDotenvValueRefusal,
+  workspaceDotenvRefusals, appliedWorkspaceDotenvKeys, envKeySourceFile, envKeyOrigin, ENV_ORIGINS,
+  workspaceDotenvWasConsulted,
+  _resetWorkspaceDotenvProvenance,
 } from '../src/helpers/workspace-dotenv.mjs';
+import { VALID_MODES, canonicalizeMode, spellingsOf } from '../src/helpers/auto-enrich-mode.mjs';
 import { blankStringsAndComments } from './_source-scan.mjs';
+import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
@@ -188,9 +194,10 @@ describe('applyWorkspaceDotenv — the loader', () => {
     assert.deepEqual(warnings, []);
 
     const empty = {};
-    assert.deepEqual(applyWorkspaceDotenv({ cwd: tmpWorkspace(undefined), env: empty, warn: (m) => warnings.push(m) }), { applied: [], ignored: [], skipped: [], withheld: [] });
-    assert.deepEqual(applyWorkspaceDotenv({ cwd: clean, env: empty, warn: (m) => warnings.push(m), readFile: () => { throw new Error('EACCES'); } }), { applied: [], ignored: [], skipped: [], withheld: [] });
-    assert.deepEqual(applyWorkspaceDotenv({ env: empty, warn: (m) => warnings.push(m) }), { applied: [], ignored: [], skipped: [], withheld: [] });
+    const NOTHING = { applied: [], ignored: [], skipped: [], withheld: [], refused: [] };
+    assert.deepEqual(applyWorkspaceDotenv({ cwd: tmpWorkspace(undefined), env: empty, warn: (m) => warnings.push(m) }), NOTHING);
+    assert.deepEqual(applyWorkspaceDotenv({ cwd: clean, env: empty, warn: (m) => warnings.push(m), readFile: () => { throw new Error('EACCES'); } }), NOTHING);
+    assert.deepEqual(applyWorkspaceDotenv({ env: empty, warn: (m) => warnings.push(m) }), NOTHING);
     assert.deepEqual(empty, {});
     assert.deepEqual(warnings, []);
   });
@@ -226,7 +233,7 @@ describe('applyWorkspaceDotenv — the loader', () => {
     const narrow = tmpWorkspace('MD_ALLOWED_PATHS=/srv/ingest\n');
     const env = {};
     const warnings = [];
-    assert.deepEqual(applyWorkspaceDotenv({ cwd: narrow, env, warn: (m) => warnings.push(m) }), { applied: ['MD_ALLOWED_PATHS'], ignored: [], skipped: [], withheld: [] });
+    assert.deepEqual(applyWorkspaceDotenv({ cwd: narrow, env, warn: (m) => warnings.push(m) }), { applied: ['MD_ALLOWED_PATHS'], ignored: [], skipped: [], withheld: [], refused: [] });
     assert.deepEqual(env, { MD_ALLOWED_PATHS: '/srv/ingest' });
     assert.deepEqual(warnings, []);
     // Ignored AND withheld in one file: still exactly one line, naming both.
@@ -364,5 +371,422 @@ describe('GUARD — every workspace .env loader in the tree goes through applyWo
     }
     assert.deepEqual(strangers, [], `a file names '.env' and is not listed here: ${strangers.join(', ')} — a second loader would be a second policy`);
     for (const rel of ALLOWED) assert.ok(seen.has(rel), `${rel}: listed here but no longer names '.env' — drop it from the list`);
+  });
+});
+
+/**
+ * v0.89.0 — one accepted key, one value it may not carry from a file.
+ *
+ * Accepted option 4 of the decision `liaison-workspace-vault-hors-depot`
+ * (Roland, 2026-09-03): FullAuto is the only auto-enrichment mode that turns a
+ * file travelling with a cloned repository into standing permission to write
+ * into one of the user's vaults without asking again. It keeps the MCP host's
+ * server declaration and a call during the session; it loses the file.
+ *
+ * The two traps these tests exist for, both named in advance:
+ *   - refusing the KEY instead of the VALUE (a Hybrid from a file must keep
+ *     working — it is a legitimate and common per-project setting);
+ *   - comparing the RAW string (auto, full, full-auto, fullauto and every
+ *     casing of them are FullAuto; a rule that refused only the obvious
+ *     spelling would read as closed and be open).
+ */
+describe('the one value an accepted key may not carry from a workspace file', () => {
+  /** Every spelling of FullAuto, in every casing a file can plausibly carry. */
+  const FULLAUTO_SPELLINGS = spellingsOf('FullAuto');
+  const casings = (s) => [...new Set([s, s.toLowerCase(), s.toUpperCase()])];
+
+  test('THE FIXTURE IS REAL: the spellings enumerated here are the ones the shared table actually canonicalises', () => {
+    // A test that enumerates spellings from a hand-written list proves nothing
+    // when a new alias is added to the table and not to the list. So the list
+    // comes FROM the table, and this asserts the table still holds the ones the
+    // rule was written for — a new alias makes the sweep below cover it for
+    // free, and dropping one of these fails here.
+    assert.deepEqual(FULLAUTO_SPELLINGS.slice().sort(), ['FullAuto', 'auto', 'full', 'full-auto', 'fullauto']);
+    for (const s of FULLAUTO_SPELLINGS) for (const c of casings(s)) assert.equal(canonicalizeMode(c), 'FullAuto', c);
+  });
+
+  test('NO spelling and NO casing of FullAuto is applied from a file: refused, absent from the environment, absent from the provenance register', () => {
+    for (const spelling of FULLAUTO_SPELLINGS) {
+      for (const written of casings(spelling)) {
+        _resetWorkspaceDotenvProvenance();
+        const env = {};
+        const dir = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\nOBSIDIAN_ROUTER_AUTO_ENRICH=${written}\n`);
+        const warnings = [];
+        const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+
+        // Not applied — the mode is simply not in the environment.
+        assert.equal('OBSIDIAN_ROUTER_AUTO_ENRICH' in env, false, `${written}: reached the environment`);
+        assert.deepEqual(env, { OBSIDIAN_ROUTER_DEFAULT_VAULT: 'notes' }, written);
+        // The KEY is still accepted policy — it is the value that was refused.
+        assert.equal(classifyWorkspaceDotenvKey('OBSIDIAN_ROUTER_AUTO_ENRICH'), 'apply');
+        // Reported, with what it was written as and what it means.
+        assert.equal(r.refused.length, 1, written);
+        assert.deepEqual(r.refused[0], {
+          key: 'OBSIDIAN_ROUTER_AUTO_ENRICH',
+          value: written,
+          canonical: 'FullAuto',
+          reason: r.refused[0].reason,
+        }, written);
+        assert.match(r.refused[0].reason, /not applied from a workspace file/);
+        // NOT recorded as applied: the provenance register describes what took
+        // effect, and this did not. `envKeyOrigin` must answer as if the file
+        // had never named the key.
+        assert.deepEqual(appliedWorkspaceDotenvKeys(env), ['OBSIDIAN_ROUTER_DEFAULT_VAULT'], written);
+        assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.HOST, written);
+        assert.notEqual(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.WORKSPACE_DOTENV, written);
+        // And the refusal is remembered for the session, against THIS env.
+        assert.deepEqual(workspaceDotenvRefusals(env).map((x) => x.key), ['OBSIDIAN_ROUTER_AUTO_ENRICH'], written);
+        assert.equal(workspaceDotenvRefusals(env)[0].file, path.join(dir, '.env'), written);
+        // The other keys of the same file are untouched by the refusal.
+        assert.deepEqual(r.applied, ['OBSIDIAN_ROUTER_DEFAULT_VAULT'], written);
+        assert.equal(warnings.length, 1, `${written}: exactly one warning`);
+      }
+    }
+  });
+
+  test('THE OTHER HALF: the three other modes, and their aliases, still apply from a file exactly as before', () => {
+    const others = VALID_MODES.filter((m) => m !== 'FullAuto');
+    assert.deepEqual(others, ['ClaudeAsk', 'Hybrid', 'off']);
+    for (const mode of others) {
+      for (const spelling of spellingsOf(mode)) {
+        for (const written of casings(spelling)) {
+          _resetWorkspaceDotenvProvenance();
+          const env = {};
+          const dir = tmpWorkspace(`OBSIDIAN_ROUTER_AUTO_ENRICH=${written}\n`);
+          const warnings = [];
+          const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+          // Applied VERBATIM: this module does not canonicalise what it takes,
+          // it only refuses what it must. The server canonicalises later.
+          assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, written, written);
+          assert.deepEqual(r.applied, ['OBSIDIAN_ROUTER_AUTO_ENRICH'], written);
+          assert.deepEqual(r.refused, [], written);
+          assert.deepEqual(appliedWorkspaceDotenvKeys(env), ['OBSIDIAN_ROUTER_AUTO_ENRICH'], written);
+          assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.WORKSPACE_DOTENV, written);
+          assert.deepEqual(warnings, [], `${written}: a legitimate mode is not worth a warning`);
+        }
+      }
+    }
+  });
+
+  test('R5 — a FullAuto the PARENT set stays, and the file that repeats it is not reported as refused', () => {
+    // The rule is about files. A host, a launcher or a shell that set the mode
+    // has chosen it deliberately, and a file that says the same thing has
+    // changed nothing — reporting a refusal there would be a false alarm about
+    // a mode that is legitimately in force.
+    for (const written of ['FullAuto', 'fullauto', 'auto']) {
+      _resetWorkspaceDotenvProvenance();
+      const env = { OBSIDIAN_ROUTER_AUTO_ENRICH: 'FullAuto' };
+      const dir = tmpWorkspace(`OBSIDIAN_ROUTER_AUTO_ENRICH=${written}\n`);
+      const warnings = [];
+      const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+      assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, 'FullAuto', written);
+      assert.deepEqual(r.applied, [], written);
+      assert.deepEqual(r.refused, [], `${written}: the parent won; nothing was refused`);
+      assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.HOST, written);
+      assert.deepEqual(workspaceDotenvRefusals(env), [], written);
+      assert.deepEqual(warnings, [], `${written}: nothing happened, nothing to say`);
+    }
+  });
+
+  test('R4bis — a parent holding a DIFFERENT value does not silence the refusal: that is exactly when the dead line needs naming', () => {
+    // Found by review. The first version put the value rule after the
+    // parent-wins rule, so ANY parent value skipped it: host=Hybrid plus a
+    // file naming FullAuto produced `refused: []` and not one word. Safe —
+    // FullAuto still did not apply — but the stale line in the user's own file
+    // was never named, and the migration hint never arrived, in the one case
+    // where its owner has no other way to find out.
+    for (const parentValue of ['Hybrid', 'ClaudeAsk', 'off', 'semi', 'not-a-mode']) {
+      _resetWorkspaceDotenvProvenance();
+      const env = { OBSIDIAN_ROUTER_AUTO_ENRICH: parentValue };
+      const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+      const warnings = [];
+      const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+      assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, parentValue, `${parentValue}: the parent still wins`);
+      assert.deepEqual(r.applied, [], parentValue);
+      assert.equal(r.refused.length, 1, `${parentValue}: the dead line must be reported`);
+      assert.equal(r.refused[0].canonical, 'FullAuto', parentValue);
+      assert.equal(warnings.length, 1, parentValue);
+      assert.match(warnings[0], /auto-mode persist/, `${parentValue}: with its migration hint`);
+      // And the provenance is untouched by the report: the parent chose.
+      assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.HOST, parentValue);
+      assert.deepEqual(appliedWorkspaceDotenvKeys(env), [], parentValue);
+    }
+  });
+
+  test('ONE report per key however many times the file repeats it — a 37 KB file must not become a 460 KB stderr line', () => {
+    // Found by review, measured: the refusal loop emitted the full diagnostic
+    // once per occurrence, so a thousand duplicate lines produced a single
+    // ~460 KB line on the router's stderr at start-up. A cloned repository
+    // slowing or wedging the MCP handshake through a message ABOUT ITSELF is
+    // the amplification the warning's name-cap already guards against for
+    // ignored keys.
+    const N = 1000;
+    const text = 'OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n'.repeat(N);
+    assert.ok(text.length > 30_000, 'the fixture must really be large');
+    _resetWorkspaceDotenvProvenance();
+    const warnings = [];
+    const env = {};
+    const r = applyWorkspaceDotenv({ cwd: 'x', env, warn: (m) => warnings.push(m), readFile: () => text });
+    assert.equal(r.refused.length, 1, `${N} duplicate lines must produce ONE report`);
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].length < 2000, `the warning stays bounded (was ${warnings[0].length} bytes)`);
+    assert.equal('OBSIDIAN_ROUTER_AUTO_ENRICH' in env, false, 'and none of the thousand applied');
+    // Per LOAD, not per process: a second file gets its own report.
+    const second = applyWorkspaceDotenv({ cwd: 'y', env: {}, warn: () => {}, readFile: () => 'OBSIDIAN_ROUTER_AUTO_ENRICH=auto\n' });
+    assert.equal(second.refused.length, 1, 'a later load reports its own file');
+  });
+
+  test('a file that names the key twice, once refused and once not: the good line applies, the bad one is reported', () => {
+    _resetWorkspaceDotenvProvenance();
+    const env = {};
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\nOBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid\n');
+    const r = applyWorkspaceDotenv({ cwd: dir, env, warn: () => {} });
+    // Both are true at once and neither contradicts the other: the file asked
+    // twice, one ask was refused and the other took effect.
+    assert.deepEqual(r.refused.map((x) => x.canonical), ['FullAuto']);
+    assert.deepEqual(r.applied, ['OBSIDIAN_ROUTER_AUTO_ENRICH']);
+    assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, 'Hybrid');
+    assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.WORKSPACE_DOTENV);
+  });
+
+  test('the two env-less accessors got the SAME identity rule as the other two — the class defect swept, 4/4', () => {
+    // Review called this the third latent site of the defect v0.88.1 had to
+    // repair on `envKeyOrigin`: a record describes the environment object it
+    // was written into. `envKeySourceFile` and `appliedWorkspaceDotenvKeys`
+    // answered from the register with no `env` at all. No production caller
+    // today — which is why it was latent rather than exploitable — but an
+    // exported accessor is a caller waiting to happen.
+    _resetWorkspaceDotenvProvenance();
+    const mine = {};
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_LOCKED=notes\n');
+    applyWorkspaceDotenv({ cwd: dir, env: mine, warn: () => {} });
+    assert.deepEqual(appliedWorkspaceDotenvKeys(mine), ['OBSIDIAN_ROUTER_LOCKED']);
+    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_LOCKED', mine), path.join(dir, '.env'));
+    // A different object: all four accessors decline to answer from it.
+    const other = { OBSIDIAN_ROUTER_LOCKED: 'notes' };
+    assert.deepEqual(appliedWorkspaceDotenvKeys(other), []);
+    assert.equal(envKeySourceFile('OBSIDIAN_ROUTER_LOCKED', other), null);
+    assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_LOCKED', other), ENV_ORIGINS.UNKNOWN);
+    assert.deepEqual(workspaceDotenvRefusals(other), []);
+  });
+
+  test('THE DECLARED LIMIT: the fifth accessor is process-wide, and here is exactly what that costs', () => {
+    // Review pass 3 measured this and was right to refuse the CHANGELOG's
+    // unqualified "the fifth is not one". `workspaceDotenvWasConsulted` is a
+    // process-wide flag, and `envKeyOrigin` uses it as its PRECONDITION while
+    // checking record identity per object — so the two halves disagree in one
+    // corner. This test PINS the corner rather than leaving it as folklore:
+    // measured, not assumed, and the day someone makes consultation per-object
+    // (a v0.88.0 contract change, hence not this lot) this pin says what they
+    // are changing.
+    _resetWorkspaceDotenvProvenance();
+    const mine = {};
+    applyWorkspaceDotenv({ cwd: tmpWorkspace('OBSIDIAN_ROUTER_LOCKED=notes\n'), env: mine, warn: () => {} });
+    const other = { OBSIDIAN_ROUTER_DEFAULT_VAULT: 'notes' };
+
+    // A key PRESENT in the register: the identity check catches the mismatch.
+    assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_LOCKED', other), ENV_ORIGINS.UNKNOWN,
+      'the recorded half is per-object and answers honestly');
+    // A key ABSENT from it: the precondition is process-wide, so this answers
+    // `host` — a positive claim about an object no file was read into. THE
+    // LIMIT. Honest would be `unknown`.
+    assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT', other), ENV_ORIGINS.HOST,
+      'known and accepted: the precondition does not distinguish environments');
+    assert.equal(workspaceDotenvWasConsulted(), true, 'and the flag itself says only "somewhere"');
+    // Why it is not reachable in production: the entry points record into
+    // process.env and ask about process.env, where the two coincide.
+    assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_LOCKED', mine), ENV_ORIGINS.WORKSPACE_DOTENV);
+  });
+
+  test('R4 — the warning names the refusal AND what to do about a line an earlier `auto-mode persist` wrote', () => {
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    const warnings = [];
+    applyWorkspaceDotenv({ cwd: dir, env: {}, warn: (m) => warnings.push(m) });
+    assert.equal(warnings.length, 1);
+    const w = warnings[0];
+    assert.match(w, /OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto refused \(canonicalises to FullAuto\)/);
+    // The two legitimate homes, so the message is a redirection and not a wall.
+    assert.match(w, /MCP host's server declaration/);
+    assert.match(w, /set_auto_enrich_mode during the session/);
+    // The migration line — nothing changes in silence.
+    assert.match(w, /auto-mode persist/);
+    assert.match(w, /remove it/);
+    // And it says the assignment ONCE. The first version led with
+    // `KEY=value refused (…)` and then repeated `KEY=FullAuto` inside the
+    // reason, with three em-dashes between: a line an operator has to parse
+    // twice to learn one thing.
+    assert.equal((w.match(/OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto/g) || []).length, 1,
+      `the assignment is stated once, not twice: ${w}`);
+  });
+
+  test('ignored, withheld AND refused in one file: still exactly ONE warning line, naming all three', () => {
+    const dir = tmpWorkspace([
+      'NODE_OPTIONS=--require=./x.js',
+      'MD_ALLOWED_PATHS=/',
+      'OBSIDIAN_ROUTER_AUTO_ENRICH=full-auto',
+      'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes',
+      '',
+    ].join('\n'));
+    const warnings = [];
+    const env = { MD_SHARE_DIR: '/srv/a' };
+    const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+    assert.deepEqual(r.ignored, ['NODE_OPTIONS']);
+    assert.deepEqual(r.withheld, ['MD_ALLOWED_PATHS']);
+    assert.deepEqual(r.refused.map((x) => x.value), ['full-auto']);
+    assert.deepEqual(r.applied, ['OBSIDIAN_ROUTER_DEFAULT_VAULT']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /1 key\(s\) ignored .* MD_ALLOWED_PATHS withheld .* OBSIDIAN_ROUTER_AUTO_ENRICH=full-auto refused/s);
+  });
+
+  test('the spelling shown comes from an untrusted file and goes through the same strict alphabet as the ignored names', () => {
+    // Reachable, not hypothetical: parseDotenv strips the quotes and leaves
+    // what is inside them, and canonicalizeMode trims before matching — so a
+    // quoted value with interior whitespace canonicalises to FullAuto while
+    // still carrying characters that have no business on a terminal.
+    // Built with fromCharCode rather than written as an escape: an editor or a
+    // shell mangles the escape, and the test would silently stop testing.
+    const TAB = String.fromCharCode(9);
+    assert.equal(TAB.length, 1);
+    const dir = tmpWorkspace(`OBSIDIAN_ROUTER_AUTO_ENRICH="${TAB}FullAuto "\n`);
+    const warnings = [];
+    const r = applyWorkspaceDotenv({ cwd: dir, env: {}, warn: (m) => warnings.push(m) });
+    assert.equal(r.refused.length, 1, 'the interior whitespace must not have saved it from the rule');
+    assert.equal(r.refused[0].canonical, 'FullAuto');
+    assert.equal(r.refused[0].value, '?FullAuto?', 'shown through the strict alphabet, not raw');
+    assert.doesNotMatch(warnings[0], new RegExp(TAB), 'no control character reaches stderr');
+  });
+
+  test('a refusal recorded against ANOTHER environment object is not reported for this one', () => {
+    // The identity-before-value rule v0.88.1 had to restore on the applied
+    // half of the register, applied to this half at the same time rather than
+    // waiting for the same defect to be found twice.
+    _resetWorkspaceDotenvProvenance();
+    const mine = {};
+    const dir = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    applyWorkspaceDotenv({ cwd: dir, env: mine, warn: () => {} });
+    assert.equal(workspaceDotenvRefusals(mine).length, 1);
+    assert.deepEqual(workspaceDotenvRefusals({}), [], 'a different object: the record says nothing about it');
+    assert.deepEqual(workspaceDotenvRefusals({ OBSIDIAN_ROUTER_AUTO_ENRICH: 'FullAuto' }), [],
+      'not even one that happens to carry the same value');
+    _resetWorkspaceDotenvProvenance();
+    assert.deepEqual(workspaceDotenvRefusals(mine), [], 'the reset seam clears this half too');
+  });
+
+  test('the policy table is the authority: one key, one refused value, and the predicate agrees with it', () => {
+    // The table is what a reviewer reads to know what the rule covers, so it is
+    // pinned. A second refused value is added there on purpose, and this test
+    // is where the decision to add it gets recorded.
+    assert.deepEqual(Object.keys(WORKSPACE_DOTENV_REFUSED_VALUES), ['OBSIDIAN_ROUTER_AUTO_ENRICH']);
+    assert.equal(WORKSPACE_DOTENV_REFUSED_VALUES.OBSIDIAN_ROUTER_AUTO_ENRICH.refused, 'FullAuto');
+    for (const key of Object.keys(WORKSPACE_DOTENV_REFUSED_VALUES)) {
+      assert.ok(WORKSPACE_DOTENV_KEYS.includes(key), `${key}: refusing a value of a key that is not accepted anyway is a no-op`);
+    }
+    // The predicate, directly: a listed key with a refused value, a listed key
+    // with anything else, an unlisted key, and the junk inputs.
+    assert.equal(workspaceDotenvValueRefusal('OBSIDIAN_ROUTER_AUTO_ENRICH', 'AUTO')?.canonical, 'FullAuto');
+    assert.equal(workspaceDotenvValueRefusal('OBSIDIAN_ROUTER_AUTO_ENRICH', 'Hybrid'), null);
+    assert.equal(workspaceDotenvValueRefusal('OBSIDIAN_ROUTER_AUTO_ENRICH', 'not-a-mode'), null);
+    assert.equal(workspaceDotenvValueRefusal('OBSIDIAN_ROUTER_AUTO_ENRICH', ''), null);
+    assert.equal(workspaceDotenvValueRefusal('OBSIDIAN_ROUTER_DEFAULT_VAULT', 'FullAuto'), null);
+    assert.equal(workspaceDotenvValueRefusal('constructor', 'FullAuto'), null, 'no prototype walk');
+    assert.equal(workspaceDotenvValueRefusal('toString', 'x'), null);
+  });
+});
+
+describe('the refusal is visible to the operator and invisible to Claude-through-a-hook', () => {
+  const BIN = path.join(ROOT, 'bin', 'obsidian-mcp-router.mjs');
+  const HOOK = path.join(ROOT, 'hooks', 'vault-link-linter.mjs');
+
+  /**
+   * A child env with a throwaway HOME and NO auto-enrich mode of its own —
+   * the variable has to be genuinely absent, not empty, or the parent-wins
+   * rule would skip the file's line and there would be nothing to refuse.
+   * `homeSafeEnv` builds it (and refuses a real home); the delete is why this
+   * does not go through `spawnSyncHomeSafe`, whose extras cannot unset a key.
+   */
+  function childEnv(homeDir) {
+    const env = homeSafeEnv(homeDir);
+    delete env.OBSIDIAN_ROUTER_AUTO_ENRICH;
+    delete env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    return env;
+  }
+
+  test('the router binary NAMES the refusal on its stderr — executed, not grepped for in the source', () => {
+    const ws = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=fullauto\n');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-dotenv-home-'));
+    // `--version` exits inside parseArgs, which runs AFTER the .env load and
+    // BEFORE the dependency self-heal — so this reaches the policy and nothing
+    // heavier. stdout carries the version, stderr carries the log.
+    const r = spawnSync(process.execPath, [BIN, '--version'], {
+      cwd: ws, env: childEnv(home), encoding: 'utf8', timeout: 30_000,
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /OBSIDIAN_ROUTER_AUTO_ENRICH=fullauto refused/,
+      'the operator must be told which line of their own file stopped working');
+    assert.match(r.stderr, /auto-mode persist/, 'and what to do about it');
+    assert.doesNotMatch(r.stdout, /refused/, 'stdout is the MCP stdio channel — nothing but the answer goes there');
+  });
+
+  test('END TO END: the refusal survives the whole start-up and reaches the Ready line', async () => {
+    // Review's one demand for an EXECUTED proof. Everything between the loader
+    // and `list_vaults` was pinned by regexes over the source: that the
+    // start-up assigns the field, that the reload carries it. Regexes cannot
+    // see the junction they depend on — the loader writes into `process.env`,
+    // and `autoEnrichModeRefusal()` reads it back from there. So: start the
+    // real server, in a real workspace, and read the line an operator reads.
+    const ws = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=full-auto\n');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-dotenv-home-'));
+    const cfg = path.join(home, 'cfg.json');
+    fs.writeFileSync(cfg, JSON.stringify({ vaults: [] }));
+    const env = childEnv(home);
+
+    const line = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [BIN, '--no-watch', '--config', cfg], {
+        cwd: ws, env, stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let buf = '';
+      const done = (err, value) => {
+        clearTimeout(timer);
+        try { child.kill(); } catch { /* already gone */ }
+        if (err) reject(err); else resolve(value);
+      };
+      const timer = setTimeout(() => done(new Error(`no Ready line in 25s. stderr so far:\n${buf}`)), 25_000);
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => {
+        buf += chunk;
+        // COMPLETE lines only. `split('\n')` leaves the unterminated tail as
+        // its last element, and a pipe may break a chunk anywhere: matching
+        // that tail would resolve on a HALF line, and the refusal note sits at
+        // the very END of the Ready line — so the assertion below would fail
+        // for a reason that has nothing to do with the code. A red that only
+        // appears on a loaded CI runner, in the one test that proves the whole
+        // chain. Dropping the tail costs one more chunk and removes the race.
+        const ready = buf.split('\n').slice(0, -1).find((l) => l.includes('] Ready.'));
+        if (ready) done(null, ready);
+      });
+      child.on('error', (e) => done(e));
+      child.on('exit', (code) => done(new Error(`exited (${code}) before Ready. stderr:\n${buf}`)));
+    });
+
+    // The whole chain in one assertion: the file said full-auto, the policy
+    // canonicalised and refused it, the register kept it against process.env,
+    // start-up read it back, and the operator is told — with the spelling the
+    // file actually used, so they can find the line.
+    assert.match(line, /asked for auto-enrich mode FullAuto \(written "full-auto"\) and was refused/, line);
+    assert.doesNotMatch(line, /Auto-enrich mode: FullAuto/, 'and the mode itself did NOT take effect');
+  });
+
+  test('a hook loading the same file says NOTHING on stderr — its stderr is the message Claude reads when it blocks', () => {
+    const ws = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=FullAuto\n');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-dotenv-home-'));
+    const r = spawnSync(process.execPath, [HOOK], {
+      cwd: ws, env: childEnv(home), encoding: 'utf8', input: '', timeout: 30_000,
+    });
+    // Whatever the hook decides about its (empty) input, it must not have
+    // editorialised about a .env in front of it: a line about a workspace file
+    // ahead of a block reason is read by Claude as an instruction.
+    assert.doesNotMatch(r.stderr, /\.env:/, r.stderr);
+    assert.doesNotMatch(r.stderr, /refused/, r.stderr);
+    assert.doesNotMatch(r.stderr, /FullAuto/, r.stderr);
   });
 });

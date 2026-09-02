@@ -41,6 +41,7 @@ import {
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
 import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
+import { safeForMessage } from './helpers/sanitize.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -523,8 +524,12 @@ function resolveDefaultVaultWithSource({ vaults, configuredDefault }) {
   const envOverride = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
   if (envOverride) {
     if (isActive(envOverride)) return { name: envOverride, ...fromEnv('OBSIDIAN_ROUTER_DEFAULT_VAULT') };
+    // Sanitised: this value comes from the workspace .env as often as not, and
+    // a raw escape sequence here erases whatever the loader printed above it.
+    // Third of the three sister warnings built from an untrusted workspace
+    // value; the other two are validateLock and validateAutoEnrichMode.
     console.error(
-      `[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="${envOverride}" does not match any active vault — ` +
+      `[registry] OBSIDIAN_ROUTER_DEFAULT_VAULT="${safeForMessage(envOverride, 200)}" does not match any active vault — ` +
         `falling through to other resolution tiers. Active vaults: ` +
         (vaults.map((v) => v.name).join(', ') || '(none)') + '.',
     );
