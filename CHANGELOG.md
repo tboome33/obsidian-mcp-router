@@ -4,7 +4,9 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased] — a project's file stops deciding which vault you are in
+## [Unreleased]
+
+## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 
 Two lots, both about trusting a file less. The first takes AUTHORITY away from the workspace
 `.env`; the second stops taking the config's word about a vault's NAME on trust. They were
