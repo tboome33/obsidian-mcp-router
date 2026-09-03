@@ -136,7 +136,7 @@ sisters — three times here, on the same class, in three different guises.
 
 - Full suite **4 561 tests, 4 560 green, 0 failed, 1 opt-in skip** (4 530 before this lot;
   31 tests added). `npm run validate` and `npm run gate` green on the same tree.
-- **Twenty-two mutations, each seen red and each restored by copying a snapshot back and comparing
+- **Twenty-three mutations, each seen red and each restored by copying a snapshot back and comparing
   the sha256** — no `git checkout`, because another session works on this repository. Nine for
   the rule as first written: comparing the raw value instead of canonicalising (5 tests red),
   moving the value rule ahead of the parent-wins rule (5), recording a refused value as applied
@@ -150,8 +150,10 @@ sisters — three times here, on the same class, in three different guises.
   registry's warning (two separate mutations, because one test that catches both is the point),
   restoring the advice that leads to a refusal, and altering the `--help` text. One for the
   third: putting the sanitiser's cap back to 80, which is what made a long legitimate value
-  unreadable. One for the fourth: reverting the French half of the README, which is what a
-  round-3 repair had left behind.
+  unreadable. Two for the fourth: reverting the French half of the README, which is what a
+  round-3 repair had left behind, and reverting the cap at the registry's warning ALONE — the
+  third of the three sites, and the one the readability test did not yet cover, so the suite
+  would have stayed green while a legitimate vault name was truncated.
 - **Executed, not grepped.** The binary's stderr, a hook's silence, the `--help` text and the
   whole start-up chain are proven by spawning real processes against a hostile workspace: one
   test starts the actual server and reads the `Ready.` line an operator would read. Everything
