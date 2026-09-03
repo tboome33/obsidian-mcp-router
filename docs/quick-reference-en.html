@@ -226,11 +226,11 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_DEFAULT_VAULT</td>
-    <td>Explicit override of the default vault for this process. Wins over <code>VAULT_PATH</code> and over <code>config.defaultVault</code>. Also the workspace↔vault binding used by the wiki-query-first hooks.</td>
+    <td>Explicit override of the default vault for this process — <strong>from the HOST only</strong> (your MCP server declaration, a launcher, your shell), where it wins over <code>VAULT_PATH</code> and <code>config.defaultVault</code>. The same variable in a project's <code>.env</code> is a <strong>proposal</strong>: reported by <code>list_vaults</code> as <code>bindingHint</code> and never applied, because a workspace is very often a cloned repository. What decides is the workspace's confirmed binding in your own <code>config.json</code> (<code>workspaceBindings</code>) — <code>confirm_workspace_binding</code> or <code>setup-vault --attach</code> records it, and the session-start briefing tells you which state you are in.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_LOCKED</td>
-    <td>Locks the router to one vault for the session. Any tool call to another vault throws. Set via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>.</td>
+    <td>Locks the router to one vault for the session. Any tool call to another vault throws. Set via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>. <strong>Same origin rule</strong>: an authority from the host, a proposal from a project file — locking is the strongest way of choosing where writes land. <code>--persist</code> records <code>locked: true</code> on the binding, which is what a restart reads; the <code>.env</code> line it also writes is a portable hint for another machine.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_AUTO_ENRICH</td>

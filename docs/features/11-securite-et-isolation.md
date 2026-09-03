@@ -19,10 +19,10 @@ Un routeur qui voit **tous** vos vaults doit aussi savoir se restreindre : à un
 **Comment l'utiliser.** Trois portes d'entrée :
 
 1. **Langage naturel / slash command** : *« verrouille sur tradingview »*, *« je ne veux travailler que sur tradingview »* — ou `/obsidian-router:lock tradingview` (volatile), `--persist` pour survivre au redémarrage.
-2. **Outil MCP** : `lock_vault({ vault: "tradingview" })`, avec `persist: true` pour écrire dans le `.env`.
-3. **Variable d'env au démarrage** : `OBSIDIAN_ROUTER_LOCKED=tradingview` dans le `.env` du workspace — le router démarre déjà verrouillé.
+2. **Outil MCP** : `lock_vault({ vault: "tradingview" })`, avec `persist: true` pour enregistrer le verrou sur la liaison du workspace — l'endroit que relit un redémarrage — et écrire l'indice portable dans le `.env`.
+3. **Variable d'env au démarrage** : `OBSIDIAN_ROUTER_LOCKED=tradingview` **depuis l'hôte** (déclaration du serveur MCP, shell) — le router démarre déjà verrouillé. La même ligne dans le `.env` d'un projet ne verrouille plus : verrouiller est la façon la plus forte de choisir où atterrissent les écritures, donc un fichier qui voyage avec un clone peut le proposer, pas l'imposer.
 
-Déverrouiller : *« déverrouille les vaults »* — `/obsidian-router:unlock` (ou `unlock_vaults`, `persist: true` pour aussi nettoyer le `.env`). Changer de cible : re-verrouiller directement — le nouveau lock remplace l'ancien atomiquement.
+Déverrouiller : *« déverrouille les vaults »* — `/obsidian-router:unlock` (ou `unlock_vaults`, `persist: true` pour lever le verrou sur la liaison **et** nettoyer le `.env`). Changer de cible : re-verrouiller directement — le nouveau lock remplace l'ancien atomiquement.
 
 **À savoir.** `persist: true` est **refusé quand le répertoire courant est votre home** : c'est presque toujours un lancement de Claude Code depuis `~` par erreur, et créer un `~/.env` surprendrait. Le lock en mémoire s'applique quand même pour la session.
 

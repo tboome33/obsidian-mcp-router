@@ -310,7 +310,7 @@ Two details that fell out of reading the hosts' own limits rather than assuming 
 
 The limit that matters is **`description`: max 1024 characters**, quoted from that spec and pinned in `contracts/agent-host-targets.json` with its access date. This is not the 1,536-character figure in the Claude Code docs — that one is where Claude Code *truncates its skill listing*, a host display budget, not a validity rule. Pinning the looser number is what let the audit report a clean run over 47 skills while 3 of them were in fact invalid; **those three descriptions have been shortened**, with the displaced text moved into the skill bodies where progressive disclosure wants it anyway.
 
-Measured on this repository: **42/47 skills carry spec-only frontmatter**, longest description **903/1024**. The other 5 use `argument-hint`, declared in the contract as an accepted Claude Code extension with its reason. Undeclared keys are errors, declared ones are warnings, and `-- --strict` collapses the two to show the spec-distribution view. Scope is printed with every run: this measures **frontmatter portability only** — whether a page's metadata can be *read* elsewhere, not whether its workflow would *execute* there, which is what `contracts/skill-capabilities.json` records.
+Measured on this repository: **42/47 skills carry spec-only frontmatter**, longest description **996/1024**. The other 5 use `argument-hint`, declared in the contract as an accepted Claude Code extension with its reason. Undeclared keys are errors, declared ones are warnings, and `-- --strict` collapses the two to show the spec-distribution view. Scope is printed with every run: this measures **frontmatter portability only** — whether a page's metadata can be *read* elsewhere, not whether its workflow would *execute* there, which is what `contracts/skill-capabilities.json` records.
 
 ## Reclaiming the plugin cache (`npm run purge:plugin-cache`)
 
@@ -461,6 +461,53 @@ The server always declares bare tool names (`get_file`, `write_file`, …). The 
 
 Documentation and skills use the short `mcp__obsidian-router__*` form for readability — Claude calls whichever name is actually in its tool list, so this is a naming difference, not a compatibility one. Hooks match these tools **by suffix** (`hooks/_helpers/tool-names.mjs`) precisely so they keep firing under all three forms.
 
+### Which vault is this project attached to?
+
+Every session opens by telling you, in a few lines — that is the
+`workspace-briefing` hook. There are **three** states, not two:
+
+| State | What it means |
+| --- | --- |
+| **one vault** | This directory is bound to it. It is the session default, and `list_vaults` shows `workspaceBinding` with an empty `also`. |
+| **several** | A primary plus secondaries (`also`), all bound and addressable by name. Only the primary is the default. |
+| **all** | No binding: every registered vault is available and the cascade picks the default. `workspaceBinding` is `null` — which never means "no vault". |
+
+**Where the binding lives, and why there.** In *your* `config.json`, under
+`workspaceBindings`, keyed by the directory's canonical path. That file is
+never synchronised between machines — it holds your vault paths and API keys —
+so one machine's decision never binds another's, and nothing in a repository
+can put an entry there.
+
+**What the project's `.env` is for now.** It is a *portable hint*. A workspace
+is very often a cloned repository, and until this release the
+`OBSIDIAN_ROUTER_DEFAULT_VAULT` line it carried decided which of your vaults
+the session read, locked and wrote into — a file you may never have written,
+choosing where a year of notes go. It is now reported and not applied:
+`list_vaults` carries it as `bindingHint`, and the briefing names it. Its
+usefulness is unchanged for the case it was good at — arriving on your *second*
+machine and proposing the right answer there, once.
+
+**Changing it**, from a conversation or a terminal:
+
+```bash
+node scripts/setup-vault.mjs --attach <vault> --also <other>
+```
+
+or ask Claude, which calls `confirm_workspace_binding`: `{ vault }` to bind,
+`{ vault, also: [...] }` for several, `{ locked: true }` to restrict the
+session to it, `{ clear: true }` to go back to all vaults. A bound vault whose
+Obsidian is not running is opened for you — a closed vault does not answer, so
+a binding to one would be a promise that does not work.
+
+**Upgrading from an earlier version.** The first time the router starts in a
+workspace that already had a hint, it imports it as a binding — once, and it
+says so at the top of every session until you either adopt it
+(`confirm_workspace_binding({ vault })`) or undo it (`{ clear: true }`, which
+sticks). The import is bounded by the dotenv file's own modification time
+against the moment you upgraded, so a repository you clone *after* upgrading is
+never imported: `git clone` writes its files now, and that is what separates a
+workspace you attached last year from one that arrived this morning.
+
 ### Which hooks the plugin turns on by itself
 
 Installing the plugin activates exactly three hooks, with no opt-in step, because Claude Code runs whatever a plugin declares in `hooks/hooks.json`:
@@ -528,13 +575,14 @@ When a tool call omits the `vault` argument (e.g., `read-search "trading risk"`)
 
 Resolution cascade, highest priority first:
 
-1. **`OBSIDIAN_ROUTER_DEFAULT_VAULT` env var** — explicit per-process override. Set this in your project's `.env` to force a specific default regardless of cwd.
-2. **`VAULT_PATH` env var** — auto-detection. If `VAULT_PATH` matches a path registered in your `portRegistry`, that vault becomes the default. `setup-vault.mjs` writes this into every bootstrapped vault's `.env`, so opening Claude Code in a vault directory "just works" with that vault as default.
+0. **The workspace's confirmed binding** — what *you* attached this directory to, recorded in your own `config.json` under `workspaceBindings` and keyed by the directory's canonical path. The only tier that cannot arrive with a `git clone`, which is why it outranks the environment. See [Which vault is this project attached to?](#which-vault-is-this-project-attached-to).
+1. **`OBSIDIAN_ROUTER_DEFAULT_VAULT` env var** — explicit per-process override, **from the host only**: your MCP server declaration, a launcher, your shell. The same variable in a project's `.env` is a *proposal*: it is reported and never applied, because a workspace is very often a cloned repository and its `.env` came with it. Confirm it once and it becomes the binding above.
+2. **`VAULT_PATH` env var** — auto-detection. If `VAULT_PATH` matches a path registered in your `portRegistry`, that vault becomes the default. From a project's `.env` this is honoured **only when it names that same directory** — the "this folder IS a vault" case, which is exactly what `setup-vault.mjs` writes into every bootstrapped vault's `.env`, so opening Claude Code in a vault directory still "just works". A project file pointing `VAULT_PATH` at some *other* vault of yours is a proposal like any other.
 3. **`config.defaultVault`** — explicit global default in `~/.claude/obsidian-mcp-router/config.json`.
 4. **First healthy local vault** — historical fallback.
 5. **First active vault of any type** — last resort.
 
-The router auto-loads `.env` from the cwd at startup, so steps 1 and 2 work without any other tooling. Existing env vars in the parent process win over `.env`.
+The router auto-loads `.env` from the cwd at startup, so steps 1 and 2 work without any other tooling — subject to the origin rule above. Existing env vars in the parent process win over `.env`, and the router records which of the two a value came from: that record is what tells a proposal from a decision, and `list_vaults` reports it as `bindingHint.origin`.
 
 #### Three concrete cases
 
@@ -630,11 +678,11 @@ Three ways to lock:
    ```
    OBSIDIAN_ROUTER_LOCKED=tradingview
    ```
-   in the workspace's `.env`. The router reads it on boot. Permanent until removed.
+   **from the host** — your MCP server declaration or your shell. The router reads it on boot. The same line in a project's `.env` no longer locks anything: locking a session to one vault is the strongest possible way of choosing where its writes land, so a file that travels with a clone may propose it and not impose it. What makes a lock survive a restart is `locked: true` on the workspace's binding, which `lock_vault({ persist: true })` writes for you.
 
 To unlock:
 - `unlock_vaults()` — in-memory only
-- `unlock_vaults({ persist: true })` — also removes `OBSIDIAN_ROUTER_LOCKED` from `<cwd>/.env`
+- `unlock_vaults({ persist: true })` — lifts the lock on the binding (where a restart reads it from) and removes the `OBSIDIAN_ROUTER_LOCKED` hint from `<cwd>/.env`
 - `/obsidian-router:unlock` or *"give me back access to all vaults"*
 
 > **Caveat — persist refused at home directory.** `lock_vault({ persist: true })` refuses when the current working directory IS your home directory (`%USERPROFILE%` on Windows, `$HOME` elsewhere). That's almost always a mistake — Claude Code was launched from `~` rather than a project folder, and creating `~/.env` would surprise you. The in-memory lock still applies for the session. To make the lock survive a restart in this case: either re-run `lock_vault` from a real project directory, or set `OBSIDIAN_ROUTER_LOCKED=<vault>` in your shell profile (`~/.bashrc`, `~/.zshrc`, or PowerShell `$PROFILE`).
@@ -1474,6 +1522,53 @@ Le serveur ne déclare que des noms nus (`get_file`, `write_file`, …). Le pré
 
 La documentation et les skills utilisent la forme courte `mcp__obsidian-router__*` par lisibilité — Claude appelle le nom qui figure réellement dans sa liste d'outils, c'est donc une différence de nommage, pas de compatibilité. Les hooks, eux, reconnaissent ces outils **par suffixe** (`hooks/_helpers/tool-names.mjs`) précisément pour continuer à se déclencher sous les trois formes.
 
+### À quel vault ce projet est-il rattaché ?
+
+Chaque session s'ouvre en te le disant, en quelques lignes — c'est le hook
+`workspace-briefing`. Il y a **trois** états, pas deux :
+
+| État | Ce que ça veut dire |
+| --- | --- |
+| **un vault** | Ce dossier y est rattaché. C'est le défaut de la session, et `list_vaults` montre `workspaceBinding` avec un `also` vide. |
+| **plusieurs** | Un primaire plus des secondaires (`also`), tous rattachés et adressables par leur nom. Seul le primaire est le défaut. |
+| **tous** | Aucune liaison : tous les vaults enregistrés sont disponibles et la cascade choisit le défaut. `workspaceBinding` vaut `null` — ce qui ne veut jamais dire « aucun vault ». |
+
+**Où vit la liaison, et pourquoi là.** Dans *ton* `config.json`, sous
+`workspaceBindings`, indexée par le chemin canonique du dossier. Ce fichier
+n'est jamais synchronisé entre machines — il porte tes chemins de vaults et tes
+clés d'API — donc la décision d'une machine n'engage jamais l'autre, et rien
+dans un dépôt ne peut y écrire une entrée.
+
+**À quoi sert le `.env` du projet maintenant.** C'est un *indice portable*. Un
+workspace est très souvent un dépôt cloné, et jusqu'à cette version la ligne
+`OBSIDIAN_ROUTER_DEFAULT_VAULT` qu'il transportait décidait lequel de tes vaults
+la session lisait, verrouillait et remplissait — un fichier que tu n'as
+peut-être jamais écrit, choisissant où va une année de notes. Il est désormais
+rapporté et non appliqué : `list_vaults` le porte dans `bindingHint`, et le
+briefing le nomme. Son utilité reste entière pour ce qu'il faisait bien —
+arriver sur ta *seconde* machine et y proposer la bonne réponse, une fois.
+
+**Le changer**, depuis une conversation ou un terminal :
+
+```bash
+node scripts/setup-vault.mjs --attach <vault> --also <autre>
+```
+
+ou demande à Claude, qui appelle `confirm_workspace_binding` : `{ vault }` pour
+rattacher, `{ vault, also: [...] }` pour plusieurs, `{ locked: true }` pour
+restreindre la session, `{ clear: true }` pour revenir à tous les vaults. Un
+vault rattaché dont Obsidian est fermé est ouvert pour toi — un vault fermé ne
+répond pas, donc une liaison vers lui serait une promesse qui ne marche pas.
+
+**Mise à jour depuis une version antérieure.** Au premier démarrage du router
+dans un workspace qui avait déjà un indice, il l'importe en liaison — une fois,
+et il le dit en tête de chaque session jusqu'à ce que tu l'adoptes
+(`confirm_workspace_binding({ vault })`) ou l'annules (`{ clear: true }`, qui
+tient). L'import est borné par la date de modification du `.env` lui-même face
+au moment de ta mise à jour : un dépôt cloné *après* n'est donc jamais importé —
+`git clone` écrit ses fichiers maintenant, et c'est ce qui sépare un workspace
+rattaché l'an dernier d'un dossier arrivé ce matin.
+
 ### Les hooks que le plugin active tout seul
 
 Installer le plugin active exactement trois hooks, sans étape d'activation, parce que Claude Code exécute ce qu'un plugin déclare dans `hooks/hooks.json` :
@@ -1541,13 +1636,14 @@ Quand un appel d'outil omet l'argument `vault` (ex: `read-search "gestion du ris
 
 Cascade de résolution, par ordre de priorité décroissant :
 
-1. **Variable d'env `OBSIDIAN_ROUTER_DEFAULT_VAULT`** — override explicite par process. À mettre dans le `.env` de ton projet pour forcer un default spécifique indépendamment du cwd.
-2. **Variable d'env `VAULT_PATH`** — auto-détection. Si `VAULT_PATH` correspond à un chemin enregistré dans `portRegistry`, ce vault devient le default. `setup-vault.mjs` écrit cette variable dans le `.env` de chaque vault qu'il bootstrap, donc lancer Claude Code dans le dossier d'un vault « ça marche tout seul » avec ce vault en default.
+0. **La liaison confirmée du workspace** — ce à quoi *tu* as rattaché ce dossier, enregistré dans ton propre `config.json` sous `workspaceBindings` et indexé par le chemin canonique du dossier. Le seul niveau qui ne peut pas être arrivé avec un `git clone`, et c'est pour ça qu'il passe devant l'environnement. Voir [À quel vault ce projet est-il rattaché ?](#à-quel-vault-ce-projet-est-il-rattaché-).
+1. **Variable d'env `OBSIDIAN_ROUTER_DEFAULT_VAULT`** — override explicite par process, **depuis l'hôte uniquement** : ta déclaration de serveur MCP, un lanceur, ton shell. La même variable dans le `.env` d'un projet est une *proposition* : elle est rapportée et jamais appliquée, parce qu'un workspace est très souvent un dépôt cloné et que son `.env` est venu avec. Confirme-la une fois et elle devient la liaison ci-dessus.
+2. **Variable d'env `VAULT_PATH`** — auto-détection. Si `VAULT_PATH` correspond à un chemin enregistré dans `portRegistry`, ce vault devient le default. Depuis le `.env` d'un projet, honoré **seulement s'il nomme ce même dossier** — le cas « ce dossier EST un vault », précisément ce que `setup-vault.mjs` écrit dans le `.env` de chaque vault qu'il bootstrap : lancer Claude Code dans le dossier d'un vault marche donc toujours tout seul. Un fichier de projet pointant `VAULT_PATH` vers un *autre* de tes vaults est une proposition comme une autre.
 3. **`config.defaultVault`** — default global explicite dans `~/.claude/obsidian-mcp-router/config.json`.
 4. **Premier vault local en bonne santé** — fallback historique.
 5. **Premier vault actif quel que soit le type** — dernier recours.
 
-Le router charge automatiquement le `.env` du cwd au démarrage, donc les étapes 1 et 2 fonctionnent sans outillage supplémentaire. Les variables d'env déjà présentes dans le process parent gagnent sur le `.env`.
+Le router charge automatiquement le `.env` du cwd au démarrage, donc les étapes 1 et 2 fonctionnent sans outillage supplémentaire — sous réserve de la règle d'origine ci-dessus. Les variables d'env déjà présentes dans le process parent gagnent sur le `.env`, et le router **enregistre laquelle des deux** a porté la valeur : c'est ce constat qui distingue une proposition d'une décision, et `list_vaults` le rapporte dans `bindingHint.origin`.
 
 #### Trois cas concrets
 
@@ -1643,11 +1739,11 @@ Trois façons de verrouiller :
    ```
    OBSIDIAN_ROUTER_LOCKED=tradingview
    ```
-   dans le `.env` du workspace. Le router la lit au boot. Permanent jusqu'à suppression.
+   **depuis l'hôte** — ta déclaration de serveur MCP ou ton shell. Le router la lit au boot. La même ligne dans le `.env` d'un projet ne verrouille plus rien : verrouiller une session sur un vault est la façon la plus forte de choisir où atterrissent ses écritures, donc un fichier qui voyage avec un clone peut le proposer, pas l'imposer. Ce qui fait survivre un verrou à un redémarrage, c'est `locked: true` sur la liaison du workspace — ce que `lock_vault({ persist: true })` écrit pour toi.
 
 Pour déverrouiller :
 - `unlock_vaults()` — en mémoire uniquement
-- `unlock_vaults({ persist: true })` — retire aussi `OBSIDIAN_ROUTER_LOCKED` du `<cwd>/.env`
+- `unlock_vaults({ persist: true })` — lève le verrou sur la liaison (l'endroit que relit un redémarrage) et retire l'indice `OBSIDIAN_ROUTER_LOCKED` du `<cwd>/.env`
 - `/obsidian-router:unlock` ou *"redonne-moi accès à tous les vaults"*
 
 > **Caveat — persist refusé au home directory.** `lock_vault({ persist: true })` refuse si le répertoire courant EST ton home (`%USERPROFILE%` sur Windows, `$HOME` ailleurs). C'est presque toujours une erreur — Claude Code a été lancé depuis `~` plutôt que depuis un dossier de projet, et créer `~/.env` te surprendrait. Le lock en mémoire reste actif pour la session. Pour rendre le lock persistant dans ce cas : soit relance `lock_vault` depuis un vrai dossier de projet, soit pose `OBSIDIAN_ROUTER_LOCKED=<vault>` dans ton profil shell (`~/.bashrc`, `~/.zshrc`, ou PowerShell `$PROFILE`).

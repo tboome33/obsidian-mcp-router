@@ -4,7 +4,102 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased] — the config's word about a vault, checked once
+## [Unreleased] — a project's file stops deciding which vault you are in
+
+Two lots, both about trusting a file less. The first takes AUTHORITY away from the workspace
+`.env`; the second stops taking the config's word about a vault's NAME on trust. They were
+written separately, reviewed separately, and merged — the four functions they both rewrote are
+where "who may choose the vault" meets "what a vault is called".
+
+### The workspace→vault binding leaves the repository
+
+A workspace is very often a cloned repository. Until now, the `OBSIDIAN_ROUTER_DEFAULT_VAULT`
+line that repository carried decided which of your vaults the session read, locked and wrote
+into — a file you may never have written, choosing where a year of notes go. v0.87.0 closed the
+security half of that (such a file can only ever name a vault you already registered, never an
+endpoint or a credential); v0.88.0 made the choice visible; v0.89.0 removed the one value that
+turned it into standing write permission. This release removes the authority itself.
+
+**BREAKING.** A workspace `.env` no longer chooses the default vault or the lock. Existing
+installations are carried over by a one-time import (below), so nothing in the field breaks; a
+hint written *after* upgrading is reported and confirmed instead of applied.
+
+#### Added
+
+- **`workspaceBindings` in your own `config.json`**, keyed by the canonical path of the
+  workspace. It is the new tier 0 of the resolution cascade and the only tier that cannot arrive
+  with a `git clone`: that file is never synchronised between machines, because it holds your
+  vault paths and API keys. A binding names one vault, or one plus secondaries (`also`), or —
+  when there is none — every registered vault stays available. Three states, and `null` never
+  means "no vault".
+- **`confirm_workspace_binding`** (51st tool) — the conversational half. Binds the CURRENT
+  workspace only (no path parameter: binding a directory you are not in is not something a
+  conversation should be able to do by accident), validates every name against the registry, and
+  OPENS a bound vault whose Obsidian is not running, because a closed vault does not answer and a
+  binding to one would be a promise that does not work. `clear: true` returns to all vaults.
+- **A session-start briefing**, shipped with the plugin. A few lines saying what this workspace is
+  attached to, what its `.env` proposed and did not get, the enrichment mode and its range, and
+  the two calls that change any of it. It is what makes the automatic import below defensible: a
+  binding imported wrongly announces itself at the top of every session instead of quietly
+  deciding where your notes go. Its opt-out is the one a workspace `.env` cannot set — read
+  before the file is loaded AND refused by name in the dotenv policy — because a file able to
+  switch off the report about itself is the same hole one level up.
+- **`bindingHint`, `workspaceBinding` and `bindingImported` on `list_vaults`.** Separate fields,
+  never an origin: a hint that was not applied is not the source of what replaced it.
+  `bindingHint.origin` says WHO proposed — telling you your project's `.env` did it when your own
+  MCP host did would send you to the wrong file.
+- **`setup-vault.mjs --attach <vault> --also <other>`** now records the binding, secondaries
+  included. Those secondaries had until now lived only in the workspace's `CLAUDE.md` — prose for
+  Claude that the router never read.
+
+#### Changed
+
+- **One gate for three settings.** `OBSIDIAN_ROUTER_DEFAULT_VAULT`, `OBSIDIAN_ROUTER_LOCKED` and
+  `VAULT_PATH` are authorities from the HOST (your MCP declaration, a launcher, your shell) and
+  proposals from a project file. `VAULT_PATH` keeps one exception, which is the case it was
+  written for: from a workspace file it is honoured when it names that same directory — "this
+  folder IS a vault", exactly what `setup-vault` writes into each bootstrapped vault's own `.env`.
+  Six resolvers go through the gate; a scan refuses a seventh that does not.
+- **`lock_vault --persist` means what it says.** `persisted` now means "will survive a restart",
+  which is the binding — the `.env` line it also writes is a portable hint, reported separately as
+  `hintWritten`. When the config cannot be written, `persisted` is false and the message says the
+  lock does NOT survive, rather than promising something that stopped being true.
+- **One writer for `config.json`.** `saveConfig` and the binding writer take the same
+  inter-process lock and write atomically, carrying the target's permission bits across the
+  rename: this file holds every vault's API key, and a `0600` config used to come back `0644`.
+
+#### Migration
+
+- **Your existing hints are imported once, and the router says so.** The first start in a
+  workspace that already had a hint records it as a binding, labelled `confirmedVia: "migration"`
+  so a later session still knows nobody confirmed it. Clearing it sticks — the workspace is
+  remembered as considered, so the next start does not re-import and quietly reverse your
+  decision.
+- **The window closes**, which is the part that took the work. An import that keeps running is
+  the old behaviour with a delay. Two facts bound it: the instant you upgraded, and the dotenv
+  file's own modification time. `git clone` writes its files *now*, so a repository cloned after
+  the upgrade is always newer and never imported, while a workspace you attached last year is
+  always older. That is the discrimination no marker inside a repository could give — and it
+  works precisely BECAUSE cloning rewrites mtimes, the property that made in-repo markers
+  worthless in the first place.
+
+#### Verification
+
+- Full suite **4 956 tests, 0 failed** (4 561 before the two lots). `npm run validate` and
+  `npm run gate` green.
+- **Reviewed adversarially three times**, invariants handed in as input each time and rewritten
+  after each round of repairs. Round 1: one BLOCKER — the `.env` was still deciding the default
+  while the briefing said it had not been applied — plus eight defects and seven blind tests.
+  Round 2: three more BLOCKERs, **two of them introduced by round 1's own repairs**. Round 3, on
+  the merge: the migration decided outside the lock it then wrote inside, so a binding recorded
+  by `--attach` in between was overwritten — the lost update the lock exists to prevent,
+  reappearing inside the function that takes it.
+- **Eleven tests in these lots were blind, vacuous or flaky rather than red**, six of them
+  written during the reviews that were meant to catch exactly that. The one worth repeating: a
+  scan branch matching `process.env['KEY']` was dead code, because the scan runs on source with
+  string CONTENT blanked out — and the mutation that "proved" it went red for a different reason.
+
+### The config's word about a vault, checked once
 
 `config.json` maps a vault path to a display name. It is a hand-editable file, so
 `"vaultNames": { "C:/VAULTS/Notes": 123 }` is a thing a user can write: valid JSON, wrong type,

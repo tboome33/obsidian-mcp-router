@@ -1,7 +1,7 @@
 ---
 name: lock
 description: |
-  Restrict the router to a single vault for the current session (single-vault isolation mode). While locked, tool calls targeting any other vault are refused, cross-vault fan-out (`vault: "*"`) is refused, and tool calls without an explicit `vault` resolve to the locked one. Lift the lock with `/obsidian-router:unlock`. Pass "persist" to write the lock into the workspace `.env` so it survives a Claude Code restart.
+  Restrict the router to a single vault for the current session (single-vault isolation mode). While locked, tool calls targeting any other vault are refused, cross-vault fan-out (`vault: "*"`) is refused, and tool calls without an explicit `vault` resolve to the locked one. Lift the lock with `/obsidian-router:unlock`. Pass "persist" to make the lock survive a restart: it is recorded on this workspace's binding in the user's own config, since a lock named only by a project `.env` is no longer applied at start-up.
 
   EN triggers: "lock to vault X", "lock the router to X", "I only want to work on vault X", "restrict me to X", "isolate to vault X", "single-vault mode on X".
   FR triggers : "verrouille sur le vault X", "lock le router sur X", "je ne veux travailler que sur le vault X", "restreins-moi à X", "isole sur le vault X", "mode mono-vault sur X".
@@ -24,7 +24,7 @@ Invoke the `lock_vault` MCP tool.
 ## Always
 
 - Verify the named vault is in the active set (the tool itself does this and refuses otherwise — surface the error clearly to the user, including the list of known vaults).
-- After a successful lock, confirm to the user: which vault, whether the lock is volatile or persisted, and where the `.env` was written if persisted.
+- After a successful lock, confirm to the user: which vault, whether the lock is volatile or persisted, and where the `.env` hint was written if persisted. **Read `persisted` from the result, do not infer it from `persist: true`** — it means "will survive a restart", so it is false when the router config could not be written even though the `.env` line was. In that case the result also carries `hintWritten: true` and a message saying the lock does NOT survive; relay that rather than reporting success.
 - If the user phrased it persistently ("permanently", "de manière permanente", "à chaque démarrage") but didn't explicitly say "persist", default `persist=true` — that's clearly their intent.
 - If the user phrased it temporarily ("just for now", "juste pour cette session", "pour l'instant"), default `persist=false`.
 

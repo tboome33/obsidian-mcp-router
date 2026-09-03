@@ -224,11 +224,11 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_DEFAULT_VAULT</td>
-    <td>Override explicite du vault par défaut pour ce process. Gagne sur <code>VAULT_PATH</code> et sur <code>config.defaultVault</code>. C'est aussi le lien workspace↔vault utilisé par les hooks wiki-query-first.</td>
+    <td>Override explicite du vault par défaut pour ce process — <strong>depuis l'HÔTE uniquement</strong> (déclaration du serveur MCP, lanceur, shell), où il gagne sur <code>VAULT_PATH</code> et <code>config.defaultVault</code>. La même variable dans le <code>.env</code> d'un projet est une <strong>proposition</strong> : rapportée par <code>list_vaults</code> dans <code>bindingHint</code> et jamais appliquée, parce qu'un workspace est très souvent un dépôt cloné. Ce qui décide, c'est la liaison confirmée du workspace dans ton propre <code>config.json</code> (<code>workspaceBindings</code>) — <code>confirm_workspace_binding</code> ou <code>setup-vault --attach</code> l'enregistre, et le briefing de début de session dit dans quel état tu es.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_LOCKED</td>
-    <td>Verrouille le router sur un seul vault pour la session. Tout appel vers un autre vault échoue. Posé via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>.</td>
+    <td>Verrouille le router sur un seul vault pour la session. Tout appel vers un autre vault échoue. Posé via <code>/obsidian-router:lock &lt;vault&gt; --persist</code>. <strong>Même règle d'origine</strong> : autorité depuis l'hôte, proposition depuis un fichier de projet — verrouiller est la façon la plus forte de choisir où atterrissent les écritures. <code>--persist</code> enregistre <code>locked: true</code> sur la liaison, que le redémarrage relit ; la ligne <code>.env</code> qu'il écrit aussi est un indice portable pour une autre machine.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_AUTO_ENRICH</td>

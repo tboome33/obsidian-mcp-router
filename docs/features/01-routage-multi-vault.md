@@ -40,12 +40,13 @@ C'est la raison d'être du projet : au lieu d'enregistrer un serveur MCP par vau
 
 **Ce que ça fait.** Le router résout le défaut par une cascade, priorité décroissante :
 
-1. **`OBSIDIAN_ROUTER_DEFAULT_VAULT`** (variable d'env) — override explicite par projet. Placez-la dans le `.env` du workspace.
-2. **`VAULT_PATH`** (variable d'env) — auto-détection. Si le chemin correspond à un vault du `portRegistry`, ce vault devient le défaut. `setup-vault.mjs` écrit cette variable dans le `.env` de chaque vault bootstrappé, donc ouvrir Claude Code **dans** un dossier de vault « marche tout seul ».
+0. **La liaison confirmée du workspace** — ce à quoi vous avez rattaché ce dossier, dans `workspaceBindings` de votre propre `config.json`, indexé par son chemin canonique. Le seul niveau qui ne peut pas arriver avec un `git clone`.
+1. **`OBSIDIAN_ROUTER_DEFAULT_VAULT`** (variable d'env) — override explicite, **depuis l'hôte uniquement** (déclaration du serveur MCP, lanceur, shell). La même variable dans le `.env` d'un projet est une *proposition* : signalée, jamais appliquée.
+2. **`VAULT_PATH`** (variable d'env) — auto-détection. Si le chemin correspond à un vault du `portRegistry`, ce vault devient le défaut. Depuis le `.env` d'un projet, honoré seulement s'il nomme **ce dossier-là** — le cas que `setup-vault.mjs` écrit dans le `.env` de chaque vault bootstrappé, donc ouvrir Claude Code **dans** un dossier de vault « marche tout seul ».
 3. **`config.defaultVault`** — le défaut global de `config.json`.
 4. Premier vault local joignable, puis premier vault actif — les filets historiques.
 
-Le router charge automatiquement le `.env` du répertoire courant au démarrage : aucun outillage supplémentaire n'est nécessaire.
+Le router charge automatiquement le `.env` du répertoire courant au démarrage : aucun outillage supplémentaire n'est nécessaire. Il **retient d'où vient chaque valeur** — du fichier ou de l'hôte — et c'est ce constat qui sépare une proposition d'une décision.
 
 **Comment l'utiliser.** Trois cas concrets :
 

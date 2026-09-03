@@ -46,7 +46,8 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 |---|---|
 | `setup-vault.mjs "<chemin>"` | Bootstrapper/provisionner un vault (plugins clonés depuis la référence, `.env`, wiki, hooks). `--dry-run --json` pour prévisualiser, `--help` pour tous les flags. |
 | `--bootstrap-reference <chemin>` | Créer le vault de référence depuis le squelette livré. |
-| `--link-workspace <workspace> <vault>` | Associer un repo de code à un vault (écrit `OBSIDIAN_ROUTER_DEFAULT_VAULT` dans le `.env` du workspace — le mode « workspace-bound »). `--unlink-workspace` pour retirer. |
+| `--link-workspace <workspace> <vault>` | Associer un repo de code à un vault : enregistre la **liaison** dans `workspaceBindings` de votre `config.json` (ce qui décide) et écrit `OBSIDIAN_ROUTER_DEFAULT_VAULT` dans le `.env` du workspace (indice portable pour une autre machine). `--unlink-workspace` pour retirer. |
+| `--attach <vault> [--also <autre>]` | Même chose depuis le workspace courant, secondaires compris — les `--also` n'étaient jusqu'ici connus que du `CLAUDE.md`, pas du router. |
 | `--sync-all` | Propager snippets/plugins de la référence vers **tous** les vaults (idempotent ; `--force` re-clone). |
 | `--install-hooks` / `--hooks-status` / `--no-hooks` | Gérer les hooks ([fiche 12](12-hooks-et-automatisations.md)). |
 | `--status` | État des lieux (aussi : `npm run status`). |

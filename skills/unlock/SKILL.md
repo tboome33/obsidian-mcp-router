@@ -1,7 +1,7 @@
 ---
 name: unlock
 description: |
-  Lift the single-vault lock and restore normal multi-vault routing. Pass "persist" to ALSO remove `OBSIDIAN_ROUTER_LOCKED` from the workspace `.env` (otherwise the lock would re-apply at next router restart if the variable is still in the file).
+  Lift the single-vault lock and restore normal multi-vault routing. Pass "persist" to ALSO lift the lock where a restart reads it from — the `locked` flag on this workspace's binding in the user's router config — and to remove the `OBSIDIAN_ROUTER_LOCKED` hint from the workspace `.env`. Without it, a lock recorded on the binding comes back at the next start; a leftover `.env` line on its own does not, since a lock named only by a project file is no longer applied.
 
   EN triggers: "unlock vaults", "unlock the router", "I want access to all vaults again", "give me back multi-vault mode", "exit single-vault mode", "lift the lock".
   FR triggers : "déverrouille les vaults", "unlock le router", "je veux pouvoir avoir accès à tous les vaults", "redonne-moi le mode multi-vault", "sors du mode mono-vault", "lève le verrou".
@@ -25,7 +25,7 @@ Invoke the `unlock_vaults` MCP tool.
 
 - After a successful unlock, confirm to the user: previous lock target (if any), whether the `.env` was cleaned, and that the router is back in normal multi-vault mode.
 - If the router wasn't locked, the tool returns a no-op message. Surface that gently — no need to be dramatic.
-- If the user said "persist" but the `.env` didn't have `OBSIDIAN_ROUTER_LOCKED`, the tool reports `persistRemoved: false` — surface that as an info ("nothing to clean up in .env").
+- If the user said "persist" but the `.env` didn't have `OBSIDIAN_ROUTER_LOCKED`, the tool reports `persistRemoved: false` — surface that as an info ("nothing to clean up in .env"). The field that matters is `bindingLifted`: false there means the lock is still recorded in the router config and WILL come back at the next start, which is worth saying plainly.
 
 ## Push back if
 

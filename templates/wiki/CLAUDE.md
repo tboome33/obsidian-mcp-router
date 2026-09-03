@@ -148,7 +148,7 @@ The mode can change mid-session via `/obsidian-router:auto-mode <Mode>`. Re-chec
 
 Even when the mode is non-`off`, auto-enrichment is active ONLY when BOTH are true:
 
-1. **The current Claude session is bound to this vault** — workspace `.env` contains `VAULT_PATH` matching this vault's path, OR `OBSIDIAN_ROUTER_DEFAULT_VAULT` matches this vault's name, OR the user explicitly opted in this session ("track this in <vault>", "prends des notes dans mon vault"), OR the conversation runs inside a Claude Desktop Project bound to this vault.
+1. **The current Claude session is bound to this vault** — `list_vaults` reports a `workspaceBinding` naming it (the confirmed binding in the user's own config, which is what decides), OR the workspace `.env` contains `VAULT_PATH` matching this vault's path, OR the user explicitly opted in this session ("track this in <vault>", "prends des notes dans mon vault"), OR the conversation runs inside a Claude Desktop Project bound to this vault. A bare `OBSIDIAN_ROUTER_DEFAULT_VAULT` line in a project's `.env` is NOT enough on its own: it is a proposal the router reports and does not apply, and `list_vaults` shows it as `bindingHint` rather than as the binding.
 
 2. **The user has not turned tracking off** for this session ("no tracking", "pas de notes cette fois", "skip wiki").
 
