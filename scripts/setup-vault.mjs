@@ -42,7 +42,9 @@ import { computePlanSeal, verifyPlanSeal, isPlanSeal, PlanDriftError } from '../
 import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
 import {
   defaultNameFromPath,
+  disabledVaultEntries,
   knownVaultSlugs,
+  referenceVaultPath,
   registeredVaultPaths,
   resolveVaultBySlug,
   vaultSlug,
@@ -867,10 +869,11 @@ function printStatus() {
   console.log(c('bold', '\nobsidian-mcp-router — current configuration\n'));
   console.log('Config file:    ' + c('gray', CONFIG_PATH));
   console.log('Router binary:  ' + c('gray', ROUTER_BIN));
-  console.log('Reference vault: ' + (cfg.referenceVault ? c('green', cfg.referenceVault) : c('red', 'NOT SET')));
+  const referenceForStatus = referenceVaultPath(cfg);
+  console.log('Reference vault: ' + (referenceForStatus ? c('green', referenceForStatus) : c('red', 'NOT SET')));
   console.log('Port start:      ' + cfg.portStart);
   const entries = Object.entries(cfg.portRegistry || {});
-  const disabled = new Set(Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []);
+  const disabled = new Set(disabledVaultEntries(cfg));
   if (entries.length === 0) {
     console.log('Configured vaults: ' + c('gray', '(none yet)'));
   } else {
@@ -1018,8 +1021,13 @@ function readVaultPortsFromDisk(vaultPath) {
  */
 function buildOnDiskPortMap(cfg, extraPaths = []) {
   const map = new Map();
-  const paths = [...Object.keys((cfg && cfg.portRegistry) || {})];
-  if (cfg && cfg.referenceVault) paths.push(cfg.referenceVault);
+  const paths = [...registeredVaultPaths(cfg)];
+  // Straight into `readVaultPortsFromDisk` → `path.join`, which throws on a
+  // non-string. This was the least visible of the three referenceVault sinks
+  // and the only one reached during ordinary port-collision reporting.
+  // (v0.90.0)
+  const reference = referenceVaultPath(cfg);
+  if (reference) paths.push(reference);
   for (const p of extraPaths) if (p) paths.push(p);
   for (const p of paths) {
     if (map.has(p)) continue;
@@ -1322,8 +1330,10 @@ function isObsidianVaultRoot(dirPath) {
 
 function classifyVault(vaultPath, cfg) {
   const abs = path.resolve(vaultPath);
-  const registered = Object.keys(cfg.portRegistry || {}).some((rp) => samePath(rp, abs));
-  const isReference = cfg.referenceVault && samePath(cfg.referenceVault, abs);
+  const registered = registeredVaultPaths(cfg).some((rp) => samePath(rp, abs));
+  // `samePath` throws a TypeError on a non-string — measured, not assumed.
+  const reference = referenceVaultPath(cfg);
+  const isReference = Boolean(reference) && samePath(reference, abs);
   const hasRestApi = fs.existsSync(path.join(abs, '.obsidian', 'plugins', 'obsidian-local-rest-api'));
   const hasBridge = fs.existsSync(path.join(abs, '.obsidian', 'plugins', 'mcp-router-bridge'));
 
@@ -2988,7 +2998,9 @@ function setupVault(vaultPath, opts = {}) {
   if (!fs.existsSync(appJsonPath)) {
     const candidates = [
       path.join(sourceVault, '.obsidian', 'app.json'),
-      cfg.referenceVault ? path.join(cfg.referenceVault, '.obsidian', 'app.json') : null,
+      // `path.join` throws on a non-string; the ternary's truthiness test let
+      // one straight through. (v0.90.0)
+      referenceVaultPath(cfg) ? path.join(referenceVaultPath(cfg), '.obsidian', 'app.json') : null,
     ].filter(Boolean);
     const found = candidates.find((p) => fs.existsSync(p));
     if (found) {
@@ -3292,7 +3304,7 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // the GitHub skeleton into a temp dir and syncs FROM it, so machines with
   // no dev repo and no local .template get the exact same guarded pipeline.
   // Default stays the configured reference vault.
-  const sourceVault = opts.sourceVault ?? loadConfig().referenceVault;
+  const sourceVault = opts.sourceVault ?? referenceVaultPath(loadConfig());
   const sourceLabel = opts.sourceLabel ?? '.template';
   if (!sourceVault || !fs.existsSync(sourceVault)) {
     if (opts.quiet) process.exit(0);
@@ -5143,7 +5155,12 @@ if (args[0] === '--sync-all') {
   // or a refreshed reference vault to every configured vault at once.
   // Idempotent — vaults that are already in sync are no-ops.
   const cfg = loadConfig();
-  if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
+  // These two guards were never at risk: `fs.existsSync` returns false for a
+  // non-string rather than throwing (measured), so a bad value already failed
+  // closed with this message. Routed anyway — a reader the scan cannot vouch
+  // for is a reader that has to be re-audited by hand next time. (v0.90.0)
+  const referenceVault = referenceVaultPath(cfg);
+  if (!referenceVault || !fs.existsSync(referenceVault)) {
     fail('No reference vault configured or it no longer exists.');
   }
   const force = args.includes('--force');
@@ -5152,7 +5169,7 @@ if (args[0] === '--sync-all') {
     info('No vaults in portRegistry. Nothing to do.');
     process.exit(0);
   }
-  console.log(c('bold', `Syncing ${targets.length} vault(s) from ${cfg.referenceVault}${force ? ' (--force)' : ''}…`));
+  console.log(c('bold', `Syncing ${targets.length} vault(s) from ${referenceVault}${force ? ' (--force)' : ''}…`));
   console.log('');
   let okCount = 0;
   let skipCount = 0;
@@ -5163,7 +5180,7 @@ if (args[0] === '--sync-all') {
     // would rm -rf the source's own plugin dir before re-copying from
     // the now-empty source). samePath() handles Windows NTFS / macOS
     // APFS case-insensitivity, which a raw path.resolve() did not.
-    if (samePath(vaultPath, cfg.referenceVault)) {
+    if (samePath(vaultPath, referenceVault)) {
       console.log(c('gray', `  - skip (reference): ${vaultPath}`));
       skipCount++;
       continue;
@@ -5288,7 +5305,7 @@ if (args[0] === '--discover-vaults') {
     process.exit(0);
   }
 
-  if (!cfg.referenceVault || !fs.existsSync(cfg.referenceVault)) {
+  if (!referenceVaultPath(cfg) || !fs.existsSync(referenceVaultPath(cfg))) {
     fail(`Cannot bootstrap: no reference vault configured (or its path no longer exists).\n   Run \`setup-vault.mjs --bootstrap-reference <path>\` first, then \`--init-reference\`.`);
   }
 

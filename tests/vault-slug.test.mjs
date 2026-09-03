@@ -37,13 +37,17 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
+  configuredDefaultVault,
   configuredVaultName,
   defaultNameFromPath,
+  disabledVaultEntries,
   knownVaultSlugs,
+  referenceVaultPath,
   registeredVaultPaths,
   resolveVaultBySlug,
   vaultNamesOf,
   vaultSlug,
+  vaultsRootPath,
 } from '../src/helpers/vault-slug.mjs';
 
 import {
@@ -51,7 +55,7 @@ import {
   resolveVaultBySlug as hookResolveVaultBySlug,
 } from '../hooks/_helpers/workspace-vault.mjs';
 import { orderedVaultCandidates } from '../hooks/_helpers/doc-drift-detector.mjs';
-import { existingSlugs } from '../scripts/vault-plan.mjs';
+import { existingSlugs, knownVaultRoots, resolveSourceVault } from '../scripts/vault-plan.mjs';
 import { knownSlugs, resolveSlugToVaultPath } from '../scripts/setup-vault.mjs';
 import { loadRegistry } from '../src/registry.mjs';
 
@@ -454,6 +458,211 @@ describe('CLASS SWEEP: the async and subprocess surfaces', () => {
 });
 
 // ---------------------------------------------------------------------------
+// THE SIBLING KEYS — defaultVault, disabledVaults, referenceVault, vaultsRoot
+// ---------------------------------------------------------------------------
+//
+// `vaultNames` was the first key of this class to be swept, not the only one.
+// Everything below is the same shape of test for the other four.
+
+/** A config whose `defaultVault` carries `bad` and whose registry is sane. */
+const badDefaultVault = (bad) => ({
+  portRegistry: { [ALPHA]: 27124, [BETA]: 27125 },
+  vaultNames: { [BETA]: 'beta-custom' },
+  defaultVault: bad,
+});
+
+describe('configuredDefaultVault — the config default, validated', () => {
+  test('returns a usable slug verbatim', () => {
+    assert.equal(configuredDefaultVault({ defaultVault: 'DEDIBOX' }), 'DEDIBOX');
+  });
+
+  test('returns null for every unusable value', () => {
+    for (const { label, value } of POISON) {
+      assert.equal(configuredDefaultVault({ defaultVault: value }), null, label);
+    }
+    assert.equal(configuredDefaultVault({}), null, 'absent key');
+    assert.equal(configuredDefaultVault(null), null, 'absent config');
+  });
+});
+
+describe('disabledVaultEntries — the CONTAINER is the dangerous part', () => {
+  test('returns the listed entries unchanged', () => {
+    assert.deepEqual(disabledVaultEntries({ disabledVaults: ['template', 'C:\\VAULTS\\X'] }),
+      ['template', 'C:\\VAULTS\\X']);
+  });
+
+  test('A BARE STRING is refused, not iterated into characters', () => {
+    // The headline of this half of the lot, and the only defect in it that was
+    // SILENT rather than a crash. `"disabledVaults": "template"` is the most
+    // plausible hand-edit there is, a string IS iterable, and
+    // `new Set("template")` is {t,e,m,p,l,a} — so a fleet with a
+    // one-character vault slug had that vault disabled by a line naming a
+    // different one. Measured before it was fixed; pinned here.
+    assert.deepEqual(disabledVaultEntries({ disabledVaults: 'template' }), []);
+    const asSet = new Set(disabledVaultEntries({ disabledVaults: 'template' }));
+    assert.equal(asSet.has('t'), false, 'a single character must not become a disabled vault');
+    assert.equal(asSet.has('template'), false);
+  });
+
+  test('every non-array container yields the empty list', () => {
+    for (const bad of [123, true, null, undefined, '', 'template', { 0: 'template' }]) {
+      assert.deepEqual(disabledVaultEntries({ disabledVaults: bad }), [], JSON.stringify(bad));
+    }
+  });
+
+  test('non-string ELEMENTS are dropped, never coerced', () => {
+    // `String(s).toLowerCase()` used to turn 123 into the name "123" — and a
+    // vault whose folder is called `123` has exactly that slug, so the
+    // coercion could disable a real vault on the strength of a typo.
+    assert.deepEqual(
+      disabledVaultEntries({ disabledVaults: ['keep', 123, null, '', true, ['x'], { a: 1 }, 'also-keep'] }),
+      ['keep', 'also-keep'],
+    );
+  });
+
+  test('always an array, so a caller may iterate without a guard', () => {
+    for (const cfg of [null, undefined, {}, { disabledVaults: 7 }]) {
+      assert.ok(Array.isArray(disabledVaultEntries(cfg)), JSON.stringify(cfg));
+    }
+  });
+});
+
+describe('referenceVaultPath / vaultsRootPath', () => {
+  test('return a configured path verbatim', () => {
+    assert.equal(referenceVaultPath({ referenceVault: 'C:\\VAULTS\\.template' }), 'C:\\VAULTS\\.template');
+    assert.equal(vaultsRootPath({ vaultsRoot: 'C:\\VAULTS' }), 'C:\\VAULTS');
+  });
+
+  test('return null for every unusable value', () => {
+    for (const { label, value } of POISON) {
+      assert.equal(referenceVaultPath({ referenceVault: value }), null, `referenceVault ${label}`);
+      assert.equal(vaultsRootPath({ vaultsRoot: value }), null, `vaultsRoot ${label}`);
+    }
+  });
+
+  test('the null they return is what keeps path.join and samePath from throwing', () => {
+    // Measured with a probe rather than assumed: fs.existsSync(123) returns
+    // false (so the readers guarded by it always failed closed), but
+    // path.join(123, …), path.resolve(123) and samePath(123, …) all throw a
+    // TypeError. Three readers reached the throwing kind.
+    assert.throws(() => path.join(referenceVaultPath({ referenceVault: 'ok' }), 'x') && path.join(123, 'x'));
+    assert.equal(fs.existsSync(123), false, 'existsSync fails closed — the reason two readers were safe');
+  });
+});
+
+describe('CLASS SWEEP: the sibling keys, across every consumer surface', () => {
+  for (const { label, value } of POISON) {
+    test(`doc-drift-detector orderedVaultCandidates survives defaultVault = ${label}`, () => {
+      // The live crash this lot exists for: `(cfg.defaultVault || '').toLowerCase()`.
+      // A non-string is TRUTHY, so `||` never caught it, and the TypeError came
+      // out of a function two hooks call — both of which must exit 0.
+      let got;
+      assert.doesNotThrow(() => { got = orderedVaultCandidates(cwdDir, badDefaultVault(value)); });
+      assert.ok(Array.isArray(got), 'must still return the candidate list');
+      assert.ok(got.includes(ALPHA) && got.includes(BETA), 'both vaults still reachable');
+    });
+
+    test(`doc-drift-detector orderedVaultCandidates survives disabledVaults = ${label}`, () => {
+      const cfg = { portRegistry: { [ALPHA]: 27124, [BETA]: 27125 }, disabledVaults: value };
+      let got;
+      assert.doesNotThrow(() => { got = orderedVaultCandidates(cwdDir, cfg); });
+      assert.ok(got.includes(ALPHA), 'an unreadable disable list must disable nothing');
+    });
+
+    test(`vault-plan knownVaultRoots survives referenceVault/vaultsRoot = ${label}`, () => {
+      const cfg = { portRegistry: { [ALPHA]: 27124 }, referenceVault: value, vaultsRoot: value };
+      let got;
+      assert.doesNotThrow(() => { got = knownVaultRoots(cfg); });
+      assert.deepEqual(got, [path.dirname(path.resolve(ALPHA))],
+        'an unreadable root must widen the provision gate by nothing');
+    });
+
+    test(`vault-plan resolveSourceVault survives referenceVault = ${label}`, () => {
+      let got;
+      assert.doesNotThrow(() => { got = resolveSourceVault({ source: 'reference' }, { referenceVault: value }); });
+      assert.equal(got.sourceVault, null, 'an unreadable reference vault is no reference vault');
+    });
+  }
+
+  for (const { label, value } of POISON) {
+    test(`registry loadRegistry survives disabledVaults = ${label}`, async () => {
+      const cfgPath = path.join(workDir, `dis-${encodeURIComponent(label)}.json`);
+      fs.writeFileSync(cfgPath, JSON.stringify({
+        portRegistry: { [ALPHA]: 27124, [BETA]: 27125 },
+        vaultNames: { [BETA]: 'beta-custom' },
+        disabledVaults: value,
+      }));
+      const registry = await loadRegistry({ configPath: cfgPath });
+      const names = registry.vaults.map((v) => v.name);
+      assert.ok(names.includes('alpha') && names.includes('beta-custom'),
+        `an unreadable disable list must hide no vault — got ${JSON.stringify(names)}`);
+    });
+
+    test(`registry loadRegistry survives defaultVault = ${label}`, async () => {
+      const cfgPath = path.join(workDir, `def-${encodeURIComponent(label)}.json`);
+      fs.writeFileSync(cfgPath, JSON.stringify(badDefaultVault(value)));
+      const previous = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      try {
+        const registry = await loadRegistry({ configPath: cfgPath });
+        assert.notEqual(registry.defaultVault, value,
+          'the raw config value must never become the resolved default');
+        assert.ok(
+          registry.defaultVault === undefined || typeof registry.defaultVault === 'string',
+          'the resolved default is a name or nothing, never the config junk',
+        );
+      } finally {
+        if (previous !== undefined) process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = previous;
+      }
+    });
+  }
+
+  test('a bare-string disabledVaults disables NOTHING, end to end through the registry', async () => {
+    // The silent case, proved at the surface a user would actually meet. ALPHA
+    // is one character away from nothing, so this uses a real single-character
+    // slug to make the old behaviour visible: a set of characters built from
+    // "alpha" contains "a".
+    const single = path.join(workDir, 'a');
+    fs.mkdirSync(single, { recursive: true });
+    const cfgPath = path.join(workDir, 'bare-string-disabled.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      portRegistry: { [single]: 27130, [ALPHA]: 27131 },
+      disabledVaults: 'alpha',
+    }));
+    const registry = await loadRegistry({ configPath: cfgPath });
+    const names = registry.vaults.map((v) => v.name);
+    assert.ok(names.includes('a'), `the one-character vault must NOT be disabled — got ${JSON.stringify(names)}`);
+    assert.ok(names.includes('alpha'), 'and neither must the vault the line meant to name');
+  });
+
+  test('hooks/vault-link-linter.mjs exits 0 on a poisoned defaultVault + disabledVaults', () => {
+    const cfgPath = path.join(workDir, 'linter-siblings.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      portRegistry: { [ALPHA]: 27124 },
+      defaultVault: 123,
+      disabledVaults: 'alpha',
+      referenceVault: 456,
+    }));
+    const transcript = path.join(workDir, 'transcript-siblings.jsonl');
+    fs.writeFileSync(
+      transcript,
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }) + '\n',
+    );
+    const res = spawnSync(process.execPath, [LINTER_HOOK], {
+      input: JSON.stringify({
+        hook_event_name: 'Stop',
+        transcript_path: transcript,
+        stop_hook_active: false,
+      }),
+      encoding: 'utf8',
+      env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: cfgPath },
+    });
+    assert.equal(res.status, 0, `linter exited ${res.status}: ${res.stderr}`);
+    assert.ok(!/TypeError/.test(res.stderr || ''), `linter leaked a type error: ${res.stderr}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LAYER 3 — the scan that keeps the class swept
 // ---------------------------------------------------------------------------
 
@@ -484,6 +693,16 @@ function scannedFiles() {
  */
 const isCommentLine = (line) => /^\s*(\/\/|\*|\/\*)/.test(line);
 
+/**
+ * The one line in the tree that mentions a config key in PROSE rather than
+ * reading it: the router binary's `--help` text, inside a template literal.
+ * Keyed by file + exact trimmed content, so it survives edits above it and
+ * fails loudly if the sentence itself changes.
+ */
+const PROSE_EXEMPTIONS = new Set([
+  'bin/obsidian-mcp-router.mjs|and over config.defaultVault.',
+]);
+
 describe('SCAN: the class cannot be re-opened quietly', () => {
   test('no file outside the helper READS vaultNames directly', () => {
     const offenders = [];
@@ -503,6 +722,60 @@ describe('SCAN: the class cannot be re-opened quietly', () => {
       offenders,
       [],
       `these read config.vaultNames without the boundary check — route them through ${HELPER_REL}:\n  ${offenders.join('\n  ')}`,
+    );
+  });
+
+  test('no file outside the helper READS the sibling config keys directly', () => {
+    // Same rule as the `vaultNames` scan above, for the four keys swept beside
+    // it. The discriminator is the RECEIVER, and it is a real distinction
+    // rather than a convenience:
+    //
+    //   cfg.defaultVault / config.defaultVault  — the config's raw word. Guarded.
+    //   registry.defaultVault / this.defaultVault / reg.* / result.*
+    //                                           — the RESOLVED name, which is
+    //     the output of `resolveDefaultVaultWithSource` and only ever a name
+    //     that passed `isActive`. The registry is itself a boundary for this
+    //     key, which is exactly why the six readers downstream of it were
+    //     never at risk while the two hooks — which parse config.json
+    //     themselves — were.
+    const KEYS = ['defaultVault', 'disabledVaults', 'referenceVault', 'vaultsRoot'];
+    const RAW_RECEIVER = /\b(cfg|config|conf)\s*(\?\.)?\s*\.\s*(defaultVault|disabledVaults|referenceVault|vaultsRoot)\b/;
+    const offenders = [];
+    for (const { rel, abs } of scannedFiles()) {
+      if (rel === HELPER_REL) continue;
+      const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (isCommentLine(line)) return;
+        if (!RAW_RECEIVER.test(line)) return;
+        // An ASSIGNMENT is a writer, not a reader: `setup-vault --bootstrap-
+        // reference` records the path, and `remote-config.mjs` builds a config
+        // of its own rather than reading the user's.
+        if (new RegExp(`(${KEYS.join('|')})\\s*=[^=]`).test(line)) return;
+        // PROSE inside a template literal is not a read, and there is exactly
+        // one: the --help text below. It is exempted BY ITS CONTENT, not by a
+        // heuristic.
+        //
+        // The first version of this test used a heuristic instead — "a line
+        // carrying a real property access also carries code punctuation; a
+        // sentence carries none" — and a mutation walked straight through it:
+        //
+        //     const disabled = new Set(
+        //       cfg.disabledVaults          // ← no punctuation on this line
+        //       || []
+        //     );
+        //
+        // 211/211 green with that read reinstated. An exemption list of one
+        // known string cannot have that hole. If the help text is reworded this
+        // test fails and the line below is updated, which is the right amount
+        // of friction for a scan that is the only net under four CLI surfaces.
+        if (PROSE_EXEMPTIONS.has(`${rel}|${line.trim()}`)) return;
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `these read a hand-editable config key without the boundary check — route them through ${HELPER_REL}:\n  ${offenders.join('\n  ')}`,
     );
   });
 

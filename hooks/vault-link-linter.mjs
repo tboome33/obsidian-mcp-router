@@ -139,7 +139,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
-import { vaultSlug } from '../src/helpers/vault-slug.mjs';
+import {
+  configuredDefaultVault,
+  disabledVaultEntries,
+  vaultSlug,
+} from '../src/helpers/vault-slug.mjs';
 
 // ---- Load workspace .env (without clobbering process.env) -------------
 // The hook runs as a separate Node subprocess invoked by Claude Code,
@@ -415,11 +419,11 @@ if (allVaultPaths.length === 0) process.exit(0);
  * Codex P2 review finding 2026-05-23.
  */
 function activeVaultPaths() {
-  const disabledSet = new Set();
-  for (const entry of Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []) {
-    // Accept either form (slug or path) per setup-vault.mjs convention.
-    if (typeof entry === 'string') disabledSet.add(entry);
-  }
+  // Accepts either form (slug or path) per setup-vault.mjs convention. The
+  // hand-written `Array.isArray` + `typeof entry === 'string'` pair that stood
+  // here was correct — and is exactly what `disabledVaultEntries` now does for
+  // all six readers, three of which had written no guard at all. (v0.90.0)
+  const disabledSet = new Set(disabledVaultEntries(cfg));
   const allowedRaw = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS || '';
   const allowedSlugs = allowedRaw
     ? new Set(allowedRaw.split(',').map((s) => s.trim()).filter(Boolean))
@@ -491,10 +495,16 @@ function resolveDefaultVaultPath() {
     }
   }
 
-  // Tier 3: cfg.defaultVault slug
-  if (cfg.defaultVault) {
+  // Tier 3: cfg.defaultVault slug.
+  //
+  // This one never threw — `===` against a number simply never matches — but
+  // it read the raw value, and a reader that is safe only by accident is a
+  // reader the scan in tests/vault-slug.test.mjs cannot vouch for. Through the
+  // accessor it is safe on purpose. (v0.90.0)
+  const configuredDefault = configuredDefaultVault(cfg);
+  if (configuredDefault) {
     for (const vp of vaultPaths) {
-      if (vaultSlug(cfg, vp) === cfg.defaultVault) return vp;
+      if (vaultSlug(cfg, vp) === configuredDefault) return vp;
     }
   }
 

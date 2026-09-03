@@ -38,7 +38,11 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
-import { configuredVaultName, vaultNamesOf } from '../src/helpers/vault-slug.mjs';
+import {
+  configuredVaultName,
+  disabledVaultEntries,
+  vaultNamesOf,
+} from '../src/helpers/vault-slug.mjs';
 
 const CONFIG_PATH = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
 
@@ -203,7 +207,9 @@ async function main() {
 
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
   let entries = Object.entries(cfg.portRegistry || {});
-  const disabled = new Set(cfg.disabledVaults || []);
+  // Same container defect as bridge-fleet-update.mjs: a bare string built a set
+  // of characters instead of throwing, and a number threw. (v0.90.0)
+  const disabled = new Set(disabledVaultEntries(cfg));
   entries = entries.filter(([p]) => !disabled.has(p));
 
   if (vaultFilter) {

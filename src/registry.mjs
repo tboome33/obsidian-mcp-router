@@ -40,7 +40,12 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
-import { defaultNameFromPath, vaultSlug } from './helpers/vault-slug.mjs';
+import {
+  configuredDefaultVault,
+  defaultNameFromPath,
+  disabledVaultEntries,
+  vaultSlug,
+} from './helpers/vault-slug.mjs';
 import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 
@@ -87,9 +92,7 @@ export async function loadRegistry({ configPath } = {}) {
 
   const config = JSON.parse(raw);
   const vaults = [];
-  const disabled = new Set(
-    Array.isArray(config.disabledVaults) ? config.disabledVaults : [],
-  );
+  const disabled = new Set(disabledVaultEntries(config));
   const skipped = [];
 
   // --- 1. Local vaults from portRegistry ---
@@ -387,7 +390,12 @@ export async function loadRegistry({ configPath } = {}) {
   // that choice and let resolveVault() raise a clear error at tool-call
   // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
   // so a router with no explicit configuration prefers a healthy vault.
-  const configuredDefault = config.defaultVault;
+  // Through the accessor (v0.90.0). This tier was already safe — `isActive`
+  // compares against names this module produced, so a number could never win
+  // it — but reading the raw value made that safety accidental, and it is the
+  // reason the six readers DOWNSTREAM of the registry never had to care:
+  // `registry.defaultVault` is a resolved name, not the config's word.
+  const configuredDefault = configuredDefaultVault(config);
   const resolvedDefault = resolveDefaultVaultWithSource({ vaults, configuredDefault });
   const defaultVault = resolvedDefault.name;
 

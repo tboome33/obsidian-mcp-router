@@ -36,7 +36,11 @@ import path from 'node:path';
 
 import { loadWorkspaceDotenv } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
-import { vaultSlug } from '../../src/helpers/vault-slug.mjs';
+import {
+  configuredDefaultVault,
+  disabledVaultEntries,
+  vaultSlug,
+} from '../../src/helpers/vault-slug.mjs';
 
 // ---------------------------------------------------------------------------
 // Vault selection
@@ -120,7 +124,13 @@ export function orderedVaultCandidates(cwd, cfg) {
   }
 
   // (2) default vault
-  const defaultSlug = (cfg.defaultVault || '').toLowerCase();
+  //
+  // `configuredDefaultVault` (v0.90.0) replaces `(cfg.defaultVault || '')`.
+  // A non-string there is TRUTHY, so `||` never caught it and `.toLowerCase()`
+  // threw a TypeError out of this function — which two hooks call, both of
+  // which must exit 0 whatever the config says. Same defect as the
+  // `vaultNames` one swept in c4291e8, one key over.
+  const defaultSlug = (configuredDefaultVault(cfg) || '').toLowerCase();
   if (defaultSlug) {
     for (const vp of all) {
       if (vaultSlug(cfg, vp).toLowerCase() === defaultSlug) { push(vp); break; }
@@ -139,7 +149,12 @@ export function orderedVaultCandidates(cwd, cfg) {
   }
 
   // (4) all remaining, excluding `.template`-style first
-  const disabled = new Set((cfg.disabledVaults || []).map((s) => String(s).toLowerCase()));
+  // `.map` on `(cfg.disabledVaults || [])` threw on anything but an array —
+  // including the likeliest hand-edit of all, a bare `"disabledVaults":
+  // "template"`. The `String(s)` that stood here guarded the ELEMENTS and not
+  // the container, and coerced a numeric entry into the name "123", which a
+  // vault whose folder is called `123` really answers to. (v0.90.0)
+  const disabled = new Set(disabledVaultEntries(cfg).map((s) => s.toLowerCase()));
   const isTemplate = (vp) => /\.template$/i.test(vp);
   for (const vp of all) {
     if (isTemplate(vp)) continue;

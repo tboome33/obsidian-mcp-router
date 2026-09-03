@@ -19,9 +19,11 @@ import path from 'node:path';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
 import {
   defaultNameFromPath,
+  referenceVaultPath,
   registeredVaultPaths,
   vaultNamesOf,
   vaultSlug,
+  vaultsRootPath,
 } from '../src/helpers/vault-slug.mjs';
 
 // Was a copy of setup-vault.mjs's copy of src/registry.mjs's — "change all
@@ -64,14 +66,22 @@ export function existingSlugs(cfg) {
  */
 export function knownVaultRoots(cfg) {
   const roots = new Set();
-  for (const vp of Object.keys(cfg.portRegistry || {})) {
+  for (const vp of registeredVaultPaths(cfg)) {
     try { roots.add(path.dirname(path.resolve(vp))); } catch { /* skip */ }
   }
-  if (cfg.referenceVault) {
-    try { roots.add(path.dirname(path.resolve(cfg.referenceVault))); } catch { /* skip */ }
+  // The `catch` around `path.resolve` already stopped a non-string from
+  // throwing here, so neither key was ever a live defect at this site. Routed
+  // through the accessors anyway (v0.90.0): a `catch` cannot tell "not
+  // configured" from "configured wrong", and this function gates
+  // `provision_vault`'s allowed write roots — the last place to be relaxed
+  // about which of those two it is looking at.
+  const reference = referenceVaultPath(cfg);
+  if (reference) {
+    try { roots.add(path.dirname(path.resolve(reference))); } catch { /* skip */ }
   }
-  if (cfg.vaultsRoot) {
-    try { roots.add(path.resolve(cfg.vaultsRoot)); } catch { /* skip */ }
+  const vaultsRoot = vaultsRootPath(cfg);
+  if (vaultsRoot) {
+    try { roots.add(path.resolve(vaultsRoot)); } catch { /* skip */ }
   }
   return [...roots];
 }
@@ -113,7 +123,7 @@ export function resolveSourceVault({ source = 'reference', fromVault } = {}, cfg
   }
   // 'reference' and 'bare' both clone their (REQUIRED, for bare) plugins from
   // the configured reference vault.
-  return { kind: source, sourceVault: cfg.referenceVault || null };
+  return { kind: source, sourceVault: referenceVaultPath(cfg) };
 }
 
 /**
@@ -230,7 +240,7 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
   const context = {
     flow,
     gitPresent,
-    referenceConfigured: Boolean(cfg.referenceVault),
+    referenceConfigured: Boolean(referenceVaultPath(cfg)),
     knownRoots: knownVaultRoots(cfg),
     existingBinding: null,
     // Questionnaire inputs (consumed by plan_vault to build the option lists).

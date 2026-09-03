@@ -1,6 +1,15 @@
 /**
- * vault-slug.mjs — "what is this vault's slug, according to this config?",
- * and the ONE derivation every reader of that question shares.
+ * vault-slug.mjs — what the router config says about a vault, type-checked
+ * once, where the config's word becomes the program's.
+ *
+ * It began as the answer to one question — "what is this vault's slug?" — and
+ * the name is from then. The remit is now every hand-editable `config.json`
+ * value that names or locates a vault: `vaultNames`, `portRegistry`,
+ * `defaultVault`, `disabledVaults`, `referenceVault`, `vaultsRoot`. They are
+ * one class, they failed the same way, and splitting them across two modules
+ * would recreate the duplication this file exists to end. See "The config's
+ * OTHER answers about vaults" near the bottom for why they landed here rather
+ * than in a sibling.
  *
  * ---------------------------------------------------------------------------
  * THE HOLE THIS CLOSES
@@ -237,4 +246,138 @@ export function registeredVaultPaths(cfg) {
  */
 export function knownVaultSlugs(cfg) {
   return registeredVaultPaths(cfg).map((vaultPath) => vaultSlug(cfg, vaultPath));
+}
+
+// ---------------------------------------------------------------------------
+// The config's OTHER answers about vaults
+// ---------------------------------------------------------------------------
+//
+// `vaultNames` was the first key of this class to be swept, not the only one.
+// The three below are read from the same hand-editable file, by the same
+// readers, under the same assumption that whatever JSON parsed is the type the
+// reader wanted. They are validated here, under the same policy, for the same
+// reason — see the module header.
+//
+// WHY THEY LIVE IN A FILE CALLED vault-slug.mjs. Two of the functions above —
+// `vaultNamesOf` and `registeredVaultPaths` — are already config accessors
+// rather than slug derivations, so this module's real remit has been "the
+// config's word about vaults, type-checked once" since it was written. Naming
+// it after the first question it answered was the narrow choice; putting the
+// sibling keys in a second module now would recreate, one commit later, the
+// exact split whose repair this file is. `referenceVault` and `vaultsRoot` are
+// vault paths, so they are in remit; `portStart` is NOT here because it is
+// already guarded at its one real reader (`isPort` in helpers/port-registry.mjs)
+// and it is not about a vault.
+
+/**
+ * The config's `defaultVault` — the slug of the vault to use when nothing else
+ * names one — validated, or null when the config names none usable.
+ *
+ * WHO ACTUALLY NEEDED THIS. Of the eight readers of `defaultVault`, six read
+ * `registry.defaultVault`, which is the RESOLVED name: `resolveDefaultVault‑
+ * WithSource` only honors a configured default that passed `isActive`, i.e.
+ * that equals the `name` of a vault already in the active set — and those names
+ * are strings this module produced. So the registry is already a boundary for
+ * that key, and everything downstream of it was safe.
+ *
+ * The exceptions are the readers that never go through the registry: the two
+ * HOOKS, which parse `config.json` themselves. One of them,
+ * `hooks/_helpers/doc-drift-detector.mjs`, did
+ * `(cfg.defaultVault || '').toLowerCase()` — and a non-string is truthy, so
+ * `||` never caught it and the `TypeError` came straight out of a hook that
+ * two entry points call and that must exit 0 whatever the config says. That is
+ * the same failure the `vaultNames` sweep removed, one key over.
+ *
+ * @param {unknown} cfg
+ * @returns {string|null}
+ */
+export function configuredDefaultVault(cfg) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  const value = cfg.defaultVault;
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * The config's `disabledVaults`, as an array of usable entries — always an
+ * array, never null, so a caller may iterate it without a guard.
+ *
+ * THE CONTAINER IS THE DANGEROUS PART HERE, not the elements. `disabledVaults`
+ * is a LIST, and the likeliest hand-edit by far is to write the single vault
+ * you meant as a bare string:
+ *
+ *   "disabledVaults": "template"        instead of  ["template"]
+ *
+ * A string is iterable. `new Set("template")` is therefore not an error — it is
+ * `{t, e, m, p, l, a}`, a set of CHARACTERS, and a fleet with a one-character
+ * vault slug would have that vault silently disabled by a line that named a
+ * different one. Measured, not reasoned about. Three of the six readers were
+ * exposed: two built a `Set` straight from the value and one called `.map` on
+ * it (which throws instead, on everything but an array). The other three
+ * already wrote `Array.isArray` by hand — this replaces all six, so the guard
+ * is in one place rather than in half the places.
+ *
+ * ELEMENTS are filtered to non-empty strings rather than coerced. One caller
+ * used to write `String(s).toLowerCase()`, which turned a numeric entry `123`
+ * into the name `"123"` — and a vault whose folder is named `123` has exactly
+ * that slug, so the coercion could disable a real vault on the strength of a
+ * typo. Dropping it is the same refusal to coerce the module already applies
+ * to `vaultNames`.
+ *
+ * Entries may be a vault NAME or a PATH, and the two are compared differently
+ * by different callers (case-sensitively in `src/registry.mjs`, lowercased in
+ * the drift detector). That is deliberately NOT normalised here: this function
+ * answers "what did the config actually list", and each caller keeps the
+ * comparison it documents.
+ *
+ * @param {unknown} cfg
+ * @returns {string[]}
+ */
+export function disabledVaultEntries(cfg) {
+  if (!cfg || typeof cfg !== 'object') return [];
+  const raw = cfg.disabledVaults;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry) => typeof entry === 'string' && entry !== '');
+}
+
+/**
+ * The config's `referenceVault` — the `.template` vault new vaults are cloned
+ * from — validated, or null.
+ *
+ * The sinks here are path functions, and they are not uniformly forgiving:
+ * `fs.existsSync(123)` returns `false` (so the two readers that guard with it
+ * fail closed, with their own clear message, and were never at risk), while
+ * `path.join(123, …)`, `path.resolve(123)` and `samePath(123, …)` all throw a
+ * `TypeError`. Three readers reached the throwing kind — including
+ * `buildOnDiskPortMap`, which pushes this value into the list of vaults whose
+ * `data.json` it reads, i.e. straight into `path.join`. Measured with a probe
+ * rather than assumed, because "it's a path, it'll be fine" is exactly the
+ * assumption this class is made of.
+ *
+ * @param {unknown} cfg
+ * @returns {string|null}
+ */
+export function referenceVaultPath(cfg) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  const value = cfg.referenceVault;
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * The config's `vaultsRoot` — a directory under which provisioning a new vault
+ * is allowed — validated, or null.
+ *
+ * Its one reader already sat inside a `try`/`catch`, so this key was never a
+ * live defect. It is here anyway: the guard that saved it is a `catch` around
+ * `path.resolve`, which silently swallows the difference between "not
+ * configured" and "configured wrong", and the scan in
+ * `tests/vault-slug.test.mjs` can only be a scan if every reader of the class
+ * goes through the same door.
+ *
+ * @param {unknown} cfg
+ * @returns {string|null}
+ */
+export function vaultsRootPath(cfg) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  const value = cfg.vaultsRoot;
+  return typeof value === 'string' && value !== '' ? value : null;
 }
