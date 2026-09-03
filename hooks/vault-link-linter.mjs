@@ -139,6 +139,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
+import {
+  readBinding,
+  authoritativeDefaultVault,
+  authoritativeLockedVault,
+  authoritativeVaultPath,
+} from '../src/helpers/workspace-bindings.mjs';
 
 // ---- Load workspace .env (without clobbering process.env) -------------
 // The hook runs as a separate Node subprocess invoked by Claude Code,
@@ -456,7 +462,17 @@ if (vaultPaths.length === 0) process.exit(0);
  *     fail to resolve too. Skip linting entirely (`exit 0`) — no safe
  *     suggestion to make.
  */
-const lockedSlug = (process.env.OBSIDIAN_ROUTER_LOCKED || '').trim();
+// MIRRORING THE ROUTER MEANS MIRRORING ITS SOURCES, not just its variable.
+// Since the Codex review of 2026-09-03 the router takes a lock from the
+// confirmed binding or from the host, never from a project `.env` — so a
+// linter that still read the raw variable would restrict itself to a vault the
+// router does not restrict itself to, and go quiet about real broken links in
+// every other vault on a cloned repository's word.
+const lockedSlug = (
+  (readBinding(cfg, cwd)?.locked && readBinding(cfg, cwd).vault)
+  || authoritativeLockedVault()
+  || ''
+).trim();
 if (lockedSlug) {
   const vaultNames = cfg.vaultNames || {};
   const lockedPath = vaultPaths.find((vp) => {
@@ -483,8 +499,14 @@ if (lockedSlug) {
 function resolveDefaultVaultPath() {
   const vaultNames = cfg.vaultNames || {};
 
-  // Tier 1: explicit env slug override
-  const envSlug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim();
+  // Tier 0: the confirmed binding for this workspace, from the user's own
+  // config. Tier 1: the environment slug, but ONLY when it may decide —
+  // `authoritativeDefaultVault` returns null for a value the loader recorded
+  // taking from this project's own `.env`. The fourth of the four resolvers
+  // swept for the Codex finding of 2026-09-03; a cloned repository must not be
+  // able to choose which vault this linter treats as "the project's own".
+  const binding = readBinding(cfg, cwd);
+  const envSlug = (binding?.vault || authoritativeDefaultVault() || '').trim();
   if (envSlug) {
     for (const vp of vaultPaths) {
       const slug = vaultNames[vp] || defaultNameFromPath(vp);
@@ -494,7 +516,9 @@ function resolveDefaultVaultPath() {
 
   // Tier 2: VAULT_PATH env (absolute path). Use path.resolve on both
   // sides to normalize separators and trailing slashes before compare.
-  const envPath = (process.env.VAULT_PATH || '').trim();
+  // GATED (Codex round 2, 2026-09-03): from a workspace file it may only name
+  // the workspace itself, never redirect the linter to another vault.
+  const envPath = (authoritativeVaultPath(cwd) || '').trim();
   if (envPath) {
     const target = path.resolve(envPath);
     for (const vp of vaultPaths) {

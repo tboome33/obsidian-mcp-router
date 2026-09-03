@@ -24,6 +24,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
+import { updateConfigBindings, withBinding, readBinding } from '../helpers/workspace-bindings.mjs';
 /**
  * Lock the router to a single vault.
  *
@@ -61,8 +62,9 @@ export async function lockVault(registry, args = {}) {
   // workspace file said at start-up (decision `liaison-workspace-vault-hors-depot`).
   registry.lockSource = { origin: 'runtime', variable: null };
 
-  let persisted = false;
+  let hintWritten = false;
   let envPath = null;
+  let bindingRecorded = null;
   if (persist) {
     const cwd = process.cwd();
     // Refuse to write a `.env` at the user's home directory. That's
@@ -93,19 +95,46 @@ export async function lockVault(registry, args = {}) {
     }
     envPath = path.join(cwd, '.env');
     await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
-    persisted = true;
+    hintWritten = true;
+    // AND the binding, since v0.90.0. Persisting a lock is an explicit act of
+    // the user saying "this workspace goes with this vault, permanently" —
+    // which is exactly a confirmation. Recording it means the lock survives in
+    // the user's OWN config rather than only in a file that travels with a
+    // clone; the dotenv line stays as the portable hint for the next machine.
+    // Best effort: a config this process cannot write must not undo a lock
+    // that is already in force and already persisted to the workspace file.
+    bindingRecorded = recordLockInBinding(registry, cwd, vault);
   }
 
+  // `persisted` MEANS "WILL SURVIVE A RESTART", and since v0.90.0 only the
+  // binding does that. The workspace `.env` line is still written — it is the
+  // portable hint that lets the next machine PROPOSE this lock — but a lock a
+  // project file names is no longer imposed on start-up, so reporting the
+  // dotenv write as persistence would promise something that has stopped being
+  // true. The Codex review of 2026-09-03 flagged the older mismatch (a
+  // `persisted: true` that meant "the .env, at least"); closing the gate that
+  // same day turned it from misleading into false.
+  const persisted = bindingRecorded !== null;
   return ({
     locked: true,
     vault,
     persisted,
-    envPath: persisted ? envPath : undefined,
+    // The portable hint, reported separately from the thing that persists.
+    hintWritten,
+    envPath: hintWritten ? envPath : undefined,
+    // What was recorded in the user's own config, or null when nothing was
+    // (no persist asked, or a config that could not be written).
+    bindingRecorded,
     message:
       `Router locked to "${vault}". ` +
       (persisted
-        ? `OBSIDIAN_ROUTER_LOCKED=${vault} written to ${envPath} — lock survives restart.`
-        : `Lock is volatile (this session only). Use persist:true to make it survive restarts.`),
+        ? 'The workspace is bound to it in your own router config, so the lock survives a restart'
+          + (hintWritten ? `, and OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath} as a portable hint for another machine.` : '.')
+        : hintWritten
+          ? `OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath}, but your router config could NOT be written`
+            + ' — so this lock does NOT survive a restart: a lock named only by a project file is no longer'
+            + ' applied at start-up. Fix the config permissions and run lock_vault again.'
+          : 'Lock is volatile (this session only). Use persist:true to make it survive restarts.'),
   });
 }
 
@@ -126,20 +155,37 @@ export async function unlockVaults(registry, args = {}) {
   registry.lockSource = { origin: 'unset', variable: null };
 
   let persistRemoved = false;
+  let bindingLifted = false;
   let envPath = null;
   if (persist) {
     envPath = path.join(process.cwd(), '.env');
+    // Symmetrical with `lock_vault --persist`: lift the lock in the user's own
+    // config too, or a restart would re-lock from the binding even after the
+    // dotenv line is gone. It does NOT remove the binding — the workspace still
+    // goes with its vault, it is simply no longer restricted to it. Best effort,
+    // and before the throwing branch below so an unwritable config cannot mask
+    // the dotenv failure, which is the one that actually re-locks on restart.
+    bindingLifted = recordLockInBinding(registry, process.cwd(), null) !== null;
     try {
       persistRemoved = await removeDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED');
     } catch (err) {
       // The in-memory lock IS already cleared above. Surface the
-      // partial-success state explicitly so the user can fix the .env
-      // manually before the next router restart relocks them.
+      // partial-success state explicitly.
+      //
+      // WHAT ACTUALLY RE-LOCKS ON RESTART IS THE BINDING, not the dotenv line.
+      // Since v0.90.0 a lock named only by a project file is refused at
+      // start-up, so a leftover `.env` line is now inert — and telling the
+      // user to go and delete it would send them to fix the harmless half
+      // while the real one (a binding whose lock could not be lifted) went
+      // unmentioned. The two cases are reported separately for that reason.
       throw new Error(
-        `unlock_vaults: in-memory lock cleared, but failed to remove ` +
-          `OBSIDIAN_ROUTER_LOCKED from ${envPath} (${err.message}). ` +
-          `If you don't remove the line manually, the router will re-lock ` +
-          `to "${wasLocked}" on next restart.`,
+        `unlock_vaults: in-memory lock cleared, but failed to remove `
+        + `OBSIDIAN_ROUTER_LOCKED from ${envPath} (${err.message}). `
+        + (bindingLifted
+          ? 'The lock was lifted in your router config, so the router will NOT re-lock on restart; '
+            + 'the leftover line is only a stale hint for another machine — remove it when convenient.'
+          : `The lock could ALSO not be lifted in your router config, so the router WILL re-lock to `
+            + `"${wasLocked}" on next restart. Fix the config permissions and run unlock_vaults again.`),
       );
     }
   }
@@ -150,14 +196,24 @@ export async function unlockVaults(registry, args = {}) {
     persisted: persist === true,
     envPath: persist ? envPath : undefined,
     persistRemoved,
+    // Whether the lock was lifted where it actually persists.
+    bindingLifted,
     message:
       wasLocked
         ? `Router unlocked from "${wasLocked}".` +
           (persist
-            ? persistRemoved
-              ? ` Removed OBSIDIAN_ROUTER_LOCKED from ${envPath}.`
-              : ` No OBSIDIAN_ROUTER_LOCKED line found in ${envPath} — already absent.`
-            : ` In-memory only; if .env has OBSIDIAN_ROUTER_LOCKED set, it'll re-lock on restart. Use persist:true to remove it.`)
+            ? (bindingLifted
+              ? ' The lock was lifted in your router config, so it will not come back on restart.'
+              : ' The lock could NOT be lifted in your router config — if one was recorded there,'
+                + ' it will come back on restart.')
+              + (persistRemoved
+                ? ` The hint was also removed from ${envPath}.`
+                : ` No OBSIDIAN_ROUTER_LOCKED line found in ${envPath} — already absent.`)
+            // A volatile unlock leaves whatever is recorded in the config
+            // untouched, and THAT is what re-locks. A leftover `.env` line no
+            // longer does anything on its own.
+            : ' In-memory only; a lock recorded in your router config will come back on restart.'
+              + ' Use persist:true to lift it there too.')
         : 'Router was not locked. No-op.',
   });
 }
@@ -255,4 +311,58 @@ function escapeRegex(s) {
 }
 
 // Exported for tests only.
-export const _internals = { upsertDotenvVar, removeDotenvVar };
+/**
+ * Record (or lift) the lock on this workspace's binding, in the user's own
+ * config. Returns what happened, or null when there was nothing to do or the
+ * config could not be written.
+ *
+ * BEST EFFORT BY DESIGN. The lock itself is already in force in memory and
+ * already written to the workspace file by the time this runs; a config the
+ * process cannot write must not turn a successful lock into a failed tool
+ * call. The caller reports what happened instead.
+ *
+ * When `locked` is true and the workspace has no binding yet, one is CREATED:
+ * persisting a lock is the user saying "this workspace goes with this vault,
+ * permanently", which is a confirmation in everything but name.
+ *
+ * @param {object} registry
+ * @param {string} cwd
+ * @param {string|null} vault the vault to lock to, or null to lift the lock
+ * @returns {{ vault: string|null, locked: boolean }|null}
+ */
+function recordLockInBinding(registry, cwd, vault, seams = {}) {
+  if (!registry?.configPath) return null;
+  try {
+    const next = updateConfigBindings(registry.configPath, (cfg) => {
+      const existing = readBinding(cfg, cwd);
+      if (vault) {
+        return withBinding(cfg, cwd, {
+          vault,
+          // A lock does not change which OTHER vaults this workspace is bound
+          // to; it only narrows what the session may reach right now.
+          also: existing && existing.vault === vault ? existing.also : [],
+          locked: true,
+          confirmedVia: existing?.confirmedVia || 'lock',
+          confirmedAt: existing?.confirmedAt || undefined,
+        });
+      }
+      // Lifting a lock never removes the binding — the workspace still goes
+      // with its vault, it is simply no longer restricted to it.
+      if (!existing) return cfg;
+      return withBinding(cfg, cwd, { ...existing, locked: false });
+    }, seams);
+    const b = readBinding(next, cwd);
+    // THE LIVE REGISTRY LEARNS WHAT THE FILE NOW SAYS. Without this,
+    // `list_vaults` kept reporting the binding as it was at start-up —
+    // `locked: false` right after a persistent lock, `locked: true` right
+    // after a persistent unlock — indefinitely under `--no-watch`. Codex
+    // round 2, 2026-09-03. The registry object is the same one the server
+    // holds, so this is the in-session half of the write.
+    registry.workspaceBinding = b;
+    return b ? { vault: b.vault, locked: b.locked } : null;
+  } catch {
+    return null;
+  }
+}
+
+export const _internals = { upsertDotenvVar, removeDotenvVar, recordLockInBinding };

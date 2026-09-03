@@ -686,6 +686,12 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       'build-wiki-graph.mjs', 'build-search-index.mjs',
       'refresh-okf-projections.mjs', 'source-ledger.mjs',
       'auto-enrich.mjs', 'lock.mjs', // both write only the cwd-derived .env
+      // v0.90.0 — writes ONLY `registry.configPath`, the router's own config
+      // file. Verified against the module: the path is taken from the registry,
+      // never from the caller; the tool has no path parameter at all, and the
+      // workspace it binds is always `process.cwd()`. Vault names it records
+      // are checked against the registry, so it cannot name one into existence.
+      'workspace-binding.mjs',
     ]);
     const GATED_ABSOLUTE_WRITERS = new Set([
       // Take a caller-supplied ABSOLUTE path and have their own dedicated gate

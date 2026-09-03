@@ -86,6 +86,76 @@ describe('writeFileAtomicSync', () => {
     assert.equal(fs.readFileSync(target, 'utf8'), 'old');
   });
 
+  test('the TARGET\'S PERMISSIONS are carried onto the temp file before the rename', () => {
+    // `rename` replaces the target wholesale, its mode included — so a 0600
+    // file rewritten through here came back 0644 under the usual umask. That
+    // was harmless while this helper only wrote derived artefacts; the
+    // `registre de liaisons` lot pointed it at the router's config.json, which
+    // holds every vault's API key. Codex flagged it on 2026-09-03.
+    //
+    // Asserted through a fake `fsMod` so it holds on every platform: Windows
+    // does almost nothing with POSIX modes, and a real-filesystem assertion
+    // would only ever run on half the CI matrix. The real-mode check below
+    // runs where modes are real.
+    const calls = [];
+    const fsMod = {
+      statSync: (p) => { calls.push(['stat', p]); return { mode: 0o100600 }; },
+      writeFileSync: (p, c) => { calls.push(['write', p]); fs.writeFileSync(p, c, 'utf8'); },
+      chmodSync: (p, m) => { calls.push(['chmod', p, m]); },
+      renameSync: (a, b) => { calls.push(['rename', a, b]); fs.renameSync(a, b); },
+      unlinkSync: fs.unlinkSync,
+    };
+    writeFileAtomicSync(target, 'secret', { fsMod });
+
+    const order = calls.map((c) => c[0]);
+    assert.deepEqual(order, ['stat', 'write', 'chmod', 'rename'],
+      'the mode is read from the TARGET and applied to the TEMP before it replaces it');
+    assert.equal(calls[2][2], 0o600, 'the file type bits are masked off; the permission bits are not');
+    assert.equal(calls[2][1], calls[1][1], 'chmod applies to the temp file, not the target');
+  });
+
+  test('a chmod that FAILS aborts the write — the target is never silently widened', () => {
+    // Round 2 of the Codex review: the first version swallowed the chmod
+    // error and went on to rename, so on a filesystem where writing works but
+    // chmod returns EPERM the default-mode temp file replaced the 0600 config.
+    // The fallback meant to be harmless was the widening.
+    fs.writeFileSync(target, 'old', 'utf8');
+    let tmpPath = null;
+    const fsMod = {
+      statSync: () => ({ mode: 0o100600 }),
+      writeFileSync: (p, c) => { tmpPath = p; fs.writeFileSync(p, c, 'utf8'); },
+      chmodSync: () => { const e = new Error('EPERM'); e.code = 'EPERM'; throw e; },
+      renameSync: () => { throw new Error('rename must not be reached'); },
+      unlinkSync: fs.unlinkSync,
+    };
+    assert.throws(() => writeFileAtomicSync(target, 'new', { fsMod }), /EPERM/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'old', 'the old file stays as it was');
+    assert.equal(fs.existsSync(tmpPath), false, 'and the temp file is cleaned up');
+  });
+
+  test('a file that does not exist yet is created without inventing a mode', () => {
+    const fresh = path.join(dir, 'brand-new.json');
+    let chmodded = false;
+    const fsMod = {
+      statSync: fs.statSync,
+      writeFileSync: (p, c) => fs.writeFileSync(p, c, 'utf8'),
+      chmodSync: () => { chmodded = true; },
+      renameSync: fs.renameSync,
+      unlinkSync: fs.unlinkSync,
+    };
+    writeFileAtomicSync(fresh, 'hello', { fsMod });
+    assert.equal(fs.readFileSync(fresh, 'utf8'), 'hello');
+    assert.equal(chmodded, false, 'nothing to copy from, so nothing is forced');
+  });
+
+  test('on a platform with real modes, a 0600 file stays 0600 across a rewrite', { skip: process.platform === 'win32' }, () => {
+    const secret = path.join(dir, 'config.json');
+    fs.writeFileSync(secret, '{"apiKey":"x"}', 'utf8');
+    fs.chmodSync(secret, 0o600);
+    writeFileAtomicSync(secret, '{"apiKey":"y"}');
+    assert.equal(fs.statSync(secret).mode & 0o777, 0o600);
+  });
+
   test('the temp file is a SIBLING (rename is only atomic within one filesystem)', () => {
     let tmpPath = null;
     const fsMod = {

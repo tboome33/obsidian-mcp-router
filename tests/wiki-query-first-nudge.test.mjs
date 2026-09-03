@@ -17,6 +17,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'wiki-query-first-nudge.mjs');
@@ -330,10 +332,32 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
     workspaceTestState = { codeWorkspace, linkedVault, slug: slugFromPath, configPath };
   });
 
-  test('injects nudge when workspace .env links to a configured vault', () => {
+  /**
+   * Put a CONFIRMED BINDING in the config, and remove any workspace `.env`.
+   *
+   * Since v0.90.0 the binding is what puts a hook in workspace-bound mode; a
+   * project `.env` only ever proposes. Tests that want the mode ON therefore
+   * bind, and the refusal test below is what proves the `.env` cannot.
+   */
+  function bindWorkspace(vault) {
+    const { codeWorkspace, linkedVault, configPath } = workspaceTestState;
+    const envFile = path.join(codeWorkspace, '.env');
+    if (fs.existsSync(envFile)) fs.unlinkSync(envFile);
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: { [linkedVault]: 28100 },
+      workspaceBindings: { [canonicalWorkspaceKey(codeWorkspace)]: { vault } },
+    }));
+  }
+
+  /** Back to no binding, for the tests that assert silence or the host path. */
+  function unbindWorkspace() {
+    const { linkedVault, configPath } = workspaceTestState;
+    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [linkedVault]: 28100 } }));
+  }
+
+  test('injects nudge when a CONFIRMED BINDING links a configured vault', () => {
     const { codeWorkspace, slug, configPath } = workspaceTestState;
-    fs.writeFileSync(path.join(codeWorkspace, '.env'),
-      `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+    bindWorkspace(slug);
 
     const r = runHook({
       prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
@@ -347,10 +371,31 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
     assert.match(ctx, new RegExp(slug.replace(/-/g, '\\-')));
   });
 
-  test('workspace-bound nudge instructs MCP get_file with vault: slug', () => {
+  test('a workspace .env alone is REFUSED — it may not aim this nudge at a vault', () => {
+    // One of the four resolvers swept for the Codex finding of 2026-09-03.
+    // This nudge tells Claude which vault to consult before answering, so a
+    // cloned repository choosing it would steer every substantive answer of
+    // the session at a vault the user never confirmed.
     const { codeWorkspace, slug, configPath } = workspaceTestState;
+    unbindWorkspace();
     fs.writeFileSync(path.join(codeWorkspace, '.env'),
       `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+    try {
+      const r = runHook({
+        prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
+        cwd: codeWorkspace,
+        env: { OBSIDIAN_ROUTER_CONFIG: configPath },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout.trim(), '');
+    } finally {
+      fs.rmSync(path.join(codeWorkspace, '.env'), { force: true });
+    }
+  });
+
+  test('workspace-bound nudge instructs MCP get_file with vault: slug', () => {
+    const { codeWorkspace, slug, configPath } = workspaceTestState;
+    bindWorkspace(slug);
 
     const r = runHook({
       prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',
@@ -365,6 +410,7 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
 
   test('silent when .env links to a slug not in portRegistry', () => {
     const { codeWorkspace, configPath } = workspaceTestState;
+    unbindWorkspace();
     fs.writeFileSync(path.join(codeWorkspace, '.env'),
       `OBSIDIAN_ROUTER_DEFAULT_VAULT="ghost-vault"\n`);
 
@@ -379,6 +425,7 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
 
   test('silent when cwd has no .env AND no env var set', () => {
     const { codeWorkspace, configPath } = workspaceTestState;
+    unbindWorkspace();
     // Make sure no .env exists
     const envFile = path.join(codeWorkspace, '.env');
     if (fs.existsSync(envFile)) fs.unlinkSync(envFile);
@@ -394,6 +441,7 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
 
   test('process.env wins over .env file (dotenv semantics)', () => {
     const { codeWorkspace, linkedVault, configPath } = workspaceTestState;
+    unbindWorkspace();
     // .env points at a non-existent vault; process.env points at the real one
     const realSlug = path.basename(linkedVault).replace(/^\./, '').toLowerCase();
     fs.writeFileSync(path.join(codeWorkspace, '.env'),
@@ -411,8 +459,7 @@ describe('wiki-query-first-nudge — workspace-bound mode (v0.11.6)', () => {
   // v0.12.5 — PATH RESOLUTION RULES block (workspace-bound only)
   test('workspace-bound nudge includes PATH RESOLUTION RULES block with both absolute roots', () => {
     const { codeWorkspace, linkedVault, slug, configPath } = workspaceTestState;
-    fs.writeFileSync(path.join(codeWorkspace, '.env'),
-      `OBSIDIAN_ROUTER_DEFAULT_VAULT="${slug}"\n`);
+    bindWorkspace(slug);
 
     const r = runHook({
       prompt: 'Comment fonctionne le système de plugins de cette plateforme ?',

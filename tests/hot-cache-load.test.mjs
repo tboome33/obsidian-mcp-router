@@ -16,6 +16,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'hot-cache-load.mjs');
@@ -61,6 +63,7 @@ function runHook({
   stdinCwd = null,
   env = {},
   workspaceDotenv = null,
+  binding = null,
 } = {}) {
   if (workspaceDotenv !== null) {
     fs.writeFileSync(path.join(cwd, '.env'), workspaceDotenv);
@@ -69,16 +72,30 @@ function runHook({
     const envFile = path.join(cwd, '.env');
     if (fs.existsSync(envFile)) fs.unlinkSync(envFile);
   }
+  // The config is rewritten per run so a binding can be added or removed.
+  // Since v0.90.0 the binding — not the workspace `.env` — is what puts this
+  // hook in workspace-bound mode.
+  fs.writeFileSync(configPath, JSON.stringify({
+    portRegistry: { [vaultDir]: 27999 },
+    ...(binding ? { workspaceBindings: { [canonicalWorkspaceKey(cwd)]: binding } } : {}),
+  }, null, 2));
   const stdin = JSON.stringify({
     hook_event_name: 'SessionStart',
     cwd: stdinCwd === null ? cwd : stdinCwd,
     session_id: 'test',
   });
+  // The developer's own shell carries OBSIDIAN_ROUTER_* variables, and these
+  // tests now turn on WHERE a value came from — an ambient one would decide
+  // the outcome for a reason unrelated to the code.
+  const clean = { ...process.env };
+  for (const k of Object.keys(clean)) {
+    if (k.startsWith('OBSIDIAN_ROUTER_') || k === 'VAULT_PATH') delete clean[k];
+  }
   return spawnSync(process.execPath, [HOOK_PATH], {
     input: stdin,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...clean,
       OBSIDIAN_ROUTER_CONFIG: configPath,
       ...env,
     },
@@ -126,11 +143,8 @@ describe('hot-cache-load — cwd-is-vault mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
-  test('reads associated vault\'s hot.md when workspace .env links it', () => {
-    const r = runHook({
-      cwd: codeWorkspace,
-      workspaceDotenv: `OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n`,
-    });
+  test('reads the associated vault\'s hot.md when a CONFIRMED BINDING links it', () => {
+    const r = runHook({ cwd: codeWorkspace, binding: { vault: 'my-vault' } });
     assert.equal(r.status, 0, r.stderr);
     // Should contain the hot.md content
     assert.match(r.stdout, /did X/);
@@ -139,21 +153,47 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     assert.match(r.stdout, /my-vault/);
   });
 
-  test('marker mentions both cwd and associated vault path', () => {
+  test('a workspace that IS a vault but is BOUND elsewhere follows the binding — hooks and server agree', () => {
+    // Round 2 of the Codex review: `detectVaultContext` returned
+    // `cwd-is-vault` before reading the binding, so a workspace carrying its
+    // own catalog but explicitly bound to another vault had the server
+    // defaulting to the binding while this hook injected the cwd's hot.md.
+    // Two answers to one question, from one config.
+    const selfVault = path.join(workDir, 'self-vault');
+    fs.mkdirSync(path.join(selfVault, 'wiki-meta'), { recursive: true });
+    fs.writeFileSync(path.join(selfVault, 'wiki-meta', 'catalog.md'), '# Self\n');
+    fs.writeFileSync(path.join(selfVault, 'wiki-meta', 'hot.md'), '## Recent\n\n- SELF CONTENT\n');
+    const r = runHook({ cwd: selfVault, binding: { vault: 'my-vault' } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /did X/, 'the BOUND vault\'s hot.md');
+    assert.doesNotMatch(r.stdout, /SELF CONTENT/, 'not the cwd\'s own');
+    assert.match(r.stdout, /workspace-bound mode/);
+  });
+
+  test('a workspace .env alone is REFUSED — this hook injects a vault\'s notes into the session', () => {
+    // One of the four resolvers swept for the Codex finding of 2026-09-03,
+    // and the one with the widest blast radius: whatever vault this hook
+    // picks has its `hot.md` read straight into Claude's context. A cloned
+    // repository choosing that was the confused-deputy hole the accepted
+    // decision exists to close, and fixing only the resolution cascade would
+    // have left it open while reading as closed.
     const r = runHook({
       cwd: codeWorkspace,
       workspaceDotenv: `OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n`,
     });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '', 'a project file may propose a vault; it may not have its notes injected');
+  });
+
+  test('marker mentions both cwd and associated vault path', () => {
+    const r = runHook({ cwd: codeWorkspace, binding: { vault: 'my-vault' } });
     assert.equal(r.status, 0);
     assert.match(r.stdout, /code-workspace/); // cwd in marker
     assert.match(r.stdout, /my-vault/);       // vault path/slug in marker
   });
 
   test('marker tells Claude to use mcp__obsidian-router__get_file for other vault files', () => {
-    const r = runHook({
-      cwd: codeWorkspace,
-      workspaceDotenv: `OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n`,
-    });
+    const r = runHook({ cwd: codeWorkspace, binding: { vault: 'my-vault' } });
     assert.equal(r.status, 0);
     assert.match(r.stdout, /mcp__obsidian-router__get_file/);
   });

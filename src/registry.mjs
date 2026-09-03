@@ -32,6 +32,7 @@
  * unless overridden in `vaultNames` ({ "<path>": "<name>" }).
  */
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -40,8 +41,20 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
-import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, envKeySourceFile } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
+import {
+  readBinding,
+  classifyBindingHint,
+  authoritativeDefaultVault,
+  authoritativeVaultPath,
+  readMigrationState,
+  migrationDecision,
+  withMigrationState,
+  withBinding,
+  updateConfigBindings,
+  canonicalWorkspaceKey,
+} from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -385,17 +398,66 @@ export async function loadRegistry({ configPath } = {}) {
   // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
   // so a router with no explicit configuration prefers a healthy vault.
   const configuredDefault = config.defaultVault;
-  const resolvedDefault = resolveDefaultVaultWithSource({ vaults, configuredDefault });
+  // Tier 0 of the cascade: what THIS user confirmed, for THIS workspace path,
+  // in their own config. Read once here and carried on the registry so the
+  // eleven readers — seven of them hooks — never learn the storage shape.
+  //
+  // THE ONE-TIME IMPORT RUNS FIRST, so a binding it creates is in force for
+  // THIS session rather than the next one. Everything it decides lives in
+  // `migrationDecision` (pure); this reads the two facts it needs from disk —
+  // the dotenv file's mtime and the migration state — and writes the result
+  // through the single config writer. Best effort in the strict sense: a
+  // config that cannot be written must never stop the router from starting,
+  // so the import is simply not recorded and is retried next time.
+  const bindingImported = importDotenvHintOnce(config, cfgPath, vaults);
+  const workspaceBinding = bindingImported
+    ? { vault: bindingImported.vault, also: [], locked: false, confirmedAt: bindingImported.at, confirmedVia: 'migration' }
+    : readBinding(config, process.cwd());
+  const bindingHint = classifyBindingHint({
+    hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+    binding: workspaceBinding,
+    isRegistered: (name) => vaults.some((v) => v.name === name),
+    // WHERE the proposal came from, from the dotenv loader's own record. The
+    // variable reads the same whether this project's file set it or the MCP
+    // host did, and the session-start briefing names the file the user should
+    // go and edit — so a proposal from the host must not be reported as this
+    // project's .env. The loader is the only thing that knows the difference.
+    origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+  });
+  const resolvedDefault = resolveDefaultVaultWithSource({
+    vaults,
+    configuredDefault,
+    binding: workspaceBinding,
+  });
   const defaultVault = resolvedDefault.name;
 
   return {
     configPath: cfgPath,
     defaultVault,
+    // The config's own `defaultVault`, carried so a caller that has to re-run
+    // the cascade after mutating tier 0 (clearing a binding, in
+    // `confirm_workspace_binding`) can pass it back in rather than reaching
+    // into the config file a second time.
+    configuredDefault,
     // WHICH tier of the cascade answered, and — when it read an environment
     // variable — whether that variable came from the workspace `.env` or from
     // the host. Surfaced by `list_vaults`; see the decision
     // `liaison-workspace-vault-hors-depot`.
     defaultVaultSource: { origin: resolvedDefault.origin, variable: resolvedDefault.variable },
+    // WHAT this workspace is bound to, and what its dotenv file proposed.
+    // Two SEPARATE fields, never folded into `defaultVaultSource`: a hint that
+    // was not applied is not the source of what replaced it — the rule v0.89.0
+    // established one setting over, applied here unchanged.
+    // `workspaceBinding` null means "no binding": every registered vault stays
+    // addressable and the cascade picks the default. That is the third state,
+    // "all vaults" — never "no vault".
+    workspaceBinding,
+    bindingHint,
+    // What the ONE-TIME import created during THIS start-up, or null. The
+    // decision's requirement that the router "name everything it imported":
+    // an import nobody is told about is a decision made on the user's behalf
+    // in silence, which is what this whole lot exists to stop.
+    bindingImported,
     vaults,
     skipped,
     // Port collisions + registry drift found at load time (v0.77.0). Always
@@ -421,6 +483,77 @@ export async function loadRegistry({ configPath } = {}) {
       return v;
     },
   };
+}
+
+/**
+ * Run the ONE-TIME import of this workspace's dotenv hint, and return what it
+ * created — or null when it created nothing.
+ *
+ * The rules are all in `migrationDecision`; this is the I/O around them. It
+ * NEVER throws: the router starting is more important than the import running,
+ * and an import that could not be recorded is retried at the next start rather
+ * than half-applied.
+ *
+ * @param {object} config the parsed config, as read at start-up
+ * @param {string} cfgPath
+ * @param {Array<{name: string}>} vaults the ACTIVE vault set
+ * @returns {{ vault: string, at: string, dotenvFile: string|null }|null}
+ */
+function importDotenvHintOnce(config, cfgPath, vaults) {
+  try {
+    const cwd = process.cwd();
+    const key = canonicalWorkspaceKey(cwd);
+    if (!key) return null;
+    const state = readMigrationState(config);
+
+    // The dotenv file's own mtime — the fact that tells a workspace attached
+    // last year from a repository cloned this morning. Read from the file the
+    // LOADER actually used, never a path composed here.
+    const dotenvFile = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT');
+    let dotenvMtimeMs = null;
+    if (dotenvFile) {
+      try { dotenvMtimeMs = fsSync.statSync(dotenvFile).mtimeMs; } catch { /* gone since it was read */ }
+    }
+
+    const decision = migrationDecision({
+      binding: readBinding(config, cwd),
+      hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+      hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+      isRegistered: (name) => vaults.some((v) => v.name === name),
+      dotenvMtimeMs,
+      openedAt: state.openedAt,
+      alreadyImported: state.imported.has(key),
+    });
+
+    // The window is opened on the FIRST start of this version whatever the
+    // decision was — otherwise every later workspace would look like it
+    // predates an upgrade that had never been recorded.
+    const at = new Date().toISOString();
+    if (!decision.import) {
+      if (!state.openedAt) {
+        try { updateConfigBindings(cfgPath, (cfg) => withMigrationState(cfg, { at })); } catch { /* next time */ }
+      }
+      return null;
+    }
+
+    updateConfigBindings(cfgPath, (cfg) => withMigrationState(
+      withBinding(cfg, cwd, {
+        vault: decision.vault,
+        also: [],
+        locked: false,
+        // NAMED AS AN IMPORT, not as something the user did. Six months later
+        // the human reading this config must be able to tell a confirmation
+        // they gave from one the router inferred from a file.
+        confirmedVia: 'migration',
+      }),
+      { at, cwd, recordImported: true },
+    ));
+    return { vault: decision.vault, at, dotenvFile: dotenvFile || null };
+  } catch {
+    // Every failure mode — unwritable config, a lock held by another process,
+    // a malformed migration block — degrades to "not imported this time".
+    return null;
+  }
 }
 
 /**
@@ -516,12 +649,35 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
  *
  * @returns {{ name: string|undefined, origin: string, variable: string|null }}
  */
-function resolveDefaultVaultWithSource({ vaults, configuredDefault }) {
+function resolveDefaultVaultWithSource({ vaults, configuredDefault, binding = null }) {
   const isActive = (name) => name && vaults.some((v) => v.name === name);
   const fromEnv = (variable) => ({ origin: envKeyOrigin(variable), variable });
 
-  // 1. Explicit per-process override
-  const envOverride = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+  // 0. THE CONFIRMED BINDING — the user's own answer, from the user's own
+  //    config, for this exact workspace path. It outranks the environment
+  //    because it is the only tier that cannot have arrived with a `git clone`:
+  //    the config file that holds it is never synchronised between machines.
+  //    Accepted decision `liaison-workspace-vault-hors-depot`, points 1-2.
+  //
+  //    Checked against the ACTIVE set like every other tier: a binding whose
+  //    vault was since disabled or removed falls through rather than bricking
+  //    the session, the same friendly failure the other tiers already have.
+  if (binding && isActive(binding.vault)) {
+    return { name: binding.vault, origin: 'binding', variable: null };
+  }
+
+  // 1. Explicit per-process override — FROM THE HOST ONLY.
+  //    `authoritativeDefaultVault` is the gate: it returns the value when the
+  //    MCP host, a launcher or a shell set it, and null when the loader
+  //    recorded taking it from this project's own `.env`. A workspace file
+  //    therefore PROPOSES and never decides, which is what the accepted
+  //    decision says and what `bindingHint` has been reporting all along.
+  //
+  //    Until the Codex review of 2026-09-03 this tier applied the variable
+  //    whatever had set it, so `list_vaults` and the session briefing reported
+  //    a hint as "not applied" while it was deciding the default vault. Both
+  //    halves were individually defensible; the lie lived in the gap.
+  const envOverride = authoritativeDefaultVault();
   if (envOverride) {
     if (isActive(envOverride)) return { name: envOverride, ...fromEnv('OBSIDIAN_ROUTER_DEFAULT_VAULT') };
     // Sanitised: this value comes from the workspace .env as often as not, and
@@ -535,8 +691,13 @@ function resolveDefaultVaultWithSource({ vaults, configuredDefault }) {
     );
   }
 
-  // 2. VAULT_PATH auto-detection (matches a portRegistry path → vault name)
-  const cwdVaultPath = process.env.VAULT_PATH;
+  // 2. VAULT_PATH auto-detection (matches a portRegistry path → vault name).
+  //    GATED since round 2 of the Codex review (2026-09-03): from a workspace
+  //    file this is honoured only when it names the workspace itself — the
+  //    "current directory IS a vault" case the spec meant — never another
+  //    registered vault. Otherwise a cloned repository's `.env` chose the
+  //    default through this tier after tier 1 had just refused it.
+  const cwdVaultPath = authoritativeVaultPath(process.cwd());
   if (cwdVaultPath) {
     const target = normalizePathForCompare(cwdVaultPath);
     const matched = vaults.find(

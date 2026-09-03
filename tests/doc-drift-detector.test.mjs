@@ -28,6 +28,9 @@ const {
   listCatalogBasenames,
 } = await import(`file://${HELPER_PATH.replace(/\\/g, '/')}`);
 
+const { canonicalWorkspaceKey } = await import('../src/helpers/workspace-bindings.mjs');
+const { _resetWorkspaceDotenvProvenance } = await import('../src/helpers/workspace-dotenv.mjs');
+
 let workDir;
 let repoDir;
 let vaultDir;
@@ -88,25 +91,59 @@ describe('parseWikiChangelogVersions', () => {
 // ---------------------------------------------------------------------------
 
 describe('orderedVaultCandidates', () => {
-  test('workspace-bound vault (via OBSIDIAN_ROUTER_DEFAULT_VAULT) is first', () => {
+  const CFG_TWO_VAULTS = () => ({
+    portRegistry: {
+      [templateVaultDir]: 27124,
+      [vaultDir]: 27125,
+    },
+    vaultNames: {
+      [templateVaultDir]: 'template',
+      [vaultDir]: 'my-project',
+    },
+  });
+
+  test('the CONFIRMED BINDING puts its vault first', () => {
     const cfg = {
-      portRegistry: {
-        [templateVaultDir]: 27124,
-        [vaultDir]: 27125,
-      },
-      vaultNames: {
-        [templateVaultDir]: 'template',
-        [vaultDir]: 'my-project',
-      },
+      ...CFG_TWO_VAULTS(),
+      workspaceBindings: { [canonicalWorkspaceKey(repoDir)]: { vault: 'my-project' } },
     };
-    // Write workspace .env that binds to my-project
-    fs.writeFileSync(path.join(repoDir, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT=my-project\n');
-    // Clear any conflicting env var
     delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
     const ordered = orderedVaultCandidates(repoDir, cfg);
-    assert.equal(ordered[0], vaultDir, '.env-bound vault should be first');
-    // Template should be last
-    assert.equal(ordered[ordered.length - 1], templateVaultDir);
+    assert.equal(ordered[0], vaultDir, 'the bound vault should be first');
+    assert.equal(ordered[ordered.length - 1], templateVaultDir, 'template last');
+  });
+
+  test('a workspace .env is REFUSED here too — it may propose a vault, not choose one', () => {
+    // One of the four resolvers swept for the Codex finding of 2026-09-03.
+    // This one decides which vault a drift report is written against, so a
+    // cloned repository able to choose it would redirect the report — and
+    // fixing only the resolution cascade would have left this door open while
+    // reading as closed.
+    const cfg = CFG_TWO_VAULTS();
+    cfg.defaultVault = 'template';
+    fs.writeFileSync(path.join(repoDir, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT=my-project\n');
+    delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    _resetWorkspaceDotenvProvenance();
+    try {
+      const ordered = orderedVaultCandidates(repoDir, cfg);
+      assert.equal(process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT, 'my-project', 'the loader did apply it');
+      assert.equal(ordered[0], templateVaultDir, 'the config default answers, not the project file');
+    } finally {
+      delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      fs.rmSync(path.join(repoDir, '.env'), { force: true });
+    }
+  });
+
+  test('the HOST may still choose — the gate is about the source, not the variable', () => {
+    const cfg = CFG_TWO_VAULTS();
+    cfg.defaultVault = 'template';
+    _resetWorkspaceDotenvProvenance();
+    process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'my-project';
+    try {
+      assert.equal(orderedVaultCandidates(repoDir, cfg)[0], vaultDir);
+    } finally {
+      delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    }
   });
 
   test('defaultVault is preferred when no workspace binding', () => {

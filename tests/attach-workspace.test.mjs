@@ -18,6 +18,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 import {
   resolveSlugToVaultPath,
   knownSlugs,
@@ -262,6 +264,28 @@ describe('appendWorkspaceGitignore', () => {
 // CLI — the happy path
 // ---------------------------------------------------------------------------
 
+describe('GUARD — every writer of config.json goes through the lock and the atomic writer', () => {
+  test('saveConfig takes the config lock and writes atomically; no bare writeFileSync targets CONFIG_PATH', () => {
+    // Round 2 of the Codex review, pass A's first BLOCKER: `saveConfig` was a
+    // bare `writeFileSync` of the whole file. `updateConfigBindings` took a
+    // lock and called itself "the one writer" — but a lock only one of two
+    // writers takes is not a lock: setup reads config A, a session confirms
+    // binding B under the lock, setup saves stale A, B is gone. The same
+    // ordering loses an API-key edit. Pinned on the source, because the race
+    // itself cannot be reproduced deterministically in a test.
+    const src = fs.readFileSync(SCRIPT_PATH, 'utf8');
+    const body = src.slice(src.indexOf('function saveConfig('), src.indexOf('function backupConfigFile('));
+    assert.ok(body.length > 0, 'saveConfig found');
+    assert.match(body, /acquireLock\(lockPathFor\(CONFIG_PATH, 'config'\)\)/, 'the SAME lock family as the binding writer');
+    assert.match(body, /writeFileAtomicSync\(CONFIG_PATH,/, 'atomic, so a crash never leaves half a config');
+    assert.doesNotMatch(body, /fs\.writeFileSync/, 'no bare write of the config');
+    assert.match(body, /finally \{\s*\n\s*release\(\);/, 'released on every exit path');
+    // And nothing ELSE in the script writes CONFIG_PATH directly.
+    const direct = [...src.matchAll(/fs\.writeFileSync\(\s*CONFIG_PATH\b/g)];
+    assert.equal(direct.length, 0, 'every config write goes through saveConfig');
+  });
+});
+
 describe('--attach (CLI)', () => {
   test('does all four workspace writes from the cwd', () => {
     const sc = makeScenario();
@@ -275,6 +299,64 @@ describe('--attach (CLI)', () => {
     assert.match(f.claudeMd, /vault: "other"/);
     assert.match(f.gitignore, /^\.env$/m);
     assert.match(f.gitignore, /^\.mcp\.json$/m);
+  });
+
+  test('AND writes the binding into the user\'s own config — the write that actually decides', () => {
+    // Everything asserted above lands in the WORKSPACE, and since v0.90.0 none
+    // of it decides anything: the `.env` line is a portable hint, the
+    // CLAUDE.md block is prose for Claude. The write that makes `--attach` one
+    // of the two confirmation channels is this one, into the user's config —
+    // and until the Codex review of 2026-09-03 no test looked at it, so
+    // deleting the call would have left the whole suite green while one of the
+    // two advertised channels quietly stopped working.
+    const sc = makeScenario();
+    const res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.equal(res.status, 0, res.out);
+
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    const entry = cfg.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)];
+    assert.ok(entry, `no binding under ${canonicalWorkspaceKey(sc.ws)} in ${JSON.stringify(cfg.workspaceBindings)}`);
+    assert.equal(entry.vault, 'myvault');
+    // The secondaries reach the router HERE and nowhere else: the `.env`
+    // carries only the primary, and the CLAUDE.md block is not read by code.
+    assert.deepEqual(entry.also, ['other']);
+    assert.equal(entry.confirmedVia, 'attach', 'the human who reopens this config six months later');
+    assert.match(entry.confirmedAt, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test('stores the REGISTERED spelling of the slug, not the user\'s', () => {
+    // Round 2 of the Codex review: resolution is case-insensitive, the
+    // registry's binding match is exact. `--attach NoTeS` resolved `notes`,
+    // stored `NoTeS`, and produced a binding the server rejected by name — the
+    // cascade fell through to the host default while the config said bound.
+    const sc = makeScenario();
+    const res = run(sc, ['--attach', 'MyVaUlT', '--also', 'OTHER']);
+    assert.equal(res.status, 0, res.out);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(sc.ws)];
+    assert.equal(entry.vault, 'myvault');
+    assert.deepEqual(entry.also, ['other']);
+    // And the workspace hint carries the same spelling, so the two agree.
+    assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/);
+  });
+
+  test('re-attaching to the SAME primary keeps its lock; attaching elsewhere drops it', () => {
+    // Round 2, the same rewrite-drops-the-lock shape as the confirmation tool.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: [], locked: true, confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    let res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.equal(res.status, 0, res.out);
+    let entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.locked, true, 'same primary: the lock survives adding a secondary');
+
+    res = run(sc, ['--attach', 'other']);
+    assert.equal(res.status, 0, res.out);
+    entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'other');
+    assert.equal(entry.locked, false, 'a different primary: the old lock belonged to the old vault');
   });
 
   test('tells the user the secondary is not auto-loaded', () => {

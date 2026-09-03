@@ -757,7 +757,14 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
     { file: 'scripts/export-gate.mjs', commands: ['git'], why: 'release tooling in the developer shell: `git ls-tree`' },
     { file: 'scripts/install-docling.mjs', commands: ['cmd'], why: 'interactive installer in the user shell: pip mirrors, proxies and CA bundles are open-ended configuration, and the parent IS the shell' },
     { file: 'scripts/install-markitdown.mjs', commands: ['cmd'], why: 'interactive installer in the user shell (same reasoning as install-docling.mjs)' },
-    { file: 'scripts/setup-vault.mjs', commands: ['cmd', 'open', 'xdg-open'], why: 'launching the user desktop app through the OS protocol handler (cmd start / open / xdg-open) — it must see the user session' },
+    // v0.90.0 — the three desktop openers MOVED, they did not multiply. They
+    // were inlined in `scripts/setup-vault.mjs`; the binding lot needs the same
+    // launcher from the SERVER (binding a vault whose Obsidian is closed has to
+    // be able to open it), so they now live in ONE helper that both callers
+    // import. Still three commands, still one file — the count is the whole
+    // point of this table, and a copy in a second file would show up here as a
+    // fourth entry rather than hiding.
+    { file: 'src/helpers/obsidian-launcher.mjs', commands: ['cmd', 'open', 'xdg-open'], why: 'launching the user desktop app through the OS protocol handler (cmd start / open / xdg-open) — it must see the user session; the ONE launcher, shared by setup-vault and the MCP server' },
   ];
 
   const SCAN_DIRS = ['src', 'scripts', 'hooks', 'bin'];

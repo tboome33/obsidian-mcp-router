@@ -346,7 +346,16 @@ describe('plugin manifests', () => {
         }
       }
     }
-    assert.deepEqual([...shipped].sort(), ['decisions-recall.mjs', 'hot-cache-load.mjs']);
+    // workspace-briefing joined the set in the `registre de liaisons` lot. It
+    // meets all four rules — it reads a config and an environment, writes
+    // nothing (not even a fingerprint), pings no vault, and prints nothing on
+    // a machine with no registered vault — and it has to be here rather than
+    // opt-in: the one-time import of existing .env hints is only defensible
+    // because a binding imported wrongly announces itself every session.
+    assert.deepEqual(
+      [...shipped].sort(),
+      ['decisions-recall.mjs', 'hot-cache-load.mjs', 'workspace-briefing.mjs'],
+    );
 
     const FORBIDDEN = [
       'wiki-autocommit.mjs',        // writes to the user's git history
@@ -363,11 +372,48 @@ describe('plugin manifests', () => {
     }
   });
 
+  test('each plugin hook is wired to the EVENTS it is for, not merely present somewhere', () => {
+    // Found by mutation: the test above unions every event before comparing,
+    // so a hook declared only under PostCompact still looked correctly
+    // shipped. For a hook whose whole purpose is "at the start of a session"
+    // that is the one failure that matters, and nothing was red. Pin the
+    // event map, so moving a hook between events has to be a decision.
+    const manifest = readJson('hooks/hooks.json');
+    const byEvent = {};
+    for (const [event, blocks] of Object.entries(manifest.hooks)) {
+      // AS A LIST, NOT A SET. Round 2 of the Codex review: the first version
+      // deduplicated through a Set, so a hook declared twice under one event
+      // — running twice per session — collapsed to one entry and passed.
+      // And every entry must be a `command` hook: that is the only type this
+      // manifest is allowed to carry.
+      const files = [];
+      for (const b of blocks) {
+        for (const h of b.hooks) {
+          assert.equal(h.type, 'command', `${event}: every plugin hook is a command hook`);
+          files.push(h.command.match(/([a-z0-9-]+\.mjs)/)[1]);
+        }
+      }
+      byEvent[event] = files.sort();
+    }
+    assert.deepEqual(byEvent, {
+      // hot.md and the briefing are both context a session needs from its
+      // first turn, and both are lost to a compaction — hence both events.
+      SessionStart: ['hot-cache-load.mjs', 'workspace-briefing.mjs'],
+      PostCompact: ['hot-cache-load.mjs', 'workspace-briefing.mjs'],
+      UserPromptSubmit: ['decisions-recall.mjs'],
+    });
+    for (const block of manifest.hooks.SessionStart) {
+      assert.equal(block.matcher, 'startup|resume|clear',
+        'a SessionStart hook that skips `clear` goes missing exactly when the context was wiped');
+    }
+  });
+
   test('every plugin-shipped hook has an env opt-out', () => {
     const manifest = readJson('hooks/hooks.json');
     const OPT_OUTS = {
       'hot-cache-load.mjs': 'OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD',
       'decisions-recall.mjs': 'OBSIDIAN_ROUTER_NO_DECISIONS_RECALL',
+      'workspace-briefing.mjs': 'OBSIDIAN_ROUTER_NO_BINDING_BRIEFING',
     };
     for (const event of Object.keys(manifest.hooks)) {
       for (const block of manifest.hooks[event]) {
@@ -500,7 +546,10 @@ describe('hook wiring — migration to a plugin-provided server', () => {
   });
 
   test('pluginProvidedHookBasenames reads the real manifest', () => {
-    assert.deepEqual(pluginProvidedHookBasenames().sort(), ['decisions-recall.mjs', 'hot-cache-load.mjs']);
+    assert.deepEqual(
+      pluginProvidedHookBasenames().sort(),
+      ['decisions-recall.mjs', 'hot-cache-load.mjs', 'workspace-briefing.mjs'],
+    );
   });
 
   test('plugin detection is conservative when the registry is unreadable', () => {
@@ -556,8 +605,9 @@ describe('hook wiring — migration to a plugin-provided server', () => {
       }));
 
       assert.equal(isRouterPluginInstalled({ homedir: dir }), true, 'the plugin IS installed');
-      assert.deepEqual(pluginProvidedHookBasenames().sort(), ['decisions-recall.mjs', 'hot-cache-load.mjs'],
-        'this checkout does declare both hooks');
+      assert.deepEqual(pluginProvidedHookBasenames().sort(),
+        ['decisions-recall.mjs', 'hot-cache-load.mjs', 'workspace-briefing.mjs'],
+        'this checkout does declare all three hooks');
       assert.deepEqual(activePluginProvidedHooks({ homedir: dir }), [],
         'but the INSTALLED plugin declares none, so nothing may be skipped');
 
@@ -566,7 +616,8 @@ describe('hook wiring — migration to a plugin-provided server', () => {
         path.join(REPO_ROOT, 'hooks', 'hooks.json'),
         path.join(installPath, 'hooks', 'hooks.json'),
       );
-      assert.deepEqual(activePluginProvidedHooks({ homedir: dir }).sort(), ['decisions-recall.mjs', 'hot-cache-load.mjs']);
+      assert.deepEqual(activePluginProvidedHooks({ homedir: dir }).sort(),
+        ['decisions-recall.mjs', 'hot-cache-load.mjs', 'workspace-briefing.mjs']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

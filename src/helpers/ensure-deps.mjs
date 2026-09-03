@@ -56,6 +56,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { subprocessOptions } from './subprocess-env.mjs';
+import { acquireLock as acquireFileLock } from './file-lock.mjs';
 
 /**
  * The specifiers to probe. These are the exact bare specifiers the startup
@@ -116,38 +117,27 @@ function lockPathFor(packageRoot) {
 }
 
 /**
- * Exclusive lock via `mkdir` (atomic on every platform we target).
- * Returns a release function, or null if the lock could not be taken
- * within `waitMs` — in which case the caller re-probes, because the holder
- * has very likely just finished installing on our behalf.
+ * Exclusive lock via `mkdir`, RE-EXPORTED from `./file-lock.mjs`.
+ *
+ * The implementation moved there when the config writer turned out to need the
+ * same thing (Codex review, 2026-09-03): two writers of the router's own
+ * config can lose each other's updates, and an atomic rename does not prevent
+ * that. One definition, two callers — a copy would have drifted the first time
+ * one of them fixed a staleness bug.
+ *
+ * The signature is unchanged, and so is the meaning of a null return: the
+ * caller re-probes, because the holder has very likely just finished
+ * installing on its behalf. The generous timeouts stay HERE rather than in the
+ * shared module: waiting three minutes is right for an npm install and wrong
+ * for a config write, so each caller names its own.
  */
-export function acquireLock(lockPath, { waitMs = LOCK_WAIT_MS, pollMs = LOCK_POLL_MS, now = Date.now, sleep = defaultSleep } = {}) {
-  const deadline = now() + waitMs;
-  for (;;) {
-    try {
-      fs.mkdirSync(lockPath);
-      return () => { try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ } };
-    } catch (err) {
-      if (err.code !== 'EEXIST') return null;
-      // Reap a lock orphaned by a killed process.
-      try {
-        const age = now() - fs.statSync(lockPath).mtimeMs;
-        if (age > LOCK_STALE_MS) {
-          fs.rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch { /* raced with the holder releasing it — just retry */ }
-      if (now() >= deadline) return null;
-      sleep(pollMs);
-    }
-  }
-}
-
-function defaultSleep(ms) {
-  // Synchronous sleep: this runs before the server exists, so there is no
-  // event loop work to yield to, and Atomics.wait needs no dependency.
-  const shared = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(shared, 0, 0, ms);
+export function acquireLock(lockPath, opts = {}) {
+  return acquireFileLock(lockPath, {
+    waitMs: LOCK_WAIT_MS,
+    pollMs: LOCK_POLL_MS,
+    staleMs: LOCK_STALE_MS,
+    ...opts,
+  });
 }
 
 /** The npm argv. Pinned here so a test can assert the guards are present. */

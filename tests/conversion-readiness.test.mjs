@@ -995,6 +995,14 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       // v0.88.0 — WHERE each of the three session settings came from. Added
       // here deliberately, which is the whole point of pinning the set.
       'autoEnrichModeSource',
+      // v0.90.0 — WHICH vaults this workspace is bound to, and what its dotenv
+      // file proposed. Two separate fields, added here deliberately, which is
+      // the whole point of pinning the set.
+      'bindingHint',
+      // v0.90.0 — what the ONE-TIME import created at this start-up, or null.
+      // The decision's "the router names everything it imported": an automatic
+      // decision nobody is told about is the thing this lot exists to stop.
+      'bindingImported',
       'configPath',
       'conversionToolbox',
       'defaultVault',
@@ -1005,7 +1013,61 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'lockedTo',
       'portCollisions',
       'vaults',
+      'workspaceBinding',
     ]);
+  });
+
+  test('the two binding fields carry their VALUES across the boundary, rebuilt and validated', async () => {
+    // Set equality above proves the field NAMES. It says nothing about what
+    // is in them, and the only other assertion added for these two checked
+    // that the keys exist — so swapping their values, passing a registry
+    // object straight through, or dropping the origin constraint all stayed
+    // green. Codex flagged it on 2026-09-03: the helper-level tests never
+    // crossed the public boundary, and the boundary is where the contract is.
+    const bound = {
+      ...registry,
+      workspaceBinding: {
+        vault: 'alpha', also: ['beta'], locked: true,
+        confirmedAt: '2026-09-03', confirmedVia: 'tool',
+        // A field the contract does not name. It must NOT cross.
+        smuggled: 'nope',
+      },
+      bindingHint: {
+        status: 'unconfirmed', hint: 'beta', boundTo: 'alpha',
+        origin: 'workspace-dotenv', smuggled: 'nope',
+      },
+    };
+    const out = await listVaults(bound);
+
+    assert.deepEqual(out.workspaceBinding, {
+      vault: 'alpha', also: ['beta'], locked: true,
+      confirmedAt: '2026-09-03', confirmedVia: 'tool',
+    }, 'the binding is REBUILT: the values cross, the extra field does not');
+    assert.deepEqual(out.bindingHint, {
+      status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',
+    }, 'the hint too, origin included');
+  });
+
+  test('the boundary refuses what it cannot vouch for, rather than passing it half-true', async () => {
+    const bad = await listVaults({
+      ...registry,
+      // A status this build does not know: a caller would branch on it wrongly.
+      bindingHint: { status: 'probably', hint: 'beta', boundTo: null, origin: 'host' },
+      // Not a binding at all.
+      workspaceBinding: { also: ['beta'] },
+    });
+    assert.equal(bad.bindingHint, null);
+    assert.equal(bad.workspaceBinding, null);
+
+    // An origin that is real in SETTING_ORIGINS but impossible for a
+    // proposal — only an environment VARIABLE can carry one — is dropped
+    // rather than reported. Removing that constraint must not stay green.
+    const wrongOrigin = await listVaults({
+      ...registry,
+      bindingHint: { status: 'unconfirmed', hint: 'beta', boundTo: null, origin: 'config' },
+    });
+    assert.equal(wrongOrigin.bindingHint.origin, null, '"config" cannot propose a vault');
+    assert.equal(wrongOrigin.bindingHint.status, 'unconfirmed', 'the rest of the hint survives');
   });
 });
 

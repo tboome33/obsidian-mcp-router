@@ -634,6 +634,13 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     'move_file', 'patch_file', 'record_source', 'refresh_okf_projections',
     'search_smart', 'set_auto_enrich_mode', 'set_frontmatter', 'unlock_vaults',
     'wiki_path', 'write_bundle',
+    // v0.90.0 — writes the USER'S OWN CONFIG, not a vault, so this bench (which
+    // proves no tool touches vault disk) has nothing to catch here. It sits
+    // beside `lock_vault` and `set_auto_enrich_mode` for the same reason: they
+    // are session and configuration routing. Its own behaviour is covered by
+    // tests/workspace-binding-tool.test.mjs, which drives it through injected
+    // read/write/launch seams and never touches a real config or a real disk.
+    'confirm_workspace_binding',
   ]);
 
   /** What the harness ACTUALLY ran — read from the run, never re-declared. */

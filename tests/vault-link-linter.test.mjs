@@ -362,10 +362,15 @@ describe('vault-link-linter — block cases', () => {
     }
   });
 
-  test('REGRESSION (codex P2 pass 3): loads workspace .env so VAULT_PATH set there wins', () => {
-    // The hook runs as a separate subprocess and doesn't inherit the
-    // workspace .env. It must read it itself, otherwise multi-vault
-    // sessions with VAULT_PATH only in .env will bias to the wrong vault.
+  test('VAULT_PATH in a workspace .env that points at ANOTHER vault is REFUSED — v0.90.0 gate', () => {
+    // Until round 2 of the Codex review (2026-09-03) this test asserted the
+    // opposite: "loads workspace .env so VAULT_PATH set there wins". That was
+    // the `.env` of a project directory redirecting the linter to whichever
+    // registered vault it named — the same confused-deputy hole the
+    // OBSIDIAN_ROUTER_DEFAULT_VAULT gate had closed, reopened one variable
+    // over. From a workspace file, VAULT_PATH is now honoured ONLY when it
+    // names the workspace itself (the next test); pointing elsewhere is a
+    // proposal, and proposals do not choose.
     const otherVault = path.join(workDir, 'other-vault-dotenv');
     fs.mkdirSync(path.join(otherVault, 'wiki'), { recursive: true });
     fs.writeFileSync(path.join(otherVault, 'wiki', 'log.md'), '# other log');
@@ -418,12 +423,68 @@ describe('vault-link-linter — block cases', () => {
         },
       );
       assert.equal(r.status, 2);
-      assert.match(r.stderr, /127\.0\.0\.1:27145/);
-      assert.doesNotMatch(r.stderr, /127\.0\.0\.1:27142/);
+      // The project's .env pointed at otherVault (27145). Refused: the linter
+      // resolves through the remaining tiers and lands on the first vault.
+      assert.doesNotMatch(r.stderr, /127\.0\.0\.1:27145/, 'a project .env may not redirect the linter');
+      assert.match(r.stderr, /127\.0\.0\.1:27142/);
     } finally {
       fs.rmSync(otherVault, { recursive: true, force: true });
       fs.rmSync(multiConfigPath, { force: true });
       fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  test('VAULT_PATH in a vault\'s OWN .env, naming that vault, still wins — the legitimate case', () => {
+    // What `setup-vault.mjs` writes into each bootstrapped vault: the file
+    // states a fact about its own location. The gate lets exactly this
+    // through, so a session opened INSIDE a vault keeps working as before.
+    const otherVault = path.join(workDir, 'other-vault-self');
+    fs.mkdirSync(path.join(otherVault, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(otherVault, 'wiki', 'log.md'), '# other log');
+    fs.mkdirSync(
+      path.join(otherVault, '.obsidian', 'plugins', 'obsidian-local-rest-api'),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(otherVault, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+      JSON.stringify({ port: 27136, insecurePort: 27146, enableInsecureServer: true }),
+    );
+    // The vault's OWN .env, as setup-vault writes it.
+    fs.writeFileSync(path.join(otherVault, '.env'), `VAULT_PATH=${otherVault}\n`);
+
+    const multiConfigPath = path.join(workDir, 'multi-self-config.json');
+    fs.writeFileSync(multiConfigPath, JSON.stringify({
+      portRegistry: { [vaultPath]: 27132, [otherVault]: 27136 },
+      portStart: 27132,
+    }, null, 2));
+
+    try {
+      const entry = {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'See [log](wiki/log.md).' }] },
+      };
+      fs.writeFileSync(transcriptPath, JSON.stringify(entry) + '\n');
+      const baseEnv = { ...process.env };
+      delete baseEnv.VAULT_PATH;
+      const r = spawnSync(
+        process.execPath,
+        [HOOK_PATH],
+        {
+          input: JSON.stringify({ hook_event_name: 'Stop', transcript_path: transcriptPath }),
+          encoding: 'utf8',
+          env: {
+            ...baseEnv,
+            OBSIDIAN_ROUTER_CONFIG: multiConfigPath,
+            CLAUDE_PROJECT_DIR: otherVault,
+          },
+        },
+      );
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /127\.0\.0\.1:27146/, 'the vault named ITSELF, and is honoured');
+      assert.doesNotMatch(r.stderr, /127\.0\.0\.1:27142/);
+    } finally {
+      fs.rmSync(otherVault, { recursive: true, force: true });
+      fs.rmSync(multiConfigPath, { force: true });
     }
   });
 

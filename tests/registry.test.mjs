@@ -21,6 +21,7 @@ import { lockVault, unlockVaults, _internals as lockInternals } from '../src/too
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
 import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/index.mjs';
 import { buildDefaultVaultStatus } from '../src/tools/list-vaults.mjs';
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath, pathBasename } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
@@ -795,15 +796,50 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     );
   });
 
-  test('lockVault with persist:true writes OBSIDIAN_ROUTER_LOCKED to .env', async () => {
+  test('lockVault with persist:true writes the .env HINT, and says the lock does not survive without a config', async () => {
+    // `persisted` means "will survive a restart", and since v0.90.0 only the
+    // BINDING in the user's own config does that: a lock named by a project
+    // `.env` is refused at start-up like any other setting a cloned file
+    // proposes. This registry has no `configPath`, so the binding cannot be
+    // written — and the honest answer is that the lock is not persisted, even
+    // though the dotenv line was written.
+    //
+    // Before this, the tool returned `persisted: true` here and a message
+    // promising the lock survived a restart. Codex flagged the mismatch on
+    // 2026-09-03; closing the gate the same day turned it from misleading
+    // into false.
     const reg = makeRegistry();
     const envPath = path.join(tmpDir, '.env');
     await fs.rm(envPath, { force: true });
 
     const result = await lockVault(reg, { vault: 'alpha', persist: true });
-    assert.equal(result.persisted, true);
+    assert.equal(result.hintWritten, true, 'the portable hint IS written');
+    assert.equal(result.persisted, false, 'but nothing persists it');
+    assert.equal(result.bindingRecorded, null);
+    assert.match(result.message, /does NOT survive a restart/);
     const envContent = await fs.readFile(envPath, 'utf8');
     assert.match(envContent, /^OBSIDIAN_ROUTER_LOCKED=alpha$/m);
+  });
+
+  test('lockVault with persist:true and a writable config DOES persist, through the binding', async () => {
+    const reg = makeRegistry();
+    const configPath = path.join(tmpDir, 'lock-config.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    reg.configPath = configPath;
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+
+    const result = await lockVault(reg, { vault: 'alpha', persist: true });
+    assert.equal(result.persisted, true);
+    assert.equal(result.hintWritten, true, 'the hint travels; the binding persists');
+    assert.equal(result.bindingRecorded?.vault, 'alpha');
+    assert.equal(result.bindingRecorded?.locked, true);
+    assert.match(result.message, /survives a restart/);
+
+    // And it is really on disk, under this workspace's canonical key.
+    const written = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    const entry = written.workspaceBindings?.[canonicalWorkspaceKey(process.cwd())];
+    assert.equal(entry?.vault, 'alpha');
+    assert.equal(entry?.locked, true);
   });
 
   test('unlockVaults clears lockedVault', async () => {
@@ -836,6 +872,35 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     // Other lines preserved
     assert.match(envContent, /KEEP_ME=hello/);
     assert.match(envContent, /ALSO_KEEP=world/);
+  });
+
+  test('unlockVaults with persist:true lifts the lock IN THE CONFIG but keeps the binding', async () => {
+    // The public half of the lock↔binding wiring. Every other test of that
+    // wiring calls the private `recordLockInBinding` directly, so removing the
+    // call sites in src/tools/lock.mjs would leave them all green while
+    // `unlock_vaults --persist` silently stopped lifting anything — and, since
+    // v0.90.0, the binding is the ONLY thing a restart reads a lock from, so
+    // the user would be re-locked at every start with no line to delete.
+    // Codex flagged the gap on 2026-09-03.
+    const configPath = path.join(tmpDir, 'unlock-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.writeFile(path.join(tmpDir, '.env'), 'OBSIDIAN_ROUTER_LOCKED=alpha\n', 'utf8');
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    reg.lockedVault = 'alpha';
+    const result = await unlockVaults(reg, { persist: true });
+
+    assert.equal(result.bindingLifted, true);
+    const after = JSON.parse(await fs.readFile(configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(after.locked, false, 'the lock is lifted');
+    assert.equal(after.vault, 'alpha', 'the workspace still goes with its vault');
+    assert.deepEqual(after.also, ['beta'], 'and keeps its secondaries');
+    assert.equal(after.confirmedVia, 'tool', 'the original provenance is not rewritten');
   });
 });
 

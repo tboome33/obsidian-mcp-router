@@ -29,6 +29,7 @@ import path from 'node:path';
 
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { applyWorkspaceDotenv } from '../../src/helpers/workspace-dotenv.mjs';
+import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -128,6 +129,60 @@ export function resolveVaultBySlug(cfg, slug) {
   return null;
 }
 
+/**
+ * The vault names this machine has registered, as far as a HOOK can know.
+ *
+ * Built from the two sources that live in the config file — `portRegistry`
+ * (local vaults) and `remoteVaults` — minus whatever `disabledVaults` hides,
+ * which it may name either by vault name or by registry path (the registry
+ * accepts both, and so does this).
+ *
+ * DELIBERATELY SHORT OF THE REGISTRY, and the caller must treat it that way.
+ * `src/registry.mjs` has a third source, `VAULT_*` environment entries, and a
+ * whitelist (`OBSIDIAN_ROUTER_ALLOWED_VAULTS`) that can narrow the result.
+ * Both belong to the served/multi-tenant deployment, which the accepted
+ * decision puts out of this lot's scope, and both are parsed by code that
+ * pulls in the router's dependencies — which a hook may not do (hooks run on
+ * checkouts that have never seen `npm install`). So this answers "does this
+ * machine have vaults, and is this name one of them?" and must never be used
+ * to publish a count: a census that is quietly short still reads as
+ * authoritative. `list_vaults` is the authority.
+ *
+ * @param {object|null} cfg the parsed router config
+ * @returns {Set<string>} vault names, lowercased for comparison
+ */
+export function registeredVaultNames(cfg) {
+  const out = new Set();
+  if (!cfg || typeof cfg !== 'object') return out;
+  const disabled = new Set(
+    (Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []).map((d) => String(d).toLowerCase()),
+  );
+  // A REGISTRY IS ONLY A REGISTRY WHEN IT IS A PLAIN OBJECT. `Object.keys` on
+  // a string yields its character indexes and on an array its element
+  // indexes, so `portRegistry: "x"` or `[27123]` manufactured a vault called
+  // "0" and the briefing spoke about it. Codex round 2, 2026-09-03.
+  const isPlain = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  const vaultNames = isPlain(cfg.vaultNames) ? cfg.vaultNames : {};
+  for (const vp of Object.keys(isPlain(cfg.portRegistry) ? cfg.portRegistry : {})) {
+    // A NAME IS ONLY A NAME WHEN IT IS A STRING. A hand-edited config can
+    // hold `vaultNames: {"C:/Vault": 123}` — parseable JSON, wrong type — and
+    // the first version called `.toLowerCase()` on the number. The exception
+    // escaped the hook, which exited 1 instead of the 0 it promises: a
+    // briefing that crashes on a typo in someone's config is worse than no
+    // briefing. Found by the Codex review, 2026-09-03.
+    const named = typeof vaultNames[vp] === 'string' ? vaultNames[vp] : null;
+    const name = (named || defaultNameFromPath(vp)).toLowerCase();
+    if (!name || disabled.has(name) || disabled.has(String(vp).toLowerCase())) continue;
+    out.add(name);
+  }
+  for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
+    const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
+    if (!name || disabled.has(name)) continue;
+    out.add(name);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Dual-mode vault context detection (cwd-is-vault OR workspace-bound)
 // ---------------------------------------------------------------------------
@@ -171,8 +226,19 @@ export function resolveVaultBySlug(cfg, slug) {
  * it from this field.
  */
 export function detectVaultContext(cwd, cfg) {
-  // Mode 1: cwd is the vault itself
-  const local = resolveScaffold(cwd, 'catalog', { fs, path });
+  // THE CONFIRMED BINDING IS CONSULTED BEFORE ANYTHING ELSE — even before
+  // asking whether the cwd is itself a vault. Round 2 of the Codex review
+  // (2026-09-03): the first version returned `cwd-is-vault` first, so a
+  // workspace that carries its own catalog but is explicitly bound to another
+  // vault had the SERVER defaulting to the binding while every hook — hot
+  // cache, decision recall, journaling, autocommit — acted on the cwd. Two
+  // answers to "which vault is this session's", from one config. The binding
+  // is the user's explicit act and outranks an inference from the directory
+  // layout, in the hooks exactly as in the cascade's tier 0.
+  const binding = cfg ? readBinding(cfg, cwd) : null;
+
+  // Mode 1: cwd is the vault itself — unless a binding says otherwise.
+  const local = binding ? null : resolveScaffold(cwd, 'catalog', { fs, path });
   if (local) {
     return {
       mode: 'cwd-is-vault',
@@ -181,9 +247,28 @@ export function detectVaultContext(cwd, cfg) {
       legacyScaffold: local.legacy ? local.relPath : null,
     };
   }
-  // Mode 2: workspace-bound via env var
-  const slug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim();
-  if (!slug || !cfg) return null;
+  if (!cfg) return null;
+
+  // Mode 2: workspace-bound.
+  //
+  // TWO SOURCES, IN THIS ORDER, and the order is the accepted decision
+  // `liaison-workspace-vault-hors-depot` rather than a preference:
+  //
+  //   (a) the CONFIRMED BINDING in the user's own config, for this exact
+  //       workspace path. The only source that cannot have arrived with a
+  //       `git clone`.
+  //   (b) `OBSIDIAN_ROUTER_DEFAULT_VAULT` **only when it may decide** —
+  //       `authoritativeDefaultVault` returns null for a value the loader
+  //       recorded taking from this project's own `.env`.
+  //
+  // Before the Codex review of 2026-09-03 this function read the variable
+  // directly, whatever had set it. That made every workspace-bound hook —
+  // hot-cache injection, decision recall, session journaling, autocommit —
+  // redirectable by a cloned repository's `.env`, INDEPENDENTLY of the
+  // resolution cascade. Fixing only the cascade would have read as closed
+  // while three of the four doors stayed open.
+  const slug = binding?.vault || authoritativeDefaultVault();
+  if (!slug) return null;
   const vp = resolveVaultBySlug(cfg, slug);
   if (!vp) return null;
   const bound = resolveScaffold(vp, 'catalog', { fs, path });
@@ -192,6 +277,7 @@ export function detectVaultContext(cwd, cfg) {
     mode: 'workspace-bound',
     vaultPath: vp,
     slug,
+    boundBy: binding ? 'binding' : 'host',
     legacyScaffold: bound.legacy ? bound.relPath : null,
   };
 }

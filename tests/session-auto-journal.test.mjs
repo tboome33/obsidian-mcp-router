@@ -20,6 +20,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'session-auto-journal.mjs');
@@ -90,9 +92,23 @@ function runHook({
   reason = 'logout',
   env = {},
   workspaceDotenv = null,
+  binding = null,
 } = {}) {
   if (workspaceDotenv !== null) {
     fs.writeFileSync(path.join(cwd, '.env'), workspaceDotenv);
+  }
+  // Since v0.90.0 a CONFIRMED BINDING is what associates a workspace with a
+  // vault; a project `.env` only proposes. Rewritten per run so a test can
+  // have the binding, or deliberately not have it.
+  // `binding: false` rewrites the config with NO bindings at all — the state a
+  // refusal test needs, and not the same thing as `null` (leave the config
+  // alone), which is what every pre-existing caller relies on.
+  if (binding !== null) {
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: { [vaultDir]: 27999 },
+      vaultNames: { [vaultDir]: 'my-vault' },
+      ...(binding ? { workspaceBindings: { [canonicalWorkspaceKey(cwd)]: binding } } : {}),
+    }, null, 2));
   }
   const payload = {
     hook_event_name: event,
@@ -272,12 +288,12 @@ describe('session-auto-journal — cwd-is-vault mode', () => {
 // ---------------------------------------------------------------------------
 
 describe('session-auto-journal — workspace-bound mode', () => {
-  test('SessionStart creates journal in the linked vault (not in cwd)', () => {
+  test('SessionStart creates the journal in the BOUND vault (not in cwd)', () => {
     const r = runHook({
       event: 'SessionStart',
       cwd: codeWorkspace,
       sessionId: 'ws-session',
-      workspaceDotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n',
+      binding: { vault: 'my-vault' },
     });
     assert.equal(r.status, 0, r.stderr);
     const content = readJournal();
@@ -285,6 +301,33 @@ describe('session-auto-journal — workspace-bound mode', () => {
     assert.match(content, /workspace: code-workspace/);
     // The journal should NOT be in the code workspace
     assert.equal(fs.existsSync(path.join(codeWorkspace, 'wiki-meta', 'Sessions')), false);
+  });
+
+  test('a workspace .env alone is REFUSED — it may not choose where a transcript is written', () => {
+    // One of the four resolvers swept for the Codex finding of 2026-09-03,
+    // and the one that WRITES: this hook copies the session's prompts and tool
+    // calls into the vault it picks. A cloned repository choosing that vault
+    // would decide where a user's own conversation gets recorded.
+    //
+    // COMPARE THE WHOLE DIRECTORY, BEFORE AND AFTER. The first version of
+    // this assertion filtered the listing for a filename built from the
+    // session id — and the hook strips non-alphanumerics when it builds that
+    // name, so the filter matched nothing and the test compared [] with [].
+    // It passed under a mutation that removed the gate entirely: a vacuous
+    // refusal test, in the very round that was written to catch vacuous tests.
+    const dir = path.join(vaultDir, 'wiki-meta', 'Sessions');
+    const ls = () => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []);
+    const before = ls();
+    const r = runHook({
+      event: 'SessionStart',
+      cwd: codeWorkspace,
+      sessionId: 'ws-refused',
+      workspaceDotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT="my-vault"\n',
+      binding: false, // rewrite the config WITHOUT a binding
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(ls(), before, 'nothing may be written on a project file\'s word');
+    fs.rmSync(path.join(codeWorkspace, '.env'), { force: true });
   });
 });
 

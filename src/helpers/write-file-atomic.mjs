@@ -27,8 +27,11 @@
  * a copy. On any failure the temp file is removed, so a failed write leaves the
  * directory as it was rather than littering it with orphans.
  *
- * Scope: the on-disk writers (`okf-projections-fs`, `bm25-index-fs`). Writes
- * that go through the Local REST API are the plugin's business, not ours.
+ * Scope: the on-disk writers (`okf-projections-fs`, `bm25-index-fs`) and, since
+ * the `registre de liaisons` lot, the router's own `config.json`. That last
+ * one is why the target's mode is carried across the rename — see the body.
+ * Writes that go through the Local REST API are the plugin's business, not
+ * ours.
  */
 
 import fs from 'node:fs';
@@ -46,8 +49,35 @@ export function writeFileAtomicSync(absPath, content, { fsMod = fs } = {}) {
   // keeps two writers in one process (and two processes) off each other's temp
   // names; the rename itself is what makes the outcome safe either way.
   const tmp = path.join(dir, `.${path.basename(absPath)}.${process.pid}.${nextSeq()}.tmp`);
+
+  // THE TARGET'S PERMISSIONS ARE CARRIED OVER, and this is a security property
+  // rather than a nicety. `rename` replaces the target with the temp file
+  // WHOLESALE — its mode included — so a 0600 file rewritten through here came
+  // back as 0644 under the usual 022 umask. That did not matter while this
+  // helper only wrote derived artefacts (a search index, a projection); it
+  // started mattering when the `registre de liaisons` lot pointed it at the
+  // router's `config.json`, which holds every vault's API key. Found by the
+  // Codex review, 2026-09-03.
+  //
+  // Best effort in the honest sense: if the target does not exist yet there is
+  // nothing to copy, and if `chmod` is unsupported (Windows does almost
+  // nothing with it) the write still has to happen. What must never occur is
+  // silently WIDENING an existing file's permissions, and that is what the
+  // copy prevents.
+  let mode = null;
+  try { mode = fsMod.statSync(absPath).mode & 0o777; } catch { /* new file */ }
+
   try {
     fsMod.writeFileSync(tmp, content, 'utf8');
+    // A chmod that FAILS aborts the write; it is not swallowed. Round 2 of the
+    // Codex review (2026-09-03): the first version caught the error and went
+    // on to rename, so on a filesystem where writing works but chmod returns
+    // EPERM/ENOTSUP the default-mode temp file replaced the 0600 config —
+    // precisely the widening this block exists to prevent, reached through
+    // the fallback meant to be harmless. Node's `chmodSync` does not throw on
+    // Windows for the modes involved, so nothing is lost there; anywhere it
+    // does throw, the caller gets the error and the old file stays as it was.
+    if (mode !== null) fsMod.chmodSync(tmp, mode);
     fsMod.renameSync(tmp, absPath);
   } catch (err) {
     try { fsMod.unlinkSync(tmp); } catch { /* the temp file never existed, or is already gone */ }

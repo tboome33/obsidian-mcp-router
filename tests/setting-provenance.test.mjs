@@ -180,7 +180,7 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
     { name: 'beta', type: 'local', path: '/v/beta' },
   ];
 
-  test('tier 1, the explicit override: workspace-dotenv when the file set it, host when the host did', () => {
+  test('tier 1, the explicit override: the HOST decides, and a workspace file is REFUSED and falls through', () => {
     _resetWorkspaceDotenvProvenance();
     consultAnEmptyWorkspace();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: 'beta', VAULT_PATH: undefined }, () => {
@@ -190,15 +190,27 @@ describe('resolveDefaultVaultWithSource — which tier of the cascade answered',
       );
     });
 
-    // Now the same value, but applied by the loader from a repository's file.
+    // The same value, same variable, same active vaults — but applied by the
+    // loader from a repository's own file. It is now REFUSED, and the cascade
+    // continues to the config default.
+    //
+    // Until the Codex review of 2026-09-03 this tier applied it and reported
+    // origin `workspace-dotenv`, while `bindingHint` reported the very same
+    // value as "unconfirmed, not applied". Both statements were defensible on
+    // their own; together they were a lie, and this assertion is the one that
+    // now makes them agree. Roland's arbitration, same day: the file proposes,
+    // the host decides, and the migration imports the existing hints so that
+    // nothing in the field breaks.
     _resetWorkspaceDotenvProvenance();
     withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: undefined, VAULT_PATH: undefined }, () => {
       const dir = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=beta\n');
       applyWorkspaceDotenv({ cwd: dir, env: process.env, warn: () => {} });
       try {
+        assert.equal(process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT, 'beta', 'the loader did apply it to the environment');
         assert.deepEqual(
           resolveDefaultVaultWithSource({ vaults, configuredDefault: 'alpha' }),
-          { name: 'beta', origin: 'workspace-dotenv', variable: 'OBSIDIAN_ROUTER_DEFAULT_VAULT' },
+          { name: 'alpha', origin: 'config', variable: null },
+          'a workspace file may propose a vault; it may not choose one',
         );
       } finally {
         delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
@@ -611,9 +623,48 @@ describe('GUARD — a setting is never assigned without its source, at start-up 
       /fresh\.autoEnrichModeSource = envSettingSource\(\s*\n\s*modeWarning \? null : process\.env\.OBSIDIAN_ROUTER_AUTO_ENRICH,\s*\n\s*'OBSIDIAN_ROUTER_AUTO_ENRICH',\s*\n\s*'default',/,
       'the start-up mode source: gated on the warning, naming its own variable, defaulting to "default"',
     );
+    // The lock now has TWO possible sources, since a persisted lock lives in
+    // the binding and must survive a restart (Codex finding, 2026-09-03: it
+    // was stored, reported, and never read back). So the source is a choice,
+    // and both halves are pinned: `binding` when the binding imposed it, the
+    // variable when the environment did. Crediting the variable for a lock the
+    // binding imposed would be the same lie the provenance lot removed.
+    // TWO SOURCES, EACH VALIDATED IN TURN, THE SECOND TRIED ONLY IF THE FIRST
+    // YIELDED NOTHING. Round 2 of the Codex review (2026-09-03) found the
+    // earlier shape choosing `binding || host` BEFORE validating, so a stale
+    // locked binding naming a vanished vault yielded no lock and the host's
+    // valid `OBSIDIAN_ROUTER_LOCKED` was never consulted — a stale file
+    // switching a host isolation boundary off. The shape pinned here is the
+    // fall-through: validate the binding's candidate with its OWN context
+    // (so the warning does not blame a variable nobody set), then, only if
+    // that gave no lock, validate the gated host value.
     codeMatch(
-      /fresh\.lockSource = envSettingSource\(initialLock, 'OBSIDIAN_ROUTER_LOCKED'\);/,
-      'the start-up lock source: built from the lock that TOOK EFFECT, naming its own variable',
+      /const fromBinding = fresh\.workspaceBinding\?\.locked \? fresh\.workspaceBinding\.vault : null;/,
+      'the binding candidate, taken only when the binding is locked',
+    );
+    codeMatch(
+      /validateLock\(fromBinding, fresh\.vaults, 'binding'\)/,
+      'the binding candidate validated under its own context',
+    );
+    codeMatch(
+      /lockSource = \{ origin: 'binding', variable: null \};/,
+      'a lock the binding imposed is credited to the binding',
+    );
+    codeMatch(
+      /if \(!initialLock\) \{\s*\n\s*const fromHost = authoritativeLockedVault\(\);/,
+      'the host is tried ONLY when the binding yielded no lock, and through the gate — never process.env',
+    );
+    codeMatch(
+      /validateLock\(fromHost, fresh\.vaults, 'env'\)/,
+      'the host candidate validated under the env context',
+    );
+    codeMatch(
+      /lockSource = envSettingSource\(lock, 'OBSIDIAN_ROUTER_LOCKED'\);/,
+      'a lock the host imposed is credited to its variable',
+    );
+    codeMatch(
+      /fresh\.lockedVault = initialLock;\s*\n\s*fresh\.lockSource = lockSource;/,
+      'the lock and its source are assigned together',
     );
     // The RELOAD path has the same duty, and no invented fallback.
     codeMatch(
@@ -713,6 +764,9 @@ describe('GUARD — the tool description names the three fields and every origin
     assert.deepEqual([...emitted].sort(), [...SETTING_ORIGINS].sort(),
       'a producer emits an origin outside SETTING_ORIGINS (or the list has a value nothing emits) — change both on purpose');
     assert.deepEqual([...SETTING_ORIGINS].sort(), [
+      // v0.90.0 added "binding" — the confirmed workspace binding, tier 0 of
+      // the cascade. Added here on purpose, which is what this list is for.
+      'binding',
       'config', 'default', 'first-active', 'first-healthy', 'host', 'runtime', 'unknown', 'unset', 'workspace-dotenv',
     ], 'the vocabulary changed: update the description, the README and this list, deliberately');
     const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');

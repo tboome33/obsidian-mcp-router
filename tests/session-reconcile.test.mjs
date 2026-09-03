@@ -26,6 +26,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 import {
   reconcileVaultSessions,
   reconstructStateFromContent,
@@ -346,12 +348,18 @@ describe('session-auto-journal SessionStart — self-heal integration', () => {
     const orphan = writeSession('2026-05-20-1000-proj-orph.md', { firstPrompt: 'crashed work' });
     writeStateJson('orphan-sid', orphan, { ageMs: 300 * MINUTE, firstUserPrompt: 'crashed work' });
 
-    // Router config + workspace .env so the hook resolves THIS vault.
-    const cfg = path.join(root, 'config.json');
-    fs.writeFileSync(cfg, JSON.stringify({ portRegistry: { [vaultDir]: 27999 }, vaultNames: { [vaultDir]: 'rec-vault' } }), 'utf8');
+    // Router config + a CONFIRMED BINDING so the hook resolves THIS vault.
+    // Since v0.90.0 a workspace `.env` only PROPOSES a vault; it can no longer
+    // send a hook off to write in one (Codex finding, 2026-09-03). This hook
+    // writes session transcripts, so it is one of the four resolvers swept.
     const ws = path.join(root, 'workspace');
     fs.mkdirSync(ws, { recursive: true });
-    fs.writeFileSync(path.join(ws, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT="rec-vault"\n');
+    const cfg = path.join(root, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({
+      portRegistry: { [vaultDir]: 27999 },
+      vaultNames: { [vaultDir]: 'rec-vault' },
+      workspaceBindings: { [canonicalWorkspaceKey(ws)]: { vault: 'rec-vault' } },
+    }), 'utf8');
     // Point HOME at our scratch so the hook's STATE_DIR == our stateDir parent.
     const fakeHome = path.join(root, 'fake-home');
     fs.mkdirSync(path.join(fakeHome, '.claude', 'obsidian-mcp-router', 'session-journals'), { recursive: true });

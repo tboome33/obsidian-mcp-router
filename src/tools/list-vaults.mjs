@@ -26,7 +26,7 @@ import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.
  * here first, and the test says where else it has to be explained.
  */
 export const SETTING_ORIGINS = Object.freeze([
-  'workspace-dotenv', 'host', 'runtime', 'config',
+  'binding', 'workspace-dotenv', 'host', 'runtime', 'config',
   'first-healthy', 'first-active', 'default', 'unset', 'unknown',
 ]);
 const SETTING_ORIGIN_SET = new Set(SETTING_ORIGINS);
@@ -178,6 +178,55 @@ export async function listVaults(registry) {
     if (ok) return recorded;
     return recorded ? UNKNOWN : fallback;
   };
+  // The binding, validated at the boundary like everything else in this
+  // response. A registry built by another path could carry anything, and a
+  // half-formed binding is worse than none: a caller would phrase "you are
+  // bound to undefined" at the top of a session. Rebuilt rather than passed
+  // through, so extra fields cannot ride along into the contract.
+  const bindingOrNull = (b) => {
+    const str = (v) => typeof v === 'string' && v !== '';
+    if (!b || typeof b !== 'object' || Array.isArray(b) || !str(b.vault)) return null;
+    return {
+      vault: b.vault,
+      also: Array.isArray(b.also) ? b.also.filter(str) : [],
+      locked: b.locked === true,
+      confirmedAt: str(b.confirmedAt) ? b.confirmedAt : null,
+      confirmedVia: str(b.confirmedVia) ? b.confirmedVia : null,
+    };
+  };
+  // The hint, same treatment. `status` must be one of the five the classifier
+  // can produce — anything else is a registry this build does not understand,
+  // and silence beats a status a caller would branch on wrongly.
+  const HINT_STATUSES = new Set(['none', 'confirmed', 'unconfirmed', 'unknown-vault', 'conflicts']);
+  // The four origins an ENVIRONMENT VARIABLE can have (ENV_ORIGINS), which is
+  // a strict subset of SETTING_ORIGINS: the cascade tiers that read no
+  // variable cannot be the origin of a proposal.
+  const ENV_ORIGIN_SET = new Set(['workspace-dotenv', 'host', 'runtime', 'unknown']);
+  const hintOrNull = (h) => {
+    if (!h || typeof h !== 'object' || Array.isArray(h) || !HINT_STATUSES.has(h.status)) return null;
+    return {
+      status: h.status,
+      hint: typeof h.hint === 'string' && h.hint ? h.hint : null,
+      boundTo: typeof h.boundTo === 'string' && h.boundTo ? h.boundTo : null,
+      // WHERE the proposal came from. Constrained to the environment origins,
+      // because a proposal only ever arrives through an environment variable:
+      // an origin from elsewhere in SETTING_ORIGINS ("config", "binding", …)
+      // would describe a tier that cannot make one, so it is dropped rather
+      // than reported. The difference that matters here is `workspace-dotenv`
+      // (this project's file) against `host` (the user's own MCP declaration);
+      // naming the wrong one sends the user to the wrong file.
+      origin: ENV_ORIGIN_SET.has(h.origin) ? h.origin : null,
+    };
+  };
+  // The one-time import's report. Three fields, all required, the vault name
+  // among them — a report that could arrive half-formed would be worse than
+  // none, because a caller would announce an import it cannot describe.
+  const importedOrNull = (i) => {
+    const str = (v) => typeof v === 'string' && v !== '';
+    return i && typeof i === 'object' && !Array.isArray(i) && str(i.vault) && str(i.at)
+      ? { vault: i.vault, at: i.at, dotenvFile: str(i.dotenvFile) ? i.dotenvFile : null }
+      : null;
+  };
   // The refusal has its own shape, so it has its own validator. Five string
   // fields, all required, and an origin that can only be the one origin a
   // refusal can have: a file is the only thing this rule refuses. Anything
@@ -225,6 +274,27 @@ export async function listVaults(registry) {
     // Anything that does not typecheck becomes null — "no refusal to report" —
     // because a half-formed refusal is worse than none.
     autoEnrichModeRefused: refusalOrNull(registry.autoEnrichModeRefused),
+    // WHICH vaults this workspace is bound to (v0.90.0) — points 1-2 of the
+    // same decision. Three states, and the difference matters to every caller
+    // that phrases it for a human:
+    //   an object          → bound to `vault`, plus `also[]` if several
+    //   null               → NO binding, which means ALL vaults: the cascade
+    //                        picks the default and every registered vault
+    //                        stays addressable. Never "no vault".
+    // `also` is information the router did not have before this lot: `--attach
+    // a --also b` wrote only `a` to the dotenv file, and `b` lived solely in a
+    // CLAUDE.md prose block the router never read.
+    workspaceBinding: bindingOrNull(registry.workspaceBinding),
+    // What this workspace's dotenv file PROPOSED, and how it stands against
+    // the binding. A SEPARATE field, never an origin: a hint that was not
+    // applied is not the source of what replaced it. `status` is one of
+    // "none" | "confirmed" | "unconfirmed" | "unknown-vault" | "conflicts";
+    // the first two are silence, the last three are worth telling the user.
+    bindingHint: hintOrNull(registry.bindingHint),
+    // What the ONE-TIME import created at THIS start-up, or null. Rebuilt and
+    // validated like the two above: the report of an automatic decision is
+    // exactly the field a caller must be able to trust.
+    bindingImported: importedOrNull(registry.bindingImported),
     conversionToolbox,
     configPath: registry.configPath,
     vaults: results,

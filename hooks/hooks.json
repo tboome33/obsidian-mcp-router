@@ -7,6 +7,13 @@
     "call, that never exit 2 (which would block the user's turn), and that are",
     "verified silent no-ops for someone with no vault configured, belong here.",
     "",
+    "The briefing hook joined this set in the `registre de liaisons` lot: it is",
+    "the surface that makes a workspace→vault binding visible, and the one-time",
+    "import of existing .env hints is only defensible because a binding the",
+    "import got wrong announces itself at the start of every session. Shipping",
+    "the import for everyone and the briefing for a few would be shipping the",
+    "trust without the check.",
+    "",
     "The other eight router hooks stay OPT-IN via",
     "`node scripts/setup-vault.mjs --install-hooks`, because they commit to git,",
     "write session transcripts into a vault, block turns, or phone home. See",
@@ -25,6 +32,10 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hot-cache-load.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/workspace-briefing.mjs\""
           }
         ]
       }
@@ -36,6 +47,10 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/hot-cache-load.mjs\""
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/workspace-briefing.mjs\""
           }
         ]
       }

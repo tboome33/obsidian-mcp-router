@@ -36,6 +36,7 @@ import path from 'node:path';
 
 import { loadWorkspaceDotenv } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
+import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
 
 // ---------------------------------------------------------------------------
 // Vault selection
@@ -103,8 +104,12 @@ export function orderedVaultCandidates(cwd, cfg) {
     }
   };
 
-  // (1) workspace-bound vault
-  const slug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim().toLowerCase();
+  // (1) workspace-bound vault — the confirmed binding first, then the
+  // environment variable ONLY when it may decide. One of the four resolvers
+  // swept for the Codex finding of 2026-09-03: a project `.env` proposes, it
+  // does not choose which vault this hook reports drift against.
+  const binding = readBinding(cfg, cwd);
+  const slug = (binding?.vault || authoritativeDefaultVault() || '').trim().toLowerCase();
   if (slug) {
     for (const vp of all) {
       const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();

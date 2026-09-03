@@ -29,6 +29,10 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { assertDotenvScalar } from '../src/helpers/dotenv-scalar.mjs';
+import { obsidianOpenUri, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
+import { updateConfigBindings, withBinding, readBinding } from '../src/helpers/workspace-bindings.mjs';
+import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
+import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -231,16 +235,46 @@ function loadConfigReadOnly() {
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
-    fs.writeFileSync(
-      CONFIG_PATH,
-      JSON.stringify(DEFAULT_CONFIG, null, 2),
-    );
+    // Through `saveConfig`, like every other write of this file. This was the
+    // second bare `writeFileSync` of the config — found not by the review but
+    // by the guard written for the review's finding, on its first run. Two
+    // processes bootstrapping at once would otherwise race to create it.
+    saveConfig(DEFAULT_CONFIG);
   }
   return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 }
 
+/**
+ * Write the whole config back — UNDER THE SAME LOCK AND THROUGH THE SAME
+ * ATOMIC WRITER as the binding registry.
+ *
+ * Round 2 of the Codex review (2026-09-03): this used to be a bare
+ * `writeFileSync`. `updateConfigBindings` was "the one writer" of
+ * `workspaceBindings`, and it took a lock — but this function rewrites the
+ * ENTIRE file from an in-memory copy, so the ordering "setup reads config A;
+ * a session confirms binding B under the lock; setup saves stale A" deleted B
+ * without either side noticing, and the same ordering loses an API key edit.
+ * A lock only one of two writers takes is not a lock.
+ *
+ * The lock is the very one the binding writer takes, keyed on the canonical
+ * config path, so the two exclude each other. The in-memory `cfg` is still a
+ * snapshot — a caller that read the config a long time ago and saves it now
+ * writes that snapshot — but every such caller in this script reads, changes
+ * and saves in one synchronous stretch, and the lock makes that stretch
+ * exclusive.
+ */
 function saveConfig(cfg) {
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  const release = acquireLock(lockPathFor(CONFIG_PATH, 'config'));
+  if (!release) {
+    throw new Error(
+      `another process is writing ${CONFIG_PATH} and did not finish in time — nothing was changed, run the command again`,
+    );
+  }
+  try {
+    writeFileAtomicSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -1959,7 +1993,16 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
         `   Known slugs: ${knownSlugs(cfg).join(', ')}`,
       );
     }
-    return { slug, path: vp };
+    // THE REGISTERED SPELLING IS STORED, NOT THE USER'S. Resolution is
+    // case-insensitive as a courtesy, but the registry matches bindings by
+    // exact name: `--attach NoTeS` used to resolve `notes`, store `NoTeS`,
+    // and produce a binding the server then rejected — the cascade fell
+    // through to the host default and the user was bound to nothing while
+    // the config said otherwise. Codex round 2, 2026-09-03.
+    const canonical = (cfg.vaultNames && typeof cfg.vaultNames[vp] === 'string')
+      ? cfg.vaultNames[vp]
+      : defaultNameFromPath(vp);
+    return { slug: canonical, path: vp };
   };
   const primary = resolve1(primarySlug, 'Primary');
   const seen = new Set([primary.slug.toLowerCase()]);
@@ -1984,6 +2027,37 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     opts: { quiet: true },
   });
   steps.push({ step: '.env', detail: `OBSIDIAN_ROUTER_DEFAULT_VAULT=${primary.slug}`, path: link.envPath });
+
+  // 1b) THE BINDING, in the user's own config — v0.90.0. `--attach` is an
+  //     explicit command the user typed, so it IS a confirmation: it records
+  //     the binding rather than leaving the workspace to be asked again at the
+  //     next session. The .env line above stays as the PORTABLE HINT — it is
+  //     the only part that travels to a second machine, where it will be
+  //     signalled and confirmed once. This is also the first time the router
+  //     itself learns about the secondaries: before this they lived only in
+  //     the CLAUDE.md prose block, which the router never reads.
+  //     Best effort: a config that cannot be written must not abort an attach
+  //     whose workspace-side writes already succeeded.
+  try {
+    updateConfigBindings(CONFIG_PATH, (cfg) => {
+      // A RE-ATTACH TO THE SAME PRIMARY KEEPS ITS LOCK. Rewriting the binding
+      // from scratch dropped `locked: true` silently — the same shape as the
+      // confirmation tool's `locked === true`, found together in round 2 of
+      // the Codex review (2026-09-03). Attaching elsewhere drops it, since the
+      // lock belonged to the previous primary.
+      const previous = readBinding(cfg, ws);
+      return withBinding(cfg, ws, {
+        vault: primary.slug,
+        also: secondaries.map((s) => s.slug),
+        locked: Boolean(previous && previous.vault === primary.slug && previous.locked),
+        confirmedVia: 'attach',
+      });
+    });
+    const alsoNote = secondaries.length ? ` (+${secondaries.length} also)` : '';
+    steps.push({ step: 'binding', detail: `${primary.slug}${alsoNote} — in your router config, not in this project`, path: CONFIG_PATH });
+  } catch (e) {
+    warn(`Could not record the workspace binding in ${CONFIG_PATH} (${e.message}). The .env hint is written; confirm it from a session.`);
+  }
 
   // 2) .claude/settings.json — WITHOUT this the .env above is inert: the
   //    plugin stays off, so hot-cache-load and wiki-query-first-nudge never
@@ -2727,49 +2801,23 @@ function writeClaudeWorkspaceSettings(workspacePath) {
 // --open: launch Obsidian on the freshly-provisioned vault via its protocol
 // handler. Best-effort + guarded: a failure never aborts (the vault is already
 // provisioned). Returns the URI regardless so the caller can print it.
-export function obsidianOpenUri(obsidianName) {
-  return `obsidian://open?vault=${encodeURIComponent(obsidianName)}`;
-}
+// The URI builder and the launcher itself moved to
+// src/helpers/obsidian-launcher.mjs in v0.90.0: the MCP server needs them too
+// (binding a vault whose Obsidian is closed has to be able to open it), and a
+// second copy would eventually lose the Electron-fuse lesson the original
+// carries. Re-exported here because this file has been the import site since
+// v0.65.0 — one definition, and this is a view of it.
+export { obsidianOpenUri };
 function openObsidianVault(obsidianName) {
-  const uri = obsidianOpenUri(obsidianName);
-  try {
-    // THESE THREE PASS THIS PROCESS'S ENVIRONMENT THROUGH ON PURPOSE. They
-    // launch the user's desktop application through the OS protocol handler,
-    // and that application has to see the user's session. What "this
-    // process's environment" is depends on who started setup-vault: from the
-    // user's shell it is the shell's; from the MCP server (`provision_vault`
-    // with `--open`) it is the `setup-vault` allowlist of subprocess-env.mjs,
-    // which names the session's display and bus variables for exactly this
-    // hand-off (DISPLAY, WAYLAND_DISPLAY, XAUTHORITY, DBUS_SESSION_BUS_ADDRESS).
-    // They are the only spawns in this file outside `subprocessOptions`; the
-    // guard in tests/subprocess-env.test.mjs lists them by count and by
-    // command, so a fourth cannot join them unnoticed.
-    // Under an Electron host the engine itself runs with ELECTRON_RUN_AS_NODE
-    // (named in its allowlist for that reason); the desktop app launched here
-    // must NOT inherit it, or an Obsidian whose runAsNode fuse is open would
-    // start as a mute Node process instead of as the application.
-    // Removed by name, case-insensitively: Windows environment names are, and
-    // a lowercase spelling from the parent would survive a `delete` of the
-    // uppercase one while Electron still read it.
-    const launcherEnv = {};
-    for (const [name, value] of Object.entries(process.env)) {
-      if (/^electron_(?:run_as_node|no_attach_console)$/i.test(name)) continue;
-      launcherEnv[name] = value;
-    }
-    if (process.platform === 'win32') {
-      // `cmd /c start "" <uri>` dispatches the protocol handler. (Not spawning a
-      // .cmd file — this is cmd.exe with /c, which is allowed.)
-      spawnSync('cmd', ['/c', 'start', '', uri], { stdio: 'ignore', env: launcherEnv });
-    } else if (process.platform === 'darwin') {
-      spawnSync('open', [uri], { stdio: 'ignore', env: launcherEnv });
-    } else {
-      spawnSync('xdg-open', [uri], { stdio: 'ignore', env: launcherEnv });
-    }
-    ok(`Opened Obsidian on vault "${obsidianName}"`);
-  } catch (e) {
-    warn(`Could not auto-open Obsidian (${e.message}). Open manually: ${uri}`);
-  }
-  return uri;
+  // The launcher itself lives in src/helpers/obsidian-launcher.mjs since
+  // v0.90.0 — one definition, shared with the MCP server, carrying the
+  // Electron-fuse removal and the platform table. This wrapper keeps the
+  // script's own reporting: best effort, never aborts a provisioning that
+  // already succeeded, and always prints the URI so a human can finish by hand.
+  const r = launchObsidianVault(obsidianName);
+  if (r.launched) ok(`Opened Obsidian on vault "${obsidianName}"`);
+  else warn(`Could not auto-open Obsidian (${r.reason}). Open manually: ${r.uri}`);
+  return r.uri;
 }
 
 // --probe: poll the vault's unencrypted loopback REST port until it answers (or

@@ -110,6 +110,26 @@ describe('parseDotenv — the one parser', () => {
   });
 });
 
+/**
+ * An opt-out the tree reads but that must NOT be settable from a workspace
+ * file goes here, by name, with its reason. Two tests read it: one requires
+ * the key to classify as 'ignore', the other requires the hook that reads it
+ * to do so BEFORE loading the workspace file — the inverse of the rule every
+ * other opt-out follows, so the inversion is asserted rather than merely
+ * allowed. Without this second list the only green exit for a new opt-out
+ * would be to ACCEPT it.
+ */
+const HOST_ONLY_OPTOUTS = [
+  // The session-start briefing is the DISCLOSURE that a workspace .env
+  // proposed a vault. An opt-out this file could set would let the very file
+  // being reported on switch off the report — the confused-deputy shape the
+  // whole `liaison-workspace-vault-hors-depot` decision exists to close,
+  // reappearing one level up as "silence the message about me". Every other
+  // enumerated opt-out is a per-session convenience; this one guards a
+  // disclosure, so it is taken from the host only.
+  'OBSIDIAN_ROUTER_NO_BINDING_BRIEFING',
+];
+
 describe('classifyWorkspaceDotenvKey — the policy', () => {
   test('the six workspace keys and the enumerated opt-outs apply; the companion keys are skipped; everything else — the host settings included — is ignored', () => {
     for (const k of [...WORKSPACE_DOTENV_KEYS, ...WORKSPACE_DOTENV_OPTOUTS]) assert.equal(classifyWorkspaceDotenvKey(k), 'apply', k);
@@ -132,15 +152,6 @@ describe('classifyWorkspaceDotenvKey — the policy', () => {
     }
     assert.match(WORKSPACE_DOTENV_POLICY, /OBSIDIAN_ROUTER_DEFAULT_VAULT.*MD_SHARE_DIR and the OBSIDIAN_ROUTER_NO_\* opt-outs/);
   });
-
-  /**
-   * An opt-out the tree reads but that must NOT be settable from a workspace
-   * file goes here, by name, with its reason — the test then requires it to
-   * classify as 'ignore'. Empty today: every enumerated opt-out is a
-   * per-session convenience, none of them is a security guard. Without this
-   * second list the only green exit for a new opt-out would be to ACCEPT it.
-   */
-  const HOST_ONLY_OPTOUTS = [];
 
   test('the enumerated opt-outs are exactly the OBSIDIAN_ROUTER_NO_* names the tree READS — comments and strings do not count; a host-only opt-out is refused by name, not forgotten', () => {
     const read = new Set();
@@ -335,21 +346,43 @@ describe('GUARD — every workspace .env loader in the tree goes through applyWo
     assert.deepEqual(offenders, [], `the old any-key loop, or a cousin of it, is back: ${offenders.join('; ')}`);
   });
 
-  test('every hook that reads an opt-out loads the workspace .env FIRST — otherwise a NO_* in that file is a dead letter for that hook', () => {
+  test('every hook that reads an opt-out loads the workspace .env FIRST — otherwise a NO_* in that file is a dead letter for that hook; a HOST-ONLY opt-out is read BEFORE, and that inversion is required, not merely tolerated', () => {
     const late = [];
+    const early = [];
     let checked = 0;
+    let hostOnlyChecked = 0;
+    // A host-only opt-out must be read where the workspace file cannot have
+    // touched the environment yet. The policy module refuses the key by name
+    // as well, so this is the second of two independent reasons — and the one
+    // that survives somebody adding the name to the accepted list.
+    const HOST_ONLY_RE = new RegExp(`process\\.env\\.(?:${HOST_ONLY_OPTOUTS.join('|')})\\b`);
     for (const file of walk(path.join(ROOT, 'hooks'))) {
       const rel = path.relative(ROOT, file).replace(/\\/g, '/');
       const code = blankStringsAndComments(fs.readFileSync(file, 'utf8'));
-      const read = code.search(/process\.env\.OBSIDIAN_ROUTER_NO_/);
+      const load = code.search(/\b(?:loadWorkspaceDotenv|applyWorkspaceDotenv)\s*\(/);
+
+      const hostOnly = code.search(HOST_ONLY_RE);
+      if (hostOnly >= 0) {
+        hostOnlyChecked += 1;
+        if (load < 0) {
+          early.push(`${rel}: reads a host-only opt-out and never loads the workspace .env at all`);
+        } else if (load < hostOnly) {
+          early.push(`${rel}: reads a host-only opt-out (offset ${hostOnly}) AFTER loading the workspace .env (offset ${load})`);
+        }
+      }
+
+      // The general rule, applied to every OTHER opt-out this file reads.
+      const read = code.replace(HOST_ONLY_RE, (m) => ' '.repeat(m.length))
+        .search(/process\.env\.OBSIDIAN_ROUTER_NO_/);
       if (read < 0) continue;
       checked += 1;
-      const load = code.search(/\b(?:loadWorkspaceDotenv|applyWorkspaceDotenv)\s*\(/);
       if (load < 0) late.push(`${rel}: reads an opt-out and never loads the workspace .env`);
       else if (load > read) late.push(`${rel}: reads an opt-out (offset ${read}) before loading the workspace .env (offset ${load})`);
     }
     assert.ok(checked >= 10, `expected the opt-out-reading hooks to be found (found ${checked})`);
+    assert.equal(hostOnlyChecked, HOST_ONLY_OPTOUTS.length, 'every host-only opt-out has a hook that reads it');
     assert.deepEqual(late, []);
+    assert.deepEqual(early, []);
   });
 
   test('the only files that name a .env file are the loader, the writers and two bystanders — a new reader is added HERE, by path', () => {
