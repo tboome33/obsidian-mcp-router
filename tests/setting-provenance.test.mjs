@@ -445,9 +445,24 @@ describe('autoEnrichModeRefused — a refused value is reported beside the sourc
     // pushing the useful half off the screen, not to save bytes.
     const long = 'Vault tres long Amelie Galzy Portfolio et Notes de Travail archive 2024-2026 partie deux';
     assert.ok(long.length > 80, `the fixture must exceed the old cap (${long.length})`);
+    // ALL THREE sites, not the two that are one function call away. The defect
+    // this round fixed was a repair that reached one site of three; covering
+    // two of three here would be the same shape, one size smaller.
+    const registryWarning = () => {
+      const lines = [];
+      const realError = console.error;
+      console.error = (...a) => lines.push(a.join(' '));
+      try {
+        withProcessEnv({ OBSIDIAN_ROUTER_DEFAULT_VAULT: long, VAULT_PATH: undefined }, () => {
+          resolveDefaultVaultWithSource({ vaults: [{ name: 'notes', type: 'local' }], configuredDefault: 'notes' });
+        });
+      } finally { console.error = realError; }
+      return lines.join('\n');
+    };
     for (const [name, warning] of [
       ['validateAutoEnrichMode', validateAutoEnrichMode(long, 'env').warning],
       ['validateLock', validateLock(long, [{ name: 'notes' }], 'env').warning],
+      ['registry default-vault override', registryWarning()],
     ]) {
       assert.ok(warning.includes(long), `${name}: the value must survive whole, not clipped to its first words`);
       assert.doesNotMatch(warning, /truncated by sanitize/, `${name}: nothing legitimate should be truncated here`);
@@ -516,6 +531,32 @@ describe('GUARD — the set_auto_enrich_mode description matches what the tool n
     const persistDoc = /persist: \{\s*type: 'boolean',\s*description:\s*('(?:[^'\\]|\\.)*')/.exec(indexSrc.slice(decl.index));
     assert.ok(persistDoc, 'the persist argument must carry a readable description');
     assert.match(persistDoc[1], /Refused for "FullAuto"/, 'the persist argument names the exception too');
+  });
+
+  test('BOTH halves of the README say it — the bilingual twin is part of the class', () => {
+    // The third time this lot met the same defect, and the one that stings:
+    // the round-2 repair fixed the two ENGLISH README spots and left their
+    // FRENCH twins promising the old contract. Before the lot, both languages
+    // said the same true thing; after it, only English was true — so the
+    // repair itself created the drift. A French reader would run
+    // `auto-mode FullAuto --persist`, get `persisted:false`, and the only
+    // document they had read would say it should have been written.
+    //
+    // Every ROW of the two slash-command tables, and both "four modes"
+    // callouts, in one assertion — so a future edit to one language cannot
+    // quietly leave the other behind.
+    const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+    const rows = readme.split('\n').filter((l) => l.includes('`/obsidian-router:auto-mode`') && l.startsWith('|'));
+    assert.equal(rows.length, 2, `expected the EN and FR command-table rows (found ${rows.length})`);
+    for (const row of rows) {
+      assert.match(row, /except `FullAuto`|sauf `FullAuto`/,
+        `a command-table row still promises that --persist writes every mode: ${row.slice(0, 120)}`);
+    }
+    const callouts = readme.split('\n').filter((l) => /^\*\*(Four modes|Quatre modes)\*\*/.test(l));
+    assert.equal(callouts.length, 2, `expected the EN and FR "four modes" callouts (found ${callouts.length})`);
+    for (const c of callouts) {
+      assert.match(c, /v0\.89\.0/, `a "four modes" callout does not carry the exception: ${c.slice(0, 120)}`);
+    }
   });
 
   test('the binary\'s --help says it too — RUN, not read', () => {

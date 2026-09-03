@@ -75,10 +75,13 @@ Roland accepted the decision's option 4 on 2026-09-03, as a second acceptance be
 
 ### Fixed
 
-All six came out of the review of this very lot, over three rounds. Two of them are older than
+All seven came out of the review of this very lot, over four rounds. Two of them are older than
 the lot — the raw start-up warnings date from v0.8.2, the missing identity checks from
-v0.88.0 — and are named here because this lot is what surfaced them. The other four are defects
-this lot introduced and its own review caught.
+v0.88.0 — and are named here because this lot is what surfaced them. The other five are defects
+this lot introduced and its own review caught, and two of those five were introduced by an
+earlier round's REPAIR rather than by the original work. That pattern is the lot's real lesson:
+a class fix that reaches only its first site reads as closed, and the next round finds the
+sisters — three times here, on the same class, in three different guises.
 
 - **Three start-up warnings printed an untrusted workspace value raw — 3 of 3 now sanitised.**
   `validateAutoEnrichMode`, `validateLock` and the registry's default-vault warning are built
@@ -116,6 +119,12 @@ this lot introduced and its own review caught.
 - **`templates/wiki/CLAUDE.md` said the opposite of the new rule**, and that file is copied into
   the user's vault and re-read every session — the documentation surface with the longest reach
   and the only one no update reaches retroactively.
+- **The French half of the README kept the old contract for one review round.** The repair that
+  updated the two English spots left their French twins saying `--persist` writes every mode: a
+  reader of one language would have been told the opposite of what the code does. Same class as
+  the first bullet, one round later and introduced by a repair rather than inherited — which is
+  why a guard now checks both language halves of the command table and both "four modes"
+  callouts in one assertion.
 - **A refusal went unreported whenever the parent held any value for the key.** Safe (the mode
   never applied), but it silenced exactly the case the migration hint exists for: host set to
   `Hybrid`, project file still carrying a `FullAuto` line written by an older `--persist`, and
@@ -125,9 +134,9 @@ this lot introduced and its own review caught.
 
 ### Verification
 
-- Full suite **4 560 tests, 4 559 green, 0 failed, 1 opt-in skip** (4 530 before this lot;
-  30 tests added). `npm run validate` and `npm run gate` green on the same tree.
-- **Twenty-one mutations, each seen red and each restored by copying a snapshot back and comparing
+- Full suite **4 561 tests, 4 560 green, 0 failed, 1 opt-in skip** (4 530 before this lot;
+  31 tests added). `npm run validate` and `npm run gate` green on the same tree.
+- **Twenty-two mutations, each seen red and each restored by copying a snapshot back and comparing
   the sha256** — no `git checkout`, because another session works on this repository. Nine for
   the rule as first written: comparing the raw value instead of canonicalising (5 tests red),
   moving the value rule ahead of the parent-wins rule (5), recording a refused value as applied
@@ -141,7 +150,8 @@ this lot introduced and its own review caught.
   registry's warning (two separate mutations, because one test that catches both is the point),
   restoring the advice that leads to a refusal, and altering the `--help` text. One for the
   third: putting the sanitiser's cap back to 80, which is what made a long legitimate value
-  unreadable.
+  unreadable. One for the fourth: reverting the French half of the README, which is what a
+  round-3 repair had left behind.
 - **Executed, not grepped.** The binary's stderr, a hook's silence, the `--help` text and the
   whole start-up chain are proven by spawning real processes against a hostile workspace: one
   test starts the actual server and reads the `Ready.` line an operator would read. Everything

@@ -1256,7 +1256,7 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash
 |---|---|---|
 | `/obsidian-router:lock` | Restreint le router à un seul vault pour la session (volatile ou `--persist` pour écrire dans `.env`) | *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* / *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* |
 | `/obsidian-router:unlock` | Lève le lock et restaure le routing multi-vault (`--persist` pour aussi nettoyer `.env`) | *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* / *"unlock vaults"*, *"give me back access to all vaults"* |
-| `/obsidian-router:auto-mode` | Set le mode d'auto-enrichissement wiki (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`) ; `--persist` écrit dans `.env` | *"passe en mode Hybrid"*, *"sauve tout automatiquement"* (→ FullAuto), *"arrête de sauver auto"* (→ off) / *"switch to Hybrid mode"*, *"save everything automatically"*, *"stop auto-saving"* |
+| `/obsidian-router:auto-mode` | Set le mode d'auto-enrichissement wiki (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`) ; `--persist` écrit dans `.env`, sauf `FullAuto` — voir plus bas | *"passe en mode Hybrid"*, *"sauve tout automatiquement"* (→ FullAuto), *"arrête de sauver auto"* (→ off) / *"switch to Hybrid mode"*, *"save everything automatically"*, *"stop auto-saving"* |
 
 Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le callout auto-enrichissement plus bas pour les designs complets et cas d'usage concrets.
 
@@ -1325,7 +1325,7 @@ Les hooks vivent dans [`hooks/`](./hooks/) ; `setup-vault.mjs` les câble automa
 
 **Auto-enrichissement** — Claude propose proactivement de saver dans le wiki à trois moments naturels : **validation** (tu dis "OK" / "valide" → pin inline), **résultat obtenu** (commit pushé, tests verts → digest de candidats), et **changement de sujet** (checkpoint obligatoire avant que Claude réponde au nouveau sujet). Agnostique du domaine : marche pour le dev, la vie perso, la recherche, la planification familiale, n'importe quoi.
 
-**Quatre modes** (`/obsidian-router:auto-mode <Mode>` pour switcher, `--persist` pour écrire dans `.env`) :
+**Quatre modes** (`/obsidian-router:auto-mode <Mode>` pour switcher, `--persist` pour écrire dans `.env` — avec une exception : depuis la v0.89.0, `FullAuto` n'est ni écrit dans le `.env` d'un workspace ni relu depuis un, parce que ce mode est une autorisation permanente d'écrire dans un vault sans redemander et que le fichier d'un dépôt cloné n'a pas à l'accorder ; il vient toujours de la déclaration du serveur dans l'hôte MCP ou d'un appel pendant la session, et `--persist` l'applique à la session en le disant) :
 
 | Mode | Comportement | Pour quel usage |
 |---|---|---|
