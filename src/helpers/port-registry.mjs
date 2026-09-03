@@ -54,6 +54,7 @@
 
 import { cmp } from './total-order.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
+import { registeredVaultPaths } from './vault-slug.mjs';
 
 /** The offset `patchRestApiData` applies when provisioning a NEW vault. */
 export const DEFAULT_INSECURE_OFFSET = 10;
@@ -103,13 +104,17 @@ export function isTwoPortEntry(value) {
  * declared ports vanish from every reservation.
  */
 export function portEntryOf(cfg, vaultPath) {
-  const registry = (cfg && cfg.portRegistry) || {};
-  if (Object.prototype.hasOwnProperty.call(registry, vaultPath)) {
-    return normalizePortEntry(registry[vaultPath]);
+  // The KEYS come from the accessor, so the container is validated once and a
+  // hand-edited `"portRegistry": "AB"` yields no keys rather than "0" and "1".
+  // The values are then read by those same validated keys, which is safe by
+  // construction. (v0.90.0, the container half of the `vaultNames` sweep.)
+  const keys = registeredVaultPaths(cfg);
+  if (keys.includes(vaultPath)) {
+    return normalizePortEntry(cfg.portRegistry[vaultPath]);
   }
   const wanted = normalizePathForCompare(vaultPath);
-  for (const key of Object.keys(registry)) {
-    if (normalizePathForCompare(key) === wanted) return normalizePortEntry(registry[key]);
+  for (const key of keys) {
+    if (normalizePathForCompare(key) === wanted) return normalizePortEntry(cfg.portRegistry[key]);
   }
   return normalizePortEntry(undefined);
 }
@@ -170,7 +175,12 @@ function allVaultPaths(cfg, onDisk) {
     seen.add(key);
     out.push(p);
   };
-  for (const p of Object.keys((cfg && cfg.portRegistry) || {})) add(p);
+  // Through the accessor: the container is validated there, so a hand-edited
+  // `"portRegistry": "AB"` contributes nothing here instead of the vault paths
+  // "0" and "1". `vault-slug.mjs` reaches only `node:path` and
+  // `vault-path-identity.mjs` — which this module already imports — so the
+  // dependency floor is unchanged and there is no cycle. (v0.90.0)
+  for (const p of registeredVaultPaths(cfg)) add(p);
   const keys = onDisk
     ? (typeof onDisk.keys === 'function' ? [...onDisk.keys()] : Object.keys(onDisk))
     : [];
@@ -373,7 +383,10 @@ export function allocateInsecurePortFor(cfg, vaultPath, httpsPort, {
  * @returns {{ changed: boolean, portRegistry: object, entries: Array }}
  */
 export function migratePortRegistry(cfg, { onDisk } = {}) {
-  const raw = (cfg && cfg.portRegistry) || {};
+  // Through the accessor for the same reason as `portEntryOf` above: this
+  // function REWRITES the registry, so enumerating a manufactured key list
+  // would write vaults called "0" and "1" into the user's config.
+  const raw = Object.fromEntries(registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]]));
   const lookup = diskLookup(onDisk);
   const out = {};
   const entries = [];

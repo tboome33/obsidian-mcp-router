@@ -84,10 +84,15 @@ const cwd = resolveCwd();
 // the load, on purpose, so a project can switch a convenience off for itself.
 // This one is different in kind: the briefing is the DISCLOSURE that a
 // project's .env proposed a vault, so a .env able to silence it would be a
-// file switching off the report about itself. The dotenv policy refuses the
-// key by name as well (HOST_ONLY_OPTOUTS) — two independent reasons, because
-// this is the exact confused-deputy shape the decision behind this lot exists
-// to close, and one of them is a list somebody could edit.
+// file switching off the report about itself. The dotenv policy is the second
+// mechanism: this key is deliberately ABSENT from `WORKSPACE_DOTENV_OPTOUTS`
+// in src/helpers/workspace-dotenv.mjs, so the loader classifies it as an
+// ignored key and never puts it in the environment at all — whatever the file
+// says. (The comment used to name a `HOST_ONLY_OPTOUTS` constant, which has
+// never existed; the guarantee is real, its description was not.) Two
+// independent reasons, because this is the exact confused-deputy shape the
+// decision behind this lot exists to close, and one of them is a list
+// somebody could edit.
 const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_BINDING_BRIEFING || '').toLowerCase())) {
   process.exit(0);
@@ -145,7 +150,7 @@ function build() {
     // until they act on it — which is better than a one-shot announcement the
     // one session that happened to run the import.
     imported: binding?.confirmedVia === 'migration'
-      ? { vault: binding.vault, at: binding.confirmedAt, dotenvFile: null }
+      ? { vault: binding.vault, at: binding.confirmedAt, locked: binding.locked, dotenvFile: null }
       : null,
   });
 }

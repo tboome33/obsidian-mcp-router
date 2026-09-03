@@ -62,8 +62,15 @@ export function writeFileAtomicSync(absPath, content, { fsMod = fs } = {}) {
   // Best effort in the honest sense: if the target does not exist yet there is
   // nothing to copy, and if `chmod` is unsupported (Windows does almost
   // nothing with it) the write still has to happen. What must never occur is
-  // silently WIDENING an existing file's permissions, and that is what the
-  // copy prevents.
+  // silently WIDENING an existing file's POSIX permission bits, and that is
+  // what the copy prevents.
+  //
+  // WHAT IT DOES NOT CARRY: a Windows ACL. `mode` is nine POSIX bits; on NTFS
+  // the temp file gets the directory's inherited DACL, and the rename keeps
+  // it — so a config hardened with an explicit ACL under a broader parent
+  // comes back with the parent's. Saying so rather than implying the write
+  // preserves "permissions" in general: on Windows the protection that
+  // matters for this file is the profile directory it lives in.
   let mode = null;
   try { mode = fsMod.statSync(absPath).mode & 0o777; } catch { /* new file */ }
 

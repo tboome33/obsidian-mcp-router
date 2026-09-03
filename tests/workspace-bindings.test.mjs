@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +51,7 @@ import {
 } from '../src/helpers/workspace-dotenv.mjs';
 import { blankStringsAndComments } from './_source-scan.mjs';
 import { _internals, loadRegistry } from '../src/registry.mjs';
+import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 
 const { resolveDefaultVaultWithSource } = _internals;
 
@@ -413,6 +415,40 @@ describe('updateConfigBindings — the ONE writer, and the lock that makes it on
     }), /cannot read the router config/);
     assert.equal(released, true);
   });
+
+  test('the lock is released when the WRITE ITSELF throws — the exit path nothing covered', () => {
+    // Three exit paths were pinned (success, unparseable config, crashed
+    // transform) and the fourth was not, so a `finally` narrowed to the first
+    // three would have stayed green while a disk-full or read-only config
+    // stranded the lock for every other process on the machine for a full
+    // minute — including the router's own start-up. Codex flagged the gap in
+    // the final review, 2026-09-03; the coverage was one line short of the
+    // failure mode most likely to actually happen.
+    let released = false;
+    assert.throws(() => updateConfigBindings('/cfg/config.json', (c) => ({ ...c, x: 1 }), {
+      lock: () => () => { released = true; },
+      readFile: () => '{}',
+      writeFile: () => { throw new Error('ENOSPC'); },
+    }), /ENOSPC/);
+    assert.equal(released, true, 'a failed write must not strand the lock');
+  });
+
+  test('a transform that changes NOTHING writes nothing at all', () => {
+    // Identity, not deep equality: every transform here is pure and returns a
+    // new object when it changes something, so handing back the same object is
+    // an unambiguous "no change". `unlock_vaults --persist` on a workspace
+    // with no binding used to rewrite the file holding every vault's API key
+    // for nothing — a write that cannot change the content can still fail, and
+    // still moves the mtime the one-time import reads.
+    const writes = [];
+    const out = updateConfigBindings('/cfg/config.json', (c) => c, {
+      lock: () => () => {},
+      readFile: () => '{"portRegistry":{}}',
+      writeFile: (p, content) => writes.push(content),
+    });
+    assert.deepEqual(writes, []);
+    assert.deepEqual(out, { portRegistry: {} }, 'and the caller still gets the config back');
+  });
 });
 
 describe('acquireLock — mutual exclusion between processes', () => {
@@ -570,11 +606,38 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
   const decide = (over = {}) => migrationDecision({ ...base, ...over });
 
   test('the ordinary case: a hint older than the upgrade, naming a registered vault, is imported', () => {
-    assert.deepEqual(decide(), { import: true, vault: 'notes', reason: IMPORT_REASON.IMPORTED });
+    assert.deepEqual(decide(), {
+      import: true, vault: 'notes', locked: false, reason: IMPORT_REASON.IMPORTED, record: true,
+    });
   });
 
-  test('a workspace that ALREADY has a binding is left alone', () => {
-    assert.equal(decide({ binding: { vault: 'work' } }).reason, IMPORT_REASON.ALREADY_BOUND);
+  test('a workspace that ALREADY has a binding is left alone — AND written down as considered', () => {
+    // `record` is the half that was missing, and its absence was a defect with
+    // teeth. The window only closed for a workspace something was actually
+    // imported INTO, so a workspace that already had a binding at the first
+    // start of this version was never recorded — and the day the user CLEARED
+    // that binding, the next start read the still-present dotenv hint and put
+    // the binding back, `confirmedVia: 'migration'`. An automatic import
+    // silently reversing an explicit human decision, which is the exact
+    // failure this whole mechanism is built to prevent. Measured against the
+    // real `loadRegistry` in the final review, 2026-09-03.
+    const d = decide({ binding: { vault: 'work' } });
+    assert.equal(d.reason, IMPORT_REASON.ALREADY_BOUND);
+    assert.equal(d.import, false, 'nothing is imported over an existing binding');
+    assert.equal(d.record, true, 'but this workspace is done with: the window closes');
+  });
+
+  test('the window closes ONLY on the two verdicts that are permanent', () => {
+    // The other four are transient conditions, and recording them would turn
+    // a passing state into a life sentence: a vault registered next week
+    // (`unknown-vault`), a hint added next month (`no-hint`), a value that
+    // came from the host this time (`not-from-a-file`), a file edited after
+    // the upgrade (`newer-than-upgrade`) — each may become importable later.
+    assert.equal(decide({ hint: undefined }).record, false, 'no-hint');
+    assert.equal(decide({ hintOrigin: 'host' }).record, false, 'not-from-a-file');
+    assert.equal(decide({ hint: 'ghost' }).record, false, 'unknown-vault');
+    assert.equal(decide({ dotenvMtimeMs: Date.parse('2026-09-04T00:00:00Z') }).record, false, 'newer-than-upgrade');
+    assert.equal(decide({ alreadyImported: true }).record, false, 'already recorded, nothing to add');
   });
 
   test('a workspace already imported is NEVER imported again — this is what makes a `clear` permanent', () => {
@@ -582,6 +645,74 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
     // quietly undo the user's decision to unbind. The one rule of this whole
     // mechanism that protects an explicit human act.
     assert.equal(decide({ alreadyImported: true }).reason, IMPORT_REASON.ALREADY_CONSIDERED);
+  });
+
+  test('a PERSISTED LOCK is migrated too, and it decides the vault', () => {
+    // `lock_vault --persist` wrote OBSIDIAN_ROUTER_LOCKED into the workspace
+    // file, and the router applied it at start-up. Closing the gate refuses
+    // it — so without this an upgrade removed an isolation boundary the user
+    // had explicitly set, in silence, with no field anywhere reporting it.
+    //
+    // It is considered BEFORE the default-vault hint because it decided more:
+    // while a lock was in force, every call without an explicit vault resolved
+    // to the locked one and every other vault was refused. A file naming a
+    // lock on `work` and a default of `notes` described a workspace on `work`
+    // alone, so importing `notes` would move where the notes go.
+    const d = decide({ lockHint: 'work', lockHintOrigin: 'workspace-dotenv', lockMtimeMs: base.dotenvMtimeMs });
+    assert.equal(d.import, true);
+    assert.equal(d.vault, 'work', 'the LOCKED vault, not the default hint');
+    assert.equal(d.locked, true);
+  });
+
+  test('a lock hint naming an UNREGISTERED vault imports NOTHING — it does not fall back', () => {
+    // Codex, round 5. The fall-back was the wrong instinct: a file naming a
+    // lock on B and a default of A described an installation working in B
+    // alone, so importing A binds the workspace to a vault the old behaviour
+    // never used — and then `record` CLOSES the window on that wrong answer,
+    // so registering B tomorrow can never restore the isolation. A transient
+    // condition (a vault temporarily disabled, not yet re-added) would have
+    // become a permanent verdict, which is exactly what `CLOSING_REASONS`
+    // exists to prevent one level up.
+    const d = decide({ lockHint: 'ghost', lockHintOrigin: 'workspace-dotenv', lockMtimeMs: base.dotenvMtimeMs });
+    assert.equal(d.import, false, 'nothing is imported');
+    assert.equal(d.reason, IMPORT_REASON.UNKNOWN_VAULT);
+    assert.equal(d.record, false, 'and the window stays OPEN for when that vault comes back');
+  });
+
+  test('an age that cannot be established fails CLOSED', () => {
+    // `mtimeMs` is null when the file the loader read has been deleted,
+    // renamed or made unreadable since — so the one fact separating a
+    // workspace attached last year from a repository cloned this morning was
+    // never measured. `Number.isFinite` guarded only the comparison, so a null
+    // skipped the window check entirely and the hint was imported on the
+    // strength of a measurement nobody took. (Codex, round 5.)
+    assert.equal(decide({ dotenvMtimeMs: null }).reason, IMPORT_REASON.NEWER_THAN_UPGRADE);
+    assert.equal(decide({ dotenvMtimeMs: undefined }).reason, IMPORT_REASON.NEWER_THAN_UPGRADE);
+    assert.equal(decide({ dotenvMtimeMs: NaN }).reason, IMPORT_REASON.NEWER_THAN_UPGRADE);
+    // And it stays OPEN: an unreadable file this minute is readable the next.
+    assert.equal(decide({ dotenvMtimeMs: null }).record, false);
+    // With no window open yet there is nothing to compare against, so the
+    // first-ever start still imports — that limit is documented, not accidental.
+    assert.equal(decide({ dotenvMtimeMs: null, openedAt: null }).import, true);
+  });
+
+  test('a lock hint follows every rule the default hint follows', () => {
+    const withLock = (over) => decide({
+      lockHint: 'work', lockHintOrigin: 'workspace-dotenv', lockMtimeMs: base.dotenvMtimeMs, ...over,
+    });
+    // From the HOST it is already an authority; importing it would record a
+    // confirmation nobody gave — so the default hint is used instead.
+    assert.equal(withLock({ lockHintOrigin: 'host' }).vault, 'notes');
+    // Naming a vault this machine does not have, it imports NOTHING — see the
+    // test above for why falling back to the default hint was wrong.
+    assert.equal(withLock({ lockHint: 'ghost' }).import, false);
+    // And its OWN file's mtime closes the window on it — the lock line may
+    // live in a different file from the default hint, so the mtime that counts
+    // is the one of the file that carried the value being imported.
+    assert.equal(
+      withLock({ lockMtimeMs: Date.parse('2026-09-04T00:00:00Z') }).reason,
+      IMPORT_REASON.NEWER_THAN_UPGRADE,
+    );
   });
 
   test('no hint, nothing to import', () => {
@@ -620,11 +751,25 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
     assert.equal(decide({ openedAt: null, dotenvMtimeMs: Date.now() }).reason, IMPORT_REASON.IMPORTED);
   });
 
-  test('an unreadable mtime or an unparseable window does not silently open the door forever', () => {
-    // Both are "we cannot tell". The choice is to import — the migration's
-    // whole purpose — and it stays bounded because `alreadyImported` is
-    // recorded either way.
-    assert.equal(decide({ dotenvMtimeMs: null }).reason, IMPORT_REASON.IMPORTED);
+  test('"we cannot tell" splits into two answers, and only one of them imports', () => {
+    // These two used to be treated as one case — "we cannot tell, so import,
+    // and it stays bounded because the workspace is recorded either way". The
+    // reasoning was wrong on the first of them, and Codex said so in round 5:
+    // being recorded bounds the NUMBER of imports, not their correctness, and
+    // an import is exactly the decision that needs the fact nobody measured.
+    //
+    //   - AN UNREADABLE MTIME is a missing measurement about THIS workspace's
+    //     file: the file the loader read is gone, renamed or unreadable, so
+    //     the one thing separating a workspace attached last year from a
+    //     repository cloned this morning was never established. Fail closed:
+    //     the hint stays a hint, the briefing says so, one sentence confirms it.
+    //     The window stays open, because the file may be readable next time.
+    //   - AN UNPARSEABLE `openedAt` is a corrupt WINDOW, not a corrupt file.
+    //     There is no upgrade instant to compare against, which is the same
+    //     situation as a first-ever start — and that case imports by design.
+    const unreadable = decide({ dotenvMtimeMs: null });
+    assert.equal(unreadable.reason, IMPORT_REASON.NEWER_THAN_UPGRADE);
+    assert.equal(unreadable.record, false, 'and it stays open for a later start');
     assert.equal(decide({ openedAt: 'not a date' }).reason, IMPORT_REASON.IMPORTED);
   });
 
@@ -674,6 +819,27 @@ describe('the migration state — read and written at the boundary', () => {
     assert.deepEqual(twice[MIGRATION_KEY].imported, [canonicalWorkspaceKey(cwd)], 'recorded once');
   });
 
+  test('a state that changes NOTHING returns the input object, so the writer can skip the file', () => {
+    // Identity is the signal `updateConfigBindings` reads. Without it the
+    // migration re-recorded the window on every start — content-identical,
+    // object-new — and the router rewrote `config.json`, the file holding
+    // every vault's API key, once per session forever.
+    //
+    // TESTED HERE, DIRECTLY, because the integration test cannot separate this
+    // repair from the other one: the caller now also skips the lock when the
+    // workspace is already recorded, so either repair alone suppresses the
+    // write and neither has a witness through the registry. Two defences, two
+    // tests — the pair is pinned end-to-end by "a settled workspace writes
+    // nothing on later starts" further down.
+    const opened = withMigrationState({}, { at: '2026-09-03T00:00:00Z' });
+    assert.equal(withMigrationState(opened, { at: '2027-01-01T00:00:00Z' }), opened,
+      're-opening an open window changes nothing');
+    const recorded = withMigrationState(opened, { cwd, recordImported: true });
+    assert.notEqual(recorded, opened, 'the first recording IS a change');
+    assert.equal(withMigrationState(recorded, { cwd, recordImported: true }), recorded,
+      'recording the same workspace twice changes nothing');
+  });
+
   test('the window is opened even when nothing is imported — otherwise every later workspace looks pre-upgrade', () => {
     const opened = withMigrationState({}, { at: '2026-09-03T00:00:00Z', recordImported: false });
     assert.equal(opened[MIGRATION_KEY].openedAt, '2026-09-03T00:00:00Z');
@@ -690,14 +856,21 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
    * caller was not.
    */
   const roots = [];
-  const scenario = ({ hintAge = 'old', bindings, migration } = {}) => {
+  const scenario = ({
+    hintAge = 'old',
+    bindings,
+    migration,
+    // The whole dotenv body, so a scenario can carry a persisted LOCK line as
+    // well as the default-vault hint. Both are migrated, and the lock decides.
+    dotenv = 'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\n',
+  } = {}) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-'));
     roots.push(root);
     const vault = path.join(root, 'notes');
     fs.mkdirSync(vault, { recursive: true });
     const ws = path.join(root, 'project');
     fs.mkdirSync(ws, { recursive: true });
-    fs.writeFileSync(path.join(ws, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\n', 'utf8');
+    fs.writeFileSync(path.join(ws, '.env'), dotenv, 'utf8');
     if (hintAge === 'old') {
       const old = new Date('2020-01-01T00:00:00Z');
       fs.utimesSync(path.join(ws, '.env'), old, old);
@@ -715,18 +888,25 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
   /** Load the registry AS IF the router had started in `ws`. */
   async function loadIn(sc) {
     const prevCwd = process.cwd();
-    const hadVault = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
-    const prevVault = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    // BOTH gated variables are saved and cleared, not just the default vault:
+    // a scenario whose `.env` carries a persisted lock has to reach the loader
+    // through the file, exactly as it would in the field, and a leftover value
+    // in this process's environment would arrive as the HOST's and be an
+    // authority instead.
+    const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED'];
+    const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
     _resetWorkspaceDotenvProvenance();
-    delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    for (const k of KEYS) delete process.env[k];
     process.chdir(sc.ws);
     try {
       applyWorkspaceDotenv({ cwd: sc.ws, env: process.env, warn: () => {} });
       return await loadRegistry({ configPath: sc.configPath });
     } finally {
       process.chdir(prevCwd);
-      if (hadVault) process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = prevVault;
-      else delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      for (const [k, had, value] of saved) {
+        if (had) process.env[k] = value;
+        else delete process.env[k];
+      }
       _resetWorkspaceDotenvProvenance();
     }
   }
@@ -831,6 +1011,228 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     const reg = await loadIn(sc);
     assert.equal(reg.bindingImported, null);
     assert.equal(reg.workspaceBinding.confirmedVia, 'tool', 'the user\'s own confirmation is untouched');
+  });
+
+  test('A CLEARED BINDING STAYS CLEARED, even when the binding predates the first start', async () => {
+    // THE BLOCKER of the final review, reproduced end-to-end against the real
+    // `loadRegistry` before it was fixed.
+    //
+    // The window used to close for a workspace only when something was
+    // actually imported INTO it. A workspace that already had a binding —
+    // written by `--attach`, by the tool, or by `lock_vault --persist` before
+    // this version ever ran — came out of the first start as `already-bound`
+    // and was never written into `imported[]`. So the day the user cleared
+    // that binding, the next start found no binding, found the still-present
+    // dotenv hint, and imported it: an automatic decision reversing an
+    // explicit human one, which is the single failure this whole mechanism
+    // exists to prevent. `confirmedVia` came back `migration`, so the config
+    // even recorded that nobody had confirmed the thing the user had just
+    // deliberately removed.
+    const sc = scenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = sc.read();
+    cfg[WORKSPACE_BINDINGS_KEY] = { [key]: { vault: 'notes', also: [], confirmedVia: 'attach' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+    const first = await loadIn(sc);
+    assert.equal(first.bindingImported, null, 'nothing imported over an existing binding');
+    assert.deepEqual(sc.read()[MIGRATION_KEY].imported, [key],
+      'but the workspace is written down as considered — this is the fix');
+
+    // The user clears it, through the very transform the tool uses.
+    updateConfigBindings(sc.configPath, (c) => withoutBinding(c, sc.ws));
+    assert.equal(readBinding(sc.read(), sc.ws), null);
+
+    const second = await loadIn(sc);
+    assert.equal(second.bindingImported, null, 'the cleared binding does NOT come back');
+    assert.equal(second.workspaceBinding, null, 'and the workspace is on "all vaults", as the user asked');
+  });
+
+  test('and `clear` through THE TOOL closes the window too, whatever the migration had decided', async () => {
+    // The registry side closes it for `already-bound`; the tool closes it for
+    // the act the user just performed. Two independent reasons, because this
+    // is the one place an automatic decision can overwrite a human one — and a
+    // workspace can reach `clear` down a path where the migration never had an
+    // opinion to record.
+    //
+    // THE TOOL IS CALLED, not the transform it happens to use. The first
+    // version of this test built the same config by calling
+    // `updateConfigBindings` with `withMigrationState(withoutBinding(...))` by
+    // hand — which is the production code copied into the test, so removing
+    // that call from `confirm_workspace_binding` left it green. A mutation
+    // said so before this comment was written; the test was decoration for
+    // about twenty minutes.
+    const sc = scenario({ migration: { openedAt: '2020-06-01T00:00:00Z', imported: [] } });
+    const key = canonicalWorkspaceKey(sc.ws);
+    updateConfigBindings(sc.configPath, (c) => withBinding(c, sc.ws, { vault: 'notes', confirmedVia: 'tool' }));
+
+    const registry = {
+      configPath: sc.configPath,
+      vaults: [{ name: 'notes', type: 'local', path: sc.vault }],
+      workspaceBinding: readBinding(sc.read(), sc.ws),
+    };
+    await confirmWorkspaceBinding(registry, { clear: true }, { cwd: sc.ws });
+    assert.deepEqual(sc.read()[MIGRATION_KEY].imported, [key],
+      'the tool itself wrote the workspace down as considered');
+
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported, null, 'the hint is not re-imported after a clear');
+    assert.equal(reg.workspaceBinding, null);
+  });
+
+  test('A SETTLED WORKSPACE WRITES NOTHING ON LATER STARTS — the config is not touched per session', async () => {
+    // A REGRESSION INTRODUCED BY THIS ROUND'S OWN REPAIR, caught by measuring
+    // rather than by reading. Closing the window for `already-bound` made that
+    // a verdict returned on EVERY start, and the recording is idempotent in
+    // content but was returning a fresh object regardless — so the router
+    // re-took the inter-process config lock and rewrote `config.json`, the file
+    // holding every vault's API key, once per session for the rest of time.
+    // Two sessions starting together would also wait on each other for it.
+    //
+    // Two independent repairs, and this test needs both: `withMigrationState`
+    // returns its input when nothing changes, so the WRITE is suppressed; and
+    // the caller skips the lock entirely when the workspace is already
+    // recorded, so the CONTENTION is too. The mtime is what a user would
+    // notice; it is also the only thing that proves no write happened.
+    const sc = scenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = sc.read();
+    cfg[WORKSPACE_BINDINGS_KEY] = { [key]: { vault: 'notes', also: [], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+    await loadIn(sc); // the start that records the workspace as considered
+    assert.deepEqual(sc.read()[MIGRATION_KEY].imported, [key]);
+
+    // The mtime is stamped to a KNOWN OLD instant rather than merely read
+    // back: two starts inside one filesystem tick would otherwise leave an
+    // unchanged mtime whether or not a write happened, which is the
+    // granularity flake this repository has already been bitten by
+    // (`staleMs: -1`, one launch in three). An hour in the past cannot be
+    // produced by accident.
+    const stamp = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(sc.configPath, stamp, stamp);
+    const settled = fs.statSync(sc.configPath).mtimeMs;
+    await loadIn(sc);
+    await loadIn(sc);
+    assert.equal(fs.statSync(sc.configPath).mtimeMs, settled,
+      'a second and third start must not rewrite the config at all');
+  });
+
+  test('a settled workspace does not even TAKE the config lock — two sessions never wait on each other', async () => {
+    // The second half of the repair above, and it needs its own witness
+    // because the two mask each other: suppressing the WRITE already stops the
+    // file changing, so the mtime assertion cannot tell whether the lock was
+    // taken. It matters on its own — Roland runs parallel sessions on one
+    // machine, and a lock taken at every start of every bound workspace
+    // serialises their start-ups for nothing.
+    //
+    // Observed by HOLDING the lock and requiring the start to be unaffected.
+    // The assertion is one-sided and cannot flake in the false-failure
+    // direction: an uncontended start is milliseconds, and a start that takes
+    // the lock waits `LOCK_WAIT_MS` (10s) before giving up. Anything under
+    // five seconds means the lock was never requested.
+    const sc = scenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = sc.read();
+    cfg[WORKSPACE_BINDINGS_KEY] = { [key]: { vault: 'notes', also: [], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2), 'utf8');
+    await loadIn(sc); // records the workspace as considered
+
+    const release = acquireLock(lockPathFor(sc.configPath, 'config'), { waitMs: 0 });
+    assert.ok(release, 'the test must actually hold the lock');
+    try {
+      const started = Date.now();
+      const reg = await loadIn(sc);
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 5_000, `a settled start must not queue behind the lock (took ${elapsed}ms)`);
+      assert.equal(reg.workspaceBinding?.vault, 'notes', 'and it still answers correctly');
+    } finally {
+      release();
+    }
+  });
+
+  test('A PERSISTED LOCK survives the upgrade — end to end, from the file to the registry', async () => {
+    // `lock_vault --persist` wrote this pair. Before the fix the import read
+    // only the default-vault line, wrote `locked: false`, and start-up then
+    // refused the workspace-origin `OBSIDIAN_ROUTER_LOCKED` — so an isolation
+    // boundary the user had explicitly set disappeared on upgrade with nothing
+    // anywhere reporting it. Not a lost convenience: the point of a lock is
+    // that writes cannot land in another vault.
+    const sc = scenario({ dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\nOBSIDIAN_ROUTER_LOCKED=notes\n' });
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported?.vault, 'notes');
+    assert.equal(reg.bindingImported?.locked, true, 'the import says the lock came with it');
+    assert.equal(reg.workspaceBinding.locked, true, 'and the binding on disk carries it');
+    assert.equal(sc.read()[WORKSPACE_BINDINGS_KEY][canonicalWorkspaceKey(sc.ws)].locked, true);
+  });
+
+  test('THE LIMIT, MEASURED: an archive-extracted project keeps its mtime and IS imported', async () => {
+    // `git clone` writes its files now, which is what the window relies on.
+    // `tar x`, an unzip that restores timestamps, GitHub's source zipball and
+    // `rsync -a` do NOT: they restore the recorded mtime, so a project
+    // obtained that way after the upgrade looks older than it is and is
+    // imported. No in-process check can tell that file from one written last
+    // year — a timestamp is the only signal the disk carries.
+    //
+    // Pinned rather than fixed, and stated in the README and the CHANGELOG in
+    // the same words, because the absolute "a repository you clone after
+    // upgrading is never imported" is the kind of claim a user plans around.
+    // If someone ever finds a real discriminator, this test is what tells them
+    // they are changing a documented behaviour.
+    const sc = scenario({ migration: { openedAt: new Date(Date.now() - 3_600_000).toISOString(), imported: [] } });
+    const lastYear = new Date(Date.now() - 365 * 86_400_000);
+    fs.utimesSync(path.join(sc.ws, '.env'), lastYear, lastYear);
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported?.vault, 'notes', 'imported — the known limit');
+    assert.equal(reg.workspaceBinding.confirmedVia, 'migration',
+      'and announced as an import at every session, which is what makes it recoverable');
+  });
+
+  test('a binding confirmed after start-up is seen even when the import does NOTHING', async () => {
+    // Codex, round 5, on the repair round 4 made. Handing back the binding
+    // read INSIDE the lock fixed the path where the import ran — and left the
+    // early-return path reading the copy `loadRegistry` parsed at start-up.
+    // That is the overwhelmingly common path: nothing to import, so return
+    // immediately. A binding another session confirmed in between was on disk,
+    // correctly untouched, and ignored for this session's entire life under
+    // `--no-watch`, with unqualified calls going wherever the cascade pointed.
+    // A fix that reaches only its first site, in a repair for a fix that
+    // reached only its first site.
+    //
+    // The window is CLOSED here (`imported` already holds this workspace), so
+    // the import has nothing to do and takes no lock — which is precisely the
+    // path that was reading stale.
+    //
+    // THE FIXTURE IS WHAT MAKES THIS DECISIVE. Writing the binding to the file
+    // before `loadIn` would put it in the start-up copy too, and the test
+    // would pass with or without the repair. So the START-UP READ is patched
+    // to return the config WITHOUT the binding — `loadRegistry` reads through
+    // `node:fs/promises`, the fallback re-reads through `node:fs` — while the
+    // file on disk carries it. That is the interleaving, reproduced by making
+    // the two reads see the two states rather than by hoping for a race.
+    const sc = scenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const settled = sc.read();
+    settled[MIGRATION_KEY] = { openedAt: '2020-06-01T00:00:00Z', imported: [key] };
+    const stale = JSON.stringify(settled, null, 2);
+    // What another process confirmed, on disk, after our start-up read.
+    settled[WORKSPACE_BINDINGS_KEY] = { [key]: { vault: 'notes', also: ['late'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(settled, null, 2), 'utf8');
+
+    const realRead = fsp.readFile;
+    fsp.readFile = async function patched(p, ...rest) {
+      if (String(p) === sc.configPath) return stale;
+      return realRead.call(this, p, ...rest);
+    };
+    let reg;
+    try {
+      reg = await loadIn(sc);
+    } finally {
+      fsp.readFile = realRead;
+    }
+    assert.equal(reg.bindingImported, null, 'nothing was imported — this is the early-return path');
+    assert.equal(reg.workspaceBinding?.vault, 'notes', 'and the binding on disk is in force');
+    assert.deepEqual(reg.workspaceBinding.also, ['late']);
   });
 
   test('an unwritable config does not stop the router from starting', async () => {

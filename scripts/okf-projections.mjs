@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
 
 const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
@@ -69,7 +70,10 @@ function parseArgs(argv) {
     } catch {
       usage(`--all-vaults needs a readable router config at ${CONFIG_PATH}`);
     }
-    paths.push(...Object.keys(cfg.portRegistry || {}));
+    // Through the accessor: the container is validated there, so a hand-edited
+  // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and
+  // "1". Sixth key of the `vaultNames` class, swept in the final review.
+  paths.push(...registeredVaultPaths(cfg));
   }
   paths.push(...args.vaults);
   if (paths.length === 0) usage('Nothing to do — pass --vault <dir> and/or --all-vaults.');

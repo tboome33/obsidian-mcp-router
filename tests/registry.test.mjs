@@ -18,10 +18,12 @@ import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
+import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
 import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/index.mjs';
 import { buildDefaultVaultStatus } from '../src/tools/list-vaults.mjs';
 import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath, pathBasename } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
@@ -874,6 +876,127 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.match(envContent, /ALSO_KEEP=world/);
   });
 
+  test('lockVault --persist onto ANOTHER vault keeps the previous primary and its secondaries', async () => {
+    // The PUBLIC path for the defect the private suite pinned. Every other
+    // test of that wiring calls `recordLockInBinding` directly, so a caller
+    // mutation — `lock_vault` writing its own binding instead of going through
+    // the helper — would leave them all green while the tool silently dropped
+    // vaults from the user's own config.
+    //
+    // Locking onto `beta` when the workspace goes with `alpha` (and `gamma`
+    // also bound) used to leave `{ vault: 'beta', also: [] }`: two bindings
+    // the user had recorded, gone, from an operation whose subject is
+    // something else entirely. Found in the final review, 2026-09-03.
+    const configPath = path.join(tmpDir, 'lock-carry-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['gamma'], locked: false, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    const result = await lockVault(reg, { vault: 'beta', persist: true });
+
+    assert.equal(result.persisted, true);
+    const entry = JSON.parse(await fs.readFile(configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'beta', 'the locked vault becomes the primary');
+    assert.deepEqual(entry.also, ['alpha', 'gamma'], 'and nothing the user recorded is lost');
+    assert.equal(entry.locked, true);
+    // The live session agrees with the file it just wrote — including the
+    // DEFAULT, which is tier 0 of the cascade and moved with the primary.
+    assert.equal(reg.workspaceBinding.vault, 'beta');
+    assert.equal(reg.defaultVault, 'beta');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'binding', variable: null });
+  });
+
+  test('unlockVaults --persist on a workspace with NO binding reports success, not a phantom lock', async () => {
+    // The PUBLIC half of the sentinel. `bindingLifted: false` is relayed by
+    // `skills/unlock` as "the lock is still recorded in the router config and
+    // WILL come back at the next start" — for a workspace that never had a
+    // binding, that sentence sends the user hunting for a lock nobody set.
+    // Only the private helper's return was pinned, so the caller could
+    // reinterpret it and nothing went red. (Codex, round 5.)
+    const configPath = path.join(tmpDir, 'unlock-none-config.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    await fs.writeFile(path.join(tmpDir, '.env'), 'OBSIDIAN_ROUTER_LOCKED=alpha\n', 'utf8');
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    reg.lockedVault = 'alpha';
+    const result = await unlockVaults(reg, { persist: true });
+
+    assert.equal(result.bindingLifted, true, 'nothing is recorded, so nothing comes back');
+    assert.equal(result.persisted, true, 'and the unlock does survive a restart');
+    assert.match(result.message, /No lock is recorded for this workspace/);
+    assert.doesNotMatch(result.message, /could NOT be written/);
+    // Nothing was invented on disk to say so.
+    const after = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    assert.equal(after.workspaceBindings, undefined);
+  });
+
+  test('unlockVaults --persist adopts the binding on disk, DEFAULT included, not only the lock flag', async () => {
+    // The lift path writes nothing when the binding is already unlocked, and
+    // the first version of that branch refreshed `workspaceBinding` and the
+    // hint but NOT `defaultVault`. So a session that started on `alpha`, whose
+    // workspace had since been re-bound to `beta` by another process, came out
+    // of `unlock_vaults --persist` reporting `beta` as its binding while still
+    // routing every unqualified call to `alpha` — a registry contradicting
+    // itself, and writes landing in the vault the user had moved away from.
+    // (Codex, round 5.)
+    const configPath = path.join(tmpDir, 'unlock-adopt-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'beta', also: [], locked: false, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    reg.lockedVault = 'alpha';
+    reg.defaultVault = 'alpha';
+    reg.defaultVaultSource = { origin: 'config', variable: null };
+    await unlockVaults(reg, { persist: true });
+
+    assert.equal(reg.workspaceBinding.vault, 'beta', 'the live binding is what the file says');
+    assert.equal(reg.defaultVault, 'beta', 'and so is the vault unqualified calls resolve to');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'binding', variable: null });
+  });
+
+  test('unlockVaults --persist reports persisted:FALSE when the config cannot be written', async () => {
+    // `persisted` used to be `persist === true` — a report of what the caller
+    // ASKED FOR. So an unwritable config returned `persisted: true` beside
+    // `bindingLifted: false`, two fields of one response contradicting each
+    // other while the binding stayed locked and came back at the next start.
+    const configPath = path.join(tmpDir, 'unlock-locked-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.writeFile(path.join(tmpDir, '.env'), 'OBSIDIAN_ROUTER_LOCKED=alpha\n', 'utf8');
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    reg.lockedVault = 'alpha';
+    // Hold the config lock so the write is refused rather than clobbering.
+    const release = acquireLock(lockPathFor(configPath, 'config'), { waitMs: 0 });
+    assert.ok(release, 'the test must actually hold the lock');
+    let result;
+    try {
+      result = await unlockVaults(reg, { persist: true });
+    } finally {
+      release();
+    }
+    assert.equal(result.bindingLifted, false);
+    assert.equal(result.persisted, false, 'the two fields must agree');
+    // And the lock really is still on disk, which is what the message claims.
+    const after = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    assert.equal(after.workspaceBindings[key].locked, true);
+  });
+
   test('unlockVaults with persist:true lifts the lock IN THE CONFIG but keeps the binding', async () => {
     // The public half of the lock↔binding wiring. Every other test of that
     // wiring calls the private `recordLockInBinding` directly, so removing the
@@ -901,6 +1024,79 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(after.vault, 'alpha', 'the workspace still goes with its vault');
     assert.deepEqual(after.also, ['beta'], 'and keeps its secondaries');
     assert.equal(after.confirmedVia, 'tool', 'the original provenance is not rewritten');
+  });
+
+  // -------------------------------------------------------------------------
+  // Sixth review, 2026-09-04 — "the system says one thing and does another".
+  // -------------------------------------------------------------------------
+
+  const clearSeams = () => ({
+    cwd: tmpDir,
+    ping: async () => ({ online: true }),
+    launch: () => ({ launched: false, uri: null, reason: 'test' }),
+  });
+
+  test('a PERSISTED lock is the binding\'s lock: clearing the binding releases it, and the source says so', async () => {
+    // lock_vault --persist recorded the lock on the binding and kept
+    // `lockSource: runtime`; `confirm_workspace_binding({ clear: true })`
+    // releases a lock by asking who imposed it (round 5), so it left the
+    // session locked to a vault whose binding it had just deleted, while
+    // answering "all registered vaults are available again". The next start
+    // then disagreed with the session.
+    const configPath = path.join(tmpDir, 'lock-clear-config.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const reg = { ...makeRegistry(), configPath, defaultVault: 'alpha', defaultVaultSource: { origin: 'config', variable: null } };
+
+    const locked = await lockVault(reg, { vault: 'alpha', persist: true });
+    assert.equal(locked.persisted, true);
+    assert.deepEqual(reg.lockSource, { origin: 'binding', variable: null },
+      'a lock that is recorded on the binding is credited to the binding');
+
+    const r = await confirmWorkspaceBinding(reg, { clear: true }, clearSeams());
+    assert.equal(r.cleared, true);
+    assert.equal(reg.lockedVault, null, 'the session really is unlocked, as the message says');
+    assert.doesNotMatch(r.message, /still locked/);
+  });
+
+  test('a VOLATILE lock survives a clear, and the answer names it instead of contradicting it', async () => {
+    const configPath = path.join(tmpDir, 'lock-clear-volatile-config.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'beta', confirmedVia: 'tool' } },
+    }), 'utf8');
+    const reg = { ...makeRegistry(), configPath, defaultVault: 'beta', defaultVaultSource: { origin: 'binding', variable: null } };
+
+    await lockVault(reg, { vault: 'alpha' });
+    const r = await confirmWorkspaceBinding(reg, { clear: true }, clearSeams());
+    assert.equal(reg.lockedVault, 'alpha', 'this session\'s own lock is not the binding\'s to lift');
+    assert.match(r.message, /All registered vaults are available again/);
+    assert.match(r.message, /still locked to "alpha" by this session's own lock_vault call; unlock_vaults lifts it/,
+      'but the sentence must not stop at "available again" while the guard refuses every other vault');
+  });
+
+  test('unlock_vaults --persist under a HOST lock says it WILL come back, and persisted is false', async () => {
+    // OBSIDIAN_ROUTER_LOCKED from the MCP declaration or the shell is
+    // re-imposed at every start; nothing the config says lifts it. The
+    // message used to promise "it will not come back on restart".
+    const configPath = path.join(tmpDir, 'host-unlock-config.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const reg = { ...makeRegistry(), configPath, lockedVault: 'alpha', lockSource: { origin: 'host', variable: 'OBSIDIAN_ROUTER_LOCKED' } };
+
+    const r = await unlockVaults(reg, { persist: true });
+    assert.equal(reg.lockedVault, null, 'the in-memory lock is lifted for this session');
+    assert.equal(r.hostReimposes, true);
+    assert.equal(r.persisted, false, '"survives a restart" is false when the host re-imposes the lock');
+    assert.match(r.message, /came from the host/);
+    assert.match(r.message, /WILL come back at the next start/);
+    assert.doesNotMatch(r.message, /will not come back on restart/);
+
+    // And the volatile form says the same thing in fewer words.
+    const reg2 = { ...makeRegistry(), lockedVault: 'alpha', lockSource: { origin: 'host', variable: 'OBSIDIAN_ROUTER_LOCKED' } };
+    const r2 = await unlockVaults(reg2, {});
+    assert.match(r2.message, /came from the host .* will come back on restart/);
   });
 });
 

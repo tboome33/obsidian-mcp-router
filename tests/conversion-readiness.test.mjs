@@ -1017,6 +1017,28 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     ]);
   });
 
+  test('bindingImported carries whether the import also brought a LOCK across', async () => {
+    // `lock_vault --persist` wrote OBSIDIAN_ROUTER_LOCKED into the workspace
+    // file, and the router used to apply it at start-up; the one-time import
+    // now carries it onto the binding so that isolation survives the upgrade.
+    // A boundary that dropped the field would leave a caller announcing an
+    // import while omitting that the session is restricted to a single vault
+    // by a decision nobody made today — which is half the news.
+    const out = await listVaults({
+      ...registry,
+      bindingImported: { vault: 'alpha', at: '2026-09-03T10:00:00Z', locked: true, dotenvFile: '/w/.env', smuggled: 'nope' },
+    });
+    assert.deepEqual(out.bindingImported, {
+      vault: 'alpha', at: '2026-09-03T10:00:00Z', locked: true, dotenvFile: '/w/.env',
+    });
+    // Absent or not literally true is false, never "maybe locked".
+    const unlocked = await listVaults({
+      ...registry,
+      bindingImported: { vault: 'alpha', at: '2026-09-03T10:00:00Z', locked: 'yes', dotenvFile: null },
+    });
+    assert.equal(unlocked.bindingImported.locked, false);
+  });
+
   test('the two binding fields carry their VALUES across the boundary, rebuilt and validated', async () => {
     // Set equality above proves the field NAMES. It says nothing about what
     // is in them, and the only other assertion added for these two checked

@@ -397,7 +397,7 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     // block green and turns that one red. Codex flagged the gap on
     // 2026-09-03 — a private-function suite is a description, not a contract.
     const next = _internals.recordLockInBinding(reg, CWD, 'notes', io().seam);
-    assert.deepEqual(next, { vault: 'notes', locked: true });
+    assert.deepEqual(next, { vault: 'notes', locked: true, also: [] });
   });
 
   test('locking a workspace that ALREADY has a binding keeps its `also` and its provenance', async () => {
@@ -417,9 +417,37 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     assert.equal(b.locked, true);
   });
 
-  test('locking to a DIFFERENT vault than the binding drops the old `also`', async () => {
-    // The secondaries belonged to the previous primary; carrying them onto a
-    // different vault would invent a binding the user never made.
+  test('locking to a DIFFERENT vault CARRIES the previous primary and secondaries into `also`', async () => {
+    // THIS TEST USED TO PIN THE DEFECT. It asserted `also: []` under the
+    // heading "drops the old `also`", with a rationale ("carrying them onto a
+    // different vault would invent a binding the user never made") that
+    // contradicted the comment three lines above the code, which promised a
+    // lock "does not change which OTHER vaults this workspace is bound to".
+    // Both could not be true, and the destructive reading was the one the code
+    // implemented: a workspace bound to `notes` with `work` also bound, locked
+    // onto a third vault, came out bound to that vault ALONE — the other two
+    // silently gone from the user's own config. Found in the final review,
+    // 2026-09-03.
+    //
+    // What a lock says is "this workspace goes with THIS vault, now": the
+    // locked vault becomes the primary. What it does not say is "forget the
+    // others", so they move into `also`, where they stay bound and addressable
+    // by name. Nothing the user recorded is lost by an operation whose whole
+    // subject is something else.
+    const config = {
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } },
+    };
+    const { written, seam } = io(config);
+    _internals.recordLockInBinding(registryOf(), CWD, 'third', seam);
+    const b = readBinding(written[0], CWD);
+    assert.equal(b.vault, 'third', 'the locked vault is the primary');
+    assert.deepEqual(b.also, ['notes', 'work'], 'the previous primary first, then its secondaries');
+    assert.equal(b.locked, true);
+  });
+
+  test('locking onto a vault that was merely a SECONDARY promotes it without duplicating it', async () => {
+    // The narrow case the filter exists for: `also` must never end up naming
+    // the primary, or "one vault or several" stops being answerable.
     const config = {
       [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } },
     };
@@ -427,7 +455,43 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     _internals.recordLockInBinding(registryOf(), CWD, 'work', seam);
     const b = readBinding(written[0], CWD);
     assert.equal(b.vault, 'work');
-    assert.deepEqual(b.also, []);
+    assert.deepEqual(b.also, ['notes'], 'the old primary is kept, the new one is not repeated');
+  });
+
+  test('re-locking an ALREADY-locked identical binding writes nothing', async () => {
+    // The same rule as `withMigrationState`, one transform over: a write that
+    // cannot change the content can still fail, still contends for the
+    // inter-process lock, and still moves the mtime of the file holding every
+    // vault's API key. `lock_vault --persist` run twice used to rewrite it for
+    // byte-identical content. A repair that reaches only its first transform
+    // is the shape this repository keeps rediscovering — measured, then fixed
+    // in all three.
+    const config = {
+      [WORKSPACE_BINDINGS_KEY]: {
+        [canonicalWorkspaceKey(CWD)]: {
+          vault: 'notes', also: ['work'], locked: true, confirmedVia: 'tool', confirmedAt: '2020-01-01',
+        },
+      },
+    };
+    const { written, seam } = io(config);
+    const r = lockModule._internals.recordLockInBinding(registryOf(), CWD, 'notes', seam);
+    assert.deepEqual(written, [], 'nothing to change, nothing written');
+    assert.deepEqual(r, { vault: 'notes', locked: true, also: ['work'] }, 'and the state is still reported');
+  });
+
+  test('an imported binding stops claiming nobody confirmed it once the user locks it', async () => {
+    // `confirmedVia: 'migration'` is what makes the session briefing say
+    // "NOBODY CONFIRMED THIS BINDING" at every start. Persisting a lock IS a
+    // confirmation — the user typed it — so leaving the marker in place kept
+    // the router accusing itself of a guess the user had already answered.
+    // A real confirmation (`tool`, `attach`) is still not overwritten: it is
+    // not this lock's place to claim someone else's.
+    const config = {
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', confirmedVia: 'migration' } },
+    };
+    const { written, seam } = io(config);
+    _internals.recordLockInBinding(registryOf(), CWD, 'notes', seam);
+    assert.equal(readBinding(written[0], CWD).confirmedVia, 'lock');
   });
 
   test('UNLOCKING lifts the lock but KEEPS the binding — the workspace still goes with its vault', async () => {
@@ -442,10 +506,32 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     assert.deepEqual(b.also, ['work']);
   });
 
-  test('unlocking a workspace with no binding writes nothing to invent', async () => {
+  test('unlocking a workspace with no binding writes nothing to invent, and says so as a SUCCESS', async () => {
+    // Nothing is written — there is no binding to lift a lock from.
+    //
+    // But the ANSWER is not `null`. `null` from this function means "the
+    // config could not be written, a recorded lock may still be there", and
+    // `unlock_vaults` turns it into `bindingLifted: false`, which
+    // `skills/unlock` told Claude to relay as "the lock is still recorded in
+    // the router config and WILL come back at the next start". For a workspace
+    // that never had a binding that sentence is simply false, and it sent the
+    // user looking for a lock nobody had set. The two cases are now
+    // distinguishable, which is what lets both the tool message and the skill
+    // be true. Found in the final review, 2026-09-03.
     const { written, seam } = io();
     const r = _internals.recordLockInBinding(registryOf(), CWD, null, seam);
-    assert.equal(r, null);
+    assert.deepEqual(written, [], 'nothing invented on disk');
+    assert.deepEqual(r, { vault: null, locked: false, also: [] }, 'a success: no lock is recorded here');
+  });
+
+  test('unlocking a binding that is ALREADY unlocked writes nothing, and still reports success', async () => {
+    const config = {
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'], locked: false } },
+    };
+    const { written, seam } = io(config);
+    const r = _internals.recordLockInBinding(registryOf(), CWD, null, seam);
+    assert.deepEqual(written, [], 'no rewrite of an unchanged file');
+    assert.deepEqual(r, { vault: 'notes', locked: false, also: ['work'] });
   });
 
   test('BEST EFFORT: an unwritable config returns null instead of throwing', async () => {
@@ -459,6 +545,200 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
 
   test('a registry with no configPath is a no-op, not a crash', async () => {
     assert.equal(_internals.recordLockInBinding({ vaults: [] }, CWD, 'notes'), null);
+  });
+});
+
+describe('the live registry after a binding change — what THIS session sees', () => {
+  // Every field the tools mutate on the running registry, checked through the
+  // registry object rather than through the tool's return value. A tool that
+  // reports a change it did not apply is the shape this lot keeps rediscovering.
+
+  test('confirming RE-CLASSIFIES the hint: what was just adopted stops being a proposal', async () => {
+    // `bindingHint` is computed once, at start-up. Every tool that changed the
+    // binding left it alone, so after `confirm_workspace_binding({ vault })`
+    // the very hint the user had just accepted was still reported
+    // `unconfirmed` — and this tool's own description tells Claude to offer a
+    // confirmation whenever it sees that status, so the assistant would keep
+    // proposing what had already been accepted, for the whole session under
+    // `--no-watch`. Measured through the real `list_vaults` in the final
+    // review, 2026-09-03.
+    const reg = registryOf({
+      bindingHint: { status: 'unconfirmed', hint: 'notes', boundTo: null, origin: 'workspace-dotenv' },
+    });
+    const prev = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'notes';
+    try {
+      await confirmWorkspaceBinding(reg, { vault: 'notes', open: false }, seams().seam);
+      assert.equal(reg.bindingHint.status, 'confirmed', 'the hint now agrees with the binding');
+      assert.equal(reg.bindingHint.boundTo, 'notes');
+    } finally {
+      if (prev === undefined) delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      else process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = prev;
+    }
+  });
+
+  test('and CLEARING re-classifies it the other way — the proposal comes back', async () => {
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes' } } };
+    const reg = registryOf({ bindingHint: { status: 'confirmed', hint: 'notes', boundTo: 'notes', origin: 'workspace-dotenv' } });
+    const prev = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'notes';
+    try {
+      await confirmWorkspaceBinding(reg, { clear: true }, seams({ config }).seam);
+      assert.equal(reg.bindingHint.status, 'unconfirmed', 'nothing is bound, so the file is proposing again');
+      assert.equal(reg.bindingHint.boundTo, null);
+    } finally {
+      if (prev === undefined) delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      else process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = prev;
+    }
+  });
+
+  test('a persisted lock moves the session DEFAULT with it, not only the guard', async () => {
+    // The binding is tier 0 of the cascade, so a lock that moves the primary
+    // moves the default. Without this the session kept resolving unqualified
+    // calls to whatever the cascade picked at start-up while the config said
+    // the workspace goes with the vault just locked — and `unlock_vaults`
+    // handed the session back to the stale answer rather than to the binding.
+    const reg = registryOf({ defaultVault: 'work', defaultVaultSource: { origin: 'config', variable: null } });
+    lockModule._internals.recordLockInBinding(reg, CWD, 'notes', seams().seam);
+    assert.equal(reg.defaultVault, 'notes');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'binding', variable: null });
+  });
+
+  test('eligibility is re-checked INSIDE the lock, against the config the transform gets', async () => {
+    // Codex, round 5. Round 4 moved the `locked` decision inside the lock and
+    // left the NAME VALIDATION outside it, reading a copy taken before. So:
+    // A validates vault `work`, B removes `work` from the config and saves,
+    // A takes the lock and writes a binding to a vault that is no longer
+    // there — and reports success, while the next session falls through it.
+    //
+    // WHAT IS PINNED IS THAT THERE IS ONLY ONE READ, and it is the transform's.
+    // With the pre-lock read gone there is no second state to make the two
+    // reads disagree about, so the observable property is the absence of that
+    // read: restoring `const onDisk = readConfig()` before the lock takes the
+    // count from one to two, and this test goes red on the commit that does it.
+    let reads = 0;
+    const config = ON_DISK();
+    const seam = {
+      cwd: CWD,
+      readFile: () => { reads += 1; return JSON.stringify(config); },
+      writeFile: () => {},
+    };
+    await confirmWorkspaceBinding(registryOf(), { vault: 'work', open: false }, seam);
+    assert.equal(reads, 1, 'the config is read exactly once, inside the lock');
+
+    // And the file half of the check still bites: a vault the live registry
+    // knows but the config no longer lists cannot be bound, because the NEXT
+    // session would load the file and fall through the binding.
+    const gone = { portRegistry: { '/v/Notes': 27124 }, remoteVaults: [] };
+    await assert.rejects(
+      () => confirmWorkspaceBinding(registryOf(), { vault: 'work', open: false }, {
+        cwd: CWD, readFile: () => JSON.stringify(gone), writeFile: () => {},
+      }),
+      /is not a registered vault/,
+    );
+  });
+
+  test('clearing a binding whose vault name came from a hand-edited config cannot drive the terminal', async () => {
+    // `had.vault` is read straight out of `workspaceBindings` and, on this
+    // path, is never checked against the registry — so a name carrying an
+    // escape sequence or a newline reached the message raw while the rejected
+    // argument beside it was carefully sanitised. Half a guard reads as a
+    // guard. Measured on 2026-09-03.
+    const evil = `x${String.fromCharCode(27)}[31mEVIL${String.fromCharCode(10)}second line`;
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: evil } } };
+    const r = await confirmWorkspaceBinding(registryOf(), { clear: true }, seams({ config }).seam);
+    assert.equal(r.message.includes(String.fromCharCode(27)), false, 'no escape sequence');
+    assert.equal(r.message.includes(String.fromCharCode(10)), false, 'and no line break to forge a second message');
+  });
+
+  test('the SUCCESS message is sanitised too — the primary and every secondary', async () => {
+    // The refusal message was cleaned and the success message was not, which
+    // is the same half-a-guard shape one branch over. These names are the
+    // REGISTERED spellings, and a registered spelling comes from `vaultNames`
+    // or from a vault path — both hand-editable. (Codex, round 5.)
+    const evilPrimary = `n${String.fromCharCode(27)}[31motes`;
+    const evilAlso = `w${String.fromCharCode(27)}[31mork`;
+    const reg = registryOf({
+      vaults: [{ name: evilPrimary, type: 'local', path: '/v/Notes' }, { name: evilAlso, type: 'local', path: '/v/Work' }],
+    });
+    const config = {
+      portRegistry: { '/v/Notes': 27124, '/v/Work': 27125 },
+      vaultNames: { '/v/Notes': evilPrimary, '/v/Work': evilAlso },
+    };
+    const r = await confirmWorkspaceBinding(
+      reg,
+      { vault: evilPrimary, also: [evilAlso], open: false },
+      seams({ config }).seam,
+    );
+    assert.equal(r.message.includes(String.fromCharCode(27)), false, 'no escape sequence survives');
+  });
+
+  test('a persisted lock and its lift both re-classify the live hint', async () => {
+    // `refreshRegistryBindingHint` was called from the confirmation tool and
+    // from `recordLockInBinding`, and only the confirmation side was pinned —
+    // so removing the call from the lock side stayed green while `list_vaults`
+    // reported a hint that had stopped describing the binding. (Codex, round 5.)
+    const prev = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'notes';
+    try {
+      const reg = registryOf({
+        bindingHint: { status: 'unconfirmed', hint: 'notes', boundTo: null, origin: 'workspace-dotenv' },
+      });
+      const lockSeam = (config = {}) => ({
+        readFile: () => JSON.stringify(config),
+        writeFile: () => {},
+      });
+      lockModule._internals.recordLockInBinding(reg, CWD, 'notes', lockSeam());
+      assert.equal(reg.bindingHint.status, 'confirmed', 'the lock created a binding the hint now agrees with');
+      assert.equal(reg.bindingHint.boundTo, 'notes');
+
+      // And the LIFT path, which writes nothing when there is no binding —
+      // it must still leave the live hint describing reality.
+      const reg2 = registryOf({
+        bindingHint: { status: 'confirmed', hint: 'notes', boundTo: 'notes', origin: 'workspace-dotenv' },
+      });
+      lockModule._internals.recordLockInBinding(reg2, CWD, null, lockSeam());
+      assert.equal(reg2.bindingHint.status, 'unconfirmed', 'no binding on disk, so the file is proposing again');
+    } finally {
+      if (prev === undefined) delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      else process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = prev;
+    }
+  });
+
+  test('clearing releases a BINDING-imposed lock by its SOURCE, not by comparing names', async () => {
+    // Codex, round 5. This session started locked to `notes` by its binding;
+    // another process then re-bound the workspace to `work`, also locked. The
+    // clear reads `had` inside the lock — correctly `work` — and the old
+    // condition compared that fresh name with the live `lockedVault`, still
+    // `notes`. They differ, so nothing was released: the response said "all
+    // registered vaults are available again" while the session stayed locked.
+    // The question being asked is "who imposed this lock", and `lockSource`
+    // answers it.
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'work', locked: true } } };
+    const reg = registryOf({
+      lockedVault: 'notes',
+      lockSource: { origin: 'binding', variable: null },
+      defaultVault: 'notes',
+      defaultVaultSource: { origin: 'binding', variable: null },
+      configuredDefault: null,
+    });
+    const r = await confirmWorkspaceBinding(reg, { clear: true }, seams({ config }).seam);
+    assert.equal(r.cleared, true);
+    assert.equal(reg.lockedVault, null, 'the session really is unlocked, as the message says');
+    assert.notEqual(reg.defaultVaultSource.origin, 'binding', 'and the default is re-derived');
+  });
+
+  test('the vault CATALOGUE in the refusal message is sanitised too, not only the rejected name', async () => {
+    const evil = `w${String.fromCharCode(27)}[31mork`;
+    const reg = registryOf({ vaults: [{ name: evil, type: 'remote' }] });
+    const config = { portRegistry: {}, remoteVaults: [{ name: evil, baseUrl: 'https://r/' }] };
+    await assert.rejects(
+      () => confirmWorkspaceBinding(reg, { vault: 'ghost' }, seams({ config }).seam),
+      (err) => {
+        assert.equal(err.message.includes(String.fromCharCode(27)), false, 'the catalogue is cleaned');
+        return true;
+      },
+    );
   });
 });
 

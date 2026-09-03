@@ -391,7 +391,12 @@ function refuseUnsafeOut(target) {
   if (under(REPO_ROOT)) {
     err(`Refus d'écrire des clés dans le dépôt (${abs}).\n  Un secret déposé dans un arbre versionné finit par être committé.`);
   }
-  for (const vaultPath of Object.keys(cfg.portRegistry || {})) {
+  // Through the accessor, like every other reader of this container: a
+  // hand-edited `"portRegistry": "AB"` yields index keys from `Object.keys`,
+  // and this loop is a SAFETY CHECK — it refuses to write API keys inside a
+  // vault directory. A guard that enumerates a manufactured list of vault
+  // paths ("0", "1") is a guard that stops seeing the real ones. (v0.90.0)
+  for (const vaultPath of registeredVaultPaths(cfg)) {
     const relV = path.relative(normalizePathForCompare(vaultPath), normalizePathForCompare(abs));
     if (relV === '' || (!relV.startsWith('..') && !path.isAbsolute(relV))) {
       err(`Refus d'écrire des clés à l'intérieur d'un vault (${abs}).\n  Le contenu d'un vault est synchronisé, indexé et servi par REST.`);

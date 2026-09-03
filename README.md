@@ -503,10 +503,31 @@ a binding to one would be a promise that does not work.
 workspace that already had a hint, it imports it as a binding — once, and it
 says so at the top of every session until you either adopt it
 (`confirm_workspace_binding({ vault })`) or undo it (`{ clear: true }`, which
-sticks). The import is bounded by the dotenv file's own modification time
-against the moment you upgraded, so a repository you clone *after* upgrading is
-never imported: `git clone` writes its files now, and that is what separates a
-workspace you attached last year from one that arrived this morning.
+sticks). A `OBSIDIAN_ROUTER_LOCKED` line an earlier `lock_vault --persist`
+wrote is carried across too, as `locked: true` on the imported binding, so an
+isolation you had set up does not quietly disappear on upgrade.
+
+The import is bounded by the dotenv file's own modification time against the
+moment you upgraded, so a repository you **clone** after upgrading is never
+imported: `git clone` writes its files now, and that is what separates a
+workspace you attached last year from one that arrived this morning. Two limits
+worth knowing, because a timestamp is the only signal the disk carries:
+unpacking an **archive** (`tar x`, an unzip that restores timestamps, GitHub's
+source zipball, `rsync -a`) keeps the recorded mtime, so a project obtained
+that way *can* be imported; and on a router whose very first start ever is on
+this version there is no "moment you upgraded" to compare against, so anything
+already on disk counts as older. Both cases are announced by the session
+briefing like any other import, which is what makes them cost one sentence to
+undo rather than a year of misfiled notes.
+
+Two more things to know on that path. If you run the router from a checkout
+rather than the plugin and wired your hooks before this version, re-run
+`node scripts/setup-vault.mjs --install-hooks` once: the import runs inside the
+router for everyone, but the briefing that announces it is a hook your older
+`settings.json` does not carry. And a proposal you do not want cannot be
+declined yet, only adopted or left standing: a hint in a `.env` you did not
+write keeps being reported at every session until you adopt it or remove the
+line.
 
 ### Which hooks the plugin turns on by itself
 
@@ -1564,10 +1585,31 @@ répond pas, donc une liaison vers lui serait une promesse qui ne marche pas.
 dans un workspace qui avait déjà un indice, il l'importe en liaison — une fois,
 et il le dit en tête de chaque session jusqu'à ce que tu l'adoptes
 (`confirm_workspace_binding({ vault })`) ou l'annules (`{ clear: true }`, qui
-tient). L'import est borné par la date de modification du `.env` lui-même face
-au moment de ta mise à jour : un dépôt cloné *après* n'est donc jamais importé —
+tient). Une ligne `OBSIDIAN_ROUTER_LOCKED` écrite par un ancien
+`lock_vault --persist` est reprise elle aussi, en `locked: true` sur la liaison
+importée : un cloisonnement que tu avais posé ne disparaît pas en silence.
+
+L'import est borné par la date de modification du `.env` lui-même face au
+moment de ta mise à jour : un dépôt **cloné** après n'est donc jamais importé —
 `git clone` écrit ses fichiers maintenant, et c'est ce qui sépare un workspace
-rattaché l'an dernier d'un dossier arrivé ce matin.
+rattaché l'an dernier d'un dossier arrivé ce matin. Deux limites à connaître,
+parce que l'horodatage est le seul signal que porte le disque : **désarchiver**
+(`tar x`, un unzip qui restaure les dates, le zip source de GitHub, `rsync -a`)
+conserve la date enregistrée, donc un projet obtenu ainsi *peut* être importé ;
+et sur un router dont le tout premier démarrage se fait sur cette version, il
+n'y a pas de « moment de la mise à jour » à comparer, donc tout ce qui est déjà
+sur le disque compte comme antérieur. Les deux cas sont annoncés par le
+briefing de session comme n'importe quel import, et c'est ce qui les rend
+réparables en une phrase.
+
+Deux choses encore sur ce chemin. Si tu fais tourner le router depuis un
+checkout plutôt que le plugin et que tes hooks ont été câblés avant cette
+version, relance une fois `node scripts/setup-vault.mjs --install-hooks` :
+l'import tourne dans le router pour tout le monde, mais le briefing qui
+l'annonce est un hook que ton ancien `settings.json` ne porte pas. Et une
+proposition dont tu ne veux pas ne se refuse pas encore, elle s'adopte ou
+reste en suspens : un indice dans un `.env` que tu n'as pas écrit est signalé
+à chaque session jusqu'à ce que tu l'adoptes ou retires la ligne.
 
 ### Les hooks que le plugin active tout seul
 

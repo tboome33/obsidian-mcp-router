@@ -130,7 +130,17 @@ function attachmentLine(binding, isRegistered) {
   if (state === 'one') {
     return `This workspace is bound to the vault ${q(binding.vault)}${locked}.`;
   }
-  return `This workspace is bound to the vault ${q(binding.vault)}${locked}, `
+  // LOCKED AND SEVERAL is the state `lock_vault --persist` produces on a
+  // workspace with secondaries, and "no other vault answers, with X also
+  // addressable by name" contradicted itself in one sentence. The guard is the
+  // truth: secondaries stay bound, and answer again once the lock is lifted.
+  // (Sixth review, 2026-09-04.)
+  if (binding.locked) {
+    return `This workspace is bound to the vault ${q(binding.vault)}${locked} while the lock holds; `
+      + `${joinNames(binding.also)} ${binding.also.length > 1 ? 'stay' : 'stays'} bound and `
+      + 'addressable by name again once it is lifted.';
+  }
+  return `This workspace is bound to the vault ${q(binding.vault)}, `
     + `with ${joinNames(binding.also)} also bound and addressable by name.`;
 }
 
@@ -200,18 +210,26 @@ function modeLine(mode, modeRefused) {
  * the decision is that it is said out loud, here, at the top of the session
  * where a wrong guess costs one sentence to undo.
  *
- * @param {{ vault: string, dotenvFile: string|null }|null} imported
+ * @param {{ vault: string, dotenvFile: string|null, locked?: boolean }|null} imported
  */
 function importedLine(imported) {
   if (!imported || typeof imported.vault !== 'string' || !imported.vault) return null;
   const from = imported.dotenvFile ? ` from ${q(imported.dotenvFile)}` : '';
+  // THE LOCK IS NAMED WHERE IT CAME FROM. The migration carries a persisted
+  // `OBSIDIAN_ROUTER_LOCKED` across, so the isolation an upgrading user had
+  // does not vanish — and the line above already says the session is locked.
+  // What only this sentence can say is that NOBODY CHOSE IT TODAY: it was
+  // inferred from the same file, and the same one call undoes both halves.
+  const lock = imported.locked === true
+    ? ' The lock came from that file too, and is in force for the same reason.'
+    : '';
   // "WAS IMPORTED", not "was just imported". The hook reports a standing fact
   // read from the binding's own provenance, so it is true in the session that
   // ran the import and in every session after it — which is the useful
   // behaviour: a wrong guess keeps saying so until somebody acts on it,
   // instead of scrolling past once and being forgotten.
   return `NOBODY CONFIRMED THIS BINDING: it was imported automatically${from}, once, so that this `
-    + 'project kept working now that a project file no longer chooses a vault on its own. If it is '
+    + `project kept working now that a project file no longer chooses a vault on its own.${lock} If it is `
     + 'wrong, confirm_workspace_binding({ clear: true }) undoes it and it will not come back; '
     + 'confirm_workspace_binding({ vault: … }) makes it yours and this line stops.';
 }

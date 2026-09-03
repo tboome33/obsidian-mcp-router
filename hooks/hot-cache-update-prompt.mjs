@@ -57,6 +57,7 @@ import {
   resolveVaultBySlug,
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
+import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 import { findStaleVaults } from '../src/helpers/hot-staleness.mjs';
 import { hotStatus, tokensToWords } from '../src/helpers/hot-size.mjs';
 
@@ -108,9 +109,10 @@ try {
 const isWin = process.platform === 'win32';
 const cfg = readRouterConfig(); // null on any error — handled below
 const vaultRoots = [];
-if (cfg && cfg.portRegistry && typeof cfg.portRegistry === 'object') {
-  for (const p of Object.keys(cfg.portRegistry)) vaultRoots.push(p);
-}
+// Through the accessor. The `typeof === 'object'` guard here was already
+// better than most, but an ARRAY passes it and yields index keys; the shared
+// helper refuses both, and refuses non-string keys as well.
+for (const p of registeredVaultPaths(cfg)) vaultRoots.push(p);
 let defaultRoot = null;
 try {
   const ctx = detectVaultContext(cwd, cfg);

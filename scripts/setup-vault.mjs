@@ -30,9 +30,16 @@ import path from 'node:path';
 import https from 'node:https';
 import { assertDotenvScalar } from '../src/helpers/dotenv-scalar.mjs';
 import { obsidianOpenUri, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
-import { updateConfigBindings, withBinding, readBinding } from '../src/helpers/workspace-bindings.mjs';
+import {
+  updateConfigBindings,
+  withBinding,
+  withoutBinding,
+  withMigrationState,
+  readBinding,
+} from '../src/helpers/workspace-bindings.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
+import { snapshotConfig, mergeConfigOntoDisk } from '../src/helpers/config-merge.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -241,6 +248,25 @@ function loadConfigReadOnly() {
   catch { return { ...DEFAULT_CONFIG }; }
 }
 
+/**
+ * What each loaded config looked like WHEN IT WAS READ, per top-level key, so
+ * `saveConfig` can tell which keys this process actually changed. See
+ * `src/helpers/config-merge.mjs` for the rule and the reason.
+ *
+ * KEYED ON THE CONFIG OBJECT ITSELF, not a module-level "last loaded". This
+ * script calls `loadConfig()` from eighteen places, and several of its
+ * commands call helpers that load again; a single "last" slot would then
+ * describe a LATER read than the object being saved, and the merge would
+ * compare a snapshot against the wrong config — silently taking the disk's
+ * value for a key this process had in fact changed, or the reverse. Nothing in
+ * today's call graph nests that way, but "today's call graph" is not a
+ * property anyone maintains, and the WeakMap removes the question instead of
+ * answering it once.
+ *
+ * @type {WeakMap<object, Record<string, string>>}
+ */
+const CONFIG_SNAPSHOTS = new WeakMap();
+
 function loadConfig() {
   if (!fs.existsSync(CONFIG_PATH)) {
     fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
@@ -250,7 +276,9 @@ function loadConfig() {
     // processes bootstrapping at once would otherwise race to create it.
     saveConfig(DEFAULT_CONFIG);
   }
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  const parsed = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  CONFIG_SNAPSHOTS.set(parsed, snapshotConfig(parsed));
+  return parsed;
 }
 
 /**
@@ -266,11 +294,24 @@ function loadConfig() {
  * A lock only one of two writers takes is not a lock.
  *
  * The lock is the very one the binding writer takes, keyed on the canonical
- * config path, so the two exclude each other. The in-memory `cfg` is still a
- * snapshot — a caller that read the config a long time ago and saves it now
- * writes that snapshot — but every such caller in this script reads, changes
- * and saves in one synchronous stretch, and the lock makes that stretch
- * exclusive.
+ * config path, so the two exclude each other.
+ *
+ * THE LOCK ALONE WAS NOT ENOUGH, and the comment that used to stand here said
+ * it was. It claimed "every such caller reads, changes and saves in one
+ * synchronous stretch, and the lock makes that stretch exclusive" — but the
+ * lock is taken by THIS function, at the save, not at the read. `setupVault`
+ * reads the config, then clones plugin directories and probes ports, then
+ * saves: seconds later, and a `confirm_workspace_binding` that landed in
+ * between was inside the snapshot's blind spot and disappeared. Synchronous is
+ * not short. Found in the final review, 2026-09-03.
+ *
+ * What closes it is a three-way merge at TOP-LEVEL KEY granularity, done
+ * inside the lock: the snapshot taken when THIS config object was read, the file
+ * is re-read now, and a key is written from the snapshot only when this
+ * process actually changed it. Everything else — a binding, an API key, a port
+ * another writer added — comes from the disk. The rule itself is a pure
+ * function in `src/helpers/config-merge.mjs`, where it is tested exhaustively
+ * without needing a race to be reproduced.
  */
 function saveConfig(cfg) {
   const release = acquireLock(lockPathFor(CONFIG_PATH, 'config'));
@@ -280,10 +321,38 @@ function saveConfig(cfg) {
     );
   }
   try {
-    writeFileAtomicSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+    writeFileAtomicSync(CONFIG_PATH, JSON.stringify(mergeOntoDisk(cfg), null, 2));
   } finally {
     release();
   }
+}
+
+/**
+ * Merge the in-memory config onto whatever the file holds NOW. Called only
+ * from inside `saveConfig`'s lock — see its header for why this exists.
+ *
+ * The RULE lives in `src/helpers/config-merge.mjs`, as a pure function of
+ * three JSON values, so it can be tested exhaustively without a race. This is
+ * the I/O around it and has no rules of its own.
+ *
+ * @param {object} cfg the snapshot this process is saving
+ * @returns {object} what should be written
+ */
+function mergeOntoDisk(cfg) {
+  // The snapshot of THIS object, or none when the caller built the config
+  // itself (the bootstrap write of DEFAULT_CONFIG) — in which case there is
+  // nothing on disk it could be clobbering that it knows about.
+  const snapshot = CONFIG_SNAPSHOTS.get(cfg);
+  if (!snapshot) return cfg;
+  let onDisk;
+  try {
+    onDisk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {
+    // Unreadable or gone since we read it: our snapshot is the only config
+    // there is, and refusing to write would leave the user with nothing.
+    return cfg;
+  }
+  return mergeConfigOntoDisk(cfg, onDisk, snapshot);
 }
 
 /**
@@ -906,7 +975,10 @@ function printStatus() {
   const referenceForStatus = referenceVaultPath(cfg);
   console.log('Reference vault: ' + (referenceForStatus ? c('green', referenceForStatus) : c('red', 'NOT SET')));
   console.log('Port start:      ' + cfg.portStart);
-  const entries = Object.entries(cfg.portRegistry || {});
+  // Through the accessor for the KEYS, then indexed with its own validated
+  // keys — the same composition src/registry.mjs uses, and for the same
+  // reason: `Object.entries` on a hand-edited string invents vaults.
+  const entries = registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]]);
   const disabled = new Set(disabledVaultEntries(cfg));
   if (entries.length === 0) {
     console.log('Configured vaults: ' + c('gray', '(none yet)'));
@@ -1247,7 +1319,7 @@ function upgradeInsecureServer(vaultPath, opts = {}) {
     // hand-rolled loop it replaces could return `data.port + 10` unchecked
     // when no config was passed, run past 65535 (port 65530 → 65540), and
     // stop ON a reserved 65535 (pre-release review, 2026-08-30).
-    if (cfg && cfg.portRegistry) {
+    if (registeredVaultPaths(cfg).length > 0) {
       try {
         newInsecurePort = allocateInsecurePortFor(cfg, vaultPath, data.port, {
           onDisk: buildOnDiskPortMap(cfg, [vaultPath]),
@@ -1816,13 +1888,64 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
 
   upsertEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT', quotedValue);
 
+  // AND THE BINDING, which is the half that actually decides. Since the
+  // binding registry landed, the `.env` line above is a portable HINT that the
+  // router reports and does not apply — so a `--link-workspace` that wrote
+  // only the file linked nothing at all, while `docs/features/13` said it
+  // "records the binding in workspaceBindings (which is what decides)". One of
+  // the two had to move, and it is the code: `--link-workspace` is a command
+  // the user typed, which is exactly what a confirmation is. Found in the
+  // final review, 2026-09-03.
+  //
+  // `opts.recordBinding === false` is for `--attach`, which writes a richer
+  // binding of its own (secondaries included) a few lines later and would
+  // otherwise write the config twice.
+  let bindingRecorded = false;
+  if (opts.recordBinding !== false) {
+    try {
+      updateConfigBindings(CONFIG_PATH, (cfg) => {
+        // A re-link to the SAME primary keeps its lock and its secondaries;
+        // pointing the workspace elsewhere drops both, because they belonged
+        // to the vault it is being moved away from. Read inside the lock.
+        const previous = readBinding(cfg, workspacePath);
+        const same = previous && previous.vault === vaultSlug;
+        return withBinding(cfg, workspacePath, {
+          vault: vaultSlug,
+          also: same ? previous.also : [],
+          locked: Boolean(same && previous.locked),
+          confirmedVia: 'link-workspace',
+        });
+      });
+      bindingRecorded = true;
+    } catch (e) {
+      // A FAILURE HERE FAILS THE COMMAND. The binding is the half that
+      // decides; the `.env` line is a hint the router reports and does not
+      // apply. Warning and exiting 0 printed "Linked workspace" for a command
+      // that had linked nothing at all — the worst possible report, because
+      // the user walks away believing the attachment exists. (Codex, round 5.)
+      fail(
+        [
+          `Could not record the workspace binding in ${CONFIG_PATH} (${e.message}).`,
+          `   The portable hint WAS written to ${envPath}, but a project file no longer chooses`,
+          '   a vault: nothing is attached until the binding is recorded. Fix the config',
+          '   (permissions, or another process holding it) and run this again — or confirm the',
+          '   binding from a session with confirm_workspace_binding.',
+        ].join('\n'),
+      );
+    }
+  }
+
   if (!opts.quiet) {
     ok(`Linked workspace ${workspacePath}`);
     console.log(`    ${c('green', '→')} ${envPath}`);
     console.log(`    ${c('green', '→')} OBSIDIAN_ROUTER_DEFAULT_VAULT=${quotedValue}`);
+    if (bindingRecorded) {
+      console.log(`    ${c('green', '→')} ${CONFIG_PATH}`);
+      console.log(`    ${c('green', '→')} workspaceBindings: ${vaultSlug} ${c('gray', '(this is what decides; the .env line is a portable hint)')}`);
+    }
     console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
   }
-  return { envPath, vaultSlug, vaultPath, previousSlug };
+  return { envPath, vaultSlug, vaultPath, previousSlug, bindingRecorded };
 }
 
 function appendGitignore(vaultPath) {
@@ -1987,7 +2110,7 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
   if (!fs.statSync(ws).isDirectory()) fail(`Workspace path is not a directory: ${ws}`);
 
   const cfg = loadConfig();
-  if (Object.keys(cfg.portRegistry || {}).length === 0) {
+  if (registeredVaultPaths(cfg).length === 0) {
     fail(
       'Router config has no vaults in portRegistry.\n' +
       '   --attach binds EXISTING vaults. Bootstrap one first with `setup-vault.mjs <vault-path>`,\n' +
@@ -2037,7 +2160,9 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     workspacePath: ws,
     vaultPath: primary.path,
     vaultSlug: primary.slug,
-    opts: { quiet: true },
+    // `--attach` writes its own binding below, with the secondaries, so the
+    // link step writes only the portable hint. One config write, not two.
+    opts: { quiet: true, recordBinding: false },
   });
   steps.push({ step: '.env', detail: `OBSIDIAN_ROUTER_DEFAULT_VAULT=${primary.slug}`, path: link.envPath });
 
@@ -2069,7 +2194,18 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     const alsoNote = secondaries.length ? ` (+${secondaries.length} also)` : '';
     steps.push({ step: 'binding', detail: `${primary.slug}${alsoNote} — in your router config, not in this project`, path: CONFIG_PATH });
   } catch (e) {
-    warn(`Could not record the workspace binding in ${CONFIG_PATH} (${e.message}). The .env hint is written; confirm it from a session.`);
+    // Same as `--link-workspace`: attaching IS this command's purpose, and the
+    // binding is the only part of it that decides anything now. Reporting a
+    // successful attach whose binding was not written would be reporting the
+    // opposite of what happened. (Codex, round 5.)
+    fail(
+      [
+        `Could not record the workspace binding in ${CONFIG_PATH} (${e.message}).`,
+        '   The workspace files were written, but a project file no longer chooses a vault:',
+        '   this workspace is NOT attached until the binding is recorded. Fix the config and',
+        '   run --attach again, or confirm it from a session with confirm_workspace_binding.',
+      ].join('\n'),
+    );
   }
 
   // 2) .claude/settings.json — WITHOUT this the .env above is inert: the
@@ -4446,12 +4582,12 @@ if (args[0] === '--check-ports') {
   if (asJson) {
     console.log(JSON.stringify({
       configPath: CONFIG_PATH,
-      vaults: Object.keys(cfg.portRegistry || {}).length,
+      vaults: registeredVaultPaths(cfg).length,
       summary: summarizePortCollisions(findings),
       findings,
     }, null, 2));
   } else if (findings.length === 0) {
-    ok(`No port collisions across ${Object.keys(cfg.portRegistry || {}).length} registered vault(s) — HTTPS and plaintext spaces both clean.`);
+    ok(`No port collisions across ${registeredVaultPaths(cfg).length} registered vault(s) — HTTPS and plaintext spaces both clean.`);
   } else {
     console.log(c('bold', c('red', `Port problems — ${summarizePortCollisions(findings)}:\n`)));
     for (const f of findings) {
@@ -4599,11 +4735,45 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
 
   if (op === '--unlink-workspace') {
     const removed = removeEnvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
-    if (removed) {
-      ok(`Removed OBSIDIAN_ROUTER_DEFAULT_VAULT from ${envPath}`);
+    // THE BINDING GOES TOO, and it is the half that decides. Removing only the
+    // dotenv line left the workspace bound in the user's own config while this
+    // command reported the link gone and told the user to restart so "the
+    // hooks stop loading the previously-associated vault" — after a restart
+    // the binding would load it again, and the advice would look like a bug in
+    // the hooks. Found in the final review, 2026-09-03.
+    //
+    // The workspace is recorded as CONSIDERED at the same time, so the
+    // one-time import does not read the leftover hint (if the user keeps the
+    // line) and quietly re-create what they just removed.
+    let bindingRemoved = false;
+    let hadBinding = false;
+    try {
+      updateConfigBindings(CONFIG_PATH, (cfg) => {
+        hadBinding = readBinding(cfg, wsPath) !== null;
+        return withMigrationState(withoutBinding(cfg, wsPath), { cwd: wsPath, recordImported: true });
+      });
+      bindingRemoved = true;
+    } catch (e) {
+      // Symmetrical with `--link-workspace`: the binding is what decides, so
+      // failing to remove it means the workspace is still attached and this
+      // command has not done what it says. Exit non-zero rather than print a
+      // warning above a success message.
+      fail(
+        [
+          `Could not update ${CONFIG_PATH} (${e.message}).`,
+          '   A binding recorded there is STILL IN FORCE, so this workspace is still attached.',
+          '   Fix the config and run this again.',
+        ].join('\n'),
+      );
+    }
+    if (removed) ok(`Removed OBSIDIAN_ROUTER_DEFAULT_VAULT from ${envPath}`);
+    else info(`No OBSIDIAN_ROUTER_DEFAULT_VAULT entry in ${envPath} (or file absent).`);
+    if (bindingRemoved && hadBinding) ok(`Removed this workspace's binding from ${CONFIG_PATH}`);
+    else if (bindingRemoved) info('No binding was recorded for this workspace in your router config.');
+    if (removed || hadBinding) {
       info('Restart Claude Code in this workspace so the hooks stop loading the previously-associated vault.');
     } else {
-      info(`No OBSIDIAN_ROUTER_DEFAULT_VAULT entry in ${envPath} (or file absent). Nothing to do.`);
+      info('Nothing to do.');
     }
     process.exit(0);
   }
@@ -4798,7 +4968,10 @@ if (args[0] === '--migrate-wiki-meta' || args[0] === '--migrate-all-wiki-meta') 
 
   // Batch mode: iterate over portRegistry.
   const cfg = loadConfig();
-  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  // Through the accessor (the container half of the `vaultNames` sweep): a
+  // hand-edited `"portRegistry": "AB"` yields no vaults instead of the
+  // manufactured paths "0" and "1".
+  const vaultPaths = registeredVaultPaths(cfg);
   if (vaultPaths.length === 0) {
     fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
   }
@@ -4911,7 +5084,10 @@ if (args[0] === '--migrate-sessions-to-wiki-meta' || args[0] === '--migrate-all-
 
   // Batch mode: iterate over portRegistry.
   const cfg = loadConfig();
-  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  // Through the accessor (the container half of the `vaultNames` sweep): a
+  // hand-edited `"portRegistry": "AB"` yields no vaults instead of the
+  // manufactured paths "0" and "1".
+  const vaultPaths = registeredVaultPaths(cfg);
   if (vaultPaths.length === 0) {
     fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
   }
@@ -5213,7 +5389,8 @@ if (args[0] === '--sync-all') {
     fail('No reference vault configured or it no longer exists.');
   }
   const force = args.includes('--force');
-  const targets = Object.keys(cfg.portRegistry || {});
+  // Through the accessor, same reason as every other reader of this container.
+  const targets = registeredVaultPaths(cfg);
   if (targets.length === 0) {
     info('No vaults in portRegistry. Nothing to do.');
     process.exit(0);
@@ -5444,7 +5621,10 @@ if (args[0] === '--upgrade-insecure-server' || args[0] === '--upgrade-insecure-s
   // Batch mode: iterate portRegistry, passing cfg so collisions are detected
   // across the whole set.
   const cfg = loadConfig();
-  const vaultPaths = Object.keys(cfg.portRegistry || {});
+  // Through the accessor (the container half of the `vaultNames` sweep): a
+  // hand-edited `"portRegistry": "AB"` yields no vaults instead of the
+  // manufactured paths "0" and "1".
+  const vaultPaths = registeredVaultPaths(cfg);
   if (vaultPaths.length === 0) {
     fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
   }

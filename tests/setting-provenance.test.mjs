@@ -742,6 +742,19 @@ describe('GUARD — the tool description names the three fields and every origin
     assert.doesNotMatch(text, /from its four valid values/,
       'the pre-v0.89.0 sentence must not survive beside the one that contradicts it');
     assert.match(text, /three of its four valid values/, 'it says three, and names the fourth as the exception');
+    // Same shape one lot later (sixth review, 2026-09-04): two sentences from
+    // before the binding registry survived the documentation sweep and told
+    // Claude a project .env still CHOOSES the vault — "a vault it must pick
+    // from the ones already registered" in the list of what a file may set,
+    // and an origin `workspace-dotenv` for the default vault and the lock that
+    // the gate can no longer produce. Read as instructions, they lead Claude
+    // to advise editing the .env to change vaults.
+    assert.doesNotMatch(text, /a vault it must pick from the ones already registered/,
+      'a workspace file can only PROPOSE the vault now; the description must not list it as settable');
+    assert.match(text, /The default vault and the lock it can only PROPOSE, never set \(see bindingHint\)/,
+      'and must say so where the list of settable things is');
+    assert.match(text, /possible for autoEnrichModeSource ONLY/,
+      'the workspace-dotenv origin must be scoped to the one field that can still carry it');
     // EVERY origin any producer can emit, named in the description. The first
     // version of this guard scanned three files, asserted `size >= 8` and
     // found exactly 8 — so it had no margin, and it was blind to `unknown`,

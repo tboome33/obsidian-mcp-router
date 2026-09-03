@@ -38,6 +38,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
+
 import {
   isOkfSafeSegment,
   buildRenamePlan,
@@ -157,7 +159,10 @@ function parseArgs(argv) {
     } catch {
       usage(`--all-vaults needs a readable router config at ${CONFIG_PATH}`);
     }
-    const registered = Object.keys(cfg.portRegistry || {});
+    // Through the accessor: the container is validated there, so a hand-edited
+  // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and
+  // "1". Sixth key of the `vaultNames` class, swept in the final review.
+  const registered = registeredVaultPaths(cfg);
     if (registered.length === 0) usage(`Router config has no vaults in portRegistry (${CONFIG_PATH}).`);
     paths.push(...registered);
   }

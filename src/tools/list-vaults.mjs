@@ -224,7 +224,17 @@ export async function listVaults(registry) {
   const importedOrNull = (i) => {
     const str = (v) => typeof v === 'string' && v !== '';
     return i && typeof i === 'object' && !Array.isArray(i) && str(i.vault) && str(i.at)
-      ? { vault: i.vault, at: i.at, dotenvFile: str(i.dotenvFile) ? i.dotenvFile : null }
+      ? {
+        vault: i.vault,
+        at: i.at,
+        // WHETHER THE IMPORT ALSO CARRIED A LOCK. A workspace file that had
+        // `OBSIDIAN_ROUTER_LOCKED` set is migrated to a LOCKED binding, so
+        // the isolation the user had persisted survives the upgrade — and a
+        // caller that reported the import without saying the session is
+        // restricted to one vault would be describing half of what happened.
+        locked: i.locked === true,
+        dotenvFile: str(i.dotenvFile) ? i.dotenvFile : null,
+      }
       : null;
   };
   // The refusal has its own shape, so it has its own validator. Five string

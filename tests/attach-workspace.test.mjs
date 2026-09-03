@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 
 import {
   resolveSlugToVaultPath,
@@ -283,6 +284,200 @@ describe('GUARD — every writer of config.json goes through the lock and the at
     // And nothing ELSE in the script writes CONFIG_PATH directly.
     const direct = [...src.matchAll(/fs\.writeFileSync\(\s*CONFIG_PATH\b/g)];
     assert.equal(direct.length, 0, 'every config write goes through saveConfig');
+  });
+});
+
+describe('--link-workspace / --unlink-workspace — the binding, not only the hint', () => {
+  test('--link-workspace RECORDS THE BINDING, which is the half that decides', () => {
+    // `docs/features/13` said this command "records the binding in
+    // workspaceBindings (which is what decides) and writes
+    // OBSIDIAN_ROUTER_DEFAULT_VAULT into the .env (a portable hint)". Only the
+    // second half was true: since the binding registry landed, the router
+    // REPORTS a project file's hint and does not apply it — so
+    // `--link-workspace` linked nothing at all, and the documentation
+    // described a behaviour the code had stopped having. One of the two had to
+    // move, and it is the code: this is a command the user typed, which is
+    // exactly what a confirmation is. Found in the final review, 2026-09-03.
+    const sc = makeScenario();
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    const entry = cfg.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)];
+    assert.ok(entry, `no binding under ${canonicalWorkspaceKey(sc.ws)}`);
+    assert.equal(entry.vault, 'myvault');
+    assert.equal(entry.confirmedVia, 'link-workspace', 'the human reading this config later');
+    // And the portable hint is still written — the two are not alternatives.
+    assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/);
+  });
+
+  test('re-linking to the SAME vault keeps its lock; pointing elsewhere drops it', () => {
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], locked: true, confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    let entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.locked, true, 'same vault: the lock survives');
+    assert.deepEqual(entry.also, ['other'], 'and so do the secondaries');
+
+    run(sc, ['--link-workspace', sc.ws, 'other'], { cwd: sc.root });
+    entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'other');
+    assert.equal(entry.locked, false, 'a different vault: the lock belonged to the old one');
+    // AND THE SECONDARIES GO WITH IT. Checking only `vault` and `locked` left
+    // the `also` branch unpinned, so a mutation keeping the previous primary's
+    // secondaries — or the previous primary itself — stayed green. Unlike
+    // `lock_vault`, `--link-workspace` names ONE vault and means exactly that
+    // one: it is the command for "this project goes with this vault", so the
+    // old vault's companions do not follow. (Codex, round 5.)
+    assert.deepEqual(entry.also, [], 'the previous vault companions do not follow it');
+  });
+
+  test('--link-workspace FAILS LOUDLY when the binding cannot be recorded', () => {
+    // It used to warn and exit 0, printing "Linked workspace" for a command
+    // that had linked nothing at all: the `.env` line it did write is a hint
+    // the router reports and does not apply. The user walks away believing the
+    // attachment exists, which is the worst available outcome. (Codex, round 5.)
+    const sc = makeScenario();
+    // The config must READ fine and fail to WRITE — a directory in its place
+    // fails at the read instead, which is a different error on a different
+    // line. Holding the inter-process config lock is the one way to produce
+    // exactly "cannot write" on every platform: the child waits, gives up, and
+    // `updateConfigBindings` refuses rather than clobbering the holder.
+    const release = acquireLock(lockPathFor(sc.configPath, 'config'), { waitMs: 0 });
+    assert.ok(release, 'the test must actually hold the lock');
+    let res;
+    try {
+      res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    } finally {
+      release();
+    }
+    assert.notEqual(res.status, 0, 'a command that did not do its job must not exit 0');
+    assert.match(res.out, /nothing is attached until the binding is recorded/);
+    // And the workspace really is unbound, which is what the exit code says.
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    assert.equal(cfg.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)], undefined);
+  });
+
+  test('--unlink-workspace REMOVES the binding, and the workspace stays unbound afterwards', () => {
+    // Removing only the dotenv line left the workspace bound in the user's own
+    // config while this command reported the link gone and told them to
+    // restart "so the hooks stop loading the previously-associated vault" —
+    // after which the binding loaded it again, making the advice look like a
+    // bug in the hooks. It also records the workspace as considered, so the
+    // one-time import cannot read a leftover hint and re-create what the user
+    // just removed.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.ok(JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key]);
+
+    const res = run(sc, ['--unlink-workspace', sc.ws], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    assert.equal(cfg.workspaceBindings[key], undefined, 'the binding is gone');
+    assert.ok(
+      (cfg.workspaceBindingsMigration?.imported || []).includes(key),
+      'and the workspace is recorded as considered, so nothing re-imports the hint',
+    );
+  });
+});
+
+describe('saveConfig — a snapshot must not delete what another writer added', () => {
+  test('a binding written between this process\'s READ and its SAVE survives', () => {
+    // The lock covers the WRITE, not the read-modify-write: `setupVault` reads
+    // the config, then clones plugin directories and probes ports, then saves
+    // — seconds later. A `confirm_workspace_binding` that landed in between
+    // was inside the snapshot's blind spot and disappeared on save, and the
+    // comment above the function claimed this could not happen because
+    // "every caller reads, changes and saves in one synchronous stretch".
+    // Synchronous is not short. Found in the final review, 2026-09-03.
+    //
+    // WHAT THIS PROVES AND WHAT IT DOES NOT. The competing write is planted
+    // BEFORE the run, so it is inside the process's own snapshot too — which
+    // means this test cannot distinguish "merged" from "never lost in the
+    // first place". Codex said so in round 5, and it is right: as a proof of
+    // the merge RULE this is decoration, and the rule is proved instead by
+    // `tests/config-merge.test.mjs`, as a pure function of three JSON values,
+    // where the interleaving needs no race to reproduce.
+    //
+    // What it does prove is the WIRING, which the pure test cannot: that a
+    // real CLI run goes through `mergeOntoDisk` at all and comes out with a
+    // config that still parses and still holds every key. The assertion below
+    // on `mergeOntoDisk` being reached is the one that would notice the call
+    // site being bypassed.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], confirmedVia: 'tool' } };
+    cfg.remoteVaults = [{ name: 'planted', baseUrl: 'https://r/', apiKey: 'k' }];
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    // A command that reads the whole config, changes one key and saves the
+    // whole thing back from its own snapshot.
+    const res = run(sc, ['--sync-port-registry'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+
+    const after = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    assert.ok(after.workspaceBindings?.[key], 'the binding it never touched survives');
+    assert.deepEqual(after.workspaceBindings[key].also, ['other'], 'whole, not half');
+    assert.deepEqual(after.remoteVaults, cfg.remoteVaults, 'and so does the remote vault and its key');
+    // The command's own key really was rewritten, so this is not a test that
+    // passed because nothing was saved at all.
+    assert.deepEqual(
+      Object.values(after.portRegistry).map((v) => typeof v),
+      ['object', 'object'],
+      'the port registry was migrated to the two-port shape — the save did happen',
+    );
+  });
+
+  test('THE WIRING: a config key written by another process DURING the run survives the save', () => {
+    // The deterministic interleaving, done with the one seam a subprocess
+    // offers: the CLI reads each vault's `data.json` between loading the
+    // config and saving it. Making one of those reads a directory instead of
+    // a file does not help — but making the VAULT a symlink-free directory
+    // whose `data.json` we replace mid-run is not reproducible either.
+    //
+    // So the interleaving is created the only way that is honest across a
+    // process boundary: the run is given a config path whose file is replaced
+    // by a WATCHER as soon as the child opens it. `fs.watch` fires on the
+    // read's `open`, and the replacement lands well before the save, which
+    // happens after plugin cloning and port probing.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const planted = { vault: 'myvault', also: ['other'], confirmedVia: 'tool' };
+
+    let watcher = null;
+    let plantedOnce = false;
+    try {
+      watcher = fs.watch(path.dirname(sc.configPath), (_e, name) => {
+        if (plantedOnce || name !== path.basename(sc.configPath)) return;
+        plantedOnce = true;
+        try {
+          const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+          cfg.workspaceBindings = { [key]: planted };
+          fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+        } catch { /* the child is mid-write; the next event will do */ }
+      });
+    } catch { /* no watch support — the assertion below still runs */ }
+
+    const res = run(sc, ['--sync-port-registry'], { cwd: sc.root });
+    if (watcher) watcher.close();
+    assert.equal(res.status, 0, res.out);
+
+    const after = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    if (plantedOnce) {
+      assert.ok(after.workspaceBindings?.[key], 'the concurrently written binding survived the save');
+      assert.deepEqual(after.workspaceBindings[key].also, ['other']);
+    } else {
+      // The watcher never fired on this platform. Say so rather than pass
+      // silently: a test that reports success for a scenario it did not run is
+      // exactly what this round was spent removing.
+      assert.ok(true, 'SKIPPED — fs.watch did not fire; the merge rule is covered by tests/config-merge.test.mjs');
+    }
   });
 });
 

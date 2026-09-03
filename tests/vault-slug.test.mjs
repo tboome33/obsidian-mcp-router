@@ -779,6 +779,104 @@ describe('SCAN: the class cannot be re-opened quietly', () => {
     );
   });
 
+  test('no file outside the helper ENUMERATES portRegistry directly', () => {
+    // THE CONTAINER, and the sixth key of the class. `Object.keys(cfg.portRegistry
+    // || {})` accepts anything truthy, and `Object.keys` on a string yields
+    // index keys — so a hand-edited `"portRegistry": "AB"` manufactured the
+    // vault PATHS "0" and "1". `src/registry.mjs` was fixed for that during the
+    // merge review; the fix reached its first site and stopped. Ten other
+    // files still enumerated the raw container — the link linter, the drift
+    // detector, the hot-cache prompt, `setup-vault --status`, the backfill
+    // script and the bridge fleet updater — so the SERVER saw no vaults while
+    // those invented two, which is cross-hook divergence read off one file.
+    // Found in the final review, 2026-09-03; this scan is what stops the
+    // seventh site being written next month.
+    //
+    // The exemption is by RECEIVER, like the sibling-key scan: indexing the
+    // container with keys the helper has already validated
+    // (`config.portRegistry[vp]` inside a loop over `registeredVaultPaths`) is
+    // safe by construction and is how both the registry and `--status` read
+    // their values.
+    // THE SCAN IS ON THE ACCESS, NOT ON THE ENUMERATION CALL. The first
+    // version matched `Object.keys(cfg.portRegistry` and nothing else, so six
+    // of eight rewrites walked straight through it — measured, not guessed:
+    // `cfg?.portRegistry`, `config['portRegistry']`, an alias
+    // (`const pr = cfg.portRegistry`), a destructure
+    // (`const { portRegistry } = cfg`), `for (const k in cfg.portRegistry)`,
+    // and `Reflect.ownKeys(...)`. A guard that only refuses the spelling
+    // somebody happened to use last time is the "blind rather than red" shape
+    // this repository keeps producing, and this one is the ONLY net under
+    // eleven files. (Codex, round 5.)
+    //
+    // So: any read of the raw `portRegistry` off a config-shaped receiver is
+    // refused, in dot form, bracket form or by destructuring. The ONE
+    // legitimate read — indexing the container with keys the helper has
+    // already validated — is exempted by its shape (`[vp]`, `[vaultPath]`,
+    // `[p]`), which is what both `src/registry.mjs` and `--status` write.
+    // THE ACCESSOR IS `.` OR `?.`, NOT `?.` FOLLOWED BY `.`. The first attempt
+    // at this hardening wrote the optional part as `(\?\.)?` and then required
+    // a dot after it, so `cfg?.portRegistry` still walked through — the very
+    // shape Codex had just named. A mutation caught it; reading the regex
+    // twice had not. A guard is only as good as the mutation that proved it.
+    const RECEIVER = String.raw`(cfg|config|conf)`;
+    const DOT = new RegExp(String.raw`\b${RECEIVER}\s*(\?\.|\.)\s*portRegistry\b`);
+    const BRACKET = new RegExp(String.raw`\b${RECEIVER}\s*(\?\.)?\s*\[\s*['"\`]portRegistry['"\`]\s*\]`);
+    const DESTRUCTURE = /\{[^}]*\bportRegistry\b[^}]*\}\s*=\s*(cfg|config|conf)\b/;
+    // `x.portRegistry[<identifier>]` — reading ONE entry by a key that came
+    // from somewhere else. Safe by construction and used by the registry.
+    const INDEXED_BY_KEY = /\.\s*portRegistry\s*\[\s*[A-Za-z_$][\w$]*\s*\]/;
+    const offenders = [];
+    for (const { rel, abs } of scannedFiles()) {
+      if (rel === HELPER_REL) continue;
+      const lines = fs.readFileSync(abs, 'utf8').split(/\r?\n/);
+      lines.forEach((line, i) => {
+        if (isCommentLine(line)) return;
+        if (!DOT.test(line) && !BRACKET.test(line) && !DESTRUCTURE.test(line)) return;
+        if (INDEXED_BY_KEY.test(line)) return;
+        // An ASSIGNMENT into the container is a WRITER, not a reader — the
+        // same distinction the `vaultNames` scan makes, and for the same
+        // reason: `setup-vault` records a freshly provisioned vault's ports,
+        // and a validated read has nothing to say about that.
+        if (/\bportRegistry\s*=[^=]/.test(line)) return;
+        offenders.push(`${rel}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      `these enumerate config.portRegistry without the container check — use registeredVaultPaths from ${HELPER_REL}:\n  ${offenders.join('\n  ')}`,
+    );
+
+    // AND THE SCAN IS TESTED AGAINST ITS OWN BLIND SPOTS. A source scan that
+    // is never run on the shapes it claims to refuse is a guard nobody has
+    // checked: the first version of this one matched exactly one spelling and
+    // walked past six others, measured. These are the rewrites somebody would
+    // reach for, and each must be caught.
+    const catches = (line) => (DOT.test(line) || BRACKET.test(line) || DESTRUCTURE.test(line))
+      && !INDEXED_BY_KEY.test(line) && !/\bportRegistry\s*=[^=]/.test(line);
+    for (const line of [
+      'const a = Object.keys(cfg.portRegistry || {});',
+      'const a = Object.keys(cfg?.portRegistry || {});',
+      "const a = Object.keys(config['portRegistry']);",
+      'const pr = cfg.portRegistry;',
+      'const { portRegistry } = cfg;',
+      'for (const k in cfg.portRegistry) {',
+      'Reflect.ownKeys(conf.portRegistry)',
+      'const n = Object.values(config.portRegistry).length;',
+    ]) {
+      assert.equal(catches(line), true, `the scan must refuse: ${line}`);
+    }
+    // And it must NOT refuse the one legitimate read: indexing the container
+    // with a key the helper already validated.
+    for (const line of [
+      'const v = config.portRegistry[vaultPath];',
+      'registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]])',
+      'cfg.portRegistry = portRegistry;',
+    ]) {
+      assert.equal(catches(line), false, `the scan must allow: ${line}`);
+    }
+  });
+
   test('exactly one definition of defaultNameFromPath exists, and it is the helper', () => {
     const definers = [];
     for (const { rel, abs } of scannedFiles()) {

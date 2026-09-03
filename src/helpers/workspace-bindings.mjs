@@ -278,7 +278,49 @@ export function withBinding(config, cwd, binding) {
     ...normalized,
     confirmedAt: normalized.confirmedAt || new Date().toISOString().slice(0, 10),
   };
+  // WRITING THE SAME BINDING BACK CHANGES NOTHING, and returning the input
+  // object says so — which is what `updateConfigBindings` reads to decide
+  // whether to touch the file at all. Re-running `lock_vault --persist` on an
+  // already-locked workspace rewrote `config.json`, the file holding every
+  // vault's API key, for byte-identical content. The same class was found one
+  // door away in `withMigrationState` (where it hit EVERY router start), and a
+  // repair that reaches only its first site is the defect this repository
+  // keeps rediscovering — so all three transforms now share the rule.
+  if (unchangedBindings(base, all)) return base;
   return { ...base, [WORKSPACE_BINDINGS_KEY]: all };
+}
+
+/**
+ * Whether `all` is, key for key, what `base` already holds under
+ * `workspaceBindings`. Compared by serialisation because these are small
+ * JSON-shaped records built by `normalizeBinding`, whose key order is fixed by
+ * that function — so equal content really does serialise equally here.
+ *
+ * @param {object} base
+ * @param {Record<string, object>} all
+ * @returns {boolean}
+ */
+function unchangedBindings(base, all) {
+  const existing = base[WORKSPACE_BINDINGS_KEY];
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return false;
+  const before = Object.keys(existing);
+  const after = Object.keys(all);
+  if (before.length !== after.length) return false;
+  for (const k of after) {
+    if (!Object.hasOwn(existing, k)) return false;
+    // Compared through `normalizeBinding` on BOTH sides, so the question asked
+    // is "does this mean the same thing?" and not "is it spelled the same".
+    //
+    // The consequence, stated because it is a real one: a stored entry
+    // carrying a field this module does not know about normalises to the same
+    // value, so it counts as unchanged and is LEFT ALONE rather than rewritten
+    // without it. That is the conservative direction — a write is not the
+    // place to silently discard something a future version, or the user, put
+    // there — but it does mean this function never tidies a config it did not
+    // have to touch anyway.
+    if (JSON.stringify(normalizeBinding(existing[k])) !== JSON.stringify(normalizeBinding(all[k]))) return false;
+  }
+  return true;
 }
 
 /**
@@ -295,9 +337,15 @@ export function withoutBinding(config, cwd) {
   const existing = base[WORKSPACE_BINDINGS_KEY];
   if (!key || !existing || typeof existing !== 'object' || Array.isArray(existing)) return base;
   const all = { ...existing };
+  let removed = false;
   for (const storedKey of Object.keys(all)) {
-    if (canonicalWorkspaceKey(storedKey) === key) delete all[storedKey];
+    if (canonicalWorkspaceKey(storedKey) === key) { delete all[storedKey]; removed = true; }
   }
+  // Same rule as `withBinding` and `withMigrationState`: nothing removed means
+  // nothing changed, and the input object comes back so the writer can skip
+  // the file entirely. Clearing a workspace that had no binding is a common
+  // no-op — the tool says so in words — and it should not rewrite the config.
+  if (!removed) return base;
   return { ...base, [WORKSPACE_BINDINGS_KEY]: all };
 }
 
@@ -359,7 +407,18 @@ export function updateConfigBindings(configPath, transform, { readFile, writeFil
       );
     }
     const next = transform(config);
-    write(configPath, `${JSON.stringify(next, null, 2)}\n`);
+    // A TRANSFORM THAT CHANGED NOTHING WRITES NOTHING. Every transform in this
+    // tree is pure and returns a NEW object when it changes anything, so
+    // returning the very object it was handed is an unambiguous "no change" —
+    // identity, never deep equality, which would be a second definition of
+    // "the same config" and would eventually disagree with the first.
+    //
+    // It is not only tidiness: `unlock_vaults --persist` on a workspace with
+    // no binding used to rewrite the file that holds every vault's API key,
+    // for nothing. A write that cannot change the content can still fail, can
+    // still lose a concurrent update through the merge above, and still moves
+    // the file's mtime — which the one-time import reads.
+    if (next !== config) write(configPath, `${JSON.stringify(next, null, 2)}\n`);
     return next;
   } finally {
     release();
@@ -505,6 +564,27 @@ export const IMPORT_REASON = Object.freeze({
 });
 
 /**
+ * The reasons that CLOSE the window for a workspace for good — the ones after
+ * which the router must never look at this workspace's dotenv hint again.
+ *
+ * `IMPORTED` is the obvious one. `ALREADY_BOUND` is the one that was missing,
+ * and its absence was a defect with teeth: a workspace that already had a
+ * binding at the first start of this version was never recorded as considered,
+ * so the day the user CLEARED that binding the next start re-imported the
+ * dotenv hint and silently undid the decision. Measured against the real
+ * `loadRegistry` on 2026-09-03 (final review): attach → start → clear →
+ * restart put the binding back, `confirmedVia: 'migration'`.
+ *
+ * The other reasons are transient by nature and must stay open: a hint that
+ * names a vault this machine does not have yet (`UNKNOWN_VAULT`), a file that
+ * carries no hint (`NO_HINT`), a value that came from the host this time
+ * (`NOT_FROM_A_FILE`), or a file newer than the upgrade
+ * (`NEWER_THAN_UPGRADE`) may each become importable later, and closing on them
+ * would turn a passing condition into a permanent verdict.
+ */
+export const CLOSING_REASONS = Object.freeze([IMPORT_REASON.IMPORTED, IMPORT_REASON.ALREADY_BOUND]);
+
+/**
  * Read the migration state, validated at the boundary like everything else
  * that comes out of a hand-editable file.
  *
@@ -562,7 +642,9 @@ export function readMigrationState(config) {
  * from inside the repository — and it works precisely BECAUSE cloning rewrites
  * mtimes, the property that made the in-repo markers worthless.
  *
- * The honest limits, stated rather than hidden:
+ * The honest limits, stated rather than hidden — and stated in the README and
+ * the CHANGELOG too, because "a repository you clone after upgrading is never
+ * imported" is the kind of absolute a user plans around:
  *   - A user who edits their own `.env` after upgrading loses the automatic
  *     import for that workspace and confirms once instead. The briefing tells
  *     them how, in the sentence it was already printing.
@@ -571,10 +653,41 @@ export function readMigrationState(config) {
  *     is now and any `.env` is older — so a repository cloned minutes before
  *     that first start would be imported. It is announced like any other
  *     import, and a first-ever start has nothing else to migrate from.
+ *   - `git clone` rewrites mtimes; UNPACKING AN ARCHIVE DOES NOT. `tar x`,
+ *     `unzip` with timestamps, the GitHub source zipball and `rsync -a` all
+ *     restore the recorded mtime, so a project obtained that way after the
+ *     upgrade can carry a `.env` older than `openedAt` and IS imported.
+ *     Measured on 2026-09-03 with `utimesSync` against the real
+ *     `loadRegistry`, not reasoned about. No in-process check can separate
+ *     that file from one written last year — the timestamp is the only signal
+ *     the disk carries — which is why the briefing announcing every import is
+ *     the thing that has to be relied on, and why the documentation says
+ *     "cloned" rather than "obtained".
  *
- * A workspace is recorded in `imported` ONLY when a binding was actually
- * created. That is what makes a later `clear` permanent: without it, the next
- * start would re-import the hint and quietly undo the user's decision.
+ * A workspace is recorded in `imported` when the window CLOSES for it — see
+ * `CLOSING_REASONS`. That is what makes a later `clear` permanent: without it,
+ * the next start would re-import the hint and quietly undo the user's
+ * decision. The caller reads `record` rather than inferring it from `import`,
+ * because "a binding was created" and "there is nothing left to import here"
+ * are not the same question, and treating them as one is what let a cleared
+ * binding come back.
+ *
+ * ---------------------------------------------------------------------------
+ * THE LOCK IS MIGRATED TOO, AND FIRST
+ * ---------------------------------------------------------------------------
+ * `lock_vault --persist` wrote `OBSIDIAN_ROUTER_LOCKED` into the workspace
+ * file, and until this release the router applied it at start-up. Closing the
+ * gate refuses it — so a user who had persisted a lock, an explicit act,
+ * would have lost an isolation boundary in silence on upgrade, with no field
+ * anywhere reporting it. An import that carries the default vault but drops
+ * the lock is not "nothing in the field breaks".
+ *
+ * The lock hint is considered FIRST because it decided more: while a lock was
+ * in force every call without an explicit vault resolved to the locked vault
+ * and every other vault was refused, so a workspace file naming both a lock on
+ * B and a default of A was, in practice, a workspace on B alone. Importing
+ * `{ vault: B, locked: true }` reproduces exactly what that installation did
+ * yesterday; importing A would move a year of notes.
  *
  * @param {{
  *   binding: object|null,
@@ -584,8 +697,11 @@ export function readMigrationState(config) {
  *   dotenvMtimeMs: number|null,
  *   openedAt: string|null,
  *   alreadyImported: boolean,
+ *   lockHint?: string|null|undefined,
+ *   lockHintOrigin?: string|null,
+ *   lockMtimeMs?: number|null,
  * }} input
- * @returns {{ import: boolean, vault: string|null, reason: string }}
+ * @returns {{ import: boolean, vault: string|null, locked: boolean, reason: string, record: boolean }}
  */
 export function migrationDecision({
   binding,
@@ -595,25 +711,87 @@ export function migrationDecision({
   dotenvMtimeMs,
   openedAt,
   alreadyImported,
+  lockHint = null,
+  lockHintOrigin = null,
+  lockMtimeMs = null,
 }) {
-  const no = (reason) => ({ import: false, vault: null, reason });
+  const no = (reason) => ({
+    import: false,
+    vault: null,
+    locked: false,
+    reason,
+    record: CLOSING_REASONS.includes(reason),
+  });
   if (binding) return no(IMPORT_REASON.ALREADY_BOUND);
   if (alreadyImported) return no(IMPORT_REASON.ALREADY_CONSIDERED);
-  if (typeof hint !== 'string' || hint.trim() === '') return no(IMPORT_REASON.NO_HINT);
-  // Only a value the loader took from THIS project's file is migrated. A host
-  // value already works — it is an authority — so importing it would record a
-  // confirmation the user never gave, for no benefit at all.
-  if (hintOrigin !== ENV_ORIGINS.WORKSPACE_DOTENV) return no(IMPORT_REASON.NOT_FROM_A_FILE);
-  if (typeof isRegistered !== 'function' || !isRegistered(hint)) return no(IMPORT_REASON.UNKNOWN_VAULT);
+
+  const known = (name) => typeof isRegistered === 'function' && isRegistered(name);
+  const fromFile = (value, origin) => typeof value === 'string' && value.trim() !== ''
+    && origin === ENV_ORIGINS.WORKSPACE_DOTENV;
+
+  // A LOCK THIS FILE CARRIED IS DECIDED FIRST AND ALONE. If the workspace file
+  // names a lock, that lock is what the installation was actually doing, so
+  // either it is imported or NOTHING is — falling back to the default-vault
+  // hint would bind the workspace to a vault the old behaviour never used, and
+  // then close the window on that wrong answer for good.
+  //
+  // The case that made this explicit (Codex, round 5): a file naming a lock on
+  // B and a default of A, with B not registered *right now* — a vault the user
+  // has yet to re-add, or one hidden by `disabledVaults` this week. The first
+  // version imported A unlocked and recorded the workspace as considered, so
+  // registering B later could never restore the isolation: a TRANSIENT
+  // condition turned into a permanent verdict, which is exactly what
+  // `CLOSING_REASONS` exists to prevent one level up.
+  if (fromFile(lockHint, lockHintOrigin) && !known(lockHint)) {
+    return no(IMPORT_REASON.UNKNOWN_VAULT);
+  }
+
+  // A candidate is a value THIS project's file carried, naming a vault this
+  // machine has. Only a value the loader took from the file is migrated: a
+  // host value already works — it is an authority — so importing it would
+  // record a confirmation the user never gave, for no benefit at all.
+  const candidate = (value, origin, mtimeMs, locked) => (
+    fromFile(value, origin) && known(value) ? { vault: value, mtimeMs, locked } : null
+  );
+  const chosen = candidate(lockHint, lockHintOrigin, lockMtimeMs, true)
+    || candidate(hint, hintOrigin, dotenvMtimeMs, false);
+
+  if (!chosen) {
+    // WHY IT WAS NOT A CANDIDATE, reported from the DEFAULT-vault hint, which
+    // is the one every existing caller and message is about. The three
+    // failures are distinguished in the order they are checked above.
+    if (typeof hint !== 'string' || hint.trim() === '') return no(IMPORT_REASON.NO_HINT);
+    if (hintOrigin !== ENV_ORIGINS.WORKSPACE_DOTENV) return no(IMPORT_REASON.NOT_FROM_A_FILE);
+    return no(IMPORT_REASON.UNKNOWN_VAULT);
+  }
+
   // The window. No `openedAt` yet means this start is the one that opens it,
-  // and everything already on disk predates it.
+  // and everything already on disk predates it — see the honest limits in the
+  // header, which the README and the CHANGELOG now state too.
+  //
+  // AN UNKNOWABLE AGE FAILS CLOSED. `mtimeMs` is null when the file the loader
+  // read has been deleted, renamed or made unreadable since — so the one fact
+  // that separates a workspace attached last year from a repository cloned
+  // this morning cannot be established. Treating that as "old enough" was the
+  // wrong default: it imports on the strength of a measurement that was never
+  // taken. The workspace simply keeps its unconfirmed hint, the briefing says
+  // so, and one sentence confirms it. (Codex, round 5.)
   if (openedAt) {
     const opened = Date.parse(openedAt);
-    if (Number.isFinite(opened) && Number.isFinite(dotenvMtimeMs) && dotenvMtimeMs >= opened) {
+    if (Number.isFinite(opened) && !Number.isFinite(chosen.mtimeMs)) {
+      return no(IMPORT_REASON.NEWER_THAN_UPGRADE);
+    }
+    if (Number.isFinite(opened) && chosen.mtimeMs >= opened) {
       return no(IMPORT_REASON.NEWER_THAN_UPGRADE);
     }
   }
-  return { import: true, vault: hint, reason: IMPORT_REASON.IMPORTED };
+  return {
+    import: true,
+    vault: chosen.vault,
+    locked: chosen.locked,
+    reason: IMPORT_REASON.IMPORTED,
+    record: true,
+  };
 }
 
 /**
@@ -633,7 +811,58 @@ export function withMigrationState(config, { at, cwd = null, recordImported = fa
     const key = canonicalWorkspaceKey(cwd);
     if (key && !imported.includes(key)) imported.push(key);
   }
+  // NOTHING TO CHANGE MEANS THE INPUT OBJECT COMES BACK, exactly like the
+  // no-op branches of `withBinding` and `withoutBinding` — and that identity is
+  // what `updateConfigBindings` reads to decide whether to write at all.
+  //
+  // Without it this function was the reason a bound workspace rewrote
+  // `config.json` on EVERY router start: the migration re-records the window
+  // each time, the recording is idempotent in CONTENT, and a fresh object was
+  // returned regardless — so the file holding every vault's API key was
+  // rewritten, and the inter-process lock taken, once per session for nothing.
+  // Measured on 2026-09-03, in the round that introduced it.
+  const before = base[MIGRATION_KEY];
+  const unchanged = before
+    && typeof before === 'object'
+    && !Array.isArray(before)
+    && before.openedAt === openedAt
+    && Array.isArray(before.imported)
+    && before.imported.length === imported.length
+    && before.imported.every((k, i) => k === imported[i]);
+  if (unchanged) return base;
   return { ...base, [MIGRATION_KEY]: { openedAt, imported } };
+}
+
+/**
+ * Re-classify the live registry's `bindingHint` against the binding it now
+ * carries. Call this after ANY in-session change to `registry.workspaceBinding`.
+ *
+ * WHY IT HAS TO EXIST. `bindingHint` is computed once, at start-up, from the
+ * binding that existed then. Every tool that changes the binding used to leave
+ * it alone, so after `confirm_workspace_binding({ vault: X })` the very hint
+ * that had just been adopted was still reported as `unconfirmed` — measured on
+ * 2026-09-03 through the real `list_vaults`, in the same process. Under
+ * `--no-watch` nothing ever corrected it, and the tool's own description tells
+ * Claude to offer a confirmation whenever the status is `unconfirmed`: the
+ * assistant would keep proposing what the user had just accepted. The mirror
+ * case is `clear`, after which the status stayed `confirmed` and the proposal
+ * went unmentioned.
+ *
+ * It is here, beside the classifier, rather than in each tool: three call
+ * sites already exist and the fourth is the one that would be forgotten.
+ *
+ * @param {object} registry the live registry, mutated in place
+ * @returns {object|null} the hint as re-classified
+ */
+export function refreshRegistryBindingHint(registry) {
+  if (!registry || typeof registry !== 'object') return null;
+  registry.bindingHint = classifyBindingHint({
+    hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+    binding: registry.workspaceBinding || null,
+    isRegistered: (name) => (registry.vaults || []).some((v) => v.name === name),
+    origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+  });
+  return registry.bindingHint;
 }
 
 /**

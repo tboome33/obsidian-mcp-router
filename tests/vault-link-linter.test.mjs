@@ -19,6 +19,8 @@ import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'vault-link-linter.mjs');
@@ -1210,5 +1212,121 @@ describe('vault-link-linter — robustness', () => {
       env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: configPath },
     });
     assert.equal(r.status, 0, r.stderr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The binding, and the rule every OTHER resolver already followed
+// ---------------------------------------------------------------------------
+
+describe('vault-link-linter — a stale binding must not switch the linter off', () => {
+  /**
+   * A second config, with the linter's vault registered AND a workspace
+   * binding pointing at a vault that is not in it. `--unlink`-style states
+   * like this are ordinary: a vault gets disabled, removed, or renamed, and
+   * the binding recorded months ago names something the machine no longer
+   * serves.
+   */
+  /**
+   * TWO ACTIVE VAULTS, and that is the point. With only one registered vault
+   * every fall-through lands on the same vault, so "the linter still resolves
+   * the right one" was true whatever the code did — the assertions could not
+   * fail. Codex said so in round 5, and it was right: two of the three tests
+   * here were measuring the fixture. The second vault carries a DIFFERENT file
+   * name, so which vault the linter chose is visible in what it reports.
+   */
+  let secondVault = null;
+  function ensureSecondVault() {
+    if (secondVault) return secondVault;
+    secondVault = path.join(workDir, 'second-vault');
+    fs.mkdirSync(path.join(secondVault, 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(secondVault, 'wiki', 'only-here.md'), '# only here');
+    fs.mkdirSync(path.join(secondVault, '.obsidian', 'plugins', 'obsidian-local-rest-api'), { recursive: true });
+    fs.writeFileSync(
+      path.join(secondVault, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+      JSON.stringify({ port: 27152, insecurePort: 27162, enableInsecureServer: true }),
+    );
+    return secondVault;
+  }
+
+  function withBindingConfig({ vault, locked, remote = false }) {
+    const other = ensureSecondVault();
+    const p = path.join(workDir, `cfg-binding-${vault}-${locked}-${remote}.json`);
+    fs.writeFileSync(p, JSON.stringify({
+      portRegistry: { [vaultPath]: 27132, [other]: 27152 },
+      portStart: 27132,
+      ...(remote ? { remoteVaults: [{ name: vault, baseUrl: 'https://r/' }] } : {}),
+      workspaceBindings: {
+        [canonicalWorkspaceKey(process.cwd())]: { vault, also: [], locked },
+      },
+    }, null, 2));
+    return p;
+  }
+
+  test('a binding LOCKED to a vault this machine no longer serves is ignored, not obeyed', () => {
+    // THE THIRD RESOLVER. `detectVaultContext` and the drift detector both
+    // check a binding against the active set before using it — the sweep that
+    // added those checks did not reach this file. So with a stale binding
+    // locked to a vanished vault, this hook narrowed itself to a vault it
+    // could not find and exited silently, going quiet about every real broken
+    // link in the vault the session was actually working in. A file nobody has
+    // edited in months must not be able to switch a check off. Found in the
+    // final review, 2026-09-03.
+    const cfg = withBindingConfig({ vault: 'vanished', locked: true });
+    const r = runLinter(
+      'See [log](wiki/log.md) for details.',
+      { env: { OBSIDIAN_ROUTER_CONFIG: cfg } },
+    );
+    assert.equal(r.status, 2, 'the broken link is still reported');
+    assert.match(r.stderr, /log\.md/);
+  });
+
+  test('a binding to a vault this machine no longer serves does not suppress the host default either', () => {
+    // The parallel defect, one tier down: `binding?.vault || authoritative…()`
+    // short-circuits on the stale name, so the host's own
+    // OBSIDIAN_ROUTER_DEFAULT_VAULT was never consulted.
+    //
+    // WITH TWO VAULTS the choice is observable. `only-here.md` exists ONLY in
+    // the second vault, so the port the linter proposes for it says which
+    // vault it treated as the session's own — 27162 is the second vault's
+    // plaintext port, 27142 the first's.
+    ensureSecondVault();
+    const cfg = withBindingConfig({ vault: 'vanished', locked: false });
+    const r = runLinter(
+      'See [only](wiki/only-here.md).',
+      { env: { OBSIDIAN_ROUTER_CONFIG: cfg, OBSIDIAN_ROUTER_DEFAULT_VAULT: 'second-vault' } },
+    );
+    assert.equal(r.status, 2, 'still linting');
+    assert.match(r.stderr, /27162/, 'the HOST default was consulted, not swallowed by the stale binding');
+  });
+
+  test('a binding that names an ACTIVE vault is honoured — and it beats the host default', () => {
+    // The other direction, and the one that proves the guard did not simply
+    // switch bindings off: with a live binding on the FIRST vault and a host
+    // default naming the SECOND, the binding wins — tier 0 of the cascade.
+    ensureSecondVault();
+    const cfg = withBindingConfig({ vault: 'fake-vault', locked: true });
+    const r = runLinter(
+      'See [only](wiki/only-here.md).',
+      { env: { OBSIDIAN_ROUTER_CONFIG: cfg, OBSIDIAN_ROUTER_DEFAULT_VAULT: 'second-vault' } },
+    );
+    // Locked to the first vault, which does not contain `only-here.md`, so the
+    // linter has nothing to say about a file outside the lock's scope.
+    assert.equal(r.status, 0, 'a locked binding really does narrow the linter');
+  });
+
+  test('a binding locked to a REMOTE vault silences the linter instead of aiming it at a local one', () => {
+    // Codex, round 5. Activity was tested only against local `portRegistry`
+    // paths, so a session legitimately locked to a remote vault had its
+    // binding read as stale — and the linter then fell through and started
+    // checking links against a local vault the session is not allowed to
+    // reach. There is nothing local to lint for a remote-locked session, and
+    // saying nothing is the right answer.
+    const cfg = withBindingConfig({ vault: 'my-remote', locked: true, remote: true });
+    const r = runLinter(
+      'See [log](wiki/log.md).',
+      { env: { OBSIDIAN_ROUTER_CONFIG: cfg } },
+    );
+    assert.equal(r.status, 0, 'no local vault is in scope, so nothing is reported');
   });
 });

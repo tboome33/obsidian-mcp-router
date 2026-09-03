@@ -436,10 +436,12 @@ export async function loadRegistry({ configPath } = {}) {
   // through the single config writer. Best effort in the strict sense: a
   // config that cannot be written must never stop the router from starting,
   // so the import is simply not recorded and is retried next time.
-  const bindingImported = importDotenvHintOnce(config, cfgPath, vaults);
-  const workspaceBinding = bindingImported
-    ? { vault: bindingImported.vault, also: [], locked: false, confirmedAt: bindingImported.at, confirmedVia: 'migration' }
-    : readBinding(config, process.cwd());
+  // BOTH come back from the same call, and the binding is the one read INSIDE
+  // the lock. Rebuilding it here from `bindingImported` — as the first version
+  // did — described what this process asked for rather than what the file
+  // ended up holding, and the `else` branch read the start-up copy, so a
+  // binding another process confirmed in between was ignored all session.
+  const { imported: bindingImported, binding: workspaceBinding } = importDotenvHintOnce(config, cfgPath, vaults);
   const bindingHint = classifyBindingHint({
     hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
     binding: workspaceBinding,
@@ -521,41 +523,98 @@ export async function loadRegistry({ configPath } = {}) {
  * and an import that could not be recorded is retried at the next start rather
  * than half-applied.
  *
+ * It also returns the binding as seen INSIDE the lock. The caller used to
+ * fall back to `readBinding(config, cwd)` on its own stale copy whenever
+ * nothing was imported — so a binding another process confirmed between this
+ * process's start-up read and the locked re-read was correctly left alone on
+ * disk and then ignored for the whole session under `--no-watch`. The locked
+ * re-read is the freshest thing this function sees; not handing it back was
+ * throwing away the only measurement that was up to date.
+ *
  * @param {object} config the parsed config, as read at start-up
  * @param {string} cfgPath
  * @param {Array<{name: string}>} vaults the ACTIVE vault set
- * @returns {{ vault: string, at: string, dotenvFile: string|null }|null}
+ * @returns {{ imported: {vault: string, at: string, locked: boolean, dotenvFile: string|null}|null, binding: object|null }}
  */
 function importDotenvHintOnce(config, cfgPath, vaults) {
+  const cwd = process.cwd();
+  // THE FALLBACK RE-READS THE FILE, it does not hand back the start-up copy.
+  //
+  // This function can decide it has nothing to do without ever taking the
+  // lock — the overwhelmingly common case — and the first version then
+  // returned `readBinding(config, cwd)` from the object `loadRegistry` parsed
+  // at start-up. Between that parse and this moment, another session's
+  // `confirm_workspace_binding` or an `--attach` can have recorded a binding;
+  // under `--no-watch` this session would then ignore it for its whole life
+  // and route unqualified calls to whatever the cascade picked instead. The
+  // repair that made the LOCKED path hand back its fresh read left this path
+  // reading the stale one, which is this repository's signature shape: a fix
+  // that reaches only its first site. (Codex, round 5.)
+  //
+  // No lock is taken: this is a read, and a torn read is impossible because
+  // every writer of this file writes it atomically through a rename.
+  const fallback = () => {
+    let fresh = config;
+    try { fresh = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8')); } catch { /* keep the copy we have */ }
+    return { imported: null, binding: readBinding(fresh, cwd) };
+  };
   try {
-    const cwd = process.cwd();
     const key = canonicalWorkspaceKey(cwd);
-    if (!key) return null;
+    if (!key) return fallback();
 
     // The dotenv file's own mtime — the fact that tells a workspace attached
     // last year from a repository cloned this morning. Read from the file the
     // LOADER actually used, never a path composed here. This is the one input
     // that does not come from the config, so it is gathered out here.
+    //
+    // BOTH hints are gathered, each with the mtime of the file that actually
+    // carried it: `OBSIDIAN_ROUTER_LOCKED` is migrated as well, or an upgrade
+    // would silently drop a lock the user had explicitly persisted. They come
+    // from the same `.env` in every case the router itself wrote, but the
+    // loader is asked separately rather than assumed.
+    const mtimeOf = (file) => {
+      if (!file) return null;
+      try { return fsSync.statSync(file).mtimeMs; } catch { return null; /* gone since it was read */ }
+    };
     const dotenvFile = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT');
-    let dotenvMtimeMs = null;
-    if (dotenvFile) {
-      try { dotenvMtimeMs = fsSync.statSync(dotenvFile).mtimeMs; } catch { /* gone since it was read */ }
-    }
+    const lockFile = envKeySourceFile('OBSIDIAN_ROUTER_LOCKED');
+    const dotenvMtimeMs = mtimeOf(dotenvFile);
+    const lockMtimeMs = mtimeOf(lockFile);
+    const hints = {
+      hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+      hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+      dotenvMtimeMs,
+      lockHint: process.env.OBSIDIAN_ROUTER_LOCKED,
+      lockHintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_LOCKED'),
+      lockMtimeMs,
+      isRegistered: (name) => vaults.some((v) => v.name === name),
+    };
 
     // A CHEAP PRE-CHECK ON THE STALE CONFIG, to avoid taking the lock for the
     // overwhelmingly common case where there is nothing to do and the window
     // is already open. It decides nothing: every branch below re-decides.
+    //
+    // `record` and not `import`: a workspace that is ALREADY BOUND has to be
+    // written down as considered, or clearing that binding later re-opens the
+    // window and the next start puts the binding back.
     const stale = readMigrationState(config);
     const staleDecision = migrationDecision({
+      ...hints,
       binding: readBinding(config, cwd),
-      hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
-      hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
-      isRegistered: (name) => vaults.some((v) => v.name === name),
-      dotenvMtimeMs,
       openedAt: stale.openedAt,
       alreadyImported: stale.imported.has(key),
     });
-    if (!staleDecision.import && stale.openedAt) return null;
+    //
+    // A verdict that CLOSES the window is only a reason to take the lock when
+    // the workspace is not already written down: `already-bound` is a closing
+    // verdict on every single start, so without the second clause a bound
+    // workspace took the config lock and re-wrote the file once per session,
+    // forever. The write itself is now suppressed one floor down
+    // (`withMigrationState` returns its input when nothing changes); this
+    // avoids even taking the lock, which is the part that makes two sessions
+    // starting together wait on each other.
+    const nothingToRecord = !staleDecision.record || stale.imported.has(key);
+    if (!staleDecision.import && nothingToRecord && stale.openedAt) return fallback();
 
     // THE DECISION IS RE-TAKEN INSIDE THE LOCK, against the config that
     // `updateConfigBindings` just re-read. Taking the lock is not enough if
@@ -569,27 +628,37 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     // human decision. Found by the Codex review of the merge, 2026-09-03.
     const at = new Date().toISOString();
     let imported = null;
-    updateConfigBindings(cfgPath, (cfg) => {
+    let bindingInLock = null;
+    const next = updateConfigBindings(cfgPath, (cfg) => {
       const fresh = readMigrationState(cfg);
+      bindingInLock = readBinding(cfg, cwd);
       const decision = migrationDecision({
-        binding: readBinding(cfg, cwd),
-        hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
-        hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
-        isRegistered: (name) => vaults.some((v) => v.name === name),
-        dotenvMtimeMs,
+        ...hints,
+        binding: bindingInLock,
         openedAt: fresh.openedAt,
         alreadyImported: fresh.imported.has(key),
       });
       // The window is opened on the FIRST start of this version whatever the
       // decision was — otherwise every later workspace would look like it
-      // predates an upgrade that had never been recorded.
-      if (!decision.import) return withMigrationState(cfg, { at });
-      imported = { vault: decision.vault, at, dotenvFile: dotenvFile || null };
+      // predates an upgrade that had never been recorded. And a workspace the
+      // window has CLOSED for is written down even when nothing was imported:
+      // `record` covers "already bound", which is the case a clear used to
+      // re-open.
+      if (!decision.import) return withMigrationState(cfg, { at, cwd, recordImported: decision.record });
+      imported = {
+        vault: decision.vault,
+        at,
+        locked: decision.locked,
+        dotenvFile: (decision.locked ? lockFile : dotenvFile) || null,
+      };
       return withMigrationState(
         withBinding(cfg, cwd, {
           vault: decision.vault,
           also: [],
-          locked: false,
+          // A LOCK THE WORKSPACE FILE CARRIED COMES ACROSS. Dropping it turned
+          // an upgrade into the silent removal of an isolation boundary the
+          // user had explicitly persisted.
+          locked: decision.locked,
           // NAMED AS AN IMPORT, not as something the user did. Six months
           // later the human reading this config must be able to tell a
           // confirmation they gave from one the router inferred from a file.
@@ -598,11 +667,14 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
         { at, cwd, recordImported: true },
       );
     });
-    return imported;
+    // The binding as of the LOCKED re-read — fresher than the caller's copy,
+    // and the only one that has seen another process's concurrent write.
+    return { imported, binding: imported ? readBinding(next, cwd) : bindingInLock };
   } catch {
     // Every failure mode — unwritable config, a lock held by another process,
-    // a malformed migration block — degrades to "not imported this time".
-    return null;
+    // a malformed migration block — degrades to "not imported this time". The
+    // binding still comes from the copy this process has.
+    return fallback();
   }
 }
 

@@ -71,11 +71,43 @@ function importsOf(file) {
   // Multi-line named imports are the house style, so a statement spans
   // several lines; it ends at the first `;`, which a blanked string can no
   // longer contain.
-  for (const m of code.matchAll(/(?:^|\n)\s*import\b[^;]*;/g)) {
+  //
+  // RE-EXPORTS COUNT AS EDGES. The first version matched `import` only, so a
+  // module reached through `export { x } from './y.mjs'` or `export * from
+  // '...'` was invisible to the whole-graph walk below — and this file's
+  // neighbours already use that form (`hooks/_helpers/workspace-vault.mjs`
+  // re-exports two functions from `vault-slug.mjs`). A bare-package dependency
+  // moved behind one re-export would have left the "every module is
+  // dependency-free" guard green while the hook stopped loading on a checkout
+  // with no `node_modules`, which is the exact promise it exists to keep.
+  // Codex flagged the gap in the final review, 2026-09-03. Dynamic `import()`
+  // is deliberately NOT matched: it is a call, not a load-time edge, and no
+  // module in this graph uses one — a separate assertion below refuses one
+  // appearing.
+  for (const m of code.matchAll(/(?:^|\n)\s*(?:import\b|export\b(?=[^;]*\bfrom\b))[^;]*;/g)) {
     const spec = /['"]([^'"]+)['"]\s*;?\s*$/.exec(src.slice(m.index, m.index + m[0].length));
     if (spec) out.push(spec[1]);
   }
   return out;
+}
+
+/**
+ * Every local file reachable from `entry` through load-time edges — imports
+ * AND re-exports. Shared by the two graph assertions below so they cannot
+ * walk two different graphs and each vouch for what the other checked.
+ */
+function graphFrom(entry) {
+  const seen = new Set();
+  const walk = (file) => {
+    if (seen.has(file)) return;
+    seen.add(file);
+    for (const spec of importsOf(file)) {
+      if (spec.startsWith('node:') || !spec.startsWith('.')) continue;
+      walk(path.resolve(path.dirname(file), spec));
+    }
+  };
+  walk(entry);
+  return seen;
 }
 
 /** A binding as `readBinding` would hand one over. */
@@ -119,6 +151,20 @@ describe('composeBriefing — what it says', () => {
     const out = brief({ binding: bind('notes', ['work', 'archive']) });
     assert.match(out, /bound to the vault "notes"/);
     assert.match(out, /"work" and "archive" also bound and addressable by name/);
+  });
+
+  test('SEVERAL AND LOCKED does not contradict itself: no other vault answers, secondaries answer again once lifted', () => {
+    // The state `lock_vault --persist` produces on a workspace with an `also`.
+    // The first wording said "no other vault answers, with X also bound and
+    // addressable by name" in one sentence. (Sixth review, 2026-09-04.)
+    const out = brief({ binding: bind('notes', ['work', 'archive'], true) });
+    assert.match(out, /locked to it — no other vault answers while the lock holds/);
+    assert.match(out, /"work" and "archive" stay bound and addressable by name again once it is lifted/);
+    assert.doesNotMatch(out, /also bound and addressable by name\./,
+      'the unlocked wording must not survive beside the lock');
+    // Grammar for a list of one.
+    const one = brief({ binding: bind('notes', ['work'], true) });
+    assert.match(one, /"work" stays bound and addressable by name again once it is lifted/);
   });
 
   test('SEVERAL with one secondary reads as a list of one, not "a and "', () => {
@@ -418,13 +464,18 @@ describe('hooks/workspace-briefing.mjs', () => {
     fs.mkdirSync(workspace, { recursive: true });
     if (dotenv !== null) fs.writeFileSync(path.join(workspace, '.env'), dotenv, 'utf8');
     const configPath = path.join(dir, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify(config ?? {}, null, 2), 'utf8');
+    const configBytes = Buffer.from(JSON.stringify(config ?? {}, null, 2), 'utf8');
+    fs.writeFileSync(configPath, configBytes);
+    // The hash of what the HARNESS wrote, computed before the hook runs. A
+    // read-only assertion that hashes the file afterwards compares it to
+    // itself and proves nothing.
+    const configHash = crypto.createHash('sha256').update(configBytes).digest('hex').slice(0, 16);
     const r = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', cwd: workspace }),
       encoding: 'utf8',
       env: hookEnv({ OBSIDIAN_ROUTER_CONFIG: configPath, ...env }),
     });
-    return { ...r, workspace, configPath };
+    return { ...r, workspace, configPath, configHash };
   }
 
   const CONFIG = (bindings = {}) => ({
@@ -578,9 +629,17 @@ describe('hooks/workspace-briefing.mjs', () => {
     assert.deepEqual(snapshot(HOME), homeBefore, 'nothing under HOME either');
     // The config directory holds the config this run created, byte for byte,
     // and nothing else.
+    //
+    // THE EXPECTED HASH IS TAKEN BEFORE THE RUN, from bytes the test wrote
+    // itself. The first version hashed the file AFTER the hook had run and
+    // compared it to itself, so "byte for byte" was a tautology: a hook that
+    // rewrote the config with semantically identical but differently formatted
+    // JSON — two spaces to four, keys reordered — passed. Codex flagged it in
+    // the final review, 2026-09-03. `runHook` writes the config, so the bytes
+    // it wrote are knowable in advance.
     const cfgDir = path.dirname(r.configPath);
-    const expectedCfg = `config.json:${crypto.createHash('sha256').update(fs.readFileSync(r.configPath)).digest('hex').slice(0, 16)}`;
-    assert.deepEqual(snapshot(cfgDir), [expectedCfg], 'no fingerprint beside the config, and the config untouched');
+    assert.deepEqual(snapshot(cfgDir), [`config.json:${r.configHash}`],
+      'no fingerprint beside the config, and the config byte-identical to what the harness wrote');
     assert.deepEqual(JSON.parse(fs.readFileSync(r.configPath, 'utf8')), CONFIG(), 'the config content is what was written');
   });
 
@@ -637,8 +696,111 @@ describe('hooks/workspace-briefing.mjs', () => {
     assert.ok(seen.size >= 5, `expected the import graph to be walked, saw ${seen.size} files`);
   });
 
+  test('the walk follows `export … from`, so a dependency cannot hide behind a re-export', () => {
+    // THIS WITNESS IS A FIXTURE, and it has to be. The first version asserted
+    // that `vault-slug.mjs` appeared in the real graph — but that module is
+    // ALSO reached by an ordinary `import` from the same file, so dropping
+    // re-export support left the assertion green. A mutation said so. When no
+    // module in the real graph is reachable ONLY through a re-export, the
+    // parser must be tested against one built for the purpose; otherwise the
+    // guard is measuring a coincidence of today's import list.
+    const dir = fs.mkdtempSync(path.join(workDir, 'graph-'));
+    const hidden = path.join(dir, 'hidden.mjs');
+    const middle = path.join(dir, 'middle.mjs');
+    const entry = path.join(dir, 'entry.mjs');
+    fs.writeFileSync(hidden, "import { x } from 'some-installed-package';\nexport const y = x;\n", 'utf8');
+    // Reached ONLY by a re-export — no `import` line names it.
+    fs.writeFileSync(middle, "export { y } from './hidden.mjs';\nexport * from './hidden.mjs';\n", 'utf8');
+    fs.writeFileSync(entry, "import { y } from './middle.mjs';\nexport default y;\n", 'utf8');
+
+    const graph = [...graphFrom(entry)].map((f) => path.basename(f)).sort();
+    assert.deepEqual(graph, ['entry.mjs', 'hidden.mjs', 'middle.mjs'],
+      'a module reached only through `export … from` is part of the graph');
+    // And the bare dependency inside it is therefore visible to the guard.
+    assert.deepEqual(importsOf(hidden), ['some-installed-package']);
+  });
+
+  test('no module in the graph loads anything at RUNTIME, where the walk cannot see it', () => {
+    // The walk above reads load-time edges. A `await import('undici')` inside a
+    // function is invisible to it and would break the same promise at the
+    // moment it runs — on a user's session, not on a developer's tree. There
+    // is no such call today, and this is what keeps it that way.
+    const dynamic = [];
+    for (const file of graphFrom(HOOK)) {
+      const code = blankStringsAndComments(fs.readFileSync(file, 'utf8'));
+      // `createRequire` is the third way in, and the one a graph walk cannot
+      // see at all: it manufactures a `require` under any name the author
+      // likes, so matching the literal call is not enough — its PRESENCE is
+      // what is refused. (Codex, round 5.)
+      const RUNTIME_LOAD = /\bimport\s*\(|\brequire\s*\(|\bcreateRequire\b/;
+      if (RUNTIME_LOAD.test(code)) dynamic.push(path.basename(file));
+    }
+    assert.deepEqual(dynamic, [], 'a runtime load is a dependency the graph walk cannot vouch for');
+  });
+
   test('nothing reaches stderr — a hook\'s stderr is a message Claude reads', () => {
     const r = runHook({ config: CONFIG() });
     assert.equal(r.stderr, '');
+  });
+
+  test('an IMPORTED binding that carries a lock says so, and says nobody chose it', () => {
+    // The disclosure the migration's whole defensibility rests on. Nothing
+    // pinned the LOCK half, so dropping `locked` from the hook's `imported`
+    // object, or emptying the sentence in `importedLine`, stayed green while
+    // the session was silently restricted to one vault by a decision nobody
+    // made today. (Codex, round 5.)
+    const dir = fs.mkdtempSync(path.join(workDir, 'imported-lock-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG({
+        [canonicalWorkspaceKey(dir)]: {
+          vault: 'notes', also: [], locked: true, confirmedVia: 'migration', confirmedAt: '2026-09-03',
+        },
+      }),
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /NOBODY CONFIRMED THIS BINDING/);
+    assert.match(r.stdout, /lock came from that file too/, 'the lock is attributed, not merely in force');
+    assert.match(r.stdout, /locked to it/, 'and the attachment line still says the session is restricted');
+  });
+
+  test('OBSIDIAN_ROUTER_ALLOWED_VAULTS narrows what a hook calls registered', () => {
+    // The whitelist NARROWS what the server serves. A hook whose idea of
+    // "registered" ignored it was WIDER than the server's — so a binding the
+    // server refuses read as active here, and `detectVaultContext` would let
+    // journaling, autocommit and recall write into a vault the session's own
+    // isolation boundary excludes while the server answered from another.
+    //
+    // Being SHORT of the registry is deliberate and safe (a hook then does
+    // nothing); being wider is not, and only one of the two directions was
+    // being reasoned about. Found in the final review, 2026-09-03.
+    const bindings = { [canonicalWorkspaceKey(process.cwd())]: { vault: 'notes', also: [] } };
+    const r = runHook({
+      cwd: process.cwd(),
+      config: CONFIG(bindings),
+      env: { OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'work' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(
+      r.stdout,
+      /not registered on this machine any more/,
+      'a binding the whitelist excludes is reported as not in force, not announced as the vault in use',
+    );
+  });
+
+  test('and it narrows REMOTE vaults too, not only the ones in portRegistry', () => {
+    // The whitelist filter was applied in the `portRegistry` loop and, at
+    // first, only there — so a binding to a remote vault the whitelist
+    // excludes read as perfectly active. Two loops, one rule, and the rule
+    // reached one of them: the shape this repository keeps producing.
+    // (Codex, round 5.)
+    const dir = fs.mkdtempSync(path.join(workDir, 'ws-remote-'));
+    const config = {
+      ...CONFIG({ [canonicalWorkspaceKey(dir)]: { vault: 'faraway', also: [] } }),
+      remoteVaults: [{ name: 'faraway', baseUrl: 'https://r/' }],
+    };
+    const r = runHook({ cwd: dir, config, env: { OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'notes' } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /not registered on this machine any more/);
   });
 });

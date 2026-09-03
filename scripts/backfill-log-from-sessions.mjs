@@ -51,7 +51,7 @@ import path from 'node:path';
 import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs';
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 import { cmp } from '../src/helpers/total-order.mjs';
-import { resolveVaultBySlug } from '../src/helpers/vault-slug.mjs';
+import { registeredVaultPaths, resolveVaultBySlug } from '../src/helpers/vault-slug.mjs';
 
 // State dir where session-auto-journal.mjs persists per-session JSON (used by
 // --include-open for recap enrichment + liveness). Mirrors the hook's path.
@@ -326,7 +326,9 @@ function main() {
   let vaults;
   if (isAll) {
     if (!cfg) fail(`Router config not found at ${CONFIG_PATH}. Run setup-vault.mjs --init-reference first.`);
-    vaults = Object.keys(cfg.portRegistry || {});
+    // Through the accessor: the container is validated, so a hand-edited
+    // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and "1".
+    vaults = registeredVaultPaths(cfg);
     if (vaults.length === 0) fail('No vaults in portRegistry.');
   } else {
     const arg = args[vaultIdx + 1];

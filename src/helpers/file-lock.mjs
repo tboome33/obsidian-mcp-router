@@ -43,8 +43,17 @@
  * A is suspended past the stale threshold, B reaps A's lock and takes its own,
  * A resumes and its release deletes B's lock, C walks in beside B. Three
  * writers overlap and the lock has done nothing. So the directory holds an
- * OWNER TOKEN, and a release removes the lock only when the token is still its
- * own. A reaped holder's release becomes a no-op instead of a hole.
+ * OWNER TOKEN, and a release removes the lock only when the token it reads is
+ * still its own. A reaped holder's release becomes a no-op instead of a hole.
+ *
+ * THE EXACT CLAIM, because a security-shaped guarantee stated one notch too
+ * strongly is worse than none: the token is read and then the directory is
+ * removed, two syscalls, so a reaper landing BETWEEN them still loses its
+ * lock. Closing that needs an atomic compare-and-delete the filesystem does
+ * not offer. What the token buys is that the ordinary reap — the one where a
+ * holder is suspended past the threshold and resumes later — is harmless,
+ * which is the case that actually happens; the residual window is two
+ * syscalls wide and needs a reap to land inside it.
  *
  * Node builtins only: this sits on the start-up path of the binary.
  */

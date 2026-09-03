@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { compareSemver, parseSemver } from '../src/helpers/semver-compare.mjs';
-import { disabledVaultEntries } from '../src/helpers/vault-slug.mjs';
+import { disabledVaultEntries, registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 
 const BRIDGE_REPO = 'tboome33/obsidian-mcp-router-bridge';
 const BRAT_COMMAND = 'obsidian42-brat%3AcheckForUpdatesAndUpdate';
@@ -121,7 +121,12 @@ async function main() {
 
   const cfgPath = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
   const cfg = readJson(cfgPath);
-  if (!cfg?.portRegistry) throw new Error(`No portRegistry in ${cfgPath}`);
+  // Through the accessor, like every other reader: a hand-edited
+  // `"portRegistry": "AB"` is truthy, so this guard passed it and the loop
+  // below then walked the index keys "0" and "1" as if they were vault paths.
+  // (v0.90.0 — the eighth spelling the scan found once it stopped matching
+  // only `Object.keys(cfg.portRegistry)`.)
+  if (registeredVaultPaths(cfg).length === 0) throw new Error(`No usable portRegistry in ${cfgPath}`);
   // `new Set(cfg.disabledVaults || [])` threw on a number and — worse — quietly
   // built a set of CHARACTERS from a bare string, so `"disabledVaults":
   // "template"` disabled any one-character vault slug and not `template`.
@@ -131,7 +136,10 @@ async function main() {
   const { version: target, source } = await resolveTarget(argTarget);
 
   const rows = [];
-  for (const vaultPath of Object.keys(cfg.portRegistry)) {
+  // Through the accessor, like every other reader of this container: a bare
+  // `Object.keys` on a hand-edited string yields index keys, and this loop
+  // would then look for a bridge under a vault path called "0".
+  for (const vaultPath of registeredVaultPaths(cfg)) {
     if (disabled.has(vaultPath)) continue;
     const name = vaultPath.split(/[\\/]/).pop();
     const local = localBridgeVersion(vaultPath);

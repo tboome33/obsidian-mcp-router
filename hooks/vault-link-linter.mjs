@@ -148,6 +148,7 @@ import {
 import {
   configuredDefaultVault,
   disabledVaultEntries,
+  registeredVaultPaths,
   vaultSlug,
 } from '../src/helpers/vault-slug.mjs';
 
@@ -409,7 +410,10 @@ try {
  * respects — it reaches only `node:path` and `vault-path-identity.mjs`.
  */
 
-const allVaultPaths = Object.keys(cfg.portRegistry || {});
+// Through the accessor (the `vaultNames` sweep's container half): a
+// hand-edited `"portRegistry": "AB"` used to give this hook the vault paths
+// "0" and "1" while the server saw none.
+const allVaultPaths = registeredVaultPaths(cfg);
 if (allVaultPaths.length === 0) process.exit(0);
 
 /**
@@ -468,8 +472,38 @@ if (vaultPaths.length === 0) process.exit(0);
 // linter that still read the raw variable would restrict itself to a vault the
 // router does not restrict itself to, and go quiet about real broken links in
 // every other vault on a cloned repository's word.
+//
+// AND AN INACTIVE BINDING FALLS THROUGH, exactly as it does in the cascade and
+// in the other two hook resolvers. The first version consumed the binding's
+// lock unconditionally: with a stale binding locked to a vault that had since
+// been disabled or removed, AND a valid host `OBSIDIAN_ROUTER_LOCKED` on
+// another vault, the server locked to the host's vault while this hook looked
+// for the stale one, failed to find it, and exited — silent about every real
+// broken link in the vault the session was actually working in. A stale file
+// must not be able to switch a hook off. Found in the final review,
+// 2026-09-03; the sweep that fixed `detectVaultContext` and the drift detector
+// had not reached this third resolver.
+// A binding is ACTIVE when this machine still serves the vault it names —
+// LOCAL or REMOTE. Only local paths were considered at first, so a session
+// legitimately locked to a remote vault had its binding classified as stale;
+// the linter then fell through to a host lock or a local default and started
+// checking links against a vault the session is not even allowed to reach.
+// The correct answer for a remote-locked session is "there is nothing local to
+// lint", which the lock branch below already produces once the binding is
+// recognised. (Codex, round 5.)
+const remoteNames = new Set(
+  (Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : [])
+    .map((r) => (typeof r?.name === 'string' ? r.name : null))
+    .filter(Boolean),
+);
+const isActiveSlug = (name) => typeof name === 'string' && name !== ''
+  && (vaultPaths.some((vp) => vaultSlug(cfg, vp) === name) || remoteNames.has(name));
+const activeBinding = (() => {
+  const b = readBinding(cfg, cwd);
+  return b && isActiveSlug(b.vault) ? b : null;
+})();
 const lockedSlug = (
-  (readBinding(cfg, cwd)?.locked && readBinding(cfg, cwd).vault)
+  (activeBinding?.locked && activeBinding.vault)
   || authoritativeLockedVault()
   || ''
 ).trim();
@@ -508,8 +542,11 @@ function resolveDefaultVaultPath() {
   // vault this linter treats as "the project's own". The COMPARISON below now
   // goes through `vaultSlug` from the `vaultNames` sweep — the local
   // `vaultNames` map this function used to build by hand is gone with it.
-  const binding = readBinding(cfg, cwd);
-  const envSlug = (binding?.vault || authoritativeDefaultVault() || '').trim();
+  // `activeBinding` and not a fresh `readBinding`: a binding naming a vault
+  // this machine no longer serves must fall through to the host's value, not
+  // suppress it. `binding?.vault || authoritativeDefaultVault()` short-circuits
+  // on the stale name and never asks the host at all.
+  const envSlug = (activeBinding?.vault || authoritativeDefaultVault() || '').trim();
   if (envSlug) {
     for (const vp of vaultPaths) {
       if (vaultSlug(cfg, vp) === envSlug) return vp;

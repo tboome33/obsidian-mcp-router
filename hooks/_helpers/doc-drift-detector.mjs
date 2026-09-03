@@ -40,6 +40,7 @@ import { readBinding, authoritativeDefaultVault } from '../../src/helpers/worksp
 import {
   configuredDefaultVault,
   disabledVaultEntries,
+  registeredVaultPaths,
   vaultSlug,
 } from '../../src/helpers/vault-slug.mjs';
 
@@ -91,8 +92,13 @@ export function readRouterConfig() {
  */
 export function orderedVaultCandidates(cwd, cfg) {
   if (!cfg) return [];
-  const portRegistry = cfg.portRegistry || {};
-  const all = Object.keys(portRegistry);
+  // THROUGH THE ACCESSOR, container included. `cfg.portRegistry || {}`
+  // accepts anything truthy, and `Object.keys` on a string yields index keys
+  // — so `"portRegistry": "AB"` manufactured the vault paths "0" and "1" here
+  // while the server, which does validate the container, correctly saw none.
+  // The registry's own fix reached only the registry; this is the same class
+  // one file over. (final review, 2026-09-03)
+  const all = registeredVaultPaths(cfg);
   if (all.length === 0) return [];
 
   // v0.13.7: hooks run as fresh Node subprocesses that don't inherit

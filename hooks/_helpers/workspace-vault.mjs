@@ -37,6 +37,7 @@ import {
   disabledVaultEntries,
   vaultSlug,
 } from '../../src/helpers/vault-slug.mjs';
+import { normalizePathForCompare } from '../../src/helpers/vault-path-identity.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -131,15 +132,24 @@ export { defaultNameFromPath, resolveVaultBySlug };
  * accepts both, and so does this).
  *
  * DELIBERATELY SHORT OF THE REGISTRY, and the caller must treat it that way.
- * `src/registry.mjs` has a third source, `VAULT_*` environment entries, and a
- * whitelist (`OBSIDIAN_ROUTER_ALLOWED_VAULTS`) that can narrow the result.
- * Both belong to the served/multi-tenant deployment, which the accepted
- * decision puts out of this lot's scope, and both are parsed by code that
+ * `src/registry.mjs` has a third source, `VAULT_*` environment entries, which
+ * belongs to the served/multi-tenant deployment and is parsed by code that
  * pulls in the router's dependencies — which a hook may not do (hooks run on
  * checkouts that have never seen `npm install`). So this answers "does this
  * machine have vaults, and is this name one of them?" and must never be used
  * to publish a count: a census that is quietly short still reads as
  * authoritative. `list_vaults` is the authority.
+ *
+ * THE WHITELIST IS HONOURED, though, and that direction matters more than the
+ * shortfall. `OBSIDIAN_ROUTER_ALLOWED_VAULTS` NARROWS what the server serves,
+ * so a set that ignored it would call a binding active that the server refuses
+ * — and `detectVaultContext` would then let journaling, autocommit and recall
+ * write into a vault the session's own isolation boundary excludes, while the
+ * server answered from another. Being short of the registry errs toward a hook
+ * doing nothing; being WIDER than it errs toward a hook writing where it must
+ * not, and only one of those is acceptable. Found in the final review,
+ * 2026-09-03. It is a comma-separated list of slugs, so reading it here costs
+ * no dependency.
  *
  * @param {object|null} cfg the parsed router config
  * @returns {Set<string>} vault names, lowercased for comparison
@@ -147,6 +157,16 @@ export { defaultNameFromPath, resolveVaultBySlug };
 export function registeredVaultNames(cfg) {
   const out = new Set();
   if (!cfg || typeof cfg !== 'object') return out;
+
+  // The whitelist, when the instance runs gated. Same parse as
+  // `src/registry.mjs`: comma-separated slugs, blanks dropped, compared
+  // lowercased like every other name in this function. `null` means no
+  // whitelist is in effect, which is the ordinary desktop case.
+  const allowedRaw = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS || '';
+  const allowed = allowedRaw.trim()
+    ? new Set(allowedRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
+    : null;
+  const permitted = (name) => !allowed || allowed.has(name);
 
   // EVERY TYPE CHECK HERE USED TO BE WRITTEN OUT BY HAND, and each one was a
   // bug found separately: `vaultNames[vp]` called `.toLowerCase()` on a number
@@ -160,11 +180,13 @@ export function registeredVaultNames(cfg) {
   for (const vp of registeredVaultPaths(cfg)) {
     const name = vaultSlug(cfg, vp).toLowerCase();
     if (!name || disabled.has(name) || disabled.has(String(vp).toLowerCase())) continue;
+    if (!permitted(name)) continue;
     out.add(name);
   }
   for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
     const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
     if (!name || disabled.has(name)) continue;
+    if (!permitted(name)) continue;
     out.add(name);
   }
   return out;
@@ -183,9 +205,11 @@ export function registeredVaultNames(cfg) {
  * merge, 2026-09-03.
  *
  * Inherits `registeredVaultNames`'s limits, deliberately: a hook cannot see
- * `VAULT_*` entries or the allowed-vaults whitelist, so a binding to one of
- * those reads as inactive here. That errs toward the hooks doing nothing
- * rather than toward them writing into a vault they guessed at.
+ * `VAULT_*` entries, so a binding to one of those reads as inactive here. That
+ * errs toward the hooks doing nothing rather than toward them writing into a
+ * vault they guessed at. The allowed-vaults whitelist IS honoured — see
+ * `registeredVaultNames`, which narrows by it — because that limit ran the
+ * other way and made this helper wider than the server.
  *
  * @param {object|null} cfg
  * @param {string} name
@@ -194,6 +218,24 @@ export function registeredVaultNames(cfg) {
 export function bindingIsActive(cfg, name) {
   if (typeof name !== 'string' || !name) return false;
   return registeredVaultNames(cfg).has(name.trim().toLowerCase());
+}
+
+/**
+ * Is `dirPath` a REGISTERED vault that `OBSIDIAN_ROUTER_ALLOWED_VAULTS`
+ * excludes? False for a directory the config does not register at all: the
+ * whitelist names vaults the server may serve, and says nothing about a folder
+ * the server has never heard of.
+ *
+ * @param {object} cfg
+ * @param {string} dirPath
+ * @returns {boolean}
+ */
+function excludedByWhitelist(cfg, dirPath) {
+  const target = normalizePathForCompare(path.resolve(dirPath));
+  const match = registeredVaultPaths(cfg)
+    .find((vp) => normalizePathForCompare(path.resolve(vp)) === target);
+  if (!match) return false;
+  return !registeredVaultNames(cfg).has(vaultSlug(cfg, match).toLowerCase());
 }
 
 // ---------------------------------------------------------------------------
@@ -258,8 +300,15 @@ export function detectVaultContext(cwd, cfg) {
   const bindingRaw = cfg ? readBinding(cfg, cwd) : null;
   const binding = bindingRaw && bindingIsActive(cfg, bindingRaw.vault) ? bindingRaw : null;
 
-  // Mode 1: cwd is the vault itself — unless a binding says otherwise.
-  const local = binding ? null : resolveScaffold(cwd, 'catalog', { fs, path });
+  // Mode 1: cwd is the vault itself — unless a binding says otherwise, or
+  // unless the whitelist excludes this very vault. `OBSIDIAN_ROUTER_ALLOWED_VAULTS`
+  // narrows what the server serves, and a hook acting on a vault the server
+  // refuses is the isolation boundary broken from the inside: journaling,
+  // autocommit and recall would write into a vault the session may not touch.
+  // A cwd that is a vault the config does not register at all is unaffected —
+  // the whitelist has nothing to say about it, and neither does the server.
+  const cwdExcluded = cfg ? excludedByWhitelist(cfg, cwd) : false;
+  const local = binding || cwdExcluded ? null : resolveScaffold(cwd, 'catalog', { fs, path });
   if (local) {
     return {
       mode: 'cwd-is-vault',
@@ -288,8 +337,17 @@ export function detectVaultContext(cwd, cfg) {
   // redirectable by a cloned repository's `.env`, INDEPENDENTLY of the
   // resolution cascade. Fixing only the cascade would have read as closed
   // while three of the four doors stayed open.
+  //   (c) AND WHATEVER IS CHOSEN GOES THROUGH THE WHITELIST. The binding was
+  //       already checked by the caller through `bindingIsActive`; the HOST
+  //       value was not, and `resolveVaultBySlug` resolves from the unfiltered
+  //       config — so with `OBSIDIAN_ROUTER_ALLOWED_VAULTS=B` and a host
+  //       default of A, every workspace-bound hook acted on A while the server
+  //       refused it and answered from B. The whitelist check reached the
+  //       binding tier and stopped there, which is the one-site repair this
+  //       repository keeps making. (Codex, round 5.)
   const slug = binding?.vault || authoritativeDefaultVault();
   if (!slug) return null;
+  if (!bindingIsActive(cfg, slug)) return null;
   const vp = resolveVaultBySlug(cfg, slug);
   if (!vp) return null;
   const bound = resolveScaffold(vp, 'catalog', { fs, path });

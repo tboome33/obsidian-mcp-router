@@ -234,6 +234,37 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     assert.match(r.stdout, /workspace-bound mode/);
   });
 
+  test('OBSIDIAN_ROUTER_ALLOWED_VAULTS excludes the HOST default too, not only a binding', () => {
+    // The whitelist NARROWS what the server serves. A hook whose idea of
+    // "registered" ignored it was WIDER than the server's — so with
+    // `OBSIDIAN_ROUTER_ALLOWED_VAULTS` naming another vault and a host default
+    // of `my-vault`, this hook loaded and injected `my-vault`'s notes into a
+    // session that is not allowed to reach it, while the server answered from
+    // somewhere else entirely. The whitelist check had been added at the
+    // BINDING tier and stopped there. (Codex, round 5.)
+    const r = runHook({
+      cwd: codeWorkspace,
+      env: {
+        OBSIDIAN_ROUTER_DEFAULT_VAULT: 'my-vault',
+        OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'some-other-vault',
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '', 'a vault outside the isolation boundary is not loaded');
+  });
+
+  test('and the whitelist does not gag a vault it ALLOWS — the guard narrows nothing else', () => {
+    const r = runHook({
+      cwd: codeWorkspace,
+      env: {
+        OBSIDIAN_ROUTER_DEFAULT_VAULT: 'my-vault',
+        OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'my-vault,some-other-vault',
+      },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /workspace-bound mode/);
+  });
+
   test('silent when associated vault has no wiki-meta/hot.md (but has wiki-meta/index.md)', () => {
     // Create another vault with wiki-meta/index.md but no hot.md yet
     const noHotVault = path.join(workDir, 'no-hot-vault');

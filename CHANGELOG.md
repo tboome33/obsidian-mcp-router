@@ -64,9 +64,55 @@ hint written *after* upgrading is reported and confirmed instead of applied.
   which is the binding — the `.env` line it also writes is a portable hint, reported separately as
   `hintWritten`. When the config cannot be written, `persisted` is false and the message says the
   lock does NOT survive, rather than promising something that stopped being true.
-- **One writer for `config.json`.** `saveConfig` and the binding writer take the same
-  inter-process lock and write atomically, carrying the target's permission bits across the
-  rename: this file holds every vault's API key, and a `0600` config used to come back `0644`.
+- **One writer for `config.json`, and it no longer overwrites what it did not change.**
+  `saveConfig` and the binding writer take the same inter-process lock and write atomically,
+  carrying the target's POSIX permission bits across the rename: this file holds every vault's
+  API key, and a `0600` config used to come back `0644`. But the lock is taken at the WRITE, not
+  at the read, and `setup-vault` reads the config, clones plugin directories, probes ports, and
+  saves seconds later — so a binding a Claude session confirmed in that window was inside the
+  snapshot's blind spot and disappeared, and the same ordering lost an API key. It now re-reads
+  inside the lock and merges by top-level key: what this process changed wins, everything else
+  comes from the disk, a key it read and removed stays removed. The rule is a pure function
+  (`src/helpers/config-merge.mjs`) so it is tested without having to reproduce a race.
+- **`setup-vault --link-workspace` records the binding, and `--unlink-workspace` removes it.**
+  Since the binding registry landed, the `.env` line these commands wrote is a hint the router
+  reports and does not apply — so `--link-workspace` linked nothing, while the documentation said
+  it "records the binding, which is what decides". `--unlink-workspace` was worse: it removed the
+  hint, told you to restart so the hooks would stop loading the old vault, and left the binding in
+  place to load it again. Both are commands you typed, which is exactly what a confirmation is.
+- **The vault-link linter checks a binding is ACTIVE before obeying it**, like the cascade and
+  the two other hook resolvers already did. A stale binding locked to a vault that had been
+  disabled or removed made the hook narrow itself to a vault it could not find and exit silently
+  — going quiet about every real broken link in the vault the session was actually working in.
+  A file nobody has edited in months must not be able to switch a check off.
+- **A hook's idea of "registered" honours `OBSIDIAN_ROUTER_ALLOWED_VAULTS`** — for the binding,
+  for the host default, for a remote vault, and for a cwd that is itself a vault. The whitelist
+  narrows what the server serves; a hook set that ignored it was WIDER than the server's, so a
+  vault the server refuses read as available and journaling, autocommit and recall could write
+  into a vault the session's own isolation boundary excludes. Being short of the registry is
+  deliberate and errs toward a hook doing nothing; being wider errs the other way, and only one of
+  those is acceptable. (The first repair reached the binding tier alone — three of the four doors
+  stayed open, which is why round 5 exists.)
+- **The config is not rewritten when nothing changed.** All three transforms return the object
+  they were handed when the result is identical, and the writer skips the file on that identity.
+  Without it a workspace that already had a binding rewrote `config.json` — the file holding every
+  vault's API key — on EVERY router start, and `lock_vault --persist` rewrote it for byte-identical
+  content. A settled workspace now does not even take the inter-process lock, so two sessions
+  starting together never queue behind each other.
+- **`--link-workspace`, `--unlink-workspace` and `--attach` FAIL when the binding cannot be
+  written.** They used to warn and exit 0, printing "Linked workspace" for a command that had
+  linked nothing at all: the `.env` line they also write is a hint the router reports and does not
+  apply. A user who reads a success message walks away believing the attachment exists.
+- **Every reader of `portRegistry` goes through the container check.** `Object.keys(cfg.portRegistry
+  || {})` accepts anything truthy, and `Object.keys` on a string yields index keys — so a
+  hand-edited `"portRegistry": "AB"` manufactured vault paths `"0"` and `"1"`. That was fixed in
+  `src/registry.mjs` during the merge review and nowhere else, which is this repository's signature
+  defect: the server saw no vaults while every other surface invented two. **23 raw expressions
+  across 11 files** were routed through the accessor — counted from the diff, not estimated — and a
+  scan now refuses a raw read outside the helper. The scan is what found them: each round of it
+  named sites the previous reading had missed, and its first version was itself too narrow (it
+  matched one spelling of `Object.keys(cfg.portRegistry)` and walked past optional chaining,
+  bracket access, aliases, destructuring and `for…in` — measured, 6 of 8 shapes).
 
 #### Migration
 
@@ -75,6 +121,15 @@ hint written *after* upgrading is reported and confirmed instead of applied.
   so a later session still knows nobody confirmed it. Clearing it sticks — the workspace is
   remembered as considered, so the next start does not re-import and quietly reverse your
   decision.
+- **A lock you had persisted comes across too.** `lock_vault --persist` used to write
+  `OBSIDIAN_ROUTER_LOCKED` into the workspace file, and the router applied it at start-up.
+  Refusing that line without migrating it would have removed an isolation boundary you had
+  explicitly set, in silence, with nothing anywhere reporting it — so the import carries it onto
+  the binding as `locked: true`, `list_vaults` reports it in `bindingImported.locked`, and the
+  session briefing says the lock came from the same file nobody confirmed. Where a file named a
+  lock on one vault and a default on another, the LOCK decides: while it was in force every call
+  without an explicit vault resolved to the locked one and every other vault was refused, so that
+  is where the work was actually going.
 - **The window closes**, which is the part that took the work. An import that keeps running is
   the old behaviour with a delay. Two facts bound it: the instant you upgraded, and the dotenv
   file's own modification time. `git clone` writes its files *now*, so a repository cloned after
@@ -82,22 +137,148 @@ hint written *after* upgrading is reported and confirmed instead of applied.
   always older. That is the discrimination no marker inside a repository could give — and it
   works precisely BECAUSE cloning rewrites mtimes, the property that made in-repo markers
   worthless in the first place.
+- **Two limits, stated because the sentence above is an absolute.** Unpacking an ARCHIVE — `tar
+  x`, an unzip that restores timestamps, GitHub's source zipball, `rsync -a` — keeps the recorded
+  mtime, so a project obtained that way after upgrading can look older than it is and *is*
+  imported. And on a router whose very first start ever is on this version there is no "moment
+  you upgraded" to compare against, so everything already on disk counts as older. A timestamp is
+  the only signal the disk carries and no in-process check can do better; both cases are
+  announced by the briefing like any other import, which is what makes them cost one sentence to
+  undo. The README says the same in both languages, and a test pins the behaviour so that
+  changing it has to be deliberate.
+
+- **Self-hosted install with hooks wired before this version: re-run `--install-hooks`.** The
+  import runs inside the router, so it runs for everyone; the briefing that discloses it is a
+  hook, activated by the plugin's `hooks.json` or by `node scripts/setup-vault.mjs
+  --install-hooks`. A `settings.json` written by an earlier `--install-hooks` does not carry it,
+  and until it is re-run the imported binding is in force with nothing announcing it. Re-running
+  is idempotent: existing hooks are left alone and the briefing is added.
+- **A proposal cannot be declined, only adopted or left standing.** A hint the workspace `.env`
+  carries and that you do not want — after clearing an imported binding, or in a repository cloned
+  after upgrading — stays `unconfirmed`, so `list_vaults` keeps reporting it and the briefing keeps
+  offering it at every session. The two ways to silence it are to adopt it or to remove the line
+  from the file. A recorded "declined" state is the obvious next step and is not in this release.
+
+#### Fixed — found in the fourth review, all three in the migration
+
+- **A cleared binding came back.** The window only closed for a workspace something had actually
+  been imported INTO. A workspace that already had a binding at the first start of this version —
+  from `--attach`, from the tool, from `lock_vault --persist` — came out as "already bound" and
+  was never written down as considered; so the day you CLEARED that binding, the next start found
+  no binding, found the still-present dotenv hint, and imported it. An automatic decision
+  reversing an explicit human one, which is the single failure this whole mechanism exists to
+  prevent, and the config even recorded `confirmedVia: "migration"` for the thing you had just
+  deliberately removed. The window now closes on both verdicts that are permanent, and
+  `confirm_workspace_binding({ clear: true })` closes it itself as well — two independent
+  reasons, because this is the one place an automatic decision can overwrite a human one.
+- **`lock_vault --persist` onto another vault erased the rest of your binding.** A workspace bound
+  to `notes` with `work` also bound, locked onto a third vault, came out bound to that vault
+  ALONE: two entries you had recorded, gone, from an operation whose subject is something else —
+  while the comment over the line promised that a lock "does not change which other vaults this
+  workspace is bound to". The locked vault becomes the primary, and the previous primary and its
+  secondaries move into `also`, where they stay bound, and addressable again once the lock is
+  lifted (while it holds, no other vault answers). The session default moves with the primary
+  too, so `unlock_vaults` no longer hands the session back to whatever the cascade had picked at
+  start-up while the config says otherwise.
+- **`bindingHint` was never re-classified in a running session.** It is computed once at start-up,
+  and no tool that changed the binding touched it — so after `confirm_workspace_binding({ vault })`
+  the hint you had just adopted was still reported `unconfirmed`, and the tool's own description
+  tells Claude to offer a confirmation whenever it sees that status. Under `--no-watch` the
+  assistant would keep proposing what you had already accepted, for the whole session. The mirror
+  case, after a `clear`, kept reporting `confirmed`.
+
+#### Fixed — found in the sixth review, all four "the system says one thing and does another"
+
+- **`lock_vault --persist` then `confirm_workspace_binding({ clear: true })` left the session
+  locked** while answering "all registered vaults are available again". The persisted lock kept
+  a `runtime` source, and the clear releases a lock by asking who imposed it — round 5's own
+  repair — so it did not recognise the lock as the binding's. A recorded lock is now credited to
+  the binding, and a lock that survives a clear for a legitimate reason (a volatile `lock_vault`
+  of this session, or the host's) is named in the answer instead of being contradicted by it.
+- **`unlock_vaults --persist` under a HOST lock promised "it will not come back on restart".**
+  `OBSIDIAN_ROUTER_LOCKED` in the MCP declaration or the shell is re-imposed at every start and
+  nothing the config says can lift it. The response now says so, `persisted` is false in that
+  case, and a new `hostReimposes` field carries the fact.
+- **The briefing contradicted itself for a locked binding with secondaries** — the exact state
+  `lock_vault --persist` produces on a workspace with an `also`: "no other vault answers, with X
+  also bound and addressable by name". The guard is the truth: secondaries stay bound and answer
+  again once the lock is lifted. The tool's own message and this CHANGELOG said the same wrong
+  thing; all three now agree.
+- **The `list_vaults` description still told Claude a project `.env` can choose the vault.** Two
+  sentences survived the documentation sweep: "what a workspace file may set at all is … a vault
+  it must pick from the ones already registered", and an origin `workspace-dotenv` for
+  `defaultVaultSource` / `lockSource` that the gate can no longer produce. Read as instructions,
+  they lead Claude to advise editing the `.env` to change vaults; the description now says a file
+  can only propose those two and points at `confirm_workspace_binding`. The `Ready` line's comment
+  made the same claim in the future tense.
 
 #### Verification
 
-- Full suite **4 956 tests, 0 failed** (4 561 before the two lots). `npm run validate` and
-  `npm run gate` green.
-- **Reviewed adversarially three times**, invariants handed in as input each time and rewritten
+- Full suite **5 023 tests, 0 failed, 2 opt-in skips** (4 561 before the two lots — measured at
+  the base commit in a worktree, not read from a note). `npm run validate` and `npm run gate`
+  green. The sixth review's four repairs each carry a witness test, and each of the five
+  mutations that undo a repair was seen red and restored by snapshot with a `sha256` compare.
+- **Reviewed adversarially five times**, invariants handed in as input each time and rewritten
   after each round of repairs. Round 1: one BLOCKER — the `.env` was still deciding the default
   while the briefing said it had not been applied — plus eight defects and seven blind tests.
   Round 2: three more BLOCKERs, **two of them introduced by round 1's own repairs**. Round 3, on
   the merge: the migration decided outside the lock it then wrote inside, so a binding recorded
   by `--attach` in between was overwritten — the lost update the lock exists to prevent,
   reappearing inside the function that takes it.
-- **Eleven tests in these lots were blind, vacuous or flaky rather than red**, six of them
-  written during the reviews that were meant to catch exactly that. The one worth repeating: a
-  scan branch matching `process.env['KEY']` was dead code, because the scan runs on source with
-  string CONTENT blanked out — and the mutation that "proved" it went red for a different reason.
+- **Round 4, before the version bump, found three more and all three were about the migration —
+  the part every earlier round had signed off.** They are listed under Migration and Fixed above:
+  a cleared binding came back on the next start; a lock the user had persisted disappeared on
+  upgrade; and an archive-extracted project was imported although the documentation said it could
+  not be. The pattern is the one this repository keeps rediscovering: the rounds converge on the
+  code that was rewritten most, and the last hole sits in what a repair round *added*.
+- **Round 5 reviewed THE REPAIRS, and found ten more.** Three of them were repairs that had
+  reached only their first site — the fix that made the migration hand back the binding it read
+  inside the lock left the early-return path reading the start-up copy; the whitelist check
+  reached the binding tier and not the host default beside it, nor the remote-vault loop; the
+  live-registry refresh reached one of two exit paths. Two were new failure modes the repairs
+  introduced: a workspace that was already bound rewrote `config.json` on EVERY start, and a lock
+  hint naming a temporarily unregistered vault fell back to the default hint and then closed the
+  window on that wrong answer for good. The rest: eligibility still validated outside the lock, a
+  live lock released by comparing names instead of asking who imposed it, an unknowable file age
+  treated as "old enough", `--link-workspace` printing success for a binding it had failed to
+  write, and `unlock_vaults` reporting `persisted: true` beside `bindingLifted: false`. The
+  pattern held: the rounds converge on the code that was rewritten most, and the last holes sit
+  in what the previous round ADDED.
+- **Round 6 read the surfaces addressed to the assistant as what they are — instructions** — the
+  tool descriptions, the session briefing beside the hot-cache block, the CHANGELOG as a published
+  document, and the upgrade path end to end without the code. Four findings, listed under Fixed
+  above; two of them sat in round 5's repairs (the lock released by source, and a sentence the
+  lock repair added), which is the pattern one more time. Every count in this section was
+  re-derived: the tool number, the `portRegistry` sites (24 removed lines, one expression across
+  two), the suite before and after.
+- **Thirty-five mutations across two passes, each seen red**, each restored by copying a snapshot
+  back and comparing `sha256` rather than by `git checkout`. One witness per rule, no shared
+  marker. Round 4's sixteen: the migration recording only on import, the lock hint being ignored,
+  the previous primary being dropped, the `confirmedVia` marker surviving an explicit lock, the
+  session default not moving, the live hint never re-classified, the window not closing on a
+  `clear`, a raw config value reaching a message, the config snapshot written without merging,
+  `--link-workspace` writing only the hint, the linter obeying an inactive binding, the whitelist
+  being ignored, the imported lock flag being dropped, the import walk stopping at re-exports, and
+  one swept `portRegistry` read reinstated. Round 5's nineteen add the repairs themselves, plus
+  the two shapes a guard is easiest to fool with: a bare dependency planted behind an
+  `export … from`, and a `createRequire` planted in the hook graph.
+- **Eleven of those mutations survived on a first run, and most killed a test written minutes
+  earlier.** In round 4, three of four. A `clear`-closes-the-window test called the production transform
+  by hand instead of the tool, so deleting the call from `confirm_workspace_binding` left it
+  green. A `saveConfig` test planted the competing write *before* the run that was supposed to
+  lose it, so the value was inside the snapshot either way — the rule now lives in a pure
+  function (`src/helpers/config-merge.mjs`) tested without a race, because a test that cannot
+  reproduce an interleaving reliably is worse than none. And the witness for "the import walk
+  follows re-exports" named a module that is *also* reached by an ordinary `import`, so it
+  measured a coincidence of today's import list; it is a fixture now. Third lot running, third
+  time a guard was theatre until a mutation said so.
+- **The `portRegistry` sweep was found BY the scan, not by reading.** The container fix landed in
+  `src/registry.mjs` during the merge review and stopped there; the scan added in this round
+  named twelve more sites across ten files — the link linter, the drift detector, the hot-cache
+  prompt, `--status`, the backfill script, the bridge fleet updater, the readiness audit, the OKF
+  projection and rename scripts, the remote-config key writer and four counts in `setup-vault`.
+  Every one was routed through the accessor and the denominator was checked before it was
+  written, which is the only way this repository has ever got one right.
 
 ### The config's word about a vault, checked once
 
@@ -220,41 +401,29 @@ it'll be fine" is exactly what this class is made of.
   RECEIVER — `cfg.` / `config.` / `conf.` is the config's raw word and must be guarded, while
   `registry.` / `this.` is the resolved value and is a boundary in its own right.
 
-### Verification
+### Verification of the `vaultNames` sweep
 
-- Full suite **4 772 tests, 4 760 green, 11 failed, 1 opt-in skip** (4 705 after the `vaultNames`
-  half of this entry, 4 561 before the lot; **+211 in total**, `tests/vault-slug.test.mjs`). The
-  11 failures are the same worktree measurement artifact described below.
-- **Seven more mutations, each seen red**, restored by snapshot copy + `sha256` as before.
-  Removing the `Array.isArray` container guard kills 12; the `defaultVault` type check 6; the
-  `referenceVault` one 6; reverting the reported defect site 6 (five behavioural plus the scan);
-  the element filter 1; and reverting a CLI that has no behavioural test **1 — the scan alone**,
-  which is the whole reason the scan exists.
-- **A mutation walked through the scan, and the scan was the thing that had to change.** Its
-  first version exempted prose with a heuristic — "a line carrying a real property access also
-  carries code punctuation; a sentence carries none" — to let the `--help` text say
-  "and over config.defaultVault." A raw read split across lines, with the property access alone
-  on an unpunctuated continuation line, passed 211/211. The heuristic is gone; the one prose line
-  is now exempted by its exact content. Second lot running, second time a guard's test was
-  theatre until a mutation said so.
+The numbers for the release as a whole are in the first Verification section above; what belongs
+here is what the sweep's own mutations found.
 
-- Full suite **4 705 tests, 4 693 green, 11 failed, 1 opt-in skip** (4 561 before this lot;
-  **+144** in `tests/vault-slug.test.mjs`). The 11 failures are all in `tests/no-vault-disk.test.mjs`
-  and are a MEASUREMENT ARTIFACT of running in a git worktree with no local `node_modules`: that
-  file's dependencies resolve outside its `--permission` allowlist. Identical count, identical
-  file, before and after the change. `npm run validate` and `npm run gate` green on the same tree.
-- **Twelve mutations, each seen red**, each restored by copying a snapshot back and comparing
+- **Nineteen mutations, each seen red**, each restored by copying a snapshot back and comparing
   `sha256` rather than by `git checkout`. One witness per rule, no shared marker: dropping the
   type check kills 70 tests across every surface; the `String()` coercion 12; the empty-string
   check 10; reverting a single consumer to its raw read 11 (10 behavioural plus the scan); a
-  seventh copy of `defaultNameFromPath` 2; and the path guard, the map shape check, the registry
-  shape check, the trim, the blank-slug guard and the prototype guard exactly 1 each.
-- **Two mutations initially SURVIVED and each cost the test that was supposed to catch it.**
+  seventh copy of `defaultNameFromPath` 2; removing the `Array.isArray` container guard 12; the
+  `defaultVault` type check 6; the `referenceVault` one 6; the element filter 1; and the path
+  guard, the map shape check, the registry shape check, the trim, the blank-slug guard and the
+  prototype guard exactly 1 each. Reverting a CLI that has no behavioural test kills **1 — the
+  scan alone**, which is the whole reason the scan exists.
+- **Four mutations SURVIVED at first, and each cost the test that was supposed to catch it.**
   Removing `Object.hasOwn` left 143/143 green, because the prototype members a test reaches for
   first are functions that `typeof` already refuses; the witness is now a polluted prototype
   carrying a *string*. Removing the blank-slug guard was likewise invisible until a fixture with
-  a registry key that actually derives an empty slug was added. Both guards were real; both tests
-  were theatre until the mutation said so.
+  a registry key that actually derives an empty slug was added. And a raw read split across
+  lines, with the property access alone on an unpunctuated continuation line, walked straight
+  through the scan's prose heuristic — "a line carrying a real property access also carries code
+  punctuation; a sentence carries none" — at 211/211 green. The heuristic is gone; the one prose
+  line is exempted by its exact content.
 
 ## [0.89.0] — 2026-09-03 — `FullAuto` never comes from a project's file
 

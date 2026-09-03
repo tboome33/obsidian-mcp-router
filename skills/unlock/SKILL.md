@@ -25,7 +25,7 @@ Invoke the `unlock_vaults` MCP tool.
 
 - After a successful unlock, confirm to the user: previous lock target (if any), whether the `.env` was cleaned, and that the router is back in normal multi-vault mode.
 - If the router wasn't locked, the tool returns a no-op message. Surface that gently — no need to be dramatic.
-- If the user said "persist" but the `.env` didn't have `OBSIDIAN_ROUTER_LOCKED`, the tool reports `persistRemoved: false` — surface that as an info ("nothing to clean up in .env"). The field that matters is `bindingLifted`: false there means the lock is still recorded in the router config and WILL come back at the next start, which is worth saying plainly.
+- If the user said "persist" but the `.env` didn't have `OBSIDIAN_ROUTER_LOCKED`, the tool reports `persistRemoved: false` — surface that as an info ("nothing to clean up in .env"). The field that matters is `bindingLifted`: **true** means no lock is recorded for this workspace in the router config any more — either it was lifted, or there never was one — so nothing comes back at the next start. **False means the router config could not be written**, so a lock recorded there (if any) WILL come back; say that plainly and point at the config's permissions. Do not report a lock as "still recorded" on a false: the tool cannot see whether one existed when the write failed. One field overrides all of that: **`hostReimposes: true`** means the lock came from the host's `OBSIDIAN_ROUTER_LOCKED` (the MCP declaration or the shell), which no persist can lift — say plainly that it WILL come back at the next start until that variable is removed where it is set, and do not promise otherwise even though `bindingLifted` is true.
 
 ## Push back if
 
