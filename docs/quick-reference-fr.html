@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.87.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 50 outils MCP · 47 skills)<br>
+  <div class="meta">v0.90.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 51 outils MCP · 47 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -176,6 +176,7 @@
 <ul>
   <li><strong>Le plugin Claude Code embarque et lance le serveur</strong> — une installation = tout, une mise à jour = tout. Le serveur est déclaré dans le <code>.mcp.json</code> racine du plugin via <code>${CLAUDE_PLUGIN_ROOT}</code> ; <code>node_modules</code> auto-réparés au premier lancement. L'entrée manuelle <code>~/.claude.json</code> reste le parcours dev (Claude Desktop a son propre fichier, <code>claude_desktop_config.json</code>)</li>
   <li><strong>Vaults locaux + distants</strong> traités à l'identique — URL + clé API dans la config, terminé</li>
+  <li><strong>Liaison workspace→vault</strong> (v0.90.0) : quel vault ouvre un dépôt cloné n'est plus décidé par son propre <code>.env</code> — c'est une liaison confirmée une fois par machine, dans <em>ton</em> <code>config.json</code> (<code>confirm_workspace_binding</code>, ou <code>setup-vault --attach</code>). Le <code>.env</code> d'un projet ne peut plus que <strong>proposer</strong> un vault ; le briefing de début de session dit à quoi ce workspace est rattaché et comment en changer</li>
   <li><strong>Cross-vault</strong> : <code>vault: "*"</code> fan-out automatique sur tous les vaults</li>
   <li><strong>Mode lock</strong> : restreint la session à un seul vault (sécurité, focus) · <strong>Auto-enrichissement</strong> : Claude propose des saves wiki à 3 moments naturels, 4 modes (<code>ClaudeAsk</code> / <code>Hybrid</code> / <code>FullAuto</code> / <code>off</code>)</li>
   <li><strong>Boîte à outils de conversion</strong> : PDF / DOCX / XLSX / PPTX / image (OCR) / audio / YouTube / page web / dépôt git → markdown — backend <strong>MarkItDown opt-in</strong> (<code>npm run install-markitdown</code> ; les outils restent listés et renvoient un hint d'installation si le backend manque) ; <strong>Docling</strong> second opt-in (<code>npm run install-docling</code>) pour le PDF haute fidélité + <code>pdf_to_images</code> (le modèle <em>voit</em> une page de PDF) ; <strong>filtre de pertinence BM25</strong> qui retire les blocs hors-sujet avant synthèse</li>
@@ -184,7 +185,7 @@
   <li><strong>Click-to-open</strong> : liens cliquables dans le chat via la route <code>GET /open/&lt;path&gt;</code> du bridge ; <code>open_in_obsidian</code> fait pareil côté serveur (sans navigateur — idéal Claude Desktop). Le lien survit à la perte du disque du vault (<code>insecurePort</code> déclarable en config, exporté seulement sur <code>--with-click-to-open</code> explicite), et l'auto-test <code>GET /ping?v=&lt;vault&gt;</code> prouve en un clic <em>quel</em> vault répond sur un port</li>
   <li><strong>Wizard de création de vault</strong> : <code>plan_vault</code> → ajustements → <code>provision_vault</code>, défauts d'abord (happy path = 1 interaction)</li>
   <li><strong>Mode multi-tenant</strong> (opt-in) : scoper une instance par variables d'env — whitelist de vaults, lecture seule, audit d'écriture par utilisateur — pour les déploiements MCPHub/proxy</li>
-  <li><strong>10 hooks</strong> — 2 actifs d'office pour tout installeur du plugin (<code>hot-cache-load</code> + <code>decisions-recall</code>, via <code>hooks/hooks.json</code>) ; les 8 autres opt-in, auto-câblés en fin de bootstrap <code>setup-vault</code> (<code>--no-hooks</code> pour s'en passer) ou via <code>node scripts/setup-vault.mjs --install-hooks</code> : auto-journal de session, garde du hot-cache, autocommit wiki, linter de liens, détecteur de dérive doc, check de mise à jour…</li>
+  <li><strong>11 hooks</strong> — 3 actifs d'office pour tout installeur du plugin (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>, via <code>hooks/hooks.json</code>) ; les 8 autres opt-in, auto-câblés en fin de bootstrap <code>setup-vault</code> (<code>--no-hooks</code> pour s'en passer) ou via <code>node scripts/setup-vault.mjs --install-hooks</code> : auto-journal de session, garde du hot-cache, autocommit wiki, linter de liens, détecteur de dérive doc, check de mise à jour…</li>
 </ul>
 
 <h2>Comment les briques s'emboîtent <span class="count">— la chaîne de dépendances</span></h2>
@@ -210,7 +211,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <li><strong>Chemin le plus simple</strong> : <code>/obsidian-router:meta-attach-vault</code> — wizard interactif qui attache un vault à un workspace (cas courant), bootstrappe un vault autonome, ou enregistre un vault distant. Provisionne les plugins + scaffolde le wiki + lie le <code>.env</code> + picker de conventions.</li>
   <li>Alternative CLI :
     <pre>npm run setup-vault -- "C:\VAULTS\MonVault"</pre>
-    ⇒ installe/configure les plugins <strong>Local REST API</strong> + bridge, écrit le <code>.env</code>, alloue un port unique, ajoute au registre, câble les hooks routeur — 10 au total, dont 2 déjà actifs via le plugin (<code>--no-hooks</code> pour s'en passer, <code>--install-hooks</code> pour le faire plus tard).</li>
+    ⇒ installe/configure les plugins <strong>Local REST API</strong> + bridge, écrit le <code>.env</code>, alloue un port unique, ajoute au registre, câble les hooks routeur — 11 au total, dont 3 déjà actifs via le plugin (<code>--no-hooks</code> pour s'en passer, <code>--install-hooks</code> pour le faire plus tard).</li>
   <li>Le <strong>bridge</strong> (<code>obsidian-mcp-router-bridge</code>) est requis pour <code>search_smart</code> (avec <strong>Smart Connections</strong>), pour <code>execute_template</code> (avec <strong>Templater</strong>) et pour les liens click-to-open (<code>/open/*</code>). Sans bridge : CRUD de base OK, ces trois capacités non.</li>
   <li>Vérifier : <code>/obsidian-router:meta-status</code> ou dire simplement <em>« diagnostique le router »</em></li>
 </ol>
@@ -282,7 +283,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
-    <td>Les <strong>8 hooks opt-in</strong> (sur 10) vivent ici — les 2 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 51 commandes + 47 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
+    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 51 commandes + 47 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
@@ -392,7 +393,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 50 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 51 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>
@@ -412,8 +413,8 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
     <td><strong>Templater.</strong> Rend un template, écrit optionnellement le résultat ; arguments via <code>tp.mcpTools.prompt("clé")</code>.</td>
   </tr>
   <tr>
-    <td>lock_vault · unlock_vaults · set_auto_enrich_mode</td>
-    <td><strong>État du router.</strong> Isolation mono-vault ; bascule du mode d'auto-enrichissement.</td>
+    <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding</td>
+    <td><strong>État du router.</strong> Isolation mono-vault ; bascule du mode d'auto-enrichissement ; confirme ou efface la liaison de ce workspace (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> pour plusieurs, <code>{ clear: true }</code> pour tous les vaults) — enregistrée dans ton propre <code>config.json</code>, jamais dans le projet.</td>
   </tr>
   <tr>
     <td>plan_vault · provision_vault</td>
