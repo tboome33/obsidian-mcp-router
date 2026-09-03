@@ -37,6 +37,11 @@ import path from 'node:path';
 import { loadWorkspaceDotenv } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
+import {
+  configuredDefaultVault,
+  disabledVaultEntries,
+  vaultSlug,
+} from '../../src/helpers/vault-slug.mjs';
 
 // ---------------------------------------------------------------------------
 // Vault selection
@@ -106,23 +111,37 @@ export function orderedVaultCandidates(cwd, cfg) {
 
   // (1) workspace-bound vault — the confirmed binding first, then the
   // environment variable ONLY when it may decide. One of the four resolvers
-  // swept for the Codex finding of 2026-09-03: a project `.env` proposes, it
-  // does not choose which vault this hook reports drift against.
+  // swept for the gate: a project `.env` proposes, it does not choose which
+  // vault this hook reports drift against.
+  //
+  // The COMPARISON side went through the same treatment in the `vaultNames`
+  // sweep: `vaultSlug` replaces the inline
+  // `(cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase()`
+  // that stood at these three sites. Two bugs went with it — a non-string in
+  // `vaultNames` threw a TypeError straight out of a hook that must exit 0
+  // whatever the config says, and the fallback used the RUNTIME's
+  // `path.basename`, which reads a Windows registry key as one long filename
+  // when the runtime is POSIX. Two independent repairs of the same function:
+  // one decides WHO may name the vault, the other what a name IS.
   const binding = readBinding(cfg, cwd);
   const slug = (binding?.vault || authoritativeDefaultVault() || '').trim().toLowerCase();
   if (slug) {
     for (const vp of all) {
-      const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-      if (candidate === slug) { push(vp); break; }
+      if (vaultSlug(cfg, vp).toLowerCase() === slug) { push(vp); break; }
     }
   }
 
   // (2) default vault
-  const defaultSlug = (cfg.defaultVault || '').toLowerCase();
+  //
+  // `configuredDefaultVault` (v0.90.0) replaces `(cfg.defaultVault || '')`.
+  // A non-string there is TRUTHY, so `||` never caught it and `.toLowerCase()`
+  // threw a TypeError out of this function — which two hooks call, both of
+  // which must exit 0 whatever the config says. Same defect as the
+  // `vaultNames` one swept in c4291e8, one key over.
+  const defaultSlug = (configuredDefaultVault(cfg) || '').toLowerCase();
   if (defaultSlug) {
     for (const vp of all) {
-      const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-      if (candidate === defaultSlug) { push(vp); break; }
+      if (vaultSlug(cfg, vp).toLowerCase() === defaultSlug) { push(vp); break; }
     }
   }
 
@@ -138,12 +157,16 @@ export function orderedVaultCandidates(cwd, cfg) {
   }
 
   // (4) all remaining, excluding `.template`-style first
-  const disabled = new Set((cfg.disabledVaults || []).map((s) => String(s).toLowerCase()));
+  // `.map` on `(cfg.disabledVaults || [])` threw on anything but an array —
+  // including the likeliest hand-edit of all, a bare `"disabledVaults":
+  // "template"`. The `String(s)` that stood here guarded the ELEMENTS and not
+  // the container, and coerced a numeric entry into the name "123", which a
+  // vault whose folder is called `123` really answers to. (v0.90.0)
+  const disabled = new Set(disabledVaultEntries(cfg).map((s) => s.toLowerCase()));
   const isTemplate = (vp) => /\.template$/i.test(vp);
   for (const vp of all) {
     if (isTemplate(vp)) continue;
-    const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-    if (disabled.has(candidate)) continue;
+    if (disabled.has(vaultSlug(cfg, vp).toLowerCase())) continue;
     push(vp);
   }
   // Templates last (almost never the right target, but include in case

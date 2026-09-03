@@ -41,6 +41,12 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
+import {
+  configuredDefaultVault,
+  defaultNameFromPath,
+  disabledVaultEntries,
+  vaultSlug,
+} from './helpers/vault-slug.mjs';
 import { envKeyOrigin, envKeySourceFile } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
@@ -99,14 +105,11 @@ export async function loadRegistry({ configPath } = {}) {
 
   const config = JSON.parse(raw);
   const vaults = [];
-  const disabled = new Set(
-    Array.isArray(config.disabledVaults) ? config.disabledVaults : [],
-  );
+  const disabled = new Set(disabledVaultEntries(config));
   const skipped = [];
 
   // --- 1. Local vaults from portRegistry ---
   const portRegistry = config.portRegistry || {};
-  const vaultNames = config.vaultNames || {};
 
   // Disk truth for the port-collision report below. Each vault's data.json is
   // read ONCE here and reused for both the apiKey and the two ports — the read
@@ -115,7 +118,10 @@ export async function loadRegistry({ configPath } = {}) {
   const onDiskPorts = new Map();
 
   for (const [vaultPath, value] of Object.entries(portRegistry)) {
-    const name = vaultNames[vaultPath] || defaultNameFromPath(vaultPath);
+    // The config's word on this vault's name, type-checked at the boundary —
+    // a hand-edited `"vaultNames": { "<path>": 123 }` falls back to the path
+    // instead of travelling on as a vault name. See helpers/vault-slug.mjs.
+    const name = vaultSlug(config, vaultPath);
 
     // READ PORTS FIRST, FILTER SECOND. `disabledVaults` hides a vault from the
     // MCP tool surface — it does NOT stop Obsidian from opening it and binding
@@ -397,7 +403,13 @@ export async function loadRegistry({ configPath } = {}) {
   // that choice and let resolveVault() raise a clear error at tool-call
   // time. Tier 4 (the implicit fallback) DOES skip missing-key candidates,
   // so a router with no explicit configuration prefers a healthy vault.
-  const configuredDefault = config.defaultVault;
+  // Through the accessor (the `vaultNames` sweep). This tier was already safe
+  // — `isActive` compares against names this module produced, so a number
+  // could never win it — but reading the raw value made that safety
+  // accidental, and it is the reason the six readers DOWNSTREAM of the
+  // registry never had to care: `registry.defaultVault` is a resolved name,
+  // not the config's word.
+  const configuredDefault = configuredDefaultVault(config);
   // Tier 0 of the cascade: what THIS user confirmed, for THIS workspace path,
   // in their own config. Read once here and carried on the registry so the
   // eleven readers — seven of them hooks — never learn the storage shape.
@@ -572,11 +584,12 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
 // Moved to src/helpers/vault-path-identity.mjs (v0.77.0) so the port helpers
 // can reuse it without importing this module, which imports THEM. The doc
 // block above stays here because it documents why the callers below need it.
-function defaultNameFromPath(p) {
-  const base = (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
-  // strip leading dot (.template → template) and lowercase
-  return base.replace(/^\./, '').toLowerCase();
-}
+//
+// `defaultNameFromPath` itself moved to src/helpers/vault-slug.mjs (v0.90.0)
+// and is imported at the top of this file — it was one of SIX identical
+// copies, and the module that now owns it also owns the `vaultNames` lookup
+// whose result it is the fallback for. It stays re-exported through
+// `_internals` below, so existing tests reach it by the same name.
 
 /**
  * Path basename with EXACT case preserved — used to derive `obsidianName`

@@ -54,6 +54,7 @@ import {
 } from '../src/helpers/remote-config.mjs';
 import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
 import { normalizePathForCompare } from '../src/helpers/vault-path-identity.mjs';
+import { registeredVaultPaths, vaultSlug } from '../src/helpers/vault-slug.mjs';
 import { fileURLToPath } from 'node:url';
 
 // `fileURLToPath`, jamais `new URL(...).pathname` : sur POSIX le `pathname`
@@ -135,10 +136,11 @@ let cfg;
 try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); }
 catch (e) { err(`Config illisible (${configPath}) : ${e.message}`); }
 
-const defaultNameFromPath = (p) => {
-  const isWin = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  return (isWin ? path.win32 : path.posix).basename(p).replace(/^\./, '').toLowerCase();
-};
+// La dérivation du slug et la lecture de `vaultNames` vivent désormais dans
+// src/helpers/vault-slug.mjs (v0.90.0) — c'était la sixième copie de la même
+// fonction. Le type de la valeur y est vérifié : un `vaultNames` édité à la
+// main qui contient un nombre faisait planter ce script un cran plus bas, sur
+// le `v.name.toLowerCase()` de la sélection insensible à la casse.
 
 /**
  * Lit du data.json l'apiKey ET le port en clair — rien d'autre.
@@ -189,10 +191,10 @@ function readVaultSecretsFromDisk(vaultPath) {
   } catch { return unreadable; }
 }
 
-const names = cfg.vaultNames || {};
 const fleet = [];
-for (const [vaultPath, raw] of Object.entries(cfg.portRegistry || {})) {
-  const name = names[vaultPath] || defaultNameFromPath(vaultPath);
+for (const vaultPath of registeredVaultPaths(cfg)) {
+  const raw = cfg.portRegistry[vaultPath];
+  const name = vaultSlug(cfg, vaultPath);
   // Seul le port HTTPS du registre est retenu. Il sert à SIGNALER un désaccord
   // avec le disque, et — sans `--with-click-to-open` seulement — de repli quand
   // le data.json n'écrit pas son port. Dès qu'une PAIRE est exportée, les deux

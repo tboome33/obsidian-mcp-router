@@ -30,6 +30,13 @@ import path from 'node:path';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { applyWorkspaceDotenv } from '../../src/helpers/workspace-dotenv.mjs';
 import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
+import {
+  defaultNameFromPath,
+  resolveVaultBySlug,
+  registeredVaultPaths,
+  disabledVaultEntries,
+  vaultSlug,
+} from '../../src/helpers/vault-slug.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -93,41 +100,27 @@ export function readRouterConfig() {
 // ---------------------------------------------------------------------------
 
 /**
- * Slug derivation matching the router's `defaultNameFromPath` in
- * `src/registry.mjs` AND the inline copy in `scripts/setup-vault.mjs`.
- * Duplicated here so hooks can resolve slugs without importing the full
- * router code (keeps hook startup latency low and avoids hook-vs-src
- * version-skew issues in dev checkouts).
+ * Slug derivation and slug → path resolution both moved to
+ * `src/helpers/vault-slug.mjs` in v0.90.0 — the TODO that stood here asking
+ * for exactly that is now done.
  *
- * TODO: extract to src/helpers/vault-slug.mjs once the 4 copies become
- * burdensome. For now, the convention is "if you change one, change all
- * — and add a regression test".
+ * The TODO said "4 copies"; there were six, and the two other TODOs saying so
+ * each said three. That drift is the argument: the shared module is now the
+ * only place either function exists, so there is no count left to keep
+ * accurate. It also type-checks the `vaultNames` value, which is what the
+ * inline `(vaultNames[vp] || …).toLowerCase()` below used to get wrong — a
+ * non-string in the config threw a TypeError out of a hook that promises to
+ * exit 0 whatever it finds.
+ *
+ * Re-exported rather than merely imported: `detectVaultContext` below is not
+ * the only caller — the hooks and their tests import both names FROM here,
+ * and this module stays their single entry point.
+ *
+ * The dependency floor is unchanged: `vault-slug.mjs` imports `node:path` and
+ * `vault-path-identity.mjs`, which imports `node:path` and nothing else. Hooks
+ * still load on a checkout with no `node_modules`.
  */
-export function defaultNameFromPath(p) {
-  if (!p || typeof p !== 'string') return '';
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
-
-/**
- * Given a router config and a slug, return the absolute vault path or
- * null. Matches the slug against `vaultNames[<path>]` if set, otherwise
- * falls back to `defaultNameFromPath(<path>)`. Case-insensitive on the
- * slug side (Windows/macOS friendly).
- */
-export function resolveVaultBySlug(cfg, slug) {
-  if (!cfg || !slug) return null;
-  const target = String(slug).trim().toLowerCase();
-  if (!target) return null;
-  const vaultNames = cfg.vaultNames || {};
-  const paths = Object.keys(cfg.portRegistry || {});
-  for (const vp of paths) {
-    const candidate = (vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase();
-    if (candidate === target) return vp;
-  }
-  return null;
-}
+export { defaultNameFromPath, resolveVaultBySlug };
 
 /**
  * The vault names this machine has registered, as far as a HOOK can know.
@@ -154,24 +147,18 @@ export function resolveVaultBySlug(cfg, slug) {
 export function registeredVaultNames(cfg) {
   const out = new Set();
   if (!cfg || typeof cfg !== 'object') return out;
-  const disabled = new Set(
-    (Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []).map((d) => String(d).toLowerCase()),
-  );
-  // A REGISTRY IS ONLY A REGISTRY WHEN IT IS A PLAIN OBJECT. `Object.keys` on
-  // a string yields its character indexes and on an array its element
-  // indexes, so `portRegistry: "x"` or `[27123]` manufactured a vault called
-  // "0" and the briefing spoke about it. Codex round 2, 2026-09-03.
-  const isPlain = (v) => v && typeof v === 'object' && !Array.isArray(v);
-  const vaultNames = isPlain(cfg.vaultNames) ? cfg.vaultNames : {};
-  for (const vp of Object.keys(isPlain(cfg.portRegistry) ? cfg.portRegistry : {})) {
-    // A NAME IS ONLY A NAME WHEN IT IS A STRING. A hand-edited config can
-    // hold `vaultNames: {"C:/Vault": 123}` — parseable JSON, wrong type — and
-    // the first version called `.toLowerCase()` on the number. The exception
-    // escaped the hook, which exited 1 instead of the 0 it promises: a
-    // briefing that crashes on a typo in someone's config is worse than no
-    // briefing. Found by the Codex review, 2026-09-03.
-    const named = typeof vaultNames[vp] === 'string' ? vaultNames[vp] : null;
-    const name = (named || defaultNameFromPath(vp)).toLowerCase();
+
+  // EVERY TYPE CHECK HERE USED TO BE WRITTEN OUT BY HAND, and each one was a
+  // bug found separately: `vaultNames[vp]` called `.toLowerCase()` on a number
+  // and threw out of a hook that promises to exit 0; `Object.keys` on a
+  // `portRegistry` that was a string or an array manufactured a vault called
+  // "0"; the `disabledVaults` container was guarded here but not in five other
+  // readers. The `vaultNames` sweep turned all three into one boundary, so
+  // this function now asks the helper instead of re-deriving the answer —
+  // which is also what keeps it out of that sweep's scan guard.
+  const disabled = new Set(disabledVaultEntries(cfg).map((d) => d.toLowerCase()));
+  for (const vp of registeredVaultPaths(cfg)) {
+    const name = vaultSlug(cfg, vp).toLowerCase();
     if (!name || disabled.has(name) || disabled.has(String(vp).toLowerCase())) continue;
     out.add(name);
   }

@@ -44,6 +44,7 @@ import {
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
+import { registeredVaultPaths, vaultSlug } from '../helpers/vault-slug.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -156,12 +157,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // review showed the tool happily binding to it — a binding the next start
   // would silently fall through. Requiring both closes that without letting
   // a vault that is in the file but not yet loaded be bound either.
+  // The file's vault names come from `vaultSlug`, the one boundary that
+  // type-checks the config's word. The first version derived them here by
+  // hand — `typeof onDisk.vaultNames[vp] === 'string' ? … : basename(vp)` —
+  // which is precisely the expression the `vaultNames` sweep collapsed into
+  // that helper, and precisely what its scan guard refuses outside it. Two
+  // separate repairs meeting: this one decides WHICH vaults may be bound, the
+  // helper decides what a vault is CALLED, and only one of them should own
+  // the second question.
   const onDisk = readConfig();
   const fileNames = new Set([
-    ...Object.entries(onDisk.portRegistry && typeof onDisk.portRegistry === 'object' ? onDisk.portRegistry : {})
-      .map(([vp]) => (onDisk.vaultNames && typeof onDisk.vaultNames[vp] === 'string'
-        ? onDisk.vaultNames[vp]
-        : pathBasename(vp).replace(/^\./, '').toLowerCase())),
+    ...registeredVaultPaths(onDisk).map((vp) => vaultSlug(onDisk, vp)),
     ...(Array.isArray(onDisk.remoteVaults) ? onDisk.remoteVaults : [])
       .map((r) => (typeof r?.name === 'string' ? r.name : null)).filter(Boolean),
   ]);

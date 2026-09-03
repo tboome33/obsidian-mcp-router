@@ -145,6 +145,11 @@ import {
   authoritativeLockedVault,
   authoritativeVaultPath,
 } from '../src/helpers/workspace-bindings.mjs';
+import {
+  configuredDefaultVault,
+  disabledVaultEntries,
+  vaultSlug,
+} from '../src/helpers/vault-slug.mjs';
 
 // ---- Load workspace .env (without clobbering process.env) -------------
 // The hook runs as a separate Node subprocess invoked by Claude Code,
@@ -393,20 +398,16 @@ try {
 }
 
 /**
- * Slug derivation matching the router's `defaultNameFromPath` + the
- * one duplicated inline in `scripts/setup-vault.mjs`. Kept inline so
- * this hook has zero runtime dependencies on src/ (so it works even
- * before `npm install` in fresh checkouts).
+ * The TODO that stood here — "extract the 3 copies into a single
+ * src/helpers/vault-slug.mjs" — is done as of v0.90.0. There were six copies,
+ * not three, and this hook now imports `vaultSlug` from that module (top of
+ * file) rather than deriving the name itself.
  *
- * TODO: extract the 3 copies (src/registry.mjs, scripts/setup-vault.mjs,
- * here) into a single src/helpers/vault-slug.mjs module. Out of scope
- * for this PR — see Reviewer A pass 2 NIT.
+ * The "zero runtime dependencies on src/" rationale had already lapsed: this
+ * file imports `src/helpers/workspace-dotenv.mjs` two lines above. What it
+ * actually needs is zero dependency on `node_modules`, which the new module
+ * respects — it reaches only `node:path` and `vault-path-identity.mjs`.
  */
-function defaultNameFromPath(p) {
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
 
 const allVaultPaths = Object.keys(cfg.portRegistry || {});
 if (allVaultPaths.length === 0) process.exit(0);
@@ -424,19 +425,18 @@ if (allVaultPaths.length === 0) process.exit(0);
  * Codex P2 review finding 2026-05-23.
  */
 function activeVaultPaths() {
-  const vaultNames = cfg.vaultNames || {};
-  const disabledSet = new Set();
-  for (const entry of Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []) {
-    // Accept either form (slug or path) per setup-vault.mjs convention.
-    if (typeof entry === 'string') disabledSet.add(entry);
-  }
+  // Accepts either form (slug or path) per setup-vault.mjs convention. The
+  // hand-written `Array.isArray` + `typeof entry === 'string'` pair that stood
+  // here was correct — and is exactly what `disabledVaultEntries` now does for
+  // all six readers, three of which had written no guard at all. (v0.90.0)
+  const disabledSet = new Set(disabledVaultEntries(cfg));
   const allowedRaw = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS || '';
   const allowedSlugs = allowedRaw
     ? new Set(allowedRaw.split(',').map((s) => s.trim()).filter(Boolean))
     : null; // null = whitelist not in effect (allow all)
 
   return allVaultPaths.filter((vp) => {
-    const slug = vaultNames[vp] || defaultNameFromPath(vp);
+    const slug = vaultSlug(cfg, vp);
     if (disabledSet.has(slug) || disabledSet.has(vp)) return false;
     if (allowedSlugs && !allowedSlugs.has(slug)) return false;
     return true;
@@ -474,11 +474,7 @@ const lockedSlug = (
   || ''
 ).trim();
 if (lockedSlug) {
-  const vaultNames = cfg.vaultNames || {};
-  const lockedPath = vaultPaths.find((vp) => {
-    const slug = vaultNames[vp] || defaultNameFromPath(vp);
-    return slug === lockedSlug;
-  });
+  const lockedPath = vaultPaths.find((vp) => vaultSlug(cfg, vp) === lockedSlug);
   if (!lockedPath) process.exit(0);
   vaultPaths = [lockedPath];
 }
@@ -497,20 +493,19 @@ if (lockedSlug) {
  * every router-bootstrapped vault). Codex P2 review finding 2026-05-23.
  */
 function resolveDefaultVaultPath() {
-  const vaultNames = cfg.vaultNames || {};
-
   // Tier 0: the confirmed binding for this workspace, from the user's own
   // config. Tier 1: the environment slug, but ONLY when it may decide —
   // `authoritativeDefaultVault` returns null for a value the loader recorded
   // taking from this project's own `.env`. The fourth of the four resolvers
-  // swept for the Codex finding of 2026-09-03; a cloned repository must not be
-  // able to choose which vault this linter treats as "the project's own".
+  // swept for the gate; a cloned repository must not be able to choose which
+  // vault this linter treats as "the project's own". The COMPARISON below now
+  // goes through `vaultSlug` from the `vaultNames` sweep — the local
+  // `vaultNames` map this function used to build by hand is gone with it.
   const binding = readBinding(cfg, cwd);
   const envSlug = (binding?.vault || authoritativeDefaultVault() || '').trim();
   if (envSlug) {
     for (const vp of vaultPaths) {
-      const slug = vaultNames[vp] || defaultNameFromPath(vp);
-      if (slug === envSlug) return vp;
+      if (vaultSlug(cfg, vp) === envSlug) return vp;
     }
   }
 
@@ -526,11 +521,16 @@ function resolveDefaultVaultPath() {
     }
   }
 
-  // Tier 3: cfg.defaultVault slug
-  if (cfg.defaultVault) {
+  // Tier 3: cfg.defaultVault slug.
+  //
+  // This one never threw — `===` against a number simply never matches — but
+  // it read the raw value, and a reader that is safe only by accident is a
+  // reader the scan in tests/vault-slug.test.mjs cannot vouch for. Through the
+  // accessor it is safe on purpose. (v0.90.0)
+  const configuredDefault = configuredDefaultVault(cfg);
+  if (configuredDefault) {
     for (const vp of vaultPaths) {
-      const slug = vaultNames[vp] || defaultNameFromPath(vp);
-      if (slug === cfg.defaultVault) return vp;
+      if (vaultSlug(cfg, vp) === configuredDefault) return vp;
     }
   }
 

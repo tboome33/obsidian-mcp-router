@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { compareSemver, parseSemver } from '../src/helpers/semver-compare.mjs';
+import { disabledVaultEntries } from '../src/helpers/vault-slug.mjs';
 
 const BRIDGE_REPO = 'tboome33/obsidian-mcp-router-bridge';
 const BRAT_COMMAND = 'obsidian42-brat%3AcheckForUpdatesAndUpdate';
@@ -121,7 +122,11 @@ async function main() {
   const cfgPath = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
   const cfg = readJson(cfgPath);
   if (!cfg?.portRegistry) throw new Error(`No portRegistry in ${cfgPath}`);
-  const disabled = new Set(cfg.disabledVaults || []);
+  // `new Set(cfg.disabledVaults || [])` threw on a number and — worse — quietly
+  // built a set of CHARACTERS from a bare string, so `"disabledVaults":
+  // "template"` disabled any one-character vault slug and not `template`.
+  // (v0.90.0)
+  const disabled = new Set(disabledVaultEntries(cfg));
 
   const { version: target, source } = await resolveTarget(argTarget);
 

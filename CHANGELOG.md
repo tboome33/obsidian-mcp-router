@@ -4,7 +4,162 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased]
+## [Unreleased] — the config's word about a vault, checked once
+
+`config.json` maps a vault path to a display name. It is a hand-editable file, so
+`"vaultNames": { "C:/VAULTS/Notes": 123 }` is a thing a user can write: valid JSON, wrong type,
+and nothing between the text editor and the reader ever checked. Twenty-two readers across nine
+files took that value on trust, each having re-derived the same expression by hand —
+`(vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase()`.
+
+Nine of them threw a `TypeError` on the number. Three of those sit in
+`hooks/_helpers/doc-drift-detector.mjs` and one in `hooks/_helpers/workspace-vault.mjs`, which
+is how one mistyped line in a config broke a hook's always-exit-0 promise. The other twelve did
+not throw, which is the worse half: they carried the number onward as if it were a vault name.
+
+### Fixed
+
+- **The `vaultNames` value is type-checked ONCE, at the boundary, and all 22 readers go through
+  it** — `src/helpers/vault-slug.mjs`. A value that is not a non-empty string is IGNORED and the
+  slug falls back to the path, exactly as if the key had never been written. Not a throw (a hook
+  exits 0 whatever the config says) and not a `String()` coercion either — coercion would turn a
+  typo'd `123` into a real, resolvable vault name that can collide with or shadow a neighbouring
+  vault, moving the failure somewhere harder to see instead of removing it. The map's SHAPE is
+  checked too: `"vaultNames": "notes"` and `"vaultNames": ["notes"]` are both parseable JSON that
+  the old `cfg.vaultNames || {}` accepted and then indexed.
+- **Twenty-two guards would have been the wrong repair.** The twenty-third site gets written next
+  month and is a guard short, so the sweep is enforced by a TEST rather than by discipline:
+  `tests/vault-slug.test.mjs` scans `src/`, `hooks/`, `scripts/` and `bin/` and fails if a direct
+  `vaultNames[...]` read reappears anywhere outside the helper. The one legitimate WRITE
+  (`setup-vault --name`) is distinguished from a read rather than exempted by filename.
+- **`scripts/setup-vault.mjs --link-workspace` wrote the unchecked value into a workspace
+  `.env`** — the worst of the twelve silent sites, because the bad slug outlived the session that
+  produced it and every later session read it back and resolved no vault at all.
+- **`hooks/_helpers/doc-drift-detector.mjs` derived its fallback with the RUNTIME's
+  `path.basename`**, so a Windows registry key read as one long filename when the runtime is
+  POSIX — a CI matrix runner on Linux loading a Windows-paths config. It now uses the same
+  structural detection as everything else.
+- **`scripts/meta-audit-bridge-readiness.mjs` labelled a vault with the empty string.** It was the
+  one reader of the twenty-two using `??` rather than `||`, so `""` reached the report as a name
+  where every other site had already fallen back. The behaviour is now uniform.
+- **A string on `Object.prototype` could name one of the user's vaults.** `vaultNames[vp]` walked
+  the prototype chain; the lookup is now `Object.hasOwn`-guarded, the same guard and the same
+  reason as `MODE_ALIASES` in `helpers/auto-enrich-mode.mjs`. Found by mutation testing, which is
+  also how the first version of its test was caught claiming coverage it did not have: the
+  obvious prototype members are all FUNCTIONS, so the `typeof` check alone already refused them
+  and removing `Object.hasOwn` left the test green.
+
+### Changed
+
+- **`defaultNameFromPath` had SIX copies; there is now one.** In `src/registry.mjs`,
+  `scripts/setup-vault.mjs`, `scripts/vault-plan.mjs`, `scripts/gen-remote-config.mjs`,
+  `hooks/vault-link-linter.mjs` and `hooks/_helpers/workspace-vault.mjs`. Three carried a TODO
+  asking for exactly this module, and the three TODOs disagreed about how many copies existed —
+  they said 3, 3 and 4 — which is the usual sign that a count has stopped being checked. A second
+  scan assertion now pins the definition count at one, so the disagreement cannot come back.
+  The stated reason for duplicating (`setup-vault.mjs` is "a standalone script with no `src/`
+  imports") had expired: that file imports eight `src/helpers/` modules today. Behaviour is
+  preserved — the six were identical on strings, and the shared one keeps the non-string
+  tolerance that two of them already had, so the collapse removed a crash rather than adding one.
+- **The four hand-written copies of the slug → path loop collapse into `resolveVaultBySlug`.**
+  They differed only in which guards each had bothered to write; the shared one has the union.
+  `resolveSlugToVaultPath` and `knownSlugs` stay exported from `scripts/setup-vault.mjs` as thin
+  wrappers, because those names are part of that module's surface.
+- The helper reaches only `node:path` and `helpers/vault-path-identity.mjs`, which reaches only
+  `node:path`. It sits on the start-up path of the binary AND of every hook, and hooks are
+  expected to run on a checkout with no `node_modules` — the same contract as
+  `helpers/auto-enrich-mode.mjs`, and now pinned by a test that walks the import graph.
+
+### Fixed — the sibling keys
+
+`vaultNames` was the first key of this class to be swept, not the only one. Five more
+hand-editable `config.json` values were read under the same assumption, by the same readers.
+**Thirty-four read sites across ten files were audited; seven were live defects.** The other
+twenty-seven were verified safe rather than assumed so — with a probe, because "it's a path,
+it'll be fine" is exactly what this class is made of.
+
+- **`defaultVault` — one live defect of eight readers.** `hooks/_helpers/doc-drift-detector.mjs`
+  did `(cfg.defaultVault || '').toLowerCase()`, and a non-string is TRUTHY, so `||` never caught
+  it and the `TypeError` came out of a function that `doc-propagation-checker` and
+  `vault-doc-startup-check` both call — hooks that must exit 0 whatever the config says.
+  The other seven were safe for a structural reason worth writing down: six of them read
+  `registry.defaultVault`, which is the RESOLVED name. `resolveDefaultVaultWithSource` only
+  honors a configured default that passed `isActive`, so the registry is already a boundary for
+  that key and nothing downstream of it was ever exposed. The readers at risk were exactly the
+  two that never go through the registry, because they parse `config.json` themselves.
+- **`disabledVaults` — three live defects of six readers, and the only SILENT one in the lot.**
+  The container is the dangerous part here, not the elements. The likeliest hand-edit is writing
+  the single vault you meant as a bare string — `"disabledVaults": "template"` instead of
+  `["template"]` — and a string is iterable, so `new Set("template")` is not an error. It is
+  `{t, e, m, p, l, a}`, a set of CHARACTERS, and a fleet with a one-character vault slug had that
+  vault silently disabled by a line naming a different one. Measured, then pinned end-to-end
+  through `loadRegistry`. `scripts/bridge-fleet-update.mjs` and
+  `scripts/meta-audit-bridge-readiness.mjs` both built that set directly; the drift detector
+  called `.map` on the value, which throws instead. The three that already wrote `Array.isArray`
+  by hand were correct — and now share the one guard rather than half the readers having it.
+- **Non-string ELEMENTS of `disabledVaults` are dropped rather than coerced.** The drift
+  detector's `String(s).toLowerCase()` turned a numeric entry `123` into the name `"123"`, and a
+  vault whose folder is called `123` has exactly that slug — so a typo could disable a real
+  vault. Behaviour change, in the safe direction, consistent with the module's refusal to coerce.
+- **`referenceVault` — three live defects of twelve readers.** `path.join`, `path.resolve` and
+  `samePath` all throw a `TypeError` on a non-string; `fs.existsSync` returns `false`. Measured
+  with a probe, and the split matters: the two readers guarded by `existsSync` always failed
+  closed with their own clear message and were never at risk, while `buildOnDiskPortMap` pushed
+  the value straight into `path.join` during ordinary port-collision reporting.
+- **`vaultsRoot`, `portStart`, `remoteVaults` — no live defects, and now on the record.**
+  `vaultsRoot`'s one reader already sat inside a `try`/`catch`; `portStart` is guarded by
+  `isPort` at its only real reader; `remoteVaults` by `Array.isArray`. The first two are routed
+  through the accessors anyway — a `catch` around `path.resolve` cannot tell "not configured"
+  from "configured wrong", and `knownVaultRoots` gates `provision_vault`'s allowed write roots,
+  which is the last place to be relaxed about which of the two it is looking at.
+
+### Changed — the boundary module's remit
+
+- **`src/helpers/vault-slug.mjs` now owns every hand-editable config value that names or locates
+  a vault**, and its header says so. The name is from the first question it answered; two of its
+  functions (`vaultNamesOf`, `registeredVaultPaths`) were already config accessors rather than
+  slug derivations, so the remit had been wider than the filename since it was written. Putting
+  the sibling keys in a second module would have recreated, one commit later, the exact split
+  whose repair this file is.
+- The scan grew a second assertion covering the four sibling keys. Its discriminator is the
+  RECEIVER — `cfg.` / `config.` / `conf.` is the config's raw word and must be guarded, while
+  `registry.` / `this.` is the resolved value and is a boundary in its own right.
+
+### Verification
+
+- Full suite **4 772 tests, 4 760 green, 11 failed, 1 opt-in skip** (4 705 after the `vaultNames`
+  half of this entry, 4 561 before the lot; **+211 in total**, `tests/vault-slug.test.mjs`). The
+  11 failures are the same worktree measurement artifact described below.
+- **Seven more mutations, each seen red**, restored by snapshot copy + `sha256` as before.
+  Removing the `Array.isArray` container guard kills 12; the `defaultVault` type check 6; the
+  `referenceVault` one 6; reverting the reported defect site 6 (five behavioural plus the scan);
+  the element filter 1; and reverting a CLI that has no behavioural test **1 — the scan alone**,
+  which is the whole reason the scan exists.
+- **A mutation walked through the scan, and the scan was the thing that had to change.** Its
+  first version exempted prose with a heuristic — "a line carrying a real property access also
+  carries code punctuation; a sentence carries none" — to let the `--help` text say
+  "and over config.defaultVault." A raw read split across lines, with the property access alone
+  on an unpunctuated continuation line, passed 211/211. The heuristic is gone; the one prose line
+  is now exempted by its exact content. Second lot running, second time a guard's test was
+  theatre until a mutation said so.
+
+- Full suite **4 705 tests, 4 693 green, 11 failed, 1 opt-in skip** (4 561 before this lot;
+  **+144** in `tests/vault-slug.test.mjs`). The 11 failures are all in `tests/no-vault-disk.test.mjs`
+  and are a MEASUREMENT ARTIFACT of running in a git worktree with no local `node_modules`: that
+  file's dependencies resolve outside its `--permission` allowlist. Identical count, identical
+  file, before and after the change. `npm run validate` and `npm run gate` green on the same tree.
+- **Twelve mutations, each seen red**, each restored by copying a snapshot back and comparing
+  `sha256` rather than by `git checkout`. One witness per rule, no shared marker: dropping the
+  type check kills 70 tests across every surface; the `String()` coercion 12; the empty-string
+  check 10; reverting a single consumer to its raw read 11 (10 behavioural plus the scan); a
+  seventh copy of `defaultNameFromPath` 2; and the path guard, the map shape check, the registry
+  shape check, the trim, the blank-slug guard and the prototype guard exactly 1 each.
+- **Two mutations initially SURVIVED and each cost the test that was supposed to catch it.**
+  Removing `Object.hasOwn` left 143/143 green, because the prototype members a test reaches for
+  first are functions that `typeof` already refuses; the witness is now a polluted prototype
+  carrying a *string*. Removing the blank-slug guard was likewise invisible until a fixture with
+  a registry key that actually derives an empty slug was added. Both guards were real; both tests
+  were theatre until the mutation said so.
 
 ## [0.89.0] — 2026-09-03 — `FullAuto` never comes from a project's file
 
