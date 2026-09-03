@@ -786,6 +786,43 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     assert.deepEqual(sc.read()[MIGRATION_KEY].imported, [], 'and not recorded, since nothing was imported');
   });
 
+  test('a binding recorded AFTER this process read the config is not overwritten by the import', async () => {
+    // THE BLOCKER of the merge review. The decision used to be computed from
+    // the config read at start-up and then applied inside the lock without
+    // rechecking — so an `--attach` or another session's confirmation landing
+    // in between was overwritten by the dotenv hint. Taking the lock is not
+    // enough when the DECISION was made outside it, and the failure is the
+    // worst one this feature has: an automatic import silently reversing an
+    // explicit human choice.
+    //
+    // Reproduced by writing the competing binding from inside the transform's
+    // own read — the only deterministic way to sit in that window.
+    const sc = scenario();
+    const competitor = { vault: 'notes', also: ['planted'], confirmedVia: 'tool' };
+    let planted = false;
+    const realRead = fs.readFileSync;
+    fs.readFileSync = function patched(p, ...rest) {
+      const out = realRead.call(this, p, ...rest);
+      if (!planted && String(p) === sc.configPath) {
+        planted = true;
+        const cfg = JSON.parse(realRead.call(this, p, 'utf8'));
+        cfg[WORKSPACE_BINDINGS_KEY] = { [canonicalWorkspaceKey(sc.ws)]: competitor };
+        realRead.call(this, p, 'utf8'); // keep the read count honest
+        fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2), 'utf8');
+        return JSON.stringify(cfg);
+      }
+      return out;
+    };
+    try {
+      await loadIn(sc);
+    } finally {
+      fs.readFileSync = realRead;
+    }
+    const entry = sc.read()[WORKSPACE_BINDINGS_KEY][canonicalWorkspaceKey(sc.ws)];
+    assert.equal(entry.confirmedVia, 'tool', 'the human confirmation survives');
+    assert.deepEqual(entry.also, ['planted'], 'and is not rewritten by the import');
+  });
+
   test('an existing binding is never overwritten by the import', async () => {
     const sc = scenario({ bindings: { [canonicalWorkspaceKey(fs.realpathSync(os.tmpdir()))]: { vault: 'notes' } } });
     const cfg = sc.read();
@@ -1084,31 +1121,78 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
       return out;
     }
 
-    // EVERY ORDINARY SPELLING OF A READ, not only dot access. Round 2 of the
-    // Codex review: `process.env['OBSIDIAN_ROUTER_LOCKED']` and
-    // `const { OBSIDIAN_ROUTER_LOCKED } = process.env` were invisible to the
-    // first version, so a resolver written either way slipped past the scan.
-    // And a file counts as GATED only if it CALLS the gate — an unused import
-    // left behind while the code resolved some other way used to pass.
+    // EVERY ORDINARY SPELLING OF A READ. Round 2 added a bracket-access
+    // branch and it was DEAD CODE: this scan runs on `blankStringsAndComments`
+    // output, which erases the CONTENT of every string literal, so
+    // `process.env['OBSIDIAN_ROUTER_LOCKED']` arrives as `process.env[    ]`
+    // and a pattern looking for the quoted key can never match. The mutation
+    // that was supposed to prove the branch went red for a different reason —
+    // the file had also stopped calling the gate — which is how a dead
+    // pattern passed for a whole review round. Found by the Codex review of
+    // the merge, 2026-09-03.
+    //
+    // The repair is to stop looking for the key inside quotes and look at the
+    // RAW source for the bracket and alias forms, while still requiring the
+    // match to sit at an offset that is code in the blanked text. And an
+    // ALIAS of `process.env` is refused outright: a file may not bind it to a
+    // local name at all, which is the only way to catch `e.OBSIDIAN_ROUTER_*`
+    // without re-implementing scope analysis.
     const keys = GATED_KEYS.join('|');
     const readRe = new RegExp(
       `process[.]env[.](?:${keys})\\b`
-      + `|process[.]env\\s*\\[\\s*['"](?:${keys})['"]\\s*\\]`
       + `|\\{[^}]*\\b(?:${keys})\\b[^}]*\\}\\s*=\\s*process[.]env\\b`,
     );
+    // Matched against the RAW source at a code offset (see below).
+    const rawReadRe = new RegExp(
+      `process\\s*[.\\[]\\s*['"]?env['"]?\\s*\\]?\\s*\\[\\s*['"](?:${keys})['"]\\s*\\]`,
+      'g',
+    );
+    // `const e = process.env;` — an alias hides every later read from any
+    // pattern that names `process.env`. The binding must END at `env`: the
+    // first version omitted the terminator and matched
+    // `const cwd = process.env.CLAUDE_PROJECT_DIR`, i.e. an ordinary read of
+    // an unrelated key, and reported five innocent files. Flagging an alias
+    // is not enough either — building a subprocess environment from one is
+    // legitimate and common — so an alias is only a finding when a GATED KEY
+    // is then read off it.
+    const aliasBindingRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\s*(?:\.\s*env|\[\s*['"]env['"]\s*\])\s*(?=[;,\n])/g;
     const gateRe = /authoritative(?:DefaultVault|LockedVault|VaultPath|EnvSetting)\s*\(/;
 
     const readers = [];
     const gated = [];
+    const aliases = [];
     for (const dir of ['bin', 'hooks', 'src', 'scripts']) {
       for (const file of walk(path.join(ROOT, dir))) {
         const rel = path.relative(ROOT, file).replace(/\\/g, '/');
-        const code = blankStringsAndComments(fs.readFileSync(file, 'utf8'));
-        if (readRe.test(code)) readers.push(rel);
+        const raw = fs.readFileSync(file, 'utf8');
+        const code = blankStringsAndComments(raw);
+        // A raw-source match counts only where the blanked text still has
+        // code — otherwise a sentence in a docblock would register as a read.
+        const rawHit = (re) => {
+          re.lastIndex = 0;
+          for (let m = re.exec(raw); m; m = re.exec(raw)) {
+            if (code[m.index] !== ' ') return true;
+          }
+          return false;
+        };
+        if (readRe.test(code) || rawHit(rawReadRe)) readers.push(rel);
+        // Every local name bound to `process.env`, then: does a gated key get
+        // read off any of them?
+        aliasBindingRe.lastIndex = 0;
+        for (let m = aliasBindingRe.exec(raw); m; m = aliasBindingRe.exec(raw)) {
+          if (code[m.index] === ' ') continue; // inside a comment or a string
+          const viaAlias = new RegExp(
+            `\\b${m[1]}\\s*(?:[.]\\s*(?:${keys})\\b|\\[\\s*['"](?:${keys})['"]\\s*\\])`,
+          );
+          if (viaAlias.test(raw)) { aliases.push(`${rel} (via \`${m[1]}\`)`); break; }
+        }
         if (gateRe.test(code) && rel !== GATE_OWNER) gated.push(rel);
       }
     }
 
+    assert.deepEqual(aliases, [],
+      'a local alias of `process.env` hides every later read from this scan — read it directly, '
+      + 'or take the value through the gate in src/helpers/workspace-bindings.mjs');
     for (const rel of readers) {
       assert.ok(
         rel === GATE_OWNER || CLASSIFIERS.has(rel),

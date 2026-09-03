@@ -43,7 +43,7 @@ import {
   WORKSPACE_BINDINGS_KEY,
   canonicalWorkspaceKey,
 } from '../src/helpers/workspace-bindings.mjs';
-import { registeredVaultNames } from '../hooks/_helpers/workspace-vault.mjs';
+import { registeredVaultNames, bindingIsActive } from '../hooks/_helpers/workspace-vault.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
 import { blankStringsAndComments } from './_source-scan.mjs';
 
@@ -348,6 +348,26 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
       disabledVaults: ['gone', 'C:\\VAULTS\\Old'],
     };
     assert.deepEqual([...registeredVaultNames(cfg)].sort(), ['notes', 'shared', 'work-journal']);
+  });
+
+  test('bindingIsActive agrees with the cascade: a disabled or absent vault is NOT bound', () => {
+    // The cascade checks every tier against the active set, so a binding whose
+    // vault was disabled falls through there. Two hook resolvers took
+    // `binding.vault` unconditionally, which had the server on one vault while
+    // journaling, autocommit and recall were on another. Codex, merge review.
+    const cfg = {
+      portRegistry: { 'C:\\V\\Notes': 27124, 'C:\\V\\Work': 27125 },
+      vaultNames: { 'C:\\V\\Notes': 'notes', 'C:\\V\\Work': 'work' },
+      disabledVaults: ['work'],
+    };
+    assert.equal(bindingIsActive(cfg, 'notes'), true);
+    assert.equal(bindingIsActive(cfg, 'NOTES'), true, 'compared case-insensitively, like the slug');
+    assert.equal(bindingIsActive(cfg, 'work'), false, 'disabled is not active');
+    assert.equal(bindingIsActive(cfg, 'ghost'), false, 'never registered');
+    for (const bad of [null, undefined, '', '   ', 42, {}]) {
+      assert.equal(bindingIsActive(cfg, bad), false, JSON.stringify(bad));
+    }
+    assert.equal(bindingIsActive(null, 'notes'), false, 'no config, nothing active');
   });
 
   test('a missing, empty or malformed config yields an empty set, never a throw', () => {

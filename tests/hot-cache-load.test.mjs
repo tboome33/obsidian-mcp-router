@@ -64,6 +64,7 @@ function runHook({
   env = {},
   workspaceDotenv = null,
   binding = null,
+  disabled = null,
 } = {}) {
   if (workspaceDotenv !== null) {
     fs.writeFileSync(path.join(cwd, '.env'), workspaceDotenv);
@@ -78,6 +79,7 @@ function runHook({
   fs.writeFileSync(configPath, JSON.stringify({
     portRegistry: { [vaultDir]: 27999 },
     ...(binding ? { workspaceBindings: { [canonicalWorkspaceKey(cwd)]: binding } } : {}),
+    ...(disabled ? { disabledVaults: disabled } : {}),
   }, null, 2));
   const stdin = JSON.stringify({
     hook_event_name: 'SessionStart',
@@ -168,6 +170,19 @@ describe('hot-cache-load — workspace-bound mode (v0.11.6)', () => {
     assert.match(r.stdout, /did X/, 'the BOUND vault\'s hot.md');
     assert.doesNotMatch(r.stdout, /SELF CONTENT/, 'not the cwd\'s own');
     assert.match(r.stdout, /workspace-bound mode/);
+  });
+
+  test('a binding to a DISABLED vault is ignored, exactly as the cascade ignores it', () => {
+    // Otherwise the server falls through to another vault while this hook
+    // injects the disabled one's notes — two answers to "which vault is this
+    // session on", from one config. Codex, merge review.
+    const r = runHook({
+      cwd: codeWorkspace,
+      binding: { vault: 'my-vault' },
+      disabled: ['my-vault'],
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), '');
   });
 
   test('a workspace .env alone is REFUSED — this hook injects a vault\'s notes into the session', () => {

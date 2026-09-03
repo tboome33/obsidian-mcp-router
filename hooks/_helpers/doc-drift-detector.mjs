@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadWorkspaceDotenv } from './workspace-vault.mjs';
+import { loadWorkspaceDotenv, bindingIsActive } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { readBinding, authoritativeDefaultVault } from '../../src/helpers/workspace-bindings.mjs';
 import {
@@ -70,7 +70,10 @@ export function readRouterConfig() {
 
 /**
  * Order candidate vaults by relevance for the current cwd:
- *   1. The workspace-bound vault (from `<cwd>/.env` OBSIDIAN_ROUTER_DEFAULT_VAULT)
+ *   1. The workspace's CONFIRMED BINDING, from the user's own config — or
+ *      `OBSIDIAN_ROUTER_DEFAULT_VAULT` when the environment may decide it.
+ *      A project `.env` only PROPOSES since the binding registry landed; it
+ *      no longer chooses which vault this hook reports drift against.
  *   2. The router config's `defaultVault`
  *   3. Vaults whose basename matches the cwd's basename (heuristic for
  *      "this is the project's own vault" — applies when cwd path !=
@@ -123,7 +126,12 @@ export function orderedVaultCandidates(cwd, cfg) {
   // `path.basename`, which reads a Windows registry key as one long filename
   // when the runtime is POSIX. Two independent repairs of the same function:
   // one decides WHO may name the vault, the other what a name IS.
-  const binding = readBinding(cfg, cwd);
+  // The binding is checked against the ACTIVE set, like every tier of the
+  // cascade: one naming a vault that has since been disabled or removed is
+  // ignored rather than followed, or this hook reports drift against a vault
+  // the router does not serve.
+  const bindingRaw = readBinding(cfg, cwd);
+  const binding = bindingRaw && bindingIsActive(cfg, bindingRaw.vault) ? bindingRaw : null;
   const slug = (binding?.vault || authoritativeDefaultVault() || '').trim().toLowerCase();
   if (slug) {
     for (const vp of all) {

@@ -170,6 +170,32 @@ export function registeredVaultNames(cfg) {
   return out;
 }
 
+/**
+ * Is `name` a vault this machine currently serves — registered, and not hidden
+ * by `disabledVaults`?
+ *
+ * The hooks' equivalent of the registry's `isActive`, and it exists so a
+ * BINDING can be checked the same way the cascade checks one. The cascade
+ * lets a binding whose vault was disabled or removed fall through rather than
+ * bricking the session; two hook resolvers took `binding.vault`
+ * unconditionally, so the server acted on one vault while journaling,
+ * autocommit and recall acted on another. Found by the Codex review of the
+ * merge, 2026-09-03.
+ *
+ * Inherits `registeredVaultNames`'s limits, deliberately: a hook cannot see
+ * `VAULT_*` entries or the allowed-vaults whitelist, so a binding to one of
+ * those reads as inactive here. That errs toward the hooks doing nothing
+ * rather than toward them writing into a vault they guessed at.
+ *
+ * @param {object|null} cfg
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function bindingIsActive(cfg, name) {
+  if (typeof name !== 'string' || !name) return false;
+  return registeredVaultNames(cfg).has(name.trim().toLowerCase());
+}
+
 // ---------------------------------------------------------------------------
 // Dual-mode vault context detection (cwd-is-vault OR workspace-bound)
 // ---------------------------------------------------------------------------
@@ -222,7 +248,15 @@ export function detectVaultContext(cwd, cfg) {
   // answers to "which vault is this session's", from one config. The binding
   // is the user's explicit act and outranks an inference from the directory
   // layout, in the hooks exactly as in the cascade's tier 0.
-  const binding = cfg ? readBinding(cfg, cwd) : null;
+  // A BINDING TO A VAULT THAT IS NOT ACTIVE IS NOT A BINDING. The cascade
+  // checks every tier against the active set — a binding whose vault was
+  // disabled or removed falls through there rather than bricking the session
+  // — and these hooks must agree with it, or the server acts on one vault
+  // while journaling, autocommit and recall act on another. Found by the
+  // Codex review of the merge, 2026-09-03: the two hook resolvers took
+  // `binding.vault` unconditionally.
+  const bindingRaw = cfg ? readBinding(cfg, cwd) : null;
+  const binding = bindingRaw && bindingIsActive(cfg, bindingRaw.vault) ? bindingRaw : null;
 
   // Mode 1: cwd is the vault itself — unless a binding says otherwise.
   const local = binding ? null : resolveScaffold(cwd, 'catalog', { fs, path });

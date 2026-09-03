@@ -45,6 +45,7 @@ import {
   configuredDefaultVault,
   defaultNameFromPath,
   disabledVaultEntries,
+  registeredVaultPaths,
   vaultSlug,
 } from './helpers/vault-slug.mjs';
 import { envKeyOrigin, envKeySourceFile } from './helpers/workspace-dotenv.mjs';
@@ -109,7 +110,21 @@ export async function loadRegistry({ configPath } = {}) {
   const skipped = [];
 
   // --- 1. Local vaults from portRegistry ---
-  const portRegistry = config.portRegistry || {};
+  // THE CONTAINER, THROUGH THE ACCESSOR. `config.portRegistry || {}` accepts
+  // anything truthy, and `Object.entries` on a string or an array yields index
+  // keys — so `"portRegistry": [27123]` manufactured a vault whose PATH was
+  // "0", with a baseUrl of `https://127.0.0.1:null`, and the cascade could
+  // hand it back as the default. The `vaultNames` sweep fixed the same shape
+  // for `disabledVaults` (where a bare string silently disabled a
+  // one-character slug) and for four other keys; this container was the site
+  // it did not reach, found by the Codex review of the merge, 2026-09-03.
+  // Composed from the accessor rather than adding a second entry point to a
+  // helper that already has 211 tests: the keys are validated by
+  // `registeredVaultPaths`, and indexing the container with its OWN keys is
+  // safe by construction.
+  const portRegistry = Object.fromEntries(
+    registeredVaultPaths(config).map((vp) => [vp, config.portRegistry[vp]]),
+  );
 
   // Disk truth for the port-collision report below. Each vault's data.json is
   // read ONCE here and reused for both the apiKey and the two ports — the read
@@ -382,7 +397,7 @@ export async function loadRegistry({ configPath } = {}) {
     }
   }
 
-  // --- 3. Default vault — 5-tier resolution cascade ---
+  // --- 3. Default vault — 6-tier resolution cascade (tier 0 + five) ---
   //
   // Priority (highest first):
   //   1. OBSIDIAN_ROUTER_DEFAULT_VAULT env var — explicit per-process override.
@@ -516,51 +531,74 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     const cwd = process.cwd();
     const key = canonicalWorkspaceKey(cwd);
     if (!key) return null;
-    const state = readMigrationState(config);
 
     // The dotenv file's own mtime — the fact that tells a workspace attached
     // last year from a repository cloned this morning. Read from the file the
-    // LOADER actually used, never a path composed here.
+    // LOADER actually used, never a path composed here. This is the one input
+    // that does not come from the config, so it is gathered out here.
     const dotenvFile = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT');
     let dotenvMtimeMs = null;
     if (dotenvFile) {
       try { dotenvMtimeMs = fsSync.statSync(dotenvFile).mtimeMs; } catch { /* gone since it was read */ }
     }
 
-    const decision = migrationDecision({
+    // A CHEAP PRE-CHECK ON THE STALE CONFIG, to avoid taking the lock for the
+    // overwhelmingly common case where there is nothing to do and the window
+    // is already open. It decides nothing: every branch below re-decides.
+    const stale = readMigrationState(config);
+    const staleDecision = migrationDecision({
       binding: readBinding(config, cwd),
       hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
       hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
       isRegistered: (name) => vaults.some((v) => v.name === name),
       dotenvMtimeMs,
-      openedAt: state.openedAt,
-      alreadyImported: state.imported.has(key),
+      openedAt: stale.openedAt,
+      alreadyImported: stale.imported.has(key),
     });
+    if (!staleDecision.import && stale.openedAt) return null;
 
-    // The window is opened on the FIRST start of this version whatever the
-    // decision was — otherwise every later workspace would look like it
-    // predates an upgrade that had never been recorded.
+    // THE DECISION IS RE-TAKEN INSIDE THE LOCK, against the config that
+    // `updateConfigBindings` just re-read. Taking the lock is not enough if
+    // the decision was made outside it: between this process reading the
+    // config at start-up and writing it here, an `--attach` or another
+    // session's `confirm_workspace_binding` can have recorded a binding — and
+    // a transform that applied a decision computed from the stale copy would
+    // overwrite that binding with a dotenv hint. That is the lost update the
+    // lock exists to prevent, reappearing inside the function that takes it,
+    // and it would have let an automatic import silently reverse an explicit
+    // human decision. Found by the Codex review of the merge, 2026-09-03.
     const at = new Date().toISOString();
-    if (!decision.import) {
-      if (!state.openedAt) {
-        try { updateConfigBindings(cfgPath, (cfg) => withMigrationState(cfg, { at })); } catch { /* next time */ }
-      }
-      return null;
-    }
-
-    updateConfigBindings(cfgPath, (cfg) => withMigrationState(
-      withBinding(cfg, cwd, {
-        vault: decision.vault,
-        also: [],
-        locked: false,
-        // NAMED AS AN IMPORT, not as something the user did. Six months later
-        // the human reading this config must be able to tell a confirmation
-        // they gave from one the router inferred from a file.
-        confirmedVia: 'migration',
-      }),
-      { at, cwd, recordImported: true },
-    ));
-    return { vault: decision.vault, at, dotenvFile: dotenvFile || null };
+    let imported = null;
+    updateConfigBindings(cfgPath, (cfg) => {
+      const fresh = readMigrationState(cfg);
+      const decision = migrationDecision({
+        binding: readBinding(cfg, cwd),
+        hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+        hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+        isRegistered: (name) => vaults.some((v) => v.name === name),
+        dotenvMtimeMs,
+        openedAt: fresh.openedAt,
+        alreadyImported: fresh.imported.has(key),
+      });
+      // The window is opened on the FIRST start of this version whatever the
+      // decision was — otherwise every later workspace would look like it
+      // predates an upgrade that had never been recorded.
+      if (!decision.import) return withMigrationState(cfg, { at });
+      imported = { vault: decision.vault, at, dotenvFile: dotenvFile || null };
+      return withMigrationState(
+        withBinding(cfg, cwd, {
+          vault: decision.vault,
+          also: [],
+          locked: false,
+          // NAMED AS AN IMPORT, not as something the user did. Six months
+          // later the human reading this config must be able to tell a
+          // confirmation they gave from one the router inferred from a file.
+          confirmedVia: 'migration',
+        }),
+        { at, cwd, recordImported: true },
+      );
+    });
+    return imported;
   } catch {
     // Every failure mode — unwritable config, a lock held by another process,
     // a malformed migration block — degrades to "not imported this time".

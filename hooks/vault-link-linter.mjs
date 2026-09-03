@@ -482,9 +482,16 @@ if (lockedSlug) {
 /**
  * Resolve the active default vault path, honoring the same cascade the
  * router uses for per-process default selection:
- *   1. `OBSIDIAN_ROUTER_DEFAULT_VAULT` env (slug) — explicit per-process.
- *   2. `VAULT_PATH` env (absolute path) — auto-detected by setup-vault
- *      in each bootstrapped vault's `.env`.
+ *   0. The workspace's CONFIRMED BINDING, from the user's own config.
+ *   1. `OBSIDIAN_ROUTER_DEFAULT_VAULT` (slug) — but ONLY when the environment
+ *      may decide it. Since the binding registry landed, a value this
+ *      project's `.env` carries is a PROPOSAL: it is signalled and never
+ *      applied, so it cannot aim this linter at a vault the user never
+ *      confirmed. From the MCP host it remains an authority.
+ *   2. `VAULT_PATH` (absolute path) — same rule, with one exception that is
+ *      the point of the key: from a workspace file it is honoured when it
+ *      names the workspace ITSELF, which is what `setup-vault` writes into
+ *      each bootstrapped vault's own `.env`.
  *   3. `cfg.defaultVault` (slug) — global fallback from config.
  * Returns null if no tier matches the active vault set.
  *
