@@ -38,6 +38,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
+import { configuredVaultName, vaultNamesOf } from '../src/helpers/vault-slug.mjs';
 
 const CONFIG_PATH = path.join(os.homedir(), '.claude', 'obsidian-mcp-router', 'config.json');
 
@@ -207,12 +208,15 @@ async function main() {
 
   if (vaultFilter) {
     const before = entries.length;
-    entries = entries.filter(([p]) => {
-      const slug = cfg.vaultNames?.[p];
-      return p === vaultFilter || slug === vaultFilter;
-    });
+    // `configuredVaultName` rather than a raw `cfg.vaultNames?.[p]`: the filter
+    // is unchanged (a vault is still selected by its PATH or by its CUSTOM
+    // name), but a non-string entry now reads as "no custom name" instead of
+    // being compared as one. Same reason the listing below is filtered — a
+    // hand-edited number has no business being offered as a slug to type.
+    entries = entries.filter(([p]) => p === vaultFilter || configuredVaultName(cfg, p) === vaultFilter);
     if (entries.length === 0) {
-      const msg = `No vault matched "${vaultFilter}". Known slugs: ${Object.values(cfg.vaultNames || {}).join(', ')}`;
+      const known = Object.values(vaultNamesOf(cfg) || {}).filter((n) => typeof n === 'string' && n !== '');
+      const msg = `No vault matched "${vaultFilter}". Known slugs: ${known.join(', ')}`;
       if (asJson) console.log(JSON.stringify({ error: msg, candidates: before }));
       else console.error(c('red', '✗ ') + msg);
       process.exit(2);
@@ -235,7 +239,11 @@ async function main() {
   // normalize before use, or the object would be printed as the vault's HTTPS
   // port in the report.
   const results = await Promise.all(entries.map(([p, value]) =>
-    auditVault(p, cfg.vaultNames?.[p] ?? path.basename(p), normalizePortEntry(value).https),
+    // The report LABELS a vault, so the fallback stays `path.basename` (on-disk
+    // case preserved) rather than the lowercased router slug. Only the lookup
+    // changed: `?? cfg.vaultNames?.[p]` accepted a number, and an empty string,
+    // as the label. (v0.90.0)
+    auditVault(p, configuredVaultName(cfg, p) ?? path.basename(p), normalizePortEntry(value).https),
   ));
 
   if (asJson) {

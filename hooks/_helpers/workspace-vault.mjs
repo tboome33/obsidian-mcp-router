@@ -29,6 +29,7 @@ import path from 'node:path';
 
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
 import { applyWorkspaceDotenv } from '../../src/helpers/workspace-dotenv.mjs';
+import { defaultNameFromPath, resolveVaultBySlug } from '../../src/helpers/vault-slug.mjs';
 
 // ---------------------------------------------------------------------------
 // Dotenv autoload
@@ -92,41 +93,27 @@ export function readRouterConfig() {
 // ---------------------------------------------------------------------------
 
 /**
- * Slug derivation matching the router's `defaultNameFromPath` in
- * `src/registry.mjs` AND the inline copy in `scripts/setup-vault.mjs`.
- * Duplicated here so hooks can resolve slugs without importing the full
- * router code (keeps hook startup latency low and avoids hook-vs-src
- * version-skew issues in dev checkouts).
+ * Slug derivation and slug → path resolution both moved to
+ * `src/helpers/vault-slug.mjs` in v0.90.0 — the TODO that stood here asking
+ * for exactly that is now done.
  *
- * TODO: extract to src/helpers/vault-slug.mjs once the 4 copies become
- * burdensome. For now, the convention is "if you change one, change all
- * — and add a regression test".
+ * The TODO said "4 copies"; there were six, and the two other TODOs saying so
+ * each said three. That drift is the argument: the shared module is now the
+ * only place either function exists, so there is no count left to keep
+ * accurate. It also type-checks the `vaultNames` value, which is what the
+ * inline `(vaultNames[vp] || …).toLowerCase()` below used to get wrong — a
+ * non-string in the config threw a TypeError out of a hook that promises to
+ * exit 0 whatever it finds.
+ *
+ * Re-exported rather than merely imported: `detectVaultContext` below is not
+ * the only caller — the hooks and their tests import both names FROM here,
+ * and this module stays their single entry point.
+ *
+ * The dependency floor is unchanged: `vault-slug.mjs` imports `node:path` and
+ * `vault-path-identity.mjs`, which imports `node:path` and nothing else. Hooks
+ * still load on a checkout with no `node_modules`.
  */
-export function defaultNameFromPath(p) {
-  if (!p || typeof p !== 'string') return '';
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
-
-/**
- * Given a router config and a slug, return the absolute vault path or
- * null. Matches the slug against `vaultNames[<path>]` if set, otherwise
- * falls back to `defaultNameFromPath(<path>)`. Case-insensitive on the
- * slug side (Windows/macOS friendly).
- */
-export function resolveVaultBySlug(cfg, slug) {
-  if (!cfg || !slug) return null;
-  const target = String(slug).trim().toLowerCase();
-  if (!target) return null;
-  const vaultNames = cfg.vaultNames || {};
-  const paths = Object.keys(cfg.portRegistry || {});
-  for (const vp of paths) {
-    const candidate = (vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase();
-    if (candidate === target) return vp;
-  }
-  return null;
-}
+export { defaultNameFromPath, resolveVaultBySlug };
 
 // ---------------------------------------------------------------------------
 // Dual-mode vault context detection (cwd-is-vault OR workspace-bound)

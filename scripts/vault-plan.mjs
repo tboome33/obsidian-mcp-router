@@ -17,17 +17,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolvePluginsToClone } from './plugin-resolver.mjs';
+import {
+  defaultNameFromPath,
+  registeredVaultPaths,
+  vaultNamesOf,
+  vaultSlug,
+} from '../src/helpers/vault-slug.mjs';
 
-// Duplicated from setup-vault.mjs (which duplicates it from src/registry.mjs) —
-// this module is imported by setup-vault.mjs so the slug it computes and the
-// slug the CLI writes MUST agree. Kept here (not imported from setup-vault.mjs)
-// because importing that CLI module runs its dispatch. If you change any copy,
-// change all three and keep tests/*.test.mjs green.
-export function defaultNameFromPath(p) {
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
+// Was a copy of setup-vault.mjs's copy of src/registry.mjs's — "change all
+// three and keep tests green" was the convention, and there were six. Now
+// imported from the one module that owns it (v0.90.0). Re-exported because
+// tests/vault-plan.test.mjs and setup-vault.mjs both reach for it by this
+// name, and because the slug this module computes and the slug the CLI writes
+// still MUST agree — which is now true by construction rather than by
+// discipline.
+export { defaultNameFromPath };
 
 /**
  * Map slug → registered vault path, so a new vault's slug can be checked for
@@ -36,14 +40,18 @@ export function defaultNameFromPath(p) {
  */
 export function existingSlugs(cfg) {
   const map = new Map();
-  const names = cfg.vaultNames || {};
-  for (const vp of Object.keys(cfg.portRegistry || {})) {
-    const slug = (names[vp] || defaultNameFromPath(vp)).toLowerCase();
+  for (const vp of registeredVaultPaths(cfg)) {
+    const slug = vaultSlug(cfg, vp).toLowerCase();
     if (!map.has(slug)) map.set(slug, vp);
   }
-  // Custom names not in portRegistry (rare, but honor them).
-  for (const [vp, name] of Object.entries(names)) {
-    const slug = String(name).toLowerCase();
+  // Custom names not in portRegistry (rare, but honor them). A collision map
+  // is the one place where a name that is NOT a usable slug still has to be
+  // enumerated — so this loop reads the raw entries rather than asking
+  // `vaultSlug` per path. It skips what the readers would skip: a non-string
+  // name reserves nothing, because no reader would ever resolve to it.
+  for (const [vp, name] of Object.entries(vaultNamesOf(cfg) || {})) {
+    if (typeof name !== 'string' || name === '') continue;
+    const slug = name.toLowerCase();
     if (!map.has(slug)) map.set(slug, vp);
   }
   return map;

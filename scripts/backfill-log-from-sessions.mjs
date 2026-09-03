@@ -51,6 +51,7 @@ import path from 'node:path';
 import { reconcileVaultSessions } from '../hooks/_helpers/session-reconcile.mjs';
 import { resolveScaffold } from '../src/helpers/wiki-meta-scaffolds.mjs';
 import { cmp } from '../src/helpers/total-order.mjs';
+import { resolveVaultBySlug } from '../src/helpers/vault-slug.mjs';
 
 // State dir where session-auto-journal.mjs persists per-session JSON (used by
 // --include-open for recap enrichment + liveness). Mirrors the hook's path.
@@ -83,16 +84,13 @@ function loadConfig() {
 function resolveVaultPath(arg, cfg) {
   // If it looks like an absolute path that exists, use it directly.
   if (path.isAbsolute(arg) && fs.existsSync(arg)) return arg;
-  // Otherwise treat as slug — look up in vaultNames.
+  // Otherwise treat as slug — resolved by the shared helper, which type-checks
+  // the `vaultNames` value at the boundary. The loop that stood here read it
+  // raw and called `.toLowerCase()` on it, so a hand-edited
+  // `"vaultNames": { "<path>": 123 }` crashed this CLI with a TypeError before
+  // it could say which vault it wanted. (v0.90.0)
   if (!cfg) return null;
-  const target = String(arg).trim().toLowerCase();
-  const vaultNames = cfg.vaultNames || {};
-  const paths = Object.keys(cfg.portRegistry || {});
-  for (const vp of paths) {
-    const candidate = (vaultNames[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-    if (candidate === target) return vp;
-  }
-  return null;
+  return resolveVaultBySlug(cfg, arg);
 }
 
 /**

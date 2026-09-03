@@ -40,6 +40,7 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
+import { defaultNameFromPath, vaultSlug } from './helpers/vault-slug.mjs';
 import { envKeyOrigin } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 
@@ -93,7 +94,6 @@ export async function loadRegistry({ configPath } = {}) {
 
   // --- 1. Local vaults from portRegistry ---
   const portRegistry = config.portRegistry || {};
-  const vaultNames = config.vaultNames || {};
 
   // Disk truth for the port-collision report below. Each vault's data.json is
   // read ONCE here and reused for both the apiKey and the two ports — the read
@@ -102,7 +102,10 @@ export async function loadRegistry({ configPath } = {}) {
   const onDiskPorts = new Map();
 
   for (const [vaultPath, value] of Object.entries(portRegistry)) {
-    const name = vaultNames[vaultPath] || defaultNameFromPath(vaultPath);
+    // The config's word on this vault's name, type-checked at the boundary —
+    // a hand-edited `"vaultNames": { "<path>": 123 }` falls back to the path
+    // instead of travelling on as a vault name. See helpers/vault-slug.mjs.
+    const name = vaultSlug(config, vaultPath);
 
     // READ PORTS FIRST, FILTER SECOND. `disabledVaults` hides a vault from the
     // MCP tool surface — it does NOT stop Obsidian from opening it and binding
@@ -439,11 +442,12 @@ export async function loadRegistry({ configPath } = {}) {
 // Moved to src/helpers/vault-path-identity.mjs (v0.77.0) so the port helpers
 // can reuse it without importing this module, which imports THEM. The doc
 // block above stays here because it documents why the callers below need it.
-function defaultNameFromPath(p) {
-  const base = (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
-  // strip leading dot (.template → template) and lowercase
-  return base.replace(/^\./, '').toLowerCase();
-}
+//
+// `defaultNameFromPath` itself moved to src/helpers/vault-slug.mjs (v0.90.0)
+// and is imported at the top of this file — it was one of SIX identical
+// copies, and the module that now owns it also owns the `vaultNames` lookup
+// whose result it is the fallback for. It stays re-exported through
+// `_internals` below, so existing tests reach it by the same name.
 
 /**
  * Path basename with EXACT case preserved — used to derive `obsidianName`

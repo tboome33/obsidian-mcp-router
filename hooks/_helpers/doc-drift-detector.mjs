@@ -36,6 +36,7 @@ import path from 'node:path';
 
 import { loadWorkspaceDotenv } from './workspace-vault.mjs';
 import { resolveScaffold } from '../../src/helpers/wiki-meta-scaffolds.mjs';
+import { vaultSlug } from '../../src/helpers/vault-slug.mjs';
 
 // ---------------------------------------------------------------------------
 // Vault selection
@@ -104,11 +105,17 @@ export function orderedVaultCandidates(cwd, cfg) {
   };
 
   // (1) workspace-bound vault
+  // `vaultSlug` (v0.90.0) replaces the inline
+  // `(cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase()`
+  // that stood at these three sites. Two bugs went with it: a non-string in
+  // `vaultNames` threw a TypeError straight out of a hook that must exit 0
+  // whatever the config says, and the fallback used the RUNTIME's
+  // `path.basename`, which reads a Windows registry key as one long filename
+  // when the runtime is POSIX. See src/helpers/vault-slug.mjs.
   const slug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim().toLowerCase();
   if (slug) {
     for (const vp of all) {
-      const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-      if (candidate === slug) { push(vp); break; }
+      if (vaultSlug(cfg, vp).toLowerCase() === slug) { push(vp); break; }
     }
   }
 
@@ -116,8 +123,7 @@ export function orderedVaultCandidates(cwd, cfg) {
   const defaultSlug = (cfg.defaultVault || '').toLowerCase();
   if (defaultSlug) {
     for (const vp of all) {
-      const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-      if (candidate === defaultSlug) { push(vp); break; }
+      if (vaultSlug(cfg, vp).toLowerCase() === defaultSlug) { push(vp); break; }
     }
   }
 
@@ -137,8 +143,7 @@ export function orderedVaultCandidates(cwd, cfg) {
   const isTemplate = (vp) => /\.template$/i.test(vp);
   for (const vp of all) {
     if (isTemplate(vp)) continue;
-    const candidate = (cfg.vaultNames?.[vp] || path.basename(vp).replace(/^\./, '')).toLowerCase();
-    if (disabled.has(candidate)) continue;
+    if (disabled.has(vaultSlug(cfg, vp).toLowerCase())) continue;
     push(vp);
   }
   // Templates last (almost never the right target, but include in case

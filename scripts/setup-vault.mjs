@@ -41,6 +41,13 @@ import { extractTarGz, assertSafeRepoRef, httpsGetBuffer } from '../src/helpers/
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, PlanDriftError } from '../src/helpers/plan-seal.mjs';
 import { subprocessOptions } from '../src/helpers/subprocess-env.mjs';
 import {
+  defaultNameFromPath,
+  knownVaultSlugs,
+  registeredVaultPaths,
+  resolveVaultBySlug,
+  vaultSlug,
+} from '../src/helpers/vault-slug.mjs';
+import {
   DEFAULT_INSECURE_OFFSET,
   normalizePortEntry,
   allocatePortPair,
@@ -324,18 +331,17 @@ function warn(msg) {
   console.log(c('yellow', '⚠ ') + msg);
 }
 
-function defaultNameFromPath(p) {
-  // MUST match src/registry.mjs's defaultNameFromPath() exactly so
-  // disabled-by-name checks (and the printStatus output) match what the
-  // router computes at runtime. The structural Windows-path detection
-  // mirrors `isWindowsPath` in registry.mjs — duplicated inline because
-  // setup-vault.mjs is intentionally a standalone script with no
-  // src/registry.mjs imports (runs in npm preinstall scenarios etc.).
-  // If you change either copy, change BOTH and add a regression test.
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
+// `defaultNameFromPath` used to be inlined here, on the grounds that
+// setup-vault.mjs is "intentionally a standalone script with no
+// src/registry.mjs imports". It still imports no registry — but it imports
+// eight other `src/helpers/` modules (see the top of this file), so the
+// premise no longer justified a copy. It comes from
+// src/helpers/vault-slug.mjs as of v0.90.0, along with the `vaultNames`
+// lookup it is the fallback for; that module reaches only `node:path`, so the
+// preinstall scenarios the comment worried about are still fine.
+//
+// "MUST match src/registry.mjs's exactly" is now true because it IS the same
+// function, rather than because two copies were kept in step by hand.
 
 // Note: samePath() / canonicalPath() live in scripts/path-helpers.mjs
 // (imported at the top of this file). Extracted so unit tests can hit
@@ -865,7 +871,6 @@ function printStatus() {
   console.log('Port start:      ' + cfg.portStart);
   const entries = Object.entries(cfg.portRegistry || {});
   const disabled = new Set(Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []);
-  const vaultNames = cfg.vaultNames || {};
   if (entries.length === 0) {
     console.log('Configured vaults: ' + c('gray', '(none yet)'));
   } else {
@@ -873,7 +878,7 @@ function printStatus() {
     for (const [vault, value] of entries) {
       // disabledVaults entries can be NAME or PATH; check both, mirroring
       // src/registry.mjs.
-      const name = vaultNames[vault] || defaultNameFromPath(vault);
+      const name = vaultSlug(cfg, vault);
       const isDisabled = disabled.has(name) || disabled.has(vault);
       const tag = isDisabled ? c('gray', '  (disabled)') : '';
       // Both ports, always — the plaintext one is what every click-to-open
@@ -1825,23 +1830,20 @@ const WS_BLOCK_END = '<!-- obsidian-mcp-router:vaults:end -->';
  *
  * Extracted in v0.65.0 — the same loop was inlined in the standalone
  * --link-workspace handler and needed a third caller for --attach.
+ *
+ * v0.90.0: "exactly like src/registry.mjs and hooks/_helpers/workspace-vault.mjs"
+ * is now literal — all three delegate to `resolveVaultBySlug` in
+ * src/helpers/vault-slug.mjs, which also type-checks the `vaultNames` value.
+ * The thin wrapper stays because this name is part of the module's surface
+ * (tests/attach-workspace.test.mjs imports it, and so does --attach).
  */
 export function resolveSlugToVaultPath(cfg, slug) {
-  if (!cfg || !slug) return null;
-  const target = String(slug).trim().toLowerCase();
-  if (!target) return null;
-  const vaultNames = cfg.vaultNames || {};
-  for (const vp of Object.keys(cfg.portRegistry || {})) {
-    if ((vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase() === target) return vp;
-  }
-  return null;
+  return resolveVaultBySlug(cfg, slug);
 }
 
 /** Every slug registered in the config, for "did you mean" error text. */
 export function knownSlugs(cfg) {
-  const vaultNames = (cfg && cfg.vaultNames) || {};
-  return Object.keys((cfg && cfg.portRegistry) || {})
-    .map((vp) => vaultNames[vp] || defaultNameFromPath(vp));
+  return knownVaultSlugs(cfg);
 }
 
 /**
@@ -3213,11 +3215,15 @@ function setupVault(vaultPath, opts = {}) {
   if (opts.linkWorkspace) {
     // Honor a configured custom name for this vault path before falling back
     // to the basename-derived default. Otherwise an existing vault registered
-    // with `cfg.vaultNames[abs] = "<custom>"` would get the basename written
-    // into the workspace .env, and the workspace-bound hooks (which resolve
-    // `vaultNames[vp] || defaultNameFromPath(vp)`) would never see it.
-    // (review+ pass 1 codex P2 #3)
-    const slug = (cfg.vaultNames && cfg.vaultNames[abs]) || defaultNameFromPath(abs);
+    // with a custom name would get the basename written into the workspace
+    // .env, and the workspace-bound hooks (which resolve the same way) would
+    // never see it. (review+ pass 1 codex P2 #3)
+    //
+    // v0.90.0: through `vaultSlug`, so the value's TYPE is checked too. This
+    // was the worst of the twelve silent sites — a non-string here was written
+    // verbatim into a workspace `.env`, where every later session read it back
+    // and resolved no vault at all.
+    const slug = vaultSlug(cfg, abs);
     linkResult = linkWorkspaceToVault({
       workspacePath: path.resolve(opts.linkWorkspace),
       vaultPath: abs,
@@ -3259,7 +3265,7 @@ function setupVault(vaultPath, opts = {}) {
     abs,
     port,
     insecurePort,
-    slug: (cfg.vaultNames && cfg.vaultNames[abs]) || defaultNameFromPath(abs),
+    slug: vaultSlug(cfg, abs),
     obsidianName: path.basename(abs),
   };
 }
@@ -4546,21 +4552,20 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   if (!vaultSlug) fail('--link-workspace requires both <workspace-path> AND <vault-slug>');
 
   const cfg = loadConfig();
-  const paths = Object.keys(cfg.portRegistry || {});
+  const paths = registeredVaultPaths(cfg);
   if (paths.length === 0) fail('Router config has no vaults in portRegistry. Bootstrap at least one with `setup-vault.mjs <vault-path>` first.');
 
-  // Resolve slug → vault path. Uses the same slug derivation as
-  // src/registry.mjs / hooks/_helpers/workspace-vault.mjs.
-  const vaultNames = cfg.vaultNames || {};
-  const targetSlug = vaultSlug.trim().toLowerCase();
-  let vaultPath = null;
-  for (const vp of paths) {
-    const slug = (vaultNames[vp] || defaultNameFromPath(vp)).toLowerCase();
-    if (slug === targetSlug) { vaultPath = vp; break; }
-  }
+  // Resolve slug → vault path. Delegated to src/helpers/vault-slug.mjs as of
+  // v0.90.0 — this was the fourth hand-written copy of that loop, and one of
+  // the two in this file that called `.toLowerCase()` on whatever `vaultNames`
+  // happened to hold.
+  //
+  // NOTE the local `const vaultSlug = args[2]` above shadows the imported
+  // `vaultSlug` helper inside this block, which is why the two module-level
+  // names used here are `resolveVaultBySlug` / `knownVaultSlugs`.
+  const vaultPath = resolveVaultBySlug(cfg, vaultSlug);
   if (!vaultPath) {
-    const knownSlugs = paths.map((vp) => vaultNames[vp] || defaultNameFromPath(vp)).join(', ');
-    fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownSlugs}`);
+    fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownVaultSlugs(cfg).join(', ')}`);
   }
 
   linkWorkspaceToVault({ workspacePath: wsPath, vaultPath, vaultSlug });

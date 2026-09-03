@@ -139,6 +139,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
+import { vaultSlug } from '../src/helpers/vault-slug.mjs';
 
 // ---- Load workspace .env (without clobbering process.env) -------------
 // The hook runs as a separate Node subprocess invoked by Claude Code,
@@ -387,20 +388,16 @@ try {
 }
 
 /**
- * Slug derivation matching the router's `defaultNameFromPath` + the
- * one duplicated inline in `scripts/setup-vault.mjs`. Kept inline so
- * this hook has zero runtime dependencies on src/ (so it works even
- * before `npm install` in fresh checkouts).
+ * The TODO that stood here — "extract the 3 copies into a single
+ * src/helpers/vault-slug.mjs" — is done as of v0.90.0. There were six copies,
+ * not three, and this hook now imports `vaultSlug` from that module (top of
+ * file) rather than deriving the name itself.
  *
- * TODO: extract the 3 copies (src/registry.mjs, scripts/setup-vault.mjs,
- * here) into a single src/helpers/vault-slug.mjs module. Out of scope
- * for this PR — see Reviewer A pass 2 NIT.
+ * The "zero runtime dependencies on src/" rationale had already lapsed: this
+ * file imports `src/helpers/workspace-dotenv.mjs` two lines above. What it
+ * actually needs is zero dependency on `node_modules`, which the new module
+ * respects — it reaches only `node:path` and `vault-path-identity.mjs`.
  */
-function defaultNameFromPath(p) {
-  const isWindows = /^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p);
-  const base = (isWindows ? path.win32 : path.posix).basename(p);
-  return base.replace(/^\./, '').toLowerCase();
-}
 
 const allVaultPaths = Object.keys(cfg.portRegistry || {});
 if (allVaultPaths.length === 0) process.exit(0);
@@ -418,7 +415,6 @@ if (allVaultPaths.length === 0) process.exit(0);
  * Codex P2 review finding 2026-05-23.
  */
 function activeVaultPaths() {
-  const vaultNames = cfg.vaultNames || {};
   const disabledSet = new Set();
   for (const entry of Array.isArray(cfg.disabledVaults) ? cfg.disabledVaults : []) {
     // Accept either form (slug or path) per setup-vault.mjs convention.
@@ -430,7 +426,7 @@ function activeVaultPaths() {
     : null; // null = whitelist not in effect (allow all)
 
   return allVaultPaths.filter((vp) => {
-    const slug = vaultNames[vp] || defaultNameFromPath(vp);
+    const slug = vaultSlug(cfg, vp);
     if (disabledSet.has(slug) || disabledSet.has(vp)) return false;
     if (allowedSlugs && !allowedSlugs.has(slug)) return false;
     return true;
@@ -458,11 +454,7 @@ if (vaultPaths.length === 0) process.exit(0);
  */
 const lockedSlug = (process.env.OBSIDIAN_ROUTER_LOCKED || '').trim();
 if (lockedSlug) {
-  const vaultNames = cfg.vaultNames || {};
-  const lockedPath = vaultPaths.find((vp) => {
-    const slug = vaultNames[vp] || defaultNameFromPath(vp);
-    return slug === lockedSlug;
-  });
+  const lockedPath = vaultPaths.find((vp) => vaultSlug(cfg, vp) === lockedSlug);
   if (!lockedPath) process.exit(0);
   vaultPaths = [lockedPath];
 }
@@ -481,14 +473,11 @@ if (lockedSlug) {
  * every router-bootstrapped vault). Codex P2 review finding 2026-05-23.
  */
 function resolveDefaultVaultPath() {
-  const vaultNames = cfg.vaultNames || {};
-
   // Tier 1: explicit env slug override
   const envSlug = (process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT || '').trim();
   if (envSlug) {
     for (const vp of vaultPaths) {
-      const slug = vaultNames[vp] || defaultNameFromPath(vp);
-      if (slug === envSlug) return vp;
+      if (vaultSlug(cfg, vp) === envSlug) return vp;
     }
   }
 
@@ -505,8 +494,7 @@ function resolveDefaultVaultPath() {
   // Tier 3: cfg.defaultVault slug
   if (cfg.defaultVault) {
     for (const vp of vaultPaths) {
-      const slug = vaultNames[vp] || defaultNameFromPath(vp);
-      if (slug === cfg.defaultVault) return vp;
+      if (vaultSlug(cfg, vp) === cfg.defaultVault) return vp;
     }
   }
 
