@@ -682,6 +682,15 @@ describe('GUARD — the tool description names the three fields and every origin
     // wrong: which value is refused, and that it is NOT an origin.
     assert.match(text, /"FullAuto", in any of its spellings/, 'the description must say WHICH value is refused');
     assert.match(text, /SEPARATE field and never an origin/, 'and that a refusal is not a tenth origin');
+    // A guard that only checks for the NEW sentences lets the OLD one survive
+    // beside them. Review pass 5 found "the auto-enrichment mode from its four
+    // valid values" a few hundred characters before the sentence saying one of
+    // the four is refused — the same description, contradicting itself, and
+    // Claude answering "can my .env set FullAuto?" from whichever half it
+    // happened to retain. Absence has to be asserted too.
+    assert.doesNotMatch(text, /from its four valid values/,
+      'the pre-v0.89.0 sentence must not survive beside the one that contradicts it');
+    assert.match(text, /three of its four valid values/, 'it says three, and names the fourth as the exception');
     // EVERY origin any producer can emit, named in the description. The first
     // version of this guard scanned three files, asserted `size >= 8` and
     // found exactly 8 — so it had no margin, and it was blind to `unknown`,

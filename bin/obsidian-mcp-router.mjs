@@ -159,16 +159,26 @@ ENVIRONMENT
                                   FullAuto is the one value NOT taken from a
                                   workspace .env (v0.89.0), in any of its
                                   spellings: that mode is standing permission
-                                  to write into a vault without asking, and a
-                                  cloned repository's file must not grant it.
-                                  It still comes from this environment (an env
-                                  entry in the MCP host's server declaration,
-                                  or your shell), or from a call during the
-                                  session. persist:true therefore refuses to
-                                  write it and applies it to the session
-                                  instead. A refusal is named on this stderr
-                                  and in list_vaults under field
-                                  autoEnrichModeRefused.
+                                  to write into a vault without asking, and
+                                  the .env a cloned repository carries must
+                                  not grant it. It still comes from this
+                                  environment (an env entry in the MCP host's
+                                  server declaration, or your shell), or from
+                                  a call during the session. persist:true
+                                  therefore refuses to write it and applies it
+                                  to the session instead. A refusal is named
+                                  on this stderr and in list_vaults under
+                                  field autoEnrichModeRefused.
+                                  SCOPE, stated honestly: this closes the .env
+                                  door only. Files Claude itself reads in a
+                                  repository (CLAUDE.md, .claude/commands,
+                                  hooks) can still ask Claude to CALL
+                                  set_auto_enrich_mode, and the router cannot
+                                  tell that call from one the user made. The
+                                  auto-mode skill instructs Claude to set
+                                  FullAuto only on the user's own request in
+                                  the conversation, never on a workspace
+                                  file's instruction.
 
 The router auto-loads a .env file from the cwd at startup, so the
 variables above can be set per-workspace without touching ~/.claude.

@@ -211,8 +211,13 @@ export async function setAutoEnrichMode(registry, args = {}) {
 
 /**
  * Set or update KEY=VALUE in the .env file at envPath. Creates the file
- * if it doesn't exist. Updates the FIRST occurrence to match the reader
- * convention in bin/obsidian-mcp-router.mjs (`if (!(key in process.env))`).
+ * if it doesn't exist. Updates the FIRST occurrence: the reader is
+ * src/helpers/workspace-dotenv.mjs, whose "parent wins" rule means the first
+ * line to APPLY is the one that takes effect — with one exception since
+ * v0.89.0, a FullAuto line is refused and skipped, so a later line for the
+ * same key can be the one that applies. Rewriting the first occurrence keeps
+ * the file coherent for the next start-up either way: whichever line is first
+ * afterwards carries the mode the user just chose.
  *
  * Forked-from-lock.mjs implementation kept in this file to avoid
  * cross-tool imports — they're each ~25 lines, the cost of duplication

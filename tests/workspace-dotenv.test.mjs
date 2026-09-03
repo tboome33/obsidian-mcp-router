@@ -473,18 +473,28 @@ describe('the one value an accepted key may not carry from a workspace file', ()
     // has chosen it deliberately, and a file that says the same thing has
     // changed nothing — reporting a refusal there would be a false alarm about
     // a mode that is legitimately in force.
-    for (const written of ['FullAuto', 'fullauto', 'auto']) {
-      _resetWorkspaceDotenvProvenance();
-      const env = { OBSIDIAN_ROUTER_AUTO_ENRICH: 'FullAuto' };
-      const dir = tmpWorkspace(`OBSIDIAN_ROUTER_AUTO_ENRICH=${written}\n`);
-      const warnings = [];
-      const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
-      assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, 'FullAuto', written);
-      assert.deepEqual(r.applied, [], written);
-      assert.deepEqual(r.refused, [], `${written}: the parent won; nothing was refused`);
-      assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.HOST, written);
-      assert.deepEqual(workspaceDotenvRefusals(env), [], written);
-      assert.deepEqual(warnings, [], `${written}: nothing happened, nothing to say`);
+    // The PARENT's spelling varies too. The exemption canonicalises the host's
+    // value before comparing — a host that wrote `auto` chose FullAuto just as
+    // deliberately as one that wrote `FullAuto`. Review pass 5 measured that
+    // comparing the parent's raw string instead left this suite green: R5 had
+    // only ever tried the canonical spelling on the host side, so the rule
+    // "a refusal is not reported when the parent chose the same value" had no
+    // witness for the case where the parent chose it under an alias.
+    for (const parentWrote of spellingsOf('FullAuto')) {
+      for (const written of ['FullAuto', 'fullauto', 'auto']) {
+        _resetWorkspaceDotenvProvenance();
+        const env = { OBSIDIAN_ROUTER_AUTO_ENRICH: parentWrote };
+        const dir = tmpWorkspace(`OBSIDIAN_ROUTER_AUTO_ENRICH=${written}\n`);
+        const warnings = [];
+        const r = applyWorkspaceDotenv({ cwd: dir, env, warn: (m) => warnings.push(m) });
+        const label = `host=${parentWrote} file=${written}`;
+        assert.equal(env.OBSIDIAN_ROUTER_AUTO_ENRICH, parentWrote, `${label}: the parent's own spelling stays`);
+        assert.deepEqual(r.applied, [], label);
+        assert.deepEqual(r.refused, [], `${label}: the parent chose the same mode; nothing was refused`);
+        assert.equal(envKeyOrigin('OBSIDIAN_ROUTER_AUTO_ENRICH', env), ENV_ORIGINS.HOST, label);
+        assert.deepEqual(workspaceDotenvRefusals(env), [], label);
+        assert.deepEqual(warnings, [], `${label}: nothing happened, nothing to say`);
+      }
     }
   });
 
@@ -785,6 +795,12 @@ describe('the refusal is visible to the operator and invisible to Claude-through
     // Whatever the hook decides about its (empty) input, it must not have
     // editorialised about a .env in front of it: a line about a workspace file
     // ahead of a block reason is read by Claude as an instruction.
+    //
+    // And it must have RUN. Three `doesNotMatch` on stderr are satisfied by a
+    // hook that crashed at import with a stack trace containing none of the
+    // words — review pass 5's "green for the wrong reason". Exit 0 says the
+    // silence came from a hook that finished, not one that never started.
+    assert.equal(r.status, 0, `the hook must exit 0, not die silently:\n${r.stderr}`);
     assert.doesNotMatch(r.stderr, /\.env:/, r.stderr);
     assert.doesNotMatch(r.stderr, /refused/, r.stderr);
     assert.doesNotMatch(r.stderr, /FullAuto/, r.stderr);

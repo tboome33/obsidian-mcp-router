@@ -5,7 +5,9 @@
  * ---------------------------------------------------------------------------
  * THE HOLE THIS CLOSES
  * ---------------------------------------------------------------------------
- * The router, and two of its hooks, load the .env file of the current
+ * The router, and its hooks (all of them, through two loader sites: the shared
+ * hooks/_helpers/workspace-vault.mjs and hooks/vault-link-linter.mjs), load
+ * the .env file of the current
  * workspace at start-up so that a project can carry its own default vault,
  * its lock, its auto-enrichment mode. Until v0.87.0 the loaders set ANY key
  * the file named, as long as the parent environment did not already carry
