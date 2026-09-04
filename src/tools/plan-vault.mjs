@@ -60,6 +60,14 @@ function buildQuestions(plan) {
 
 export async function planVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
+  // A PRESENT `path`/`vaultPath` must be a string, checked BEFORE the `||`
+  // fallback below swallows any FALSY value as if it were absent — see the
+  // identical guard (and the review finding) in provision-vault.mjs.
+  for (const [field, value] of [['path', args.path], ['vaultPath', args.vaultPath]]) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      throw new Error(`plan_vault: \`${field}\` must be a string.`);
+    }
+  }
   const input = { ...args, path: args.path || args.vaultPath };
   if (!input.path && !input.name) {
     throw new Error('plan_vault requires `path` (the intended vault location, e.g. "C:\\\\VAULTS\\\\MyProject") or `name` (composes a path under the configured vaultsRoot). The frontend proposes a default; pass one of them here.');
@@ -78,6 +86,14 @@ export async function planVaultTool(registry, args = {}, _deps = {}) {
     identity: { target: plan.path ?? null },
     plan: { core: provisionPlanCore(plan), exec: provisionExecOptions(input) },
   });
+  // bindToWorkspace is deliberately NEVER resolved into linkWorkspace here —
+  // see provision-vault.mjs's execInput comment: the engine (and therefore
+  // plan.steps/plan.wikiMode, both part of the SEALED core above) must never
+  // see it, or provision_vault's later dry-run recomputes a different plan
+  // and the seal spuriously "drifts". So the caller's INTENT is surfaced
+  // display-only, computed AFTER the seal, from the boolean the seal already
+  // captured (provisionExecOptions) — never from a resolved workspace path.
+  const bindToWorkspace = input.bindToWorkspace === true;
   return ({
     context: plan.context,
     approvedPlanSha256,
@@ -94,9 +110,12 @@ export async function planVaultTool(registry, args = {}, _deps = {}) {
       open: plan.open,
       probe: plan.probe,
       gitInit: plan.gitInit,
+      bindToWorkspace,
     },
     questions: buildQuestions(plan),
     warnings: plan.warnings,
-    steps: plan.steps,
+    steps: bindToWorkspace && !input.linkWorkspace
+      ? [...plan.steps, `bind the current workspace (${process.cwd()}) to this vault`]
+      : plan.steps,
   });
 }

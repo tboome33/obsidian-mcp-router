@@ -101,6 +101,28 @@ describe('register_remote_vault', () => {
     );
   });
 
+  // Regression (found by codex review): rest-client.mjs builds every request
+  // as plain string concatenation (`${baseUrl}${urlPath}`), never URL
+  // resolution — a query string or fragment on baseUrl swallows the real
+  // endpoint path, breaking every request this vault would ever receive.
+  test('rejects a baseUrl carrying a query string', async () => {
+    const { written, seam } = seams();
+    await assert.rejects(
+      () => registerRemoteVaultTool(registry, { name: 'x', baseUrl: 'https://vault.example.com/?debug=1', apiKey: 'k' }, seam),
+      /requires `baseUrl`/,
+    );
+    assert.equal(written.length, 0);
+  });
+
+  test('rejects a baseUrl carrying a fragment', async () => {
+    const { written, seam } = seams();
+    await assert.rejects(
+      () => registerRemoteVaultTool(registry, { name: 'x', baseUrl: 'https://vault.example.com/#section', apiKey: 'k' }, seam),
+      /requires `baseUrl`/,
+    );
+    assert.equal(written.length, 0);
+  });
+
   test('requires `apiKey`', async () => {
     const { seam } = seams();
     await assert.rejects(

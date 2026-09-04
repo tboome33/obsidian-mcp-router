@@ -29,12 +29,26 @@ import { updateConfigBindings } from '../helpers/workspace-bindings.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import { hostIsWireguardOrLoopback, isTruthyEnv } from '../registry.mjs';
 
-/** An absolute http(s) URL — no scheme other than http/https accepted. */
+/**
+ * An absolute http(s) URL usable as a `baseUrl` — no scheme other than
+ * http/https, and no query string or fragment.
+ *
+ * The query/fragment rejection is load-bearing, not cosmetic. `rest-client.mjs`
+ * builds every request as plain string concatenation — `` `${vault.baseUrl}
+ * ${urlPath}` `` — never `new URL(base, path)` resolution. A baseUrl like
+ * `https://vault.example/?debug=1` would concatenate to
+ * `https://vault.example/?debug=1/vault/wiki/note.md`: the real endpoint path
+ * lands INSIDE the query string, the actual request path collapses to `/`,
+ * and every single call to this vault silently targets the wrong URL. A
+ * fragment (`#...`) breaks the same way. Found in review (codex).
+ */
 function isHttpUrl(value) {
   if (typeof value !== 'string' || value === '') return false;
   try {
     const u = new URL(value);
-    return u.protocol === 'http:' || u.protocol === 'https:';
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (u.search || u.hash) return false;
+    return true;
   } catch {
     return false;
   }
@@ -66,7 +80,8 @@ export async function registerRemoteVaultTool(registry, args = {}, seams = {}) {
   const baseUrl = typeof args.baseUrl === 'string' ? args.baseUrl.replace(/\/+$/, '') : '';
   if (!isHttpUrl(baseUrl)) {
     throw new Error(
-      'register_remote_vault requires `baseUrl` — an absolute http(s) URL for the ALREADY-OPEN remote vault '
+      'register_remote_vault requires `baseUrl` — an absolute http(s) URL for the ALREADY-OPEN remote vault, '
+      + 'with no query string or fragment (they would corrupt every request this router later makes to it) '
       + '(e.g. "https://10.8.0.5:27125" over WireGuard, or "https://vault.example.com" behind a TLS-terminating proxy).',
     );
   }

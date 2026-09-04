@@ -181,7 +181,7 @@ describe('provision_vault — bindToWorkspace (decision ergonomie-creation-liais
     // it before the dry-run/seal made every plan_vault -> provision_vault call
     // with bindToWorkspace:true refuse with a false plan_drift.
     let seenAtPlan, seenAtApply;
-    await provisionVaultTool(
+    const out = await provisionVaultTool(
       registry,
       { path: 'C:/VAULTS/x', bindToWorkspace: true },
       {
@@ -191,6 +191,12 @@ describe('provision_vault — bindToWorkspace (decision ergonomie-creation-liais
     );
     assert.equal(seenAtPlan, undefined, 'the dry-run must not see a resolved linkWorkspace');
     assert.equal(seenAtApply, process.cwd(), 'only the real spawn resolves it');
+    // Regression (codex review): the binding must still be VISIBLE in the
+    // result, even though it is invisible to the dry-run/seal computation.
+    assert.ok(
+      out.steps.some((s) => s.includes('bound the current workspace')),
+      `bindToWorkspace's effect is not reported in steps: ${JSON.stringify(out.steps)}`,
+    );
   });
 
   test('bindToWorkspace: false (default) — linkWorkspace stays unset, never bound silently', async () => {
@@ -211,6 +217,28 @@ describe('provision_vault — bindToWorkspace (decision ergonomie-creation-liais
       { runDryRunPlan: async (input) => { seen = input.linkWorkspace; return okPlan(); }, runProvision: async () => okResult() },
     );
     assert.equal(seen, '/explicit/ws');
+  });
+});
+
+describe('provision_vault — path/vaultPath type validation (regression, found by codex review)', () => {
+  // `args.path || args.vaultPath` treats ANY falsy value as absent, not just
+  // undefined/''. Before this fix, `path: false` alongside a valid `name`
+  // silently fell through to name-composed provisioning instead of refusing
+  // the caller's malformed request — the type check downstream never saw it,
+  // because it had already been erased by the `||`.
+  for (const badPath of [false, 0, {}, ['a']]) {
+    test(`rejects path: ${JSON.stringify(badPath)} even when name is also given`, async () => {
+      await assert.rejects(
+        () => provisionVaultTool({}, { path: badPath, name: 'Tartenpion' }),
+        /`path` must be a string/,
+      );
+    });
+  }
+  test('rejects a non-string vaultPath the same way', async () => {
+    await assert.rejects(
+      () => provisionVaultTool({}, { vaultPath: false, name: 'Tartenpion' }),
+      /`vaultPath` must be a string/,
+    );
   });
 });
 

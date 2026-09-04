@@ -105,6 +105,37 @@ describe('plan_vault tool', () => {
     );
   });
 
+  // Regression (found by codex review): `args.path || args.vaultPath` treats
+  // ANY falsy value as absent, not just undefined/''. `path: false` alongside
+  // a valid `name` used to fall through to name-composed planning silently.
+  for (const badPath of [false, 0, {}, ['a']]) {
+    test(`rejects path: ${JSON.stringify(badPath)} even when name is also given`, async () => {
+      await assert.rejects(
+        () => planVaultTool({}, { path: badPath, name: 'Tartenpion' }),
+        /`path` must be a string/,
+      );
+    });
+  }
+  test('rejects a non-string vaultPath the same way', async () => {
+    await assert.rejects(
+      () => planVaultTool({}, { vaultPath: false, name: 'Tartenpion' }),
+      /`vaultPath` must be a string/,
+    );
+  });
+
+  test('bindToWorkspace is surfaced in defaults + steps, display-only (regression, found by codex review)', async () => {
+    // The dry-run/seal must NOT see it resolved (see plan-seal-integration.test.mjs
+    // for why), but the caller reviewing this preview must still be told a
+    // workspace bind is pending — codex flagged this as a real transparency gap.
+    const target = path.join(workDir, 'BindPreview');
+    const res = await planVaultTool({}, { path: target, bindToWorkspace: true });
+    assert.equal(res.defaults.bindToWorkspace, true);
+    assert.ok(
+      res.steps.some((s) => s.includes('bind the current workspace')),
+      `bindToWorkspace's pending effect is not shown in steps: ${JSON.stringify(res.steps)}`,
+    );
+  });
+
   test('surfaces a no-known-roots warning so the plan agrees with the provision gate', async () => {
     // review+ W2 pass 2: an empty-roots config must warn in the PLAN, not only
     // refuse at provision — so the frontend can request allowOutsideRoots first.

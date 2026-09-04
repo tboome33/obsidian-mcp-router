@@ -25,6 +25,19 @@ import { verifyPlanSeal, isPlanSeal, PlanDriftError } from '../helpers/plan-seal
 export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
   const runProvision = _deps.runProvision || defaultRunProvision;
+  // A PRESENT `path`/`vaultPath` must be a string, checked BEFORE the `||`
+  // fallback below — which is a fallback for MISSING, not for wrong-typed.
+  // Found in review (codex): `args.path || args.vaultPath` treats any FALSY
+  // value (`false`, `0`, not just `undefined`/`''`) as absent, so a caller
+  // that mistakenly sent `path: false` alongside a valid `name` had that
+  // malformed value silently erased before vault-wizard-engine.mjs's own
+  // type check ever saw it — provisioning at the name-composed location
+  // instead of refusing the caller's malformed request.
+  for (const [field, value] of [['path', args.path], ['vaultPath', args.vaultPath]]) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+      throw new Error(`provision_vault: \`${field}\` must be a string.`);
+    }
+  }
   const input = { ...args, path: args.path || args.vaultPath };
   if (!input.path && !input.name) {
     throw new Error('provision_vault requires `path` (the target vault location) or `name` (composes a path under the configured vaultsRoot).');
@@ -105,9 +118,8 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   // "Current workspace" is the same process.cwd() confirm_workspace_binding
   // treats as the caller's workspace by default. An explicit `linkWorkspace`
   // (an arbitrary path, already supported) always wins.
-  const execInput = args.bindToWorkspace === true && !input.linkWorkspace
-    ? { ...input, linkWorkspace: process.cwd() }
-    : input;
+  const boundByFlag = args.bindToWorkspace === true && !input.linkWorkspace;
+  const execInput = boundByFlag ? { ...input, linkWorkspace: process.cwd() } : input;
   const { code, stdout, stderr, result } = await runProvision(execInput, { configPath });
 
   if (!result) {
@@ -132,7 +144,12 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
     probeResult: result.probe ?? null,
     ...(result.bridgeDownloaded !== undefined ? { bridgeDownloaded: result.bridgeDownloaded } : {}),
     ...(result.message ? { message: result.message } : {}),
-    steps: plan.steps,
+    // The dry-run plan's own steps never mention bindToWorkspace — it is
+    // deliberately invisible to the ENGINE (see the comment above execInput):
+    // resolving it earlier would make the dry-run plan itself diverge from
+    // what plan_vault sealed. Appended here, display-only, AFTER the real run
+    // — reporting what actually happened, not part of any sealed plan.
+    steps: boundByFlag ? [...plan.steps, `bound the current workspace (${process.cwd()}) to this vault`] : plan.steps,
     warnings: plan.warnings,
     // Hooks are intentionally NOT auto-wired from an MCP call — the tool never
     // mutates ~/.claude/settings.json. Wire them via the skill or the CLI.
