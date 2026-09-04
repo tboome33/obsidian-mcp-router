@@ -459,7 +459,9 @@ The server always declares bare tool names (`get_file`, `write_file`, …). The 
 | Registered by hand in `~/.claude.json` | `mcp__obsidian-router__get_file` |
 | Behind MCPHub | `mcp__<id>__obsidian-router-<vault>-get_file` |
 
-Documentation and skills use the short `mcp__obsidian-router__*` form for readability — Claude calls whichever name is actually in its tool list, so this is a naming difference, not a compatibility one. Hooks match these tools **by suffix** (`hooks/_helpers/tool-names.mjs`) precisely so they keep firing under all three forms.
+Documentation and skills use the short `mcp__obsidian-router__*` form for readability — Claude calls whichever name is actually in its tool list. Hooks match these tools **by suffix** (`hooks/_helpers/tool-names.mjs`) precisely so they keep firing under all three forms.
+
+**When two prefixes are present at once, prefer the plugin's.** A Claude Code session inside the desktop app sees both its own plugin server and any server the desktop app itself declares, and they do not answer the same way about *this* workspace: an MCP server is started with its launcher's working directory, and only the plugin's is started in the workspace. A server declared in the desktop app's own config starts in the app's directory, so it belongs to no workspace — `workspaceBinding` is `null` and the default vault is the config-wide one. That answer is correct for a server with no workspace, and wrong for the project you are sitting in. Measured 2026-09-04.
 
 ### Which vault is this project attached to?
 
@@ -1541,7 +1543,9 @@ Le serveur ne déclare que des noms nus (`get_file`, `write_file`, …). Le pré
 | Enregistré à la main dans `~/.claude.json` | `mcp__obsidian-router__get_file` |
 | Derrière MCPHub | `mcp__<id>__obsidian-router-<vault>-get_file` |
 
-La documentation et les skills utilisent la forme courte `mcp__obsidian-router__*` par lisibilité — Claude appelle le nom qui figure réellement dans sa liste d'outils, c'est donc une différence de nommage, pas de compatibilité. Les hooks, eux, reconnaissent ces outils **par suffixe** (`hooks/_helpers/tool-names.mjs`) précisément pour continuer à se déclencher sous les trois formes.
+La documentation et les skills utilisent la forme courte `mcp__obsidian-router__*` par lisibilité — Claude appelle le nom qui figure réellement dans sa liste d'outils. Les hooks, eux, reconnaissent ces outils **par suffixe** (`hooks/_helpers/tool-names.mjs`) précisément pour continuer à se déclencher sous les trois formes.
+
+**Quand deux préfixes sont présents en même temps, préférer celui du plugin.** Une session Claude Code dans l'app desktop voit à la fois son propre serveur de plugin et ceux que l'app déclare elle-même, et les deux ne répondent pas pareil sur *ce* workspace : un serveur MCP démarre dans le répertoire de travail de son lanceur, et seul celui du plugin démarre dans le workspace. Un serveur déclaré dans la config de l'app desktop démarre dans le répertoire de l'app, n'appartient donc à aucun workspace — `workspaceBinding` vaut `null` et le vault par défaut est celui de la config globale. Cette réponse est juste pour un serveur sans workspace, et fausse pour le projet dans lequel tu te trouves. Mesuré le 2026-09-04.
 
 ### À quel vault ce projet est-il rattaché ?
 

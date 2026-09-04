@@ -128,7 +128,7 @@ const frame = [
       `<!-- This hot.md was loaded from the ASSOCIATED vault \`${ctx.slug}\` (path: ${ctx.vaultPath}). -->`,
       `<!-- The current workspace (cwd: ${cwd}) is a code/dev project, not the vault itself. -->`,
       `<!-- To read other vault files, use mcp__obsidian-router__get_file({ vault: "${ctx.slug}", path: "wiki/..." }). -->`,
-      '<!-- Tool prefix: when the router is provided by the Claude Code plugin, the same tools are named mcp__plugin_obsidian-router_router__* instead. Use whichever is in your tool list. -->',
+      '<!-- Tool prefix: when the router is provided by the Claude Code plugin, the same tools are named mcp__plugin_obsidian-router_router__* instead. If BOTH prefixes are in your tool list, prefer the plugin one: only the plugin server is started with this workspace as its working directory, so it is the one that resolves this workspace\'s vault binding. A server declared by the MCP host itself (Claude Desktop, a launcher) starts in the host\'s own directory, belongs to no workspace, and answers with the config-wide default vault instead — correct for it, wrong for here. -->',
     ]
     : [`<!-- hot-cache-load: cwd-is-vault — loaded from ${ctx.vaultPath}. -->`]),
   "<!-- Below = the user's own notes, quoted as cited data: recent-context",
