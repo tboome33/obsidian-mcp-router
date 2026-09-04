@@ -620,6 +620,7 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       refresh_okf_projections: 'writes only planner-derived projection paths',
       download_page_assets: 'caller-supplied outputDir, sandboxed by MD_ALLOWED_PATHS — NOTE: assertPathAllowed is a no-op when that env var is unset, tracked separately',
       provision_vault: 'caller-supplied absolute path, gated by allowOutsideRoots (fail-closed)',
+      register_remote_vault: 'writes only the fixed config.json path, never a caller-supplied filesystem path; the caller-supplied fields (baseUrl/apiKey/name) become JSON values inside it, not a write TARGET',
     };
     // NAME NOTE: `WRITE_TOOL_NAMES` is the VAULT-CONTENT writer set, not every
     // tool that touches a file. `lock_vault`, `unlock_vaults` and
@@ -692,6 +693,13 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       // workspace it binds is always `process.cwd()`. Vault names it records
       // are checked against the registry, so it cannot name one into existence.
       'workspace-binding.mjs',
+      // v0.90.0 — register-remote-vault.mjs. Same shape as workspace-binding.mjs,
+      // one file over: writes ONLY `registry.configPath` (never a caller-supplied
+      // filesystem path — the tool has no path parameter). The caller-supplied
+      // `name`/`baseUrl`/`apiKey`/etc. become JSON VALUES inside that one fixed
+      // file, never a write target, and `name` is refused when it collides with
+      // an already-registered vault (checked inside the config lock).
+      'register-remote-vault.mjs',
     ]);
     const GATED_ABSOLUTE_WRITERS = new Set([
       // Take a caller-supplied ABSOLUTE path and have their own dedicated gate
@@ -2265,7 +2273,6 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
       // The on-disk location of a vault to CREATE — an absolute filesystem path
       // by design, gated separately by `allowOutsideRoots`.
       ['plan_vault.path', 'the FS location of a vault to create; gated by allowOutsideRoots'],
-      ['plan_vault.linkWorkspace', 'the FS location of the code workspace to bind; same gate, same planner (writes nothing)'],
       // NOT a filesystem path: it selects a heading ancestry ("H1::H2"), a block
       // id, or a frontmatter key INSIDE the file named by the sibling `path`.
       // `looksLikePath` matches it only because its description reads "the
@@ -2389,6 +2396,23 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
       ['find_boundary_pages.exemptStatuses', 'the ranker needs substance measurements the fixture graph does not carry'],
       // `plan_vault` demands its own `path` before it reads the nested source.
       ['plan_vault.source.fromVault', 'plan_vault refuses without its top-level `path` first'],
+      // v0.90.0 — `path` and `name` both left plan_vault's `required` (decision
+      // ergonomie-creation-liaison-vaults §1: `name` alone composes a path under
+      // vaultsRoot), so the envelope no longer fills either when driving a
+      // sibling leaf. Driving `linkWorkspace` alone now refuses immediately with
+      // "requires `path` ... or `name`", before the hostile value is ever read —
+      // moved here from ACCEPTED_BY_DESIGN, where it used to be silently absorbed.
+      ['plan_vault.linkWorkspace', 'plan_vault refuses without its top-level `path` or `name` first'],
+      // v0.90.0 — `name`'s own description now mentions "path" (composing one
+      // under vaultsRoot), so it is newly swept in as path-ish. Driven alone (no
+      // `path`), it reaches the engine, which refuses for lack of a configured
+      // `vaultsRoot` in this fixture's config (a file that does not exist on
+      // disk) — a message naming neither the hostile value nor "active". Had
+      // vaultsRoot been configured, `slugifyForPath` (setup-vault.mjs) would
+      // still have reduced the value to a safe single filesystem segment before
+      // it ever became part of a path, same as any other --name.
+      ['plan_vault.name', 'no vaultsRoot is configured in this fixture, so the engine refuses before the value could become a path segment'],
+      ['provision_vault.name', 'no vaultsRoot is configured in this fixture; the dry-run plan refuses first, same as plan_vault.name'],
     ]);
     assert.deepEqual(
       notDriven.slice().sort(), [...NOT_DRIVEN_REASONS.keys()].sort(),

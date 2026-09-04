@@ -119,16 +119,30 @@ If the vault is reachable from outside your LAN (over the public Internet, or ev
 
 Then in the router config, set `tlsInsecure: false` and `baseUrl` to the public URL. The Bearer token from the plugin acts as a second factor behind the proxy.
 
-## Step 4 — Tailscale (recommended for personal use)
+## Step 4 — WireGuard or Tailscale (recommended for personal use)
 
-The simplest secure setup for personal multi-device access:
+Both are the same idea — an authenticated mesh, so the plugin's self-signed cert is fine and there is no reverse-proxy boilerplate to run. They are **both** first-class transports here; **neither is required to use the other**. Pick WireGuard when you already run your own mesh (this project's own `10.8.0.0/24` is one), or Tailscale when you would rather not manage keys yourself.
+
+**WireGuard.** Every machine on the mesh reaches every other by its WireGuard IP — no port-forwarding, no public DNS. In the router config, use that IP as `baseUrl`'s host (`https://10.8.0.5:27125`) and keep `tlsInsecure: true` (the mesh itself is the authentication boundary; the plugin's self-signed cert only needs to stop a passive eavesdropper, which WireGuard already does one layer down). `hostPassesTransportGuard` (`src/helpers/remote-config.mjs`) already recognizes `10.8.0.0/24` and loopback as passing `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` without extra configuration — a host outside that mesh (and not loopback) is flagged, not silently accepted.
+
+**Tailscale.**
 
 1. Install Tailscale on every machine that runs an Obsidian vault and on your client(s).
 2. In the plugin, bind to `0.0.0.0` (or to the Tailscale IP specifically).
 3. Reach the vault at `https://<machine>.tailnet.local:27125` — Tailscale handles auth + encryption transparently.
 4. In the router config, use that hostname and keep `tlsInsecure: true` (the plugin's self-signed cert is fine inside Tailscale because the network itself is authenticated).
 
-This avoids the reverse-proxy boilerplate and works across mobile, desktop, and NAS.
+Either way this avoids the reverse-proxy boilerplate and works across mobile, desktop, and NAS. A domain name in front of a real, publicly-trusted TLS certificate (Step 3, above) is the third option, equally valid — it is what you want when the reader is a device you cannot enroll in your own mesh (a family member's own account, a machine you do not administer).
+
+## Concurrent writers — `ifMatch` on a shared vault
+
+Opening a vault to more than one machine makes the common case a vault reachable from **more than one workspace**, not just more than one person sitting at a keyboard — a knowledge base two projects both write to is exactly the shape this document's own use cases (NAS, office ↔ home, multi-device) encourage. `write_file`'s `ifMatch` (a `contentSha256` from `get_file`, checked as an atomic compare-and-swap) is how two writers on the same note avoid silently overwriting each other — without it, the second write simply wins and the first is gone with no error and no trace beyond `wiki-meta/journal.md`.
+
+**The concrete scenario.** Roland and his son both have this vault registered — Roland's session on his desktop, his son's on his own machine, both reaching the same `remoteVaults` entry over WireGuard. Neither knows the other is mid-edit. If both sessions call `write_file` on the same page within the same few seconds, whichever request the vault's REST API processes second overwrites the first outright, unless that second call passed `ifMatch` from a `get_file` taken before its own edit — in which case it gets a 409 conflict instead of a silent loss, and can re-read and retry.
+
+**What holds today.** `ifMatch` is optional on every `write_file` call, on every vault, local or remote — passing it is always safe, omitting it is never refused. A vault this router's own registry can see is attached to more than one workspace does not yet change that: making `ifMatch` **required** (not merely advisable) on exactly those vaults — mono-attached ones keep writing exactly as before — is an accepted-but-not-yet-implemented decision (`ergonomie-creation-liaison-vaults`, §3, 2026-09-04) recorded in this project's own wiki, not in this repository. Until it ships, treat this section as the advisory it already is: pass `ifMatch` on any vault more than one workspace or person might touch, the same way you would for any file you know is contended.
+
+**The honest limit, stated with the mechanism rather than left implicit.** `ifMatch`'s compare-and-swap only protects writes that go through this same route. It says nothing about a concurrent edit made straight in Obsidian's own editor on the machine that hosts the vault, or a parallel Obsidian Sync / LiveSync pass — those never touch the REST API this router calls, so no `ifMatch` check ever sees them.
 
 ## Latency considerations
 

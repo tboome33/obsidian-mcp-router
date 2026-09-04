@@ -641,6 +641,11 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     // tests/workspace-binding-tool.test.mjs, which drives it through injected
     // read/write/launch seams and never touches a real config or a real disk.
     'confirm_workspace_binding',
+    // v0.90.0 — same category, one tool over: writes a remoteVaults entry to
+    // config.json (the router's OWN config, never a vault). Covered by
+    // tests/register-remote-vault.test.mjs, which injects readFile/writeFile
+    // seams and never touches a real config or a real disk.
+    'register_remote_vault',
   ]);
 
   /** What the harness ACTUALLY ran — read from the run, never re-declared. */

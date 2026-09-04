@@ -26,11 +26,30 @@ test('composeSetupVaultArgs: rejects a path that looks like a flag', () => {
   assert.throws(() => composeSetupVaultArgs({ path: '--regenerate' }), /must be a filesystem path, not a flag/);
 });
 
-test('composeSetupVaultArgs: requires path + validates enums', () => {
-  assert.throws(() => composeSetupVaultArgs({}), /`path` \(string\) is required/);
+test('composeSetupVaultArgs: requires path or name + validates enums', () => {
+  assert.throws(() => composeSetupVaultArgs({}), /`path` or `name` \(string\) is required/);
   assert.throws(() => composeSetupVaultArgs({ path: '/v', source: { kind: 'bogus' } }), /Unknown source\.kind/);
   assert.throws(() => composeSetupVaultArgs({ path: '/v', plugins: { profile: 'bogus' } }), /Unknown plugins\.profile/);
   assert.throws(() => composeSetupVaultArgs({ path: '/v', source: { kind: 'from-vault' } }), /requires source\.fromVault/);
+});
+
+test('composeSetupVaultArgs: name alone (no path) omits the positional — the engine composes it from vaultsRoot', () => {
+  const args = composeSetupVaultArgs({ name: 'Tartenpion' });
+  assert.equal(args[0], '--name', 'no positional path pushed; --name is argv[0]');
+  assert.ok(args.includes('Tartenpion'));
+});
+
+test('composeSetupVaultArgs: a non-string path is a type error, even when name is also given (regression)', () => {
+  // A wrong-type path must never be silently swallowed as "absent" just
+  // because a valid `name` happens to also be present — that would silently
+  // provision at the vaultsRoot-composed location instead of refusing.
+  for (const badPath of [{ evil: true }, 12345, true, ['a']]) {
+    assert.throws(
+      () => composeSetupVaultArgs({ path: badPath, name: 'Tartenpion' }),
+      /`path` must be a string/,
+      `did not reject non-string path: ${JSON.stringify(badPath)}`,
+    );
+  }
 });
 
 test('parseProvisionResult: matches the nonce and ignores spoofed plain markers', () => {

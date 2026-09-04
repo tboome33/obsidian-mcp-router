@@ -81,6 +81,28 @@ test('isPathWithinRoots: inside allowed, sibling-prefix rejected', () => {
   assert.equal(isPathWithinRoots(path.resolve('/etc/passwd'), [root]), false);
 });
 
+// Phase 1 item 3 of the portee-ergonomie-refus roadmap (decision ergonomie-
+// creation-liaison-vaults §1): "Node handles UNC paths natively, but nothing
+// verifies it" — this is that verification, not a new mechanism.
+// `isPathWithinRoots`/`knownVaultRoots` resolve through the platform-ambient
+// `node:path` (not the structural `path.win32`-always helpers in
+// vault-path-identity.mjs), so UNC separators are only meaningful when this
+// process itself runs on win32 — skipped elsewhere rather than asserting a
+// behavior POSIX `path.resolve` does not have.
+test('isPathWithinRoots: UNC network paths resolve natively (win32)', { skip: process.platform !== 'win32' }, () => {
+  const root = path.resolve('\\\\server\\share\\Vaults');
+  assert.equal(isPathWithinRoots(path.resolve('\\\\server\\share\\Vaults\\New'), [root]), true);
+  assert.equal(isPathWithinRoots(root, [root]), true);
+  assert.equal(isPathWithinRoots(path.resolve('\\\\server\\share\\Vaults-evil\\New'), [root]), false, 'prefix but not subdir');
+  assert.equal(isPathWithinRoots(path.resolve('\\\\otherserver\\share\\Vaults\\New'), [root]), false, 'different UNC host, not within root');
+});
+
+test('knownVaultRoots: a UNC vaultsRoot composes correctly (win32)', { skip: process.platform !== 'win32' }, () => {
+  const cfg = { portRegistry: {}, vaultsRoot: '\\\\server\\share\\Vaults' };
+  const roots = knownVaultRoots(cfg);
+  assert.ok(roots.includes(path.resolve('\\\\server\\share\\Vaults')));
+});
+
 test('resolveSourceVault: from-vault by slug resolves to registered path', () => {
   const src = tmpVault(['smart-connections']);
   try {

@@ -61,8 +61,8 @@ function buildQuestions(plan) {
 export async function planVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
   const input = { ...args, path: args.path || args.vaultPath };
-  if (!input.path) {
-    throw new Error('plan_vault requires `path` — the intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default; pass it here.');
+  if (!input.path && !input.name) {
+    throw new Error('plan_vault requires `path` (the intended vault location, e.g. "C:\\\\VAULTS\\\\MyProject") or `name` (composes a path under the configured vaultsRoot). The frontend proposes a default; pass one of them here.');
   }
   // Plan against the server's active config (review+ W2 P2).
   const configPath = registry && registry.configPath;

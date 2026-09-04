@@ -321,6 +321,44 @@ describe('provision_vault — sealed preview', () => {
     assert.equal(out.ok, true);
   });
 
+  test('regression: bindToWorkspace:true must not drift the seal — resolved to linkWorkspace only for the real spawn', async () => {
+    // Found in review (v0.90.0): provisionVaultTool used to resolve
+    // bindToWorkspace into input.linkWorkspace BEFORE its own dry-run and
+    // BEFORE recomputing exec options for verifyPlanSeal — so the plan it
+    // checked against plan_vault's seal was never the same plan plan_vault
+    // sealed (plan_vault never performs that resolution: provisionExecOptions
+    // captures bindToWorkspace as a bare boolean specifically so the seal only
+    // has to compare that boolean). Every plan_vault -> provision_vault call
+    // with bindToWorkspace:true refused with a false plan_drift.
+    const seenLinkWorkspace = [];
+    const planSeenByProvision = async (input) => {
+      seenLinkWorkspace.push(input.linkWorkspace);
+      return okPlan();
+    };
+
+    const planned = await planVaultTool(
+      registry,
+      { path: 'C:/VAULTS/x', bindToWorkspace: true },
+      { runDryRunPlan: async () => okPlan() },
+    );
+
+    let provisionedWith = null;
+    const out = await provisionVaultTool(
+      registry,
+      { path: 'C:/VAULTS/x', bindToWorkspace: true, approvedPlanSha256: planned.approvedPlanSha256 },
+      {
+        runDryRunPlan: planSeenByProvision,
+        runProvision: async (input) => { provisionedWith = input; return okProvisionResult(); },
+      },
+    );
+    assert.equal(out.ok, true, 'bindToWorkspace:true must not cause a false plan_drift');
+    // The DRY-RUN (which feeds both the plan core and the sealed exec options)
+    // must see the SAME input plan_vault saw — linkWorkspace still unresolved.
+    assert.equal(seenLinkWorkspace[0], undefined, 'the dry-run/seal computation must not see a resolved linkWorkspace');
+    // Only the REAL spawn gets the resolved workspace.
+    assert.equal(provisionedWith.linkWorkspace, process.cwd(), 'the real run must still bind the current workspace');
+  });
+
   test('backward compat: provisioning without a seal still runs', async () => {
     let provisioned = false;
     const out = await provisionVaultTool(

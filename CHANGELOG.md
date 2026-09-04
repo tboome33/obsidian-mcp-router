@@ -6,6 +6,34 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### Vault creation gets easier, and a new tool registers a remote vault from the conversation
+
+Phase 1 of the `portee-ergonomie-refus-roadmap` (decisions `ergonomie-creation-liaison-vaults` §1
+and §2, accepted 2026-09-04). Low-risk, additive — no change for anyone not using the new
+parameters.
+
+#### Added
+
+- **`vaultsRoot` composes a path from a name alone.** `provision_vault`/`plan_vault` may now omit
+  `path` when `name` is given: the target is composed as `<vaultsRoot>/<slug-of-name>`. Refuses
+  clearly when `vaultsRoot` isn't configured, and refuses when the composed folder is already
+  registered under a *different* name (re-running with the same name still works).
+- **`provision_vault` gains `bindToWorkspace`** (default `false`): binds the CURRENT workspace to
+  the newly-created vault on success, on explicit request only.
+- **`register_remote_vault`** (52nd tool) — register an already-open remote vault (`name`,
+  `baseUrl`, `apiKey`) from the conversation, without hand-editing `config.json`. Always writes to
+  the router's own config, never a workspace `.env`. Pre-checks
+  `OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK` before writing (refuses rather than writing an entry
+  that would later break config reload), refuses a name collision case-insensitively (matching how
+  `--attach`/`confirm_workspace_binding` resolve names elsewhere), and is excluded from gated
+  deployments — MCPHub's multi-tenant instances share one central `config.json`.
+
+#### Docs
+
+- `docs/remote-vaults.md`: WireGuard documented as a first-class transport alongside Tailscale (not
+  only via Tailscale's own mesh), and a new section on `ifMatch` discipline for a vault shared by
+  more than one workspace, with the concrete two-writer scenario.
+
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 
 Two lots, both about trusting a file less. The first takes AUTHORITY away from the workspace

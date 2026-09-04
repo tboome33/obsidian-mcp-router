@@ -64,7 +64,7 @@ The **default vault** is resolved by a 5-tier cascade (highest first): `OBSIDIAN
 
 ## Tool surface
 
-The router's catalog holds **51 MCP tools**: vault discovery & session control (6), reading & search (4), the local BM25 search index (1), writing & surgical editing (8), Templater execution (1), document conversion to markdown (12), web-ingestion helpers (4), the source ledger (2), wiki graph & context (7), OKF projections (1), links & navigation (3), and the vault-creation wizard (2). The full, human-readable feature guide lives in [`docs/features/`](features/README.md); the compact per-tool tables are in the [README](../README.md).
+The router's catalog holds **52 MCP tools**: vault discovery & session control (6), reading & search (4), the local BM25 search index (1), writing & surgical editing (8), Templater execution (1), document conversion to markdown (12), web-ingestion helpers (4), the source ledger (2), wiki graph & context (7), OKF projections (1), links & navigation (3), and the vault-creation wizard (3). The full, human-readable feature guide lives in [`docs/features/`](features/README.md); the compact per-tool tables are in the [README](../README.md).
 
 The counter above is checked in CI: `contracts/skill-capabilities.json` declares what every skill reads, writes and requires, and `npm run validate` fails when this sentence, the skills' own pages, and the tool catalog disagree. See [Skill capability contracts](../README.md#skill-capability-contracts-contractsskill-capabilitiesjson).
 

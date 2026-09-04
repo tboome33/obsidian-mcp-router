@@ -78,8 +78,31 @@ describe('plan_vault tool', () => {
     assert.ok(res.defaults.plugins.resolved.includes('templater-obsidian'), 'from-vault plugins derived from that source');
   });
 
-  test('requires a path', async () => {
+  test('requires a path (or a name)', async () => {
     await assert.rejects(() => planVaultTool({}, {}), /requires `path`/);
+  });
+
+  test('name alone composes a path under vaultsRoot (decision ergonomie-creation-liaison-vaults §1)', async () => {
+    const vaultsRootDir = path.join(workDir, 'roots');
+    fs.mkdirSync(vaultsRootDir, { recursive: true });
+    const cfgWithRoot = path.join(workDir, 'config-with-root.json');
+    fs.writeFileSync(cfgWithRoot, JSON.stringify({
+      referenceVault: ref, portRegistry: {}, portStart: 27300, vaultsRoot: vaultsRootDir,
+    }));
+    const res = await planVaultTool({ configPath: cfgWithRoot }, { name: 'Tartenpion' });
+    assert.equal(res.defaults.path, path.join(vaultsRootDir, 'tartenpion'));
+    assert.equal(res.defaults.slug, 'tartenpion');
+    // READ-ONLY still holds for the composed path too.
+    assert.ok(!fs.existsSync(res.defaults.path), 'plan_vault must not create the target');
+  });
+
+  test('name alone WITHOUT a configured vaultsRoot fails clearly, no mutation', async () => {
+    const cfgNoRoot = path.join(workDir, 'config-no-root.json');
+    fs.writeFileSync(cfgNoRoot, JSON.stringify({ referenceVault: ref, portRegistry: {}, portStart: 27400 }));
+    await assert.rejects(
+      () => planVaultTool({ configPath: cfgNoRoot }, { name: 'Tartenpion' }),
+      /vaultsRoot/,
+    );
   });
 
   test('surfaces a no-known-roots warning so the plan agrees with the provision gate', async () => {

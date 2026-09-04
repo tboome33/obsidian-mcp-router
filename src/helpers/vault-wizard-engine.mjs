@@ -24,17 +24,33 @@ export const SETUP_VAULT_SCRIPT = path.resolve(SELF_DIR, '..', '..', 'scripts', 
  *     linkWorkspace?, claudeWorkspace?, open?, probe?, probeTimeout?, gitInit? }
  */
 export function composeSetupVaultArgs(input = {}) {
-  if (!input.path || typeof input.path !== 'string') {
-    throw new Error('`path` (string) is required.');
+  // A PRESENT `path` must be a string — a wrong type is a caller bug, not "no
+  // path given", and must never be silently swallowed just because `name`
+  // also happens to be present. Found in review: checking only `typeof ===
+  // 'string'` to decide "do we have a path" let a non-string `path` (e.g. an
+  // accidentally-nested object) alongside a valid `name` provision silently
+  // at the vaultsRoot-composed location instead of the caller's intended
+  // target — no error, no warning, wrong vault created.
+  if (input.path !== undefined && input.path !== null && typeof input.path !== 'string') {
+    throw new Error('`path` must be a string.');
+  }
+  const hasPath = typeof input.path === 'string' && input.path !== '';
+  // `path` may be omitted (or empty) when `name` is given: the engine then
+  // composes it from the configured `vaultsRoot` (decision ergonomie-
+  // creation-liaison-vaults §1). Neither present is still a hard error —
+  // there is nothing to create a vault FROM.
+  if (!hasPath && !input.name) {
+    throw new Error('`path` or `name` (string) is required — `name` alone composes a path under the configured vaultsRoot.');
   }
   // The path is argv[0] (a positional). A value starting with `--` would be
   // parsed by the engine as a FLAG (not the vault path), silently activating
   // e.g. --regenerate/--force and then failing with "No vault path provided".
   // Reject it up front with a clear error (review+ W2 NIT #3).
-  if (input.path.startsWith('--')) {
+  if (hasPath && input.path.startsWith('--')) {
     throw new Error('`path` must be a filesystem path, not a flag (got a value starting with "--").');
   }
-  const args = [input.path];
+  const args = [];
+  if (hasPath) args.push(input.path);
   if (input.name) args.push('--name', String(input.name));
 
   const src = input.source || {};
@@ -199,6 +215,11 @@ export function provisionExecOptions(input = {}) {
     probeTimeout: input.probeTimeout ?? null,
     gitInit: input.gitInit ?? null,
     allowOutsideRoots: input.allowOutsideRoots ?? null,
+    // Captured verbatim (not resolved to a workspace path) so the seal only
+    // has to compare a boolean: provision_vault is the one that turns `true`
+    // into `linkWorkspace = process.cwd()` at apply time (decision
+    // ergonomie-creation-liaison-vaults §1 — bindToWorkspace, default false).
+    bindToWorkspace: input.bindToWorkspace ?? null,
   };
 }
 

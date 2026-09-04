@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 15 documented write tools', () => {
+  test('contains the 16 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -114,6 +114,10 @@ describe('WRITE_TOOL_NAMES', () => {
       // its read-only `recover:true` listing goes with it, which costs nothing
       // because a readonly deployment cannot leave a bundle half-applied.
       'write_bundle',
+      // v0.90.0 — writes a new remoteVaults entry (apiKey included) to
+      // config.json. Same reasoning as provision_vault: a read-only
+      // deployment must hide it too, not just the OBSIDIAN_ROUTER_USER_ID gate.
+      'register_remote_vault',
     ];
     assert.equal(WRITE_TOOL_NAMES.size, expected.length);
     for (const e of expected) {

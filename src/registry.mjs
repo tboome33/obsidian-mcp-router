@@ -1107,3 +1107,13 @@ export const _internals = {
 // Exposed for the list_vaults tool which needs the on-disk casing for the
 // `obsidianName` field that feeds the obsidian://open?vault=<name> URI.
 export { pathBasename };
+
+// Exposed for register_remote_vault (src/tools/register-remote-vault.mjs),
+// which pre-checks OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK before writing a new
+// remoteVaults entry — reusing the EXACT predicate loadRegistry enforces at
+// (re)load, rather than an approximation that could silently disagree with it.
+// Without this, a caller could register a public-TLS vault under an
+// enforcing deployment, get a confident "registered" response, and only learn
+// the vault is permanently unreachable from the server's stderr at the next
+// config reload.
+export { hostIsWireguardOrLoopback, isTruthyEnv };

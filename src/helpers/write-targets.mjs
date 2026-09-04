@@ -70,6 +70,12 @@ export const FIXED_TARGET_TOOLS = new Set([
   'build_search_index',
   'record_source',
   'refresh_okf_projections',
+  // v0.90.0 — register_remote_vault writes ONLY `registry.configPath`, never a
+  // caller-named path (the tool has no `path` argument at all). Without this
+  // entry the DEFAULT `['path']` field would read a caller-APPENDED `path` —
+  // `request.params.arguments` is an open record at runtime — and misattribute
+  // a config.json write to a forged vault path in the audit journal.
+  'register_remote_vault',
 ]);
 
 /**

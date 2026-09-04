@@ -82,6 +82,7 @@ import { getViewLinkTool } from './tools/get-view-link.mjs';
 // filesystem, so they must never be reachable on a shared/gated deployment.
 import { planVaultTool } from './tools/plan-vault.mjs';
 import { provisionVaultTool } from './tools/provision-vault.mjs';
+import { registerRemoteVaultTool } from './tools/register-remote-vault.mjs';
 import { viewLinkForWrite, noteForWriteResult } from './helpers/view-link.mjs';
 import { smartLinkEnabled } from './helpers/smart-link.mjs';
 import {
@@ -1004,8 +1005,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'The intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default.' },
-        name: { type: 'string', description: 'Optional display name (→ slug).' },
+        path: { type: 'string', description: 'The intended vault location (e.g. "C:\\\\VAULTS\\\\MyProject"). The frontend proposes a default. May be omitted when `name` is given AND `vaultsRoot` is configured — the path is then composed as `<vaultsRoot>/<slug-of-name>`.' },
+        name: { type: 'string', description: 'Display name (→ vaultNames slug). Required when `path` is omitted — it also composes the folder name under vaultsRoot in that case.' },
         source: {
           type: 'object',
           description: 'Template source override. kind: reference (default) | from-vault | skeleton | bare.',
@@ -1035,7 +1036,7 @@ const TOOLS = [
         theme: { type: 'string', description: 'Theme to apply: a theme folder name cloned from the source (see plan_vault\'s themes list), or "obsidian-default" for the built-in look. Written as cssTheme in the new vault\'s appearance.json.' },
         linkWorkspace: { type: 'string', description: 'Code workspace path to bind to this vault.' },
         claudeWorkspace: { type: 'boolean' },
-        // C3 catch-22 fix (v0.76.0): these 5 are EXEC options — plan_vault
+        // C3 catch-22 fix (v0.76.0): these 6 are EXEC options — plan_vault
         // never executes them (it is read-only), but they are folded into the
         // sealed plan so provision_vault's apply-time hash matches. Omitting
         // them here let a client that forwards only schema-declared
@@ -1049,8 +1050,9 @@ const TOOLS = [
         probeTimeout: { type: 'number', description: 'Exec option — same as `open`: sealed here, executed by provision_vault.' },
         gitInit: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault.' },
         allowOutsideRoots: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault. Pass it here too when the target is outside known vault roots, matching what you will pass to provision_vault — otherwise the sealed preview will not match provision_vault\'s apply-time hash and it will refuse with plan_drift.' },
+        bindToWorkspace: { type: 'boolean', description: 'Exec option — same as `open`: sealed here, executed by provision_vault. Default false. When true, provision_vault binds the CURRENT workspace to the new vault on success (never silently — pass it explicitly).' },
       },
-      required: ['path'],
+      required: [],
       additionalProperties: true,
     },
   },
@@ -1061,8 +1063,8 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Target vault location (must be under a known vault root unless allowOutsideRoots).' },
-        name: { type: 'string' },
+        path: { type: 'string', description: 'Target vault location (must be under a known vault root unless allowOutsideRoots). May be omitted when `name` is given AND `vaultsRoot` is configured — composed as `<vaultsRoot>/<slug-of-name>`.' },
+        name: { type: 'string', description: 'Display name (→ vaultNames slug). Required when `path` is omitted.' },
         source: {
           type: 'object',
           properties: {
@@ -1096,13 +1098,33 @@ const TOOLS = [
         probeTimeout: { type: 'number', description: 'Probe timeout in seconds.' },
         gitInit: { type: 'boolean', description: 'git init + initial commit inside the vault.' },
         allowOutsideRoots: { type: 'boolean', description: 'Override the path gate to allow a target outside known vault roots.' },
+        bindToWorkspace: { type: 'boolean', description: 'Bind the CURRENT workspace to the new vault on success. Default false — never bound silently. An explicit `linkWorkspace` (any workspace path) still takes precedence.' },
         approvedPlanSha256: {
           type: 'string',
           description: 'C3 sealed preview: the 64-hex seal plan_vault returned. When supplied, provisioning is refused (before the filesystem-mutating run) if the plan drifted since the preview — a slug collision appeared, the source vault changed, a root vanished. Call plan_vault with the SAME arguments to obtain it.',
         },
       },
-      required: ['path'],
+      required: [],
       additionalProperties: true,
+    },
+  },
+  {
+    name: 'register_remote_vault',
+    description:
+      'Register an ALREADY-OPEN remote vault (reachable now over WireGuard, a public TLS domain, or any other transport docs/remote-vaults.md covers) by writing a `remoteVaults` entry into config.json from the conversation — no hand edit needed. NEVER writes to a workspace .env: the apiKey is a bearer token and always lands in the router\'s own config. Refuses a `name` that already names a registered vault (local or remote). LOCAL-ONLY: absent on gated deployments (MCPHub instances share one central config.json; see the tool source for why). Writes to the local filesystem (the router config, not a vault).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The vault name sessions will address it by. Must not collide with any already-registered vault, local or remote.' },
+        baseUrl: { type: 'string', description: 'Absolute http(s) URL of the already-open vault\'s Local REST API, e.g. "https://10.8.0.5:27125" (WireGuard) or "https://vault.example.com" (TLS-terminating proxy).' },
+        apiKey: { type: 'string', description: 'Bearer token from that vault\'s Local REST API plugin settings.' },
+        description: { type: 'string' },
+        tlsInsecure: { type: 'boolean', description: 'Skip certificate verification. Default false (verify). Set true for the plugin\'s self-signed cert over an already-authenticated transport like WireGuard.' },
+        insecurePort: { type: 'number', description: 'That vault\'s plaintext HTTP port, ONLY if you want clickToOpenUrl links emitted for it (see docs/remote-vaults.md — this is an assertion about who will click the link, not a secret).' },
+        timeoutMs: { type: 'number', description: 'Per-request timeout in ms. Default 10000 if omitted.' },
+      },
+      required: ['name', 'baseUrl', 'apiKey'],
+      additionalProperties: false,
     },
   },
 ];
@@ -1205,13 +1227,21 @@ const TOOL_HANDLERS = {
   // and use `reg.configPath` so the child runs against the server's config.
   plan_vault: (reg, args) => planVaultTool(reg, args),
   provision_vault: (reg, args) => provisionVaultTool(reg, args),
+  register_remote_vault: (reg, args) => registerRemoteVaultTool(reg, args),
 };
 
-// LOCAL-ONLY tools: they touch the local filesystem (provision_vault writes a
-// new vault), so they are HIDDEN from the tool list — and refused at CallTool —
-// on any gated/multi-tenant deployment (OBSIDIAN_ROUTER_USER_ID set). Same
-// spirit as the MD_ALLOWED_PATHS sandbox gate. Exported for testing.
-const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault']);
+// LOCAL-ONLY tools: HIDDEN from the tool list — and refused at CallTool — on
+// any gated/multi-tenant deployment (OBSIDIAN_ROUTER_USER_ID set). Same spirit
+// as the MD_ALLOWED_PATHS sandbox gate. Two different reasons land a tool
+// here: plan_vault/provision_vault touch the local filesystem (they write a
+// new vault to the HOST). register_remote_vault touches no local disk at all,
+// but MCPHub's gated instances all read the SAME central config.json
+// (registry.mjs's ALLOWED_VAULTS comment: "even though they all read the same
+// central config.json") — left open, one tenant could plant a `remoteVaults`
+// entry whose name another tenant's allowlist happens to include, routing that
+// tenant's sessions through a vault (baseUrl + apiKey) the planting tenant
+// chose. Exported for testing.
+const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault', 'register_remote_vault']);
 
 /**
  * Tools that need the TARGET VAULT to have a local disk — a different question,
@@ -1333,6 +1363,9 @@ const WRITE_TOOL_NAMES = new Set([
   // deployment must hide it too (not just the OBSIDIAN_ROUTER_USER_ID gate).
   // plan_vault is read-only and is deliberately NOT in this set. (review+ W2 P1)
   'provision_vault',
+  // v0.90.0 — writes a new remoteVaults entry (apiKey included) to config.json.
+  // A read-only deployment must hide it too, same as provision_vault.
+  'register_remote_vault',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1554,9 +1587,11 @@ export function computeExposedTools(tools, { readonly = false, viewAgentConfigur
 }
 
 /**
- * The vault path each fixed-target write tool actually writes. Consulted BEFORE
- * anything the caller supplied, because for these tools the target is not an
- * argument at all — the tool decides it.
+ * What each fixed-target write tool actually writes — usually a vault-relative
+ * path, occasionally router text describing a non-vault target (see
+ * `register_remote_vault` below). Consulted BEFORE anything the caller
+ * supplied, because for these tools the target is not an argument at all —
+ * the tool decides it.
  */
 const FIXED_AUDIT_TARGETS = {
   // No `path` arg: it writes the canonical graph JSON (+ a derived UA copy).
@@ -1565,6 +1600,13 @@ const FIXED_AUDIT_TARGETS = {
   refresh_okf_projections: 'wiki/index.md (okf projections)',
   build_search_index: SEARCH_INDEX_PATH,
   record_source: SOURCE_LEDGER_PATH,
+  // v0.90.0 — writes ONLY the router's OWN config.json, never a vault path.
+  // Currently unreachable in practice (userId truthy implies gated implies
+  // this tool is refused before the handler runs — same mutual exclusion
+  // pinned for provision_vault in tests/audit-middleware-e2e.test.mjs), but
+  // present anyway so a future decoupling of gating from audit-logging finds
+  // a real label here instead of silently falling through to "(unknown)".
+  register_remote_vault: 'config.json (remoteVaults)',
 };
 
 /** Does this tool's own inputSchema declare `field`? */

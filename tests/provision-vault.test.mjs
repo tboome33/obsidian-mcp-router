@@ -121,17 +121,118 @@ describe('provision_vault tool', () => {
     assert.notEqual(restData.apiKey, 'SRC-SECRET', 'source secret not copied');
     assert.ok(!fs.existsSync(path.join(target, '.obsidian', 'workspace.json')), 'workspace.json excluded');
   });
+
+  test('name alone composes a path under vaultsRoot and provisions there (decision ergonomie-creation-liaison-vaults §1)', async () => {
+    const vaultsRootDir = path.join(workDir, 'name-only-roots');
+    fs.mkdirSync(vaultsRootDir, { recursive: true });
+    const cfgWithRoot = path.join(workDir, 'config-with-root.json');
+    fs.writeFileSync(cfgWithRoot, JSON.stringify({
+      referenceVault: ref, portRegistry: {}, portStart: 27600, vaultsRoot: vaultsRootDir,
+    }));
+    const res = await provisionVaultTool({ configPath: cfgWithRoot }, { name: 'Tartenpion' });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(path.resolve(res.path), path.join(vaultsRootDir, 'tartenpion'));
+    assert.ok(fs.existsSync(path.join(vaultsRootDir, 'tartenpion', '.env')));
+  });
+
+  test('two --name values folding to the SAME vaultsRoot folder slug: refused, not silently relabeled (regression, found in review)', async () => {
+    // slugifyForPath (the folder slug) folds both ' ' and '.' to '-', so "My
+    // Vault" and "My.Vault" compose the identical folder — while the
+    // vaultNames slug the existing collision guard checks (a bare
+    // .toLowerCase(), no folding) sees "my vault" vs "my.vault": genuinely
+    // different, so that guard alone cannot see this collision.
+    const vaultsRootDir = path.join(workDir, 'slug-fold-roots');
+    fs.mkdirSync(vaultsRootDir, { recursive: true });
+    const cfgWithRoot = path.join(workDir, 'config-slug-fold.json');
+    fs.writeFileSync(cfgWithRoot, JSON.stringify({
+      referenceVault: ref, portRegistry: {}, portStart: 27700, vaultsRoot: vaultsRootDir,
+    }));
+    const first = await provisionVaultTool({ configPath: cfgWithRoot }, { name: 'My Vault' });
+    assert.equal(first.ok, true, JSON.stringify(first));
+    assert.equal(path.resolve(first.path), path.join(vaultsRootDir, 'my-vault'));
+
+    await assert.rejects(
+      () => provisionVaultTool({ configPath: cfgWithRoot }, { name: 'My.Vault' }),
+      /already registered as vault/,
+    );
+
+    // Re-running with the SAME --name (case-insensitive) on the same folder
+    // is the legitimate case and must keep working.
+    const again = await provisionVaultTool({ configPath: cfgWithRoot }, { name: 'my vault' });
+    assert.equal(again.ok, true, JSON.stringify(again));
+  });
+});
+
+describe('provision_vault — bindToWorkspace (decision ergonomie-creation-liaison-vaults §1)', () => {
+  const okPlan = () => ({
+    path: 'C:/VAULTS/x', slug: 'x', name: 'x', source: { kind: 'reference' },
+    plugins: { profile: 'recommended', resolved: [] }, theme: null, wikiMode: { mode: 'personal' },
+    conventions: null, claudeWorkspace: false, warnings: [], steps: [], context: { knownRoots: ['C:/VAULTS'] },
+  });
+  const okResult = () => ({
+    code: 0, stdout: '', stderr: '',
+    result: { ok: true, kind: 'reference', abs: 'C:/VAULTS/x', slug: 'x', obsidianName: 'x', port: 1, insecurePort: 2, openUri: 'obsidian://x', opened: false, probe: null },
+  });
+  const registry = { resolveVault: () => ({ name: 'x' }), configPath: null };
+
+  test('bindToWorkspace: true derives linkWorkspace = process.cwd() ONLY for the real run, never for the dry-run/seal computation', async () => {
+    // The dry-run must see the SAME input plan_vault would have seen (no
+    // resolution) — see tests/plan-seal-integration.test.mjs for why: resolving
+    // it before the dry-run/seal made every plan_vault -> provision_vault call
+    // with bindToWorkspace:true refuse with a false plan_drift.
+    let seenAtPlan, seenAtApply;
+    await provisionVaultTool(
+      registry,
+      { path: 'C:/VAULTS/x', bindToWorkspace: true },
+      {
+        runDryRunPlan: async (input) => { seenAtPlan = input.linkWorkspace; return okPlan(); },
+        runProvision: async (input) => { seenAtApply = input.linkWorkspace; return okResult(); },
+      },
+    );
+    assert.equal(seenAtPlan, undefined, 'the dry-run must not see a resolved linkWorkspace');
+    assert.equal(seenAtApply, process.cwd(), 'only the real spawn resolves it');
+  });
+
+  test('bindToWorkspace: false (default) — linkWorkspace stays unset, never bound silently', async () => {
+    let seen = 'UNTOUCHED';
+    await provisionVaultTool(
+      registry,
+      { path: 'C:/VAULTS/x' },
+      { runDryRunPlan: async (input) => { seen = input.linkWorkspace; return okPlan(); }, runProvision: async () => okResult() },
+    );
+    assert.equal(seen, undefined);
+  });
+
+  test('an explicit linkWorkspace always wins over bindToWorkspace', async () => {
+    let seen;
+    await provisionVaultTool(
+      registry,
+      { path: 'C:/VAULTS/x', bindToWorkspace: true, linkWorkspace: '/explicit/ws' },
+      { runDryRunPlan: async (input) => { seen = input.linkWorkspace; return okPlan(); }, runProvision: async () => okResult() },
+    );
+    assert.equal(seen, '/explicit/ws');
+  });
 });
 
 describe('vault-wizard tools security gate', () => {
-  test('both tools are hidden when OBSIDIAN_ROUTER_USER_ID is set (gated)', () => {
+  test('all three tools are hidden when OBSIDIAN_ROUTER_USER_ID is set (gated)', () => {
     const { TOOLS, LOCAL_ONLY_TOOL_NAMES, computeExposedTools } = _internals;
-    assert.deepEqual([...LOCAL_ONLY_TOOL_NAMES].sort(), ['plan_vault', 'provision_vault']);
+    assert.deepEqual(
+      [...LOCAL_ONLY_TOOL_NAMES].sort(),
+      ['plan_vault', 'provision_vault', 'register_remote_vault'],
+    );
     const gated = computeExposedTools(TOOLS, { gated: true }).map((t) => t.name);
     assert.ok(!gated.includes('plan_vault'), 'plan_vault hidden when gated');
     assert.ok(!gated.includes('provision_vault'), 'provision_vault hidden when gated');
+    assert.ok(
+      !gated.includes('register_remote_vault'),
+      'register_remote_vault hidden when gated — MCPHub tenants share one central config.json',
+    );
     const open = computeExposedTools(TOOLS, { gated: false }).map((t) => t.name);
-    assert.ok(open.includes('plan_vault') && open.includes('provision_vault'), 'exposed when not gated');
+    assert.ok(
+      open.includes('plan_vault') && open.includes('provision_vault') && open.includes('register_remote_vault'),
+      'exposed when not gated',
+    );
   });
 
   test('both tools have a registered handler (drift guard)', () => {

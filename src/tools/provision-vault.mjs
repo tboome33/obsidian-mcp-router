@@ -26,8 +26,8 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   const runDryRunPlan = _deps.runDryRunPlan || defaultRunDryRunPlan;
   const runProvision = _deps.runProvision || defaultRunProvision;
   const input = { ...args, path: args.path || args.vaultPath };
-  if (!input.path) {
-    throw new Error('provision_vault requires `path` — the target vault location.');
+  if (!input.path && !input.name) {
+    throw new Error('provision_vault requires `path` (the target vault location) or `name` (composes a path under the configured vaultsRoot).');
   }
   // Validate the seal SHAPE before spawning the planner — a typo must surface
   // as a validation error, not silently behave like "no seal".
@@ -87,7 +87,28 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
   }
 
   // 2) Real run (nonce'd --json → the engine emits a spoof-proof result line).
-  const { code, stdout, stderr, result } = await runProvision(input, { configPath });
+  //
+  // bindToWorkspace (default false) is resolved to a real `linkWorkspace` HERE,
+  // on a COPY used only for this spawn — never earlier. `input` itself feeds
+  // BOTH the dry-run plan (whose wikiMode/steps depend on whether linkWorkspace
+  // is set — vault-plan.mjs's defaultWikiMode and its "bind workspace" step)
+  // AND, above, the C3 seal's `exec` options: mutating `input.linkWorkspace`
+  // before either of those would make provision_vault recompute a DIFFERENT
+  // plan/seal than plan_vault sealed for the identical `{bindToWorkspace:true}`
+  // request — plan_vault never performs this resolution (provisionExecOptions
+  // captures `bindToWorkspace` verbatim, as a boolean, precisely so the seal
+  // only ever has to compare that boolean). Found in review: resolving it
+  // earlier made every plan_vault→provision_vault call with bindToWorkspace:true
+  // refuse with a false plan_drift, because nothing in the environment had
+  // actually drifted — only this tool's own pre-seal mutation had.
+  //
+  // "Current workspace" is the same process.cwd() confirm_workspace_binding
+  // treats as the caller's workspace by default. An explicit `linkWorkspace`
+  // (an arbitrary path, already supported) always wins.
+  const execInput = args.bindToWorkspace === true && !input.linkWorkspace
+    ? { ...input, linkWorkspace: process.cwd() }
+    : input;
+  const { code, stdout, stderr, result } = await runProvision(execInput, { configPath });
 
   if (!result) {
     throw new Error(

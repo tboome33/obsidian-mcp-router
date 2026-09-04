@@ -59,7 +59,14 @@ import {
   registeredVaultPaths,
   resolveVaultBySlug,
   vaultSlug,
+  vaultsRootPath,
 } from '../src/helpers/vault-slug.mjs';
+// Filesystem-safe slug for a NEW vault's folder name, aliased against the many
+// local `slug` bindings already in this file (vaultSlug results, --attach
+// params) — see the vaultsRoot-composition block below for why this is a
+// deliberately DIFFERENT derivation from `buildProvisionPlan`'s vaultNames
+// slug (a bare lowercase of --name).
+import { slug as slugifyForPath } from '../src/helpers/filters/slug.mjs';
 import {
   DEFAULT_INSECURE_OFFSET,
   normalizePortEntry,
@@ -5790,12 +5797,74 @@ const wizardOpts = {
 };
 
 // Positional vault arg: skip every token consumed as a flag value.
-const vaultArg = args.find((a, i) => {
+let vaultArg = args.find((a, i) => {
   if (a.startsWith('--')) return false;
   if (consumedValueIdx.has(i)) return false;
   return true;
 });
-if (!vaultArg) fail('No vault path provided');
+
+// vaultsRoot composes a path from a NAME ALONE (Phase 1 item 1 of the
+// portee-ergonomie-refus roadmap; decision ergonomie-creation-liaison-vaults
+// §1, accepted 2026-09-04). `vaultsRoot` already gated WHERE a vault may be
+// created (knownVaultRoots, vault-plan.mjs) — nothing composed a path FROM
+// it, so `--name "Foo"` with no positional path used to fail below with "No
+// vault path provided" even when vaultsRoot was configured.
+//
+// `slugifyForPath` — NOT the vaultNames slug `buildProvisionPlan` computes a
+// few calls downstream (a bare `.toLowerCase()` of --name) — is deliberately
+// used here. The two are allowed to diverge: one is a DISPLAY name (Obsidian
+// itself tolerates spaces/accents), the other is a FOLDER name (which must
+// not carry either). Nothing needs them to match, only to both exist — the
+// resolved path is echoed back in plan_vault's preview and provision_vault's
+// result before anything is ever created, so a caller sees the actual folder
+// name before or as it happens.
+//
+// `vaultsRoot` itself missing on disk is deliberately NOT special-cased here:
+// `fs.mkdirSync(abs, { recursive: true })` inside setupVault() already
+// creates every missing intermediate directory, vaultsRoot included.
+if (!vaultArg) {
+  if (nameFlag) {
+    const cfgForRoot = loadConfigReadOnly();
+    const root = vaultsRootPath(cfgForRoot);
+    if (!root) {
+      fail(
+        'No vault path provided, and no `vaultsRoot` is configured in config.json to compose one from --name. ' +
+        'Pass a path explicitly, or set `vaultsRoot` in config.json.',
+      );
+    }
+    vaultArg = path.join(root, slugifyForPath(nameFlag));
+
+    // A FOLDER ALREADY AT THAT PATH, REGISTERED UNDER A DIFFERENT NAME, IS
+    // REFUSED — found in review. `slugifyForPath` (folder slug: char-run
+    // folding) and the vaultNames slug `buildProvisionPlan`/`setupVault`
+    // compute a few calls downstream (`wizard.name.toLowerCase()`, no
+    // folding) are two DIFFERENT normalizations of the same --name — by
+    // design, since one names a filesystem folder and the other a display
+    // name Obsidian itself lets carry spaces/accents. Left unchecked, two
+    // differently-punctuated --name values that happen to fold to the SAME
+    // folder slug (e.g. "My Vault" and "My.Vault" both → "my-vault") would
+    // silently fall through to the adopt-vs-create branch below under the
+    // SECOND call's --name — relabeling an already-registered vault with no
+    // warning that a different --name landed on its folder. The EXISTING
+    // slug-collision guard a few calls downstream (keyed on the vaultNames
+    // slug) cannot see this: it never learns the folder-slug collision
+    // happened, because the two calls' vaultNames slugs genuinely differ.
+    const already = registeredVaultPaths(cfgForRoot)
+      .find((vp) => path.resolve(vp) === path.resolve(vaultArg));
+    if (already) {
+      const existingName = vaultSlug(cfgForRoot, already);
+      if (existingName.toLowerCase() !== nameFlag.toLowerCase()) {
+        fail(
+          `--name "${nameFlag}" composes the folder ${vaultArg}, which is already registered as vault ` +
+          `"${existingName}". Pass --name "${existingName}" to re-run on that same vault, or choose a ` +
+          'different --name (or an explicit path) to create a distinct one.',
+        );
+      }
+    }
+  } else {
+    fail('No vault path provided');
+  }
+}
 
 // --dry-run [--json] — build the full provisioning plan WITHOUT mutating
 // anything and print it. Consumed by the wizard skill's pre-flight and by the
