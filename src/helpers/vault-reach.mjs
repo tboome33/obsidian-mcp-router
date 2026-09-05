@@ -87,6 +87,7 @@
 import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
+import { alsoLockedEntries } from './vault-slug.mjs';
 
 /**
  * The `confirmSecondaryWrite` schema property, shared BY IDENTITY across
@@ -207,6 +208,54 @@ export function alsoWriteTierFor(vaultName, registry) {
  */
 export function isPromotionOfLockedSecondary(vaultName, registry) {
   return alsoWriteTierFor(vaultName, registry) === 'locked';
+}
+
+/**
+ * The SAME question, asked of the config file as it is INSIDE the config
+ * lock — the binding record the writer has just re-read, and the file's own
+ * global `alsoLocked` list — rather than of the live registry.
+ *
+ * Both writers that can promote a secondary (`confirm_workspace_binding`,
+ * `lock_vault` with `persist`) asked `isPromotionOfLockedSecondary` of the
+ * live registry BEFORE taking the lock, then re-read the file inside it and
+ * rewrote the binding from that fresh copy — so a tier another process had
+ * recorded in between (a sibling session running `set_secondary_vault_mode`;
+ * under `--no-watch` the live copy never learns) was read fresh, filtered
+ * away as "no longer a secondary", and the vault came out primary. The
+ * preflight is kept for the message it gives early; this is the check that
+ * decides. Found by the Codex round on fd9e1cd — the same
+ * decide-outside-apply-inside shape the merge review had called a BLOCKER,
+ * one field over from where round 3 added the preflight.
+ *
+ * @param {string} vaultName
+ * @param {object|null} binding the workspace's binding as `readBinding(cfg, cwd)` returns it inside the lock
+ * @param {object} cfg the config as handed to the `updateConfigBindings` transform
+ * @returns {boolean}
+ */
+export function isPromotionOfLockedSecondaryOnDisk(vaultName, binding, cfg) {
+  return isPromotionOfLockedSecondary(vaultName, {
+    workspaceBinding: binding,
+    alsoLocked: alsoLockedEntries(cfg),
+    alsoWritable: [],
+  });
+}
+
+/**
+ * The error code carried by a promotion refusal, so that a caller which
+ * swallows every other failure of a best-effort config write (`lock_vault`'s
+ * `recordLockInBinding` returns `null` for "the config could not be written")
+ * can let THIS one out: a refused promotion is not a write that failed, it is
+ * a write that must not happen, and reporting it as "fix the config
+ * permissions" would send the user to repair a file that is fine.
+ */
+export const PROMOTION_REFUSED_CODE = 'ERR_PROMOTION_OF_LOCKED_SECONDARY';
+
+/**
+ * @param {string} message the tool's own sentence, naming the vault and the way out
+ * @returns {Error & { code: string }}
+ */
+export function lockedSecondaryPromotionError(message) {
+  return Object.assign(new Error(message), { code: PROMOTION_REFUSED_CODE });
 }
 
 /**

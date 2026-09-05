@@ -77,6 +77,21 @@ does not set them.
   `confirm_workspace_binding({ clear })` can no longer leave a session locked to a vault the
   workspace cannot reach (every call would then fail until `unlock_vaults`).
 - `build_wiki_graph` with a stringified `dryRun` (`"true"`) is a dry run, never a write.
+- The promotion refusal (a strict secondary cannot become the primary from the conversation) is
+  decided INSIDE the config lock, against the file, by both writers that can promote —
+  `confirm_workspace_binding` and `lock_vault --persist`. A tier a sibling session recorded after
+  this process started (unseen under `--no-watch`) passed the live-registry preflight and was then
+  dropped by the rewrite. `lock_vault` takes its in-memory lock back on that refusal, and writes
+  the `.env` hint only once the binding is recorded. (Codex review of the fd9e1cd lot.)
+- `set_secondary_vault_mode` decides on the file, never on this session's copy: a workspace another
+  session re-bound (or bound) since this one started is qualified, not refused, and the live
+  registry adopts what the file says; re-recording an unchanged mode on a hand-authored binding
+  with no `confirmedAt` no longer rewrites the config nor stamps a confirmation date.
+- `setup-vault --attach` and `--link-workspace` re-run on the same primary keep the write tiers
+  recorded on the binding's secondaries — they rebuilt the record without them.
+- `bind-workspace` skill — "make X read-only for this project" on a vault that is ALREADY a
+  secondary now has a path (Step 1 → the one question for that vault), and "only: X" in the
+  detect step accepts an existing secondary for the same purpose.
 
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 

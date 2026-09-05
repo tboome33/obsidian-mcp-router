@@ -145,35 +145,35 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     );
   }
 
-  // Checked against the LIVE binding first, for a message that names what this
-  // session actually sees — then again inside the lock, against the file.
+  // EVERY ACCEPTANCE OR REFUSAL IS DECIDED INSIDE THE CONFIG LOCK, against the
+  // file as it is — never against `registry.workspaceBinding`, which is what
+  // this process loaded (or last wrote) and which another session may have
+  // overtaken since: process A still holds `ref` as its primary while B has
+  // re-bound the workspace onto `notes` with `ref` as a secondary, and A's
+  // answer about `ref` must be recorded, not refused on A's stale copy. The
+  // first version asked the live copy first, "for a message that names what
+  // this session sees" — and refused on it. (Codex, round on fd9e1cd.) The
+  // live registry LEARNS from the file afterwards, below.
   const shown = safeForMessage(vault, 80);
-  const live = registry.workspaceBinding;
-  if (!live) {
-    throw new Error(
-      `set_secondary_vault_mode: this workspace has no binding, so "${shown}" is not a secondary of anything. `
-      + 'Bind the workspace first: confirm_workspace_binding({ vault: <primary>, also: [...] }).',
-    );
-  }
-  if (live.vault === vault) {
-    throw new Error(
-      `set_secondary_vault_mode: "${shown}" is this workspace's PRIMARY vault, which is always read-write. `
-      + 'Only a secondary (a vault in `also`) has a write tier.',
-    );
-  }
-
   const io = { readFile, writeFile };
   let previousMode = null;
   const next = updateConfigBindings(configPath, (cfg) => {
     const existing = readBinding(cfg, cwd);
     if (!existing) {
       throw new Error(
-        'set_secondary_vault_mode: this workspace\'s binding is no longer in the router config (another session '
-        + 'or a hand edit removed it). Re-confirm it with confirm_workspace_binding, then record the mode again.',
+        'set_secondary_vault_mode: this workspace has no binding in the router config'
+        + (registry.workspaceBinding
+          ? ' any more (another session or a hand edit removed it since this session started)'
+          : '')
+        + `, so "${shown}" is not a secondary of anything. `
+        + 'Bind the workspace first: confirm_workspace_binding({ vault: <primary>, also: [...] }).',
       );
     }
     if (existing.vault === vault) {
-      throw new Error(`set_secondary_vault_mode: "${shown}" is the workspace's PRIMARY vault, which is always read-write.`);
+      throw new Error(
+        `set_secondary_vault_mode: "${shown}" is this workspace's PRIMARY vault, which is always read-write. `
+        + 'Only a secondary (a vault in `also`) has a write tier.',
+      );
     }
     if (!existing.also.includes(vault)) {
       const secondaries = existing.also.map((n) => `"${safeForMessage(n, 60)}"`).join(', ') || '(none)';
@@ -183,19 +183,33 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
       );
     }
     previousMode = recordedMode(existing, vault);
+    // THE SAME ANSWER TWICE WRITES NOTHING — decided HERE, not left to
+    // `withBinding`'s identity rule. That rule compares NORMALISED records,
+    // and a hand-authored binding with no `confirmedAt` normalises to one
+    // carrying today's date, so re-recording its unchanged mode rewrote the
+    // file that holds every vault's API key and stamped a confirmation date
+    // nobody gave. (Codex, round on fd9e1cd.) `updateConfigBindings` reads
+    // the returned identity and leaves the file alone.
+    if (previousMode === mode) return cfg;
     const alsoLocked = existing.alsoLocked.filter((n) => n !== vault);
     const alsoWritable = existing.alsoWritable.filter((n) => n !== vault);
     if (mode === 'locked') alsoLocked.push(vault);
     if (mode === 'writable') alsoWritable.push(vault);
-    // `withBinding` returns the input object when nothing changed, and
-    // `updateConfigBindings` then writes nothing — re-recording the same
-    // mode does not rewrite the file that holds every vault's API key.
     return withBinding(cfg, cwd, { ...existing, alsoLocked, alsoWritable });
   }, io);
 
   // The live registry learns what the file now says — the gate reads
   // `registry.workspaceBinding` on every call, so the mode is in force at once.
-  registry.workspaceBinding = readBinding(next, cwd);
+  // AND THE DEFAULT VAULT WITH IT (tier 0 of the cascade): a binding adopted
+  // from the file may name another primary than the one this session loaded,
+  // and a registry whose binding says `notes` while unqualified calls still go
+  // to `ref` is the self-contradiction `lock_vault` had to fix in round 5.
+  const binding = readBinding(next, cwd);
+  registry.workspaceBinding = binding;
+  if (binding) {
+    registry.defaultVault = binding.vault;
+    registry.defaultVaultSource = { origin: 'binding', variable: null };
+  }
   refreshRegistryBindingHint(registry);
 
   // A GLOBAL list can outrank what was just recorded (locked anywhere wins).

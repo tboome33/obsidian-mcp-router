@@ -554,6 +554,29 @@ describe('--attach (CLI)', () => {
     assert.equal(entry.locked, false, 'a different primary: the old lock belonged to the old vault');
   });
 
+  test('re-attaching keeps the write TIER of a secondary that stays, and drops it with a secondary that leaves', () => {
+    // Phase 3 (portee-ergonomie-refus-roadmap): the tiers live on the binding
+    // record (`alsoLocked` / `alsoWritable`), written by set_secondary_vault_mode.
+    // Found by the Codex round on that lot: `--attach` rebuilt the record
+    // without them, so re-attaching silently reopened a strict read-only vault.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], alsoLocked: ['other'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    let res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.equal(res.status, 0, res.out);
+    let entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.deepEqual(entry.alsoLocked, ['other'], 'the secondary stayed, so its strict tier must too');
+
+    res = run(sc, ['--attach', 'other']);
+    assert.equal(res.status, 0, res.out);
+    entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'other');
+    assert.deepEqual(entry.alsoLocked, [], 'promoted to primary — a primary has no tier');
+  });
+
   test('tells the user the secondary is not auto-loaded', () => {
     const sc = makeScenario();
     const res = run(sc, ['--attach', 'myvault', '--also', 'other']);

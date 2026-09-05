@@ -47,12 +47,28 @@ import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
 import { registeredVaultPaths, vaultSlug } from '../helpers/vault-slug.mjs';
-import { isVaultReachable, isPromotionOfLockedSecondary } from '../helpers/vault-reach.mjs';
+import {
+  isVaultReachable,
+  isPromotionOfLockedSecondary,
+  isPromotionOfLockedSecondaryOnDisk,
+  lockedSecondaryPromotionError,
+} from '../helpers/vault-reach.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
 /** How the binding got there, recorded for the human who reads the config later. */
 const CONFIRMED_VIA = 'tool';
+
+/**
+ * The refusal both the preflight (live registry) and the in-lock check (the
+ * file) speak — ONE sentence, so the two cannot drift apart.
+ */
+const promotionRefusal = (primary) =>
+  `confirm_workspace_binding: "${safeForMessage(primary, 80)}" is an alsoLocked SECONDARY of this `
+  + 'workspace; binding the workspace to it as its primary would lift that hard read-only tier from '
+  + 'the conversation. Edit `alsoLocked` in config.json if this workspace is meant to maintain that '
+  + 'vault, or clear the binding first (confirm_workspace_binding({ clear: true })) and re-bind — '
+  + 'two explicit acts, not one.';
 
 /**
  * Record (or clear) this workspace's binding.
@@ -198,15 +214,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // promoted to PRIMARY from the conversation: `alsoWriteTierFor` returns
   // null for a primary, so this call was the one-step way past "no
   // exceptions" (decision portee-et-mode-ecriture-des-vaults §2; review
-  // round 3). Read against the LIVE binding, which this tool keeps current.
+  // round 3). Read against the LIVE binding here, for an early answer; the
+  // check that DECIDES is asked again of the file, inside the lock (below).
   if (isPromotionOfLockedSecondary(primary, registry)) {
-    throw new Error(
-      `confirm_workspace_binding: "${safeForMessage(primary, 80)}" is an alsoLocked SECONDARY of this `
-      + 'workspace; binding the workspace to it as its primary would lift that hard read-only tier from '
-      + 'the conversation. Edit `alsoLocked` in config.json if this workspace is meant to maintain that '
-      + 'vault, or clear the binding first (confirm_workspace_binding({ clear: true })) and re-bind — '
-      + 'two explicit acts, not one.',
-    );
+    throw lockedSecondaryPromotionError(promotionRefusal(primary));
   }
 
   // EVERY name is checked against the registry. This is the same rule the
@@ -297,6 +308,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   const next = updateConfigBindings(configPath, (cfg) => {
     assertBindable(cfg);
     const previous = readBinding(cfg, cwd);
+    // THE PROMOTION REFUSAL IS ASKED AGAIN, OF THE FILE. The preflight above
+    // answered from the live registry; between it and this lock a sibling
+    // session may have recorded `primary` as a strict secondary of this very
+    // workspace (`set_secondary_vault_mode`; under `--no-watch` the live copy
+    // never learns), and the `keep` filter below would then have read that
+    // fresh tier and dropped it as "no longer a secondary" — the bypass the
+    // preflight exists to stop, through the re-read meant to make the write
+    // safe. (Codex, round on fd9e1cd.)
+    if (isPromotionOfLockedSecondaryOnDisk(primary, previous, cfg)) {
+      throw lockedSecondaryPromotionError(promotionRefusal(primary));
+    }
     const locked = typeof args.locked === 'boolean'
       ? args.locked
       : Boolean(previous && previous.vault === primary && previous.locked);

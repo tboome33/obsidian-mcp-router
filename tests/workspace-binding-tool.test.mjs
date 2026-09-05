@@ -368,6 +368,34 @@ describe('confirm_workspace_binding — an alsoLocked SECONDARY cannot be promot
     const r = await confirmWorkspaceBinding(reg, { vault: 'work' }, seam);
     assert.equal(r.boundTo, 'work');
   });
+
+  test('the FILE decides: a tier a sibling session recorded since this process started refuses the promotion, INSIDE the lock', async () => {
+    // Codex, round on fd9e1cd. The live registry (this session's copy) knows
+    // no tier; the file — rewritten by another session's
+    // set_secondary_vault_mode, unseen under `--no-watch` — marks `work`
+    // strict. The preflight passed on the stale copy; the transform then read
+    // the fresh tier and filtered it away as "no longer a secondary".
+    const onDisk = {
+      ...ON_DISK(),
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'], alsoLocked: ['work'] } },
+    };
+    const { written, seam } = seams({ config: onDisk });
+    const reg = bound({ alsoLocked: [], workspaceBinding: { vault: 'notes', also: ['work'], locked: false, alsoLocked: [], alsoWritable: [] } });
+    await assert.rejects(confirmWorkspaceBinding(reg, { vault: 'work' }, seam), /alsoLocked SECONDARY/);
+    assert.equal(written.length, 0, 'refused inside the lock, before the binding was rewritten');
+    assert.equal(reg.workspaceBinding.vault, 'notes', 'and the live registry was not moved either');
+  });
+
+  test('the file\'s GLOBAL alsoLocked list is read inside the lock too', async () => {
+    const onDisk = {
+      ...ON_DISK(),
+      alsoLocked: ['work'],
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } },
+    };
+    const { written, seam } = seams({ config: onDisk });
+    await assert.rejects(confirmWorkspaceBinding(bound({ alsoLocked: [] }), { vault: 'work' }, seam), /alsoLocked SECONDARY/);
+    assert.equal(written.length, 0);
+  });
 });
 
 describe('confirm_workspace_binding — opening what is not open', () => {
@@ -510,6 +538,21 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     assert.equal(b.vault, 'third', 'the locked vault is the primary');
     assert.deepEqual(b.also, ['notes', 'work'], 'the previous primary first, then its secondaries');
     assert.equal(b.locked, true);
+  });
+
+  test('a strict tier the FILE records on the vault being locked onto refuses the promotion — the one error this best-effort writer lets out', async () => {
+    // Codex, round on fd9e1cd: `lockVault`'s preflight asks the live registry;
+    // this transform used to read the fresh tier and drop it with `keep`.
+    const config = {
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'], alsoLocked: ['work'] } },
+    };
+    const { written, seam } = io(config);
+    assert.throws(() => _internals.recordLockInBinding(registryOf(), CWD, 'work', seam), /alsoLocked SECONDARY/);
+    assert.equal(written.length, 0);
+    // The ordinary best-effort contract is untouched: a config that cannot be
+    // read is still `null` ("could not be written"), never a throw.
+    const unreadable = { readFile: () => { throw new Error('EACCES'); }, writeFile: () => {} };
+    assert.equal(_internals.recordLockInBinding(registryOf(), CWD, 'work', unreadable), null);
   });
 
   test('locking onto a vault that was merely a SECONDARY promotes it without duplicating it', async () => {

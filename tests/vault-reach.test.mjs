@@ -12,6 +12,7 @@ import path from 'node:path';
 
 import {
   isVaultReachable, alsoWriteTierFor, assertVaultWritable, vaultContainingPath, isPromotionOfLockedSecondary,
+  isPromotionOfLockedSecondaryOnDisk, lockedSecondaryPromotionError, PROMOTION_REFUSED_CODE,
 } from '../src/helpers/vault-reach.mjs';
 
 describe('isVaultReachable', () => {
@@ -199,6 +200,34 @@ describe('isPromotionOfLockedSecondary', () => {
     assert.equal(isPromotionOfLockedSecondary('other', reg), false, 'not a secondary of this binding');
     assert.equal(isPromotionOfLockedSecondary('ref', { ...reg, alsoLocked: [] }), false, 'soft tier may be promoted');
     assert.equal(isPromotionOfLockedSecondary('ref', { alsoLocked: ['ref'] }), false, 'no binding — nothing to promote');
+  });
+});
+
+describe('isPromotionOfLockedSecondaryOnDisk — the same question, asked of the FILE inside the config lock', () => {
+  // Codex, round on fd9e1cd: both promoting writers asked the live registry
+  // BEFORE the lock and rewrote the binding from the fresh file INSIDE it —
+  // so a tier recorded in between was read fresh and filtered away.
+  const cfg = (extra = {}) => ({ portRegistry: {}, ...extra });
+
+  test('a tier recorded ON THE BINDING in the file refuses, whatever the live registry believed', () => {
+    const binding = { vault: 'work', also: ['ref'], alsoLocked: ['ref'], alsoWritable: [] };
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('ref', binding, cfg()), true);
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('work', binding, cfg()), false, 'already the primary');
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('ref', { ...binding, alsoLocked: [] }, cfg()), false, 'soft tier may be promoted');
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('ref', null, cfg({ alsoLocked: ['ref'] })), false, 'no binding — nothing to promote');
+  });
+
+  test('the file\'s GLOBAL alsoLocked list counts too — locked anywhere wins, on disk as in memory', () => {
+    const binding = { vault: 'work', also: ['ref'], alsoLocked: [], alsoWritable: ['ref'] };
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('ref', binding, cfg({ alsoLocked: ['ref'] })), true);
+    assert.equal(isPromotionOfLockedSecondaryOnDisk('ref', binding, cfg()), false);
+  });
+
+  test('the refusal carries the code that lets a best-effort writer let it through', () => {
+    const err = lockedSecondaryPromotionError('nope');
+    assert.equal(err.code, PROMOTION_REFUSED_CODE);
+    assert.equal(err.message, 'nope');
+    assert.ok(err instanceof Error);
   });
 });
 

@@ -35,7 +35,24 @@ import {
   readBinding,
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
-import { isVaultReachable, isPromotionOfLockedSecondary } from '../helpers/vault-reach.mjs';
+import {
+  isVaultReachable,
+  isPromotionOfLockedSecondary,
+  isPromotionOfLockedSecondaryOnDisk,
+  lockedSecondaryPromotionError,
+  PROMOTION_REFUSED_CODE,
+} from '../helpers/vault-reach.mjs';
+
+/**
+ * The refusal both the preflight (live registry) and the in-lock check (the
+ * file) speak — ONE sentence, so the two cannot drift apart.
+ */
+const promotionRefusal = (vault) =>
+  `lock_vault: "${vault}" is an alsoLocked SECONDARY of this workspace, and persist:true would `
+  + 'record it as the workspace\'s PRIMARY — lifting that hard read-only tier from the conversation. '
+  + 'Lock without persist (the lock stays for this session only), edit `alsoLocked` in config.json '
+  + 'if this workspace is meant to maintain that vault, or clear the binding first.';
+
 /**
  * Lock the router to a single vault.
  *
@@ -89,18 +106,16 @@ export async function lockVault(registry, args = {}) {
   // does not touch the binding, S stays a locked secondary, and every write
   // routed to it is still refused by the gate.
   if (persist && isPromotionOfLockedSecondary(vault, registry)) {
-    throw new Error(
-      `lock_vault: "${vault}" is an alsoLocked SECONDARY of this workspace, and persist:true would `
-      + 'record it as the workspace\'s PRIMARY — lifting that hard read-only tier from the conversation. '
-      + 'Lock without persist (the lock stays for this session only), edit `alsoLocked` in config.json '
-      + 'if this workspace is meant to maintain that vault, or clear the binding first.',
-    );
+    throw lockedSecondaryPromotionError(promotionRefusal(vault));
   }
 
   // Apply the lock state BEFORE attempting persistence — even if the
   // persist write fails (refused below, or filesystem error), the
   // in-memory lock takes effect. The user can still re-run with persist
-  // pointing at a sensible directory.
+  // pointing at a sensible directory. What it was before is kept for the
+  // ONE refusal that must leave no half-state: the promotion check, asked
+  // again of the file inside the config lock (see below).
+  const before = { lockedVault: registry.lockedVault, lockSource: registry.lockSource };
   registry.lockedVault = vault;
   // Provenance: from here on the lock is this session's doing, whatever a
   // workspace file said at start-up (decision `liaison-workspace-vault-hors-depot`).
@@ -138,16 +153,33 @@ export async function lockVault(registry, args = {}) {
       );
     }
     envPath = path.join(cwd, '.env');
-    await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
-    hintWritten = true;
-    // AND the binding, since v0.90.0. Persisting a lock is an explicit act of
-    // the user saying "this workspace goes with this vault, permanently" —
-    // which is exactly a confirmation. Recording it means the lock survives in
-    // the user's OWN config rather than only in a file that travels with a
-    // clone; the dotenv line stays as the portable hint for the next machine.
-    // Best effort: a config this process cannot write must not undo a lock
-    // that is already in force and already persisted to the workspace file.
-    bindingRecorded = recordLockInBinding(registry, cwd, vault);
+    // THE BINDING FIRST, THE PORTABLE HINT SECOND. Persisting a lock is an
+    // explicit act of the user saying "this workspace goes with this vault,
+    // permanently" — which is exactly a confirmation, so since v0.90.0 it is
+    // recorded in the user's OWN config; the dotenv line stays as the portable
+    // hint for the next machine. Best effort: a config this process cannot
+    // write must not undo a lock that is already in force.
+    //
+    // The binding is also the half that can REFUSE: the promotion check above
+    // was asked of the live registry, and `recordLockInBinding` asks it again
+    // of the file, inside the config lock — a sibling session may have marked
+    // this vault a strict secondary of this workspace in between (under
+    // `--no-watch` the live copy never learns). The hint used to be written
+    // FIRST, which would have left `OBSIDIAN_ROUTER_LOCKED=<vault>` in the
+    // workspace file for a lock the config then refused to record. (Codex,
+    // round on fd9e1cd.)
+    try {
+      bindingRecorded = recordLockInBinding(registry, cwd, vault);
+    } catch (err) {
+      if (err?.code !== PROMOTION_REFUSED_CODE) throw err;
+      // The preflight promised "no half-state", and the stale path keeps that
+      // promise by hand: the in-memory lock applied above is taken back, so a
+      // refused persist:true does not degrade into a volatile lock the user
+      // did not ask for.
+      registry.lockedVault = before.lockedVault;
+      registry.lockSource = before.lockSource;
+      throw err;
+    }
     // A LOCK THAT WAS RECORDED IS THE BINDING'S LOCK, and its source says so.
     // Left as 'runtime', `confirm_workspace_binding({ clear: true })` — which
     // releases a lock by asking who imposed it — kept the session locked after
@@ -155,6 +187,8 @@ export async function lockVault(registry, args = {}) {
     // registered vaults are available again"; the next start then disagreed
     // with the session. Found in the sixth review, 2026-09-04.
     if (bindingRecorded) registry.lockSource = { origin: 'binding', variable: null };
+    await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
+    hintWritten = true;
   }
 
   // `persisted` MEANS "WILL SURVIVE A RESTART", and since v0.90.0 only the
@@ -441,6 +475,16 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
       // taken. That was the shape of the merge review's BLOCKER.
       const existing = readBinding(cfg, cwd);
       if (vault) {
+        // ASKED AGAIN, OF THE FILE. `lockVault`'s preflight asked
+        // `isPromotionOfLockedSecondary` of the live registry; between that
+        // answer and this lock a sibling session may have recorded `vault` as
+        // a strict secondary of this very workspace, and the `keep` filter
+        // below would have read that fresh tier and dropped it as "no longer
+        // a secondary" — the promotion the preflight exists to refuse, through
+        // the re-read meant to make the write safe. (Codex, round on fd9e1cd.)
+        if (isPromotionOfLockedSecondaryOnDisk(vault, existing, cfg)) {
+          throw lockedSecondaryPromotionError(promotionRefusal(vault));
+        }
         wrote = true;
         // The previous primary and its secondaries, minus the new primary.
         // `withBinding` drops the primary from `also` itself; the filter here
@@ -525,7 +569,13 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // twenty minutes, which is why it is written out here rather than left to
     // the shape of the code.
     return vault ? null : { vault: null, locked: false, also: [] };
-  } catch {
+  } catch (err) {
+    // A REFUSED PROMOTION IS NOT A WRITE THAT FAILED. Everything else this
+    // best-effort writer meets — a config it cannot read, a lock it cannot
+    // take — is `null`, "the config could not be written, fix it and retry";
+    // sending the user to fix permissions on a file that refused on purpose
+    // would be the wrong sentence. The code on the error is the difference.
+    if (err?.code === PROMOTION_REFUSED_CODE) throw err;
     return null;
   }
 }

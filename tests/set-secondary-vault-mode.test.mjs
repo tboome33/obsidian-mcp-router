@@ -165,6 +165,48 @@ describe('set_secondary_vault_mode — what it refuses', () => {
   });
 });
 
+describe('set_secondary_vault_mode — the FILE decides, never this session\'s copy (Codex, round on fd9e1cd)', () => {
+  test('live says `ref` is the PRIMARY, the file (another session re-bound the workspace) says secondary: recorded, and the live registry adopts the file', async () => {
+    const { written, seam } = seams({ config: onDisk({ vault: 'notes', also: ['ref'] }) });
+    const reg = registryOf({ defaultVault: 'ref', workspaceBinding: { vault: 'ref', also: [], locked: false, alsoLocked: [], alsoWritable: [] } });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(r.mode, 'locked');
+    assert.equal(written.length, 1);
+    assert.equal(reg.workspaceBinding.vault, 'notes', 'the live binding is what the file says now');
+    assert.equal(reg.defaultVault, 'notes', 'and so is the default vault — a registry must not contradict itself');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'binding', variable: null });
+    assert.equal(alsoWriteTierFor('ref', reg), 'locked');
+  });
+
+  test('live has NO binding, the file has one (bound by another session since this one started): recorded', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf({ workspaceBinding: null });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'writable' }, seam);
+    assert.equal(r.mode, 'writable');
+    assert.equal(written.length, 1);
+    assert.equal(reg.workspaceBinding.vault, 'notes');
+  });
+
+  test('live says secondary, the file says PRIMARY: refused on the file', async () => {
+    const { written, seam } = seams({ config: onDisk({ vault: 'ref', also: ['notes'] }) });
+    await assert.rejects(setSecondaryVaultMode(registryOf(), { vault: 'ref', mode: 'locked' }, seam), /PRIMARY/);
+    assert.equal(written.length, 0);
+  });
+
+  test('re-recording the SAME mode on a hand-authored binding with no confirmedAt writes nothing — and stamps no date', async () => {
+    // `withBinding`'s identity rule compares NORMALISED records, and a record
+    // without `confirmedAt` normalises to one carrying today's date — so the
+    // "unchanged" path used to rewrite the file and invent a confirmation.
+    const key = canonicalWorkspaceKey(CWD);
+    const config = { ...onDisk(null), workspaceBindings: { [key]: { vault: 'notes', also: ['ref', 'scratch'], alsoLocked: ['ref'], confirmedVia: 'tool' } } };
+    const { written, seam } = seams({ config });
+    const r = await setSecondaryVaultMode(registryOf(), { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(r.previousMode, 'locked');
+    assert.match(r.message, /unchanged/);
+    assert.equal(written.length, 0);
+  });
+});
+
 describe('set_secondary_vault_mode — the global lists still have the last word, and the result says so', () => {
   test('recording "writable" on a vault config.json locks globally: recorded, but effectiveMode is locked and overriddenBy names the list', async () => {
     const { seam } = seams();

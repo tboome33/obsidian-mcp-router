@@ -793,6 +793,35 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(reg.lockedVault, 'beta', 'a volatile lock does not touch the binding, so beta stays a locked secondary');
   });
 
+  test('lockVault persist:true — the FILE decides: a tier recorded there by another session refuses, rolls the in-memory lock back, and writes no .env', async () => {
+    // Codex, round on fd9e1cd. The live registry knows no tier (loaded before
+    // a sibling session ran set_secondary_vault_mode; `--no-watch`); the file
+    // does. The preflight passes on the stale copy, and the transform used to
+    // read the fresh tier and drop it with `keep` — promotion through the
+    // very re-read meant to make the write safe.
+    const cfgPath = path.join(tmpDir, 'stale-tier.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], alsoLocked: ['beta'], confirmedVia: 'tool', confirmedAt: '2026-09-05' } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const envPath = path.join(tmpDir, '.env');
+    const envBefore = await fs.readFile(envPath, 'utf8').catch(() => null);
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    await assert.rejects(lockVault(reg, { vault: 'beta', persist: true }), /alsoLocked SECONDARY/);
+    assert.equal(reg.lockedVault, null, 'the in-memory lock applied before persistence is taken back — no half-state');
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the config is byte-identical');
+    assert.equal(await fs.readFile(envPath, 'utf8').catch(() => null), envBefore, 'no OBSIDIAN_ROUTER_LOCKED hint for a lock that was refused');
+  });
+
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {
     const reg = makeRegistry();
     const result = await lockVault(reg, { vault: 'alpha' });

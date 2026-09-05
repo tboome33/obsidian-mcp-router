@@ -360,6 +360,12 @@ export function renderSkillsIndex(skills, {
    * with an ellipsis, and the header states that the `SKILL.md` is
    * authoritative — an abbreviated description must not read as a complete one.
    *
+   * A rung is a CEILING on the clipped length, not a guaranteed prefix: at
+   * 24 characters `Deterministic wizard tha` becomes `Deterministic wizard…`,
+   * and that is the intended trade — a whole word routes better than three
+   * letters of the next one. (Raised in the Codex round on fd9e1cd; kept as
+   * designed, since nothing downstream contracts the exact count.)
+   *
    * The clip length is a PARAMETER (`briefChars`, 80 by default), because the
    * planner walks it down as a ladder of its own — see `planOne`. With one
    * fixed clip, the 48th skill pushed the tightest real host (Windsurf,

@@ -1916,11 +1916,17 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
         // to the vault it is being moved away from. Read inside the lock.
         const previous = readBinding(cfg, workspacePath);
         const same = previous && previous.vault === vaultSlug;
+        // The write tier of each secondary that STAYS (Phase 3, per-workspace
+        // `alsoLocked`/`alsoWritable` on the binding) survives a re-link to the
+        // same primary — the secondaries do, so their modes must, or a re-run
+        // of `--link-workspace` silently reopens a strict read-only vault.
         return withBinding(cfg, workspacePath, {
           vault: vaultSlug,
           also: same ? previous.also : [],
           locked: Boolean(same && previous.locked),
           confirmedVia: 'link-workspace',
+          alsoLocked: same ? previous.alsoLocked : [],
+          alsoWritable: same ? previous.alsoWritable : [],
         });
       });
       bindingRecorded = true;
@@ -2191,11 +2197,18 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
       // the Codex review (2026-09-03). Attaching elsewhere drops it, since the
       // lock belonged to the previous primary.
       const previous = readBinding(cfg, ws);
+      const also = secondaries.map((s) => s.slug);
+      // Same rule as confirm_workspace_binding: the write tier of a secondary
+      // that stays in `also` survives the re-attach; one that leaves takes its
+      // tier with it; the previous primary, if it drops to `also`, starts soft.
+      const keep = (list) => (previous && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
       return withBinding(cfg, ws, {
         vault: primary.slug,
-        also: secondaries.map((s) => s.slug),
+        also,
         locked: Boolean(previous && previous.vault === primary.slug && previous.locked),
         confirmedVia: 'attach',
+        alsoLocked: keep(previous?.alsoLocked),
+        alsoWritable: keep(previous?.alsoWritable),
       });
     });
     const alsoNote = secondaries.length ? ` (+${secondaries.length} also)` : '';
