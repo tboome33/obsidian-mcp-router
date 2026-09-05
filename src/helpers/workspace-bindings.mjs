@@ -60,16 +60,41 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
-import { envKeyOrigin, ENV_ORIGINS } from './workspace-dotenv.mjs';
+import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
 /** The config key holding every binding. The seventh top-level key. */
 export const WORKSPACE_BINDINGS_KEY = 'workspaceBindings';
 
 /**
+ * The config key holding every REFUSED proposal, per workspace — decision
+ * `refus-d-une-proposition-de-liaison` (accepted 2026-09-04).
+ *
+ *   workspaceRefusals: { "<canonical workspace key>": { "<vault>": "<date>" } }
+ *
+ * A refusal names a VAULT, never "this workspace, for good": a global refusal
+ * would silence a DIFFERENT proposal arriving later (the file changes, names
+ * another vault, and the question is never asked) — the decision's trap 1,
+ * and the permanent-versus-transient distinction `CLOSING_REASONS` exists for.
+ *
+ * Kept OUT of the binding record on purpose. A workspace can hold refusals
+ * and no binding, and `normalizeBinding` rightly answers "no binding" to an
+ * entry without a `vault` — so refusals folded into that record would be
+ * dropped by `withoutBinding`, replaced by `withBinding`, and invisible to
+ * `unchangedBindings`, which compares through `normalizeBinding`. A sibling
+ * key with its own reader and its own two transforms has none of those
+ * cliffs.
+ */
+export const WORKSPACE_REFUSALS_KEY = 'workspaceRefusals';
+
+/**
  * How a workspace's dotenv hint relates to what the registry says. Returned by
  * `classifyBindingHint`, surfaced by `list_vaults`, and read by the
  * session-start briefing.
+ *
+ * SIX values. Three are silence (`none`, `confirmed`, `refused`) and three are
+ * signalled; `hintIsWorthSignalling` is the one place that partition is
+ * written, and a test proves every consumer handles every value.
  */
 export const HINT_STATUS = Object.freeze({
   /** No hint in the environment at all. */
@@ -82,6 +107,13 @@ export const HINT_STATUS = Object.freeze({
   UNKNOWN_VAULT: 'unknown-vault',
   /** A binding exists and the hint names a DIFFERENT registered vault. Signalled; the binding wins. */
   CONFLICTS: 'conflicts',
+  /**
+   * The hint names a vault this workspace REFUSED, in the user's own config.
+   * Silence: the question was asked and answered. A binding to that very
+   * vault outranks the refusal (`confirmed`, never this) — the refusal is
+   * then stale, and `withBinding` drops it.
+   */
+  REFUSED: 'refused',
 });
 
 /**
@@ -253,30 +285,150 @@ export function boundVaults(binding) {
  * false accusation against a file that is innocent, and it points them at the
  * wrong place to change it.
  *
- * @param {{ hint: string|null|undefined, binding: object|null, isRegistered: (name: string) => boolean, origin?: string|null }} opts
- * @returns {{ status: string, hint: string|null, boundTo: string|null, origin: string|null }}
+ * TWO REFUSALS, TWO ROLES (decision `refus-d-une-proposition-de-liaison`):
+ *
+ *   - `isRefused` answers from the user's own config — the AUTHORITY. A hint
+ *     naming a refused vault is `refused`: silence, the question was answered.
+ *   - `fileRefusal` is what the workspace file itself says was refused here
+ *     before (`OBSIDIAN_ROUTER_REFUSED_VAULT`) — a portable HINT. It changes
+ *     no status. It sets `previouslyRefused`, which the briefing turns into
+ *     "a refusal of this was recorded here before": the reinstall case, where
+ *     the config is gone and the file is the only memory left, so the
+ *     question is asked once more WITH that context rather than as if nothing
+ *     had happened. A cloned repository carrying that line can therefore
+ *     silence nobody; at worst it makes a question be asked, once.
+ *
+ * The binding in force outranks both (trap 5): a hint naming the vault the
+ * workspace is bound to is `confirmed` whatever any refusal says — otherwise
+ * the briefing would call refused the very binding it had just announced.
+ *
+ * @param {{
+ *   hint: string|null|undefined,
+ *   binding: object|null,
+ *   isRegistered: (name: string) => boolean,
+ *   origin?: string|null,
+ *   isRefused?: ((name: string) => boolean)|null,
+ *   fileRefusal?: string|null,
+ * }} opts
+ * @returns {{ status: string, hint: string|null, boundTo: string|null, origin: string|null, previouslyRefused: boolean }}
  */
-export function classifyBindingHint({ hint, binding, isRegistered, origin = null }) {
+export function classifyBindingHint({ hint, binding, isRegistered, origin = null, isRefused = null, fileRefusal = null }) {
   const boundTo = binding?.vault || null;
   const from = typeof origin === 'string' && origin ? origin : null;
   if (typeof hint !== 'string' || hint.trim() === '') {
-    return { status: HINT_STATUS.NONE, hint: null, boundTo, origin: null };
+    return { status: HINT_STATUS.NONE, hint: null, boundTo, origin: null, previouslyRefused: false };
   }
-  if (binding) {
-    return {
-      status: hint === binding.vault ? HINT_STATUS.CONFIRMED : HINT_STATUS.CONFLICTS,
-      hint,
-      boundTo,
-      origin: from,
-    };
-  }
+  // A FACT about the file, reported whatever the verdict: the consumers that
+  // phrase it only do so for a signalled status, and a reader of `list_vaults`
+  // is told what it means.
+  const previouslyRefused = typeof fileRefusal === 'string' && fileRefusal !== '' && fileRefusal === hint;
+  const verdict = (status) => ({ status, hint, boundTo, origin: from, previouslyRefused });
+  if (binding && hint === binding.vault) return verdict(HINT_STATUS.CONFIRMED);
+  if (typeof isRefused === 'function' && isRefused(hint) === true) return verdict(HINT_STATUS.REFUSED);
+  if (binding) return verdict(HINT_STATUS.CONFLICTS);
   const known = typeof isRegistered === 'function' && isRegistered(hint);
-  return {
-    status: known ? HINT_STATUS.UNCONFIRMED : HINT_STATUS.UNKNOWN_VAULT,
-    hint,
-    boundTo,
-    origin: from,
-  };
+  return verdict(known ? HINT_STATUS.UNCONFIRMED : HINT_STATUS.UNKNOWN_VAULT);
+}
+
+/**
+ * The vaults this workspace REFUSED, from the user's own config: vault name →
+ * the date it was refused, or null when a hand edit left none. A Map rather
+ * than an object, so a vault called `constructor` or `__proto__` is a name and
+ * nothing else.
+ *
+ * Every stored spelling that canonicalises to this workspace counts — the
+ * UNION, where `readBinding` has to pick one: two refusals cannot contradict
+ * each other, and dropping one because the file spells the directory twice
+ * would re-ask a question the user had answered.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @returns {Map<string, string|null>}
+ */
+export function readRefusals(config, cwd) {
+  const out = new Map();
+  const key = canonicalWorkspaceKey(cwd);
+  if (!key) return out;
+  const all = config?.[WORKSPACE_REFUSALS_KEY];
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return out;
+  const spellings = Object.keys(all).filter((stored) => canonicalWorkspaceKey(stored) === key).sort();
+  for (const spelling of spellings) {
+    const entry = all[spelling];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    for (const [name, at] of Object.entries(entry)) {
+      if (typeof name !== 'string' || name.trim() === '' || out.has(name)) continue;
+      out.set(name, typeof at === 'string' && at ? at : null);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every top-level entry of `workspaceRefusals` EXCEPT this workspace's, in a
+ * fresh object — the two transforms below rebuild this workspace's entry from
+ * the Map `readRefusals` returns, so the colliding spellings a hand edit can
+ * leave behind collapse into the canonical key on the first write.
+ */
+function refusalsOfOtherWorkspaces(base, key) {
+  const existing = base[WORKSPACE_REFUSALS_KEY];
+  const all = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
+  for (const stored of Object.keys(all)) {
+    if (canonicalWorkspaceKey(stored) === key) delete all[stored];
+  }
+  return all;
+}
+
+/**
+ * A NEW config recording that `cwd` refused the vault `vault`. Pure, and the
+ * same identity rule as `withBinding`: a vault already refused changes nothing
+ * and the input object comes back, so the writer skips the file.
+ *
+ * `Object.fromEntries` and not an object literal with a computed key: for a
+ * vault named `__proto__` the literal would set the prototype instead of a
+ * property, and the refusal would be written nowhere.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @param {string} vault
+ * @param {{ at?: string }} [opts]
+ * @returns {object}
+ */
+export function withRefusal(config, cwd, vault, { at } = {}) {
+  const key = canonicalWorkspaceKey(cwd);
+  const base = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+  if (!key || typeof vault !== 'string' || vault.trim() === '') return base;
+  const current = readRefusals(base, cwd);
+  if (current.has(vault)) return base;
+  current.set(vault, typeof at === 'string' && at ? at : new Date().toISOString().slice(0, 10));
+  const all = refusalsOfOtherWorkspaces(base, key);
+  all[key] = Object.fromEntries(current);
+  return { ...base, [WORKSPACE_REFUSALS_KEY]: all };
+}
+
+/**
+ * A NEW config with the refusal of `vault` by `cwd` removed — the way back
+ * after a refusal, and what binding that vault does on the way through. Pure;
+ * identity when there was nothing to remove. An emptied entry goes away
+ * rather than lingering as `{}`, and so does the top-level key.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @param {string} vault
+ * @returns {object}
+ */
+export function withoutRefusal(config, cwd, vault) {
+  const key = canonicalWorkspaceKey(cwd);
+  const base = config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+  if (!key || typeof vault !== 'string') return base;
+  const current = readRefusals(base, cwd);
+  if (!current.has(vault)) return base;
+  current.delete(vault);
+  const all = refusalsOfOtherWorkspaces(base, key);
+  if (current.size) all[key] = Object.fromEntries(current);
+  const next = { ...base };
+  if (Object.keys(all).length) next[WORKSPACE_REFUSALS_KEY] = all;
+  else delete next[WORKSPACE_REFUSALS_KEY];
+  return next;
 }
 
 /**
@@ -321,8 +473,18 @@ export function withBinding(config, cwd, binding) {
   // door away in `withMigrationState` (where it hit EVERY router start), and a
   // repair that reaches only its first site is the defect this repository
   // keeps rediscovering — so all three transforms now share the rule.
-  if (unchangedBindings(base, all)) return base;
-  return { ...base, [WORKSPACE_BINDINGS_KEY]: all };
+  let next = unchangedBindings(base, all) ? base : { ...base, [WORKSPACE_BINDINGS_KEY]: all };
+  // BINDING A VAULT ADOPTS IT. A refusal of the primary or of a secondary,
+  // recorded for this workspace, is stale the moment the user binds it — and
+  // it is dropped HERE, in the one transform every binding writer goes
+  // through (the tool, `--attach`, `--link-workspace`, `lock_vault --persist`),
+  // rather than in whichever caller remembered. Left in place it would come
+  // back to life the day the binding is cleared: a hint the user had since
+  // adopted would read `refused`, silently, instead of being proposed again.
+  // `withoutRefusal` is identity when there is nothing to drop, so the
+  // no-change rule above survives it.
+  for (const name of boundVaults(normalized)) next = withoutRefusal(next, cwd, name);
+  return next;
 }
 
 /**
@@ -596,6 +758,13 @@ export const IMPORT_REASON = Object.freeze({
   NOT_FROM_A_FILE: 'not-from-a-file',
   UNKNOWN_VAULT: 'unknown-vault',
   NEWER_THAN_UPGRADE: 'newer-than-upgrade',
+  /**
+   * The hint names a vault this workspace REFUSED — in the user's config, or
+   * in the very file that carries the hint (the reinstall case: the config is
+   * gone, the file still says "refused here before"). Never imported. NOT a
+   * closing reason: a refusal can be retracted, and the file can change.
+   */
+  REFUSED: 'refused',
 });
 
 /**
@@ -749,6 +918,7 @@ export function migrationDecision({
   lockHint = null,
   lockHintOrigin = null,
   lockMtimeMs = null,
+  isRefused = null,
 }) {
   const no = (reason) => ({
     import: false,
@@ -761,6 +931,14 @@ export function migrationDecision({
   if (alreadyImported) return no(IMPORT_REASON.ALREADY_CONSIDERED);
 
   const known = (name) => typeof isRegistered === 'function' && isRegistered(name);
+  // A REFUSED VAULT IS NEVER IMPORTED, whichever side recorded the refusal.
+  // The reinstall scenario of decision `refus-d-une-proposition-de-liaison`
+  // is exactly this function's blind spot without it: a fresh config opens
+  // the window NOW, every file on disk predates it, and a `.env` that says
+  // both "propose X" and "X was refused here" would have X imported as a
+  // confirmed binding at the very first start — the router deciding, in
+  // silence, the one question the file was asking it to pose.
+  const refused = (name) => typeof isRefused === 'function' && isRefused(name) === true;
   const fromFile = (value, origin) => typeof value === 'string' && value.trim() !== ''
     && origin === ENV_ORIGINS.WORKSPACE_DOTENV;
 
@@ -777,26 +955,33 @@ export function migrationDecision({
   // registering B later could never restore the isolation: a TRANSIENT
   // condition turned into a permanent verdict, which is exactly what
   // `CLOSING_REASONS` exists to prevent one level up.
+  if (fromFile(lockHint, lockHintOrigin) && refused(lockHint)) {
+    return no(IMPORT_REASON.REFUSED);
+  }
   if (fromFile(lockHint, lockHintOrigin) && !known(lockHint)) {
     return no(IMPORT_REASON.UNKNOWN_VAULT);
   }
 
   // A candidate is a value THIS project's file carried, naming a vault this
-  // machine has. Only a value the loader took from the file is migrated: a
-  // host value already works — it is an authority — so importing it would
-  // record a confirmation the user never gave, for no benefit at all.
+  // machine has and this workspace has not refused. Only a value the loader
+  // took from the file is migrated: a host value already works — it is an
+  // authority — so importing it would record a confirmation the user never
+  // gave, for no benefit at all.
   const candidate = (value, origin, mtimeMs, locked) => (
-    fromFile(value, origin) && known(value) ? { vault: value, mtimeMs, locked } : null
+    fromFile(value, origin) && known(value) && !refused(value) ? { vault: value, mtimeMs, locked } : null
   );
   const chosen = candidate(lockHint, lockHintOrigin, lockMtimeMs, true)
     || candidate(hint, hintOrigin, dotenvMtimeMs, false);
 
   if (!chosen) {
     // WHY IT WAS NOT A CANDIDATE, reported from the DEFAULT-vault hint, which
-    // is the one every existing caller and message is about. The three
-    // failures are distinguished in the order they are checked above.
+    // is the one every existing caller and message is about. The four
+    // failures are distinguished in the order they are checked above —
+    // `refused` before `unknown-vault`, because a refusal names a vault
+    // whether or not this machine has it, and it is the more useful answer.
     if (typeof hint !== 'string' || hint.trim() === '') return no(IMPORT_REASON.NO_HINT);
     if (hintOrigin !== ENV_ORIGINS.WORKSPACE_DOTENV) return no(IMPORT_REASON.NOT_FROM_A_FILE);
+    if (refused(hint)) return no(IMPORT_REASON.REFUSED);
     return no(IMPORT_REASON.UNKNOWN_VAULT);
   }
 
@@ -886,6 +1071,11 @@ export function withMigrationState(config, { at, cwd = null, recordImported = fa
  * It is here, beside the classifier, rather than in each tool: three call
  * sites already exist and the fourth is the one that would be forgotten.
  *
+ * It reads `registry.workspaceRefusals` too — the Map `readRefusals` returns,
+ * carried on the registry by `loadRegistry` and replaced by the tool after a
+ * refusal or a retraction — so a proposal the user has just refused falls
+ * silent in the same session, without a restart.
+ *
  * @param {object} registry the live registry, mutated in place
  * @returns {object|null} the hint as re-classified
  */
@@ -896,6 +1086,8 @@ export function refreshRegistryBindingHint(registry) {
     binding: registry.workspaceBinding || null,
     isRegistered: (name) => (registry.vaults || []).some((v) => v.name === name),
     origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    isRefused: (name) => registry.workspaceRefusals instanceof Map && registry.workspaceRefusals.has(name),
+    fileRefusal: dotenvRefusalHint(),
   });
   return registry.bindingHint;
 }
@@ -905,7 +1097,14 @@ export function refreshRegistryBindingHint(registry) {
  *
  * `none` and `confirmed` are silence: nothing was turned away, and repeating
  * "your file agrees with your registry" at every start would be the kind of
- * noise that trains people to stop reading start-up messages.
+ * noise that trains people to stop reading start-up messages. `refused` is
+ * silence too, and it is the whole point of that status: the user answered,
+ * and a question that keeps being asked after its answer is the sound that
+ * teaches people to stop listening.
+ *
+ * THE ONE PLACE the silent/signalled partition of `HINT_STATUS` is written.
+ * A test proves it is total — every value on exactly one side — so a seventh
+ * status cannot arrive unclassified.
  *
  * @param {{ status: string }} classified
  * @returns {boolean}

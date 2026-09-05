@@ -158,7 +158,21 @@ function attachmentLine(binding, isRegistered) {
  * is not there, in a file that is innocent, while the setting that actually
  * did it — their own MCP host declaration — goes unmentioned.
  *
- * @param {{ status: string, hint: string|null, origin: string|null }|null} hint
+ * EVERY signalled proposal names the way to say NO. Until the decision
+ * `refus-d-une-proposition-de-liaison` there was none: a proposal the user did
+ * not want was re-announced at every session, forever, because the router had
+ * nowhere to write that the question had been answered. `refused` is silence
+ * (`hintIsWorthSignalling`), so this line is the one place the refusal has to
+ * be offered — and it is offered for all three signalled statuses, not only
+ * for `unconfirmed`, because "the binding wins" and "not registered here" are
+ * both still a sentence repeated at every start.
+ *
+ * `previouslyRefused` is the reinstall case: the workspace file itself says
+ * this very proposal was refused here before, and the config that silenced it
+ * is gone. The question is asked once more, WITH that context — which is the
+ * whole reason the refusal is written into the file at all.
+ *
+ * @param {{ status: string, hint: string|null, origin: string|null, previouslyRefused?: boolean }|null} hint
  */
 function hintLine(hint) {
   if (!hint || !hintIsWorthSignalling(hint)) return null;
@@ -166,16 +180,22 @@ function hintLine(hint) {
   const who = hint.origin === 'workspace-dotenv'
     ? "This project's .env"
     : (hint.origin === 'host' ? 'The environment this router was started in' : 'The environment');
+  const before = hint.previouslyRefused === true
+    ? ' A refusal of it was recorded here before (the file carries OBSIDIAN_ROUTER_REFUSED_VAULT), '
+      + 'but your own router config has no answer for this workspace, so you are asked once more.'
+    : '';
+  const refuse = `confirm_workspace_binding({ refuse: ${name} })`;
   if (hint.status === HINT_STATUS.UNKNOWN_VAULT) {
     return `${who} proposes the vault ${name}, which is not registered on this machine; `
-      + 'it was not applied.';
+      + `it was not applied.${before} Refuse it with ${refuse} and this notice stops.`;
   }
   if (hint.status === HINT_STATUS.CONFLICTS) {
     return `${who} proposes ${name} instead; the binding above wins and the proposal was `
-      + 'not applied.';
+      + `not applied.${before} Refuse it with ${refuse} and this notice stops.`;
   }
-  return `${who} proposes the vault ${name}; it was not applied. Accept it with `
-    + `confirm_workspace_binding({ vault: ${name} }) if it is what you want.`;
+  return `${who} proposes the vault ${name}; it was not applied.${before} Accept it with `
+    + `confirm_workspace_binding({ vault: ${name} }) if it is what you want, or refuse it with `
+    + `${refuse} and you will not be asked again.`;
 }
 
 /**

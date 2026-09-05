@@ -162,6 +162,52 @@ a `remoteVaults` entry pointing at a local vault's own loopback port is a second
 files, and each name has one declarer. A `remoteVaults` entry also has no `path`, so
 `download_page_assets` into such a vault is never gated by containment. Both are on the roadmap.
 
+### A proposal to bind a workspace can now be refused
+
+Phase 5 of the `portee-ergonomie-refus-roadmap` (decision `refus-d-une-proposition-de-liaison`,
+accepted 2026-09-04). Until now a proposal carried by a project's `.env`
+(`OBSIDIAN_ROUTER_DEFAULT_VAULT`) could only be adopted or endured: the one you did not want was
+re-announced at every session, forever, because nothing could write down that the question had
+been answered. Nothing changes for a workspace that never refuses anything.
+
+#### Added
+
+- **`confirm_workspace_binding({ refuse: "<vault>" })`** records the NO on two sides with two
+  roles. In the user's own `config.json` (`workspaceRefusals`, per workspace, per vault name, dated)
+  it is the **authority**: the next `list_vaults` reports the hint as `"refused"`, the next
+  session's briefing says nothing, and the one-time import never binds that vault. In this
+  project's `.env`, as **`OBSIDIAN_ROUTER_REFUSED_VAULT`**, it is a portable **hint** — written
+  ONLY when that file itself carried the proposal being refused (a proposal from the host leaves the
+  project file untouched). The hint silences nobody: it survives an uninstall of the router and
+  makes the question be asked once more, with its context, after a reinstall — so a cloned
+  repository carrying it can at most make a colleague be asked once. The result says which halves
+  were written (`hintWritten`, `envPath`, `hintError`) and whether the current proposal fell silent
+  (`silencesCurrentHint`).
+- **`confirm_workspace_binding({ retract: "<vault>" })`** takes a refusal back. Binding a refused
+  vault drops its refusal too — in every binding writer, since it lives in the shared transform —
+  and the result names it in `refusalsDropped`.
+- **A sixth hint status, `"refused"`** (silence), and **`bindingHint.previouslyRefused`**: true
+  when the workspace file itself says this very proposal was refused here before while the user's
+  config has no answer any more (the reinstall case). The session-start briefing then says so and
+  asks once; and every signalled proposal — `unconfirmed`, `unknown-vault`, `conflicts` — now
+  names the call that says no.
+- **`list_vaults.workspaceRefusals`**: the vault names this workspace refused, always an array.
+- `OBSIDIAN_ROUTER_REFUSED_VAULT` joins the closed list of keys a workspace `.env` may set (seven
+  now), classified as a hint: it is read by nobody as an authority.
+
+#### Changed
+
+- A refusal names ONE vault, never the workspace: a later proposal naming a different vault is
+  signalled as usual (the decision's trap 1). The vault a workspace is bound to cannot be refused
+  (clear the binding first); a binding in force always reads `confirmed`, whatever a stale refusal
+  says (trap 5). The one-time import treats a refused vault — refused in the config, or in the
+  very file that carries the hint — as never importable, without closing the window, since a
+  refusal can be retracted.
+- The `.env` writer that `lock_vault --persist` and `set_auto_enrich_mode --persist` each carried a
+  private copy of now lives once in `src/helpers/dotenv-writer.mjs`; the third caller is the
+  refusal. `list_vaults` derives its hint-status validator from the classifier's own vocabulary
+  instead of a hand-copied list of five.
+
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,

@@ -48,8 +48,9 @@ import { normalizePathForCompare } from '../../src/helpers/vault-path-identity.m
  * file values fill only UNSET keys (process.env always wins) — under the
  * workspace policy of src/helpers/workspace-dotenv.mjs: exactly the keys the
  * router's own writers put in a workspace file (OBSIDIAN_ROUTER_DEFAULT_VAULT,
- * OBSIDIAN_ROUTER_LOCKED, OBSIDIAN_ROUTER_AUTO_ENRICH, VAULT_PATH,
- * MD_ALLOWED_PATHS, MD_SHARE_DIR) plus the enumerated OBSIDIAN_ROUTER_NO_*
+ * OBSIDIAN_ROUTER_LOCKED, OBSIDIAN_ROUTER_AUTO_ENRICH,
+ * OBSIDIAN_ROUTER_REFUSED_VAULT, VAULT_PATH, MD_ALLOWED_PATHS, MD_SHARE_DIR)
+ * plus the enumerated OBSIDIAN_ROUTER_NO_*
  * opt-outs. Anything else — a repository's GIT_CONFIG_GLOBAL, a NODE_OPTIONS,
  * a tool override, a host setting such as OBSIDIAN_ROUTER_CONFIG — is
  * ignored, and ignored SILENTLY here (see the function body; the router

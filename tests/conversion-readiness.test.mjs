@@ -1014,6 +1014,10 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'portCollisions',
       'vaults',
       'workspaceBinding',
+      // Phase 5 of portee-ergonomie-refus-roadmap (decision refus-d-une-
+      // proposition-de-liaison) — the vault names this workspace REFUSED, so
+      // a retraction has a list to pick from. Added here deliberately.
+      'workspaceRefusals',
     ]);
   });
 
@@ -1069,6 +1073,8 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     }, 'the binding is REBUILT: the values cross, the extra field does not');
     assert.deepEqual(out.bindingHint, {
       status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',
+      // Phase 5 — always present, false unless the registry says true.
+      previouslyRefused: false,
     }, 'the hint too, origin included');
   });
 

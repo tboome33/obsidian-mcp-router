@@ -32,8 +32,9 @@ import { applyWorkspaceDotenv } from '../src/helpers/workspace-dotenv.mjs';
  * - Reads .env from process.cwd() if present.
  * - Existing env vars (set by the parent) win — never overwrite.
  * - ONLY the keys the router's own writers put in a workspace .env are
- *   taken (OBSIDIAN_ROUTER_DEFAULT_VAULT, _LOCKED, _AUTO_ENRICH, VAULT_PATH,
- *   the MD_* sandbox, the enumerated OBSIDIAN_ROUTER_NO_* opt-outs). A
+ *   taken (OBSIDIAN_ROUTER_DEFAULT_VAULT, _LOCKED, _AUTO_ENRICH,
+ *   _REFUSED_VAULT, VAULT_PATH, the MD_* sandbox, the enumerated
+ *   OBSIDIAN_ROUTER_NO_* opt-outs). A
  *   workspace is often a cloned repository, and a repository's .env used to
  *   be able to set GIT_CONFIG_GLOBAL, NODE_OPTIONS, MARKITDOWN_PATH — or
  *   OBSIDIAN_ROUTER_CONFIG — in this process (v0.87.0). Anything else is
@@ -126,10 +127,20 @@ OPTIONS
 ENVIRONMENT
   OBSIDIAN_ROUTER_CONFIG          Same as --config.
   OBSIDIAN_ROUTER_NO_WATCH        Set to any value to disable hot-reload.
-  OBSIDIAN_ROUTER_DEFAULT_VAULT   Override the default vault for this
-                                  process (vault name from list_vaults).
-                                  Wins over VAULT_PATH auto-detection
-                                  and over config.defaultVault.
+  OBSIDIAN_ROUTER_DEFAULT_VAULT   From the host (shell, MCP declaration):
+                                  the default vault for this process (vault
+                                  name from list_vaults), winning over
+                                  VAULT_PATH and the defaultVault of
+                                  config.json. From a workspace .env: a
+                                  PROPOSAL, reported by list_vaults
+                                  (bindingHint) and never applied — the
+                                  workspace's confirmed binding decides.
+  OBSIDIAN_ROUTER_REFUSED_VAULT   Workspace .env only: a proposal the user
+                                  refused here before. Written by
+                                  confirm_workspace_binding({ refuse }),
+                                  beside the line it answers. A hint, never
+                                  an authority — the refusal that silences
+                                  the question lives in config.json.
   VAULT_PATH                      Auto-detection: if set to a path that
                                   matches one of the registered vaults'
                                   paths, that vault becomes the default.

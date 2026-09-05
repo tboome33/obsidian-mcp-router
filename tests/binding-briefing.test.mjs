@@ -41,6 +41,7 @@ import {
   classifyBindingHint,
   HINT_STATUS,
   WORKSPACE_BINDINGS_KEY,
+  WORKSPACE_REFUSALS_KEY,
   canonicalWorkspaceKey,
 } from '../src/helpers/workspace-bindings.mjs';
 import { registeredVaultNames, bindingIsActive } from '../hooks/_helpers/workspace-vault.mjs';
@@ -298,6 +299,41 @@ describe('composeBriefing — the hint, and WHO proposed it', () => {
     assert.match(out, /the binding above wins and the proposal was not applied/);
   });
 
+  test('REFUSED is silent — the user answered, and a question repeated after its answer is noise', () => {
+    // Decision refus-d-une-proposition-de-liaison: until this status the
+    // proposal the user did not want was re-announced at every session.
+    const out = brief({ binding: null, hint: hintOf(HINT_STATUS.REFUSED, 'workspace-dotenv') });
+    assert.doesNotMatch(out, /proposes/);
+    assert.doesNotMatch(out, /refuse/);
+  });
+
+  test('EVERY signalled status offers the way to say no, with the vault name', () => {
+    for (const status of [HINT_STATUS.UNCONFIRMED, HINT_STATUS.UNKNOWN_VAULT, HINT_STATUS.CONFLICTS]) {
+      const out = brief({
+        binding: status === HINT_STATUS.CONFLICTS ? bind('notes') : null,
+        hint: hintOf(status, 'workspace-dotenv'),
+      });
+      assert.match(out, /confirm_workspace_binding\(\{ refuse: "other" \}\)/, status);
+    }
+  });
+
+  test('previouslyRefused adds the reinstall context: refused here before, asked once more, and why', () => {
+    const out = brief({
+      binding: null,
+      hint: { ...hintOf(HINT_STATUS.UNCONFIRMED, 'workspace-dotenv'), previouslyRefused: true },
+    });
+    assert.match(out, /A refusal of it was recorded here before/);
+    assert.match(out, /OBSIDIAN_ROUTER_REFUSED_VAULT/);
+    assert.match(out, /your own router config has no answer for this workspace, so you are asked once more/);
+    assert.match(out, /confirm_workspace_binding\(\{ vault: "other" \}\)/, 'both answers are still offered');
+    assert.match(out, /confirm_workspace_binding\(\{ refuse: "other" \}\)/);
+    const plain = brief({ binding: null, hint: hintOf(HINT_STATUS.UNCONFIRMED, 'workspace-dotenv') });
+    assert.doesNotMatch(plain, /recorded here before/);
+    // Still ONE line: the context is folded into the hint sentence, not a
+    // line of its own — the budget is part of the specification.
+    assert.equal(out.split('\n').length, plain.split('\n').length);
+  });
+
   test('none and confirmed are SILENT — a file that agrees is not news', () => {
     for (const status of [HINT_STATUS.NONE, HINT_STATUS.CONFIRMED]) {
       const out = brief({ binding: bind('notes'), hint: hintOf(status, 'workspace-dotenv', 'notes') });
@@ -341,7 +377,7 @@ describe('composeBriefing — silence and budget', () => {
     // part of the specification, so it fails here rather than in a bill.
     const worst = composeBriefing({
       binding: bind('notes', ['work', 'archive'], true),
-      hint: { status: HINT_STATUS.CONFLICTS, hint: 'other', origin: 'workspace-dotenv', boundTo: 'notes' },
+      hint: { status: HINT_STATUS.CONFLICTS, hint: 'other', origin: 'workspace-dotenv', boundTo: 'notes', previouslyRefused: true },
       mode: 'off',
       modeRefused: { value: 'FULLAUTO', canonical: 'FullAuto' },
       registeredCount: 23,
@@ -554,6 +590,42 @@ describe('hooks/workspace-briefing.mjs', () => {
     });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /This project's \.env proposes the vault "work"; it was not applied/);
+  });
+
+  test('a proposal the user REFUSED (in the config) is not announced at all', () => {
+    const dir = fs.mkdtempSync(path.join(workDir, 'refused-'));
+    const r = runHook({
+      cwd: dir,
+      config: { ...CONFIG(), [WORKSPACE_REFUSALS_KEY]: { [canonicalWorkspaceKey(dir)]: { work: '2026-09-06' } } },
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, new RegExp(`^${BRIEFING_MARKER}$`, 'm'), 'the briefing itself still prints');
+    assert.doesNotMatch(r.stdout, /proposes/);
+  });
+
+  test('a refusal of ANOTHER vault silences nothing (trap 1) — end to end', () => {
+    const dir = fs.mkdtempSync(path.join(workDir, 'refused-other-'));
+    const r = runHook({
+      cwd: dir,
+      config: { ...CONFIG(), [WORKSPACE_REFUSALS_KEY]: { [canonicalWorkspaceKey(dir)]: { notes: '2026-09-06' } } },
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /proposes the vault "work"/);
+  });
+
+  test('THE REINSTALL CASE end to end: the file proposes AND says it was refused before, the config has no answer → asked once, with the context', () => {
+    const dir = fs.mkdtempSync(path.join(workDir, 'reinstall-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG(),
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=work\nOBSIDIAN_ROUTER_REFUSED_VAULT=work\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /This project's \.env proposes the vault "work"/);
+    assert.match(r.stdout, /A refusal of it was recorded here before/);
+    assert.match(r.stdout, /confirm_workspace_binding\(\{ refuse: "work" \}\)/);
   });
 
   test('the same value from the HOST is attributed to the host, not to the file', () => {

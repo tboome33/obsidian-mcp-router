@@ -20,6 +20,7 @@ import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { sharingRequirement } from '../helpers/vault-sharing.mjs';
+import { HINT_STATUS } from '../helpers/workspace-bindings.mjs';
 
 /**
  * The complete vocabulary of `*Source.origin` — the ONE authoritative list.
@@ -231,10 +232,14 @@ export async function listVaults(registry, sharedConfig = null) {
       alsoWritable: Array.isArray(b.alsoWritable) ? b.alsoWritable.filter(str) : [],
     };
   };
-  // The hint, same treatment. `status` must be one of the five the classifier
-  // can produce — anything else is a registry this build does not understand,
-  // and silence beats a status a caller would branch on wrongly.
-  const HINT_STATUSES = new Set(['none', 'confirmed', 'unconfirmed', 'unknown-vault', 'conflicts']);
+  // The hint, same treatment. `status` must be one the classifier can produce
+  // — anything else is a registry this build does not understand, and silence
+  // beats a status a caller would branch on wrongly. Derived from the
+  // classifier's own vocabulary rather than copied: the copy said "five" for
+  // a whole release after the sixth status (`refused`) arrived, and a status
+  // the classifier produces but this validator drops is a proposal the user
+  // has answered being reported as no proposal at all.
+  const HINT_STATUSES = new Set(Object.values(HINT_STATUS));
   // The four origins an ENVIRONMENT VARIABLE can have (ENV_ORIGINS), which is
   // a strict subset of SETTING_ORIGINS: the cascade tiers that read no
   // variable cannot be the origin of a proposal.
@@ -245,6 +250,12 @@ export async function listVaults(registry, sharedConfig = null) {
       status: h.status,
       hint: typeof h.hint === 'string' && h.hint ? h.hint : null,
       boundTo: typeof h.boundTo === 'string' && h.boundTo ? h.boundTo : null,
+      // Whether the workspace file ITSELF says this proposal was refused here
+      // before (OBSIDIAN_ROUTER_REFUSED_VAULT naming the same vault). A fact
+      // about the file, carried whatever the status; it means something only
+      // for a signalled one, where it is the reinstall case: the config that
+      // held the answer is gone, and the file is the last memory of it.
+      previouslyRefused: h.previouslyRefused === true,
       // WHERE the proposal came from. Constrained to the environment origins,
       // because a proposal only ever arrives through an environment variable:
       // an origin from elsewhere in SETTING_ORIGINS ("config", "binding", …)
@@ -335,9 +346,17 @@ export async function listVaults(registry, sharedConfig = null) {
     // What this workspace's dotenv file PROPOSED, and how it stands against
     // the binding. A SEPARATE field, never an origin: a hint that was not
     // applied is not the source of what replaced it. `status` is one of
-    // "none" | "confirmed" | "unconfirmed" | "unknown-vault" | "conflicts";
-    // the first two are silence, the last three are worth telling the user.
+    // HINT_STATUS's six values; `hintIsWorthSignalling` says which three are
+    // worth telling the user — the other three (none, confirmed, refused) are
+    // silence.
     bindingHint: hintOrNull(registry.bindingHint),
+    // WHICH vaults this workspace REFUSED, by name, from the user's own config
+    // (decision refus-d-une-proposition-de-liaison). Always an array, empty
+    // when nothing was refused — the list a retraction picks from. Names
+    // only: the dates sit in config.json for the human who reads it.
+    workspaceRefusals: registry.workspaceRefusals instanceof Map
+      ? [...registry.workspaceRefusals.keys()].filter((n) => typeof n === 'string' && n !== '')
+      : [],
     // What the ONE-TIME import created at THIS start-up, or null. Rebuilt and
     // validated like the two above: the report of an automatic decision is
     // exactly the field a caller must be able to trust.

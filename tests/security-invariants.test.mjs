@@ -418,8 +418,10 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       [
         'scripts/setup-vault.mjs:upsertEnvVarSync()',
         'scripts/setup-vault.mjs:writeEnvFile()',
-        'src/tools/auto-enrich.mjs:upsertDotenvVar()',
-        'src/tools/lock.mjs:upsertDotenvVar()',
+        // lock.mjs and auto-enrich.mjs each carried a fork of this writer;
+        // both moved here when confirm_workspace_binding({ refuse }) became
+        // the third caller (decision refus-d-une-proposition-de-liaison).
+        'src/helpers/dotenv-writer.mjs:upsertDotenvVar()',
       ],
       'the set of dotenv writer FUNCTIONS changed — either a writer moved out of reach of the unit finder, or a new one arrived',
     );

@@ -100,3 +100,25 @@ describe('listVaults — the binding\'s per-secondary write tiers reach the call
     assert.deepEqual(out.workspaceBinding.alsoWritable, []);
   });
 });
+
+describe('listVaults — the refusals of this workspace reach the caller (decision refus-d-une-proposition-de-liaison)', () => {
+  test('workspaceRefusals: the Map on the registry becomes an array of names; anything else is an empty array', async () => {
+    const withMap = await listVaults({
+      vaults: [], skipped: [], configPath: '/c',
+      workspaceRefusals: new Map([['work', '2026-09-06'], ['', null], ['archive', null]]),
+    });
+    assert.deepEqual(withMap.workspaceRefusals, ['work', 'archive']);
+    for (const junk of [undefined, null, ['work'], { work: '2026-09-06' }, 'work']) {
+      const out = await listVaults({ vaults: [], skipped: [], configPath: '/c', workspaceRefusals: junk });
+      assert.deepEqual(out.workspaceRefusals, [], JSON.stringify(junk));
+    }
+  });
+
+  test('bindingHint.previouslyRefused is a boolean, true only when the registry says so', async () => {
+    const hint = (extra) => ({ status: 'unconfirmed', hint: 'work', boundTo: null, origin: 'workspace-dotenv', ...extra });
+    for (const [value, expected] of [[true, true], [false, false], [undefined, false], ['true', false], [1, false]]) {
+      const out = await listVaults({ vaults: [], skipped: [], configPath: '/c', bindingHint: hint({ previouslyRefused: value }) });
+      assert.equal(out.bindingHint.previouslyRefused, expected, JSON.stringify(value));
+    }
+  });
+});

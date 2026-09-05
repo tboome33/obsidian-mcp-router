@@ -57,10 +57,10 @@ import {
   readRouterConfig,
   registeredVaultNames,
 } from './_helpers/workspace-vault.mjs';
-import { readBinding, classifyBindingHint } from '../src/helpers/workspace-bindings.mjs';
+import { readBinding, readRefusals, classifyBindingHint } from '../src/helpers/workspace-bindings.mjs';
 import { composeBriefing } from '../src/helpers/binding-briefing.mjs';
 import { canonicalizeMode } from '../src/helpers/auto-enrich-mode.mjs';
-import { envKeyOrigin, workspaceDotenvRefusals } from '../src/helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, workspaceDotenvRefusals, dotenvRefusalHint } from '../src/helpers/workspace-dotenv.mjs';
 
 // ---- Resolve cwd from stdin or env ----------------------------------
 // Read BEFORE the dotenv load: the file to read is this workspace's, and the
@@ -119,6 +119,13 @@ function build() {
   // the eleven readers of this setting exist to respect.
   const binding = readBinding(cfg, cwd);
 
+  // The refusals, through the same module — and the SAME inputs the server
+  // gives the classifier (registry.mjs), so the hook and `list_vaults` cannot
+  // disagree about whether a proposal is silent. A refusal recorded in the
+  // config is the user's answer; the file's own OBSIDIAN_ROUTER_REFUSED_VAULT
+  // line only adds "this was refused here before" when the config has no
+  // answer any more.
+  const refusals = readRefusals(cfg, cwd);
   const hint = classifyBindingHint({
     hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
     binding,
@@ -126,6 +133,8 @@ function build() {
     // slug from a path; `registeredVaultNames` stores them the same way.
     isRegistered: (name) => registered.has(String(name).trim().toLowerCase()),
     origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    isRefused: (name) => refusals.has(name),
+    fileRefusal: dotenvRefusalHint(),
   });
 
   // The mode this session STARTS in. A `set_auto_enrich_mode` call later in

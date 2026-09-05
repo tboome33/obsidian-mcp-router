@@ -12,13 +12,23 @@
  * here touches a real config file and NOTHING spawns a desktop application.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import * as lockModule from '../src/tools/lock.mjs';
-import { canonicalWorkspaceKey, readBinding, WORKSPACE_BINDINGS_KEY } from '../src/helpers/workspace-bindings.mjs';
+import {
+  canonicalWorkspaceKey,
+  readBinding,
+  readRefusals,
+  withRefusal,
+  HINT_STATUS,
+  WORKSPACE_BINDINGS_KEY,
+} from '../src/helpers/workspace-bindings.mjs';
+import { applyWorkspaceDotenv, _resetWorkspaceDotenvProvenance } from '../src/helpers/workspace-dotenv.mjs';
 
 const CWD = process.cwd();
 
@@ -878,5 +888,281 @@ describe('confirm_workspace_binding — clearing, the third state', () => {
     const r = await confirmWorkspaceBinding(registryOf(), { clear: true, vault: 'notes' }, seam);
     assert.equal(r.cleared, true);
     assert.equal(readBinding(written[0].config, CWD), null);
+  });
+});
+
+describe('confirm_workspace_binding — refuse: the user says NO (decision refus-d-une-proposition-de-liaison)', () => {
+  const refusalsOf = (config) => readRefusals(config, CWD);
+  const withDefaultVault = async (value, fn) => {
+    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
+    const prev = process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    if (value === null) delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    else process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = value;
+    try { return await fn(); } finally {
+      if (had) process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = prev; else delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    }
+  };
+
+  test('a refusal lands in the user\'s config under the canonical key, dated, and the LIVE registry carries it', async () => {
+    const { written, seam } = seams();
+    const reg = registryOf();
+    const r = await confirmWorkspaceBinding(reg, { refuse: 'work' }, seam);
+    assert.equal(r.refused, true);
+    assert.equal(r.vault, 'work');
+    assert.equal(r.alreadyRefused, false);
+    assert.equal(written.length, 1);
+    const stored = refusalsOf(written[0].config);
+    assert.deepEqual([...stored.keys()], ['work']);
+    assert.match(stored.get('work'), /^\d{4}-\d{2}-\d{2}$/, 'dated, for the human who reads the config later');
+    assert.deepEqual([...reg.workspaceRefusals.keys()], ['work'], 'the session sees its own answer without a restart');
+    assert.equal(r.hintWritten, false, 'no workspace file proposed anything here');
+    assert.match(r.message, /Nothing was written to this project's \.env/);
+    assert.match(r.message, /confirm_workspace_binding\(\{ retract: "work" \}\)/, 'the way back is named');
+  });
+
+  test('refusing the vault the CURRENT proposal names silences it in this session — list_vaults would say "refused"', async () => {
+    await withDefaultVault('work', async () => {
+      const { seam } = seams();
+      const reg = registryOf();
+      const r = await confirmWorkspaceBinding(reg, { refuse: 'work' }, seam);
+      assert.equal(r.silencesCurrentHint, true);
+      assert.equal(reg.bindingHint.status, HINT_STATUS.REFUSED);
+      assert.equal(reg.bindingHint.hint, 'work');
+    });
+  });
+
+  test('refusing some OTHER vault leaves the current proposal signalled (trap 1)', async () => {
+    await withDefaultVault('work', async () => {
+      const { seam } = seams();
+      const reg = registryOf();
+      const r = await confirmWorkspaceBinding(reg, { refuse: 'notes' }, seam);
+      assert.equal(r.silencesCurrentHint, false);
+      assert.equal(reg.bindingHint.status, HINT_STATUS.UNCONFIRMED);
+    });
+  });
+
+  test('`refuse` and `retract` are their own acts — never combined with vault, also, locked, clear, or each other', async () => {
+    const { written, seam } = seams();
+    for (const args of [
+      { refuse: 'work', vault: 'notes' },
+      { refuse: 'work', clear: true },
+      { refuse: 'work', retract: 'work' },
+      { retract: 'work', also: ['notes'] },
+      { refuse: 'work', locked: true },
+    ]) {
+      await assert.rejects(() => confirmWorkspaceBinding(registryOf(), args, seam), /cannot be combined with/, JSON.stringify(args));
+    }
+    assert.equal(written.length, 0, 'a refused call writes nothing');
+  });
+
+  test('the name is validated at the boundary — empty, multi-line, absurdly long or not a string: refused, nothing written', async () => {
+    const { written, seam } = seams();
+    for (const bad of ['', '   ', 'a\nb', 'a\rb', 'x'.repeat(256), 42, null]) {
+      await assert.rejects(
+        () => confirmWorkspaceBinding(registryOf(), { refuse: bad }, seam),
+        /must (name a vault|be a plain vault name)/,
+        JSON.stringify(bad),
+      );
+    }
+    assert.equal(written.length, 0);
+  });
+
+  test('the vault this workspace is BOUND to cannot be refused — primary or secondary, read from the file inside the lock', async () => {
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } } };
+    const { written, seam } = seams({ config });
+    for (const name of ['notes', 'work']) {
+      await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: name }, seam), /bound to "[^"]+", so that vault cannot be refused/, name);
+    }
+    assert.equal(written.length, 0);
+  });
+
+  test('refusing twice is honest — "already refused", and the config is NOT rewritten', async () => {
+    const config = withRefusal(ON_DISK(), CWD, 'work', { at: '2026-09-06' });
+    const { written, seam } = seams({ config });
+    const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, seam);
+    assert.equal(r.alreadyRefused, true);
+    assert.equal(written.length, 0, 'an identity transform must not touch the file that holds every API key');
+    assert.match(r.message, /already refused/);
+  });
+
+  test('an UNREGISTERED vault can be refused — that is how the unknown-vault notice stops', async () => {
+    const { written, seam } = seams();
+    const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'ghost' }, seam);
+    assert.equal(r.refused, true);
+    assert.equal(refusalsOf(written[0].config).has('ghost'), true);
+  });
+
+  test('the refused name is sanitised before it reaches the message', async () => {
+    const ESC = String.fromCharCode(27);
+    const { seam } = seams();
+    const r = await confirmWorkspaceBinding(registryOf(), { refuse: `${ESC}[2Jwork` }, seam);
+    assert.doesNotMatch(r.message, new RegExp(ESC));
+  });
+
+  test('retract takes a refusal back — in the file and in the live registry — and says so honestly when there was none', async () => {
+    const config = withRefusal(ON_DISK(), CWD, 'work', { at: '2026-09-06' });
+    const { written, seam } = seams({ config });
+    const reg = registryOf({ workspaceRefusals: new Map([['work', '2026-09-06']]) });
+    const r = await confirmWorkspaceBinding(reg, { retract: 'work' }, seam);
+    assert.equal(r.retracted, true);
+    assert.equal(refusalsOf(written[0].config).has('work'), false);
+    assert.equal(reg.workspaceRefusals.size, 0);
+    assert.match(r.message, /signalled again/);
+
+    const fresh = seams();
+    const none = await confirmWorkspaceBinding(registryOf(), { retract: 'work' }, fresh.seam);
+    assert.equal(none.retracted, false);
+    assert.equal(fresh.written.length, 0, 'nothing to remove, nothing rewritten');
+    assert.match(none.message, /No refusal/);
+  });
+
+  test('BINDING A REFUSED VAULT DROPS THE REFUSAL, in the file and live, and the answer says so', async () => {
+    const config = withRefusal(withRefusal(ON_DISK(), CWD, 'notes', { at: '2026-09-06' }), CWD, 'remote', { at: '2026-09-06' });
+    const { written, seam } = seams({ config });
+    const reg = registryOf({ workspaceRefusals: new Map([['notes', '2026-09-06'], ['remote', '2026-09-06']]) });
+    const r = await confirmWorkspaceBinding(reg, { vault: 'notes', open: false }, seam);
+    assert.deepEqual(r.refusalsDropped, ['notes']);
+    assert.match(r.message, /earlier refusal of "notes" recorded for this workspace is dropped/);
+    assert.deepEqual([...refusalsOf(written[0].config).keys()], ['remote'], 'the vault NOT bound stays refused');
+    assert.deepEqual([...reg.workspaceRefusals.keys()], ['remote'], 'the live registry agrees with the file');
+  });
+
+  test('binding a vault that was never refused reports an empty refusalsDropped and says nothing about it', async () => {
+    const { seam } = seams();
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'notes', open: false }, seam);
+    assert.deepEqual(r.refusalsDropped, []);
+    assert.doesNotMatch(r.message, /refusal/);
+  });
+});
+
+describe('confirm_workspace_binding — refuse: the PORTABLE half, written only into the file that spoke (trap 3)', () => {
+  // A real temporary workspace and the real loader, because the tool decides
+  // from the loader's own record (`envKeySourceFile`) which file — if any —
+  // carried the proposal it is answering.
+  const roots = [];
+  after(() => { for (const r of roots) fs.rmSync(r, { recursive: true, force: true }); });
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_REFUSED_VAULT'];
+
+  async function withCleanEnv(fn) {
+    const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
+    for (const k of KEYS) delete process.env[k];
+    _resetWorkspaceDotenvProvenance();
+    try { return await fn(); } finally {
+      for (const [k, had, value] of saved) { if (had) process.env[k] = value; else delete process.env[k]; }
+      _resetWorkspaceDotenvProvenance();
+    }
+  }
+  function workspace(dotenv) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'refuse-ws-'));
+    roots.push(dir);
+    if (dotenv !== null) fs.writeFileSync(path.join(dir, '.env'), dotenv, 'utf8');
+    return dir;
+  }
+  const load = (dir) => applyWorkspaceDotenv({ cwd: dir, env: process.env, warn: () => {} });
+
+  test('the .env that PROPOSED the vault receives the refusal line, beside the proposal', async () => {
+    await withCleanEnv(async () => {
+      const ws = workspace('# project\nOBSIDIAN_ROUTER_DEFAULT_VAULT=work\n');
+      load(ws);
+      const { written, seam } = seams();
+      const reg = registryOf();
+      const r = await confirmWorkspaceBinding(reg, { refuse: 'work' }, { ...seam, cwd: ws });
+      assert.equal(r.hintWritten, true);
+      assert.equal(r.envPath, path.join(ws, '.env'));
+      assert.equal(r.silencesCurrentHint, true);
+      const text = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+      assert.match(text, /^OBSIDIAN_ROUTER_DEFAULT_VAULT=work$/m, 'the proposal stays: the line answers it, it does not erase it');
+      assert.match(text, /^OBSIDIAN_ROUTER_REFUSED_VAULT=work$/m);
+      assert.match(text, /^# project$/m, 'the rest of the file is preserved');
+      assert.match(r.message, /portable half/);
+      assert.match(r.message, /may travel with the project/);
+      assert.equal(written.length, 1, 'and the config half was written first');
+    });
+  });
+
+  test('a name with whitespace is quoted like the proposal line, and reads back as the same name', async () => {
+    await withCleanEnv(async () => {
+      const ws = workspace('OBSIDIAN_ROUTER_DEFAULT_VAULT="my vault"\n');
+      load(ws);
+      assert.equal(process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT, 'my vault', 'the loader strips the quotes');
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'my vault' }, { ...seams().seam, cwd: ws });
+      assert.equal(r.hintWritten, true);
+      const text = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+      assert.match(text, /^OBSIDIAN_ROUTER_REFUSED_VAULT="my vault"$/m);
+      // Read back through the real loader, as the next start would.
+      delete process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+      _resetWorkspaceDotenvProvenance();
+      load(ws);
+      assert.equal(process.env.OBSIDIAN_ROUTER_REFUSED_VAULT, 'my vault');
+    });
+  });
+
+  test('a proposal from the HOST leaves the project file untouched — there is no line there to answer', async () => {
+    await withCleanEnv(async () => {
+      const ws = workspace('# nothing proposed here\n');
+      process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'work'; // the host's, so the loader records nothing for it
+      load(ws);
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, { ...seams().seam, cwd: ws });
+      assert.equal(r.refused, true);
+      assert.equal(r.hintWritten, false);
+      assert.equal(fs.readFileSync(path.join(ws, '.env'), 'utf8'), '# nothing proposed here\n');
+      assert.match(r.message, /did not propose "work"/);
+    });
+  });
+
+  test('a file that proposed ANOTHER vault is not written into either — the line stands beside the proposal it answers', async () => {
+    await withCleanEnv(async () => {
+      const ws = workspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\n');
+      load(ws);
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, { ...seams().seam, cwd: ws });
+      assert.equal(r.hintWritten, false);
+      assert.doesNotMatch(fs.readFileSync(path.join(ws, '.env'), 'utf8'), /REFUSED/);
+    });
+  });
+
+  test('the file must be THIS workspace\'s — a loader record from another directory is never written into', async () => {
+    await withCleanEnv(async () => {
+      const spoke = workspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n');
+      load(spoke);
+      const elsewhere = workspace(null);
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, { ...seams().seam, cwd: elsewhere });
+      assert.equal(r.refused, true);
+      assert.equal(r.hintWritten, false);
+      assert.doesNotMatch(fs.readFileSync(path.join(spoke, '.env'), 'utf8'), /REFUSED/);
+      assert.equal(fs.existsSync(path.join(elsewhere, '.env')), false, 'and no file is created where nothing spoke');
+    });
+  });
+
+  test('a file that cannot be written costs the reinstall memory, not the refusal', async () => {
+    await withCleanEnv(async () => {
+      const ws = workspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n');
+      load(ws);
+      const { written, seam } = seams();
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, {
+        ...seam, cwd: ws, upsertDotenv: async () => { throw new Error('EACCES: read-only checkout'); },
+      });
+      assert.equal(r.refused, true);
+      assert.equal(written.length, 1, 'the config half — the one that decides — was recorded');
+      assert.equal(r.hintWritten, false);
+      assert.match(r.hintError, /EACCES/);
+      assert.match(r.message, /could NOT be written/);
+      assert.match(r.message, /in force from your config alone/);
+    });
+  });
+
+  test('the value written goes through the shared dotenv validator — a name that would inject a line is refused before any write', async () => {
+    // Belt and braces: `refusalName` already rejects a line break at the
+    // boundary. This pins that the WRITER refuses too, so the boundary check
+    // is not the only thing standing between a hostile name and the file.
+    await withCleanEnv(async () => {
+      const ws = workspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n');
+      load(ws);
+      const { upsertDotenvVar } = await import('../src/helpers/dotenv-writer.mjs');
+      await assert.rejects(
+        () => upsertDotenvVar(path.join(ws, '.env'), 'OBSIDIAN_ROUTER_REFUSED_VAULT', 'work\nOBSIDIAN_ROUTER_READONLY=false'),
+        /refusing to persist/,
+      );
+      assert.doesNotMatch(fs.readFileSync(path.join(ws, '.env'), 'utf8'), /READONLY/);
+    });
   });
 });

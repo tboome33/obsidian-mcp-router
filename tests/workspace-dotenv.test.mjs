@@ -131,7 +131,7 @@ const HOST_ONLY_OPTOUTS = [
 ];
 
 describe('classifyWorkspaceDotenvKey — the policy', () => {
-  test('the six workspace keys and the enumerated opt-outs apply; the companion keys are skipped; everything else — the host settings included — is ignored', () => {
+  test('the seven workspace keys and the enumerated opt-outs apply; the companion keys are skipped; everything else — the host settings included — is ignored', () => {
     for (const k of [...WORKSPACE_DOTENV_KEYS, ...WORKSPACE_DOTENV_OPTOUTS]) assert.equal(classifyWorkspaceDotenvKey(k), 'apply', k);
     for (const k of WORKSPACE_DOTENV_COMPANION_KEYS) assert.equal(classifyWorkspaceDotenvKey(k), 'companion', k);
     for (const k of [
@@ -192,7 +192,7 @@ describe('applyWorkspaceDotenv — the loader', () => {
     assert.equal(warnings.length, 1, 'exactly one warning');
     assert.match(warnings[0], new RegExp(`${HOSTILE_IGNORED.length} key\\(s\\) ignored`));
     assert.match(warnings[0], /OBSIDIAN_ROUTER_CONFIG, OBSIDIAN_ROUTER_VIEW_AGENT_URL, .*OPENAI_API_KEY/);
-    assert.match(warnings[0], /OBSIDIAN_ROUTER_DEFAULT_VAULT, OBSIDIAN_ROUTER_LOCKED, OBSIDIAN_ROUTER_AUTO_ENRICH, VAULT_PATH, MD_ALLOWED_PATHS, MD_SHARE_DIR and the OBSIDIAN_ROUTER_NO_\* opt-outs/);
+    assert.match(warnings[0], /OBSIDIAN_ROUTER_DEFAULT_VAULT, OBSIDIAN_ROUTER_LOCKED, OBSIDIAN_ROUTER_AUTO_ENRICH, OBSIDIAN_ROUTER_REFUSED_VAULT, VAULT_PATH, MD_ALLOWED_PATHS, MD_SHARE_DIR and the OBSIDIAN_ROUTER_NO_\* opt-outs/);
     assert.doesNotMatch(warnings[0], /OBSIDIAN_API_KEY|OBSIDIAN_BASE_URL/, 'the companion keys the router wrote itself are not nagged about');
   });
 

@@ -47,6 +47,16 @@
  *     `setup-vault --link-workspace`;
  *   - OBSIDIAN_ROUTER_LOCKED — written by `lock_vault --persist`;
  *   - OBSIDIAN_ROUTER_AUTO_ENRICH — written by `auto-mode --persist`;
+ *   - OBSIDIAN_ROUTER_REFUSED_VAULT — written by
+ *     `confirm_workspace_binding({ refuse })`, and only into a file that
+ *     itself carried the proposal being refused (decision
+ *     `refus-d-une-proposition-de-liaison`, 2026-09-04). A HINT and never an
+ *     authority, like the DEFAULT_VAULT line it answers: it silences nobody.
+ *     The refusal that silences the question lives in the user's own config
+ *     (`workspaceRefusals`); this line is the portable half, which survives
+ *     an uninstall of the router and makes the question be asked once more,
+ *     with its context, after a reinstall. Read by `classifyBindingHint`
+ *     through `dotenvRefusalHint` below;
  *   - VAULT_PATH — written by setup-vault into every bootstrapped vault, read
  *     by the registry to make that vault the default when the cwd is the
  *     vault;
@@ -101,15 +111,41 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalizeMode } from './auto-enrich-mode.mjs';
 
+/**
+ * The portable half of a refused binding proposal — see the header. Named
+ * once here; the classifier, the tool that writes it and the briefing hook
+ * all import the name rather than spelling it.
+ */
+export const REFUSED_VAULT_KEY = 'OBSIDIAN_ROUTER_REFUSED_VAULT';
+
 /** The keys the router's own writers put into a workspace .env, and the two sandbox keys. */
 export const WORKSPACE_DOTENV_KEYS = Object.freeze([
   'OBSIDIAN_ROUTER_DEFAULT_VAULT',
   'OBSIDIAN_ROUTER_LOCKED',
   'OBSIDIAN_ROUTER_AUTO_ENRICH',
+  REFUSED_VAULT_KEY,
   'VAULT_PATH',
   'MD_ALLOWED_PATHS',
   'MD_SHARE_DIR',
 ]);
+
+/**
+ * The vault a workspace file says was refused here before, or null.
+ *
+ * Only ever CONTEXT for the classifier: a value here changes no verdict on
+ * its own — the registry's `workspaceRefusals` is what silences a proposal —
+ * it makes the briefing say "a refusal of this was recorded here before" when
+ * the same vault is proposed again with no answer in the registry (the
+ * reinstall case the decision was written for). Read from the environment
+ * like the proposal it answers, so the two agree on which file spoke.
+ *
+ * @param {object} [env]
+ * @returns {string|null}
+ */
+export function dotenvRefusalHint(env = process.env) {
+  const value = env?.[REFUSED_VAULT_KEY];
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
 
 /**
  * The two spellings of ONE setting — the conversion tools' read sandbox. A

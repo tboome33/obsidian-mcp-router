@@ -25,6 +25,20 @@
  *     did not name.
  *   - `clear: true` removes the binding and returns the workspace to ALL
  *     vaults — the third state, and the way to undo a confirmation.
+ *   - `refuse: "<vault>"` records that the user said NO to a proposal
+ *     (decision `refus-d-une-proposition-de-liaison`, accepted 2026-09-04).
+ *     Until then a proposal could only be adopted or endured: the one the
+ *     user did not want was re-announced at every session, forever, because
+ *     nothing could write down that the question had been answered. The
+ *     refusal is written on TWO sides with two roles — the user's own config,
+ *     where it is the AUTHORITY that silences the question; and, only when
+ *     this project's `.env` itself carried that very proposal, the same file,
+ *     as `OBSIDIAN_ROUTER_REFUSED_VAULT`: a portable HINT that survives an
+ *     uninstall of the router and makes the question be asked once more,
+ *     with its context, after a reinstall. A cloned repository carrying that
+ *     line can silence nobody; at worst it makes a question be asked, once.
+ *   - `retract: "<vault>"` takes a refusal back. Binding the vault does too,
+ *     through `withBinding` — adopting is the opposite of refusing.
  */
 
 import fs from 'node:fs';
@@ -32,6 +46,7 @@ import path from 'node:path';
 import { writeFileAtomicSync } from '../helpers/write-file-atomic.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import {
+  HINT_STATUS,
   withBinding,
   withoutBinding,
   readBinding,
@@ -42,7 +57,17 @@ import {
   refreshRegistryBindingHint,
   authoritativeDefaultVault,
   authoritativeLockedVault,
+  readRefusals,
+  withRefusal,
+  withoutRefusal,
 } from '../helpers/workspace-bindings.mjs';
+import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
+import {
+  envKeyOrigin,
+  envKeySourceFile,
+  ENV_ORIGINS,
+  REFUSED_VAULT_KEY,
+} from '../helpers/workspace-dotenv.mjs';
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
@@ -71,11 +96,36 @@ const promotionRefusal = (primary) =>
   + 'two explicit acts, not one.';
 
 /**
- * Record (or clear) this workspace's binding.
+ * The name a `refuse` or a `retract` is about, validated at the boundary: a
+ * plain vault name, nothing that could become a second `.env` line or a
+ * message that drives a terminal. NOT checked against the registry — a refusal
+ * may name a vault this machine does not have (`unknown-vault` is a signalled
+ * status, and refusing it is how the notice stops), so the registry has
+ * nothing to say about it.
+ */
+function refusalName(arg, verb) {
+  if (typeof arg !== 'string' || arg.trim() === '') {
+    throw new Error(
+      `confirm_workspace_binding: \`${verb}\` must name a vault — the one this workspace `
+      + (verb === 'refuse' ? 'should no longer be asked about.' : 'may be asked about again.'),
+    );
+  }
+  if (/[\r\n\0]/.test(arg) || arg.length > 255) {
+    throw new Error(
+      `confirm_workspace_binding: \`${verb}\` must be a plain vault name (no line break, at most 255 `
+      + `characters); got "${safeForMessage(arg, 60)}".`,
+    );
+  }
+  return arg;
+}
+
+/**
+ * Record (or clear) this workspace's binding — or refuse, or un-refuse, a
+ * proposal.
  *
  * @param {object} registry the live registry — used for the vault catalogue and configPath
- * @param {{ vault?: string, also?: string[], locked?: boolean, open?: boolean, clear?: boolean }} args
- * @param {{ cwd?: string, readFile?: Function, writeFile?: Function, launch?: Function }} [seams] test seams
+ * @param {{ vault?: string, also?: string[], locked?: boolean, open?: boolean, clear?: boolean, refuse?: string, retract?: string }} args
+ * @param {{ cwd?: string, readFile?: Function, writeFile?: Function, launch?: Function, upsertDotenv?: Function }} [seams] test seams
  */
 export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   const {
@@ -84,6 +134,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     writeFile = (p, c) => writeFileAtomicSync(p, c),
     launch = launchObsidianVault,
     ping = pingVault,
+    upsertDotenv = upsertDotenvVar,
   } = seams;
 
   const configPath = registry?.configPath;
@@ -112,6 +163,26 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     }
   };
 
+  // A REFUSAL IS ITS OWN ACT. `refuse` and `retract` answer a proposal; the
+  // other arguments write a binding. One call, one act — a call that both
+  // bound and refused would be writing two answers to one question, and
+  // whichever this function happened to apply first would win in silence.
+  const verbs = ['refuse', 'retract'].filter((k) => args[k] !== undefined);
+  if (verbs.length) {
+    const others = ['vault', 'also', 'locked', 'clear'].filter((k) => args[k] !== undefined);
+    if (verbs.length > 1 || others.length) {
+      throw new Error(
+        `confirm_workspace_binding: \`${verbs[0]}\` cannot be combined with `
+        + `${[...verbs.slice(1), ...others].map((k) => `\`${k}\``).join(', ')} — refusing a proposal and `
+        + 'binding a vault are two separate calls.',
+      );
+    }
+    const ctx = { registry, cwd, key, configPath, io, upsertDotenv };
+    return verbs[0] === 'refuse'
+      ? refuseProposal(ctx, refusalName(args.refuse, 'refuse'))
+      : retractRefusal(ctx, refusalName(args.retract, 'retract'));
+  }
+
   if (args.clear === true) {
     // READ INSIDE THE LOCK, and reported from there. `had` used to come from a
     // read taken before the lock, so the message could name a vault another
@@ -127,8 +198,12 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // The registry side closes it for `already-bound`; this closes it for the
     // act the user just performed, whatever the migration had decided.
     let had = null;
+    let refusals = null;
     updateConfigBindings(configPath, (cfg) => {
       had = readBinding(cfg, cwd);
+      // Untouched by a clear — read so the live copy below is the file's,
+      // not whatever this process loaded at start-up.
+      refusals = readRefusals(cfg, cwd);
       return withMigrationState(withoutBinding(cfg, cwd), { cwd, recordImported: true });
     }, io);
 
@@ -138,6 +213,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // there is nothing to reload it, so the sentence stayed false for the rest
     // of the session. Found by the Codex review, 2026-09-03.
     registry.workspaceBinding = null;
+    registry.workspaceRefusals = refusals;
     // A lock the BINDING imposed goes with it. One the host imposed does not —
     // and a host lock the binding had been SHADOWING comes back, whatever
     // vault it names. The first version kept the host lock only when it named
@@ -305,9 +381,14 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // over B — inside the very function that re-reads to prevent exactly that.
   // Found in the final review, 2026-09-03; the merge review had found the
   // identical shape in the migration.
+  let refusalsDropped = [];
   const next = updateConfigBindings(configPath, (cfg) => {
     assertBindable(cfg);
     const previous = readBinding(cfg, cwd);
+    // A refusal of any vault being bound is dropped by `withBinding` itself;
+    // read here, inside the lock, only so the answer can SAY so.
+    const refusedBefore = readRefusals(cfg, cwd);
+    refusalsDropped = requested.filter((n) => refusedBefore.has(n));
     // THE PROMOTION REFUSAL IS ASKED AGAIN, OF THE FILE. The preflight above
     // answered from the live registry; between it and this lock a sibling
     // session may have recorded `primary` as a strict secondary of this very
@@ -342,6 +423,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // not have to be restarted to see its own answer.
   const binding = readBinding(next, cwd);
   registry.workspaceBinding = binding;
+  registry.workspaceRefusals = readRefusals(next, cwd);
   registry.defaultVault = primary;
   registry.defaultVaultSource = { origin: 'binding', variable: null };
   // AND THE HINT IS RE-CLASSIFIED. It was computed once at start-up, so a hint
@@ -412,6 +494,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     also,
     locked: binding.locked,
     opened,
+    // The refusals this binding made stale, and dropped. Named so the user
+    // hears that an earlier "no" is gone, rather than discovering it the day
+    // the binding is cleared and the proposal comes back.
+    refusalsDropped,
     message:
       // Sanitised like every other config-derived name in this file: these
       // are the REGISTERED spellings, which come from `vaultNames` and from
@@ -427,7 +513,140 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       + (opened.length
         ? ` Opening ${opened.filter((o) => o.launched).length} of ${opened.length} vault(s) that were not running — Obsidian may take a moment, and a vault answers only once it is open.`
         : '')
+      + (refusalsDropped.length
+        ? ` The earlier refusal of ${refusalsDropped.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} recorded for this workspace is dropped — binding a vault is adopting it.`
+        : '')
       + ' The binding lives in your own router config, not in this project, so it does not travel with a clone.',
+  };
+}
+
+/**
+ * Record that this workspace refused a proposal — `confirm_workspace_binding
+ * ({ refuse })`. See the header for the two sides and their roles.
+ *
+ * THE CONFIG FIRST, THE FILE SECOND, and the file only when it SPOKE. The
+ * decision's trap 3: writing into a cloned repository's `.env` is accepting
+ * that a `git commit` carries the line to a colleague. Harmless by
+ * construction — it asks them a question, once — but it has to be a
+ * consequence the user is told about, not a discovery. The mitigation the
+ * decision asked to examine first is applied as the rule: the line is written
+ * only into the file the LOADER took this very proposal from, i.e. only when
+ * `OBSIDIAN_ROUTER_DEFAULT_VAULT` came from this workspace's `.env` and names
+ * the vault being refused. A proposal from the host leaves the project's file
+ * untouched: there is no line there to answer.
+ *
+ * @param {{ registry: object, cwd: string, key: string, configPath: string, io: object, upsertDotenv: Function }} ctx
+ * @param {string} name the vault being refused
+ */
+async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv }, name) {
+  const shown = safeForMessage(name, 80);
+  let alreadyRefused = false;
+  const next = updateConfigBindings(configPath, (cfg) => {
+    // A VAULT THIS WORKSPACE IS BOUND TO CANNOT BE REFUSED. The binding in
+    // force outranks a refusal anyway (the classifier says `confirmed`, trap
+    // 5), so recording one beside it would be writing two answers to the one
+    // question — and the day the binding is cleared, the stale "no" would
+    // silence a proposal the user had adopted in between. Asked of the FILE,
+    // inside the lock, like every decision that ends in a write here.
+    if (boundVaults(readBinding(cfg, cwd)).includes(name)) {
+      throw new Error(
+        `confirm_workspace_binding: this workspace is bound to "${shown}", so that vault cannot be `
+        + 'refused — a binding in force is the opposite answer. Clear the binding first '
+        + '(confirm_workspace_binding({ clear: true })), or bind the workspace elsewhere; then refuse.',
+      );
+    }
+    alreadyRefused = readRefusals(cfg, cwd).has(name);
+    return withRefusal(cfg, cwd, name);
+  }, io);
+
+  // The live registry hears the answer in the same session: the very next
+  // `list_vaults` reports the proposal as `refused`, and the briefing of the
+  // next session says nothing — under `--no-watch` as everywhere else.
+  registry.workspaceRefusals = readRefusals(next, cwd);
+  const hint = refreshRegistryBindingHint(registry);
+  const silencesCurrentHint = hint?.status === HINT_STATUS.REFUSED && hint.hint === name;
+
+  // THE PORTABLE HALF. The file is the loader's record, never a path composed
+  // from `cwd` — the same discipline as the one-time import — and it has to
+  // be THIS workspace's file, so a test seam pointing `cwd` elsewhere cannot
+  // make the tool write into the directory the process was started in.
+  const file = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT');
+  const fileProposedThisVault = Boolean(file)
+    && envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT') === ENV_ORIGINS.WORKSPACE_DOTENV
+    && process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT === name
+    && canonicalWorkspaceKey(path.dirname(file)) === key;
+  let hintWritten = false;
+  let hintError = null;
+  if (fileProposedThisVault) {
+    // Best effort: the refusal is in force from the config alone. A file the
+    // process cannot write costs the reinstall memory, nothing else, and the
+    // answer says which half is missing rather than failing a call that did
+    // record the user's decision.
+    //
+    // QUOTED WHEN THE NAME HAS WHITESPACE, exactly as `--attach` quotes the
+    // proposal line it stands beside: a `.env` is also sourced by shells, and
+    // the loader strips matched outer quotes on read, so the two lines are
+    // read back as the same name.
+    const literal = /\s/.test(name) ? `"${name}"` : name;
+    try {
+      await upsertDotenv(file, REFUSED_VAULT_KEY, literal);
+      hintWritten = true;
+    } catch (err) {
+      hintError = err?.message || String(err);
+    }
+  }
+
+  const where = hintWritten
+    ? `, and ${REFUSED_VAULT_KEY}=${shown} was written to ${file} beside the line that proposed it. That line is the portable half: it survives an uninstall of the router and makes the question be asked once more, with this context, after a reinstall — it silences nobody by itself, so a clone of this repository carrying it is at worst asked once. It may travel with the project if the file is committed.`
+    : fileProposedThisVault
+      ? `. ${REFUSED_VAULT_KEY} could NOT be written to ${file} (${safeForMessage(hintError || 'unknown error', 120)}): the refusal is in force from your config alone; only the memory that would survive a reinstall is missing.`
+      : `. Nothing was written to this project's .env: that file did not propose "${shown}" (the proposal came from the host, or there is none), and a refusal is written only beside the line it answers.`;
+  return {
+    refused: true,
+    vault: name,
+    workspace: key,
+    alreadyRefused,
+    silencesCurrentHint,
+    hintWritten,
+    envPath: hintWritten ? file : undefined,
+    hintError,
+    message:
+      (alreadyRefused
+        ? `"${shown}" was already refused for this workspace; nothing changed in your router config`
+        : `Refused: this workspace will not be asked about the vault "${shown}" again. Recorded in your own router config, which is the answer that silences the question`)
+      + where
+      + ` Bind it later with confirm_workspace_binding({ vault: "${shown}" }) — which drops the refusal — or take the refusal back with confirm_workspace_binding({ retract: "${shown}" }).`,
+  };
+}
+
+/**
+ * Take a refusal back — `confirm_workspace_binding({ retract })`. The config
+ * half only: a proposal naming that vault is signalled again, as any
+ * unanswered proposal is. The file's `OBSIDIAN_ROUTER_REFUSED_VAULT` line, if
+ * any, is left alone on purpose — it is a memory that a refusal happened, not
+ * an answer, and the briefing reads it as exactly that.
+ *
+ * @param {{ registry: object, cwd: string, key: string, configPath: string, io: object }} ctx
+ * @param {string} name
+ */
+async function retractRefusal({ registry, cwd, key, configPath, io }, name) {
+  const shown = safeForMessage(name, 80);
+  let had = false;
+  const next = updateConfigBindings(configPath, (cfg) => {
+    had = readRefusals(cfg, cwd).has(name);
+    return withoutRefusal(cfg, cwd, name);
+  }, io);
+  registry.workspaceRefusals = readRefusals(next, cwd);
+  refreshRegistryBindingHint(registry);
+  return {
+    retracted: had,
+    vault: name,
+    workspace: key,
+    message: had
+      ? `The refusal of "${shown}" is withdrawn: a proposal naming it is signalled again, like any proposal `
+        + 'this workspace has not answered. This project\'s .env is left as it is — an '
+        + `${REFUSED_VAULT_KEY} line there, if any, records that a refusal happened, and is read as that.`
+      : `No refusal of "${shown}" was recorded for this workspace; nothing changed.`,
   };
 }
 

@@ -25,10 +25,9 @@
  * separately.
  */
 
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
+import { upsertDotenvVar, removeDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
   updateConfigBindings,
   withBinding,
@@ -337,93 +336,10 @@ export async function unlockVaults(registry, args = {}) {
 // .env mutation helpers — line-oriented, preserve other lines verbatim
 // ---------------------------------------------------------------------------
 
-/**
- * Set or update KEY=VALUE in the .env file at envPath. Creates the file
- * if it doesn't exist. Preserves all other lines, including comments and
- * formatting.
- *
- * Duplicate-line policy: updates the FIRST occurrence and leaves later
- * duplicates as-is. This matches the convention of our .env loader at
- * bin/obsidian-mcp-router.mjs, which keeps the first occurrence
- * (line ~45: `if (!(key in process.env))` skips later assignments).
- * Updating the last occurrence instead would create a writer/reader
- * disagreement: the writer would update the bottom line but the loader
- * would still read the stale top one. CRLF line endings on Windows are
- * silently converted to LF on write — acceptable for .env files which
- * shells/Node parse equivalently with either ending.
- */
-async function upsertDotenvVar(envPath, key, value) {
-  // One shared definition — see helpers/dotenv-scalar.mjs. The guard first
-  // lived HERE and nowhere else, which is why the setup script kept writing
-  // injectable values for a whole review round.
-  assertDotenvScalar(value, key, envPath);
-  let lines = [];
-  try {
-    const raw = await fs.readFile(envPath, 'utf8');
-    lines = raw.split(/\r?\n/);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-    // File doesn't exist — start with an empty array
-  }
-
-  // Find the FIRST occurrence of `<key>=` (start-of-line, ignoring
-  // surrounding whitespace) and update it. If absent, append.
-  let firstIdx = -1;
-  const keyRegex = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  for (let i = 0; i < lines.length; i++) {
-    if (keyRegex.test(lines[i])) {
-      firstIdx = i;
-      break;
-    }
-  }
-  const newLine = `${key}=${value}`;
-  if (firstIdx === -1) {
-    // Append, preserving trailing newline behavior
-    if (lines.length > 0 && lines[lines.length - 1] !== '') {
-      lines.push(newLine);
-    } else if (lines.length > 0) {
-      // Last line is empty (file ended with \n) — insert before it
-      lines.splice(lines.length - 1, 0, newLine);
-    } else {
-      lines.push(newLine);
-    }
-  } else {
-    lines[firstIdx] = newLine;
-  }
-
-  // Always end with a newline
-  let out = lines.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  await fs.writeFile(envPath, out, 'utf8');
-}
-
-/**
- * Remove all `<key>=...` lines from the .env file. Returns true if at
- * least one line was removed, false if the file or the key was absent.
- */
-async function removeDotenvVar(envPath, key) {
-  let raw;
-  try {
-    raw = await fs.readFile(envPath, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return false;
-    throw err;
-  }
-
-  const lines = raw.split(/\r?\n/);
-  const keyRegex = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  const filtered = lines.filter((l) => !keyRegex.test(l));
-  if (filtered.length === lines.length) return false;
-
-  let out = filtered.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  await fs.writeFile(envPath, out, 'utf8');
-  return true;
-}
-
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// `upsertDotenvVar` / `removeDotenvVar` used to live here (and a fork of them
+// in auto-enrich.mjs). They moved to helpers/dotenv-writer.mjs the day a third
+// caller arrived — `confirm_workspace_binding({ refuse })` — and are still
+// re-exported through `_internals` below for the tests that reach them here.
 
 // Exported for tests only.
 /**

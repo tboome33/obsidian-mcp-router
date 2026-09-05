@@ -53,7 +53,7 @@ import {
   alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
-import { envKeyOrigin, envKeySourceFile } from './helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
   readBinding,
@@ -66,6 +66,7 @@ import {
   withBinding,
   updateConfigBindings,
   canonicalWorkspaceKey,
+  readRefusals,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -446,7 +447,11 @@ export async function loadRegistry({ configPath } = {}) {
   // did — described what this process asked for rather than what the file
   // ended up holding, and the `else` branch read the start-up copy, so a
   // binding another process confirmed in between was ignored all session.
-  const { imported: bindingImported, binding: workspaceBinding } = importDotenvHintOnce(config, cfgPath, vaults);
+  const {
+    imported: bindingImported,
+    binding: workspaceBinding,
+    refusals: workspaceRefusals,
+  } = importDotenvHintOnce(config, cfgPath, vaults);
   const bindingHint = classifyBindingHint({
     hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
     binding: workspaceBinding,
@@ -457,6 +462,10 @@ export async function loadRegistry({ configPath } = {}) {
     // go and edit — so a proposal from the host must not be reported as this
     // project's .env. The loader is the only thing that knows the difference.
     origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    // The two halves of a refusal (decision refus-d-une-proposition-de-
+    // liaison): the user's config decides, the workspace file only remembers.
+    isRefused: (name) => workspaceRefusals.has(name),
+    fileRefusal: dotenvRefusalHint(),
   });
   const resolvedDefault = resolveDefaultVaultWithSource({
     vaults,
@@ -499,6 +508,12 @@ export async function loadRegistry({ configPath } = {}) {
     // "all vaults" — never "no vault".
     workspaceBinding,
     bindingHint,
+    // WHICH vaults this workspace REFUSED, from the user's own config — the
+    // Map `readRefusals` returns (vault → date), read in the same locked pass
+    // as the binding. Carried so `refreshRegistryBindingHint` can re-classify
+    // in-session, and replaced by `confirm_workspace_binding` after a refusal
+    // or a retraction, exactly like `workspaceBinding` after a confirmation.
+    workspaceRefusals,
     // What the ONE-TIME import created during THIS start-up, or null. The
     // decision's requirement that the router "name everything it imported":
     // an import nobody is told about is a decision made on the user's behalf
@@ -588,7 +603,7 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
   const fallback = () => {
     let fresh = config;
     try { fresh = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8')); } catch { /* keep the copy we have */ }
-    return { imported: null, binding: readBinding(fresh, cwd) };
+    return { imported: null, binding: readBinding(fresh, cwd), refusals: readRefusals(fresh, cwd) };
   };
   try {
     const key = canonicalWorkspaceKey(cwd);
@@ -612,6 +627,15 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     const lockFile = envKeySourceFile('OBSIDIAN_ROUTER_LOCKED');
     const dotenvMtimeMs = mtimeOf(dotenvFile);
     const lockMtimeMs = mtimeOf(lockFile);
+    // The portable half of a refusal, from the same environment the hint came
+    // through. It is joined below with the config's half, which has to be read
+    // from the config the decision is taken against — the stale copy for the
+    // pre-check, the locked re-read for the decision — so it is not in `hints`.
+    const fileRefusal = dotenvRefusalHint();
+    const refusedIn = (cfg) => {
+      const recorded = readRefusals(cfg, cwd);
+      return (name) => name === fileRefusal || recorded.has(name);
+    };
     const hints = {
       hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
       hintOrigin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
@@ -635,6 +659,7 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
       binding: readBinding(config, cwd),
       openedAt: stale.openedAt,
       alreadyImported: stale.imported.has(key),
+      isRefused: refusedIn(config),
     });
     //
     // A verdict that CLOSES the window is only a reason to take the lock when
@@ -661,14 +686,17 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     const at = new Date().toISOString();
     let imported = null;
     let bindingInLock = null;
+    let refusalsInLock = null;
     const next = updateConfigBindings(cfgPath, (cfg) => {
       const fresh = readMigrationState(cfg);
       bindingInLock = readBinding(cfg, cwd);
+      refusalsInLock = readRefusals(cfg, cwd);
       const decision = migrationDecision({
         ...hints,
         binding: bindingInLock,
         openedAt: fresh.openedAt,
         alreadyImported: fresh.imported.has(key),
+        isRefused: refusedIn(cfg),
       });
       // The window is opened on the FIRST start of this version whatever the
       // decision was — otherwise every later workspace would look like it
@@ -700,8 +728,14 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
       );
     });
     // The binding as of the LOCKED re-read — fresher than the caller's copy,
-    // and the only one that has seen another process's concurrent write.
-    return { imported, binding: imported ? readBinding(next, cwd) : bindingInLock };
+    // and the only one that has seen another process's concurrent write. The
+    // refusals come from the same read: an import never binds a refused
+    // vault, so they are unchanged by the write.
+    return {
+      imported,
+      binding: imported ? readBinding(next, cwd) : bindingInLock,
+      refusals: refusalsInLock || readRefusals(next, cwd),
+    };
   } catch {
     // Every failure mode — unwritable config, a lock held by another process,
     // a malformed migration block — degrades to "not imported this time". The

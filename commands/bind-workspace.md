@@ -5,7 +5,7 @@ description: Deterministic wizard to bind the current workspace to a PRIMARY vau
 Invoke the `bind-workspace` skill.
 
 The skill handles, step by step, each with one prompt and one tool call:
-1. Where we are (`list_vaults`) — an existing primary is named, and the user chooses: change it, or go to the secondaries
+1. Where we are (`list_vaults`) — an existing primary is named, and the user chooses: change it, or go to the secondaries; a proposal the project's `.env` made and nobody answered is named too, and a "no" becomes `confirm_workspace_binding({ refuse })`
 2. The open vaults, listed — the user names the primary; if none is open, the user opens one and says when
 3. Detect again
 4. "Do you want to bind vault X as the primary vault of this workspace?"

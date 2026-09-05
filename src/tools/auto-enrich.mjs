@@ -29,10 +29,9 @@
  * tracks the mode and exposes it.
  */
 
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
+import { upsertDotenvVar, removeDotenvVar } from '../helpers/dotenv-writer.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import { VALID_MODES, canonicalizeMode } from '../helpers/auto-enrich-mode.mjs';
 
@@ -205,87 +204,14 @@ export async function setAutoEnrichMode(registry, args = {}) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Set or update KEY=VALUE in the .env file at envPath. Creates the file
- * if it doesn't exist. Updates the FIRST occurrence: the reader is
- * src/helpers/workspace-dotenv.mjs, whose "parent wins" rule means the first
- * line to APPLY is the one that takes effect — with one exception since
- * v0.89.0, a FullAuto line is refused and skipped, so a later line for the
- * same key can be the one that applies. Rewriting the first occurrence keeps
- * the file coherent for the next start-up either way: whichever line is first
- * afterwards carries the mode the user just chose.
- *
- * Forked-from-lock.mjs implementation kept in this file to avoid
- * cross-tool imports — they're each ~25 lines, the cost of duplication
- * is lower than the cost of a new shared module that two tools depend on.
- */
-async function upsertDotenvVar(envPath, key, value) {
-  // Shared definition — see helpers/dotenv-scalar.mjs. Today this writer's
-  // caller reduces its input to a fixed mode vocabulary before reaching here,
-  // so it is not exploitable; the guard is present anyway so the NEXT caller
-  // does not have to rediscover why it matters.
-  assertDotenvScalar(value, key, envPath);
-  let lines = [];
-  try {
-    const raw = await fs.readFile(envPath, 'utf8');
-    lines = raw.split(/\r?\n/);
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-  }
-
-  let firstIdx = -1;
-  const keyRegex = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  for (let i = 0; i < lines.length; i++) {
-    if (keyRegex.test(lines[i])) {
-      firstIdx = i;
-      break;
-    }
-  }
-  const newLine = `${key}=${value}`;
-  if (firstIdx === -1) {
-    if (lines.length > 0 && lines[lines.length - 1] !== '') {
-      lines.push(newLine);
-    } else if (lines.length > 0) {
-      lines.splice(lines.length - 1, 0, newLine);
-    } else {
-      lines.push(newLine);
-    }
-  } else {
-    lines[firstIdx] = newLine;
-  }
-
-  let out = lines.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  await fs.writeFile(envPath, out, 'utf8');
-}
-
-async function removeDotenvVar(envPath, key) {
-  let raw;
-  try {
-    raw = await fs.readFile(envPath, 'utf8');
-  } catch (err) {
-    if (err.code === 'ENOENT') return false;
-    throw err;
-  }
-
-  const lines = raw.split(/\r?\n/);
-  const keyRegex = new RegExp(`^\\s*${escapeRegex(key)}\\s*=`);
-  const filtered = lines.filter((l) => !keyRegex.test(l));
-  if (filtered.length === lines.length) return false;
-
-  let out = filtered.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  await fs.writeFile(envPath, out, 'utf8');
-  return true;
-}
-
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// The dotenv writer this file used to fork from lock.mjs ("the cost of
+// duplication is lower than the cost of a new shared module that two tools
+// depend on") lives in helpers/dotenv-writer.mjs since a THIRD tool needed it.
+// The upsert updates the FIRST occurrence: the reader's "parent wins" rule
+// means the first line to APPLY is the one that takes effect — with one
+// exception since v0.89.0, a FullAuto line is refused and skipped, so a later
+// line for the same key can be the one that applies. Rewriting the first
+// occurrence keeps the file coherent for the next start-up either way.
 
 // Exported for tests only. `canonicalizeMode` and `VALID_MODES` are re-exported
 // at the top of this file from helpers/auto-enrich-mode.mjs, where they now

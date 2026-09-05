@@ -43,7 +43,13 @@ import {
   readMigrationState,
   migrationDecision,
   withMigrationState,
+  WORKSPACE_REFUSALS_KEY,
+  readRefusals,
+  withRefusal,
+  withoutRefusal,
 } from '../src/helpers/workspace-bindings.mjs';
+import { composeBriefing } from '../src/helpers/binding-briefing.mjs';
+import { listVaults } from '../src/tools/list-vaults.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import {
   applyWorkspaceDotenv,
@@ -237,6 +243,133 @@ describe('classifyBindingHint — the hint is classified, never applied', () => 
   });
 });
 
+describe('classifyBindingHint — the SIXTH status: a proposal the user REFUSED (decision refus-d-une-proposition-de-liaison)', () => {
+  const binding = normalizeBinding({ vault: 'notes' });
+  const refusedWork = (name) => name === 'work';
+
+  test('a refusal in the user\'s config is SILENCE — whether or not the vault is registered', () => {
+    const known = classifyBindingHint({ hint: 'work', binding: null, isRegistered, isRefused: refusedWork });
+    assert.equal(known.status, HINT_STATUS.REFUSED);
+    assert.equal(hintIsWorthSignalling(known), false, 'the question was asked and answered');
+    // An unregistered vault can be refused too: that is how the unknown-vault
+    // notice stops, since there is nothing to register.
+    const unknown = classifyBindingHint({ hint: 'work', binding: null, isRegistered: () => false, isRefused: refusedWork });
+    assert.equal(unknown.status, HINT_STATUS.REFUSED);
+  });
+
+  test('TRAP 1 — a refusal names ONE vault: a proposal naming another is signalled as usual', () => {
+    const c = classifyBindingHint({ hint: 'archive', binding: null, isRegistered, isRefused: refusedWork });
+    assert.equal(c.status, HINT_STATUS.UNCONFIRMED);
+    assert.equal(hintIsWorthSignalling(c), true);
+  });
+
+  test('TRAP 5 — the binding in force wins: the bound vault reads "confirmed" even against a stale refusal', () => {
+    // The user refused X, then bound the workspace to X deliberately (by a
+    // path that does not drop refusals — a hand edit). The briefing must not
+    // call refused the binding it has just announced.
+    const c = classifyBindingHint({ hint: 'notes', binding, isRegistered, isRefused: (n) => n === 'notes' });
+    assert.equal(c.status, HINT_STATUS.CONFIRMED);
+  });
+
+  test('bound elsewhere, and the file proposes a vault the user refused: silence, not "conflicts"', () => {
+    const c = classifyBindingHint({ hint: 'work', binding, isRegistered, isRefused: refusedWork });
+    assert.equal(c.status, HINT_STATUS.REFUSED);
+    assert.equal(c.boundTo, 'notes');
+  });
+
+  test('the FILE\'s own refusal changes NO verdict — it only sets previouslyRefused', () => {
+    // The reinstall case: the config that held the answer is gone, the file
+    // still says "refused here before". Asked once more, with that context.
+    // A file that could silence a proposal is a cloned repository silencing
+    // one for everybody it reaches.
+    const c = classifyBindingHint({ hint: 'work', binding: null, isRegistered, fileRefusal: 'work' });
+    assert.equal(c.status, HINT_STATUS.UNCONFIRMED);
+    assert.equal(c.previouslyRefused, true);
+    assert.equal(hintIsWorthSignalling(c), true);
+    const other = classifyBindingHint({ hint: 'work', binding: null, isRegistered, fileRefusal: 'archive' });
+    assert.equal(other.previouslyRefused, false, 'a refusal of another vault is not context for this one');
+    for (const bad of [null, undefined, '', 42, {}]) {
+      const x = classifyBindingHint({ hint: 'work', binding: null, isRegistered, fileRefusal: bad });
+      assert.equal(x.previouslyRefused, false, JSON.stringify(bad));
+      assert.equal(x.status, HINT_STATUS.UNCONFIRMED);
+    }
+  });
+
+  test('previouslyRefused is a fact about the file, carried whatever the verdict; NONE carries false', () => {
+    assert.equal(classifyBindingHint({ hint: '', binding: null, isRegistered, fileRefusal: '' }).previouslyRefused, false);
+    const c = classifyBindingHint({ hint: 'work', binding: null, isRegistered, isRefused: refusedWork, fileRefusal: 'work' });
+    assert.equal(c.status, HINT_STATUS.REFUSED);
+    assert.equal(c.previouslyRefused, true);
+  });
+
+  test('a non-function isRefused means "nothing refused" — never a throw, never a silence', () => {
+    for (const bad of [null, undefined, true, 'work', {}, ['work']]) {
+      const c = classifyBindingHint({ hint: 'work', binding: null, isRegistered, isRefused: bad });
+      assert.equal(c.status, HINT_STATUS.UNCONFIRMED, JSON.stringify(bad));
+    }
+  });
+});
+
+describe('HINT_STATUS — the silent/signalled partition is TOTAL, and every consumer handles every value (roadmap item 25)', () => {
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const hintOf = (status) => ({ status, hint: 'work', boundTo: null, origin: 'workspace-dotenv', previouslyRefused: false });
+
+  test('six values, each on exactly one side of hintIsWorthSignalling', () => {
+    const values = Object.values(HINT_STATUS);
+    assert.equal(values.length, 6, 'a seventh status must be classified here, in the briefing and in list_vaults');
+    const silent = values.filter((s) => !hintIsWorthSignalling({ status: s })).sort();
+    const signalled = values.filter((s) => hintIsWorthSignalling({ status: s })).sort();
+    assert.deepEqual(silent, ['confirmed', 'none', 'refused']);
+    assert.deepEqual(signalled, ['conflicts', 'unconfirmed', 'unknown-vault']);
+  });
+
+  test('CONSUMER 1 — the briefing: a sentence for every signalled value, silence for every silent one', () => {
+    for (const status of Object.values(HINT_STATUS)) {
+      const out = composeBriefing({ binding: null, hint: hintOf(status), registeredCount: 1 });
+      assert.equal(/proposes/.test(out), hintIsWorthSignalling({ status }), status);
+      // And every signalled value offers the way to say no.
+      assert.equal(/refuse: "work"/.test(out), hintIsWorthSignalling({ status }), `${status}: the refusal is offered`);
+    }
+  });
+
+  test('CONSUMER 2 — list_vaults passes every value through, and drops only what the classifier cannot produce', async () => {
+    for (const status of Object.values(HINT_STATUS)) {
+      const out = await listVaults({ vaults: [], skipped: [], configPath: '/c', bindingHint: { ...hintOf(status), previouslyRefused: true } });
+      assert.equal(out.bindingHint?.status, status, status);
+      assert.equal(out.bindingHint.previouslyRefused, true, `${status}: the file's fact is carried`);
+    }
+    const junk = await listVaults({ vaults: [], skipped: [], configPath: '/c', bindingHint: { ...hintOf('declined') } });
+    assert.equal(junk.bindingHint, null, 'a status this build cannot produce is not reported half-true');
+  });
+
+  test('CONSUMER 3 — the list_vaults description names every value, and no other module hand-copies the vocabulary', () => {
+    const index = fs.readFileSync(path.join(ROOT, 'src', 'index.mjs'), 'utf8');
+    for (const status of Object.values(HINT_STATUS)) {
+      assert.ok(index.includes(`"${status}"`), `the list_vaults description must explain "${status}"`);
+    }
+    // The vocabulary lives in ONE module. A second enumeration of the literals
+    // anywhere in src/ or hooks/ is a copy that will say "five" after the
+    // sixth arrives — which is exactly what list-vaults.mjs did until it was
+    // made to derive its validator from HINT_STATUS.
+    const OWNER = 'src/helpers/workspace-bindings.mjs';
+    const PROSE_ONLY = new Set(['src/index.mjs']); // tool descriptions, checked above
+    const copies = [];
+    for (const dir of ['src', 'hooks']) {
+      for (const rel of fs.readdirSync(path.join(ROOT, dir), { recursive: true }).map(String)) {
+        if (!/[.]mjs$/.test(rel)) continue;
+        const file = `${dir}/${rel.replace(/\\/g, '/')}`;
+        if (file === OWNER || PROSE_ONLY.has(file)) continue;
+        const src = fs.readFileSync(path.join(ROOT, dir, rel), 'utf8');
+        const found = Object.values(HINT_STATUS).filter((s) => s !== 'none' && (src.includes(`'${s}'`) || src.includes(`"${s}"`)));
+        // A module may mention ONE status by literal in a message; enumerating
+        // three or more of them is a copy of the vocabulary.
+        if (found.length >= 3) copies.push(`${file}: ${found.join(', ')}`);
+      }
+    }
+    assert.deepEqual(copies, [], 'derive from HINT_STATUS instead of copying its values');
+  });
+});
+
 describe('withBinding / withoutBinding — pure transforms, so every rule is testable without a disk', () => {
   const cwd = process.cwd();
 
@@ -347,6 +480,95 @@ describe('withBinding / withoutBinding — pure transforms, so every rule is tes
   test('removing from a config that never had bindings is a no-op, not a crash', () => {
     assert.deepEqual(withoutBinding({ defaultVault: 'work' }, cwd), { defaultVault: 'work' });
     assert.doesNotThrow(() => withoutBinding(null, cwd));
+  });
+});
+
+describe('workspaceRefusals — read at the boundary, written by two pure transforms', () => {
+  const cwd = process.cwd();
+  const key = canonicalWorkspaceKey(cwd);
+  const refusedAt = (entries) => ({ [WORKSPACE_REFUSALS_KEY]: { [key]: entries } });
+
+  test('readRefusals validates at the boundary: junk in, an empty Map out', () => {
+    for (const cfg of [
+      null, undefined, {}, { [WORKSPACE_REFUSALS_KEY]: null }, { [WORKSPACE_REFUSALS_KEY]: [] },
+      { [WORKSPACE_REFUSALS_KEY]: 'work' }, refusedAt('work'), refusedAt(['work']), refusedAt(null),
+    ]) {
+      assert.equal(readRefusals(cfg, cwd).size, 0, JSON.stringify(cfg));
+    }
+    const m = readRefusals(refusedAt({ work: '2026-09-06', '': 'x', '  ': 'y', archive: 7 }), cwd);
+    assert.deepEqual([...m.entries()], [['work', '2026-09-06'], ['archive', null]],
+      'a name without a usable date is still refused; an empty name is not a name');
+    assert.equal(readRefusals(refusedAt({ work: '2026-09-06' }), '').size, 0, 'no usable cwd, nothing');
+  });
+
+  test('two spellings of the same directory are UNIONED — two refusals cannot contradict each other', () => {
+    const cfg = { [WORKSPACE_REFUSALS_KEY]: { [cwd + path.sep]: { work: '2026-09-06' }, [key]: { archive: '2026-09-07' } } };
+    assert.deepEqual([...readRefusals(cfg, cwd).keys()].sort(), ['archive', 'work']);
+  });
+
+  test('withRefusal records under the canonical key, dates it, and is IDENTITY when already refused', () => {
+    const a = withRefusal({}, cwd, 'work', { at: '2026-09-06' });
+    assert.deepEqual(a[WORKSPACE_REFUSALS_KEY], { [key]: { work: '2026-09-06' } });
+    assert.equal(withRefusal(a, cwd, 'work'), a, 'nothing to change → the input object, so the writer skips the file');
+    const b = withRefusal(a, cwd, 'archive', { at: '2026-09-07' });
+    assert.deepEqual(b[WORKSPACE_REFUSALS_KEY][key], { work: '2026-09-06', archive: '2026-09-07' });
+    assert.deepEqual(a[WORKSPACE_REFUSALS_KEY][key], { work: '2026-09-06' }, 'pure: the input is not mutated');
+    assert.match(withRefusal({}, cwd, 'work')[WORKSPACE_REFUSALS_KEY][key].work, /^\d{4}-\d{2}-\d{2}$/, 'dated today when no date is given');
+    for (const bad of ['', '  ', null, 42]) assert.equal(withRefusal(a, cwd, bad), a, JSON.stringify(bad));
+    assert.deepEqual(withRefusal(null, cwd, 'work')[WORKSPACE_REFUSALS_KEY], { [key]: { work: withRefusal(null, cwd, 'work')[WORKSPACE_REFUSALS_KEY][key].work } });
+  });
+
+  test('withRefusal collapses colliding spellings into the canonical key, keeping what they held', () => {
+    const cfg = { [WORKSPACE_REFUSALS_KEY]: { [cwd + path.sep]: { work: '2026-09-06' } } };
+    const next = withRefusal(cfg, cwd, 'archive', { at: '2026-09-07' });
+    assert.deepEqual(Object.keys(next[WORKSPACE_REFUSALS_KEY]), [key]);
+    assert.deepEqual(next[WORKSPACE_REFUSALS_KEY][key], { work: '2026-09-06', archive: '2026-09-07' });
+  });
+
+  test('a vault named like an Object property is a name, not a prototype — through a JSON round trip', () => {
+    for (const name of ['__proto__', 'constructor', 'hasOwnProperty']) {
+      const cfg = JSON.parse(JSON.stringify(withRefusal({}, cwd, name, { at: '2026-09-06' })));
+      assert.equal(readRefusals(cfg, cwd).has(name), true, name);
+      assert.equal(readRefusals(cfg, cwd).has('toString'), false, `${name}: no prototype walk`);
+      assert.equal(readRefusals(withoutRefusal(cfg, cwd, name), cwd).has(name), false, `${name}: removable too`);
+    }
+  });
+
+  test('withoutRefusal removes one refusal, drops an emptied entry AND an emptied key, and is identity otherwise', () => {
+    const two = withRefusal(withRefusal({ defaultVault: 'notes' }, cwd, 'work', { at: '2026-09-06' }), cwd, 'archive', { at: '2026-09-07' });
+    const one = withoutRefusal(two, cwd, 'work');
+    assert.deepEqual(one[WORKSPACE_REFUSALS_KEY][key], { archive: '2026-09-07' });
+    const none = withoutRefusal(one, cwd, 'archive');
+    assert.equal(Object.hasOwn(none, WORKSPACE_REFUSALS_KEY), false, 'nothing left, no key left');
+    assert.equal(none.defaultVault, 'notes', 'the rest of the config survives');
+    assert.equal(withoutRefusal(none, cwd, 'work'), none, 'identity when there is nothing to remove');
+    assert.equal(withoutRefusal(two, cwd, 'ghost'), two);
+    assert.equal(withoutRefusal(two, cwd, 42), two);
+    assert.doesNotThrow(() => withoutRefusal(null, cwd, 'work'));
+  });
+
+  test('other workspaces\' refusals are never touched', () => {
+    const other = path.join(cwd, 'elsewhere');
+    const cfg = withRefusal(withRefusal({}, other, 'work', { at: '2026-09-06' }), cwd, 'work', { at: '2026-09-06' });
+    const next = withoutRefusal(cfg, cwd, 'work');
+    assert.equal(readRefusals(next, other).has('work'), true);
+    assert.equal(readRefusals(next, cwd).has('work'), false);
+  });
+
+  test('BINDING A VAULT ADOPTS IT — withBinding drops the refusal of the primary and of each secondary, whoever writes the binding', () => {
+    const refused = ['notes', 'work', 'archive']
+      .reduce((cfg, n) => withRefusal(cfg, cwd, n, { at: '2026-09-06' }), {});
+    const bound = withBinding(refused, cwd, { vault: 'notes', also: ['work'] });
+    assert.deepEqual([...readRefusals(bound, cwd).keys()], ['archive'], 'the vault NOT bound stays refused');
+    // The no-change rule survives: the same binding again, nothing to drop →
+    // the input object.
+    assert.equal(withBinding(bound, cwd, { vault: 'notes', also: ['work'] }), bound);
+    // And a binding that changes nothing but has a refusal to drop IS a change.
+    const stale = withRefusal(bound, cwd, 'notes', { at: '2026-09-08' });
+    const again = withBinding(stale, cwd, { vault: 'notes', also: ['work'] });
+    assert.notEqual(again, stale);
+    assert.equal(readRefusals(again, cwd).has('notes'), false);
+    assert.equal(readBinding(again, cwd).vault, 'notes');
   });
 });
 
@@ -818,6 +1040,36 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
     assert.equal(decide({ openedAt: 'not a date' }).reason, IMPORT_REASON.IMPORTED);
   });
 
+  test('A REFUSED VAULT IS NEVER IMPORTED — and the window stays open, since a refusal can be retracted', () => {
+    // Decision refus-d-une-proposition-de-liaison. The reinstall scenario is
+    // this function's blind spot without it: a fresh config opens the window
+    // NOW, every file on disk predates it, so a `.env` saying both "propose
+    // notes" and "notes was refused here" would have `notes` imported as a
+    // confirmed binding at the very first start.
+    const r = decide({ isRefused: (n) => n === 'notes' });
+    assert.deepEqual(r, { import: false, vault: null, locked: false, reason: IMPORT_REASON.REFUSED, record: false });
+    // `refused` is reported before `unknown-vault`: a refusal names a vault
+    // whether or not this machine has it, and it is the more useful answer.
+    assert.equal(decide({ hint: 'ghost', isRefused: (n) => n === 'ghost' }).reason, IMPORT_REASON.REFUSED);
+    // A refusal of ANOTHER vault changes nothing (trap 1).
+    assert.equal(decide({ isRefused: (n) => n === 'work' }).import, true);
+    // And a non-function is "nothing refused".
+    assert.equal(decide({ isRefused: true }).import, true);
+  });
+
+  test('a refused LOCK hint imports nothing at all — not even the default-vault hint beside it', () => {
+    // Same rule as an unknown lock: the lock is what the installation was
+    // doing, so either it is imported or NOTHING is. Falling back to the
+    // default-vault hint would bind the workspace to a vault the old behaviour
+    // never used.
+    const r = decide({
+      lockHint: 'work', lockHintOrigin: 'workspace-dotenv', lockMtimeMs: base.dotenvMtimeMs,
+      isRefused: (n) => n === 'work',
+    });
+    assert.equal(r.import, false);
+    assert.equal(r.reason, IMPORT_REASON.REFUSED);
+  });
+
   test('the reasons are exhaustive — every path names itself', () => {
     const seen = new Set([
       decide().reason,
@@ -827,6 +1079,7 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
       decide({ hintOrigin: 'host' }).reason,
       decide({ hint: 'ghost' }).reason,
       decide({ dotenvMtimeMs: Date.parse('2026-09-04T00:00:00Z') }).reason,
+      decide({ isRefused: (n) => n === 'notes' }).reason,
     ]);
     assert.deepEqual([...seen].sort(), Object.values(IMPORT_REASON).sort());
   });
@@ -905,6 +1158,8 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     hintAge = 'old',
     bindings,
     migration,
+    // Vault names THIS workspace refused, written under its canonical key.
+    refusals = null,
     // The whole dotenv body, so a scenario can carry a persisted LOCK line as
     // well as the default-vault hint. Both are migrated, and the lock decides.
     dotenv = 'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\n',
@@ -926,6 +1181,9 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
       vaultNames: { [vault]: 'notes' },
       ...(bindings ? { [WORKSPACE_BINDINGS_KEY]: bindings } : {}),
       ...(migration ? { [MIGRATION_KEY]: migration } : {}),
+      ...(refusals
+        ? { [WORKSPACE_REFUSALS_KEY]: { [canonicalWorkspaceKey(ws)]: Object.fromEntries(refusals.map((n) => [n, '2026-09-06'])) } }
+        : {}),
     }, null, 2), 'utf8');
     return { root, ws, vault, configPath, read: () => JSON.parse(fs.readFileSync(configPath, 'utf8')) };
   };
@@ -938,7 +1196,7 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     // through the file, exactly as it would in the field, and a leftover value
     // in this process's environment would arrive as the HOST's and be an
     // authority instead.
-    const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED'];
+    const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED', 'OBSIDIAN_ROUTER_REFUSED_VAULT'];
     const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
     _resetWorkspaceDotenvProvenance();
     for (const k of KEYS) delete process.env[k];
@@ -1302,6 +1560,43 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
       try { fs.chmodSync(sc.configPath, 0o644); } catch { /* best effort */ }
     }
   }
+
+  test('THE REINSTALL CASE: a fresh config, a .env that proposes AND says it refused the same vault — nothing is imported, the question is asked once, with its context', async () => {
+    // Decision refus-d-une-proposition-de-liaison, the scenario it was written
+    // for: the router was uninstalled (config gone) and reinstalled; the
+    // workspace file is the only memory left. The first start opens the window
+    // NOW and every file predates it — so without the refusal check, `notes`
+    // would be imported as a confirmed binding, in silence, the one thing the
+    // file was asking the router NOT to decide alone.
+    const sc = scenario({ dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=notes\nOBSIDIAN_ROUTER_REFUSED_VAULT=notes\n' });
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported, null, 'the file said no once; the router must not say yes for it');
+    assert.equal(reg.workspaceBinding, null);
+    assert.equal(reg.bindingHint.status, HINT_STATUS.UNCONFIRMED, 'asked once more…');
+    assert.equal(reg.bindingHint.previouslyRefused, true, '…with the context that it was refused here before');
+    assert.equal(reg.workspaceRefusals.size, 0, 'the config has no answer — that is the whole situation');
+    const cfg = sc.read();
+    assert.ok(cfg[MIGRATION_KEY].openedAt, 'the window still opens');
+    assert.deepEqual(cfg[MIGRATION_KEY].imported, [], 'and does not close: the user may answer either way');
+  });
+
+  test('a refusal in the CONFIG silences the proposal at load, and the registry carries it', async () => {
+    const sc = scenario({ refusals: ['notes'] });
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported, null);
+    assert.equal(reg.workspaceBinding, null);
+    assert.equal(reg.bindingHint.status, HINT_STATUS.REFUSED);
+    assert.equal(reg.bindingHint.previouslyRefused, false, 'the file itself carries no refusal line');
+    assert.deepEqual([...reg.workspaceRefusals.keys()], ['notes']);
+  });
+
+  test('a refusal of ANOTHER vault does not stop the import (trap 1), and rides along on the registry', async () => {
+    const sc = scenario({ refusals: ['work'] });
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported?.vault, 'notes');
+    assert.deepEqual([...reg.workspaceRefusals.keys()], ['work']);
+    assert.equal(reg.bindingHint.status, HINT_STATUS.CONFIRMED);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1554,6 +1849,12 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
       'src/registry.mjs',             // builds `bindingHint` for list_vaults
       'hooks/workspace-briefing.mjs', // builds the session-start sentence
       'src/tools/lock.mjs',           // reports and rewrites the .env line itself
+      // Compares the proposal to the vault being REFUSED, to decide whether
+      // the workspace file spoke that name and so gets the refusal line beside
+      // it (decision refus-d-une-proposition-de-liaison, trap 3). Reports and
+      // writes a hint; resolves nothing — the vault it acts on is the one
+      // the user just named.
+      'src/tools/workspace-binding.mjs',
       'scripts/setup-vault.mjs',      // the WRITER of the workspace file
       'bin/obsidian-mcp-router.mjs',  // --help text and start-up diagnostics
     ]);
