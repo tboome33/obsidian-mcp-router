@@ -19,6 +19,7 @@ import { pathBasename } from '../registry.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
+import { sharingRequirement } from '../helpers/vault-sharing.mjs';
 
 /**
  * The complete vocabulary of `*Source.origin` — the ONE authoritative list.
@@ -82,7 +83,7 @@ export function buildDefaultVaultStatus(defaultVaultName, pingedResults) {
   };
 }
 
-export async function listVaults(registry) {
+export async function listVaults(registry, sharedConfig = null) {
   // Reachability (decision portee-et-mode-ecriture-des-vaults §1, trap 4 of
   // the page: "list_vaults must keep SHOWING what's unreachable, never hide
   // it"). Computed LIVE against `registry.workspaceBinding` for the same
@@ -98,6 +99,17 @@ export async function listVaults(registry) {
   const results = await Promise.all(
     reachable.map(async (v) => {
       const ping = await pingVault(v);
+      // WHICH VAULTS DEMAND A PRECONDITION, said BEFORE a write is refused
+      // rather than only by the refusal (Phase 4 of portee-ergonomie-refus-
+      // roadmap, decision ergonomie-creation-liaison-vaults point 6). The
+      // requirement is computed from the binding registry, so there is no
+      // switch to read anywhere and no way for a caller to find out except by
+      // being told: `list_vaults` is where a session looks.
+      //
+      // Both fields are ALWAYS present, even when false/null — the same
+      // contract rule `disabled[]` follows one field down: a caller must never
+      // have to tell "not shared" from "this router is too old to know".
+      const sharing = sharingRequirement(v.name, registry, sharedConfig);
       return {
         name: v.name,
         type: v.type,
@@ -109,6 +121,8 @@ export async function listVaults(registry) {
         latencyMs: ping.latencyMs,
         error: ping.error,
         missingApiKey: v.missingApiKey || false,
+        writesRequireIfMatch: sharing.required,
+        sharingReason: sharing.reason,
       };
     }),
   );

@@ -324,9 +324,16 @@ describe('audit middleware wire-up sanity', () => {
     // the import line where the schema name first appears.
     const i = src.indexOf('setRequestHandler(CallToolRequestSchema');
     assert.ok(i > 0, 'setRequestHandler(CallToolRequestSchema must appear in src/index.mjs');
-    // Generous slice — readonly guard + audit middleware + try/catch
-    // is ~3-4 KB in the current source; 8 KB has slack for future growth.
-    const handlerRegion = src.slice(i, i + 8000);
+    // Generous slice — readonly guard + the write gates + audit middleware +
+    // try/catch. It was 8 KB when the region was ~3-4 KB; Phases 3 and 4 of
+    // `portee-ergonomie-refus-roadmap` added two gates ahead of the audit
+    // block and left it sitting ~200 bytes under the limit, so the next
+    // comment anywhere above it turned this guard red for a reason that has
+    // nothing to do with what it checks. A window that tight is a tripwire,
+    // not a guard: widened WITH its slack restored rather than shaved to fit
+    // once more. It still says what it means — 12 KB is unambiguously "inside
+    // the CallTool handler", the whole point of anchoring on it.
+    const handlerRegion = src.slice(i, i + 12000);
     assert.ok(
       handlerRegion.includes('WRITE_TOOL_NAMES.has(name)'),
       'CallTool must guard against write tools (readonly mode + audit middleware) — the WRITE_TOOL_NAMES.has(name) check ANCHORS both layers',

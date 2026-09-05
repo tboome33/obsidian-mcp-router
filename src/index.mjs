@@ -160,6 +160,14 @@ import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import {
   alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
 } from './helpers/vault-reach.mjs';
+// Phase 4 of portee-ergonomie-refus-roadmap (decision ergonomie-creation-
+// liaison-vaults, point 6): a vault SEVERAL workspaces declare requires an
+// optimistic-concurrency precondition on every write. See the module header
+// for why it is computed rather than declared, and re-read from the file.
+import {
+  assertSharedVaultPrecondition, createBindingsReader, sharingRequirement, preconditionState,
+  IF_MATCH_EXEMPT,
+} from './helpers/vault-sharing.mjs';
 import {
   TOOL_DEFINITION as SET_SECONDARY_VAULT_MODE_TOOL_DEFINITION,
   setSecondaryVaultMode,
@@ -1159,7 +1167,10 @@ const TOOLS = [
  * dispatcher be a one-liner.
  */
 const TOOL_HANDLERS = {
-  list_vaults: (reg, args) => listVaults(reg),
+  // The second argument is the config AS IT IS ON DISK — `list_vaults` reports
+  // which vaults require a write precondition, and that count lives in other
+  // workspaces' bindings, which only the file holds (Phase 4).
+  list_vaults: (reg, args) => listVaults(reg, sharedVaultConfig()),
   list_files: (reg, args) => listFiles(reg, args),
   get_file: (reg, args) => getFile(reg, args),
   search: (reg, args) => search(reg, args),
@@ -1652,6 +1663,24 @@ const maintainVault = createMaintenancePass({
 // `shouldSkip` doc in helpers/projections-refresh.mjs for why that gap
 // matters (a vault turned `alsoLocked` mid-debounce, caught by Codex review).
 let liveRegistryRef = null;
+
+/**
+ * Reads the binding registry AS IT IS ON DISK, for the shared-vault
+ * precondition gate. Built once in `startServer()` — the config PATH never
+ * changes for the life of the process, hot-reload included, and the reader's
+ * own `mtime`+`size` guard is what keeps it current.
+ *
+ * Null until then (and in unit tests that call the dispatcher's helpers
+ * directly): `sharingRequirement` answers from `openVaults` alone in that
+ * case, which is the documented degraded mode rather than a silent "no
+ * requirement".
+ */
+let bindingsReader = null;
+
+/** The config on disk right now, or null when it has never been readable. */
+function sharedVaultConfig() {
+  return bindingsReader ? bindingsReader.current() : null;
+}
 
 const projectionsScheduler = createProjectionsScheduler({
   refresh: maintainVault,
@@ -2636,6 +2665,11 @@ export async function startServer({ configPath, watch = true } = {}) {
   // debounced refresh that fires after this call returns still sees whatever
   // is CURRENT then, hot-reload included.
   liveRegistryRef = registryRef;
+  // The shared-vault precondition (Phase 4) reads the binding registry from
+  // the FILE, not from `fresh`: the second workspace that makes a vault shared
+  // is another process, and its binding exists nowhere else. Built here, once,
+  // because the path is fixed for the life of the process.
+  bindingsReader = createBindingsReader({ configPath: cfgPath });
 
   // Hot-reload of the config file. Debounced (500ms) to coalesce rapid
   // successive writes from setup-vault.mjs. On parse error, the existing
@@ -2952,6 +2986,10 @@ export async function startServer({ configPath, watch = true } = {}) {
       if (requiresAlsoTierCheck(name, args)) {
         const target = reg.resolveVault(args.vault);
         assertVaultWritable(target, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: name });
+        // Phase 4 — same choke point, and deliberately the same condition:
+        // two predicates asking "does this call really write?" is how they end
+        // up disagreeing. See helpers/vault-sharing.mjs for the whole rule.
+        assertSharedVaultPrecondition(target, reg, name, args, sharedVaultConfig());
       }
       // The one write tool that reaches a vault through the FILESYSTEM rather
       // than a `vault` argument — gated by where `outputDir` points instead.
@@ -3358,6 +3396,15 @@ export const _internals = {
   automaticWriteAllowed,
   queuedMaintenanceBlocked,
   assertAssetOutputDirWritable,
+  // Phase 4 — the shared-vault precondition. Re-exported from
+  // helpers/vault-sharing.mjs through THIS object so the partition test can
+  // ask one question of one module: "is every member of WRITE_TOOL_NAMES
+  // either covered by the gate or exempt with a written reason?". Splitting
+  // the two halves across two imports is how a new write tool ends up in
+  // neither.
+  IF_MATCH_EXEMPT,
+  preconditionState,
+  sharingRequirement,
   PKG_VERSION,
   isMcpContentPayload,
   // v0.71.0 — the wire boundary. Exposed so a test can prove the ONE place

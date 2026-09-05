@@ -34,6 +34,41 @@ parameters.
   only via Tailscale's own mesh), and a new section on `ifMatch` discipline for a vault shared by
   more than one workspace, with the concrete two-writer scenario.
 
+### A vault two workspaces share stops accepting blind writes
+
+Phase 4 of the `portee-ergonomie-refus-roadmap` (decision
+`ergonomie-creation-liaison-vaults`, point 6, accepted 2026-09-04). Nothing changes for a vault
+only one workspace declares — which is the condition the decision set for the feature.
+
+#### Added
+
+- **`ifMatch` becomes REQUIRED on a shared vault.** A vault that two or more workspaces declare
+  (as their primary `vault` or in their `also`) refuses a write that carries no
+  optimistic-concurrency precondition, instead of silently overwriting whatever changed since the
+  caller read the file. The requirement is **computed from the binding registry**, never declared:
+  there is no new switch and no list to keep up to date, so it cannot go stale. A vault listed in
+  **`openVaults`** is treated as shared by hypothesis — it is reachable from every workspace
+  without being declared by any, so its readership is not knowable.
+  - Satisfied by `ifMatch` on `write_file`, `append_to_file`, `patch_file`, `set_frontmatter`,
+    `merge_frontmatter`, `move_file` and `delete_file`; by **`ifNew: true`** on `write_file` (a
+    compare-and-swap against absence, so creating a note on a shared vault stays possible); and by
+    a precondition on **every step** of a `write_bundle`.
+  - Exempt, each for a stated reason: the tools that regenerate a derived artifact from the vault's
+    own content (`build_wiki_graph`, `build_search_index`, `refresh_okf_projections`),
+    `record_source` (it already does its own compare-and-swap on the shared ledger),
+    `download_page_assets`, `provision_vault` and `register_remote_vault`. `execute_template` with
+    `createFile: true` carries no precondition at all, so it is refused with the way through:
+    render without `createFile`, then write the result with `write_file`.
+  - The count is re-read from the config file on each write, so a vault becomes shared **the
+    instant** a second workspace declares it — from another session, in another directory, with no
+    restart and no config hot-reload.
+- **`list_vaults` reports `writesRequireIfMatch` and `sharingReason`** per vault, so a session can
+  know before it is refused rather than by being refused.
+
+The honest limit travels with the mechanism, in the refusal message and in `docs/remote-vaults.md`:
+compare-and-swap protects the writers that go through the router **from each other**, not from a
+note saved in Obsidian itself on the machine hosting the vault, nor from a Sync/LiveSync replica.
+
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,
