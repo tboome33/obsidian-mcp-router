@@ -9,6 +9,11 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
+
+import {
   RESOURCE_SCHEME,
   CATALOG_URI,
   VAULT_RESOURCE_FILES,
@@ -17,12 +22,53 @@ import {
   buildResourceList,
   buildVaultCatalog,
   readResource,
+  registerResourceHandlers,
 } from '../src/resources.mjs';
 
 const fakeVaults = [
   { name: 'dedibox', type: 'remote', baseUrl: 'http://10.8.0.10:27161', apiKey: 'SECRET1', description: 'infra' },
   { name: 'smile', type: 'local', baseUrl: 'https://127.0.0.1:27129', apiKey: 'SECRET2' },
 ];
+
+/** Capture the two handlers `registerResourceHandlers` wires, without a transport. */
+function captureHandlers(registry) {
+  const handlers = new Map();
+  registerResourceHandlers({ setRequestHandler: (schema, fn) => handlers.set(schema, fn) }, () => registry);
+  return {
+    list: () => handlers.get(ListResourcesRequestSchema)({}),
+    read: (uri) => handlers.get(ReadResourceRequestSchema)({ params: { uri } }),
+  };
+}
+
+describe('registerResourceHandlers — discovery obeys reachability (decision portee-et-mode-ecriture-des-vaults §1)', () => {
+  test('vaultReach inactive (default) — every registered vault is listed and catalogued, unchanged', async () => {
+    const { list, read } = captureHandlers({ vaults: fakeVaults });
+    const { resources } = await list();
+    assert.ok(resources.some((r) => r.uri === buildResourceUri('dedibox', 'wiki-catalog')));
+    assert.ok(resources.some((r) => r.uri === buildResourceUri('smile', 'wiki-catalog')));
+    const catalog = JSON.parse((await read(CATALOG_URI)).contents[0].text);
+    assert.deepEqual(catalog.vaults.map((v) => v.name).sort(), ['dedibox', 'smile']);
+  });
+
+  test('vaultReach: "declared" — a vault this workspace cannot reach is neither listed nor catalogued', async () => {
+    // Review round 3: `resources/list` advertised a URI for every vault while
+    // `resources/read` on it refused with "not reachable" — and the catalogue
+    // leaked the baseUrl of vaults this workspace never declared.
+    const registry = {
+      vaults: fakeVaults,
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBinding: { vault: 'smile', also: [] },
+    };
+    const { list, read } = captureHandlers(registry);
+    const { resources } = await list();
+    assert.ok(resources.some((r) => r.uri === buildResourceUri('smile', 'wiki-catalog')), 'the bound vault stays listed');
+    assert.ok(!resources.some((r) => r.uri.includes('dedibox')), `an unreachable vault must not be advertised: ${JSON.stringify(resources.map((r) => r.uri))}`);
+    const catalog = JSON.parse((await read(CATALOG_URI)).contents[0].text);
+    assert.deepEqual(catalog.vaults.map((v) => v.name), ['smile']);
+    assert.ok(!JSON.stringify(catalog).includes('10.8.0.10'), 'the unreachable vault\'s baseUrl must not leak through the catalogue');
+  });
+});
 
 describe('buildResourceUri / parseResourceUri — round trip', () => {
   test('catalog URI parses to { catalog: true }', () => {

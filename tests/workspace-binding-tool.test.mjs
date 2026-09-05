@@ -301,6 +301,73 @@ describe('confirm_workspace_binding — clear: true releases the LIVE session, n
       if (had) process.env.OBSIDIAN_ROUTER_LOCKED = prev; else delete process.env.OBSIDIAN_ROUTER_LOCKED;
     }
   });
+
+  test('…but a host lock naming a vault this workspace cannot REACH is not restored (it would refuse every call)', async () => {
+    // Review round 3 of Phase 2/3 (portee-ergonomie-refus-roadmap): start-up
+    // already rejects such a host lock through validateLock's reachability
+    // context; `releaseBindingLock` re-derived it against the active set
+    // only and handed it back on `clear` — `lockedVault` set to a name
+    // resolveVault() refuses, every call failing until unlock_vaults.
+    const { seam } = seams({ config: boundOnDisk({ locked: true }) });
+    const reg = registryOf({
+      defaultVault: 'notes', lockedVault: 'notes',
+      lockSource: { origin: 'binding', variable: null },
+      workspaceBinding: { vault: 'notes', also: [], locked: true },
+      vaultReach: 'declared', openVaults: [],
+    });
+    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_LOCKED');
+    const prev = process.env.OBSIDIAN_ROUTER_LOCKED;
+    process.env.OBSIDIAN_ROUTER_LOCKED = 'work';
+    try {
+      await confirmWorkspaceBinding(reg, { clear: true }, seam);
+      // After `clear` there is no binding and `openVaults` is empty, so
+      // nothing is reachable — `work` least of all.
+      assert.equal(reg.lockedVault, null, 'an unreachable host lock must not come back');
+      assert.deepEqual(reg.lockSource, { origin: 'unset', variable: null });
+    } finally {
+      if (had) process.env.OBSIDIAN_ROUTER_LOCKED = prev; else delete process.env.OBSIDIAN_ROUTER_LOCKED;
+    }
+  });
+});
+
+describe('confirm_workspace_binding — an alsoLocked SECONDARY cannot be promoted to primary from the conversation', () => {
+  // Phase 3 review round 3 (portee-ergonomie-refus-roadmap): `alsoWriteTierFor`
+  // returns null for a primary, so re-binding the workspace onto its locked
+  // secondary was the one-step way past the hard tier.
+  const bound = (extra = {}) => registryOf({
+    defaultVault: 'notes',
+    workspaceBinding: { vault: 'notes', also: ['work'], locked: false },
+    alsoWritable: [],
+    alsoLocked: ['work'],
+    ...extra,
+  });
+
+  test('promoting the locked secondary is refused, and nothing is written', async () => {
+    const { written, seam } = seams();
+    await assert.rejects(confirmWorkspaceBinding(bound(), { vault: 'work' }, seam), /alsoLocked SECONDARY/);
+    assert.equal(written.length, 0);
+  });
+
+  test('the SAME call on a soft-tier secondary still promotes it (the refusal is about the hard tier only)', async () => {
+    const { seam } = seams();
+    const r = await confirmWorkspaceBinding(bound({ alsoLocked: [] }), { vault: 'work' }, seam);
+    assert.equal(r.boundTo, 'work');
+  });
+
+  test('a workspace with NO binding binds it as primary freely — it is not promoting anything', async () => {
+    const { seam } = seams();
+    const r = await confirmWorkspaceBinding(registryOf({ alsoLocked: ['work'] }), { vault: 'work' }, seam);
+    assert.equal(r.boundTo, 'work', 'this is the maintaining workspace declaring its primary from the start');
+  });
+
+  test('clearing first, then re-binding, is still possible — two explicit acts, not one', async () => {
+    const { seam } = seams();
+    const reg = bound();
+    await confirmWorkspaceBinding(reg, { clear: true }, seam);
+    assert.equal(reg.workspaceBinding, null);
+    const r = await confirmWorkspaceBinding(reg, { vault: 'work' }, seam);
+    assert.equal(r.boundTo, 'work');
+  });
 });
 
 describe('confirm_workspace_binding — opening what is not open', () => {

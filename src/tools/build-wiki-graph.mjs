@@ -399,19 +399,18 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
 
   // 7. write ×2 (unless dryRun) — the validated, sanitized graph.
   //
-  // STRICT `!== true`, not a truthy check: the also-tier write gate
-  // (src/index.mjs's requiresAlsoTierCheck) exempts this call from the
-  // secondary-vault write check ONLY when `args.dryRun === true`, on the
-  // stated premise that this is "the SAME condition the tool's own writer
-  // branches on". A truthy-coercing `if (!dryRun)` here disagreed with that
-  // for any non-boolean truthy value (e.g. a client sending the string
-  // `"true"` — documented elsewhere in this codebase, see write-bundle.mjs's
-  // `recover` handling, as something a real MCP client does) — the gate
-  // would require the also-tier check for a call that, in truth, wrote
-  // nothing, an over-refusal on a soft-tier or `alsoLocked` secondary vault.
+  // TRUTHY on purpose, and the also-tier write gate in src/index.mjs
+  // (`requiresAlsoTierCheck`) tests the SAME truthiness, so the two cannot
+  // disagree about whether this call writes. A client sending the string
+  // `"true"` (real MCP clients do — see write-bundle.mjs's `recover`
+  // handling) gets a dry run from both. The alternative alignment, strict
+  // `=== true` on both sides, was tried in round 1 of the Phase 3 review and
+  // reversed in round 3: it turned that same `"true"` into a real write,
+  // which is the wrong direction to fail in for a flag whose whole job is to
+  // NOT write.
   const json = `${JSON.stringify(safeGraph, null, 2)}\n`;
   const written = [];
-  if (dryRun !== true) {
+  if (!dryRun) {
     await deps.writeFile(vault, CANONICAL_GRAPH_PATH, json);
     written.push(CANONICAL_GRAPH_PATH);
     if (writeUnderstandAnythingCopy) {
@@ -428,7 +427,7 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   return ({
     vault: vault.name,
     kind: safeGraph.kind,
-    dryRun: dryRun === true,
+    dryRun: Boolean(dryRun),
     written,
     counts: {
       pages: pages.length,

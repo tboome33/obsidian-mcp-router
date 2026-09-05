@@ -47,6 +47,7 @@ import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
 import { registeredVaultPaths, vaultSlug } from '../helpers/vault-slug.mjs';
+import { isVaultReachable, isPromotionOfLockedSecondary } from '../helpers/vault-reach.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -191,6 +192,20 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     throw new Error(
       'confirm_workspace_binding: `vault` is required (the vault this workspace should be bound to). '
       + 'Pass `clear: true` instead to remove the binding and return to all vaults.',
+    );
+  }
+  // A vault this workspace declared as an `alsoLocked` SECONDARY cannot be
+  // promoted to PRIMARY from the conversation: `alsoWriteTierFor` returns
+  // null for a primary, so this call was the one-step way past "no
+  // exceptions" (decision portee-et-mode-ecriture-des-vaults §2; review
+  // round 3). Read against the LIVE binding, which this tool keeps current.
+  if (isPromotionOfLockedSecondary(primary, registry)) {
+    throw new Error(
+      `confirm_workspace_binding: "${safeForMessage(primary, 80)}" is an alsoLocked SECONDARY of this `
+      + 'workspace; binding the workspace to it as its primary would lift that hard read-only tier from '
+      + 'the conversation. Edit `alsoLocked` in config.json if this workspace is meant to maintain that '
+      + 'vault, or clear the binding first (confirm_workspace_binding({ clear: true })) and re-bind — '
+      + 'two explicit acts, not one.',
     );
   }
 
@@ -395,7 +410,16 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
  */
 function releaseBindingLock(registry) {
   const fromHost = authoritativeLockedVault();
-  const active = fromHost && (registry.vaults || []).some((v) => v.name === fromHost);
+  // "Validated against the live vault set like every other lock candidate" —
+  // and, since Phase 2, against REACHABILITY too, exactly as `validateLock`
+  // does at start-up: a host lock naming a vault this workspace cannot reach
+  // was rejected when the server started, and re-deriving it here without
+  // that half of the check handed it back — `lockedVault` set to a name
+  // `resolveVault()` refuses, every call failing until `unlock_vaults`.
+  // Found in review round 3, one site over from the start-up fix.
+  const active = fromHost
+    && (registry.vaults || []).some((v) => v.name === fromHost)
+    && isVaultReachable(fromHost, registry);
   registry.lockedVault = active ? fromHost : null;
   registry.lockSource = active
     ? { origin: 'host', variable: 'OBSIDIAN_ROUTER_LOCKED' }

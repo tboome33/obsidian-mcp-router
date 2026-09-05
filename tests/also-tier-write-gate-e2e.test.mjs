@@ -208,6 +208,15 @@ async function handshake(rt) {
   rt.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
 }
 
+/**
+ * EVERY method that mutates the vault. Round 3 of the review caught the
+ * earlier assertions filtering on PUT/DELETE only — while the audit line is
+ * appended with POST. A "no write landed" assertion that ignores POST passes
+ * whether or not the audit middleware fired: blind, not green.
+ */
+const MUTATING = new Set(['PUT', 'POST', 'PATCH', 'DELETE']);
+const isMutation = (r) => MUTATING.has(r.method);
+
 /** The write-related PUTs a `write_file` call would have made (excludes conformance's own index/projection writes). */
 function contentPuts(vault, relPath) {
   return vault.seen.filter((r) => r.method === 'PUT' && r.url === `/vault/${relPath}`);
@@ -393,7 +402,7 @@ describe('E2E: preview/dry-run calls must not trigger post-write middleware on a
       // if either fired, its PUT would already be recorded by now.
       await new Promise((r) => setTimeout(r, 800));
       assert.deepEqual(
-        vault.seen.filter((r) => r.method === 'PUT' || r.method === 'DELETE').map((r) => r.url), [],
+        vault.seen.filter(isMutation).map((r) => r.url), [],
         'a delete_file PREVIEW must never write to an alsoLocked vault — not the deleted file, not an audit entry, not a projections refresh',
       );
     } finally {
@@ -419,7 +428,7 @@ describe('E2E: preview/dry-run calls must not trigger post-write middleware on a
       assert.ok(!res.error && !res.result?.isError, `the preview itself failed: ${JSON.stringify(res.error || res.result)}\n${rt.stderrText()}`);
       await new Promise((r) => setTimeout(r, 800));
       assert.deepEqual(
-        vault.seen.filter((r) => r.method === 'PUT' || r.method === 'DELETE').map((r) => r.url), [],
+        vault.seen.filter(isMutation).map((r) => r.url), [],
         'a write_bundle PREVIEW must never write to an alsoLocked vault',
       );
     } finally {
@@ -442,8 +451,70 @@ describe('E2E: preview/dry-run calls must not trigger post-write middleware on a
       });
       assert.ok(!res.error && !res.result?.isError, `the write itself failed: ${JSON.stringify(res.error || res.result)}\n${rt.stderrText()}`);
       await new Promise((r) => setTimeout(r, 800));
-      const journalPuts = vault.seen.filter((r) => r.method === 'PUT' && /journal\.md|log\.md/.test(r.url));
+      const journalPuts = vault.seen.filter((r) => isMutation(r) && /journal\.md|log\.md/.test(r.url));
       assert.ok(journalPuts.length >= 1, `a real write must still be audited: ${JSON.stringify(vault.seen.map((r) => `${r.method} ${r.url}`))}`);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+});
+
+/**
+ * Review round 3: the audit line is itself a write, and for the three tools
+ * that carry no `vault` argument (`download_page_assets` here — it writes to
+ * a caller-named filesystem directory, never to a vault) it lands wherever
+ * the SESSION resolves by default: the locked vault under `lock_vault`. Lock
+ * the session to a soft-tier secondary, run such a tool, and the audit
+ * middleware appended a journal line to a vault that never received consent
+ * for a write. The gate could not see it because the tool is exempt from
+ * the also-tier check by design (it addresses no registered vault).
+ */
+describe('E2E: the audit line obeys the tier of whatever vault the session resolves by default', () => {
+  const NO_ASSETS_HTML = '<html><body><p>nothing to download here</p></body></html>';
+
+  test('locked to a SOFT secondary, an exempt tool succeeds and appends NO audit line there', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir, env: { OBSIDIAN_ROUTER_USER_ID: 'reviewer' } });
+    try {
+      await handshake(rt);
+      const lock = await rt.call(2, 'tools/call', { name: 'lock_vault', arguments: { vault: 'soft-ref' } });
+      assert.ok(!lock.error && !lock.result?.isError, `fixture sanity: locking to a reachable soft secondary must succeed: ${JSON.stringify(lock.error || lock.result)}`);
+      const puts0 = vault.seen.filter((r) => r.method === 'PUT').length;
+
+      const res = await rt.call(3, 'tools/call', {
+        name: 'download_page_assets',
+        arguments: { html: NO_ASSETS_HTML, baseUrl: 'http://127.0.0.1:1/', outputDir: path.join(dir, 'assets') },
+      });
+      assert.ok(!res.error && !res.result?.isError, `fixture sanity: the exempt tool must succeed for the audit block to be reached: ${JSON.stringify(res.error || res.result)}\n${rt.stderrText()}`);
+      await new Promise((r) => setTimeout(r, 800));
+      assert.deepEqual(
+        vault.seen.slice(puts0).filter(isMutation).map((r) => r.url), [],
+        'no audit line may land on a soft-tier secondary the user never consented to writing',
+      );
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+
+  test('control: locked to the alsoWritable secondary, the same call DOES get its audit line there', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir, env: { OBSIDIAN_ROUTER_USER_ID: 'reviewer' } });
+    try {
+      await handshake(rt);
+      const lock = await rt.call(2, 'tools/call', { name: 'lock_vault', arguments: { vault: 'writable-ref' } });
+      assert.ok(!lock.error && !lock.result?.isError, JSON.stringify(lock.error || lock.result));
+      const res = await rt.call(3, 'tools/call', {
+        name: 'download_page_assets',
+        arguments: { html: NO_ASSETS_HTML, baseUrl: 'http://127.0.0.1:1/', outputDir: path.join(dir, 'assets') },
+      });
+      assert.ok(!res.error && !res.result?.isError, `${JSON.stringify(res.error || res.result)}\n${rt.stderrText()}`);
+      await new Promise((r) => setTimeout(r, 800));
+      const journalPuts = vault.seen.filter((r) => isMutation(r) && /journal\.md|log\.md/.test(r.url));
+      assert.ok(journalPuts.length >= 1, `the audit trail must still cover an exempt tool on a writable vault: ${JSON.stringify(vault.seen.map((r) => `${r.method} ${r.url}`))}`);
     } finally {
       rt.kill();
       await vault.close();
@@ -465,7 +536,7 @@ describe('E2E: trap 2 — first contact never repairs a locked or soft-tier seco
       assert.ok(!res.error, `the read itself failed: ${JSON.stringify(res.error)}\n${rt.stderrText()}`);
       await new Promise((r) => setTimeout(r, 800));
       assert.deepEqual(
-        vault.seen.filter((r) => r.method === 'PUT').map((r) => r.url), [],
+        vault.seen.filter(isMutation).map((r) => r.url), [],
         'a soft-tier secondary must never be repaired by a mere read',
       );
     } finally {
@@ -487,7 +558,7 @@ describe('E2E: trap 2 — first contact never repairs a locked or soft-tier seco
       assert.ok(!res.error, `the read itself failed: ${JSON.stringify(res.error)}\n${rt.stderrText()}`);
       await new Promise((r) => setTimeout(r, 800));
       assert.deepEqual(
-        vault.seen.filter((r) => r.method === 'PUT').map((r) => r.url), [],
+        vault.seen.filter(isMutation).map((r) => r.url), [],
         'an alsoLocked secondary must never be repaired by a mere read',
       );
     } finally {
@@ -532,6 +603,71 @@ describe('E2E: trap 2 — first contact never repairs a locked or soft-tier seco
         await waitForIndexWrite(vault),
         'an alsoWritable secondary must be repaired like any other addressable vault',
       );
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+});
+
+/**
+ * Review round 3's most severe finding: `alsoWriteTierFor` returns null for a
+ * PRIMARY, so any tool that rewrote the binding with the locked secondary on
+ * top lifted "no exceptions" in one call — `confirm_workspace_binding({vault})`,
+ * and `lock_vault({persist: true})`, which records the locked vault as the
+ * workspace's primary. Both now refuse while the vault is a locked secondary
+ * of the live binding; a volatile lock (no binding rewrite) stays allowed.
+ */
+describe('E2E: an alsoLocked secondary cannot be promoted to primary from the conversation', () => {
+  test('confirm_workspace_binding({vault: locked-ref}) is refused; a write there is still refused afterwards', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'confirm_workspace_binding', arguments: { vault: 'locked-ref', open: false } });
+      const text = res.result?.content?.[0]?.text ?? '';
+      assert.ok(res.result?.isError || /Error/.test(text), `expected a refusal, got: ${JSON.stringify(res.error || res.result)}`);
+      assert.match(text, /alsoLocked SECONDARY/);
+
+      const write = await rt.call(3, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'locked-ref', path: 'wiki/notes/new.md', content: '# New\n', confirmSecondaryWrite: true },
+      });
+      assert.match(write.result?.content?.[0]?.text ?? '', /locked read-only/, 'the tier must still be in force');
+      assert.equal(contentPuts(vault, 'wiki/notes/new.md').length, 0);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+
+  test('lock_vault({vault: locked-ref, persist: true}) is refused before any state changes; the volatile lock is allowed and the write stays refused', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const persist = await rt.call(2, 'tools/call', { name: 'lock_vault', arguments: { vault: 'locked-ref', persist: true } });
+      const ptext = persist.result?.content?.[0]?.text ?? '';
+      assert.ok(persist.result?.isError || /Error/.test(ptext), `expected a refusal, got: ${JSON.stringify(persist.error || persist.result)}`);
+      assert.match(ptext, /alsoLocked SECONDARY/);
+
+      const listed = await rt.call(3, 'tools/call', { name: 'list_vaults', arguments: {} });
+      const parsed = JSON.parse(listed.result.content[0].text);
+      assert.equal(parsed.lockedTo, null, 'the refused persist must not have applied the in-memory lock either');
+      assert.equal(parsed.workspaceBinding.vault, 'work', 'and the binding is untouched');
+
+      const volatile = await rt.call(4, 'tools/call', { name: 'lock_vault', arguments: { vault: 'locked-ref' } });
+      assert.ok(!volatile.error && !volatile.result?.isError, `a volatile lock must still be allowed: ${JSON.stringify(volatile.error || volatile.result)}`);
+
+      // Locked to it, `vault` omitted resolves to it — and the write is still refused.
+      const write = await rt.call(5, 'tools/call', {
+        name: 'write_file',
+        arguments: { path: 'wiki/notes/new.md', content: '# New\n', confirmSecondaryWrite: true },
+      });
+      assert.match(write.result?.content?.[0]?.text ?? '', /locked read-only/);
+      assert.equal(contentPuts(vault, 'wiki/notes/new.md').length, 0);
     } finally {
       rt.kill();
       await vault.close();

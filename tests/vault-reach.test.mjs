@@ -7,7 +7,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isVaultReachable, alsoWriteTierFor, assertVaultWritable } from '../src/helpers/vault-reach.mjs';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  isVaultReachable, alsoWriteTierFor, assertVaultWritable, vaultContainingPath, isPromotionOfLockedSecondary,
+} from '../src/helpers/vault-reach.mjs';
 
 describe('isVaultReachable', () => {
   test('vaultReach inactive (absent/anything but "declared") — every vault reachable, unconditionally', () => {
@@ -147,5 +152,52 @@ describe('assertVaultWritable', () => {
       () => assertVaultWritable(vault('ref'), registry, { toolName: 'write_file' }),
       /`write_file`/,
     );
+  });
+});
+
+describe('vaultContainingPath — the filesystem door into a vault (download_page_assets outputDir)', () => {
+  const root = path.join(os.tmpdir(), 'vault-reach-Ref');
+  const registry = {
+    vaults: [
+      { name: 'ref', type: 'local', path: root },
+      { name: 'remote', type: 'remote', baseUrl: 'http://127.0.0.1:1' },
+    ],
+  };
+
+  test('a path inside the vault folder resolves to that vault; the folder itself too', () => {
+    assert.equal(vaultContainingPath(path.join(root, 'wiki', '.assets', 'x'), registry)?.name, 'ref');
+    assert.equal(vaultContainingPath(root, registry)?.name, 'ref');
+  });
+
+  test('a sibling folder sharing the prefix is NOT inside (separator-aware, not startsWith on the string)', () => {
+    assert.equal(vaultContainingPath(`${root}x`, registry), null);
+    assert.equal(vaultContainingPath(path.join(`${root}-other`, 'wiki'), registry), null);
+  });
+
+  test('`..` is resolved before comparing — a path that only LOOKS inside is not', () => {
+    assert.equal(vaultContainingPath(path.join(root, 'wiki', '..', '..', 'elsewhere'), registry), null);
+  });
+
+  test('a path elsewhere, a remote vault (no folder), a malformed input — null', () => {
+    assert.equal(vaultContainingPath(path.join(os.tmpdir(), 'nowhere'), registry), null);
+    assert.equal(vaultContainingPath(root, { vaults: [{ name: 'remote', type: 'remote' }] }), null);
+    assert.equal(vaultContainingPath('', registry), null);
+    assert.equal(vaultContainingPath(undefined, registry), null);
+    assert.equal(vaultContainingPath(root, {}), null);
+  });
+
+  test('Windows case folding: the same folder spelled in another case still matches', { skip: process.platform !== 'win32' }, () => {
+    assert.equal(vaultContainingPath(path.join(root.toUpperCase(), 'wiki'), registry)?.name, 'ref');
+  });
+});
+
+describe('isPromotionOfLockedSecondary', () => {
+  test('true only for a vault the LIVE binding declares as an alsoLocked secondary', () => {
+    const reg = { workspaceBinding: { vault: 'work', also: ['ref'] }, alsoWritable: [], alsoLocked: ['ref'] };
+    assert.equal(isPromotionOfLockedSecondary('ref', reg), true);
+    assert.equal(isPromotionOfLockedSecondary('work', reg), false, 'already the primary');
+    assert.equal(isPromotionOfLockedSecondary('other', reg), false, 'not a secondary of this binding');
+    assert.equal(isPromotionOfLockedSecondary('ref', { ...reg, alsoLocked: [] }), false, 'soft tier may be promoted');
+    assert.equal(isPromotionOfLockedSecondary('ref', { alsoLocked: ['ref'] }), false, 'no binding — nothing to promote');
   });
 });

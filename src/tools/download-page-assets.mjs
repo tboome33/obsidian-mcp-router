@@ -76,6 +76,7 @@ import {
 import { extractMainContent } from '../helpers/defuddle-extract.mjs';
 import { assertPathAllowed } from '../markdownify/utils.mjs';
 import { isAuditStable } from '../helpers/vault-path-guard.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 export const TOOL_NAME = 'download_page_assets';
 
 export const TOOL_DEFINITION = {
@@ -99,8 +100,9 @@ export const TOOL_DEFINITION = {
       },
       outputDir: {
         type: 'string',
-        description: 'Absolute path to the directory where downloaded assets land. Created if missing. Must be inside MD_ALLOWED_PATHS if that env var is set.',
+        description: 'Absolute path to the directory where downloaded assets land. Created if missing. Must be inside MD_ALLOWED_PATHS if that env var is set. When it sits INSIDE a registered vault\'s folder (the wiki-ingest convention `<vault>/wiki/.assets/<slug>/`), that vault\'s reachability and write tier apply exactly as for a REST write — a soft-tier secondary of this workspace needs confirmSecondaryWrite, an alsoLocked one is refused.',
       },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       defuddleFirst: {
         type: 'boolean',
         description: 'v0.14.7: when true (default), run defuddle to extract the article body before scanning for images. Strips nav/header/sidebar/footer/ads/share-widgets at zero network cost. Set to false to scan raw HTML (pre-v0.14.7 behavior).',

@@ -157,7 +157,9 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 // the projections scheduler — it used to be a second copy that drifted three
 // ways. See helpers/write-targets.mjs.
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
-import { alsoWriteTierFor, assertVaultWritable, isVaultReachable, CONFIRM_SECONDARY_WRITE_PROP } from './helpers/vault-reach.mjs';
+import {
+  alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
+} from './helpers/vault-reach.mjs';
 import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
 import { envKeyOrigin, workspaceDotenvRefusals } from './helpers/workspace-dotenv.mjs';
 
@@ -165,7 +167,7 @@ const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults skipped by the disabledVaults config — name, type, reason), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "binding" = the confirmed workspace binding in the user\'s OWN config chose it — the only origin that cannot have arrived with a git clone, and the one that outranks the environment; "workspace-dotenv" = this project\'s own .env file chose it — possible for autoEnrichModeSource ONLY: for defaultVaultSource and lockSource this origin never appears any more, because a workspace file can no longer choose the vault or the lock, only propose them (see bindingHint) — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — the auto-enrichment mode from three of its four valid values — never "FullAuto", see autoEnrichModeRefused — VAULT_PATH only when it names the workspace directory itself, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs. The default vault and the lock it can only PROPOSE, never set (see bindingHint), and it can never name an endpoint, a credential or the router\'s own config, so this is about consent, not access; do not advise editing a project .env to change the vault — confirm_workspace_binding is the way), workspaceBinding (WHICH vaults this workspace is bound to, from the user\'s own config — { vault, also[], locked, confirmedAt, confirmedVia }, or NULL. Read the three states carefully before phrasing them: an object with an empty `also` = bound to ONE vault; an object with a non-empty `also` = bound to SEVERAL, all addressable by name; null = NO binding, which means ALL vaults are available and the cascade picks the default — null is never "no vault"), bindingImported (null in the normal case; otherwise what the ONE-TIME migration created at THIS start-up, as { vault, at, locked, dotenvFile } — the router imported this workspace\'s .env hint as a confirmed binding, once, so that installations that predate the binding registry kept working when a project file stopped being able to choose a vault. NOBODY CONFIRMED IT: say so, name the vault, and say that confirm_workspace_binding({ clear: true }) undoes it permanently while confirm_workspace_binding({ vault }) adopts it. The import runs at most once per workspace and never for a dotenv file written after the upgrade, so a freshly cloned repository is never imported; a binding it created carries confirmedVia "migration", which is how a later session still knows nobody confirmed it. `locked` true means the file ALSO carried an OBSIDIAN_ROUTER_LOCKED line an earlier lock_vault --persist had written, and the imported binding is locked so that isolation survives the upgrade — say that too, because the session is then restricted to one vault by a decision nobody made today), bindingHint (what PROPOSED the default vault for this workspace without being able to decide it, as { status, hint, boundTo, origin }, or null. status is "none" or "confirmed" (both mean silence — nothing was turned away), "unconfirmed" (a registered vault this workspace never confirmed), "unknown-vault" (a vault this machine does not have), or "conflicts" (a binding exists and the environment names a different vault; the binding wins). For the last three, tell the user what was asked for and that it was not applied — and READ origin BEFORE naming the source: "workspace-dotenv" means this project\'s own .env file proposed it (that is the file to edit, and a cloned repository carries one), while "host" means the MCP host\'s server declaration or the launching shell did, in which case blaming the project file would send the user to the wrong place; "runtime" and "unknown" name neither. A SEPARATE field and never an origin of the setting: a hint that was not applied is not the source of what replaced it), autoEnrichModeRefused (null in the normal case; otherwise the auto-enrichment mode this workspace\'s .env asked for AT START-UP and did NOT get, as { value, canonical, origin, variable, reason } — a fact about what the file said when the router started, so it stays non-null after a set_auto_enrich_mode call in this session and after a persist that rewrote the line; read it beside autoEnrichMode and autoEnrichModeSource, which say what is in force NOW. Exactly one value is refused this way: "FullAuto", in any of its spellings, when it comes from a workspace file — the mode that lets Claude write into a vault without asking again is not something a file travelling with a cloned repository may turn on. It is a SEPARATE field and never an origin: autoEnrichModeSource keeps naming what actually took effect, because a refused value is not the source of what replaced it. When this is non-null, tell the user their project file asked for FullAuto and was refused, and that the two places the mode is still taken from are the MCP host\'s server declaration and a set_auto_enrich_mode call in this session), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
+      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults this session cannot use, NOT pinged — name, type, reason: either "disabled" for a vault skipped by the disabledVaults config, or "not reachable from this workspace (…)" for a vault that exists but that this workspace\'s binding does not name while vaultReach: "declared" is active — that second case is fixed in-session with confirm_workspace_binding, never by editing config.json), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "binding" = the confirmed workspace binding in the user\'s OWN config chose it — the only origin that cannot have arrived with a git clone, and the one that outranks the environment; "workspace-dotenv" = this project\'s own .env file chose it — possible for autoEnrichModeSource ONLY: for defaultVaultSource and lockSource this origin never appears any more, because a workspace file can no longer choose the vault or the lock, only propose them (see bindingHint) — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — the auto-enrichment mode from three of its four valid values — never "FullAuto", see autoEnrichModeRefused — VAULT_PATH only when it names the workspace directory itself, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs. The default vault and the lock it can only PROPOSE, never set (see bindingHint), and it can never name an endpoint, a credential or the router\'s own config, so this is about consent, not access; do not advise editing a project .env to change the vault — confirm_workspace_binding is the way), workspaceBinding (WHICH vaults this workspace is bound to, from the user\'s own config — { vault, also[], locked, confirmedAt, confirmedVia }, or NULL. Read the three states carefully before phrasing them: an object with an empty `also` = bound to ONE vault; an object with a non-empty `also` = bound to SEVERAL, all addressable by name; null = NO binding, which means ALL vaults are available and the cascade picks the default — null is never "no vault"), bindingImported (null in the normal case; otherwise what the ONE-TIME migration created at THIS start-up, as { vault, at, locked, dotenvFile } — the router imported this workspace\'s .env hint as a confirmed binding, once, so that installations that predate the binding registry kept working when a project file stopped being able to choose a vault. NOBODY CONFIRMED IT: say so, name the vault, and say that confirm_workspace_binding({ clear: true }) undoes it permanently while confirm_workspace_binding({ vault }) adopts it. The import runs at most once per workspace and never for a dotenv file written after the upgrade, so a freshly cloned repository is never imported; a binding it created carries confirmedVia "migration", which is how a later session still knows nobody confirmed it. `locked` true means the file ALSO carried an OBSIDIAN_ROUTER_LOCKED line an earlier lock_vault --persist had written, and the imported binding is locked so that isolation survives the upgrade — say that too, because the session is then restricted to one vault by a decision nobody made today), bindingHint (what PROPOSED the default vault for this workspace without being able to decide it, as { status, hint, boundTo, origin }, or null. status is "none" or "confirmed" (both mean silence — nothing was turned away), "unconfirmed" (a registered vault this workspace never confirmed), "unknown-vault" (a vault this machine does not have), or "conflicts" (a binding exists and the environment names a different vault; the binding wins). For the last three, tell the user what was asked for and that it was not applied — and READ origin BEFORE naming the source: "workspace-dotenv" means this project\'s own .env file proposed it (that is the file to edit, and a cloned repository carries one), while "host" means the MCP host\'s server declaration or the launching shell did, in which case blaming the project file would send the user to the wrong place; "runtime" and "unknown" name neither. A SEPARATE field and never an origin of the setting: a hint that was not applied is not the source of what replaced it), autoEnrichModeRefused (null in the normal case; otherwise the auto-enrichment mode this workspace\'s .env asked for AT START-UP and did NOT get, as { value, canonical, origin, variable, reason } — a fact about what the file said when the router started, so it stays non-null after a set_auto_enrich_mode call in this session and after a persist that rewrote the line; read it beside autoEnrichMode and autoEnrichModeSource, which say what is in force NOW. Exactly one value is refused this way: "FullAuto", in any of its spellings, when it comes from a workspace file — the mode that lets Claude write into a vault without asking again is not something a file travelling with a cloned repository may turn on. It is a SEPARATE field and never an origin: autoEnrichModeSource keeps naming what actually took effect, because a refused value is not the source of what replaced it. When this is non-null, tell the user their project file asked for FullAuto and was refused, and that the two places the mode is still taken from are the MCP host\'s server declaration and a set_auto_enrich_mode call in this session), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1385,9 +1387,14 @@ const WRITE_TOOL_NAMES = new Set([
  *   - `provision_vault` / `register_remote_vault` — they REGISTER a vault,
  *     they do not address one that could already carry a write tier. Neither
  *     tool even declares a `vault` argument.
- *   - `download_page_assets` — writes to an arbitrary, caller-supplied
- *     filesystem path (`outputDir`, sandboxed by MD_ALLOWED_PATHS), never to
- *     a registered vault at all; it does not call `resolveVault` anywhere.
+ *   - `download_page_assets` — writes to a caller-supplied FILESYSTEM path
+ *     (`outputDir`), never over REST, and carries no `vault` argument, so
+ *     the vault-argument gate below has nothing to resolve. It is NOT
+ *     ungated: `outputDir` very often sits INSIDE a registered local vault
+ *     (`<vault>/wiki/.assets/<slug>/` is the `wiki-ingest` skill's own
+ *     convention), so the dispatcher gates it separately by PATH CONTAINMENT
+ *     — see `assertAssetOutputDirWritable`. Review round 3 found the first
+ *     version of this comment ("never to a registered vault at all") false.
  *
  * Exported for testing so the exemption stays visible rather than living only
  * inside `requiresAlsoTierCheck`'s closure.
@@ -1425,8 +1432,14 @@ const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set(['provision_vault', 'register_remote
  *     distinguish them — found and fixed before this landed.)
  *   - `delete_file` with `preview: true` returns a sealed plan and deletes
  *     nothing (src/tools/delete-file.mjs) — only `confirm: true` deletes.
- *   - `build_wiki_graph` with `dryRun: true` builds + validates + reports
+ *   - `build_wiki_graph` with a TRUTHY `dryRun` builds + validates + reports
  *     counts, writing neither the canonical nor the derived graph copy.
+ *     Truthy, not `=== true`, because that is what its handler branches on
+ *     (`if (!dryRun)`), and the two must fail in the same direction: a
+ *     client sending the string `"true"` gets a dry run from both, never a
+ *     real write from one and an exemption from the other. (Round 1 of the
+ *     review aligned them the other way — strict on both — which turned
+ *     `dryRun: "true"` into an unintended WRITE; round 3 reversed it.)
  *   - `build_search_index` / `refresh_okf_projections` with `check: true`
  *     report a drift/plan seal and write nothing.
  */
@@ -1435,7 +1448,7 @@ function requiresAlsoTierCheck(toolName, args) {
   if (toolName === 'execute_template' && args.createFile !== true) return false;
   if (toolName === 'write_bundle' && (args.preview === true || normalizeRecoverArg(args.recover) === true)) return false;
   if (toolName === 'delete_file' && args.preview === true) return false;
-  if (toolName === 'build_wiki_graph' && args.dryRun === true) return false;
+  if (toolName === 'build_wiki_graph' && Boolean(args.dryRun)) return false;
   if (toolName === 'build_search_index' && args.check === true) return false;
   if (toolName === 'refresh_okf_projections' && args.check === true) return false;
   return true;
@@ -1468,6 +1481,81 @@ function requiresAlsoTierCheck(toolName, args) {
  */
 function toolActuallyWrote(toolName, args) {
   return requiresAlsoTierCheck(toolName, args) || ALSO_TIER_EXEMPT_TOOL_NAMES.has(toolName);
+}
+
+/**
+ * May the ROUTER ITSELF write to `vaultName` on its own initiative — an
+ * audit line, a first-contact repair, a projections/index refresh — given the
+ * write tier this workspace's binding puts that vault under?
+ *
+ * ONE predicate for the three automatic writers (decision portee-et-mode-
+ * ecriture-des-vaults, trap 2), so that none of them re-derives the rule.
+ * Round 3 of the review found that the tier check lived only in
+ * `noteVaultContact`: the default-vault repair after `list_vaults` called
+ * `conformanceGate.ensure` directly, and the audit block wrote wherever
+ * `resolveVault(args.vault)` landed — which, for the three tools that carry
+ * no `vault` argument, is the SESSION DEFAULT, i.e. the locked vault when
+ * `lock_vault` is in force. Lock the session to a soft or `alsoLocked`
+ * secondary, call `download_page_assets`, and the audit line landed there.
+ *
+ *   - `locked` — never.
+ *   - `soft`   — only on the back of a call that carried the user's explicit
+ *     go-ahead (`confirmed`), and only for what belongs to THAT write (its
+ *     audit line). A repair pass rewriting projections is not what the user
+ *     consented to, so the two repair callers pass nothing here.
+ *   - anything else (primary, `alsoWritable`, no binding, `openVaults`) — yes.
+ */
+function automaticWriteAllowed(vaultName, reg, { confirmed = false } = {}) {
+  const tier = alsoWriteTierFor(vaultName, reg);
+  if (tier === 'locked') return false;
+  if (tier === 'soft') return confirmed === true;
+  return true;
+}
+
+/**
+ * Should a QUEUED (debounced) maintenance refresh for `vaultName` be dropped
+ * when it finally fires, given what is true NOW rather than when it was
+ * scheduled? See `shouldSkip` in helpers/projections-refresh.mjs for the
+ * race this closes.
+ *
+ * Narrower than `automaticWriteAllowed` on purpose: a queued refresh follows
+ * a write that was already permitted (primary, `alsoWritable`, or a CONFIRMED
+ * soft-tier write), so re-reading `soft` here would refuse housekeeping for a
+ * write the user approved. Only two facts are absolute enough to cancel
+ * already-queued work: the vault became `alsoLocked` ("no exceptions, ever"),
+ * or this workspace can no longer NAME it at all (binding cleared or
+ * re-bound elsewhere, `openVaults` edited) — a refresh from a workspace that
+ * cannot reach the vault would be a write `resolveVault()` itself refuses.
+ */
+function queuedMaintenanceBlocked(vaultName, reg) {
+  if (!isVaultReachable(vaultName, reg)) return true;
+  return alsoWriteTierFor(vaultName, reg) === 'locked';
+}
+
+/**
+ * `download_page_assets` writes files under `args.outputDir` on the local
+ * disk. When that directory sits inside a registered LOCAL vault's folder,
+ * it is a write to that vault by another door — the same door
+ * `wiki-ingest --save-assets` uses on purpose — and both guards apply to it
+ * exactly as they would to a REST write: the vault must be reachable from
+ * this workspace, and its write tier must allow it. A directory outside every
+ * registered vault is left to `MD_ALLOWED_PATHS`, as before.
+ *
+ * Pure apart from `path.resolve`; exported for tests through `_internals`.
+ */
+function assertAssetOutputDirWritable(args, reg) {
+  const owner = vaultContainingPath(args?.outputDir, reg);
+  if (!owner) return null;
+  if (!isVaultReachable(owner.name, reg)) {
+    throw new Error(
+      `download_page_assets: outputDir is inside vault "${owner.name}", which is registered but not `
+      + 'reachable from this workspace (vaultReach: "declared" is active, and this workspace\'s '
+      + 'binding does not name it, nor is it in `openVaults`). Bind this workspace to it with '
+      + 'confirm_workspace_binding, add it to `openVaults`, or choose an outputDir elsewhere.',
+    );
+  }
+  assertVaultWritable(owner, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: 'download_page_assets' });
+  return owner;
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,6 +1628,13 @@ const maintainVault = createMaintenancePass({
   // Middleware writes bypass the tool layer, hence the audit trail — a one-line
   // stderr trace keeps them observable (review v0.59.0 N4).
   logInfo: (msg) => console.error(msg),
+  // Re-evaluated INSIDE the per-vault lock, against whatever registry is live
+  // when the pass actually runs — `liveRegistryRef` is assigned in
+  // startServer(), long before any pass can be requested; the closure only
+  // reads it at run time.
+  shouldSkip: (vault) => (liveRegistryRef?.current
+    ? queuedMaintenanceBlocked(vault.name, liveRegistryRef.current)
+    : false),
 });
 
 // Set once, inside `startServer()`, right after `registryRef` is created —
@@ -1557,13 +1652,7 @@ const projectionsScheduler = createProjectionsScheduler({
   delayMs: projectionsDebounceMs,
   shouldSkip: (vault) => {
     if (!liveRegistryRef?.current) return false;
-    // Hard tier only. A queued refresh follows a write that was already
-    // permitted (primary, alsoWritable, or a CONFIRMED soft-tier write) —
-    // re-litigating that against a live "soft" reading would be wrong in the
-    // other direction, refusing housekeeping for a write the user already
-    // approved. Only `alsoLocked`'s unconditional "no exceptions, ever" is
-    // absolute enough to retroactively cancel already-queued maintenance.
-    return alsoWriteTierFor(vault.name, liveRegistryRef.current) === 'locked';
+    return queuedMaintenanceBlocked(vault.name, liveRegistryRef.current);
   },
 });
 
@@ -2791,8 +2880,7 @@ export async function startServer({ configPath, watch = true } = {}) {
     // `'writable'` (primary, no binding, openVaults, or explicitly writable)
     // proceed unchanged — this is the SAME predicate the also-tier write gate
     // uses, not a re-derived approximation of it.
-    const tier = alsoWriteTierFor(target.name, reg);
-    if (tier === 'soft' || tier === 'locked') return;
+    if (!automaticWriteAllowed(target.name, reg)) return;
     const pass = Promise.resolve(conformanceGate.ensure(target)).catch(() => null);
     if (blocking) await pass;
   }
@@ -2855,6 +2943,9 @@ export async function startServer({ configPath, watch = true } = {}) {
         const target = reg.resolveVault(args.vault);
         assertVaultWritable(target, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: name });
       }
+      // The one write tool that reaches a vault through the FILESYSTEM rather
+      // than a `vault` argument — gated by where `outputDir` points instead.
+      if (name === 'download_page_assets') assertAssetOutputDirWritable(args, reg);
 
       const result = await handler(reg, args);
 
@@ -2873,7 +2964,16 @@ export async function startServer({ configPath, watch = true } = {}) {
         const def = result.defaultVaultStatus;
         if (def && def.online === true) {
           try {
-            void Promise.resolve(conformanceGate.ensure(reg.resolveVault(def.name))).catch(() => {});
+            // The SAME tier rule as `noteVaultContact` — this repair used to
+            // call the gate directly and skip it (review round 3). Today the
+            // default is always the binding's primary when a binding exists,
+            // so the check is a no-op by construction; it is here so that the
+            // day the cascade can land on a secondary, this site is already
+            // covered rather than being the one that was forgotten.
+            const target = reg.resolveVault(def.name);
+            if (automaticWriteAllowed(target.name, reg)) {
+              void Promise.resolve(conformanceGate.ensure(target)).catch(() => {});
+            }
           } catch { /* the default vault vanished between ping and resolve */ }
         }
       }
@@ -2895,36 +2995,45 @@ export async function startServer({ configPath, watch = true } = {}) {
         const auditLine = formatAuditLine({ userId, toolName: name, auditPath });
         try {
           const auditVault = reg.resolveVault(args.vault);
-          // Direct REST call → break the recursion that would happen if we
-          // routed through `appendToFileTool` (which is itself a write tool
-          // that would trigger another audit, ad infinitum).
-          //
-          // v0.58.0: `journal.md`, with `log.md` as a fallback for vaults
-          // not yet migrated. Order matters — appending with
-          // `createTargetIfMissing` on the FIRST try would silently create a
-          // second journal next to the existing `log.md` and split the audit
-          // trail in two. So: try each name without creating, and only
-          // create the current name when neither exists. The migrated case
-          // (the common one) still costs exactly one round-trip.
-          const [journalRel, legacyJournalRel] = scaffoldCandidates('journal');
-          let appended = false;
-          for (const rel of [journalRel, legacyJournalRel]) {
-            try {
-              await restAppendToFile(auditVault, rel, auditLine, {
-                createTargetIfMissing: false,
-              });
-              appended = true;
-              break;
-            } catch (e) {
-              // Only a 404 means "not under this name"; an offline or
-              // unauthorized vault must not fall through to a create.
-              if (!shouldTryLegacyScaffold(e)) throw e;
+          // The audit line is itself a write to `auditVault`, and for the
+          // three tools that carry no `vault` argument that vault is whatever
+          // the SESSION resolves by default — the locked vault under
+          // `lock_vault`, which may be a soft or `alsoLocked` secondary. The
+          // tier rule applies here exactly as it does to the repair passes
+          // (review round 3); a CONFIRMED soft-tier write keeps its audit line,
+          // since that line belongs to the write the user just approved.
+          if (automaticWriteAllowed(auditVault.name, reg, { confirmed: args.confirmSecondaryWrite === true })) {
+            // Direct REST call → break the recursion that would happen if we
+            // routed through `appendToFileTool` (which is itself a write tool
+            // that would trigger another audit, ad infinitum).
+            //
+            // v0.58.0: `journal.md`, with `log.md` as a fallback for vaults
+            // not yet migrated. Order matters — appending with
+            // `createTargetIfMissing` on the FIRST try would silently create a
+            // second journal next to the existing `log.md` and split the audit
+            // trail in two. So: try each name without creating, and only
+            // create the current name when neither exists. The migrated case
+            // (the common one) still costs exactly one round-trip.
+            const [journalRel, legacyJournalRel] = scaffoldCandidates('journal');
+            let appended = false;
+            for (const rel of [journalRel, legacyJournalRel]) {
+              try {
+                await restAppendToFile(auditVault, rel, auditLine, {
+                  createTargetIfMissing: false,
+                });
+                appended = true;
+                break;
+              } catch (e) {
+                // Only a 404 means "not under this name"; an offline or
+                // unauthorized vault must not fall through to a create.
+                if (!shouldTryLegacyScaffold(e)) throw e;
+              }
             }
-          }
-          if (!appended) {
-            await restAppendToFile(auditVault, journalRel, auditLine, {
-              createTargetIfMissing: true,
-            });
+            if (!appended) {
+              await restAppendToFile(auditVault, journalRel, auditLine, {
+                createTargetIfMissing: true,
+              });
+            }
           }
         } catch (auditErr) {
           // Best-effort: don't fail the original write. Log the cause so
@@ -2948,7 +3057,17 @@ export async function startServer({ configPath, watch = true } = {}) {
       // must not schedule a real maintenance write either.
       if (projectionsScheduler && toolActuallyWrote(name, args)) {
         try {
-          projectionsScheduler.noteWrite(reg.resolveVault(args.vault), name, args);
+          // The SAME tier rule as the audit line above, for the same reason
+          // (review round 3): `args.vault` and — through `pathsTouchedByWrite`,
+          // which has no schema in scope — `args.path` are read from the RAW
+          // request, and the SDK does not enforce `additionalProperties`. A
+          // call to an exempt tool carrying an undeclared `vault: "B"` plus a
+          // `path` under wiki/ would otherwise schedule a real maintenance
+          // write on a secondary the gate never looked at.
+          const target = reg.resolveVault(args.vault);
+          if (automaticWriteAllowed(target.name, reg, { confirmed: args.confirmSecondaryWrite === true })) {
+            projectionsScheduler.noteWrite(target, name, args);
+          }
         } catch { /* nav upkeep must never block or fail a user write */ }
       }
 
@@ -3224,6 +3343,11 @@ export const _internals = {
   // off WRITE_TOOL_NAMES alone, so a preview/dry-run call still produced a
   // real write. Exposed for the same reason as requiresAlsoTierCheck above.
   toolActuallyWrote,
+  // Round 3: the ONE tier rule for the router's own writes (audit line,
+  // repairs) and the fire-time rule for a queued refresh.
+  automaticWriteAllowed,
+  queuedMaintenanceBlocked,
+  assertAssetOutputDirWritable,
   PKG_VERSION,
   isMcpContentPayload,
   // v0.71.0 — the wire boundary. Exposed so a test can prove the ONE place

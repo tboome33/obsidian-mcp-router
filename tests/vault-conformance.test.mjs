@@ -613,6 +613,58 @@ describe('createMaintenancePass — failures never reach the caller', () => {
 // A7 — ONE lock, shared by every rebuild path
 // ---------------------------------------------------------------------------
 
+describe('createMaintenancePass — shouldSkip is re-checked INSIDE the lock, when the pass actually runs', () => {
+  // Phase 3 review round 3: every caller decides "may I write here" when it
+  // REQUESTS the pass, then waits for the per-vault lock. What is true when
+  // the pass finally runs is what must decide.
+  test('a blocked vault yields a terminal, successful no-op — nothing written, nothing to retry', async () => {
+    const v = nextVault();
+    let refreshed = 0;
+    const logged = [];
+    const maintain = createMaintenancePass({
+      refreshProjections: async () => { refreshed += 1; return {}; },
+      ensureSearchIndex: async () => { refreshed += 1; return {}; },
+      shouldSkip: () => true,
+      logInfo: (m) => logged.push(m),
+    });
+    const report = await maintain(v);
+    assert.equal(refreshed, 0);
+    assert.equal(report.ok, true);
+    assert.equal(report.skipped, 'blocked-at-run-time');
+    assert.ok(logged.some((m) => /maintenance skipped/.test(m)), 'the skip is observable on stderr like every other middleware write');
+  });
+
+  test('the vault becomes blocked WHILE a pass is queued behind the lock — the queued pass skips, the running one finishes', async () => {
+    const v = nextVault();
+    let blocked = false;
+    let refreshed = 0;
+    const maintain = createMaintenancePass({
+      refreshProjections: async () => {
+        refreshed += 1;
+        // Simulate the hot-reload landing during the first pass: the second,
+        // already-queued pass must see it.
+        blocked = true;
+        await new Promise((r) => setTimeout(r, 10));
+        return {};
+      },
+      shouldSkip: () => blocked,
+      logInfo: () => {},
+    });
+    const [first, second] = await Promise.all([maintain(v), maintain(v)]);
+    assert.equal(refreshed, 1, 'only the pass that was already running wrote');
+    assert.equal(first.skipped, undefined);
+    assert.equal(second.skipped, 'blocked-at-run-time');
+  });
+
+  test('default (no shouldSkip) is unchanged: the pass runs', async () => {
+    const v = nextVault();
+    let refreshed = 0;
+    const maintain = createMaintenancePass({ refreshProjections: async () => { refreshed += 1; return {}; }, logInfo: () => {} });
+    await maintain(v);
+    assert.equal(refreshed, 1);
+  });
+});
+
 describe('the per-vault maintenance lock', () => {
   test('two sections on one vault never overlap', async () => {
     const v = nextVault();

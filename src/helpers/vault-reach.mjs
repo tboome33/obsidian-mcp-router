@@ -43,10 +43,21 @@
  * session can merely name.
  *
  *   - `alsoWritable` — direct write, no friction.
- *   - `alsoLocked`   — refused UNCONDITIONALLY. No parameter passed by a
- *     caller can lift this; only editing config.json removes a vault from
- *     the list. This is what makes "never, no exceptions" actually true
- *     rather than a description of what the model is supposed to do.
+ *   - `alsoLocked`   — refused UNCONDITIONALLY for the SECONDARY role. No
+ *     write parameter can lift this; only editing config.json removes a
+ *     vault from the list. This is what makes "never, no exceptions" actually
+ *     true rather than a description of what the model is supposed to do.
+ *     The list is global but the ROLE is per binding — the decision keeps
+ *     the same base read-write in the workspace that maintains it, which
+ *     declares it as PRIMARY from the start. Review round 3 found the one
+ *     conversational way out: PROMOTING a locked secondary to primary from
+ *     inside the workspace that declared it as secondary — through
+ *     `confirm_workspace_binding({ vault })` or `lock_vault({ persist })`,
+ *     which rewrites the binding with the locked vault as primary. Both
+ *     now refuse while the vault is a locked secondary of the live binding
+ *     (`isPromotionOfLockedSecondary`). Clearing the binding first and
+ *     re-binding is still possible — two explicit, announced acts, which is
+ *     what hygiene against inadvertence asks for, not access control.
  *   - neither list (the default for an `also` vault) — SOFT read-only:
  *     refused unless the caller passes an explicit confirmation, which the
  *     tool's own description instructs it to obtain from the user in
@@ -64,7 +75,9 @@
  *     never honoured, so it has to exist regardless of what item 15 finds.
  */
 
+import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
+import { normalizePathForCompare } from './vault-path-identity.mjs';
 
 /**
  * The `confirmSecondaryWrite` schema property, shared BY IDENTITY across
@@ -108,6 +121,34 @@ export function isVaultReachable(vaultName, registry) {
 }
 
 /**
+ * The registered LOCAL vault whose folder contains `fsPath`, or null.
+ *
+ * A vault is reached over REST by NAME everywhere in this router except one
+ * door: a tool that writes to a caller-named directory on the local disk
+ * (`download_page_assets`' `outputDir`). When that directory is inside a
+ * vault's folder, it is a write to that vault, and the two guards of this
+ * module apply to it by the vault's name. Compared through the same
+ * normalisation the registry uses to tell two spellings of one vault apart
+ * (Windows case folded, trailing separators stripped), on the RESOLVED path,
+ * so `..` segments cannot step out of a folder they appear to be under.
+ *
+ * @param {unknown} fsPath
+ * @param {{ vaults?: Array<{ name: string, path?: string }> }} registry
+ * @returns {object|null} the vault entry, or null when no registered vault contains the path
+ */
+export function vaultContainingPath(fsPath, registry) {
+  if (typeof fsPath !== 'string' || fsPath.trim() === '') return null;
+  const child = normalizePathForCompare(path.resolve(fsPath));
+  const vaults = registry && Array.isArray(registry.vaults) ? registry.vaults : [];
+  for (const v of vaults) {
+    if (!v || typeof v.path !== 'string' || v.path === '') continue;
+    const root = normalizePathForCompare(path.resolve(v.path));
+    if (child === root || child.startsWith(`${root}\\`) || child.startsWith(`${root}/`)) return v;
+  }
+  return null;
+}
+
+/**
  * The write tier `vaultName` falls under, for the CURRENT workspace's
  * binding — or `null` when the also-tier gate does not apply at all: no
  * binding, the vault is the binding's own PRIMARY, or the vault is not
@@ -133,6 +174,27 @@ export function alsoWriteTierFor(vaultName, registry) {
 }
 
 /**
+ * Would binding this workspace to `vaultName` as its PRIMARY promote a vault
+ * that the LIVE binding currently declares as an `alsoLocked` SECONDARY?
+ *
+ * The one conversational way past the hard tier that review round 3 found:
+ * `alsoWriteTierFor` returns null for a primary, so any tool that rewrites
+ * the binding with the locked vault on top — `confirm_workspace_binding`,
+ * `lock_vault` with `persist` (which records the locked vault as primary,
+ * see tools/lock.mjs `recordLockInBinding`) — lifted "no exceptions" in one
+ * call. Both call this before touching the binding. A workspace with no
+ * binding, or one where the vault is not a secondary, is never affected: it
+ * is not promoting anything.
+ *
+ * @param {string} vaultName
+ * @param {object} registry the live registry
+ * @returns {boolean}
+ */
+export function isPromotionOfLockedSecondary(vaultName, registry) {
+  return alsoWriteTierFor(vaultName, registry) === 'locked';
+}
+
+/**
  * Refuse a write `vault` cannot accept from THIS workspace, given whether the
  * caller already asserted it obtained the user's explicit go-ahead for a
  * soft-tier vault. Silent (no throw) for a primary vault, an `alsoWritable`
@@ -147,10 +209,21 @@ export function assertVaultWritable(vault, registry, { confirmed = false, toolNa
   if (tier === null || tier === 'writable') return;
   const tool = toolName ? `\`${toolName}\`` : 'this tool';
   if (tier === 'locked') {
+    // THE LIMIT, STATED IN THE MESSAGE ITSELF (review round 3): this tier is
+    // about the SECONDARY role. The decision keeps the same base read-write
+    // in the workspace that maintains it, so `alsoLocked` cannot forbid a
+    // workspace from binding the vault as its PRIMARY — and re-binding
+    // (`confirm_workspace_binding`, or `lock_vault` with `persist`) is an
+    // explicit, announced act, not a write parameter. Saying "nothing in
+    // conversation can lift this" was therefore false, and a false absolute
+    // in a refusal is the kind of text the sixth v0.90.0 review hunted.
     throw new Error(
-      `Vault "${vault.name}" is locked read-only as a secondary vault of this workspace `
+      `Vault "${vault.name}" is locked read-only as a SECONDARY vault of this workspace `
       + '(listed in `alsoLocked`). No parameter passed in conversation can override this — '
-      + 'only editing `alsoLocked` in config.json can.',
+      + 'confirmSecondaryWrite is ignored here, and re-binding or persistently locking this workspace '
+      + 'onto that vault to make it the primary is refused while it is listed. Only editing '
+      + '`alsoLocked` in config.json lifts it. (A workspace that MAINTAINS that vault declares it as '
+      + 'its primary from the start; this one declared it as a secondary.)',
     );
   }
   // tier === 'soft' — the one tier a caller CAN pass through, by asserting

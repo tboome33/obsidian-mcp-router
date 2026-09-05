@@ -10,10 +10,65 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
 
 import { _internals } from '../src/index.mjs';
 
-const { requiresAlsoTierCheck, ALSO_TIER_EXEMPT_TOOL_NAMES, WRITE_TOOL_NAMES, toolActuallyWrote } = _internals;
+const {
+  requiresAlsoTierCheck, ALSO_TIER_EXEMPT_TOOL_NAMES, WRITE_TOOL_NAMES, toolActuallyWrote,
+  automaticWriteAllowed, queuedMaintenanceBlocked, assertAssetOutputDirWritable,
+} = _internals;
+
+/**
+ * `assertAssetOutputDirWritable` — the gate for the one write tool that reaches
+ * a vault through the FILESYSTEM (`download_page_assets`' `outputDir`) rather
+ * than a `vault` argument. Review round 3: the exempt-set comment said this
+ * tool "never writes to a registered vault at all", while the tool's own
+ * header documents `<vault>/wiki/.assets/<slug>/` as its normal target.
+ */
+describe('assertAssetOutputDirWritable', () => {
+  const refRoot = path.join(os.tmpdir(), 'index-internals-Ref');
+  const inside = path.join(refRoot, 'wiki', '.assets', 'slug');
+  const reg = (extra = {}) => ({
+    vaults: [
+      { name: 'work', type: 'local', path: path.join(os.tmpdir(), 'index-internals-Work') },
+      { name: 'ref', type: 'local', path: refRoot },
+    ],
+    workspaceBinding: { vault: 'work', also: ['ref'] },
+    alsoWritable: [],
+    alsoLocked: [],
+    ...extra,
+  });
+
+  test('an outputDir outside every registered vault is left alone (null, no throw)', () => {
+    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-elsewhere') }, reg()), null);
+    assert.equal(assertAssetOutputDirWritable({}, reg()), null);
+  });
+
+  test('inside the PRIMARY: allowed', () => {
+    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-Work', 'wiki', '.assets') }, reg())?.name, 'work');
+  });
+
+  test('inside an alsoLocked secondary: refused, confirmed or not', () => {
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoLocked: ['ref'] })), /locked read-only/);
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg({ alsoLocked: ['ref'] })), /locked read-only/);
+  });
+
+  test('inside a soft-tier secondary: refused without the flag, allowed with it', () => {
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg()), /SECONDARY vault/);
+    assert.equal(assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg())?.name, 'ref');
+  });
+
+  test('inside an alsoWritable secondary: allowed', () => {
+    assert.equal(assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'] }))?.name, 'ref');
+  });
+
+  test('inside a vault this workspace cannot REACH: refused, before the tier is even considered', () => {
+    const r = reg({ vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } });
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, r), /not reachable from this workspace/);
+  });
+});
 
 describe('ALSO_TIER_EXEMPT_TOOL_NAMES', () => {
   test('is a Set of the 3 tools that never address an already-registered vault as their write target', () => {
@@ -80,8 +135,14 @@ describe('requiresAlsoTierCheck', () => {
     assert.equal(requiresAlsoTierCheck('delete_file', {}), true);
   });
 
-  test('build_wiki_graph: dryRun:true is exempt, a real build is not', () => {
+  test('build_wiki_graph: a truthy dryRun is exempt (the handler\'s own test is truthy too), a real build is not', () => {
     assert.equal(requiresAlsoTierCheck('build_wiki_graph', { dryRun: true }), false);
+    // A client sending a stringified boolean must land on the SAME side as
+    // the handler's `if (!dryRun)`: a dry run, never an unintended write.
+    assert.equal(requiresAlsoTierCheck('build_wiki_graph', { dryRun: 'true' }), false);
+    assert.equal(requiresAlsoTierCheck('build_wiki_graph', { dryRun: 1 }), false);
+    assert.equal(requiresAlsoTierCheck('build_wiki_graph', { dryRun: false }), true);
+    assert.equal(requiresAlsoTierCheck('build_wiki_graph', { dryRun: 0 }), true);
     assert.equal(requiresAlsoTierCheck('build_wiki_graph', {}), true);
   });
 
@@ -152,5 +213,64 @@ describe('toolActuallyWrote', () => {
     for (const n of ['get_file', 'list_vaults', 'search', 'search_smart']) {
       assert.equal(toolActuallyWrote(n, {}), false);
     }
+  });
+});
+
+/**
+ * `automaticWriteAllowed` — the ONE tier rule for the router's OWN writes
+ * (audit line, first-contact repair, the default-vault repair after
+ * `list_vaults`). Round 3 of the review found the rule lived in only one of
+ * its three sites; this is the predicate the three now share.
+ */
+describe('automaticWriteAllowed', () => {
+  const bound = (extra = {}) => ({ workspaceBinding: { vault: 'work', also: ['ref'] }, alsoWritable: [], alsoLocked: [], ...extra });
+
+  test('no binding, the primary, an alsoWritable secondary, an undeclared vault — allowed', () => {
+    assert.equal(automaticWriteAllowed('any', {}), true);
+    assert.equal(automaticWriteAllowed('work', bound()), true);
+    assert.equal(automaticWriteAllowed('ref', bound({ alsoWritable: ['ref'] })), true);
+    assert.equal(automaticWriteAllowed('elsewhere', bound()), true);
+  });
+
+  test('alsoLocked — never, confirmed or not', () => {
+    const reg = bound({ alsoLocked: ['ref'] });
+    assert.equal(automaticWriteAllowed('ref', reg), false);
+    assert.equal(automaticWriteAllowed('ref', reg, { confirmed: true }), false);
+  });
+
+  test('soft tier — only on the back of a CONFIRMED call', () => {
+    assert.equal(automaticWriteAllowed('ref', bound()), false);
+    assert.equal(automaticWriteAllowed('ref', bound(), { confirmed: false }), false);
+    assert.equal(automaticWriteAllowed('ref', bound(), { confirmed: 'true' }), false, 'the literal boolean, not a truthy string');
+    assert.equal(automaticWriteAllowed('ref', bound(), { confirmed: true }), true);
+  });
+});
+
+/**
+ * `queuedMaintenanceBlocked` — the fire-time rule for a debounced refresh
+ * (helpers/projections-refresh.mjs `shouldSkip`). Narrower than the rule
+ * above on purpose: a queued refresh follows a write that was already
+ * permitted, so `soft` must NOT block it — only `alsoLocked`, or the vault
+ * having become unreachable since.
+ */
+describe('queuedMaintenanceBlocked', () => {
+  const bound = (extra = {}) => ({ workspaceBinding: { vault: 'work', also: ['ref'] }, alsoWritable: [], alsoLocked: [], ...extra });
+
+  test('soft tier does NOT block a queued refresh (the write it follows was confirmed)', () => {
+    assert.equal(queuedMaintenanceBlocked('ref', bound()), false);
+  });
+
+  test('alsoLocked blocks it', () => {
+    assert.equal(queuedMaintenanceBlocked('ref', bound({ alsoLocked: ['ref'] })), true);
+  });
+
+  test('a vault that became unreachable since the write blocks it', () => {
+    const reg = { vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } };
+    assert.equal(queuedMaintenanceBlocked('ref', reg), true, 'ref was in `also` when the write happened; the binding was re-confirmed without it');
+    assert.equal(queuedMaintenanceBlocked('work', reg), false);
+  });
+
+  test('vaultReach inactive, no binding — nothing blocks', () => {
+    assert.equal(queuedMaintenanceBlocked('any', {}), false);
   });
 });

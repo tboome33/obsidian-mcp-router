@@ -772,6 +772,27 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     };
   }
 
+  test('lockVault persist:true REFUSES an alsoLocked secondary (it would record it as primary and lift the hard tier); a volatile lock to it is fine', async () => {
+    // Phase 3 review round 3: `recordLockInBinding` rewrites the binding with
+    // the locked vault on top, and a primary is never under a write tier —
+    // so a persisted lock was a one-call way past "no exceptions", through
+    // the tool whose job is to RESTRICT the session.
+    const reg = {
+      ...makeRegistry(),
+      configPath: path.join(tmpDir, 'never-written.json'),
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false },
+      alsoWritable: [],
+      alsoLocked: ['beta'],
+    };
+    await assert.rejects(lockVault(reg, { vault: 'beta', persist: true }), /alsoLocked SECONDARY/);
+    assert.equal(reg.lockedVault, null, 'refused BEFORE the in-memory lock is applied — no half-state');
+    await assert.rejects(fs.access(reg.configPath), 'and nothing was written');
+
+    const volatile = await lockVault(reg, { vault: 'beta' });
+    assert.equal(volatile.locked, true);
+    assert.equal(reg.lockedVault, 'beta', 'a volatile lock does not touch the binding, so beta stays a locked secondary');
+  });
+
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {
     const reg = makeRegistry();
     const result = await lockVault(reg, { vault: 'alpha' });

@@ -120,9 +120,21 @@ export function createMaintenancePass({
   refreshProjections = null,
   ensureSearchIndex = null,
   logInfo = (msg) => console.error(msg),
+  shouldSkip = () => false,
 } = {}) {
   return function maintain(vault) {
     return withVaultLock(vault.name, async () => {
+      // RE-CHECKED INSIDE THE LOCK, not where the pass was requested. Every
+      // caller of this pass — the debounced flush, first contact, the
+      // default-vault repair — decides "may I write here" at ENQUEUE time,
+      // then waits for this per-vault lock; a config hot-reload in that wait
+      // (a vault turned `alsoLocked`, a binding cleared) is what this closes.
+      // Phase 3 review round 3: the same TOCTOU the debounce had, one writer
+      // over. The answer is a terminal, successful no-op: nothing to retry.
+      if (shouldSkip(vault)) {
+        logInfo(`[obsidian-mcp-router] vault maintenance skipped for vault "${vault.name}": the vault became read-only or unreachable from this workspace while the pass was queued`);
+        return { vault: vault.name, projections: null, searchIndex: null, conflicts: [], errors: [], ok: true, skipped: 'blocked-at-run-time' };
+      }
       const report = {
         vault: vault.name,
         projections: null,

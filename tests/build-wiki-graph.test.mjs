@@ -161,6 +161,17 @@ describe('buildWikiGraphTool — happy path', () => {
     assert.equal(res.counts.pages, 2);
   });
 
+  test('a stringified dryRun ("true", as real MCP clients send) is a dry run, never an unintended write', async () => {
+    // Pinned in the fail-SAFE direction: the also-tier gate in src/index.mjs
+    // exempts this call on the same truthiness, so the two can only ever
+    // agree on "nothing was written".
+    const { deps, writes } = makeVaultFs(files);
+    const res = await buildWikiGraphTool(makeRegistry(), { dryRun: 'true' }, deps);
+    assert.deepEqual(res.written, []);
+    assert.equal(res.dryRun, true);
+    assert.equal(Object.keys(writes).length, 0);
+  });
+
   test('writeUnderstandAnythingCopy:false writes only the canonical file', async () => {
     const { deps, writes } = makeVaultFs(files);
     const res = await buildWikiGraphTool(

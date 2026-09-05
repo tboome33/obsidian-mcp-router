@@ -6,7 +6,8 @@
  * looping list_files / list_vaults / get_file. Resources are READ-ONLY by
  * nature, so this is safe on `OBSIDIAN_ROUTER_READONLY=true` instances.
  *
- * Per active vault we expose its two scaffold pages:
+ * Per active vault this workspace can REACH (see `reachableVaults` below) we
+ * expose its two scaffold pages:
  *   - wiki-meta/catalog.md   → the page catalogue
  *   - wiki-meta/overview.md  → the executive summary
  * Plus one synthetic, router-wide catalogue:
@@ -32,6 +33,20 @@ import {
 import { getFileContent } from './rest-client.mjs';
 import { sanitizeContent, safeForMessage, NO_TRUNCATION } from './helpers/sanitize.mjs';
 import { scaffoldCandidates, shouldTryLegacyScaffold } from './helpers/wiki-meta-scaffolds.mjs';
+import { isVaultReachable } from './helpers/vault-reach.mjs';
+
+/**
+ * The vaults this session may NAME — the same answer `resolveVault()` gives,
+ * applied to the two discovery surfaces of this channel. Without it,
+ * `resources/list` advertised a resource for every registered vault and
+ * `resources/read` on it then refused with "not reachable from this
+ * workspace": a contract that hands out URIs it will not honour, and a
+ * catalogue that leaks the `baseUrl` of vaults this workspace never declared.
+ * A no-op unless `vaultReach: "declared"` is configured.
+ */
+function reachableVaults(registry) {
+  return (registry.vaults || []).filter((v) => isVaultReachable(v.name, registry));
+}
 
 export const RESOURCE_SCHEME = 'obsidian-router';
 export const CATALOG_URI = `${RESOURCE_SCHEME}://_catalog`;
@@ -230,7 +245,7 @@ async function resolveResource(uri, registry, readFile) {
         {
           uri: CATALOG_URI,
           mimeType: 'application/json',
-          text: buildVaultCatalog(registry.vaults),
+          text: buildVaultCatalog(reachableVaults(registry)),
         },
       ],
     };
@@ -300,7 +315,7 @@ export function registerResourceHandlers(server, getRegistry) {
   server.setRequestHandler(ListResourcesRequestSchema, async () => {
     try {
       const registry = getRegistry();
-      return { resources: buildResourceList(registry.vaults) };
+      return { resources: buildResourceList(reachableVaults(registry)) };
     } catch (err) {
       // The same boundary as ReadResource, for the same reason: `getRegistry()`
       // reads a hot-reloaded config, and a config-load failure names the file it

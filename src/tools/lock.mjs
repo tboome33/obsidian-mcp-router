@@ -35,7 +35,7 @@ import {
   readBinding,
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
-import { isVaultReachable } from '../helpers/vault-reach.mjs';
+import { isVaultReachable, isPromotionOfLockedSecondary } from '../helpers/vault-reach.mjs';
 /**
  * Lock the router to a single vault.
  *
@@ -76,6 +76,24 @@ export async function lockVault(registry, args = {}) {
         '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, nor is it in ' +
         '`openVaults`). Locking to it would refuse every subsequent call until unlock. Bind this workspace ' +
         'to it with confirm_workspace_binding first, or add it to `openVaults` in config.json.',
+    );
+  }
+
+  // A PERSISTED lock rewrites the binding with the locked vault as PRIMARY
+  // (`recordLockInBinding` below) — and a primary is never under a write
+  // tier. So `lock_vault({ vault: S, persist: true })` on an `alsoLocked`
+  // secondary S was a one-call way past "no exceptions", through a tool whose
+  // whole purpose is to RESTRICT the session (review round 3). Refused
+  // before anything is applied, in-memory lock included, so the refusal
+  // leaves no half-state behind. A volatile lock to S stays allowed: it
+  // does not touch the binding, S stays a locked secondary, and every write
+  // routed to it is still refused by the gate.
+  if (persist && isPromotionOfLockedSecondary(vault, registry)) {
+    throw new Error(
+      `lock_vault: "${vault}" is an alsoLocked SECONDARY of this workspace, and persist:true would `
+      + 'record it as the workspace\'s PRIMARY — lifting that hard read-only tier from the conversation. '
+      + 'Lock without persist (the lock stays for this session only), edit `alsoLocked` in config.json '
+      + 'if this workspace is meant to maintain that vault, or clear the binding first.',
     );
   }
 
