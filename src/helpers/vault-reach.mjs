@@ -84,6 +84,7 @@
  *     never honoured, so it has to exist regardless of what item 15 finds.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
@@ -148,14 +149,34 @@ export function isVaultReachable(vaultName, registry) {
  */
 export function vaultContainingPath(fsPath, registry) {
   if (typeof fsPath !== 'string' || fsPath.trim() === '') return null;
-  const child = normalizePathForCompare(path.resolve(fsPath));
+  const child = normalizePathForCompare(realOrResolved(fsPath));
   const vaults = registry && Array.isArray(registry.vaults) ? registry.vaults : [];
   for (const v of vaults) {
     if (!v || typeof v.path !== 'string' || v.path === '') continue;
-    const root = normalizePathForCompare(path.resolve(v.path));
+    const root = normalizePathForCompare(realOrResolved(v.path));
     if (child === root || child.startsWith(`${root}\\`) || child.startsWith(`${root}/`)) return v;
   }
   return null;
+}
+
+/**
+ * The path as the FILESYSTEM knows it, when it exists; `path.resolve` alone
+ * when it does not (an `outputDir` the tool is about to create). A purely
+ * lexical containment test was escaped by a junction into the vault, by the
+ * `\\?\` long-path prefix, and by an 8.3 short name — all spellings of a
+ * directory inside the vault that do not start with the vault's own spelling.
+ * `realpathSync.native` resolves the three when the path is real; the prefix
+ * is stripped either way. What this still does not see is named in the
+ * header (a `remoteVaults` entry for a local vault has no `path` at all).
+ * (Fable 5.1 round, verifying the gate's assumptions about existing code.)
+ */
+function realOrResolved(p) {
+  const resolved = path.resolve(String(p).replace(/^\\\\\?\\/, ''));
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 /**

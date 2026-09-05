@@ -284,7 +284,9 @@
         "get_file",
         "write_file"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "list_vaults"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": true,

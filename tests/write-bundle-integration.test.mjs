@@ -868,6 +868,47 @@ describe('write_bundle — sealed preview (C3)', () => {
   });
 });
 
+describe('write_bundle — a write step\'s ifNew is checked in the PRE-FLIGHT, like ifMatch (Fable 5.1 round)', () => {
+  // The first version forwarded `ifNew` to the write handler and let it fail
+  // MID-bundle — earlier steps written, then rolled back — while the
+  // shared-vault gate's hint claimed every step was checked before the first
+  // write. Same before-images, same refusal shape as a stale ifMatch.
+  test('a write step with ifNew on a file that EXISTS refuses the whole bundle before any write', async () => {
+    const { registry, store, deps, io } = harness({ files: { 'a.md': 'ALREADY THERE', 'b.md': 'B' } });
+    await assert.rejects(
+      () => writeBundleTool(registry, {
+        steps: [
+          { op: 'write', path: 'b.md', content: 'NEW B' },
+          { op: 'write', path: 'a.md', content: 'NEW A', ifNew: true },
+        ],
+      }, deps),
+      /NOT to exist yet \(ifNew\).*NOTHING was written/s,
+    );
+    assert.equal(store.get('b.md'), 'B', 'the earlier step did not run either');
+    assert.equal(store.get('a.md'), 'ALREADY THERE');
+    assert.equal(io.some(([verb]) => verb !== 'get'), false);
+  });
+
+  test('a preview REPORTS the stale ifNew instead of throwing, in stalePreconditions', async () => {
+    const { registry, deps } = harness({ files: { 'a.md': 'ALREADY THERE' } });
+    const out = await writeBundleTool(registry, {
+      preview: true,
+      steps: [{ op: 'write', path: 'a.md', content: 'NEW A', ifNew: true }],
+    }, deps);
+    assert.equal(out.willRefuse, true);
+    assert.equal(out.stalePreconditions[0].reason, 'target-exists');
+  });
+
+  test('a write step with ifNew on an ABSENT file goes through', async () => {
+    const { registry, store, deps } = harness({ files: {} });
+    const out = await writeBundleTool(registry, {
+      steps: [{ op: 'write', path: 'fresh.md', content: 'NEW', ifNew: true }],
+    }, deps);
+    assert.equal(out.ok, true);
+    assert.equal(store.get('fresh.md'), 'NEW');
+  });
+});
+
 describe('write_bundle — recovery from a journal a crash left behind', () => {
   /** A vault where a bundle died after writing a.md, journal still present. */
   function crashed({ current = { 'a.md': 'HALF WRITTEN', 'created.md': 'PARTIAL' } } = {}) {
@@ -907,6 +948,68 @@ describe('write_bundle — recovery from a journal a crash left behind', () => {
     assert.match(out.message, /mixes files the bundle wrote with files YOU may have edited/);
     assert.equal(io.some(([verb]) => verb !== 'get'), false);
     assert.equal(store.get('a.md'), 'HALF WRITTEN');
+  });
+
+  test('the listing exposes what a GUARDED recovery needs: currentSha256, beforeSha256 and journalPath', async () => {
+    // The first version showed booleans only, so on a shared vault — where the
+    // run needs `expect` — the listing named the files and gave nothing to
+    // guard them with. (Fable 5.1 round.)
+    const { registry, deps } = crashed();
+    const out = await writeBundleTool(registry, { recover: true }, deps);
+    const p = out.pending[0];
+    assert.equal(p.journalPath, JOURNAL);
+    const a = p.files.find((f) => f.path === 'a.md');
+    assert.equal(a.currentSha256, contentSha256('HALF WRITTEN'));
+    assert.equal(a.beforeSha256, contentSha256('ORIGINAL A'));
+    const c = p.files.find((f) => f.path === 'created.md');
+    assert.equal(c.currentSha256, contentSha256('PARTIAL'));
+    assert.equal(c.beforeSha256, null, 'the file did not exist before the bundle');
+  });
+
+  test('a recovery with a matching `expect` restores — the recovery\'s own per-path ifMatch', async () => {
+    const { registry, store, deps } = crashed();
+    const expect = { 'a.md': contentSha256('HALF WRITTEN'), 'created.md': contentSha256('PARTIAL') };
+    const out = await writeBundleTool(registry, { recover: OP_ID, confirm: true, expect }, deps);
+    assert.match(out.outcome, /^rolled-back/);
+    assert.equal(store.get('a.md'), 'ORIGINAL A');
+    assert.equal(store.has('created.md'), false);
+  });
+
+  test('a recovery whose `expect` no longer matches is refused BEFORE any write — someone wrote there since', async () => {
+    const { registry, store, deps, io } = crashed();
+    // The listing said HALF WRITTEN; a sibling workspace has edited since.
+    const expect = { 'a.md': contentSha256('HALF WRITTEN — but changed by another workspace'), 'created.md': contentSha256('PARTIAL') };
+    await assert.rejects(
+      () => writeBundleTool(registry, { recover: OP_ID, confirm: true, expect }, deps),
+      /no longer match.*a\.md.*NOTHING was restored/s,
+    );
+    assert.equal(store.get('a.md'), 'HALF WRITTEN', 'left exactly as it was');
+    assert.equal(store.has('created.md'), true);
+    assert.equal(io.some(([verb]) => verb !== 'get'), false, 'only reads happened');
+  });
+
+  test('`expect` must pin EVERY path the run restores — a missing entry refuses; `only` narrows what must be pinned', async () => {
+    const { registry, store, deps } = crashed();
+    await assert.rejects(
+      () => writeBundleTool(registry, { recover: OP_ID, confirm: true, expect: { 'a.md': contentSha256('HALF WRITTEN') } }, deps),
+      /names no entry for created\.md/,
+    );
+    assert.equal(store.get('a.md'), 'HALF WRITTEN');
+    // Narrowed to a.md, the same map is complete.
+    const out = await writeBundleTool(registry, { recover: OP_ID, confirm: true, only: ['a.md'], expect: { 'a.md': contentSha256('HALF WRITTEN') } }, deps);
+    assert.match(out.outcome, /^rolled-back/);
+    assert.equal(store.get('a.md'), 'ORIGINAL A');
+    assert.equal(store.get('created.md'), 'PARTIAL', 'outside `only`, untouched');
+  });
+
+  test('`expect: null` means "this file does not exist" — and a malformed value is refused', async () => {
+    const { registry, deps } = crashed({ current: { 'a.md': 'HALF WRITTEN' } }); // created.md absent now
+    await assert.rejects(
+      () => writeBundleTool(registry, { recover: OP_ID, confirm: true, expect: { 'a.md': 'stale', 'created.md': null } }, deps),
+      /neither null nor a 64-char/,
+    );
+    const out = await writeBundleTool(registry, { recover: OP_ID, confirm: true, expect: { 'a.md': contentSha256('HALF WRITTEN'), 'created.md': null } }, deps);
+    assert.match(out.outcome, /^rolled-back/);
   });
 
   test('an empty journal directory reports "nothing pending" rather than erroring', async () => {

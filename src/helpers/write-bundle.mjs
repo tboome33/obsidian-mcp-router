@@ -795,6 +795,7 @@ export function outcomeMessage({ outcome, operationId, applied, skipped = 0, tot
     `Bundle ${operationId} ${at} and could NOT be fully rolled back. ${applied} step(s) had run. ` +
     `Still not restored: ${residue.join(', ')}. The rollback journal was KEPT at ${journalPath} — it holds ` +
     `the exact pre-bundle content of every target. Inspect those files, then either repair them by hand or ` +
-    `re-run write_bundle with recover:"${operationId}".`
+    `re-run write_bundle with recover:"${operationId}" (on a vault several workspaces share, add ` +
+    `expect: { path: currentSha256 } copied from the recover:true listing — the run is refused otherwise).`
   );
 }

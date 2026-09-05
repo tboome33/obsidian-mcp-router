@@ -523,10 +523,47 @@ export async function moveFileFromTo(vault, fromPath, toPath, opts = {}) {
  * @param {string} content   — new file content (markdown text)
  * @param {object} [opts]
  */
-export function writeFile(vault, filePath, content, opts = {}) {
+export async function writeFile(vault, filePath, content, opts = {}) {
   const headers = { 'Content-Type': 'text/markdown' };
   if (opts.applyIfContentPreexists === false) {
+    // "CREATE ONLY" IS ENFORCED HERE, IN THE ROUTER — the header alone never
+    // did it. Verified against the installed Local REST API 4.0.2 (the whole
+    // fleet): its bundle contains ZERO occurrences of `Apply-If-Content-
+    // Preexists`; the only related header it reads is
+    // `Reject-If-Content-Preexists`, and only in the PATCH handler. So for the
+    // life of this option — `write_file`'s `ifNew`, the bundle's journal
+    // creation and restore-if-absent, the source ledger's first write, the
+    // reserved-path writer — every "must not exist yet" PUT was a plain
+    // overwrite, and Phase 4's shared-vault gate credited `ifNew: true` with a
+    // compare-and-swap against absence that did not exist. (Fable 5.1 round,
+    // verifying the gate's assumptions about existing code.)
+    //
+    // GET-probe then PUT: check-then-write, one round trip wide — the same
+    // grade as `assertContentMatches`, and `HONEST_LIMIT` says so. A 404 means
+    // absent; any other error is the vault's own and surfaces unchanged. The
+    // header is still sent, harmlessly, for a server that may one day honour it.
     headers['Apply-If-Content-Preexists'] = 'false';
+    let exists = true;
+    try {
+      await getFileContent(vault, filePath);
+    } catch (err) {
+      if (err instanceof RestApiError && err.kind === 'not_found') exists = false;
+      else throw err;
+    }
+    if (exists) {
+      throw new RestApiError(
+        `[${vault.name}] "${filePath}" already exists, and this write was create-only (ifNew / applyIfContentPreexists: false).`,
+        {
+          kind: 'conflict',
+          vaultName: vault.name,
+          status: 409,
+          urlPath: `/vault/${encodePath(filePath)}`,
+          hint:
+            'Read it with get_file and either pass its contentSha256 as ifMatch to replace it deliberately, '
+            + 'or choose another path. Nothing was written.',
+        },
+      );
+    }
   }
   return request(vault, 'PUT', `/vault/${encodePath(filePath)}`, {
     headers,
@@ -870,7 +907,14 @@ export async function patchFile(vault, filePath, args) {
     headers['Create-Target-If-Missing'] = String(createTargetIfMissing);
   }
   if (applyIfContentPreexists != null) {
-    headers['Apply-If-Content-Preexists'] = String(applyIfContentPreexists);
+    // THE HEADER THE PLUGIN ACTUALLY READS. Local REST API 4.0.2's PATCH
+    // handler does `req.get("Reject-If-Content-Preexists") == "true"` — nothing
+    // named `Apply-If-Content-Preexists` exists in its bundle, so the header
+    // this router sent under that name was silently dropped for block and
+    // frontmatter targets (the heading branch is router-side and honoured the
+    // option). Same meaning, inverted spelling: "apply if preexists: false" is
+    // "reject if preexists: true". (Fable 5.1 round.)
+    headers['Reject-If-Content-Preexists'] = applyIfContentPreexists ? 'false' : 'true';
   }
   if (trimTargetWhitespace != null) {
     headers['Trim-Target-Whitespace'] = String(trimTargetWhitespace);

@@ -65,7 +65,7 @@ export const TOOL_NAME = 'write_bundle';
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    "Run several vault writes as ONE logical operation with rollback. A save, an ingestion or a fold touches 3-4 files (the note, an index, the journal, hot.md); today a failure at step 3 leaves the vault half-written and nothing notices. write_bundle captures every target's content BEFORE the first write, persists those before-images to a journal (so a rollback survives the process dying), then runs the steps through the ordinary write_file / append_to_file / patch_file / set_frontmatter / merge_frontmatter / delete_file handlers — every guard they carry still applies. If any step fails, every file the bundle touched is put back to the content the bundle read, and the result says which: `applied` · `rolled-back` · `rolled-back-unverified` (everything is back, but the undo could not be proven) · `rolled-back-partial` (some files are still dirty). Read that field — a failure mid-bundle RETURNS this report with ok:false rather than throwing; only refusals BEFORE the first write throw. HONEST SCOPE: this is recovery, not isolation — a concurrent reader can still observe an intermediate state while the bundle runs, and a bundle is not a lock. A file changed by SOMEONE ELSE is never restored over (that would be the exact clobber ifMatch exists to prevent): it is left alone and named in the report. Attribution is graded — `ours` when the bundle knows the exact bytes it wrote (write/delete steps), `observed` when it can only read the file back after the step (patch/append/frontmatter steps, where a write landing inside that one round trip would be adopted as the bundle's own). Steps may carry `ifMatch`: the preconditions are all checked up front, so a bundle whose targets moved refuses ENTIRELY before writing anything. Use `preview:true` for a sealed plan, and `recover:true` to list journals left behind by a crash.",
+    "Run several vault writes as ONE logical operation with rollback. A save, an ingestion or a fold touches 3-4 files (the note, an index, the journal, hot.md); today a failure at step 3 leaves the vault half-written and nothing notices. write_bundle captures every target's content BEFORE the first write, persists those before-images to a journal (so a rollback survives the process dying), then runs the steps through the ordinary write_file / append_to_file / patch_file / set_frontmatter / merge_frontmatter / delete_file handlers — every guard they carry still applies. If any step fails, every file the bundle touched is put back to the content the bundle read, and the result says which: `applied` · `rolled-back` · `rolled-back-unverified` (everything is back, but the undo could not be proven) · `rolled-back-partial` (some files are still dirty). Read that field — a failure mid-bundle RETURNS this report with ok:false rather than throwing; only refusals BEFORE the first write throw. HONEST SCOPE: this is recovery, not isolation — a concurrent reader can still observe an intermediate state while the bundle runs, and a bundle is not a lock. A file changed by someone else AFTER a step the bundle can attribute is never restored over (that would be the exact clobber ifMatch exists to prevent): it is left alone and named in the report. Where nothing can be attributed — a RECOVERY run, or a step that failed before any post-image existed — the restore goes ahead as `unverified` and the journal keeps a copy of what it overwrote; on a vault several workspaces share, a recovery run therefore requires `expect`. Attribution is graded — `ours` when the bundle knows the exact bytes it wrote (write/delete steps), `observed` when it can only read the file back after the step (patch/append/frontmatter steps, where a write landing inside that one round trip would be adopted as the bundle's own). Steps may carry `ifMatch`: the preconditions are all checked up front, so a bundle whose targets moved refuses ENTIRELY before writing anything. Use `preview:true` for a sealed plan, and `recover:true` to list journals left behind by a crash.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -83,6 +83,7 @@ export const TOOL_DEFINITION = {
             path: { type: 'string', description: 'Vault-relative path this step writes.' },
             content: { type: 'string', description: 'For write / append / patch.' },
             ifMatch: { type: 'string', description: "C1 precondition for this step's file: the contentSha256 you read. Verified for EVERY step before the first write, so a stale bundle refuses whole." },
+            ifNew: { type: 'boolean', description: 'For a write step: the file must NOT exist yet — the precondition against absence, the same one write_file carries. Verified before the first write like ifMatch, so a bundle that would create a file that is already there refuses whole.' },
             confirm: { type: 'boolean', description: 'Required (true) on a delete step.' },
             operation: { type: 'string', description: 'For patch: append | prepend | replace.' },
             targetType: { type: 'string', description: 'For patch: heading | block | frontmatter.' },
@@ -107,6 +108,11 @@ export const TOOL_DEFINITION = {
           'An operationId string → replay that journal\'s rollback (requires confirm:true). Recovery cannot attribute the current content to anyone — it also cannot tell which files the crashed bundle actually reached — so it reports every restore as `unverified`: list first, look at the files, then decide. Narrow it with `only`.',
       },
       only: { type: 'array', items: { type: 'string' }, description: 'For a recovery run: restore ONLY these paths out of the journal. Use it when the listing shows files you know you edited yourself after the crash.' },
+      expect: {
+        type: 'object',
+        description:
+          'For a recovery run: { "<path>": "<contentSha256>" | null } for EVERY path the run will restore (narrow with `only` first), copied from the `recover: true` listing\'s per-file `currentSha256` (null = the file does not exist right now). The recovery is refused BEFORE any write if a file no longer matches — the recovery\'s own per-path ifMatch. REQUIRED on a vault several workspaces share (list_vaults → writesRequireIfMatch), honoured everywhere.',
+      },
       confirm: { type: 'boolean', description: 'Required (true) to RUN a recovery. Ignored when applying a normal bundle.' },
       confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
@@ -428,6 +434,26 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
         message:
           `steps[${step.index}] expects "${step.path}" to still hash to ${ifMatch}, but it now hashes to ` +
           `${before.contentSha256} — someone changed it since you read it.`,
+      });
+    }
+  }
+  // `ifNew` IS A PRECONDITION TOO — against ABSENCE — and it is checked HERE,
+  // before the first write, like `ifMatch`. The first version forwarded it to
+  // the write handler and let it fail MID-bundle (earlier steps written, then
+  // rolled back), while the shared-vault gate's hint claimed every step was
+  // checked up front. Same before-images, same refusal shape. (Fable 5.1 round.)
+  for (const step of steps) {
+    if (step.op !== 'write' || step.args.ifNew !== true) continue;
+    const before = backups.get(step.path);
+    if (before.existed) {
+      stale.push({
+        index: step.index,
+        path: step.path,
+        reason: 'target-exists',
+        actual: before.contentSha256,
+        message:
+          `steps[${step.index}] expects "${step.path}" NOT to exist yet (ifNew), but it does — it hashes to ` +
+          `${before.contentSha256}. Read it and pass ifMatch to replace it deliberately, or choose another path.`,
       });
     }
   }
@@ -780,10 +806,19 @@ async function recover(vault, args, deps) {
           existsNow: current.exists,
           matchesBackup: same,
           wouldChange: !same,
+          // THE TWO HASHES A GUARDED RECOVERY NEEDS, exposed rather than left
+          // for the caller to fetch one file at a time: `currentSha256` is what
+          // `expect` pins (null = absent), `beforeSha256` is what a restore
+          // would put back. The first version showed only booleans, so on a
+          // shared vault — where the run needs `expect` — the listing named
+          // the files and gave nothing to guard them with. (Fable 5.1 round.)
+          beforeSha256: before.contentSha256,
+          currentSha256: current.exists ? current.contentSha256 : null,
         });
       }
       pending.push({
         operationId: id,
+        journalPath: loaded.journalPath,
         state: loaded.journal.state,
         recoverable: loaded.journal.state === JOURNAL_PENDING,
         startedAt: loaded.journal.startedAt,
@@ -804,7 +839,9 @@ async function recover(vault, args, deps) {
           `file marked wouldChange:true is NOT at its pre-bundle content — but a crashed bundle leaves no ` +
           `record of how far it actually got, so that list mixes files the bundle wrote with files YOU may ` +
           `have edited since. Look at them before running write_bundle with recover:"<operationId>" and ` +
-          `confirm:true; pass only:[...] to restore just the ones you recognise as the bundle's.`
+          `confirm:true; pass only:[...] to restore just the ones you recognise as the bundle's, and ` +
+          `expect:{ path: currentSha256 } (from this listing) to refuse the run if any of them changes ` +
+          `first — required on a vault several workspaces share.`
         : `No bundle journals in vault "${vault.name}" — every bundle either applied or rolled back cleanly.`,
     });
   }
@@ -842,6 +879,52 @@ async function recover(vault, args, deps) {
       );
     }
     paths = paths.filter((p) => wanted.includes(p));
+  }
+
+  // `expect` — THE RECOVERY'S OWN PRECONDITION, per path. A recovery replays
+  // with no post-images, so `planRestore` restores over whatever is there as
+  // `unverified`; on a vault several workspaces share, that can undo another
+  // workspace's edit made after the crash. The caller pins what it SAW in the
+  // `recover: true` listing (`currentSha256` per file, `null` for an absent
+  // one), and a path that no longer matches refuses the WHOLE run before any
+  // write — per-path `ifMatch`, in the recovery's own vocabulary. The
+  // shared-vault gate requires it there; anywhere else it is optional and
+  // honoured. Check-then-write, one round trip wide, like `assertContentMatches`
+  // — and the restore itself still goes through `writeFileIfMatch` against the
+  // hash the recovery reads a moment later. (Fable 5.1 round.)
+  if (args.expect !== undefined) {
+    const expect = args.expect;
+    if (!expect || typeof expect !== 'object' || Array.isArray(expect)) {
+      throw new BundleError(
+        'The expect: argument must be an object mapping each journal path to the currentSha256 the ' +
+          'recover:true listing showed for it (null for a file that does not exist).',
+      );
+    }
+    const missing = paths.filter((p) => !Object.hasOwn(expect, p));
+    if (missing.length) {
+      throw new BundleError(
+        `expect: names no entry for ${missing.join(', ')} — a guarded recovery must pin EVERY path it will ` +
+          `restore. Narrow the run with only: or add those paths from the listing. NOTHING was restored.`,
+      );
+    }
+    const drifted = [];
+    for (const p of paths) {
+      const want = expect[p];
+      if (want !== null && !isContentSha256(want)) {
+        throw new BundleError(`expect["${p}"] is neither null nor a 64-char lowercase hex content hash.`);
+      }
+      const current = await probePath(deps.getFileContent, vault, p);
+      const have = current.exists ? current.contentSha256 : null;
+      if (have !== want) drifted.push({ path: p, expected: want, actual: have });
+    }
+    if (drifted.length) {
+      throw new BundleError(
+        `Recovery refused: ${drifted.length} file(s) no longer match what the listing showed ` +
+          `(${drifted.map((d) => d.path).join(', ')}) — someone wrote there since. List again with ` +
+          `recover:true, look at those files, and pass the fresh currentSha256 values. NOTHING was restored.`,
+        { kind: 'conflict', status: 409, drifted },
+      );
+    }
   }
 
   // No post-images survive a crash, so every path a recovery actually CHANGES is

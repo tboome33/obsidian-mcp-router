@@ -8,15 +8,16 @@
  * ---------------------------------------------------------------------------
  * WHAT THIS IS FOR
  * ---------------------------------------------------------------------------
- * `write_file` and its seven siblings already implement compare-and-swap: pass
+ * `write_file` and its six siblings already implement compare-and-swap: pass
  * `ifMatch` (the `contentSha256` a `get_file` returned) and the write is
  * refused with a 409 if the file changed since you read it. The mechanism has
  * existed on both sides for a long time — the router's `ifMatch` argument, the
  * bridge's `PUT /vault-cas/*` route. It was simply OPTIONAL, and the
- * measurement taken while the decision was written says what optional bought:
- * of the 21 `write_file` call sites in this repository's own skills and
- * commands, 11 mention `ifMatch`. Blind writing is the normal case, not the
- * exception.
+ * measurement taken while the decision was written (2026-09-04, by hand, over
+ * skills/ and commands/) says what optional bought: of the 21 `write_file`
+ * call sites counted then, 11 mentioned `ifMatch`. The tree has grown since —
+ * re-measure rather than quote the figure. Blind writing is the normal case,
+ * not the exception.
  *
  * Two sessions on two different projects, both bound to the same reference
  * vault, can write the same note minutes apart and neither ever learns. The
@@ -64,9 +65,10 @@
  * live copy, apply to the file.
  *
  * So the attachment count is read from the file, per call, through
- * `createBindingsReader` — an `mtime`+`size` guard means the parse happens
- * only after the file actually changes, which on this path costs a `stat` next
- * to a REST round trip.
+ * `createBindingsReader` — the bytes are read every time and re-parsed only
+ * when they changed, which on this path costs one small file read next to a
+ * REST round trip. (Not `mtime`+`size`: a coarse timestamp hides a same-length
+ * replacement — Codex round on 23bbbaa.)
  *
  * ---------------------------------------------------------------------------
  * THE HONEST LIMIT (the decision requires it to be stated WITH the mechanism)
@@ -94,7 +96,15 @@
 
 import fs from 'node:fs';
 import { canonicalWorkspaceKey, normalizeBinding, boundVaults, WORKSPACE_BINDINGS_KEY } from './workspace-bindings.mjs';
-import { isRecoveryCall } from './write-targets.mjs';
+// The bundle's OWN normaliser and id test, not a mirror of them. The first
+// version used `isRecoveryCall` (write-targets.mjs) — a second copy of the same
+// rule, which disagreed with the handler on non-string junk (`recover: 1`), so
+// a malformed call met this gate's refusal instead of the handler's "invalid
+// recover value". Two predicates asking one question is how they end up
+// disagreeing; this one now asks the handler's. (Fable 5.1 round.)
+import { normalizeRecoverArg, isOperationId } from './write-bundle.mjs';
+// A C3 plan seal IS a content-pinned precondition (see `preconditionState`).
+import { isPlanSeal } from './plan-seal.mjs';
 // The ONE boundary that turns a config key into a list of names — container
 // guard included, so a hand-edited `openVaults: "roland"` is not iterated
 // character by character. Reading `config.openVaults` here by hand duplicated
@@ -162,22 +172,18 @@ export function workspacesDeclaring(vaultName, config) {
  * @param {string} vaultName
  * @param {{ openVaults?: string[] }} registry the live registry (for `openVaults`)
  * @param {object|null} config the config as it is ON DISK RIGHT NOW, or null
- *   when it could not be read — in which case only the `openVaults` half can
- *   be answered, which is stated rather than silently treated as "no
- *   requirement". See `createBindingsReader`, which keeps the last good copy
- *   precisely so this argument is almost never null.
+ *   when it has never been readable — in which case the answer is UNKNOWN and
+ *   treated as shared (fail closed; see below). `createBindingsReader` keeps
+ *   the last good copy and is primed at construction precisely so this
+ *   argument is null only when the router never managed to read its own
+ *   config, which `loadRegistry` would have refused to start on.
  * @returns {{ required: boolean, reason: string|null, workspaces: string[] }}
  */
 export function sharingRequirement(vaultName, registry, config) {
-  // `openVaults` comes from the REGISTRY, not from the freshly-read `config`,
-  // and the asymmetry with the workspace count below is deliberate. The count
-  // must be fresh because the fact it reads is written by ANOTHER PROCESS —
-  // that is the whole of roadmap item 19. `openVaults` is hand-edited by the
-  // user in their own config, exactly like `alsoLocked`, which the sibling gate
-  // (`alsoWriteTierFor`) also reads from the registry: taking one from the file
-  // and the other from memory is how two gates that must agree about which
-  // vaults are open end up disagreeing after a hand edit. Both follow the
-  // registry, and a hand edit takes effect on hot-reload or restart.
+  // `openVaults` is read from BOTH the fresh file and the registry (union,
+  // below). The first version read the registry alone and defended the
+  // asymmetry with the workspace count as "consistency with the sibling gate";
+  // Codex argued the other side and was right — see the comment at the union.
   //
   // AND IT COUNTS WHETHER OR NOT `vaultReach` IS ACTIVE — deliberate, not an
   // oversight. `openVaults` is `vaultReach: "declared"`'s exception list, so
@@ -236,18 +242,13 @@ export function sharingRequirement(vaultName, registry, config) {
  */
 export const IF_MATCH_EXEMPT = new Map([
   ['provision_vault',
-    'Creates a NEW vault on local disk. It addresses no file in an existing vault, so there is '
-    + 'nothing a precondition could pin.'],
+    'Creates a NEW vault on local disk, or ADOPTS an existing folder (the adopt path keeps a '
+    + 'pre-existing app.json and skips plugin directories that are already there — '
+    + 'helpers/vault-wizard-engine.mjs). Either way it writes scaffolding into a folder that is not '
+    + 'yet a registered vault when the call is made, so no binding can declare it shared and there '
+    + 'is no note content a precondition could pin.'],
   ['register_remote_vault',
     'Writes a `remoteVaults` entry to the router\'s own config.json, never to a vault.'],
-  ['download_page_assets',
-    'Declares no per-file precondition, and cannot: it writes a batch of binary files to a '
-    + 'filesystem directory (`outputDir`). It is NOT unguarded — the dispatcher refuses it outright '
-    + 'when `outputDir` sits inside a shared vault (assertAssetOutputDirWritable), because it '
-    + 'CAN overwrite: `downloadOne` writes with a plain fs.writeFile and its collision set only '
-    + 'covers the current batch, never a file already on disk. The first version of this entry '
-    + 'claimed it only ever created new files — false, and an exemption whose reason is false is '
-    + 'worse than a missing one. (Codex round on 23bbbaa.)'],
   ['build_wiki_graph',
     'Regenerates a DERIVED artifact (the knowledge-graph JSON) wholesale from the vault\'s own '
     + 'content. There is no "content I read" to pin — the input is the whole vault — and two '
@@ -259,9 +260,24 @@ export const IF_MATCH_EXEMPT = new Map([
   ['record_source',
     'Does its OWN compare-and-swap on the shared ledger — it reads the fingerprint and writes with '
     + 'ifMatch (src/tools/source-ledger.mjs), refusing rather than clobbering a parallel session\'s '
-    + 'entry. It is already the discipline this gate exists to impose; a caller-supplied '
-    + 'precondition would be a second, weaker one.'],
+    + 'entry; its CREATE path writes with `applyIfContentPreexists: false`, which `rest-client`\'s '
+    + 'writeFile now enforces router-side (the server ignored the header — Fable 5.1 round). It is '
+    + 'already the discipline this gate exists to impose; a caller-supplied precondition would be a '
+    + 'second, weaker one.'],
 ]);
+
+/**
+ * Is `value` the content-pinned precondition a C3 sealed two-phase call
+ * carries? `delete_file` with `approvedPlanSha256` rebuilds the plan from the
+ * file's CURRENT content and refuses on drift before the DELETE
+ * (tools/delete-file.mjs); `write_bundle` with `approvedPlanSha256` verifies
+ * the seal over a plan that carries every target's before-image hash, before
+ * the journal is even written (tools/write-bundle.mjs). Same check-then-mutate
+ * grade as `assertContentMatches`. The first version recognised only `ifMatch`
+ * and sent the documented preview → confirm flows (the `manage-delete` skill,
+ * a sealed bundle) to fetch a hash they had already pinned. (Fable 5.1 round.)
+ */
+const carriesSeal = (args) => isPlanSeal(args.approvedPlanSha256);
 
 /**
  * What a call brings to the table, precondition-wise.
@@ -284,25 +300,35 @@ export function preconditionState(toolName, args = {}) {
   if (IF_MATCH_EXEMPT.has(toolName)) return 'not-applicable';
 
   if (toolName === 'write_bundle') {
-    // A RECOVERY RUN WRITES, AND ITS "OWN GUARD" DOES NOT COVER THIS CASE.
-    //
-    // The first version exempted it, claiming `planRestore` answers `skip` for
-    // a path holding someone else's content. That is true only when the bundle
-    // KNOWS what it left there (`last`). A recovery replays a journal with an
-    // EMPTY last-state, and `planRestore`'s branch for `last == null` returns
-    // `{ action: 'restore', attribution: 'unverified' }` — it restores OVER the
-    // differing content on purpose, because abandoning a half-applied bundle
-    // breaks the guarantee C2 sells. So on a shared vault a recovery can undo
-    // another workspace's edit, with no precondition to stop it.
-    //
-    // The claim was written from the module header rather than from the branch;
-    // an exemption whose stated reason is false is worse than a missing one.
-    // (Codex round on 23bbbaa.) It is therefore `missing` — refused on a shared
-    // vault, with the read-only listing named as the way to proceed.
-    //
-    // The read-only LISTING (`recover: true`) never reaches here at all: the
-    // dispatcher's `requiresAlsoTierCheck` exempts it as a non-write.
-    if (isRecoveryCall(args.recover)) return 'missing';
+    // ROUTED EXACTLY AS THE HANDLER ROUTES: on `recover` first, through the
+    // handler's own normaliser. `true` is the read-only listing (never reaches
+    // here — `requiresAlsoTierCheck` exempts it — but named so the two agree);
+    // an operation id is a RUN; anything else is malformed and the handler
+    // refuses it with its own message, writing nothing.
+    const recover = normalizeRecoverArg(args.recover);
+    if (recover === true) return 'not-applicable';
+    if (isOperationId(recover)) {
+      // A RECOVERY RUN WRITES, AND ITS BUILT-IN GUARD DOES NOT COVER THIS CASE:
+      // `planRestore` answers `skip` for someone else's content only when the
+      // bundle KNOWS what it left there (`last`); a recovery replays with an
+      // EMPTY last-state and restores over differing content as `unverified`,
+      // on purpose. (Codex round on 23bbbaa — the first version had exempted
+      // it on a claim read from the module header, not the branch.)
+      //
+      // ITS PRECONDITION IS `expect`: { path: currentSha256 | null } for every
+      // path the run will restore, taken from the `recover: true` listing. The
+      // handler refuses the whole run before any write if one no longer
+      // matches — per-path `ifMatch`, in the recovery's own vocabulary. The
+      // first repair refused the run outright and sent the caller to "repair
+      // the named files deliberately" with nothing to do it with: no hash, no
+      // journal path, and a `write_file` that cannot carry what the listing
+      // did not show. (Fable 5.1 round.)
+      return expectCarriesPrecondition(args.expect) ? 'carried' : 'missing';
+    }
+    if (recover !== false) return 'not-applicable';
+    // A SEALED APPLY pins every target's before-image in the plan the seal
+    // covers; the handler refuses on drift before the journal is written.
+    if (carriesSeal(args)) return 'carried';
     const steps = Array.isArray(args.steps) ? args.steps : [];
     // An empty bundle writes nothing. Not "satisfied": nothing to satisfy.
     if (steps.length === 0) return 'not-applicable';
@@ -310,16 +336,26 @@ export function preconditionState(toolName, args = {}) {
     return unguarded ? 'missing' : 'carried';
   }
 
-  // `execute_template` with `createFile: true` writes the rendered template at
-  // a caller-named path, through the bridge, and offers NO precondition. It is
-  // therefore 'missing' and can never be anything else on a shared vault —
-  // deliberately, because there is a real way through: render without
-  // `createFile` and write the result with `write_file`, which does carry one.
-  // Exempting it instead would leave the one write tool that overwrites a
-  // caller-named file unguarded, which is precisely the clobber in question.
-  if (toolName === 'execute_template') {
-    return args.createFile === true ? 'missing' : 'not-applicable';
-  }
+  // `execute_template` with `createFile: true` IS create-only: the bridge
+  // refuses an existing `targetPath` with a 409 before rendering, and
+  // `app.vault.create` throws on an existing file besides (bridge
+  // `templates-execute.ts`, since the route's first commit). That is the
+  // compare-and-swap against ABSENCE this gate credits `ifNew: true` with —
+  // the first version refused the one write here that cannot clobber, on the
+  // claim that it "carries no precondition". Read against the bridge's branch,
+  // not this repository's comment about it. (Fable 5.1 round.) A render-only
+  // call writes nothing.
+  if (toolName === 'execute_template') return args.createFile === true ? 'carried' : 'not-applicable';
+
+  // `download_page_assets` writes a batch of BINARY files, which no other tool
+  // can carry (write_file's content is a markdown string). Its precondition is
+  // `createOnly: true` — the asset analogue of `ifNew`: every file is opened
+  // with the `wx` flag, an existing name falls through to the content-hash
+  // name, and an existing content-hash name means the identical asset is
+  // already there. Nothing is ever overwritten. The first repair refused the
+  // tool outright on a shared vault and pointed at write_file, a remedy that
+  // cannot carry a PNG. (Fable 5.1 round.)
+  if (toolName === 'download_page_assets') return args.createOnly === true ? 'carried' : 'missing';
 
   // A DELETE THAT IS NOT CONFIRMED WRITES NOTHING. `delete_file` refuses
   // without `confirm: true`, but `requiresAlsoTierCheck` only exempts the
@@ -329,17 +365,29 @@ export function preconditionState(toolName, args = {}) {
   // own refusal is the right one. (Codex round on 23bbbaa.) Handled here rather
   // than in `requiresAlsoTierCheck`, which the write-tier gate shares and which
   // has its own review history.
-  if (toolName === 'delete_file' && args.confirm !== true) return 'not-applicable';
+  if (toolName === 'delete_file') {
+    if (args.confirm !== true) return 'not-applicable';
+    if (carriesSeal(args)) return 'carried';
+  }
 
   if (typeof args.ifMatch === 'string' && args.ifMatch !== '') return 'carried';
 
   // `write_file`'s OTHER precondition, and the reason a shared vault can still
-  // receive a new note at all: `ifNew: true` sends
-  // `Apply-If-Content-Preexists: false`, so the server refuses with a 409 if
-  // the file already exists. That is a compare-and-swap against ABSENCE — the
-  // only one available for a file that has no hash yet, since there is nothing
-  // to have read. Without it this gate would make "create a note" impossible
-  // on every shared vault, which is not a stricter rule, it is a broken one.
+  // receive a new note at all: `ifNew: true` refuses with a 409 if the file
+  // already exists — a compare-and-swap against ABSENCE, the only one
+  // available for a file that has no hash yet. Without it this gate would make
+  // "create a note" impossible on every shared vault, which is not a stricter
+  // rule, it is a broken one.
+  //
+  // WHERE THAT REFUSAL ACTUALLY HAPPENS, verified rather than assumed: in the
+  // ROUTER, before the PUT (`rest-client.writeFile` probes the path when
+  // `applyIfContentPreexists: false`). The header it also sends,
+  // `Apply-If-Content-Preexists`, is read by NO version of the Local REST API
+  // plugin (4.0.2 reads `Reject-If-Content-Preexists`, and only in PATCH) —
+  // so before the Fable 5.1 round `ifNew: true` was a plain overwriting PUT on
+  // every real installation, and this gate credited it with a protection that
+  // did not exist. The check is check-then-write, one round trip wide, and
+  // `HONEST_LIMIT` says so.
   //
   // `write_file` ONLY: no other tool declares the flag, so accepting it
   // elsewhere would let a caller through on an argument the handler ignores.
@@ -350,7 +398,8 @@ export function preconditionState(toolName, args = {}) {
 
 /**
  * One `write_bundle` step. `ifNew: true` counts on a `write` step for the same
- * reason it does on `write_file`.
+ * reason it does on `write_file` — and the bundle's pre-flight now checks it
+ * against the before-images like `ifMatch`, so a stale one refuses whole.
  */
 function stepCarriesPrecondition(step) {
   if (!step || typeof step !== 'object') return false;
@@ -359,27 +408,61 @@ function stepCarriesPrecondition(step) {
 }
 
 /**
+ * A recovery run's `expect` map: a plain object with at least one entry whose
+ * values are each a content hash or `null` ("this file does not exist").
+ * Coverage of EVERY path the run restores is the handler's check — it alone
+ * knows the journal; here, as everywhere in this gate, presence and shape are
+ * what is asked.
+ */
+function expectCarriesPrecondition(expect) {
+  if (!expect || typeof expect !== 'object' || Array.isArray(expect)) return false;
+  const values = Object.values(expect);
+  if (values.length === 0) return false;
+  return values.every((v) => v === null || isPlanSeal(v));
+}
+
+/**
  * What the caller should pass instead, per tool — the second half of every
  * refusal. A message that says "this is required" without saying "here is the
  * argument that satisfies it" costs a round trip and teaches nothing.
  */
+const NEW_FILE_HINT =
+  ' A file that does not exist yet cannot be guarded this way (get_file 404s and `ifMatch` would '
+  + 'answer "target missing"): create it with write_file and `ifNew: true`, then append or patch it';
 const PRECONDITION_HINT = {
   write_file:
     'pass `ifMatch` (the contentSha256 a get_file returned) to write only if the file still holds '
     + 'what you read, or `ifNew: true` to create a file that must not exist yet',
+  append_to_file:
+    'pass `ifMatch` (the contentSha256 a get_file returned) so the append is refused if the file '
+    + 'changed since you read it.' + NEW_FILE_HINT,
+  patch_file:
+    'pass `ifMatch` (the contentSha256 a get_file returned) so the patch is refused if the file '
+    + 'changed since you read it.' + NEW_FILE_HINT,
+  set_frontmatter:
+    'pass `ifMatch` (the contentSha256 a get_file returned — get_frontmatter does not return one).'
+    + NEW_FILE_HINT,
+  merge_frontmatter:
+    'pass `ifMatch` (the contentSha256 a get_file returned — get_frontmatter does not return one).'
+    + NEW_FILE_HINT,
   move_file:
     'pass `ifMatch` (the contentSha256 of the SOURCE, from get_file) — note that it guards the '
     + 'source; leave `overwrite` false so an existing destination is refused rather than replaced',
+  delete_file:
+    'pass `ifMatch` (the contentSha256 a get_file returned), or the `approvedPlanSha256` a '
+    + 'preview:true call returned — the seal pins the file\'s content and the delete is refused if '
+    + 'it drifted',
   write_bundle:
     'give EVERY step its own `ifMatch` (or `ifNew: true` on a write step) — the bundle checks them '
-    + 'all before its first write, so a stale bundle refuses whole. A RECOVERY RUN cannot be '
-    + 'guarded at all (it replays a journal with no per-path precondition and restores over '
-    + 'whatever is there), so on a shared vault it is refused: list first with `recover: true`, '
-    + 'which is read-only and always allowed, then repair the named files deliberately',
-  execute_template:
-    'this tool carries no precondition, so it cannot write to a shared vault: call it WITHOUT '
-    + '`createFile` to get the rendered text back, then write that with write_file '
-    + '(`ifMatch`, or `ifNew: true` for a new note)',
+    + 'all before its first write, so a stale bundle refuses whole; or pass the `approvedPlanSha256` '
+    + 'a preview:true call returned, which pins every target. For a RECOVERY RUN pass `expect`: '
+    + '{ "<path>": "<currentSha256>" | null } for every path it will restore, copied from the '
+    + '`recover: true` listing (read-only) — the run is refused before any write if a file no '
+    + 'longer matches',
+  download_page_assets:
+    'pass `createOnly: true` — every asset is then written create-only (`wx`), an existing name '
+    + 'falls through to the content-hash name, and an asset already there is reported, never '
+    + 'overwritten',
 };
 const DEFAULT_PRECONDITION_HINT =
   'pass `ifMatch` (the contentSha256 a get_file returned) so the change is refused with a 409 '
@@ -389,11 +472,14 @@ const DEFAULT_PRECONDITION_HINT =
  * The honest limit, in one sentence, carried by every refusal.
  *
  * The second half grades the protection, and is not decoration. Only
- * `write_file` with `ifMatch` against a bridge that serves `/vault-cas/` is a
- * true atomic compare-and-swap. Everything else — `write_file`'s GET-compare
- * fallback on an older bridge, and `assertContentMatches` for
- * patch/append/frontmatter/move/delete — is check-then-mutate: it narrows the
- * window from unbounded to one round trip, it does not close it.
+ * `write_file` with `ifMatch` — called directly, as a `write_bundle` step, or by
+ * `record_source` — against a bridge that serves `/vault-cas/` is a true atomic
+ * compare-and-swap. Everything else — the GET-compare fallback on an older
+ * bridge; `assertContentMatches` for patch/append/frontmatter/delete;
+ * `move_file`'s own source compare; the router-side existence probe behind
+ * `ifNew`; the recovery's `expect` probe; a C3 seal's re-derived plan — is
+ * check-then-mutate: it narrows the window from unbounded to one round trip, it
+ * does not close it.
  *
  * Codex (round on 23bbbaa) proposed refusing the non-atomic modes outright.
  * Declined, with the reason on record: no atomic route exists for six of the
@@ -405,11 +491,12 @@ const DEFAULT_PRECONDITION_HINT =
  * `ours` / `observed` rather than pretending to isolation.
  */
 const HONEST_LIMIT =
-  'Honest limit: this protects writes that go through the router from EACH OTHER — not from a '
-  + 'note saved in Obsidian itself on the machine hosting the vault, nor from a Sync/LiveSync '
-  + 'replica. And only `write_file` + `ifMatch` against a bridge serving /vault-cas/ is truly '
-  + 'atomic; the other checks run just before the write, which narrows the window to one round '
-  + 'trip rather than closing it.';
+  'Honest limit: this protects writes that go through the router from EACH OTHER — an edit '
+  + 'already saved in Obsidian is caught by the hash, a save landing after the check is not, and a '
+  + 'Sync/LiveSync replica never passes here at all. And only `write_file` + `ifMatch` (directly '
+  + 'or as a bundle write step) against a bridge serving /vault-cas/ is truly atomic; every other '
+  + 'check runs just before the write, which narrows the window to one round trip rather than '
+  + 'closing it.';
 
 /**
  * Refuse a write to a shared vault that carries no optimistic-concurrency
@@ -430,8 +517,10 @@ export function assertSharedVaultPrecondition(vault, registry, toolName, args = 
 
   let why;
   if (reason === SHARING_REASONS.OPEN_VAULT) {
-    why = 'it is listed in `openVaults`, so every workspace on this machine can reach it and its '
-      + 'readership is not knowable — the decision treats such a vault as shared by hypothesis';
+    why = 'it is listed in `openVaults` (in the config file, or in the registry this session loaded — '
+      + 'a hand edit to the file takes full effect on hot-reload or restart), so every workspace on '
+      + 'this machine can reach it and its readership is not knowable — the decision treats such a '
+      + 'vault as shared by hypothesis';
   } else if (reason === SHARING_REASONS.UNKNOWN) {
     why = 'the router config could not be read just now, so how many workspaces declare this vault '
       + 'is UNKNOWN — and an unknown answer is treated as shared rather than as "nobody". Check '
@@ -452,25 +541,26 @@ export function assertSharedVaultPrecondition(vault, registry, toolName, args = 
  * A reader of the binding registry AS IT IS ON DISK, cheap enough to consult on
  * every write.
  *
- * `mtimeMs` + `size` decide whether the file is re-parsed. Both, not just the
- * timestamp: a filesystem with coarse timestamps (or two writes inside the
- * same millisecond, which `updateConfigBindings`' atomic rename makes possible)
- * can leave `mtimeMs` unchanged while the content differs, and the size then
- * catches it. Neither is a hash — this is a cache invalidation heuristic on the
- * router's own config file, not a security boundary; the write path takes a
- * real lock and re-reads inside it.
+ * The BYTES decide whether the file is re-parsed: it is read on every call and
+ * parsed again only when the content differs from the last good read. Not
+ * `mtime` + `size` — a filesystem with coarse timestamps can hide a same-length
+ * replacement inside one tick, and the stat saved a 2 KB read next to an HTTP
+ * round trip (Codex round on 23bbbaa). This is a parse cache on the router's
+ * own config file, not a security boundary; the write path takes a real lock
+ * and re-reads inside it.
  *
  * WHAT HAPPENS WHEN THE FILE CANNOT BE READ. The LAST GOOD copy is kept and
  * returned. A transient failure (a rename racing the read, a lock held by an
  * antivirus scanner) must not make a requirement disappear for one call — a
  * guard that fails open at the first hiccup is not a guard. When there has
- * never been a good copy, `null` comes back and `sharingRequirement` answers
- * from `openVaults` alone; that is stated in its doc rather than hidden.
+ * never been a good copy, `null` comes back and `sharingRequirement` treats it
+ * as UNKNOWN, which is refused like a shared vault — never as "nobody declares
+ * it". The reader is primed at construction so that state is, in practice,
+ * unreachable in a running router.
  *
  * @param {object} opts
  * @param {string} opts.configPath
  * @param {(p: string) => string} [opts.readFile]
- * @param {(p: string) => {mtimeMs: number, size: number}} [opts.statFile]
  * @returns {{ current: () => object|null }}
  */
 export function createBindingsReader({ configPath, readFile } = {}) {

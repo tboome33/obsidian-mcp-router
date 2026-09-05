@@ -144,7 +144,8 @@ describe('preconditionState — what a call brings to the table', () => {
   });
 
   test('write_file: ifNew is a precondition too — creating a note on a shared vault must stay possible', () => {
-    // `ifNew: true` sends Apply-If-Content-Preexists: false, so the server
+    // `ifNew: true` makes the ROUTER probe the path before the PUT (the header
+    // it also sends is read by no Local REST API version — Fable 5.1 round), so it
     // 409s if the file exists: a compare-and-swap against ABSENCE. Without
     // this, a shared vault could never receive a new note at all, since there
     // is no hash to pin for a file that does not exist yet.
@@ -170,12 +171,38 @@ describe('preconditionState — what a call brings to the table', () => {
     assert.equal(preconditionState('delete_file', { path: 'a.md', confirm: true }), 'missing');
   });
 
-  test('execute_template: a render is not-applicable, a createFile write is ALWAYS missing', () => {
+  test('execute_template: a render is not-applicable, a createFile write is CARRIED — the bridge makes it create-only', () => {
+    // Verified in the bridge, not in this repository's comment about it
+    // (Fable 5.1 round): `templates-execute.ts` refuses an existing
+    // `targetPath` with a 409 BEFORE rendering, and `app.vault.create` throws
+    // on an existing file besides. That is the compare-and-swap against
+    // absence this gate credits `ifNew` with. The first version refused the one
+    // write here that cannot clobber.
     assert.equal(preconditionState('execute_template', { name: 't.md' }), 'not-applicable');
-    assert.equal(preconditionState('execute_template', { createFile: true, targetPath: 'x.md' }), 'missing');
-    // It declares no ifMatch, so passing one must not buy a way through: the
-    // bridge would ignore it and the write would land unguarded.
-    assert.equal(preconditionState('execute_template', { createFile: true, ...CARRIES }), 'missing');
+    assert.equal(preconditionState('execute_template', { createFile: true, targetPath: 'x.md' }), 'carried');
+    assert.equal(preconditionState('execute_template', { createFile: 'true', targetPath: 'x.md' }), 'not-applicable', 'a non-boolean is a render, as the handler reads it');
+  });
+
+  test('download_page_assets: createOnly is its precondition — the asset analogue of ifNew', () => {
+    assert.equal(preconditionState('download_page_assets', { outputDir: '/x', createOnly: true }), 'carried');
+    assert.equal(preconditionState('download_page_assets', { outputDir: '/x' }), 'missing');
+    assert.equal(preconditionState('download_page_assets', { outputDir: '/x', createOnly: 'true' }), 'missing');
+    // It declares no ifMatch; one must not buy a way through.
+    assert.equal(preconditionState('download_page_assets', { outputDir: '/x', ...CARRIES }), 'missing');
+  });
+
+  test('a C3 plan seal is a content-pinned precondition on delete_file and write_bundle', () => {
+    // `delete_file` rebuilds the plan from the CURRENT content and refuses on
+    // drift before the DELETE; `write_bundle` verifies the seal over a plan that
+    // carries every before-image hash, before the journal is written. The
+    // first version recognised only ifMatch and sent the documented preview →
+    // confirm flows to fetch a hash they had already pinned. (Fable 5.1 round.)
+    const seal = 'b'.repeat(64);
+    assert.equal(preconditionState('delete_file', { confirm: true, approvedPlanSha256: seal }), 'carried');
+    assert.equal(preconditionState('delete_file', { approvedPlanSha256: seal }), 'not-applicable', 'still not a write without confirm');
+    assert.equal(preconditionState('delete_file', { confirm: true, approvedPlanSha256: 'not-a-seal' }), 'missing', 'shape is checked here for the seal because the handler would otherwise DELETE first... no: it throws PlanDriftError — but a malformed seal must not read as carried');
+    assert.equal(preconditionState('write_bundle', { approvedPlanSha256: seal, steps: [{ op: 'write', path: 'a.md', content: 'x' }] }), 'carried');
+    assert.equal(preconditionState('write_bundle', { approvedPlanSha256: 'nope', steps: [{ op: 'write', path: 'a.md', content: 'x' }] }), 'missing');
   });
 
   describe('write_bundle — per step, because the bundle IS the other write tools', () => {
@@ -193,24 +220,49 @@ describe('preconditionState — what a call brings to the table', () => {
       assert.equal(preconditionState('write_bundle', { steps: [{ op: 'delete', path: 'a.md', ...CARRIES }] }), 'carried');
     });
 
-    test('a RECOVERY RUN is MISSING — its "own guard" does not cover the recovery case', () => {
-      // The first version exempted it on a claim read from write-bundle's module
-      // header. Checked against the branch instead (Codex round on 23bbbaa):
-      // `planRestore` answers `skip` only when the bundle knows what it left
-      // there. A recovery replays with an EMPTY last-state, and that branch
-      // returns `{ action: 'restore', attribution: 'unverified' }` — it restores
-      // OVER differing content on purpose. So on a shared vault it can undo
-      // another workspace's edit, with nothing to stop it.
-      assert.equal(preconditionState('write_bundle', { recover: 'op-123', confirm: true }), 'missing');
-      // An ifMatch cannot rescue it either: recovery takes no per-path precondition.
-      assert.equal(preconditionState('write_bundle', { recover: 'op-123', confirm: true, ifMatch: 'a'.repeat(64) }), 'missing');
+    const OP = 'op-0123456789abcdef';
+
+    test('a RECOVERY RUN is MISSING without `expect` — its built-in guard does not cover the recovery case', () => {
+      // Checked against the branch (Codex round on 23bbbaa): `planRestore`
+      // answers `skip` only when the bundle knows what it left there. A
+      // recovery replays with an EMPTY last-state and restores OVER differing
+      // content as `unverified`, on purpose. So on a shared vault it can undo
+      // another workspace's edit — unless the caller pins what it saw.
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true }), 'missing');
+      // An ifMatch is not the recovery's vocabulary.
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, ifMatch: 'a'.repeat(64) }), 'missing');
     });
 
-    test('the refusal names the read-only listing as the way to proceed', () => {
+    test('`expect` — { path: currentSha256 | null } from the listing — is the recovery\'s own ifMatch', () => {
+      const sha = 'c'.repeat(64);
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: { 'a.md': sha } }), 'carried');
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: { 'a.md': sha, 'new.md': null } }), 'carried', 'null = "this file does not exist"');
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: {} }), 'missing', 'an empty map pins nothing');
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: { 'a.md': 'stale' } }), 'missing');
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: [sha] }), 'missing');
+      assert.equal(preconditionState('write_bundle', { recover: OP, confirm: true, expect: 'a.md' }), 'missing');
+    });
+
+    test('the recover argument is read through the HANDLER\'s normaliser, so the two cannot disagree', () => {
+      // `recover: 1` used to meet this gate's refusal instead of the handler's
+      // "invalid recover value" — two predicates, one question. (Fable 5.1 round.)
+      for (const listing of [true, 'true', 'TRUE', ' true ', '1', 'yes', 'on']) {
+        assert.equal(preconditionState('write_bundle', { recover: listing }), 'not-applicable', `listing form ${JSON.stringify(listing)}`);
+      }
+      for (const junk of [1, {}, [], 'random', 'op-short']) {
+        assert.equal(preconditionState('write_bundle', { recover: junk }), 'not-applicable', `malformed ${JSON.stringify(junk)} — the handler refuses it, nothing written`);
+      }
+      // The falsy tokens mean "not a recovery": an ordinary bundle, judged by its steps.
+      for (const no of [false, 'false', '0', 'no', 'off', '', null, undefined]) {
+        assert.equal(preconditionState('write_bundle', { recover: no, steps: [step()] }), 'missing', `not a recovery: ${JSON.stringify(no)}`);
+      }
+    });
+
+    test('the refusal names `expect` and the read-only listing as the way through', () => {
       const shared = cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'ref' } });
       assert.throws(
-        () => assertSharedVaultPrecondition({ name: 'ref' }, { openVaults: [] }, 'write_bundle', { recover: 'op-1', confirm: true }, shared),
-        /recover: true.*read-only/s,
+        () => assertSharedVaultPrecondition({ name: 'ref' }, { openVaults: [] }, 'write_bundle', { recover: OP, confirm: true }, shared),
+        /`expect`.*currentSha256.*recover: true/s,
       );
     });
 
@@ -266,10 +318,36 @@ describe('assertSharedVaultPrecondition — the refusal, and everything it must 
     }
   });
 
-  test('execute_template is refused with the way THROUGH, not just a "no"', () => {
+  test('execute_template with createFile passes on a shared vault — it is create-only at the bridge', () => {
+    assert.doesNotThrow(() => assertSharedVaultPrecondition(V, reg, 'execute_template', { createFile: true, targetPath: 'x.md' }, shared));
+  });
+
+  test('download_page_assets: refused without createOnly, with the flag named; passes with it', () => {
     assert.throws(
-      () => assertSharedVaultPrecondition(V, reg, 'execute_template', { createFile: true, targetPath: 'x.md' }, shared),
-      /WITHOUT `createFile`.*write_file/s,
+      () => assertSharedVaultPrecondition(V, reg, 'download_page_assets', { outputDir: '/v/Ref/wiki/.assets' }, shared),
+      /`createOnly: true`.*never.*overwritten/s,
+    );
+    assert.doesNotThrow(() => assertSharedVaultPrecondition(V, reg, 'download_page_assets', { outputDir: '/v/Ref/wiki/.assets', createOnly: true }, shared));
+  });
+
+  test('the hints for append / patch / frontmatter say how a file that does not exist yet is created', () => {
+    // `ifMatch` on an absent file answers "target missing", and `get_file` 404s
+    // first — so the default hint sent the caller down a dead end for the one
+    // case a journal-style tool meets most: its first line. (Fable 5.1 round.)
+    for (const t of ['append_to_file', 'patch_file', 'set_frontmatter', 'merge_frontmatter']) {
+      assert.throws(
+        () => assertSharedVaultPrecondition(V, reg, t, { path: 'new.md' }, shared),
+        /write_file and `ifNew: true`/,
+        t,
+      );
+    }
+    assert.throws(
+      () => assertSharedVaultPrecondition(V, reg, 'set_frontmatter', { path: 'a.md', key: 'k', value: 'v' }, shared),
+      /get_frontmatter does not return one/,
+    );
+    assert.throws(
+      () => assertSharedVaultPrecondition(V, reg, 'delete_file', { path: 'a.md', confirm: true }, shared),
+      /approvedPlanSha256/,
     );
   });
 
@@ -367,32 +445,42 @@ describe('THE PARTITION — no write tool can be silently ungated', () => {
   // asserted TOTAL is a list that goes stale the first time somebody adds a
   // member. Three buckets, and every member of WRITE_TOOL_NAMES must be in
   // exactly one.
-  const SATISFIABLE = new Set([
-    'write_file', 'append_to_file', 'patch_file', 'set_frontmatter',
-    'merge_frontmatter', 'move_file', 'delete_file', 'write_bundle',
+  /**
+   * Every covered tool, with the argument(s) that satisfy the gate for it — and
+   * a call that carries one. There is no "knowingly unsatisfiable" bucket any
+   * more: the Fable 5.1 round found that both tools it held were satisfiable
+   * after all (`execute_template` is create-only at the bridge; the assets tool
+   * gained `createOnly`), and that a bucket named "impossible" was where two
+   * false claims had gone to look deliberate.
+   */
+  const SATISFIABLE = new Map([
+    ['write_file', { fields: ['ifMatch', 'ifNew'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['append_to_file', { fields: ['ifMatch'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['patch_file', { fields: ['ifMatch'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['set_frontmatter', { fields: ['ifMatch'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['merge_frontmatter', { fields: ['ifMatch'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['move_file', { fields: ['ifMatch'], carried: { ifMatch: 'a'.repeat(64) } }],
+    ['delete_file', { fields: ['ifMatch', 'approvedPlanSha256'], carried: { confirm: true, ifMatch: 'a'.repeat(64) } }],
+    ['write_bundle', { fields: ['steps.ifMatch', 'steps.ifNew', 'approvedPlanSha256', 'expect'], carried: { steps: [{ op: 'write', path: 'a.md', ifMatch: 'a'.repeat(64) }] } }],
+    ['execute_template', { fields: ['createFile'], carried: { createFile: true, targetPath: 'x.md' } }],
+    ['download_page_assets', { fields: ['createOnly'], carried: { outputDir: '/x', createOnly: true } }],
   ]);
-  /** Covered, and deliberately impossible to satisfy — it has a documented way through. */
-  const NEVER_SATISFIABLE = new Set(['execute_template']);
 
-  test('every write tool is exempt, satisfiable, or knowingly unsatisfiable — exactly one of the three', () => {
+  test('every write tool is exempt or satisfiable — exactly one of the two', () => {
     const all = [..._internals.WRITE_TOOL_NAMES];
-    const unclassified = all.filter(
-      (n) => !IF_MATCH_EXEMPT.has(n) && !SATISFIABLE.has(n) && !NEVER_SATISFIABLE.has(n),
-    );
+    const unclassified = all.filter((n) => !IF_MATCH_EXEMPT.has(n) && !SATISFIABLE.has(n));
     assert.deepEqual(
       unclassified, [],
       'a write tool exists that the shared-vault gate neither covers nor exempts. Classify it: '
-      + 'add it to IF_MATCH_EXEMPT with a reason, or to SATISFIABLE here once it declares ifMatch.',
+      + 'add it to IF_MATCH_EXEMPT with a reason, or to SATISFIABLE here with the argument that satisfies it.',
     );
-    const overlap = all.filter(
-      (n) => [IF_MATCH_EXEMPT.has(n), SATISFIABLE.has(n), NEVER_SATISFIABLE.has(n)].filter(Boolean).length > 1,
-    );
-    assert.deepEqual(overlap, [], 'a write tool is in two buckets — pick one');
+    const overlap = all.filter((n) => IF_MATCH_EXEMPT.has(n) && SATISFIABLE.has(n));
+    assert.deepEqual(overlap, [], 'a write tool is in both buckets — pick one');
   });
 
   test('the classification names real tools, and only real tools', () => {
     const all = new Set(_internals.WRITE_TOOL_NAMES);
-    const ghosts = [...IF_MATCH_EXEMPT.keys(), ...SATISFIABLE, ...NEVER_SATISFIABLE].filter((n) => !all.has(n));
+    const ghosts = [...IF_MATCH_EXEMPT.keys(), ...SATISFIABLE.keys()].filter((n) => !all.has(n));
     assert.deepEqual(ghosts, [], 'the classification mentions tools that are not write tools');
   });
 
@@ -402,28 +490,25 @@ describe('THE PARTITION — no write tool can be silently ungated', () => {
   });
 
   test('every SATISFIABLE tool really can be satisfied — or the gate bricks it on every shared vault', () => {
-    const sample = {
-      write_bundle: { steps: [{ op: 'write', path: 'a.md', ifMatch: 'a'.repeat(64) }] },
-      delete_file: { confirm: true, ifMatch: 'a'.repeat(64) },
-    };
-    for (const name of SATISFIABLE) {
-      const args = sample[name] || { ifMatch: 'a'.repeat(64) };
-      assert.equal(preconditionState(name, args), 'carried', `${name} cannot be satisfied at all`);
+    for (const [name, { carried }] of SATISFIABLE) {
+      assert.equal(preconditionState(name, carried), 'carried', `${name} cannot be satisfied at all`);
     }
   });
 
-  test('every SATISFIABLE tool DECLARES the argument the gate demands — a hint naming a field the schema lacks is a dead end', () => {
-    // The gate's whole promise is "pass ifMatch and it goes through". If the
+  test('every SATISFIABLE tool DECLARES the argument(s) the gate demands — a hint naming a field the schema lacks is a dead end', () => {
+    // The gate's whole promise is "pass <this> and it goes through". If the
     // tool's own inputSchema does not declare it, `additionalProperties: false`
     // is a lie at runtime but the caller has no way to discover the field —
     // and the refusal message points at nothing.
     const byName = new Map(_internals.TOOLS.map((t) => [t.name, t]));
-    for (const name of SATISFIABLE) {
+    for (const [name, { fields }] of SATISFIABLE) {
       const props = byName.get(name)?.inputSchema?.properties || {};
-      const declares = name === 'write_bundle'
-        ? Boolean(props.steps?.items?.properties?.ifMatch)
-        : Boolean(props.ifMatch);
-      assert.ok(declares, `${name} does not declare ifMatch in its own schema`);
+      for (const field of fields) {
+        const declared = field.startsWith('steps.')
+          ? Boolean(props.steps?.items?.properties?.[field.slice('steps.'.length)])
+          : Boolean(props[field]);
+        assert.ok(declared, `${name} does not declare ${field} in its own schema`);
+      }
     }
   });
 });

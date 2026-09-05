@@ -2150,6 +2150,18 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
     const seen = [];
     const server = http.createServer((req, res) => {
       seen.push(req.url);
+      // A FRESHLY MINTED BUNDLE JOURNAL DOES NOT EXIST YET. Since the Fable 5.1
+      // round, `writeFile(..., { applyIfContentPreexists: false })` probes the
+      // path with a GET before the PUT (the header alone was never honoured by
+      // the server), so a stand-in that answers 200 to every GET tells the
+      // bundle its random-id journal is "already there" and the bundle refuses
+      // before any step runs — which made the `write_bundle.steps[].target`
+      // row below look stale when nothing about `target` had changed. The
+      // journal directory is the one path this guard must answer honestly.
+      if (req.method === 'GET' && /\/write-journal\//.test(req.url)) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end('{"errorCode":40400,"message":"not found"}');
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       if (/knowledge-graph\.json/.test(req.url)) return res.end(GRAPH);
       if (/source-ledger\.json/.test(req.url)) return res.end(LEDGER);

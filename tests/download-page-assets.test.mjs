@@ -29,6 +29,13 @@ describe('download-page-assets — TOOL_DEFINITION shape', () => {
     assert.ok(schema.required.includes('outputDir'));
   });
 
+  test('declares createOnly — the precondition the shared-vault gate demands of this tool (Fable 5.1 round)', () => {
+    const p = TOOL_DEFINITION.inputSchema.properties.createOnly;
+    assert.equal(p?.type, 'boolean');
+    assert.match(p.description, /wx/);
+    assert.match(p.description, /writesRequireIfMatch/);
+  });
+
   test('declares all input parameters with descriptions', () => {
     const props = TOOL_DEFINITION.inputSchema.properties;
     for (const k of [

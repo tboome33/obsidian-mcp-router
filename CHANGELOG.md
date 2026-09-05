@@ -51,14 +51,16 @@ only one workspace declares — which is the condition the decision set for the 
   without being declared by any, so its readership is not knowable.
   - Satisfied by `ifMatch` on `write_file`, `append_to_file`, `patch_file`, `set_frontmatter`,
     `merge_frontmatter`, `move_file` and `delete_file`; by **`ifNew: true`** on `write_file` (a
-    compare-and-swap against absence, so creating a note on a shared vault stays possible); and by
-    a precondition on **every step** of a `write_bundle`.
+    compare-and-swap against absence, so creating a note on a shared vault stays possible); by the
+    **`approvedPlanSha256`** a `preview: true` call returned, on `delete_file` and `write_bundle`
+    (the seal pins the content); by a precondition on **every step** of a `write_bundle`
+    (`ifMatch`, or `ifNew: true` on a write step); by **`expect`** on a `write_bundle` recovery
+    run; by **`createOnly: true`** on `download_page_assets`; and by `createFile: true` on
+    `execute_template`, which the bridge already makes create-only.
   - Exempt, each for a stated reason: the tools that regenerate a derived artifact from the vault's
     own content (`build_wiki_graph`, `build_search_index`, `refresh_okf_projections`),
     `record_source` (it already does its own compare-and-swap on the shared ledger),
-    `download_page_assets`, `provision_vault` and `register_remote_vault`. `execute_template` with
-    `createFile: true` carries no precondition at all, so it is refused with the way through:
-    render without `createFile`, then write the result with `write_file`.
+    `provision_vault` and `register_remote_vault` (they address no note in an existing vault).
   - The count is re-read from the config file on each write, so a vault becomes shared **the
     instant** a second workspace declares it — from another session, in another directory, with no
     restart and no config hot-reload.
@@ -77,16 +79,16 @@ Two Codex passes (a plain review of the commit and an invariants pass) found six
 including two exemptions whose stated reason was FALSE — the worst kind, because a reviewer reads
 the claim instead of the code:
 
-- **`download_page_assets` on a shared vault is now refused.** Its exemption claimed it only ever
-  created new files. It does not: `downloadOne` writes with a plain `fs.writeFile`, and its
-  collision set covers only the current batch — an asset already on disk under the same name is
-  overwritten. It is the one write door with no `ifMatch` to offer, so on a shared vault it is
-  refused outright (download outside the vault, then bring files in with `write_file`).
-- **A `write_bundle` RECOVERY RUN is no longer exempt.** Its exemption cited a guard that does not
-  cover recovery: `planRestore` answers `skip` for someone else's content only when the bundle
-  knows what it left there. A recovery replays with an empty last-state and deliberately restores
-  over differing content as `unverified`. It is refused on a shared vault; the read-only
-  `recover: true` listing stays available.
+- **`download_page_assets` lost a false exemption.** It claimed the tool only ever created new
+  files. It does not: `downloadOne` writes with a plain `fs.writeFile`, and its collision set covers
+  only the current batch — an asset already on disk under the same name is overwritten. (The round's
+  first repair refused the tool outright on a shared vault; the Fable 5.1 round below replaced that
+  with a real precondition.)
+- **A `write_bundle` RECOVERY RUN lost a false exemption.** It cited a guard that does not cover
+  recovery: `planRestore` answers `skip` for someone else's content only when the bundle knows what
+  it left there. A recovery replays with an empty last-state and deliberately restores over
+  differing content as `unverified`. (First refused outright on a shared vault; the Fable 5.1 round
+  gave it a precondition of its own.)
 - **An unreadable config now fails CLOSED.** "I could not read the binding registry" is reported as
   shared, not as "nobody declares it" — and the reader is primed at construction, while the file is
   known to be readable.
@@ -107,6 +109,58 @@ overclaimed.
 Also pinned by the round: every tool the gate calls satisfiable is now proved — by a loop over the
 producers, not an assertion per site — to actually ENFORCE the precondition it accepts.
 `append_to_file` and `set_frontmatter` enforced it in source and were pinned by nothing.
+
+#### Fixed in the last review round (Fable 5.1, three angles + a targeted pass) — two blockers
+
+The round attacked the repairs above and every assumption the gate makes about existing code.
+It found two blockers, both pre-existing, both made load-bearing by this lot:
+
+- **`ifNew: true` was a dead header, and the gate was crediting it.** `write_file` sent
+  `Apply-If-Content-Preexists: false`; the installed Local REST API (4.0.2, the whole fleet) reads
+  no such header — the only one it knows is `Reject-If-Content-Preexists`, and only in PATCH. So on
+  every real installation `ifNew: true` was a plain overwriting PUT, and the gate admitted it on a
+  shared vault as a "compare-and-swap against absence". The same dead header sat under the
+  bundle's journal creation and restore-if-absent, the source ledger's first write and the
+  reserved-path writer. **`writeFile` now enforces create-only in the router** — a read just before
+  the PUT, one round trip wide, and the honest limit says so. The PATCH path now sends the header
+  the plugin actually reads.
+- **A recovery run with `preview: true` bypassed BOTH gates and the audit line.** The dispatcher
+  exempted `write_bundle` on `preview` before looking at `recover`; the handler routes on `recover`
+  first and its recovery path never reads `preview`. One stray flag replayed a journal onto an
+  `alsoLocked` secondary — the very promise Phase 3's first round had closed for the plain run. The
+  dispatcher now routes exactly as the handler does.
+
+And the round's own repairs were themselves wrong in three places, fixed here:
+
+- **`download_page_assets` gets `createOnly: true`** — the asset analogue of `ifNew`: every file is
+  opened with the `wx` flag, an existing name falls through to the content-hash name, and an asset
+  already there is reported as `alreadyPresent`, never overwritten. The previous repair refused the
+  tool outright on a shared vault and pointed at `write_file` — which cannot carry a PNG, so asset
+  saving had become impossible on the workspace's own primary.
+- **A recovery run gets `expect`** — `{ "<path>": "<currentSha256>" | null }` for every path it
+  will restore, copied from the `recover: true` listing, which now exposes `currentSha256`,
+  `beforeSha256` and `journalPath` per file. The run is refused before any write if a file no
+  longer matches: per-path `ifMatch`, in the recovery's own vocabulary. The previous repair refused
+  recovery outright and named a way through the listing did not equip.
+- **`execute_template` with `createFile: true` is accepted** — the bridge refuses an existing
+  `targetPath` with a 409 before rendering, and `app.vault.create` throws besides: it was already
+  the create-only write the gate credits `ifNew` with. The previous version refused the one write
+  that cannot clobber, on a claim read from this repository's comment instead of the bridge's code.
+
+Also: a C3 **`approvedPlanSha256` is accepted as the precondition it is** on `delete_file` and
+`write_bundle` (the seal pins the content; the documented preview → confirm flows were being sent
+to fetch a hash they had already pinned); a bundle `write` step's `ifNew` is now checked in the
+pre-flight like `ifMatch` (it used to fail mid-bundle) and declared in the step schema; path
+containment for `download_page_assets` resolves the real path when it exists (a junction, a `\\?\`
+prefix or an 8.3 name into the vault used to escape it); every write tool's description now says
+the argument is required on a vault `list_vaults` reports as `writesRequireIfMatch`, and
+`merge_frontmatter`'s recipe names `get_file` (the only reader that returns a hash); the refusal
+hints for `append_to_file`/`patch_file` say how to create a file that does not exist yet.
+
+Recorded, not fixed: sharing is counted by vault NAME, while clobbering happens by physical vault —
+a `remoteVaults` entry pointing at a local vault's own loopback port is a second name for the same
+files, and each name has one declarer. A `remoteVaults` entry also has no `path`, so
+`download_page_assets` into such a vault is never gated by containment. Both are on the roadmap.
 
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 

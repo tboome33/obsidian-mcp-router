@@ -629,6 +629,7 @@ export async function downloadOne(url, outputDir, opts = {}) {
     maxBytes = 10 * 1024 * 1024,
     minWidth = 0,
     minHeight = 0,
+    createOnly = false,
     usedNames = new Set(),
     _fetchFn = safeFetchBinary,
     _writeFn = fs.writeFile,
@@ -676,11 +677,43 @@ export async function downloadOne(url, outputDir, opts = {}) {
   const filename = pickAssetFilename(url, buffer, contentType, usedNames);
   usedNames.add(filename);
   const fullPath = path.join(outputDir, filename);
-  await _writeFn(fullPath, buffer);
 
-  const result = { ok: true, sourceUrl: url, savedAs: filename, bytes: buffer.length };
-  if (dimensions) result.dimensions = dimensions;
-  return result;
+  if (!createOnly) {
+    await _writeFn(fullPath, buffer);
+    const result = { ok: true, sourceUrl: url, savedAs: filename, bytes: buffer.length };
+    if (dimensions) result.dimensions = dimensions;
+    return result;
+  }
+
+  // CREATE-ONLY: the asset analogue of write_file's `ifNew`, and what makes this
+  // tool admissible on a vault several workspaces share. `usedNames` guards
+  // collisions INSIDE the batch only; a file already on disk under the
+  // URL-derived name was silently overwritten by the plain write above (the
+  // shared-vault gate's first exemption reason said the opposite — Codex round
+  // on 23bbbaa). The `wx` flag makes the filesystem the arbiter: EEXIST on the
+  // URL name falls through to the content-hash name — the same fallback
+  // `pickAssetFilename` already uses for in-batch collisions — and EEXIST on
+  // THAT name means the identical bytes are already there, which is reported
+  // as `alreadyPresent`, not treated as a failure. Nothing is ever overwritten.
+  // (Fable 5.1 round.)
+  const attempt = async (name) => {
+    try {
+      await _writeFn(path.join(outputDir, name), buffer, { flag: 'wx' });
+      return 'written';
+    } catch (err) {
+      if (err && err.code === 'EEXIST') return 'exists';
+      throw err;
+    }
+  };
+  const base = { sourceUrl: url, bytes: buffer.length, ...(dimensions ? { dimensions } : {}) };
+  if ((await attempt(filename)) === 'written') return { ok: true, savedAs: filename, ...base };
+  // Force the hash fallback by declaring the URL name taken.
+  const hashed = pickAssetFilename(url, buffer, contentType, new Set([...usedNames, filename]));
+  usedNames.add(hashed);
+  if ((await attempt(hashed)) === 'written') {
+    return { ok: true, savedAs: hashed, renamedFrom: filename, ...base };
+  }
+  return { ok: true, savedAs: hashed, alreadyPresent: true, ...base };
 }
 
 /**
@@ -713,6 +746,7 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
     maxBytes = 10 * 1024 * 1024,
     minWidth = 0,
     minHeight = 0,
+    createOnly = false,
     _fetchFn,
     _writeFn,
     _mkdirFn = fs.mkdir,
@@ -788,6 +822,7 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
         maxBytes,
         minWidth,
         minHeight,
+        createOnly,
         usedNames,
         _fetchFn,
         _writeFn,

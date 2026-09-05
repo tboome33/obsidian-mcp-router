@@ -89,17 +89,29 @@ describe('assertAssetOutputDirWritable', () => {
   // asset already on disk under the same name is overwritten. On a shared vault
   // that is the silent clobber this phase exists to stop, by the one door with
   // no `ifMatch` to offer.
-  test('inside a SHARED vault: refused, even with the secondary-write confirmation', () => {
+  test('inside a SHARED vault: refused without createOnly, with the flag named — and allowed with it', () => {
+    // The previous round refused this tool outright on a shared vault and
+    // pointed at write_file — which cannot carry a PNG, so asset saving had
+    // become impossible on the workspace's own primary. `createOnly` is the
+    // tool's own precondition (the `wx` flag). (Fable 5.1 round.)
     assert.throws(
       () => assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg({ alsoWritable: ['ref'] }), SHARED),
-      /is SHARED.*2 workspaces declare it.*OUTSIDE the vault/s,
+      /is SHARED.*2 workspaces declare it.*`createOnly: true`/s,
+    );
+    assert.equal(
+      assertAssetOutputDirWritable({ outputDir: inside, createOnly: true }, reg({ alsoWritable: ['ref'] }), SHARED)?.name,
+      'ref',
     );
   });
 
-  test('inside a vault listed in openVaults: refused for that reason', () => {
+  test('inside a vault listed in openVaults: refused for that reason, allowed with createOnly', () => {
     assert.throws(
       () => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'], openVaults: ['ref'] }), SOLO),
-      /is SHARED.*openVaults/s,
+      /is SHARED.*openVaults.*`createOnly: true`/s,
+    );
+    assert.equal(
+      assertAssetOutputDirWritable({ outputDir: inside, createOnly: true }, reg({ alsoWritable: ['ref'], openVaults: ['ref'] }), SOLO)?.name,
+      'ref',
     );
   });
 
@@ -114,6 +126,18 @@ describe('assertAssetOutputDirWritable', () => {
       () => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'] })),
       /is SHARED.*could not be read/s,
     );
+  });
+
+  test('containment follows the REAL path: a junction or a long-path prefix into the vault does not escape it', () => {
+    // Lexical-only containment was escaped by every other spelling of a
+    // directory inside the vault (Fable 5.1 round). Proved with the spellings
+    // available without privileges: the `\\?\` prefix, and — when the vault
+    // root really exists on disk — the filesystem's own canonical form.
+    const owner = assertAssetOutputDirWritable(
+      { outputDir: `\\\\?\\${path.join(os.tmpdir(), 'index-internals-Work', 'wiki', '.assets')}` }, reg(), SOLO,
+    );
+    if (process.platform === 'win32') assert.equal(owner?.name, 'work', 'the \\\\?\\ prefix is stripped before comparing');
+    else assert.ok(true, 'the prefix is a Windows spelling');
   });
 });
 
@@ -174,6 +198,18 @@ describe('requiresAlsoTierCheck', () => {
   test('write_bundle: a RUN-mode recovery (an actual operation id) is NOT exempt — it WRITES, so alsoLocked\'s "no exceptions" must still apply to it', () => {
     assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 'op-1234567890abcdef', confirm: true }), true);
     assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 'op-1234567890abcdef' }), true);
+    // THE BYPASS THE FABLE 5.1 ROUND FOUND: the handler routes on `recover`
+    // first and its recovery path never reads `preview`, so a run that ALSO
+    // says `preview: true` replays the journal — while this predicate, which
+    // used to test `preview` first, called it a non-write. Both gates, the
+    // audit line and the projections refresh were skipped by one stray flag.
+    assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 'op-1234567890abcdef', confirm: true, preview: true }), true,
+      'a recovery run WRITES whatever `preview` says — the handler never reads it');
+    // Malformed `recover` values reach the handler and are refused there,
+    // writing nothing — so they are not gated, exactly like the listing.
+    assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 1 }), false);
+    assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 'op-short' }), false);
+    assert.equal(requiresAlsoTierCheck('write_bundle', { recover: 'TRUE' }), false, 'a listing token in any case');
   });
 
   test('delete_file: preview:true is exempt, an actual delete is not', () => {
@@ -233,6 +269,8 @@ describe('toolActuallyWrote', () => {
       ['write_bundle', {}],
       ['write_bundle', { recover: true }],
       ['write_bundle', { recover: 'op-1234567890abcdef', confirm: true }],
+      ['write_bundle', { recover: 'op-1234567890abcdef', confirm: true, preview: true }],
+      ['write_bundle', { recover: 1 }],
       ['delete_file', { preview: true }],
       ['delete_file', { confirm: true }],
       ['build_wiki_graph', { dryRun: true }],

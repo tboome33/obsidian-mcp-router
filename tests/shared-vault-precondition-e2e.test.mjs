@@ -186,7 +186,7 @@ const jsonOf = (res) => JSON.parse(textOf(res));
 const putsTo = (vault, rel) => vault.seen.filter((r) => r.method === 'PUT' && r.url === `/vault/${rel}`);
 
 async function withRouter(opts, body) {
-  const vault = await startFakeVault(FILES);
+  const vault = await startFakeVault(opts.files || FILES);
   const { dir, configPath } = writeConfig(vault.port, opts);
   const rt = startRouter({ configPath, cwd: dir });
   try {
@@ -297,6 +297,52 @@ describe('E2E: an openVaults vault is shared by hypothesis', () => {
       assert.ok(isRefusal(res), `expected a refusal for an openVaults vault, got: ${textOf(res)}`);
       assert.match(textOf(res), /openVaults/);
       assert.equal(putsTo(vault, NOTE).length, 0);
+    });
+  });
+});
+
+describe('E2E: the two blockers of the Fable 5.1 round, closed at the real dispatcher', () => {
+  test('ifNew on a file that EXISTS is refused by the ROUTER — the server never honoured the header', async () => {
+    // Before this round `ifNew: true` was a plain overwriting PUT on every real
+    // installation (Local REST API reads no such header), and the gate let it
+    // through a shared vault as a "compare-and-swap against absence".
+    await withRouter({}, async ({ rt, vault, configPath }) => {
+      addSecondWorkspace(configPath, 'work');
+      const res = await rt.call('tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'work', path: NOTE, content: '# Clobber\n', ifNew: true },
+      });
+      assert.ok(isRefusal(res), `expected a refusal, got: ${textOf(res)}`);
+      assert.match(textOf(res), /already exists/);
+      assert.equal(putsTo(vault, NOTE).length, 0, 'nothing reached the vault');
+      assert.equal(vault.store.get(NOTE), FILES[NOTE], 'the existing note is byte-identical');
+    });
+  });
+
+  test('a recovery run with preview:true no longer slips past both gates', async () => {
+    // The dispatcher exempted write_bundle on `preview` before looking at
+    // `recover`; the handler routes on `recover` first and its recovery path
+    // never reads `preview` — so one stray flag REPLAYED THE JOURNAL with both
+    // gates, the audit line and the projections refresh skipped. Seeded with a
+    // journal whose replay would PUT the note, so a reopened bypass shows up as
+    // a landed write, not merely a different message.
+    const OP = 'op-0123456789abcdef';
+    const journal = {
+      version: 1, operationId: OP, vault: 'work', startedAt: '2026-09-05T10:00:00.000Z', state: 'pending',
+      steps: [{ index: 0, op: 'write', path: NOTE }],
+      backups: { [NOTE]: { existed: true, content: '# ORIGINAL\n', contentSha256: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } },
+    };
+    const files = { ...FILES, [`wiki-meta/write-journal/${OP}.json`]: `${JSON.stringify(journal, null, 2)}\n` };
+    await withRouter({ files }, async ({ rt, vault, configPath }) => {
+      addSecondWorkspace(configPath, 'work');
+      const res = await rt.call('tools/call', {
+        name: 'write_bundle',
+        arguments: { vault: 'work', recover: OP, confirm: true, preview: true },
+      });
+      assert.ok(isRefusal(res), `expected a refusal, got: ${textOf(res)}`);
+      assert.match(textOf(res), /is SHARED.*`expect`/s, 'refused by the shared-vault gate, for the missing expect');
+      assert.equal(putsTo(vault, NOTE).length, 0, 'the journal was NOT replayed');
+      assert.equal(vault.store.get(NOTE), FILES[NOTE]);
     });
   });
 });

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 
 import {
   extractImageUrls,
@@ -1000,4 +1001,88 @@ test('downloadAssets: threads minWidth/minHeight through to per-asset downloadOn
   assert.equal(r.skipped.length, 1);
   assert.equal(r.skipped[0].reason, 'too-small-dimensions');
   assert.deepEqual(r.skipped[0].dimensions, { width: 50, height: 50 });
+});
+
+// -----------------------------------------------------------------------------
+// createOnly — the asset analogue of write_file's ifNew (Fable 5.1 round)
+// -----------------------------------------------------------------------------
+//
+// `usedNames` guards collisions INSIDE a batch; a file already on disk under
+// the URL-derived name was silently overwritten by the plain write, which the
+// shared-vault gate's first exemption reason denied. With `createOnly` the
+// filesystem is the arbiter (`wx`): EEXIST on the URL name falls through to the
+// content-hash name, EEXIST on THAT name means the identical bytes are already
+// there. Nothing is ever overwritten.
+
+/** A write stub that models a directory already holding `existing` names. */
+function makeStubWriteWithExisting(existing) {
+  const writes = [];
+  const fn = async (fullPath, buffer, opts) => {
+    // Split on BOTH separators — this line was first written through a shell
+    // heredoc, which ate one backslash and left a regex that matched `/` only,
+    // so on Windows `base` was the whole path and EEXIST never fired: a
+    // silent, plausible-looking failure. Code content goes through Edit/Write.
+    const base = fullPath.split(/[\\/]/).pop();
+    if (opts && opts.flag === 'wx' && existing.has(base)) {
+      throw Object.assign(new Error(`EEXIST: ${base}`), { code: 'EEXIST' });
+    }
+    writes.push({ fullPath, base, bytes: buffer.length, opts });
+    existing.add(base);
+  };
+  return { writes, fn };
+}
+
+test('createOnly: the write is opened with the wx flag; without createOnly no flag travels (unchanged behaviour)', async () => {
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 1), contentType: 'image/png' } });
+  const guarded = makeStubWriteWithExisting(new Set());
+  const r = await downloadOne('https://x.io/a.png', '/abs/out', { _fetchFn: stub, _writeFn: guarded.fn, createOnly: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.savedAs, 'a.png');
+  assert.deepEqual(guarded.writes[0].opts, { flag: 'wx' });
+
+  const plain = makeStubWriteWithExisting(new Set());
+  await downloadOne('https://x.io/a.png', '/abs/out', { _fetchFn: stub, _writeFn: plain.fn });
+  assert.equal(plain.writes[0].opts, undefined, 'the default path is byte-for-byte what it was');
+});
+
+test('createOnly: an existing URL-derived name falls through to the content-hash name — never overwritten', async () => {
+  const stub = makeStubFetch({ 'https://x.io/hero.jpg': { buffer: Buffer.alloc(4096, 7), contentType: 'image/jpeg' } });
+  const { writes, fn } = makeStubWriteWithExisting(new Set(['hero.jpg']));
+  const r = await downloadOne('https://x.io/hero.jpg', '/abs/out', { _fetchFn: stub, _writeFn: fn, createOnly: true });
+  assert.equal(r.ok, true);
+  assert.match(r.savedAs, /^[0-9a-f]{16}\.jpg$/, 'the sha256-derived fallback name');
+  assert.equal(r.renamedFrom, 'hero.jpg');
+  assert.equal(writes.length, 1, 'exactly one file was written');
+  assert.equal(writes[0].base, r.savedAs);
+});
+
+test('createOnly: when even the content-hash name exists, the identical asset is already there — reported, not rewritten', async () => {
+  const buffer = Buffer.alloc(4096, 9);
+  const stub = makeStubFetch({ 'https://x.io/hero.jpg': { buffer, contentType: 'image/jpeg' } });
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16);
+  const { writes, fn } = makeStubWriteWithExisting(new Set(['hero.jpg', `${hash}.jpg`]));
+  const r = await downloadOne('https://x.io/hero.jpg', '/abs/out', { _fetchFn: stub, _writeFn: fn, createOnly: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.alreadyPresent, true);
+  assert.equal(r.savedAs, `${hash}.jpg`);
+  assert.equal(writes.length, 0, 'nothing was written at all');
+});
+
+test('createOnly: a write error that is NOT EEXIST surfaces unchanged', async () => {
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 1), contentType: 'image/png' } });
+  const fn = async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+  await assert.rejects(() => downloadOne('https://x.io/a.png', '/abs/out', { _fetchFn: stub, _writeFn: fn, createOnly: true }), /EACCES/);
+});
+
+test('downloadAssets forwards createOnly to every downloadOne', async () => {
+  const stub = makeStubFetch({
+    'https://x.io/a.png': { buffer: Buffer.alloc(2048, 1), contentType: 'image/png' },
+    'https://x.io/b.png': { buffer: Buffer.alloc(2048, 2), contentType: 'image/png' },
+  });
+  const { writes, fn } = makeStubWriteWithExisting(new Set());
+  await downloadAssets(['https://x.io/a.png', 'https://x.io/b.png'], '/abs/out', {
+    _fetchFn: stub, _writeFn: fn, _mkdirFn: async () => undefined, _statFn: stubStatAllDirs, createOnly: true,
+  });
+  assert.equal(writes.length, 2);
+  assert.ok(writes.every((w) => w.opts && w.opts.flag === 'wx'));
 });

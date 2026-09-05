@@ -158,8 +158,16 @@ export function writeTargets(toolName, args = {}, { declares } = {}) {
  * Mirrors `normalizeRecoverArg` (`helpers/write-bundle.mjs`) rather than
  * re-deriving it: the union it normalises is the reason the naive truthiness
  * test was wrong. Kept as a predicate here (not an import) only because this
- * module must stay free of the bundle machinery — the two are pinned equal in
- * `tests/security-invariants.test.mjs`, so they cannot drift silently.
+ * module must stay free of the bundle machinery.
+ *
+ * THE TWO ARE NOT IDENTICAL, and no test pins them equal — an earlier version
+ * of this comment claimed one in `tests/security-invariants.test.mjs` that
+ * does not exist (Fable 5.1 round). They agree on every value the handler
+ * LISTS and on every value it treats as a bundle apply; they differ on junk
+ * (`recover: 1` is truthy here, returned verbatim there). That is fine for
+ * THIS module's consumers, which only need "does this call name step
+ * targets?" — and it is why the shared-vault gate imports the handler's own
+ * normaliser instead of this predicate.
  */
 export function isRecoveryCall(value) {
   if (value === undefined || value === null || value === false) return false;

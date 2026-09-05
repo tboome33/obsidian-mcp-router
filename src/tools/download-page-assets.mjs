@@ -103,6 +103,10 @@ export const TOOL_DEFINITION = {
         description: 'Absolute path to the directory where downloaded assets land. Created if missing. Must be inside MD_ALLOWED_PATHS if that env var is set. When it sits INSIDE a registered vault\'s folder (the wiki-ingest convention `<vault>/wiki/.assets/<slug>/`), that vault\'s reachability and write tier apply exactly as for a REST write — a soft-tier secondary of this workspace needs confirmSecondaryWrite, an alsoLocked one is refused.',
       },
       confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
+      createOnly: {
+        type: 'boolean',
+        description: 'When true, every asset is written create-only (the `wx` open flag): an asset whose URL-derived name already exists falls through to its content-hash name, and one whose content-hash name already exists is reported as alreadyPresent, never overwritten. This is the asset analogue of write_file\'s ifNew, and it is REQUIRED when outputDir sits inside a vault list_vaults reports as writesRequireIfMatch: true. Default: false (an existing name is overwritten, as before).',
+      },
       defuddleFirst: {
         type: 'boolean',
         description: 'v0.14.7: when true (default), run defuddle to extract the article body before scanning for images. Strips nav/header/sidebar/footer/ads/share-widgets at zero network cost. Set to false to scan raw HTML (pre-v0.14.7 behavior).',
@@ -183,7 +187,11 @@ export async function handleDownloadPageAssets(args = {}) {
     minHeight = DEFAULTS.minHeight,
     concurrency = DEFAULTS.concurrency,
     maxAssets = DEFAULTS.maxAssets,
+    createOnly = false,
   } = args;
+  if (createOnly !== undefined && typeof createOnly !== 'boolean') {
+    throw new Error(`download_page_assets: createOnly must be a boolean, got ${typeof createOnly}`);
+  }
 
   // Input validation — fail fast with clear messages.
   if (!url && !html) {
@@ -317,6 +325,7 @@ export async function handleDownloadPageAssets(args = {}) {
     minWidth,
     minHeight,
     concurrency,
+    createOnly,
   });
 
   // Serialize the Map for MCP transport (JSON has no Map type).

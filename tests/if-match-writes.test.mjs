@@ -50,9 +50,14 @@ before(async () => {
     const url = decodeURIComponent(req.url);
     recorded.requests.push({ method: req.method, url, rawUrl: req.url, body, headers: req.headers });
 
-    // Atomic CAS route.
+    // Atomic CAS route. A 2xx here IS a landed write — recorded, so that
+    // `mutated()` sees it. The first version of the enforcement loop only
+    // looked at the core verbs, which was blind for exactly the atomic tier
+    // (harmless while every case left the route 404, and the shape round 3
+    // had already paid for once with POST). (Fable 5.1 round.)
     if (req.method === 'PUT' && url.startsWith('/vault-cas/')) {
       const r = behaviour.vaultCas;
+      if (r.status >= 200 && r.status < 300) recorded.cas = { url, body };
       res.writeHead(r.status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(r.body ?? {}));
       return;
@@ -107,7 +112,7 @@ beforeEach(() => {
     vaultCas: { status: 404 }, // default: bridge route absent
     get: { status: 404 },
   };
-  recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
+  recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null, cas: null };
 });
 
 function vault() {
@@ -259,7 +264,7 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
   test('fallback STATUS MATRIX: 400/404/413/415 degrade — 401/403/500 hard-fail (codex #6)', async () => {
     // Degrading group: the fallback GET fires and the core PUT services the write.
     for (const status of [400, 404, 413, 415]) {
-      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
+      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null, cas: null };
       behaviour.vaultCas = { status, body: {} };
       behaviour.get = { status: 200, body: 'current' };
       const out = await writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('current'));
@@ -268,7 +273,7 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
     }
     // Hard-error group: no fallback GET, no core PUT — the error surfaces.
     for (const status of [401, 403, 500]) {
-      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
+      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null, cas: null };
       behaviour.vaultCas = { status, body: {} };
       behaviour.get = { status: 200, body: 'current' };
       await assert.rejects(
@@ -499,7 +504,7 @@ describe('the shared-vault gate\'s promise: satisfying it really does protect', 
   // EVERY mutating method, POST included. The round-3 lesson of the also-tier
   // gate was exactly this: a "no write landed" assertion that ignores one verb
   // is blind, not green — there, it was the audit line's POST.
-  const mutated = () => Boolean(recorded.corePut || recorded.corePatch || recorded.corePost || recorded.coreDelete);
+  const mutated = () => Boolean(recorded.corePut || recorded.corePatch || recorded.corePost || recorded.coreDelete || recorded.cas);
   // `move_file` refuses an existing destination unless told otherwise, and this
   // fake answers 200 for every GET — so the destination always "exists". The
   // precondition under test guards the SOURCE either way.
@@ -511,9 +516,13 @@ describe('the shared-vault gate\'s promise: satisfying it really does protect', 
     // it is a composite that runs these very handlers (its own suite covers
     // it), and `execute_template` because the gate refuses it outright — it
     // declares no precondition at all.
-    const expected = [..._internals.WRITE_TOOL_NAMES].filter(
-      (n) => !IF_MATCH_EXEMPT.has(n) && n !== 'write_bundle' && n !== 'execute_template',
-    );
+    // Excluded by name, each with its reason: `write_bundle` is a composite
+    // that runs these very handlers (its own suite covers it);
+    // `execute_template` and `download_page_assets` are satisfiable by a
+    // precondition that is not `ifMatch` (`createFile`, create-only at the
+    // bridge; `createOnly`, the `wx` flag) and are proved in their own suites.
+    const NOT_IF_MATCH = new Set(['write_bundle', 'execute_template', 'download_page_assets']);
+    const expected = [..._internals.WRITE_TOOL_NAMES].filter((n) => !IF_MATCH_EXEMPT.has(n) && !NOT_IF_MATCH.has(n));
     assert.deepEqual(
       expected.filter((n) => !(n in CASES)), [],
       'a write tool the gate calls satisfiable is not exercised by this loop',
@@ -548,6 +557,95 @@ describe('the shared-vault gate\'s promise: satisfying it really does protect', 
       assert.equal(mutated(), true, `${name} did not write even though the precondition held`);
     });
   }
+});
+
+/**
+ * `ifNew` / `applyIfContentPreexists: false` IS ENFORCED BY THE ROUTER — the
+ * header never did it.
+ *
+ * Verified against the installed Local REST API 4.0.2 (the whole fleet): its
+ * bundle contains zero occurrences of `Apply-If-Content-Preexists`; the only
+ * related header it reads is `Reject-If-Content-Preexists`, in PATCH. So every
+ * "must not exist yet" PUT — write_file's ifNew, the bundle's journal creation
+ * and restore-if-absent, the source ledger's first write, the reserved-path
+ * writer — was a plain overwrite, and the Phase 4 gate credited `ifNew: true`
+ * with a compare-and-swap against absence that did not exist. (Fable 5.1
+ * round, verifying the gate's assumptions about existing code.)
+ */
+describe('create-only writes are enforced in the router, not by a header the server ignores', () => {
+  test('write_file ifNew on an EXISTING file: refused 409 by the router, no PUT reaches the vault', async () => {
+    behaviour.get = { status: 200, body: 'already here' };
+    await assert.rejects(
+      () => writeFileTool(realRegistry(), { path: 'a.md', content: 'x', ifNew: true }),
+      /already exists/,
+    );
+    assert.equal(recorded.corePut, null, 'nothing was written');
+    assert.equal(recorded.requests.filter((r) => r.method === 'PUT').length, 0);
+  });
+
+  test('write_file ifNew on an ABSENT file: one probe GET, then the PUT lands', async () => {
+    behaviour.get = { status: 404 };
+    const r = await writeFileTool(realRegistry(), { path: 'a.md', content: 'x', ifNew: true });
+    assert.equal(r.mode, 'create-only');
+    assert.ok(recorded.corePut, 'the create landed');
+    assert.deepEqual(recorded.requests.map((q) => q.method), ['GET', 'PUT']);
+    // The header still travels, harmlessly, for a server that may honour it one day.
+    assert.equal(recorded.corePut && recorded.requests[1].headers['apply-if-content-preexists'], 'false');
+  });
+
+  test('every internal caller of applyIfContentPreexists:false gets the same guard — it lives in writeFile itself', async () => {
+    // The bundle's journal creation, its restore-if-absent, the source ledger's
+    // first write and the reserved-path writer all call rest-client's
+    // `writeFile(..., { applyIfContentPreexists: false })`. One fix, four
+    // callers — proved at the sink they share, not per site.
+    const { writeFile } = await import('../src/rest-client.mjs');
+    behaviour.get = { status: 200, body: 'taken' };
+    await assert.rejects(() => writeFile(vault(), 'x.json', '{}', { applyIfContentPreexists: false }), /already exists/);
+    assert.equal(recorded.corePut, null);
+    behaviour.get = { status: 404 };
+    await writeFile(vault(), 'x.json', '{}', { applyIfContentPreexists: false });
+    assert.ok(recorded.corePut);
+  });
+
+  test('a probe that fails for a reason other than 404 surfaces unchanged — never treated as "absent"', async () => {
+    const { writeFile } = await import('../src/rest-client.mjs');
+    behaviour.get = { status: 500, body: 'boom' };
+    await assert.rejects(() => writeFile(vault(), 'x.md', 'x', { applyIfContentPreexists: false }), (err) => err.kind !== 'not_found');
+    assert.equal(recorded.corePut, null, 'an unknown state must not become a write');
+  });
+
+  test('patch_file sends the header the plugin actually reads, with the inverted spelling', async () => {
+    // 4.0.2's PATCH handler: `req.get("Reject-If-Content-Preexists") == "true"`.
+    // `applyIfContentPreexists: false` = "reject if preexists: true".
+    behaviour.get = { status: 200, body: 'current' };
+    await patchFileTool(realRegistry(), {
+      path: 'a.md', operation: 'append', targetType: 'block', target: 'b1', content: 'c', applyIfContentPreexists: false,
+    });
+    assert.ok(recorded.corePatch);
+    const h = recorded.requests.find((q) => q.method === 'PATCH').headers;
+    assert.equal(h['reject-if-content-preexists'], 'true');
+    assert.equal(h['apply-if-content-preexists'], undefined, 'the dead header is gone from PATCH');
+  });
+});
+
+describe('the atomic CAS tier is proved too, not only the fallback (Fable 5.1 round)', () => {
+  test('bridge route present + matching hash: the write lands through /vault-cas/ and mutated() sees it', async () => {
+    behaviour.vaultCas = { status: 200, body: { ok: true } };
+    const r = await writeFileTool(realRegistry(), { path: 'a.md', content: 'x', ifMatch: contentSha256('current') });
+    assert.equal(r.mode, 'if-match:atomic');
+    assert.ok(recorded.cas, 'the CAS write is recorded as a mutation');
+    assert.equal(recorded.corePut, null, 'no fallback PUT');
+  });
+
+  test('bridge route present + server says 409: refused, and NOTHING landed anywhere', async () => {
+    behaviour.vaultCas = { status: 409, body: { error: 'conflict', reason: 'content-changed' } };
+    await assert.rejects(
+      () => writeFileTool(realRegistry(), { path: 'a.md', content: 'x', ifMatch: contentSha256('stale') }),
+      /changed since|precondition failed/i,
+    );
+    assert.equal(recorded.cas, null);
+    assert.equal(recorded.corePut, null);
+  });
 });
 
 describe('ifMatch guard suppresses the operation on mismatch (patch/delete/move/merge)', () => {

@@ -117,7 +117,7 @@ import {
 // argument — see FIXED_AUDIT_TARGETS.
 import { SEARCH_INDEX_PATH } from './helpers/bm25-index.mjs';
 import { SOURCE_LEDGER_PATH } from './helpers/source-ledger.mjs';
-import { BUNDLE_JOURNAL_DIR, normalizeRecoverArg } from './helpers/write-bundle.mjs';
+import { BUNDLE_JOURNAL_DIR, normalizeRecoverArg, isOperationId } from './helpers/write-bundle.mjs';
 import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
@@ -166,7 +166,7 @@ import {
 // for why it is computed rather than declared, and re-read from the file.
 import {
   assertSharedVaultPrecondition, createBindingsReader, sharingRequirement, preconditionState,
-  IF_MATCH_EXEMPT, SHARING_REASONS,
+  IF_MATCH_EXEMPT,
 } from './helpers/vault-sharing.mjs';
 import {
   TOOL_DEFINITION as SET_SECONDARY_VAULT_MODE_TOOL_DEFINITION,
@@ -179,7 +179,7 @@ const TOOLS = [
   {
     name: 'list_vaults',
     description:
-      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault), disabled[] (vaults this session cannot use, NOT pinged — name, type, reason: either "disabled" for a vault skipped by the disabledVaults config, or "not reachable from this workspace (…)" for a vault that exists but that this workspace\'s binding does not name while vaultReach: "declared" is active — that second case is fixed in-session with confirm_workspace_binding, never by editing config.json), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "binding" = the confirmed workspace binding in the user\'s OWN config chose it — the only origin that cannot have arrived with a git clone, and the one that outranks the environment; "workspace-dotenv" = this project\'s own .env file chose it — possible for autoEnrichModeSource ONLY: for defaultVaultSource and lockSource this origin never appears any more, because a workspace file can no longer choose the vault or the lock, only propose them (see bindingHint) — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — the auto-enrichment mode from three of its four valid values — never "FullAuto", see autoEnrichModeRefused — VAULT_PATH only when it names the workspace directory itself, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs. The default vault and the lock it can only PROPOSE, never set (see bindingHint), and it can never name an endpoint, a credential or the router\'s own config, so this is about consent, not access; do not advise editing a project .env to change the vault — confirm_workspace_binding is the way), workspaceBinding (WHICH vaults this workspace is bound to, from the user\'s own config — { vault, also[], locked, confirmedAt, confirmedVia, alsoLocked[], alsoWritable[] }, or NULL. `alsoLocked`/`alsoWritable` are the write tiers of the secondaries for THIS workspace, as recorded by set_secondary_vault_mode: a secondary in `alsoLocked` is read-only, strict; one in `alsoWritable` is read-write; one in neither is read-only with a per-write override that needs the user\'s explicit yes in the conversation (confirmSecondaryWrite). Read the three states carefully before phrasing them: an object with an empty `also` = bound to ONE vault; an object with a non-empty `also` = bound to SEVERAL, all addressable by name; null = NO binding, which means ALL vaults are available and the cascade picks the default — null is never "no vault"), bindingImported (null in the normal case; otherwise what the ONE-TIME migration created at THIS start-up, as { vault, at, locked, dotenvFile } — the router imported this workspace\'s .env hint as a confirmed binding, once, so that installations that predate the binding registry kept working when a project file stopped being able to choose a vault. NOBODY CONFIRMED IT: say so, name the vault, and say that confirm_workspace_binding({ clear: true }) undoes it permanently while confirm_workspace_binding({ vault }) adopts it. The import runs at most once per workspace and never for a dotenv file written after the upgrade, so a freshly cloned repository is never imported; a binding it created carries confirmedVia "migration", which is how a later session still knows nobody confirmed it. `locked` true means the file ALSO carried an OBSIDIAN_ROUTER_LOCKED line an earlier lock_vault --persist had written, and the imported binding is locked so that isolation survives the upgrade — say that too, because the session is then restricted to one vault by a decision nobody made today), bindingHint (what PROPOSED the default vault for this workspace without being able to decide it, as { status, hint, boundTo, origin }, or null. status is "none" or "confirmed" (both mean silence — nothing was turned away), "unconfirmed" (a registered vault this workspace never confirmed), "unknown-vault" (a vault this machine does not have), or "conflicts" (a binding exists and the environment names a different vault; the binding wins). For the last three, tell the user what was asked for and that it was not applied — and READ origin BEFORE naming the source: "workspace-dotenv" means this project\'s own .env file proposed it (that is the file to edit, and a cloned repository carries one), while "host" means the MCP host\'s server declaration or the launching shell did, in which case blaming the project file would send the user to the wrong place; "runtime" and "unknown" name neither. A SEPARATE field and never an origin of the setting: a hint that was not applied is not the source of what replaced it), autoEnrichModeRefused (null in the normal case; otherwise the auto-enrichment mode this workspace\'s .env asked for AT START-UP and did NOT get, as { value, canonical, origin, variable, reason } — a fact about what the file said when the router started, so it stays non-null after a set_auto_enrich_mode call in this session and after a persist that rewrote the line; read it beside autoEnrichMode and autoEnrichModeSource, which say what is in force NOW. Exactly one value is refused this way: "FullAuto", in any of its spellings, when it comes from a workspace file — the mode that lets Claude write into a vault without asking again is not something a file travelling with a cloned repository may turn on. It is a SEPARATE field and never an origin: autoEnrichModeSource keeps naming what actually took effect, because a refused value is not the source of what replaced it. When this is non-null, tell the user their project file asked for FullAuto and was refused, and that the two places the mode is still taken from are the MCP host\'s server declaration and a set_auto_enrich_mode call in this session), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
+      'List all configured Obsidian vaults (local and remote). Returns: defaultVault (the name resolved by the cascade for the current session), defaultVaultStatus (that vault\'s reachability, path and obsidian:// URI), vaults[] (active vaults, each pinged for online status + latency + missingApiKey + isDefault + writesRequireIfMatch / sharingReason — true when every write to that vault must carry a precondition (ifMatch, ifNew, approvedPlanSha256, createOnly, or a recovery expect), because two or more workspaces declare it ("multi-workspace"), it is in openVaults ("open-vault"), or the router could not read its own binding registry ("registry-unreadable")), disabled[] (vaults this session cannot use, NOT pinged — name, type, reason: either "disabled" for a vault skipped by the disabledVaults config, or "not reachable from this workspace (…)" for a vault that exists but that this workspace\'s binding does not name while vaultReach: "declared" is active — that second case is fixed in-session with confirm_workspace_binding, never by editing config.json), configPath, portCollisions[] (two vaults on one port — the answer to an otherwise unexplained "online: false"), lockedTo (the locked vault name when single-vault isolation is on, or null when multi-vault), autoEnrichMode (the wiki auto-enrichment mode: "ClaudeAsk" | "Hybrid" | "FullAuto" | "off"), defaultVaultSource / lockSource / autoEnrichModeSource (WHERE each of those three settings came from, as { origin, variable }: "binding" = the confirmed workspace binding in the user\'s OWN config chose it — the only origin that cannot have arrived with a git clone, and the one that outranks the environment; "workspace-dotenv" = this project\'s own .env file chose it — possible for autoEnrichModeSource ONLY: for defaultVaultSource and lockSource this origin never appears any more, because a workspace file can no longer choose the vault or the lock, only propose them (see bindingHint) — say so before acting on it, a cloned repository carries its .env; "host" = the MCP host\'s server declaration, a launcher or a shell; "runtime" = a tool call in this session, or a value that changed after the file was read; "config" / "first-healthy" / "first-active" = the router\'s config.json or a fallback of the resolution cascade; "default" = nothing set it; "unset" = no value; "unknown" = the router cannot say — never a guess. `variable` is the environment variable that carried the value, or null when no variable was involved. What a workspace file may set at all is a short, fixed list — the auto-enrichment mode from three of its four valid values — never "FullAuto", see autoEnrichModeRefused — VAULT_PATH only when it names the workspace directory itself, a NARROWING of the conversion sandbox, and the enumerated NO_* opt-outs. The default vault and the lock it can only PROPOSE, never set (see bindingHint), and it can never name an endpoint, a credential or the router\'s own config, so this is about consent, not access; do not advise editing a project .env to change the vault — confirm_workspace_binding is the way), workspaceBinding (WHICH vaults this workspace is bound to, from the user\'s own config — { vault, also[], locked, confirmedAt, confirmedVia, alsoLocked[], alsoWritable[] }, or NULL. `alsoLocked`/`alsoWritable` are the write tiers of the secondaries for THIS workspace, as recorded by set_secondary_vault_mode: a secondary in `alsoLocked` is read-only, strict; one in `alsoWritable` is read-write; one in neither is read-only with a per-write override that needs the user\'s explicit yes in the conversation (confirmSecondaryWrite). Read the three states carefully before phrasing them: an object with an empty `also` = bound to ONE vault; an object with a non-empty `also` = bound to SEVERAL, all addressable by name; null = NO binding, which means ALL vaults are available and the cascade picks the default — null is never "no vault"), bindingImported (null in the normal case; otherwise what the ONE-TIME migration created at THIS start-up, as { vault, at, locked, dotenvFile } — the router imported this workspace\'s .env hint as a confirmed binding, once, so that installations that predate the binding registry kept working when a project file stopped being able to choose a vault. NOBODY CONFIRMED IT: say so, name the vault, and say that confirm_workspace_binding({ clear: true }) undoes it permanently while confirm_workspace_binding({ vault }) adopts it. The import runs at most once per workspace and never for a dotenv file written after the upgrade, so a freshly cloned repository is never imported; a binding it created carries confirmedVia "migration", which is how a later session still knows nobody confirmed it. `locked` true means the file ALSO carried an OBSIDIAN_ROUTER_LOCKED line an earlier lock_vault --persist had written, and the imported binding is locked so that isolation survives the upgrade — say that too, because the session is then restricted to one vault by a decision nobody made today), bindingHint (what PROPOSED the default vault for this workspace without being able to decide it, as { status, hint, boundTo, origin }, or null. status is "none" or "confirmed" (both mean silence — nothing was turned away), "unconfirmed" (a registered vault this workspace never confirmed), "unknown-vault" (a vault this machine does not have), or "conflicts" (a binding exists and the environment names a different vault; the binding wins). For the last three, tell the user what was asked for and that it was not applied — and READ origin BEFORE naming the source: "workspace-dotenv" means this project\'s own .env file proposed it (that is the file to edit, and a cloned repository carries one), while "host" means the MCP host\'s server declaration or the launching shell did, in which case blaming the project file would send the user to the wrong place; "runtime" and "unknown" name neither. A SEPARATE field and never an origin of the setting: a hint that was not applied is not the source of what replaced it), autoEnrichModeRefused (null in the normal case; otherwise the auto-enrichment mode this workspace\'s .env asked for AT START-UP and did NOT get, as { value, canonical, origin, variable, reason } — a fact about what the file said when the router started, so it stays non-null after a set_auto_enrich_mode call in this session and after a persist that rewrote the line; read it beside autoEnrichMode and autoEnrichModeSource, which say what is in force NOW. Exactly one value is refused this way: "FullAuto", in any of its spellings, when it comes from a workspace file — the mode that lets Claude write into a vault without asking again is not something a file travelling with a cloned repository may turn on. It is a SEPARATE field and never an origin: autoEnrichModeSource keeps naming what actually took effect, because a refused value is not the source of what replaced it. When this is non-null, tell the user their project file asked for FullAuto and was refused, and that the two places the mode is still taken from are the MCP host\'s server declaration and a set_auto_enrich_mode call in this session), and conversionToolbox (whether the markitdown Python CLI is usable here: available, via, path, verified, optedOut, toolsAffected[], toolsDegraded[], hint. It is an explicit opt-in, never installed automatically, so on a fresh install the EIGHT tools in toolsAffected are dormant until someone says yes; youtube_to_markdown merely degrades to its yt-dlp fallback, and git_repo_to_markdown (repomix) and pdf_to_markdown_docling (Docling) are unaffected. verified:false means the answer was taken on the user\'s word — a bare command name resolved through PATH at call time, or a UNC path — so report it as "configured", not "ready"). Always call this first to discover which vaults are available and the current router state.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -261,11 +261,11 @@ const TOOLS = [
         content: { type: 'string', description: 'Full file content (markdown).' },
         ifNew: {
           type: 'boolean',
-          description: 'If true, fail with 409 if the file already exists. Default: false (overwrite). Mutually exclusive with ifMatch.',
+          description: 'If true, fail with 409 if the file already exists — the router checks with a read just before the PUT (a check-then-write, one round trip wide). Default: false (overwrite). Mutually exclusive with ifMatch. On a vault list_vaults reports as writesRequireIfMatch: true, a write must carry ifMatch or ifNew.',
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Writes only if the file still hashes to this; otherwise 409. Atomic when the target vault runs obsidian-mcp-router-bridge >= 0.7.0, else a GET-compare fallback.',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Writes only if the file still hashes to this; otherwise 409. Atomic when the target vault runs obsidian-mcp-router-bridge >= 0.7.0, else a GET-compare fallback. REQUIRED (or ifNew for a new file) on a vault list_vaults reports as writesRequireIfMatch: true.',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -276,7 +276,7 @@ const TOOLS = [
   {
     name: 'append_to_file',
     description:
-      'Append content to the end of a file. Creates the file if it doesn\'t exist (unless requireExisting is true). Use this for journals, logs, or running notes.',
+      'Append content to the end of a file. Creates the file if it doesn\'t exist (unless requireExisting is true). Use this for journals, logs, or running notes. On a vault list_vaults reports as writesRequireIfMatch: true, an append must carry ifMatch — and a file that does not exist yet cannot be guarded that way: create it first with write_file + ifNew: true.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -289,7 +289,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The append is refused with a 409 conflict if the file changed since you read it. Checked before the append, not atomically with it.',
+          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The append is refused with a 409 conflict if the file changed since you read it. Checked before the append, not atomically with it. REQUIRED on a vault list_vaults reports as writesRequireIfMatch: true.',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -313,7 +313,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard on the SOURCE: the 64-hex contentSha256 from a prior get_file of the source. Refuses the move with 409 if the source changed since then.',
+          description: 'Optimistic-concurrency guard on the SOURCE: the 64-hex contentSha256 from a prior get_file of the source. Refuses the move with 409 if the source changed since then. REQUIRED on a vault list_vaults reports as writesRequireIfMatch: true (leave overwrite false there, so an existing destination is refused rather than replaced).',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -358,7 +358,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The property is not set if the file changed since you read it — a 409 conflict instead. Checked before the patch, not atomically with it.',
+          description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file (get_frontmatter returns none). The property is not set if the file changed since you read it — a 409 conflict instead. Checked before the patch, not atomically with it. REQUIRED on a vault list_vaults reports as writesRequireIfMatch: true.',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -369,7 +369,7 @@ const TOOLS = [
   {
     name: 'merge_frontmatter',
     description:
-      'Apply multiple frontmatter updates in sequence (NOT atomic — partial failures possible). Returns a per-key result. For atomic multi-key updates, prefer get_frontmatter + modify + write_file.',
+      'Apply multiple frontmatter updates in sequence (NOT atomic — partial failures possible). Returns a per-key result. For atomic multi-key updates, prefer get_file + modify + write_file with its contentSha256 as ifMatch (get_frontmatter returns no hash, so it cannot seed a guarded write).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -385,7 +385,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Checked once before any key is written; a mismatch throws 409 before the first mutation. Does not make the multi-key update atomic.',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file (get_frontmatter returns none). Checked once before any key is written; a mismatch throws 409 before the first mutation. Does not make the multi-key update atomic. REQUIRED on a vault list_vaults reports as writesRequireIfMatch: true.',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -416,7 +416,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Refuses the delete with 409 if the file changed since then — avoids deleting a file another session just edited.',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Refuses the delete with 409 if the file changed since then — avoids deleting a file another session just edited. On a vault list_vaults reports as writesRequireIfMatch: true, a confirmed delete must carry this or approvedPlanSha256 (the seal pins the content too).',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -473,7 +473,7 @@ const TOOLS = [
         },
         ifMatch: {
           type: 'string',
-          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. The whole-file precondition is checked before patching; a mismatch throws 409. Guards against patching content that changed since you read it (the patch itself is not hash-locked).',
+          description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. The whole-file precondition is checked before patching; a mismatch throws 409. Guards against patching content that changed since you read it (the patch itself is not hash-locked). REQUIRED on a vault list_vaults reports as writesRequireIfMatch: true.',
         },
         confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
@@ -1463,7 +1463,19 @@ const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set(['provision_vault', 'register_remote
 function requiresAlsoTierCheck(toolName, args) {
   if (!WRITE_TOOL_NAMES.has(toolName) || ALSO_TIER_EXEMPT_TOOL_NAMES.has(toolName)) return false;
   if (toolName === 'execute_template' && args.createFile !== true) return false;
-  if (toolName === 'write_bundle' && (args.preview === true || normalizeRecoverArg(args.recover) === true)) return false;
+  if (toolName === 'write_bundle') {
+    // ROUTED AS THE HANDLER ROUTES: on `recover` FIRST. `recover()` never reads
+    // `preview`, so the first version — which tested `preview` first — let
+    // `{ recover: "<opId>", confirm: true, preview: true }` through as a
+    // non-write: both gates skipped, no audit line, no projections refresh,
+    // and the handler REPLAYED THE JOURNAL. One stray flag past the promise
+    // Phase 3's round 1 had just closed for the recovery run. (Fable 5.1 round.)
+    const recover = normalizeRecoverArg(args.recover);
+    if (recover === true) return false; // the read-only listing
+    if (isOperationId(recover)) return true; // a recovery RUN writes, preview or not
+    if (recover !== false) return false; // malformed — the handler refuses it, nothing written
+    return args.preview !== true; // a sealed plan writes nothing
+  }
   if (toolName === 'delete_file' && args.preview === true) return false;
   if (toolName === 'build_wiki_graph' && Boolean(args.dryRun)) return false;
   if (toolName === 'build_search_index' && args.check === true) return false;
@@ -1589,21 +1601,12 @@ function assertAssetOutputDirWritable(args, reg, sharedConfig = null) {
   // `sharingRequirement` reports as UNKNOWN and treats as shared. That is the
   // fail-closed direction on purpose; the one production caller always passes
   // the reader's answer.
-  const sharing = sharingRequirement(owner.name, reg, sharedConfig);
-  if (sharing.required) {
-    const why = sharing.reason === SHARING_REASONS.OPEN_VAULT
-      ? 'it is listed in `openVaults`'
-      : sharing.reason === SHARING_REASONS.UNKNOWN
-        ? 'the router config could not be read, so how many workspaces declare it is unknown'
-        : `${sharing.workspaces.length} workspaces declare it: ${sharing.workspaces.join(', ')}`;
-    throw new Error(
-      `download_page_assets: outputDir is inside vault "${owner.name}", which is SHARED (${why}). `
-      + 'This tool writes a batch of files with no per-file precondition, and it overwrites an asset '
-      + 'that already exists under the same name, so it cannot run against a shared vault. Download '
-      + 'to a directory OUTSIDE the vault, then bring in what you need with write_file '
-      + '(`ifNew: true` for a file that must not exist yet).',
-    );
-  }
+  // The SAME gate the REST writers meet, with the tool's own precondition:
+  // `createOnly: true`. The previous round refused this tool outright on a
+  // shared vault and pointed at `write_file` — a remedy that cannot carry a
+  // PNG, so asset saving had become impossible on every shared vault, the
+  // workspace's own primary included. (Fable 5.1 round.)
+  assertSharedVaultPrecondition(owner, reg, 'download_page_assets', args, sharedConfig);
   return owner;
 }
 
@@ -1699,13 +1702,14 @@ let liveRegistryRef = null;
 /**
  * Reads the binding registry AS IT IS ON DISK, for the shared-vault
  * precondition gate. Built once in `startServer()` — the config PATH never
- * changes for the life of the process, hot-reload included, and the reader's
- * own `mtime`+`size` guard is what keeps it current.
+ * changes for the life of the process, hot-reload included — and it re-reads
+ * the file's bytes on every call, re-parsing only when they changed.
  *
  * Null until then (and in unit tests that call the dispatcher's helpers
- * directly): `sharingRequirement` answers from `openVaults` alone in that
- * case, which is the documented degraded mode rather than a silent "no
- * requirement".
+ * directly): `sharingRequirement` then answers UNKNOWN, which is refused like
+ * a shared vault — never a silent "no requirement". In a running router this
+ * cannot happen: the reader is built before the CallTool handler is wired and
+ * primed while the file is known readable.
  */
 let bindingsReader = null;
 

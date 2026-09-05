@@ -52,7 +52,7 @@ For a single file, use the ordinary `write-append` / `write-create-or-replace` /
 ✅ **Concurrent writers are detected, not assumed away.** For `write` and `delete` steps the bundle knows the exact result it produced, so a read-back that disagrees is *proof* someone else wrote — that file is then left alone for the rest of the operation, rollback included.
 
 ❌ **Not isolation.** A concurrent reader can still see an intermediate state *while* the bundle runs. What disappears is the durable half-applied state, not the transient one.
-❌ **Not a lock.** A file that someone else changed is **never** restored over — that would be the exact clobber `ifMatch` exists to prevent. It is left alone, named in `rollback.paths` with `left-modified` / `left-deleted` / `left-created`, and the journal is kept.
+❌ **Not a lock.** A file that someone else changed **after a step the bundle can attribute** is never restored over — that would be the exact clobber `ifMatch` exists to prevent. It is left alone, named in `rollback.paths` with `left-modified` / `left-deleted` / `left-created`, and the journal is kept. Where nothing can be attributed — a **recovery run**, or a step that failed before any post-image existed — the restore goes ahead as `unverified` and the journal keeps a copy of what it overwrote; that is why a recovery on a shared vault requires `expect` (below).
 ❌ **Not byte-level.** Restoration puts back *the content the router read*. The read path strips a leading UTF-8 BOM (the same normalisation C1's hash depends on), so a BOM-prefixed file comes back without its BOM. Everything else — CRLF, accents, emoji, trailing spaces — is exact.
 
 ## Reading the result
@@ -86,9 +86,13 @@ A step whose failure is a *normal branch* of your logic will roll the whole bund
 write_bundle({ recover: true })                                            # read-only listing
 write_bundle({ recover: "op-<16 hex>", confirm: true })                    # replay one rollback
 write_bundle({ recover: "op-<16 hex>", confirm: true, only: ["a.md"] })     # …just these files
+write_bundle({ recover: "op-<16 hex>", confirm: true,
+               expect: { "a.md": "<currentSha256 from the listing>", "new.md": null } })  # guarded
 ```
 
-`recover: true` lists the journals left by bundles that never finished, with a per-file `wouldChange` verdict and a `recoverable` flag (a journal already stamped terminal is listed but refused — replaying it would undo an operation that succeeded).
+`recover: true` lists the journals left by bundles that never finished, with a per-file `wouldChange` verdict, its `currentSha256` / `beforeSha256`, the `journalPath`, and a `recoverable` flag (a journal already stamped terminal is listed but refused — replaying it would undo an operation that succeeded).
+
+`expect` is the recovery's own `ifMatch`: `{ "<path>": "<currentSha256>" | null }` for **every** path the run will restore (narrow with `only` first), copied from the listing. The run is refused before any write if a file no longer matches. It is **required** on a vault `list_vaults` reports as `writesRequireIfMatch: true` — a recovery restores over whatever is there, and on a shared vault that could be another workspace's edit — and honoured everywhere else.
 
 Run the listing first and **look at those files**. A recovery cannot prove two things: who wrote the content that is there now, *and* how far the crashed bundle actually got — a crash leaves no per-step record. So `wouldChange:true` mixes files the bundle wrote with files **you** may have edited since. That is why the run form demands `confirm: true`, reports every restore as `unverified`, and accepts `only` so you can restore just the files you recognise as the bundle's. A partial recovery keeps the journal so the rest stays recoverable.
 
