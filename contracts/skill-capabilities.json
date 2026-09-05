@@ -321,6 +321,34 @@
         "reason": "No harness executes a skill. The only mutation is the router's own lock state; persistence writes the workspace .env via the tool."
       }
     },
+    "bind-workspace": {
+      "summary": "Deterministic wizard: detects the open vaults, binds the one the user names as the workspace's primary, then runs the secondary-vault flow (detect, confirm, one write tier per vault).",
+      "reads": [
+        "router:config",
+        "vault:listing"
+      ],
+      "writes": [
+        "router:config"
+      ],
+      "tools": [
+        "list_vaults",
+        "confirm_workspace_binding",
+        "set_secondary_vault_mode"
+      ],
+      "toolsMentionedNotCalled": [],
+      "writeMode": "mutating",
+      "requires": {
+        "shell": false,
+        "network": false,
+        "python": false,
+        "obsidianPlugins": [],
+        "binaries": []
+      },
+      "verification": {
+        "status": "declared",
+        "reason": "No harness executes a skill. The only mutation is the workspace binding and its per-secondary tiers, written into the user's own router config through the two tools; nothing is opened, the user opens what they choose."
+      }
+    },
     "manage-delete": {
       "summary": "Permanently deletes a vault file, behind a two-step preview-then-confirm guard.",
       "reads": [

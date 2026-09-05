@@ -42,6 +42,15 @@
  * secondary vault... within a liaison already established", not every vault a
  * session can merely name.
  *
+ * The tier is declared PER WORKSPACE, on the binding record itself
+ * (`alsoLocked`/`alsoWritable` beside `also`, written by
+ * `set_secondary_vault_mode` — the "paramétrons les vaults secondaires"
+ * conversation), so one reference base can be strict in a project that only
+ * consults it and read-write in another. The global config lists of the
+ * same names, which the decision page first described, still work and are
+ * read as well; see `alsoWriteTierFor` for the precedence (locked anywhere
+ * wins).
+ *
  *   - `alsoWritable` — direct write, no friction.
  *   - `alsoLocked`   — refused UNCONDITIONALLY for the SECONDARY role. No
  *     write parameter can lift this; only editing config.json removes a
@@ -157,7 +166,7 @@ export function vaultContainingPath(fsPath, registry) {
  * `vaultReach` is inactive, simply named directly).
  *
  * @param {string} vaultName
- * @param {{ alsoWritable?: string[], alsoLocked?: string[], workspaceBinding?: { vault?: string, also?: string[] }|null }} registry
+ * @param {{ alsoWritable?: string[], alsoLocked?: string[], workspaceBinding?: { vault?: string, also?: string[], alsoLocked?: string[], alsoWritable?: string[] }|null }} registry
  * @returns {'writable'|'locked'|'soft'|null}
  */
 export function alsoWriteTierFor(vaultName, registry) {
@@ -166,10 +175,16 @@ export function alsoWriteTierFor(vaultName, registry) {
   if (binding.vault === vaultName) return null;
   const also = Array.isArray(binding.also) ? binding.also : [];
   if (!also.includes(vaultName)) return null;
-  const locked = registry && Array.isArray(registry.alsoLocked) ? registry.alsoLocked : [];
-  if (locked.includes(vaultName)) return 'locked';
-  const writable = registry && Array.isArray(registry.alsoWritable) ? registry.alsoWritable : [];
-  if (writable.includes(vaultName)) return 'writable';
+  // TWO PLACES CAN DECLARE A TIER, and the hard tier wins wherever it is
+  // declared. The BINDING's own lists (`alsoLocked`/`alsoWritable` on the
+  // binding record — what `set_secondary_vault_mode` writes, per workspace,
+  // so the same vault can be strict in one project and read-write in
+  // another) and the GLOBAL config lists the decision first described
+  // (hand-edited, one answer for every workspace). Locked anywhere → locked;
+  // otherwise writable anywhere → writable; otherwise soft, the default.
+  const has = (list) => Array.isArray(list) && list.includes(vaultName);
+  if (has(binding.alsoLocked) || has(registry.alsoLocked)) return 'locked';
+  if (has(binding.alsoWritable) || has(registry.alsoWritable)) return 'writable';
   return 'soft';
 }
 

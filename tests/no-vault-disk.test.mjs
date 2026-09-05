@@ -646,6 +646,12 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     // tests/register-remote-vault.test.mjs, which injects readFile/writeFile
     // seams and never touches a real config or a real disk.
     'register_remote_vault',
+    // Phase 3 (portee-ergonomie-refus-roadmap) — records a secondary's write
+    // tier on this workspace's binding in config.json (the router's OWN
+    // config, never a vault). Same category as confirm_workspace_binding.
+    // Covered by tests/set-secondary-vault-mode.test.mjs through injected
+    // read/write seams, and end to end by tests/also-tier-write-gate-e2e.test.mjs.
+    'set_secondary_vault_mode',
   ]);
 
   /** What the harness ACTUALLY ran — read from the run, never re-declared. */

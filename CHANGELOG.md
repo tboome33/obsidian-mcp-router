@@ -34,6 +34,50 @@ parameters.
   only via Tailscale's own mesh), and a new section on `ifMatch` discipline for a vault shared by
   more than one workspace, with the concrete two-writer scenario.
 
+### A vault a workspace never declared stops answering, and a secondary vault opens read-only
+
+Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,
+accepted 2026-09-04). Both switches are OFF by default: nothing changes for an installation that
+does not set them.
+
+#### Added
+
+- **`vaultReach: "declared"`** (config) — once set, a registered vault answers a session only if
+  that workspace's binding names it (`vault` or `also`), or if it is listed in **`openVaults`**,
+  the exception list that keeps a personal vault reachable from everywhere (the Desktop chat has
+  no workspace, so no binding). Enforced in `resolveVault()`, the one place a name becomes a vault;
+  `search`/`search_smart` with `vault: "*"`, the MCP Resources listing and `list_vaults` follow it —
+  `list_vaults` keeps SHOWING an unreachable vault in `disabled[]`, with its reason.
+- **Three write tiers for a workspace's SECONDARY vaults** (`also`): read-only strict (`locked`,
+  refused unconditionally — no parameter lifts it, and a locked secondary cannot be promoted to
+  primary from the conversation), read-only with a per-write override (`soft`, the default — the
+  write must carry **`confirmSecondaryWrite: true`**, which every write tool now declares and which
+  Claude may set only after the user said yes), and read-write (`writable`). The primary is always
+  read-write. The router's own writes — the first-contact repair, the audit line, the projections
+  refresh — obey the same tier, including a refresh queued before the tier changed.
+- **`set_secondary_vault_mode`** (53rd tool) — records one secondary's tier for the CURRENT
+  workspace, on its binding in the user's own config: the same vault can be strict in one project
+  and read-write in another. The global `alsoLocked`/`alsoWritable` config lists still work.
+- **`bind-workspace` skill + `/obsidian-router:bind-workspace` and
+  `/obsidian-router:configure-secondary-vaults` commands** — a deterministic wizard: the open
+  vaults are detected and listed, the user names the primary (or opens one and says when), confirms,
+  then attaches secondaries the same way and answers one question per vault. English canonical
+  prompts, answered in the user's language.
+
+#### Changed
+
+- `download_page_assets` — an `outputDir` inside a registered vault's folder is now subject to that
+  vault's reachability and write tier, exactly as a REST write would be.
+- The `install:agent-rules` index walks the `brief` clip down (80 → 24 chars) before giving up
+  descriptions, so a tight host cap no longer flips straight to the degraded index.
+
+#### Fixed
+
+- `lock_vault`, `OBSIDIAN_ROUTER_LOCKED` at start-up and a host lock re-derived on
+  `confirm_workspace_binding({ clear })` can no longer leave a session locked to a vault the
+  workspace cannot reach (every call would then fail until `unlock_vaults`).
+- `build_wiki_graph` with a stringified `dryRun` (`"true"`) is a dry run, never a write.
+
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 
 Two lots, both about trusting a file less. The first takes AUTHORITY away from the workspace

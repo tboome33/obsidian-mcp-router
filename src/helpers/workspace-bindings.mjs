@@ -132,12 +132,35 @@ export function normalizeBinding(raw) {
     }
   }
 
+  // THE WRITE TIER OF EACH SECONDARY, recorded on the binding itself (decision
+  // portee-et-mode-ecriture-des-vaults §2, applied per WORKSPACE — Roland's
+  // own words on 2026-09-05: "dans ce workspace, pour chacun d'entre eux je te
+  // demanderai…"). Two lists, both subsets of `also`: a name outside `also`
+  // has no role to qualify and is dropped; a name in BOTH is locked — the
+  // hard tier wins a conflict, exactly as it does for the global lists.
+  // Neither list means "soft", the default: a secondary in neither is
+  // read-only with a per-write override on the user's say-so.
+  const alsoSet = new Set(also);
+  const tierList = (value) => {
+    const out = [];
+    if (!Array.isArray(value)) return out;
+    for (const entry of value) {
+      if (typeof entry !== 'string' || !alsoSet.has(entry) || out.includes(entry)) continue;
+      out.push(entry);
+    }
+    return out;
+  };
+  const alsoLocked = tierList(raw.alsoLocked);
+  const alsoWritable = tierList(raw.alsoWritable).filter((n) => !alsoLocked.includes(n));
+
   return {
     vault,
     also,
     locked: raw.locked === true,
     confirmedAt: typeof raw.confirmedAt === 'string' && raw.confirmedAt ? raw.confirmedAt : null,
     confirmedVia: typeof raw.confirmedVia === 'string' && raw.confirmedVia ? raw.confirmedVia : null,
+    alsoLocked,
+    alsoWritable,
   };
 }
 

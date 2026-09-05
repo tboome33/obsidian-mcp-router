@@ -85,7 +85,10 @@ describe('normalizeBinding — a config file is a file, so validate at the bound
   test('a well-formed binding keeps its shape', () => {
     assert.deepEqual(
       normalizeBinding({ vault: 'notes', also: ['work'], locked: true, confirmedAt: '2026-09-03', confirmedVia: 'tool' }),
-      { vault: 'notes', also: ['work'], locked: true, confirmedAt: '2026-09-03', confirmedVia: 'tool' },
+      // `alsoLocked` / `alsoWritable` (Phase 3, per-workspace write tiers) are
+      // always present, empty when the record carries none — a reader never
+      // has to guard against `undefined`.
+      { vault: 'notes', also: ['work'], locked: true, confirmedAt: '2026-09-03', confirmedVia: 'tool', alsoLocked: [], alsoWritable: [] },
     );
   });
 
@@ -140,6 +143,48 @@ describe('readBinding — what THIS workspace is bound to', () => {
     const b = readBinding(withBinding({ vault: 'work' }, raw), cwd);
     assert.ok(b, 'a trailing separator in the stored key must not hide the binding');
     assert.equal(b.vault, 'work');
+  });
+});
+
+describe('normalizeBinding — the write tier of each secondary, recorded on the binding (Phase 3, per workspace)', () => {
+  test('alsoLocked / alsoWritable are carried, as subsets of `also`, deduplicated', () => {
+    const b = normalizeBinding({
+      vault: 'notes',
+      also: ['ref', 'shared', 'scratch'],
+      alsoLocked: ['ref', 'ref', 'not-a-secondary', 'notes'],
+      alsoWritable: ['scratch', 42, ''],
+    });
+    assert.deepEqual(b.alsoLocked, ['ref'], 'a name outside `also` (or the primary) has no role to qualify');
+    assert.deepEqual(b.alsoWritable, ['scratch']);
+  });
+
+  test('a name in BOTH lists is locked — the hard tier wins a conflict', () => {
+    const b = normalizeBinding({ vault: 'notes', also: ['ref'], alsoLocked: ['ref'], alsoWritable: ['ref'] });
+    assert.deepEqual(b.alsoLocked, ['ref']);
+    assert.deepEqual(b.alsoWritable, []);
+  });
+
+  test('absent or malformed lists are empty arrays — every secondary is then soft', () => {
+    for (const raw of [
+      { vault: 'notes', also: ['ref'] },
+      { vault: 'notes', also: ['ref'], alsoLocked: 'ref', alsoWritable: { 0: 'ref' } },
+    ]) {
+      const b = normalizeBinding(raw);
+      assert.deepEqual(b.alsoLocked, []);
+      assert.deepEqual(b.alsoWritable, []);
+    }
+  });
+
+  test('withBinding round-trips the tiers through the config, and re-writing the same tiers changes nothing', () => {
+    const cfg = withBinding({}, '/w/proj', { vault: 'notes', also: ['ref', 'scratch'], alsoLocked: ['ref'], alsoWritable: ['scratch'] });
+    const back = readBinding(cfg, '/w/proj');
+    assert.deepEqual(back.alsoLocked, ['ref']);
+    assert.deepEqual(back.alsoWritable, ['scratch']);
+    const again = withBinding(cfg, '/w/proj', { ...back });
+    assert.equal(again, cfg, 'identity — the writer must see "nothing to write"');
+    const changed = withBinding(cfg, '/w/proj', { ...back, alsoLocked: [], alsoWritable: ['scratch', 'ref'] });
+    assert.notEqual(changed, cfg);
+    assert.deepEqual(readBinding(changed, '/w/proj').alsoWritable, ['scratch', 'ref']);
   });
 });
 

@@ -448,10 +448,16 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         const carried = existing
           ? [existing.vault, ...existing.also].filter((n) => n !== vault)
           : [];
+        // The tier of each secondary that STAYS a secondary survives; the
+        // previous primary joins `also` with no tier (soft), like any newly
+        // declared secondary. Same rule as confirm_workspace_binding.
+        const keep = (list) => (existing && Array.isArray(list) ? list.filter((n) => carried.includes(n)) : []);
         return withBinding(cfg, cwd, {
           vault,
           also: carried,
           locked: true,
+          alsoLocked: keep(existing?.alsoLocked),
+          alsoWritable: keep(existing?.alsoWritable),
           // AN EXPLICIT LOCK IS A CONFIRMATION, so it replaces `migration`.
           // Keeping it meant the briefing went on saying "NOBODY CONFIRMED
           // THIS BINDING" after the user had locked the workspace by hand —

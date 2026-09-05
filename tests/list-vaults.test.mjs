@@ -75,3 +75,28 @@ describe('listVaults — reachability (trap 4)', () => {
     assert.equal(out.defaultVaultStatus, null);
   });
 });
+
+describe('listVaults — the binding\'s per-secondary write tiers reach the caller', () => {
+  test('alsoLocked / alsoWritable are passed through, validated like the other binding fields', async () => {
+    const registry = {
+      vaults: [vault('work')], skipped: [], configPath: '/c',
+      workspaceBinding: {
+        vault: 'work', also: ['ref', 'scratch'], locked: false,
+        alsoLocked: ['ref', 7, ''], alsoWritable: ['scratch'],
+      },
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.workspaceBinding.alsoLocked, ['ref']);
+    assert.deepEqual(out.workspaceBinding.alsoWritable, ['scratch']);
+  });
+
+  test('a binding written before the tiers existed reads back with empty lists, never undefined', async () => {
+    const registry = {
+      vaults: [vault('work')], skipped: [], configPath: '/c',
+      workspaceBinding: { vault: 'work', also: ['ref'], locked: false },
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.workspaceBinding.alsoLocked, []);
+    assert.deepEqual(out.workspaceBinding.alsoWritable, []);
+  });
+});

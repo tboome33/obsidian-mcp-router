@@ -211,6 +211,10 @@ export async function listVaults(registry) {
       locked: b.locked === true,
       confirmedAt: str(b.confirmedAt) ? b.confirmedAt : null,
       confirmedVia: str(b.confirmedVia) ? b.confirmedVia : null,
+      // The write tier of each secondary, for THIS workspace — what the
+      // "configure-secondary-vaults" conversation reads back before asking.
+      alsoLocked: Array.isArray(b.alsoLocked) ? b.alsoLocked.filter(str) : [],
+      alsoWritable: Array.isArray(b.alsoWritable) ? b.alsoWritable.filter(str) : [],
     };
   };
   // The hint, same treatment. `status` must be one of the five the classifier

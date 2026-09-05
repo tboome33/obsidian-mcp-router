@@ -201,3 +201,35 @@ describe('isPromotionOfLockedSecondary', () => {
     assert.equal(isPromotionOfLockedSecondary('ref', { alsoLocked: ['ref'] }), false, 'no binding — nothing to promote');
   });
 });
+
+describe('alsoWriteTierFor — the tier recorded ON THE BINDING (per workspace), beside the global lists', () => {
+  const bound = (binding = {}, extra = {}) => ({
+    workspaceBinding: { vault: 'work', also: ['ref'], alsoLocked: [], alsoWritable: [], ...binding },
+    alsoWritable: [],
+    alsoLocked: [],
+    ...extra,
+  });
+
+  test('the binding\'s own lists decide when the global lists are silent', () => {
+    assert.equal(alsoWriteTierFor('ref', bound({ alsoLocked: ['ref'] })), 'locked');
+    assert.equal(alsoWriteTierFor('ref', bound({ alsoWritable: ['ref'] })), 'writable');
+    assert.equal(alsoWriteTierFor('ref', bound()), 'soft');
+  });
+
+  test('locked ANYWHERE wins: a binding that says writable cannot lift a global alsoLocked, and vice-versa', () => {
+    assert.equal(alsoWriteTierFor('ref', bound({ alsoWritable: ['ref'] }, { alsoLocked: ['ref'] })), 'locked');
+    assert.equal(alsoWriteTierFor('ref', bound({ alsoLocked: ['ref'] }, { alsoWritable: ['ref'] })), 'locked');
+  });
+
+  test('writable anywhere beats soft', () => {
+    assert.equal(alsoWriteTierFor('ref', bound({}, { alsoWritable: ['ref'] })), 'writable');
+  });
+
+  test('a binding without the new fields (written by an older version) is still read — every secondary soft', () => {
+    assert.equal(alsoWriteTierFor('ref', { workspaceBinding: { vault: 'work', also: ['ref'] } }), 'soft');
+  });
+
+  test('isPromotionOfLockedSecondary follows the binding-level tier too', () => {
+    assert.equal(isPromotionOfLockedSecondary('ref', bound({ alsoLocked: ['ref'] })), true);
+  });
+});

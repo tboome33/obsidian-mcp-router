@@ -1064,6 +1064,8 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
     assert.deepEqual(out.workspaceBinding, {
       vault: 'alpha', also: ['beta'], locked: true,
       confirmedAt: '2026-09-03', confirmedVia: 'tool',
+      // Phase 3 — the per-secondary write tiers, always present (empty here).
+      alsoLocked: [], alsoWritable: [],
     }, 'the binding is REBUILT: the values cross, the extra field does not');
     assert.deepEqual(out.bindingHint, {
       status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',

@@ -102,7 +102,7 @@ It binds `127.0.0.1` only (deliberately not configurable), requires a bearer tok
 
 ## Slash commands & skills (Claude Code plugin)
 
-The repo doubles as a **Claude Code plugin marketplace** that exposes **51 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
+The repo doubles as a **Claude Code plugin marketplace** that exposes **53 slash commands** under the `/obsidian-router:*` namespace. Type `/obsidian-router:` in Claude Code → the autocomplete shows everything. Every slash command also auto-triggers on natural-language phrasing (EN + FR) so you rarely have to remember the exact name — just describe what you want.
 
 > 📄 **Quick reference PDF** (router overview + setup + config + every slash command with NL trigger phrases) — [English](./docs/quick-reference-en.pdf) · [Français](./docs/quick-reference-fr.pdf). Printable, accessible font sizes — for paper or screen reference.
 
@@ -269,7 +269,7 @@ What it catches: a skill that ships undeclared · a declaration whose skill was 
 - `verified` — requires `evidence` naming test files that **exist** and that **mention the skill**. Citing an unrelated suite is rejected.
 - `declared` — requires a written `reason` naming the specific residual uncertainty.
 
-**All 47 skills are `declared` today**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically, so there is nothing a behavioral verifier could hook onto. There is deliberately no middle tier — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist only binds the batch path while the ordinary in-process path is bound by nothing.
+**All 48 skills are `declared` today**, and that is not a backlog item: a skill is markdown interpreted by a model, and no harness executes one deterministically, so there is nothing a behavioral verifier could hook onto. There is deliberately no middle tier — "enforced by the sub-agent allowlist" was considered and rejected, because the allowlist only binds the batch path while the ordinary in-process path is bound by nothing.
 
 **Bootstrapping.** `npm run capabilities:bootstrap` derives a proposal from the code (which tools each `SKILL.md` names, what those tools imply). It previews by default and writes nothing; `--missing-only --write` adds entries for new skills without touching reviewed ones. Every generated entry is stamped `UNREVIEWED-BOOTSTRAP`, **which the validator rejects** — so a generated file cannot go green until a human has read the page and replaced the reason. That mechanism is the point: the seeding pass is a proposal, and on the first run it was wrong often enough to prove it (it read the pure-reader `read-get` as `destructive`, `autoresearch` as offline, and `defuddle`'s prose-only `filter_relevant_blocks` mention as a call).
 
@@ -294,7 +294,7 @@ npm run install:agent-rules -- --uninstall --apply
 
 **Preview is also the status command.** There is no separate `--status`: run it with no flags and it reports, per target, the file, whether a managed block is there, and whether it is current (`installed` · `already-installed` · `upgraded` · `ambiguous-state` · `over-budget`). "What is installed on my machine?" and "what would this do?" are the same question asked of the same code, so they get the same answer rather than two implementations that can disagree.
 
-**Future work — a native Agent Skills adapter.** The index is a bridge, not the destination. Hosts are converging on a real skills directory, and an adapter that emits conforming skill folders would give actual progressive disclosure instead of a pointer list. The empirical hook is already on disk: **codex-cli 0.146.0 scans `%USERPROFILE%\.agents\skills\` at startup**. Measured on this machine: that directory exists and holds 9 top-level entries (7 active, 2 `_disabled_*`) containing **35 `SKILL.md` files, of which 15 have no YAML frontmatter** — which is exactly why codex logs parse errors for them at launch. Emitting the router's 47 skills into that tree is the natural next step, and it is the reason `npm run audit:skills-portability` exists now rather than later: an adapter can only emit what already conforms.
+**Future work — a native Agent Skills adapter.** The index is a bridge, not the destination. Hosts are converging on a real skills directory, and an adapter that emits conforming skill folders would give actual progressive disclosure instead of a pointer list. The empirical hook is already on disk: **codex-cli 0.146.0 scans `%USERPROFILE%\.agents\skills\` at startup**. Measured on this machine: that directory exists and holds 9 top-level entries (7 active, 2 `_disabled_*`) containing **35 `SKILL.md` files, of which 15 have no YAML frontmatter** — which is exactly why codex logs parse errors for them at launch. Emitting the router's 48 skills into that tree is the natural next step, and it is the reason `npm run audit:skills-portability` exists now rather than later: an adapter can only emit what already conforms.
 
 Seven targets across five host entries, all declared in `contracts/agent-host-targets.json` rather than hardcoded, each carrying the **provenance** of its path so the preview can say which location was confirmed and which is taken on a vendor's word. Same HTML-comment markers as `--install-global-convention`, and the same refusal: markers that do not form exactly one well-formed block are reported as `ambiguous-state` and left alone, because an installer that guesses where a half-deleted block ended eats the paragraph after it.
 
@@ -308,9 +308,9 @@ Two details that fell out of reading the hosts' own limits rather than assuming 
 
 **`npm run audit:skills-portability`** measures the frontmatter side. Per the [Agent Skills specification](https://agentskills.io/specification) the format admits exactly six keys (`allowed-tools`, `compatibility`, `description`, `license`, `metadata`, `name`); Claude Code accepts about twenty and ignores the rest, while spec distribution paths reject the whole file on the first unknown key. So an extra key costs nothing until it costs everything.
 
-The limit that matters is **`description`: max 1024 characters**, quoted from that spec and pinned in `contracts/agent-host-targets.json` with its access date. This is not the 1,536-character figure in the Claude Code docs — that one is where Claude Code *truncates its skill listing*, a host display budget, not a validity rule. Pinning the looser number is what let the audit report a clean run over 47 skills while 3 of them were in fact invalid; **those three descriptions have been shortened**, with the displaced text moved into the skill bodies where progressive disclosure wants it anyway.
+The limit that matters is **`description`: max 1024 characters**, quoted from that spec and pinned in `contracts/agent-host-targets.json` with its access date. This is not the 1,536-character figure in the Claude Code docs — that one is where Claude Code *truncates its skill listing*, a host display budget, not a validity rule. Pinning the looser number is what let the audit report a clean run over 48 skills while 3 of them were in fact invalid; **those three descriptions have been shortened**, with the displaced text moved into the skill bodies where progressive disclosure wants it anyway.
 
-Measured on this repository: **42/47 skills carry spec-only frontmatter**, longest description **996/1024**. The other 5 use `argument-hint`, declared in the contract as an accepted Claude Code extension with its reason. Undeclared keys are errors, declared ones are warnings, and `-- --strict` collapses the two to show the spec-distribution view. Scope is printed with every run: this measures **frontmatter portability only** — whether a page's metadata can be *read* elsewhere, not whether its workflow would *execute* there, which is what `contracts/skill-capabilities.json` records.
+Measured on this repository: **43/48 skills carry spec-only frontmatter**, longest description **1010/1024**. The other 5 use `argument-hint`, declared in the contract as an accepted Claude Code extension with its reason. Undeclared keys are errors, declared ones are warnings, and `-- --strict` collapses the two to show the spec-distribution view. Scope is printed with every run: this measures **frontmatter portability only** — whether a page's metadata can be *read* elsewhere, not whether its workflow would *execute* there, which is what `contracts/skill-capabilities.json` records.
 
 ## Reclaiming the plugin cache (`npm run purge:plugin-cache`)
 
@@ -423,7 +423,7 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 }
 ```
 
-**Then enable the plugin per-workspace**, NOT globally. The plugin loads 51 slash commands and 47 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
+**Then enable the plugin per-workspace**, NOT globally. The plugin loads 53 slash commands and 48 skills (~10k context tokens per session) — you only want that overhead on workspaces that actually use Obsidian. For each vault directory and each app workspace that consumes the router, drop a `.claude/settings.json` file at the workspace root:
 
 ```json
 {
@@ -435,11 +435,11 @@ The router reads `~/.claude/obsidian-mcp-router/config.json` on start (the same 
 
 For vaults bootstrapped via `setup-vault.mjs`, this file is **cloned automatically** from `.template/.claude/settings.json` — you don't have to write it by hand. For non-vault workspaces (dev repos that work with vault content), copy the snippet above into `<workspace>/.claude/settings.json`.
 
-Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 51 slash commands should appear. From a workspace without, the namespace stays clean.
+Restart Claude Code. From a workspace with the plugin enabled, type `/obsidian-router:` — the 53 slash commands should appear. From a workspace without, the namespace stays clean.
 
 > **Why not enable it globally?** If you put `enabledPlugins` in `~/.claude/settings.json` instead of per-workspace, the plugin loads in EVERY Claude Code session — random scripts, debug sessions, unrelated repos — paying ~10k tokens for commands those sessions will never use. Project-scope keeps the budget tight.
 
-> **Bump the skill-listing budget (recommended).** The router contributes 47 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
+> **Bump the skill-listing budget (recommended).** The router contributes 48 skills to Claude Code's skill listing. On a default install (`skillListingBudgetFraction: 0.01`, i.e. 1% of the context window), this often pushes the listing past the budget — descriptions are truncated, and natural-language triggering for `/save`, `/wiki`, `/autoresearch` etc. silently breaks. **Recommended**: raise to `0.05` in `~/.claude/settings.json` (~6k extra tokens per session). The diagnostic message *"Skill listing will be truncated — N descriptions dropped"* at session start is the symptom this fixes.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }
@@ -1268,7 +1268,7 @@ Il n'écoute que sur `127.0.0.1` (délibérément non configurable), exige un je
 
 ### Slash commands & skills (plugin Claude Code)
 
-Le repo est aussi un **marketplace de plugin Claude Code** qui expose **51 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
+Le repo est aussi un **marketplace de plugin Claude Code** qui expose **53 slash commands** sous le namespace `/obsidian-router:*`. Tape `/obsidian-router:` dans Claude Code → l'autocomplete montre tout. Chaque slash command s'auto-déclenche aussi sur du langage naturel (EN + FR), donc tu n'as quasiment jamais à retenir le nom exact — décris simplement ce que tu veux.
 
 > 📄 **PDF de référence rapide** (vue d'ensemble du router + setup + config + chaque slash command avec phrases déclencheuses en langage naturel) — [Français](./docs/quick-reference-fr.pdf) · [English](./docs/quick-reference-en.pdf). Imprimable, fontes lisibles — pour papier ou consultation écran.
 
@@ -1507,7 +1507,7 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 }
 ```
 
-**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 51 slash commands et 47 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
+**Puis active le plugin par workspace**, PAS globalement. Le plugin charge 53 slash commands et 48 skills (~10k tokens de contexte par session) — tu ne veux ça que sur les workspaces qui font effectivement de l'Obsidian. Pour chaque dossier de vault et chaque workspace d'app qui consomme le router, ajoute un `.claude/settings.json` à la racine du workspace :
 
 ```json
 {
@@ -1519,11 +1519,11 @@ Le router lit `~/.claude/obsidian-mcp-router/config.json` au démarrage (le mêm
 
 Pour les vaults bootstrappés via `setup-vault.mjs`, ce fichier est **cloné automatiquement** depuis `.template/.claude/settings.json` — pas à écrire à la main. Pour les workspaces hors-vault (repos de code qui travaillent avec le contenu d'un vault), copie le snippet ci-dessus dans `<workspace>/.claude/settings.json`.
 
-Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 51 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
+Redémarre Claude Code. Depuis un workspace où le plugin est activé, tape `/obsidian-router:` — les 53 slash commands doivent apparaître. Depuis un workspace sans, le namespace reste vide.
 
 > **Pourquoi pas en global ?** Si tu mets `enabledPlugins` dans `~/.claude/settings.json` au lieu de per-workspace, le plugin se charge dans CHAQUE session Claude Code — scripts random, sessions de debug, repos sans rapport — payant ~10k tokens pour des commandes que ces sessions n'utiliseront jamais. Le project-scope garde le budget serré.
 
-> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 47 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
+> **Augmenter le budget de la skill-listing (recommandé).** Le router ajoute 48 skills à la liste exposée à Claude Code. Sur une instance par défaut (`skillListingBudgetFraction: 0.01`, soit 1% de la fenêtre de contexte), ça pousse souvent la liste au-delà du budget — les descriptions sont tronquées et le triggering en langage naturel pour `/save`, `/wiki`, `/autoresearch` etc. casse silencieusement. **Recommandé** : passer à `0.05` dans `~/.claude/settings.json` (~6k tokens supplémentaires par session). Le message *"Skill listing will be truncated — N descriptions dropped"* au démarrage de session est le symptôme que ce réglage corrige.
 >
 > ```json
 > { "skillListingBudgetFraction": 0.05 }

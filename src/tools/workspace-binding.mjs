@@ -300,11 +300,19 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     const locked = typeof args.locked === 'boolean'
       ? args.locked
       : Boolean(previous && previous.vault === primary && previous.locked);
+    // THE TIER OF EACH SECONDARY SURVIVES A RE-CONFIRMATION. Adding a
+    // secondary is the ordinary reason to call this again, and the first
+    // version would have reset every mode `set_secondary_vault_mode` had
+    // recorded. Carried from the binding as it is INSIDE the lock, filtered
+    // to the vaults that are still secondaries after this call.
+    const keep = (list) => (previous && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
     return withBinding(cfg, cwd, {
       vault: primary,
       also,
       locked,
       confirmedVia: CONFIRMED_VIA,
+      alsoLocked: keep(previous?.alsoLocked),
+      alsoWritable: keep(previous?.alsoWritable),
     });
   }, io);
 

@@ -296,6 +296,9 @@ export function skillLinkPath(skillFile, targetFile, projectDir) {
  *   rooted   name + description; the layout is stated ONCE and the 47 paths
  *            drop out, because `skills/<name>/SKILL.md` is derivable from the
  *            name the line already carries. Nothing is lost.
+ *   brief    name + CLIPPED description, the clip walked down 80 → 64 → 48 →
+ *            32 → 24 chars by the planner. A clipped sentence still says
+ *            which domain a skill belongs to; the block says it is clipped.
  *   compact  name + path only. The signal is gone; this is a genuine
  *            degradation and the block says so, in the block.
  *
@@ -304,7 +307,7 @@ export function skillLinkPath(skillFile, targetFile, projectDir) {
  * below for a host with a cap tighter than the descriptions alone.
  */
 export function renderSkillsIndex(skills, {
-  mode = 'full', targetFile, projectDir, repoRoot, version = null, generatedAt = null,
+  mode = 'full', briefChars = 80, targetFile, projectDir, repoRoot, version = null, generatedAt = null,
 } = {}) {
   const lines = [];
   lines.push('## obsidian-mcp-router — skills index');
@@ -356,8 +359,15 @@ export function renderSkillsIndex(skills, {
    * sentence says nothing at all. The clip lands on a word boundary, is marked
    * with an ellipsis, and the header states that the `SKILL.md` is
    * authoritative — an abbreviated description must not read as a complete one.
+   *
+   * The clip length is a PARAMETER (`briefChars`, 80 by default), because the
+   * planner walks it down as a ladder of its own — see `planOne`. With one
+   * fixed clip, the 48th skill pushed the tightest real host (Windsurf,
+   * 6000 chars) straight from an 80-char brief to the compact rung that says
+   * nothing at all, while a 64-char brief would have fitted with the signal
+   * intact.
    */
-  const BRIEF_CHARS = 80;
+  const BRIEF_CHARS = Math.max(24, Number(briefChars) || 80);
   const routingText = (s) => {
     const d = s.description || '';
     if (mode !== 'brief' || d.length <= BRIEF_CHARS) return d;
@@ -632,8 +642,19 @@ export function planOne(target, skills, contract, {
     // instead of falling back to the smaller form that would have fitted.
     let chosen = null;
     let lastProjected = 0;
-    for (const mode of ['full', 'rooted', 'brief', 'compact']) {
-      const body = renderSkillsIndex(skills, { mode, targetFile: target.file, projectDir, repoRoot, version, generatedAt });
+    // `brief` is a ladder of its own: the clip shrinks step by step, down to
+    // a floor that still names each skill's domain (24 chars — the "start of
+    // the description" the tests pin), BEFORE the index gives up its
+    // descriptions entirely. One fixed clip meant the 48th skill pushed the
+    // tightest real host from brief straight to compact.
+    const rungs = [
+      { mode: 'full' },
+      { mode: 'rooted' },
+      ...[80, 64, 48, 32, 24].map((briefChars) => ({ mode: 'brief', briefChars })),
+      { mode: 'compact' },
+    ];
+    for (const { mode, briefChars } of rungs) {
+      const body = renderSkillsIndex(skills, { mode, briefChars, targetFile: target.file, projectDir, repoRoot, version, generatedAt });
       const block = wrapBlock(body, contract);
       const projected = composeNext(existing, { ...plan, body: block, format: target.format }, contract).length;
       lastProjected = projected;

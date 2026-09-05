@@ -700,6 +700,14 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       // file, never a write target, and `name` is refused when it collides with
       // an already-registered vault (checked inside the config lock).
       'register-remote-vault.mjs',
+      // Phase 3 (portee-ergonomie-refus-roadmap) — set-secondary-vault-mode.mjs.
+      // Same shape as workspace-binding.mjs: writes ONLY `registry.configPath`,
+      // through `updateConfigBindings` (the one writer of that section, locked
+      // and atomic); no path parameter at all. The caller-supplied `vault` is
+      // checked against the binding's own `also` inside the lock, so it can
+      // only ever qualify a secondary the user already declared — never name
+      // one into existence, never touch a vault.
+      'set-secondary-vault-mode.mjs',
     ]);
     const GATED_ABSOLUTE_WRITERS = new Set([
       // Take a caller-supplied ABSOLUTE path and have their own dedicated gate

@@ -122,13 +122,17 @@ const DRIFTED = {
  * bookkeeping; the underlying store does not need to differ per name for
  * these tests, which only ask "did a write reach the server at all").
  */
-function writeConfig(port, { vaultReach } = {}) {
+function writeConfig(port, { vaultReach, tiersOnBinding = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'also-tier-e2e-'));
   tmpDirs.push(dir);
   const configPath = path.join(dir, 'config.json');
   const baseUrl = `http://127.0.0.1:${port}`;
   const remote = (name) => ({ name, baseUrl, apiKey: API_KEY, timeoutMs: 5000 });
   const key = canonicalWorkspaceKey(dir);
+  // The SAME three tiers, declared either in the GLOBAL config lists (the
+  // decision page's first form) or ON THE BINDING RECORD (what
+  // set_secondary_vault_mode writes, per workspace) — the gate must not care.
+  const tiers = { alsoWritable: ['writable-ref'], alsoLocked: ['locked-ref'] };
   fs.writeFileSync(configPath, JSON.stringify({
     portRegistry: {},
     vaultNames: {},
@@ -139,8 +143,7 @@ function writeConfig(port, { vaultReach } = {}) {
       remote('soft-ref'),
     ],
     defaultVault: 'work',
-    alsoWritable: ['writable-ref'],
-    alsoLocked: ['locked-ref'],
+    ...(tiersOnBinding ? {} : tiers),
     ...(vaultReach ? { vaultReach: 'declared', openVaults: [] } : {}),
     workspaceBindings: {
       [key]: {
@@ -149,6 +152,7 @@ function writeConfig(port, { vaultReach } = {}) {
         locked: false,
         confirmedAt: '2026-09-05',
         confirmedVia: 'test',
+        ...(tiersOnBinding ? tiers : {}),
       },
     },
   }, null, 2), 'utf8');
@@ -668,6 +672,104 @@ describe('E2E: an alsoLocked secondary cannot be promoted to primary from the co
       });
       assert.match(write.result?.content?.[0]?.text ?? '', /locked read-only/);
       assert.equal(contentPuts(vault, 'wiki/notes/new.md').length, 0);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+});
+
+/**
+ * The tiers recorded ON THE BINDING (per workspace — "paramétrons les vaults
+ * secondaires") behave exactly like the global lists, and
+ * `set_secondary_vault_mode` changes them for the running session at once.
+ */
+describe('E2E: per-workspace tiers on the binding record, and set_secondary_vault_mode through the real dispatcher', () => {
+  test('tiers declared on the binding: locked refused, writable allowed, soft needs the flag — identical to the global lists', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port, { tiersOnBinding: true });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const locked = await rt.call(2, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'locked-ref', path: 'wiki/notes/a.md', content: '# a\n', confirmSecondaryWrite: true },
+      });
+      assert.match(locked.result?.content?.[0]?.text ?? '', /locked read-only/);
+      const soft = await rt.call(3, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'soft-ref', path: 'wiki/notes/b.md', content: '# b\n' },
+      });
+      assert.match(soft.result?.content?.[0]?.text ?? '', /SECONDARY vault/);
+      const writable = await rt.call(4, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'writable-ref', path: 'wiki/notes/c.md', content: '# c\n' },
+      });
+      assert.ok(!writable.error && !writable.result?.isError, JSON.stringify(writable.error || writable.result));
+      assert.equal(contentPuts(vault, 'wiki/notes/c.md').length, 1);
+      assert.equal(contentPuts(vault, 'wiki/notes/a.md').length, 0);
+      assert.equal(contentPuts(vault, 'wiki/notes/b.md').length, 0);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+
+  test('set_secondary_vault_mode: soft → locked refuses the next write, locked → writable allows it, list_vaults shows the lists', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port, { tiersOnBinding: true });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const toLocked = await rt.call(2, 'tools/call', { name: 'set_secondary_vault_mode', arguments: { vault: 'soft-ref', mode: 'locked' } });
+      assert.ok(!toLocked.error && !toLocked.result?.isError, JSON.stringify(toLocked.error || toLocked.result));
+      assert.equal(JSON.parse(toLocked.result.content[0].text).previousMode, 'soft');
+
+      const refused = await rt.call(3, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'soft-ref', path: 'wiki/notes/x.md', content: '# x\n', confirmSecondaryWrite: true },
+      });
+      assert.match(refused.result?.content?.[0]?.text ?? '', /locked read-only/, 'in force for the running session, no restart');
+
+      const listed = await rt.call(4, 'tools/call', { name: 'list_vaults', arguments: {} });
+      const binding = JSON.parse(listed.result.content[0].text).workspaceBinding;
+      assert.deepEqual(binding.alsoLocked.sort(), ['locked-ref', 'soft-ref']);
+      assert.deepEqual(binding.alsoWritable, ['writable-ref']);
+
+      const toWritable = await rt.call(5, 'tools/call', { name: 'set_secondary_vault_mode', arguments: { vault: 'soft-ref', mode: 'writable' } });
+      assert.ok(!toWritable.error && !toWritable.result?.isError, JSON.stringify(toWritable.error || toWritable.result));
+      const allowed = await rt.call(6, 'tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'soft-ref', path: 'wiki/notes/x.md', content: '# x\n' },
+      });
+      assert.ok(!allowed.error && !allowed.result?.isError, JSON.stringify(allowed.error || allowed.result));
+      assert.equal(contentPuts(vault, 'wiki/notes/x.md').length, 1);
+
+      // And the file agrees with the session.
+      const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const record = onDisk.workspaceBindings[canonicalWorkspaceKey(dir)];
+      assert.deepEqual(record.alsoWritable.sort(), ['soft-ref', 'writable-ref']);
+      assert.deepEqual(record.alsoLocked, ['locked-ref']);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+
+  test('set_secondary_vault_mode on the PRIMARY, or on a vault that is not a secondary, is refused and writes nothing', async () => {
+    const vault = await startFakeVault(DRIFTED);
+    const { dir, configPath } = writeConfig(vault.port, { tiersOnBinding: true });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      // Snapshot AFTER start-up: the one-time import records its migration
+      // state in the config on the first start, which is not this tool's doing.
+      const before = fs.readFileSync(configPath, 'utf8');
+      const primary = await rt.call(2, 'tools/call', { name: 'set_secondary_vault_mode', arguments: { vault: 'work', mode: 'locked' } });
+      assert.match(primary.result?.content?.[0]?.text ?? '', /PRIMARY/);
+      const stranger = await rt.call(3, 'tools/call', { name: 'set_secondary_vault_mode', arguments: { vault: 'nope', mode: 'locked' } });
+      assert.match(stranger.result?.content?.[0]?.text ?? '', /not a secondary/);
+      assert.equal(fs.readFileSync(configPath, 'utf8'), before, 'the config file must be byte-identical');
     } finally {
       rt.kill();
       await vault.close();
