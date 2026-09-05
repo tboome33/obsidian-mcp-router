@@ -35,6 +35,7 @@ import { scaffoldCandidates } from '../helpers/wiki-meta-scaffolds.mjs';
 import { withVaultLock } from '../helpers/vault-maintenance-lock.mjs';
 import { applyReservedWrites, strictReservedCasEnabled } from '../helpers/reserved-path-write.mjs';
 import { collectMarkdown, readAll } from './build-wiki-graph.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 
 /**
  * The drift-sensitive core of a projection plan, for the C3 seal. Captures
@@ -78,6 +79,7 @@ export const TOOL_DEFINITION = {
         type: 'string',
         description: 'C3 sealed preview: the 64-hex seal a prior check:true call returned. When supplied on an apply, the refresh is refused (before any write) if the projection plan drifted since the check — a page was added/edited or a conflict appeared. Use it to apply exactly the plan you reviewed, especially when conflicts are present.',
       },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
     required: [],
     additionalProperties: false,

@@ -35,6 +35,7 @@ import {
   readBinding,
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
+import { isVaultReachable } from '../helpers/vault-reach.mjs';
 /**
  * Lock the router to a single vault.
  *
@@ -60,6 +61,21 @@ export async function lockVault(registry, args = {}) {
     throw new Error(
       `lock_vault: cannot lock to "${vault}" — not in the active vault set. ` +
         `Known vaults: ${known}.`,
+    );
+  }
+  // Same reasoning, one guard further: applyLockGuard() (src/index.mjs) makes
+  // EVERY subsequent resolveVault() call — including calls that omit `vault`
+  // — resolve `registry.lockedVault` specifically. Once vaultReach:
+  // "declared" is active, resolveVault() refuses a vault this workspace
+  // cannot reach, so locking to one it does not yet reach would brick every
+  // tool call exactly as the comment above warns against for a disabled or
+  // unknown vault — just one guard later, and previously unchecked here.
+  if (!isVaultReachable(vault, registry)) {
+    throw new Error(
+      `lock_vault: cannot lock to "${vault}" — it is registered but not reachable from this workspace ` +
+        '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, nor is it in ' +
+        '`openVaults`). Locking to it would refuse every subsequent call until unlock. Bind this workspace ' +
+        'to it with confirm_workspace_binding first, or add it to `openVaults` in config.json.',
     );
   }
 

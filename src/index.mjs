@@ -117,7 +117,7 @@ import {
 // argument — see FIXED_AUDIT_TARGETS.
 import { SEARCH_INDEX_PATH } from './helpers/bm25-index.mjs';
 import { SOURCE_LEDGER_PATH } from './helpers/source-ledger.mjs';
-import { BUNDLE_JOURNAL_DIR } from './helpers/write-bundle.mjs';
+import { BUNDLE_JOURNAL_DIR, normalizeRecoverArg } from './helpers/write-bundle.mjs';
 import {
   TOOL_DEFINITION as GET_PAGE_NEIGHBORS_TOOL_DEFINITION,
   getPageNeighborsTool,
@@ -157,6 +157,7 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 // the projections scheduler — it used to be a second copy that drifted three
 // ways. See helpers/write-targets.mjs.
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
+import { alsoWriteTierFor, assertVaultWritable, isVaultReachable, CONFIRM_SECONDARY_WRITE_PROP } from './helpers/vault-reach.mjs';
 import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
 import { envKeyOrigin, workspaceDotenvRefusals } from './helpers/workspace-dotenv.mjs';
 
@@ -252,6 +253,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Writes only if the file still hashes to this; otherwise 409. Atomic when the target vault runs obsidian-mcp-router-bridge >= 0.7.0, else a GET-compare fallback.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path', 'content'],
       additionalProperties: false,
@@ -275,6 +277,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The append is refused with a 409 conflict if the file changed since you read it. Checked before the append, not atomically with it.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path', 'content'],
       additionalProperties: false,
@@ -298,6 +301,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard on the SOURCE: the 64-hex contentSha256 from a prior get_file of the source. Refuses the move with 409 if the source changed since then.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['from', 'to'],
       additionalProperties: false,
@@ -342,6 +346,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard (C1): the contentSha256 from get_file. The property is not set if the file changed since you read it — a 409 conflict instead. Checked before the patch, not atomically with it.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path', 'key', 'value'],
       additionalProperties: false,
@@ -368,6 +373,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Checked once before any key is written; a mismatch throws 409 before the first mutation. Does not make the multi-key update atomic.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path', 'values'],
       additionalProperties: false,
@@ -398,6 +404,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. Refuses the delete with 409 if the file changed since then — avoids deleting a file another session just edited.',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path'],
       additionalProperties: false,
@@ -454,6 +461,7 @@ const TOOLS = [
           type: 'string',
           description: 'Optimistic-concurrency guard: the 64-hex contentSha256 from a prior get_file. The whole-file precondition is checked before patching; a mismatch throws 409. Guards against patching content that changed since you read it (the patch itself is not hash-locked).',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['path', 'operation', 'targetType', 'target', 'content'],
       additionalProperties: false,
@@ -484,6 +492,7 @@ const TOOLS = [
           type: 'string',
           description: 'Where to save the rendered template (required when createFile is true).',
         },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       },
       required: ['name'],
       additionalProperties: false,
@@ -1368,6 +1377,99 @@ const WRITE_TOOL_NAMES = new Set([
   'register_remote_vault',
 ]);
 
+/**
+ * WRITE_TOOL_NAMES members the also-tier write gate (decision portee-et-
+ * mode-ecriture-des-vaults §2) does not apply to, because they do not write
+ * to an EXISTING registered vault's content the way every other member does:
+ *
+ *   - `provision_vault` / `register_remote_vault` — they REGISTER a vault,
+ *     they do not address one that could already carry a write tier. Neither
+ *     tool even declares a `vault` argument.
+ *   - `download_page_assets` — writes to an arbitrary, caller-supplied
+ *     filesystem path (`outputDir`, sandboxed by MD_ALLOWED_PATHS), never to
+ *     a registered vault at all; it does not call `resolveVault` anywhere.
+ *
+ * Exported for testing so the exemption stays visible rather than living only
+ * inside `requiresAlsoTierCheck`'s closure.
+ */
+const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set(['provision_vault', 'register_remote_vault', 'download_page_assets']);
+
+/**
+ * Does THIS call need the also-tier write-gate check before its handler
+ * runs? A pure predicate (no I/O, no vault resolution) so it can be unit
+ * tested in isolation from the dispatcher and from `assertVaultWritable`.
+ *
+ * Beyond the exempt set above, six tool-specific exceptions — each because
+ * the tool does not actually WRITE under the condition named, so gating it
+ * anyway would refuse a call that never touches vault content at all. Every
+ * flag read here is the SAME one the tool's own writer branches on (cited
+ * beside each), never re-derived, so this cannot silently drift from what
+ * actually writes:
+ *
+ *   - `execute_template` writes at `targetPath` ONLY when `createFile ===
+ *     true` — the same condition `helpers/write-targets.mjs` already uses
+ *     for audit attribution.
+ *   - `write_bundle` with `preview: true` returns a sealed plan and writes
+ *     nothing (src/tools/write-bundle.mjs). A `recover` value that
+ *     normalises to the boolean `true` is the READ-ONLY listing mode — it
+ *     reports pending journals and writes nothing either. `recover` set to
+ *     an actual operation id (a string naming a specific journal) is the RUN
+ *     mode: it WRITES (`rollbackPaths` restores pre-bundle content) and is
+ *     deliberately NOT exempted here — an `alsoLocked` secondary's own
+ *     refusal message promises "no exceptions... only editing config.json
+ *     can" lift it, and a bundle recovery is not an exception to that any
+ *     more than any other write tool is. `normalizeRecoverArg` is the same
+ *     normaliser `write_bundle`'s own handler uses to tell LIST from RUN, so
+ *     this cannot silently drift from what actually writes. (Earlier drafts
+ *     of this gate exempted BOTH modes via `isRecoveryCall`, which does not
+ *     distinguish them — found and fixed before this landed.)
+ *   - `delete_file` with `preview: true` returns a sealed plan and deletes
+ *     nothing (src/tools/delete-file.mjs) — only `confirm: true` deletes.
+ *   - `build_wiki_graph` with `dryRun: true` builds + validates + reports
+ *     counts, writing neither the canonical nor the derived graph copy.
+ *   - `build_search_index` / `refresh_okf_projections` with `check: true`
+ *     report a drift/plan seal and write nothing.
+ */
+function requiresAlsoTierCheck(toolName, args) {
+  if (!WRITE_TOOL_NAMES.has(toolName) || ALSO_TIER_EXEMPT_TOOL_NAMES.has(toolName)) return false;
+  if (toolName === 'execute_template' && args.createFile !== true) return false;
+  if (toolName === 'write_bundle' && (args.preview === true || normalizeRecoverArg(args.recover) === true)) return false;
+  if (toolName === 'delete_file' && args.preview === true) return false;
+  if (toolName === 'build_wiki_graph' && args.dryRun === true) return false;
+  if (toolName === 'build_search_index' && args.check === true) return false;
+  if (toolName === 'refresh_okf_projections' && args.check === true) return false;
+  return true;
+}
+
+/**
+ * Did THIS call actually mutate a registered vault's content — the same
+ * question `requiresAlsoTierCheck` answers, but needed by TWO OTHER post-write
+ * middleware blocks below (the audit log, the debounced projections/search
+ * scheduler) that used to key off `WRITE_TOOL_NAMES.has(name)` alone.
+ *
+ * That was wrong for exactly the calls `requiresAlsoTierCheck` exempts as
+ * non-mutating: `delete_file`/`write_bundle` with `preview: true`,
+ * `build_wiki_graph` with `dryRun: true`, etc. all reach this point having
+ * written NOTHING — the also-tier gate correctly let them through without
+ * even checking the target's write tier, because there was nothing to check.
+ * But `WRITE_TOOL_NAMES.has(name)` alone can't tell a preview from a real
+ * apply, so on an `alsoLocked` secondary a preview call still appended an
+ * audit-log entry and scheduled a projections/index refresh — both real
+ * writes to a vault whose own refusal message promises "no exceptions,
+ * ever". Caught by TWO independent Codex review passes on the same diff.
+ *
+ * `ALSO_TIER_EXEMPT_TOOL_NAMES` is added back in: those three tools
+ * (`provision_vault`, `register_remote_vault`, `download_page_assets`) DO
+ * write, `requiresAlsoTierCheck` just doesn't need to gate them by vault
+ * write-tier (they don't address an existing registered vault's content the
+ * way every other write tool does) — this predicate must keep treating them
+ * as writes, exactly as before this fix, or audit/projections would silently
+ * stop covering them as a side effect unrelated to what was actually broken.
+ */
+function toolActuallyWrote(toolName, args) {
+  return requiresAlsoTierCheck(toolName, args) || ALSO_TIER_EXEMPT_TOOL_NAMES.has(toolName);
+}
+
 // ---------------------------------------------------------------------------
 // v0.59.0 — volet ② of the catalog/journal decision: keep the OKF navigation
 // projections inside `wiki/` fed as content is written. Debounced full
@@ -1440,9 +1542,29 @@ const maintainVault = createMaintenancePass({
   logInfo: (msg) => console.error(msg),
 });
 
+// Set once, inside `startServer()`, right after `registryRef` is created —
+// this scheduler is constructed at MODULE load, before any registry exists,
+// and lives across a config hot-reload (only `registryRef.current` is
+// replaced, never this scheduler). `shouldSkip` below reads it lazily, at
+// the moment a QUEUED refresh actually fires, which can be up to
+// `projectionsDebounceMs` after the write that scheduled it — see the
+// `shouldSkip` doc in helpers/projections-refresh.mjs for why that gap
+// matters (a vault turned `alsoLocked` mid-debounce, caught by Codex review).
+let liveRegistryRef = null;
+
 const projectionsScheduler = createProjectionsScheduler({
   refresh: maintainVault,
   delayMs: projectionsDebounceMs,
+  shouldSkip: (vault) => {
+    if (!liveRegistryRef?.current) return false;
+    // Hard tier only. A queued refresh follows a write that was already
+    // permitted (primary, alsoWritable, or a CONFIRMED soft-tier write) —
+    // re-litigating that against a live "soft" reading would be wrong in the
+    // other direction, refusing housekeeping for a write the user already
+    // approved. Only `alsoLocked`'s unconditional "no exceptions, ever" is
+    // absolute enough to retroactively cancel already-queued maintenance.
+    return alsoWriteTierFor(vault.name, liveRegistryRef.current) === 'locked';
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -2072,22 +2194,54 @@ function renderAuditPath(auditPath) {
 }
 
 /**
- * Validate that a candidate lock name is in the active vault set. Returns
- * `{ lock, warning }`: `lock` is the candidate if valid, otherwise null;
- * `warning` is null when the candidate is valid (or absent), otherwise a
- * stderr-ready string explaining the fall-through.
+ * Validate that a candidate lock name is in the active vault set — AND, when
+ * `reachability` is supplied, that this workspace can actually reach it.
+ * Returns `{ lock, warning }`: `lock` is the candidate if valid, otherwise
+ * null; `warning` is null when the candidate is valid (or absent), otherwise
+ * a stderr-ready string explaining the fall-through.
  *
  * Two contexts are supported:
  *   - "env"        — initial lock from `OBSIDIAN_ROUTER_LOCKED` at startup
  *   - "preserved"  — runtime lock that survived a config hot-reload but
  *                    whose target may have been disabled/removed since
  *
+ * `reachability` (optional — `{ vaultReach, openVaults, workspaceBinding }`,
+ * the three fields `isVaultReachable` reads) is a SEPARATE parameter from
+ * `vaults`, not `vaults` itself, for two reasons: it keeps every existing
+ * caller — this function's own tests included — unchanged when they pass
+ * none, and it makes explicit that "in the active set" and "reachable from
+ * THIS workspace" are the two orthogonal questions decision
+ * portee-et-mode-ecriture-des-vaults names. Phase 2 gave `resolveVault()` the
+ * reachability guard but left this SEPARATE lock-startup validator
+ * unguarded — found by Codex review: `OBSIDIAN_ROUTER_LOCKED` naming a real
+ * but unreachable vault passed here, then bricked every subsequent call
+ * (`applyLockGuard` forces every `resolveVault()` through the locked name,
+ * which the Phase 2 guard then refuses) — the exact "brick every call"
+ * failure this function's own docstring already existed to prevent for a
+ * merely disabled/removed vault.
+ *
  * Exported for testing (in addition to its use by startServer + watcher).
  */
-export function validateLock(candidate, vaults, context = 'env') {
+export function validateLock(candidate, vaults, context = 'env', reachability = null) {
   if (!candidate) return { lock: null, warning: null };
-  if (vaults.some((v) => v.name === candidate)) {
+  const inActiveSet = vaults.some((v) => v.name === candidate);
+  if (inActiveSet && (!reachability || isVaultReachable(candidate, reachability))) {
     return { lock: candidate, warning: null };
+  }
+  if (inActiveSet) {
+    const shown = safeForMessage(candidate, 200);
+    const prefix =
+      context === 'preserved'
+        ? `[obsidian-mcp-router] Locked vault "${shown}" is no longer reachable from this workspace after config reload`
+        : context === 'binding'
+          ? `[obsidian-mcp-router] This workspace's binding is locked to "${shown}", which this workspace cannot reach — the binding's lock is ignored`
+          : `[obsidian-mcp-router] OBSIDIAN_ROUTER_LOCKED="${shown}" names a vault this workspace cannot reach`;
+    return {
+      lock: null,
+      warning: `${prefix} (vaultReach: "declared" is active, and this workspace's binding does not name it, `
+        + 'nor is it in `openVaults`) — falling back to normal multi-vault mode. Bind this workspace to it '
+        + 'with confirm_workspace_binding, or add it to `openVaults` in config.json.',
+    };
   }
   const active = vaults.map((v) => v.name).join(', ') || '(none)';
   // Sanitised for the same reason as the mode below: OBSIDIAN_ROUTER_LOCKED is
@@ -2342,13 +2496,13 @@ export async function startServer({ configPath, watch = true } = {}) {
   let lockSource = { origin: 'unset', variable: null };
   const fromBinding = fresh.workspaceBinding?.locked ? fresh.workspaceBinding.vault : null;
   if (fromBinding) {
-    const { lock, warning } = validateLock(fromBinding, fresh.vaults, 'binding');
+    const { lock, warning } = validateLock(fromBinding, fresh.vaults, 'binding', fresh);
     if (warning) console.error(warning);
     if (lock) { initialLock = lock; lockSource = { origin: 'binding', variable: null }; }
   }
   if (!initialLock) {
     const fromHost = authoritativeLockedVault();
-    const { lock, warning } = validateLock(fromHost, fresh.vaults, 'env');
+    const { lock, warning } = validateLock(fromHost, fresh.vaults, 'env', fresh);
     if (warning) console.error(warning);
     if (lock) { initialLock = lock; lockSource = envSettingSource(lock, 'OBSIDIAN_ROUTER_LOCKED'); }
   }
@@ -2378,6 +2532,11 @@ export async function startServer({ configPath, watch = true } = {}) {
   fresh.autoEnrichModeRefused = autoEnrichModeRefusal();
 
   const registryRef = { current: fresh };
+  // The projections scheduler's `shouldSkip` (module scope, constructed
+  // before this function ever ran) reads this same box — set once, so a
+  // debounced refresh that fires after this call returns still sees whatever
+  // is CURRENT then, hot-reload included.
+  liveRegistryRef = registryRef;
 
   // Hot-reload of the config file. Debounced (500ms) to coalesce rapid
   // successive writes from setup-vault.mjs. On parse error, the existing
@@ -2409,6 +2568,7 @@ export async function startServer({ configPath, watch = true } = {}) {
             preserved,
             fresh.vaults,
             'preserved',
+            fresh,
           );
           if (reloadWarning) console.error(reloadWarning);
           fresh.lockedVault = validatedLock;
@@ -2621,8 +2781,18 @@ export async function startServer({ configPath, watch = true } = {}) {
     try {
       target = reg.resolveVault(args.vault);
     } catch {
-      return; // `*` fan-out, unknown vault, empty registry
+      return; // `*` fan-out, unknown vault, empty registry, or unreachable
     }
+    // Trap 2 of decision portee-et-mode-ecriture-des-vaults: this repair is a
+    // WRITE (search index, OKF projections) triggered by ANY tool call,
+    // including a plain read — so a vault marked read-only as a secondary of
+    // this workspace (soft or `alsoLocked`) must never receive it, exactly as
+    // if `write_bundle` itself had been asked to write there. `null`/
+    // `'writable'` (primary, no binding, openVaults, or explicitly writable)
+    // proceed unchanged — this is the SAME predicate the also-tier write gate
+    // uses, not a re-derived approximation of it.
+    const tier = alsoWriteTierFor(target.name, reg);
+    if (tier === 'soft' || tier === 'locked') return;
     const pass = Promise.resolve(conformanceGate.ensure(target)).catch(() => null);
     if (blocking) await pass;
   }
@@ -2669,6 +2839,23 @@ export async function startServer({ configPath, watch = true } = {}) {
         await noteVaultContact(reg, name, args, { blocking: true });
       }
 
+      // The also-tier write gate (decision portee-et-mode-ecriture-des-vaults
+      // §2, Phase 3 of portee-ergonomie-refus-roadmap) — ONE choke point,
+      // deliberately here rather than inside each of the ~13 write-tool
+      // files it covers: trap 1 of the decision names exactly this class of
+      // defect ("dispersing it across each tool") as one this repo has
+      // already paid for four times. `args.vault` omitted still resolves
+      // (to the workspace's own default, which is always the binding's
+      // PRIMARY when one exists — see helpers/vault-reach.mjs), so this
+      // reads the same target every write handler is about to resolve again
+      // for itself; the second resolution inside the handler is cheap
+      // (an in-memory lookup) and left alone rather than threading a
+      // pre-resolved vault through ~13 call sites for no behavioural gain.
+      if (requiresAlsoTierCheck(name, args)) {
+        const target = reg.resolveVault(args.vault);
+        assertVaultWritable(target, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: name });
+      }
+
       const result = await handler(reg, args);
 
       // `list_vaults` IS the session health check, and it is the one tool that
@@ -2694,7 +2881,16 @@ export async function startServer({ configPath, watch = true } = {}) {
       // v0.9.0 — audit log AFTER a successful write. We deliberately don't
       // log failed writes — the user already sees the error, and a failed
       // write didn't modify the vault, so there's nothing to attribute.
-      if (userId && WRITE_TOOL_NAMES.has(name)) {
+      //
+      // `toolActuallyWrote`, not `WRITE_TOOL_NAMES.has(name)` alone (Phase 3
+      // fix, portee-ergonomie-refus-roadmap): a `delete_file`/`write_bundle`
+      // preview, or any other conditionally-exempt call, is a write TOOL that
+      // wrote NOTHING this time — appending an audit line for it is itself an
+      // uncontrolled write, and on an `alsoLocked` secondary it silently broke
+      // that tier's "no exceptions" promise. See `toolActuallyWrote`'s own
+      // comment for the full reasoning; two independent Codex review passes
+      // found this on the same diff.
+      if (userId && toolActuallyWrote(name, args)) {
         const auditPath = pickAuditPath(name, args);
         const auditLine = formatAuditLine({ userId, toolName: name, auditPath });
         try {
@@ -2746,7 +2942,11 @@ export async function startServer({ configPath, watch = true } = {}) {
       // scheduler ignores paths outside wiki/ content, and the refresh core
       // aborts on vaults whose projections were never initialised. Its own
       // writes go through rest-client directly, so nothing here recurses.
-      if (projectionsScheduler && WRITE_TOOL_NAMES.has(name)) {
+      //
+      // `toolActuallyWrote`, not `WRITE_TOOL_NAMES.has(name)` alone — same
+      // Phase 3 fix as the audit block just above: a preview/dry-run call
+      // must not schedule a real maintenance write either.
+      if (projectionsScheduler && toolActuallyWrote(name, args)) {
         try {
           projectionsScheduler.noteWrite(reg.resolveVault(args.vault), name, args);
         } catch { /* nav upkeep must never block or fail a user write */ }
@@ -3014,6 +3214,16 @@ export const _internals = {
   LOCAL_ONLY_TOOL_NAMES,
   LOCAL_VAULT_ONLY_TOOL_NAMES,
   computeExposedTools,
+  // Phase 3 of portee-ergonomie-refus-roadmap — the also-tier write gate's
+  // dispatcher predicate, exposed so it can be unit-tested as a pure function
+  // (tool name + args in, boolean out) without booting an MCP transport, the
+  // same reason WRITE_TOOL_NAMES is exposed above it.
+  requiresAlsoTierCheck,
+  ALSO_TIER_EXEMPT_TOOL_NAMES,
+  // Codex-round fix: the audit log and the projections scheduler used to key
+  // off WRITE_TOOL_NAMES alone, so a preview/dry-run call still produced a
+  // real write. Exposed for the same reason as requiresAlsoTierCheck above.
+  toolActuallyWrote,
   PKG_VERSION,
   isMcpContentPayload,
   // v0.71.0 — the wire boundary. Exposed so a test can prove the ONE place

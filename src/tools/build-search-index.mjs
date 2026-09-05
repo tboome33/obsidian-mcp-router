@@ -39,6 +39,7 @@ import { scaffoldCandidates } from '../helpers/wiki-meta-scaffolds.mjs';
 import { withVaultLock } from '../helpers/vault-maintenance-lock.mjs';
 import { applyReservedWrites, strictReservedCasEnabled } from '../helpers/reserved-path-write.mjs';
 import { collectMarkdown, readAll } from './build-wiki-graph.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 
 export const TOOL_NAME = 'build_search_index';
 
@@ -57,6 +58,7 @@ export const TOOL_DEFINITION = {
         type: 'boolean',
         description: 'When true, report what a build would produce and whether the stored index is absent/stale/current — without writing. Default: false.',
       },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
     required: [],
     additionalProperties: false,

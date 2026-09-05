@@ -1250,6 +1250,74 @@ describe('validateLock — env + preserved contexts', () => {
 });
 
 // ---------------------------------------------------------------------------
+// validateLock — reachability (Phase 2/3 fix, portee-ergonomie-refus-
+// roadmap). Codex review: OBSIDIAN_ROUTER_LOCKED naming a real but
+// UNREACHABLE vault passed this validator, then bricked every subsequent
+// call once applyLockGuard forced every resolveVault() through it. The
+// reachability param is OPTIONAL and additive — every test above passes
+// none and must keep behaving exactly as before.
+// ---------------------------------------------------------------------------
+
+describe('validateLock — reachability, when a `reachability` context is supplied', () => {
+  const vaults = [
+    { name: 'work', type: 'remote' },
+    { name: 'reference', type: 'remote' },
+  ];
+
+  test('no reachability param (undefined) — unchanged: a real vault always locks, reachability never consulted', () => {
+    // Old 3-arg call site, exactly as every existing caller/test uses it.
+    const result = validateLock('reference', vaults, 'env');
+    assert.equal(result.lock, 'reference', 'omitting the 4th param must not start enforcing reachability');
+    assert.equal(result.warning, null);
+  });
+
+  test('env context: a real but unreachable vault falls through with a reachability warning, not a brick', () => {
+    const reg = { vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } };
+    const result = validateLock('reference', vaults, 'env', reg);
+    assert.equal(result.lock, null);
+    assert.match(result.warning, /OBSIDIAN_ROUTER_LOCKED="reference"/);
+    assert.match(result.warning, /this workspace cannot reach/);
+    assert.match(result.warning, /falling back to normal multi-vault mode/);
+  });
+
+  test('preserved context: a vault that BECAME unreachable across a hot-reload falls through, named as such', () => {
+    const reg = { vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } };
+    const result = validateLock('reference', vaults, 'preserved', reg);
+    assert.equal(result.lock, null);
+    assert.match(result.warning, /Locked vault "reference" is no longer reachable from this workspace after config reload/);
+  });
+
+  test('a vault that IS reachable (primary, also, or openVaults) still locks normally', () => {
+    assert.equal(
+      validateLock('work', vaults, 'env', { vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } }).lock,
+      'work',
+    );
+    assert.equal(
+      validateLock('reference', vaults, 'env', { vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: ['reference'] } }).lock,
+      'reference',
+    );
+    assert.equal(
+      validateLock('reference', vaults, 'env', { vaultReach: 'declared', openVaults: ['reference'], workspaceBinding: null }).lock,
+      'reference',
+    );
+  });
+
+  test('vaultReach inactive (the default) — reachability param present but harmless', () => {
+    const result = validateLock('reference', vaults, 'env', { vaultReach: null, openVaults: [], workspaceBinding: { vault: 'work', also: [] } });
+    assert.equal(result.lock, 'reference', 'vaultReach must be exactly "declared" to restrict anything');
+  });
+
+  test('a candidate not even in the active set is still reported as such, never misdiagnosed as unreachable', () => {
+    // Reachability is checked ONLY after confirming the vault is in the
+    // active set at all — a typo must keep getting the ORIGINAL "does not
+    // match any active vault" message, not a confusing reachability one.
+    const result = validateLock('typo-vault', vaults, 'env', { vaultReach: 'declared', openVaults: [], workspaceBinding: null });
+    assert.match(result.warning, /does not match any active vault/);
+    assert.doesNotMatch(result.warning, /cannot reach/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // applyLockGuard — integration: monkey-patched resolveVault enforces lock
 // ---------------------------------------------------------------------------
 
@@ -1323,6 +1391,89 @@ describe('applyLockGuard — registry.resolveVault enforces lock', () => {
       assert.match(err.message, /Router is locked to vault "alpha"/);
     }
     assert.equal(thrownCount, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveVault() — reachability (decision portee-et-mode-ecriture-des-vaults
+// §1, Phase 2 of portee-ergonomie-refus-roadmap). Trap 1 of the decision:
+// this is THE single point of passage the guard must live at — tested here
+// directly against the production loadRegistry()/resolveVault(), not a
+// reimplementation, so a regression in the real wiring shows up here.
+// ---------------------------------------------------------------------------
+
+describe('resolveVault() — reachability', () => {
+  let tmpDir, cfgPath;
+
+  before(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-reach-test-'));
+    cfgPath = path.join(tmpDir, 'config.json');
+  });
+
+  after(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function makeRegistry(extraConfig = {}) {
+    const config = {
+      portRegistry: {},
+      remoteVaults: [
+        { name: 'work', baseUrl: 'https://w/', apiKey: 'k' },
+        { name: 'reference', baseUrl: 'https://r/', apiKey: 'k' },
+        { name: 'roland', baseUrl: 'https://p/', apiKey: 'k' },
+      ],
+      ...extraConfig,
+    };
+    await fs.writeFile(cfgPath, JSON.stringify(config), 'utf8');
+    return loadRegistry({ configPath: cfgPath });
+  }
+
+  test('vaultReach absent (default) — every registered vault resolves, unchanged behaviour', async () => {
+    const reg = await makeRegistry();
+    assert.equal(reg.vaultReach, null);
+    assert.equal(reg.resolveVault('work').name, 'work');
+    assert.equal(reg.resolveVault('reference').name, 'reference');
+  });
+
+  test('vaultReach: "declared", no binding, no openVaults — every named vault refuses', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    assert.equal(reg.vaultReach, 'declared');
+    assert.throws(() => reg.resolveVault('work'), /not reachable from this workspace/);
+    assert.throws(() => reg.resolveVault('reference'), /not reachable from this workspace/);
+  });
+
+  test('vaultReach: "declared" + openVaults — that vault resolves from anywhere, others still refuse', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared', openVaults: ['roland'] });
+    assert.equal(reg.resolveVault('roland').name, 'roland');
+    assert.throws(() => reg.resolveVault('work'), /not reachable from this workspace/);
+  });
+
+  test('vaultReach: "declared" + a live workspaceBinding — the primary and every `also` resolve', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    // Set LIVE, the same way confirm_workspace_binding does on the real
+    // registry object mid-session — no need to fabricate a dotenv-import
+    // fixture keyed by this test process's own cwd.
+    reg.workspaceBinding = { vault: 'work', also: ['reference'] };
+    assert.equal(reg.resolveVault('work').name, 'work');
+    assert.equal(reg.resolveVault('reference').name, 'reference');
+    assert.throws(() => reg.resolveVault('roland'), /not reachable from this workspace/);
+  });
+
+  test('an omitted name still resolves to the default vault when reachable, and still refuses when not', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    reg.workspaceBinding = { vault: 'work', also: [] };
+    reg.defaultVault = 'work';
+    assert.equal(reg.resolveVault().name, 'work');
+    reg.defaultVault = 'roland'; // not declared, not in openVaults
+    assert.throws(() => reg.resolveVault(), /not reachable from this workspace/);
+  });
+
+  test('lock + reachability compose: locking to an unreachable vault still refuses it', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    applyLockGuard(reg);
+    reg.lockedVault = 'roland'; // never declared, not in openVaults
+    assert.throws(() => reg.resolveVault(), /not reachable from this workspace/);
+    assert.throws(() => reg.resolveVault('roland'), /not reachable from this workspace/);
   });
 });
 

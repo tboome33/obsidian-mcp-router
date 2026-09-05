@@ -79,6 +79,17 @@ export function pathsTouchedByWrite(toolName, args = {}) {
  * @param {Function} [input.setTimeoutFn] injected for tests
  * @param {Function} [input.clearTimeoutFn] injected for tests
  * @param {(msg: string) => void} [input.logError]
+ * @param {(vault: object) => boolean} [input.shouldSkip] Re-checked immediately
+ *   before a QUEUED refresh actually runs — never at `noteWrite` time. A write
+ *   is noted, then debounced for up to `delayMs`; `config.json` can be
+ *   hot-reloaded in that window, and the `vault` object this scheduler is
+ *   holding was captured at note-time, not re-resolved against whatever is
+ *   live now. Without this hook, a vault turned `alsoLocked` mid-debounce
+ *   still received the queued projections/index write — the "no exceptions"
+ *   hard tier, silently defeated by a race that has nothing to do with the
+ *   write that scheduled the refresh. Default `() => false` preserves the
+ *   original unconditional behaviour for every caller (a test, or a build
+ *   with no such tier concept) that does not pass one.
  */
 export function createProjectionsScheduler({
   refresh,
@@ -86,6 +97,7 @@ export function createProjectionsScheduler({
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
   logError = (msg) => console.error(msg),
+  shouldSkip = () => false,
 }) {
   const timers = new Map(); // vault name → {timer, vault}
 
@@ -108,6 +120,7 @@ export function createProjectionsScheduler({
    * WHAT THIS SCHEDULER STILL OWNS: when to fire. Errors never escape.
    */
   function runRefresh(vault) {
+    if (shouldSkip(vault)) return Promise.resolve(null);
     return Promise.resolve()
       .then(() => refresh(vault))
       .catch((err) => {

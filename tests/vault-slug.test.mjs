@@ -48,6 +48,10 @@ import {
   vaultNamesOf,
   vaultSlug,
   vaultsRootPath,
+  vaultReachMode,
+  openVaultEntries,
+  alsoWritableEntries,
+  alsoLockedEntries,
 } from '../src/helpers/vault-slug.mjs';
 
 import {
@@ -527,6 +531,54 @@ describe('disabledVaultEntries — the CONTAINER is the dangerous part', () => {
   });
 });
 
+describe('vaultReachMode — a closed vocabulary, not a boolean', () => {
+  test('"declared" is the only value that means anything', () => {
+    assert.equal(vaultReachMode({ vaultReach: 'declared' }), 'declared');
+  });
+
+  test('anything else falls back to null — today\'s unchanged behaviour', () => {
+    for (const cfg of [
+      {}, { vaultReach: true }, { vaultReach: 'Declared' }, { vaultReach: 'open' },
+      { vaultReach: null }, { vaultReach: 1 }, null, undefined,
+    ]) {
+      assert.equal(vaultReachMode(cfg), null, JSON.stringify(cfg));
+    }
+  });
+});
+
+describe('openVaultEntries / alsoWritableEntries / alsoLockedEntries — same container guard as disabledVaultEntries', () => {
+  for (const [fn, key] of [
+    [openVaultEntries, 'openVaults'],
+    [alsoWritableEntries, 'alsoWritable'],
+    [alsoLockedEntries, 'alsoLocked'],
+  ]) {
+    test(`${fn.name}: returns the listed entries unchanged`, () => {
+      assert.deepEqual(fn({ [key]: ['roland', 'notes'] }), ['roland', 'notes']);
+    });
+
+    test(`${fn.name}: a BARE STRING is refused, not iterated into characters`, () => {
+      assert.deepEqual(fn({ [key]: 'roland' }), []);
+    });
+
+    test(`${fn.name}: non-array containers yield the empty list`, () => {
+      for (const bad of [123, true, null, undefined, '', 'roland', { 0: 'roland' }]) {
+        assert.deepEqual(fn({ [key]: bad }), [], JSON.stringify(bad));
+      }
+    });
+
+    test(`${fn.name}: non-string elements are dropped, not coerced`, () => {
+      assert.deepEqual(fn({ [key]: ['keep', 123, null, '', true, ['x'], { a: 1 }, 'also-keep'] }),
+        ['keep', 'also-keep']);
+    });
+
+    test(`${fn.name}: always an array`, () => {
+      for (const cfg of [null, undefined, {}, { [key]: 7 }]) {
+        assert.ok(Array.isArray(fn(cfg)), JSON.stringify(cfg));
+      }
+    });
+  }
+});
+
 describe('referenceVaultPath / vaultsRootPath', () => {
   test('return a configured path verbatim', () => {
     assert.equal(referenceVaultPath({ referenceVault: 'C:\\VAULTS\\.template' }), 'C:\\VAULTS\\.template');
@@ -738,8 +790,14 @@ describe('SCAN: the class cannot be re-opened quietly', () => {
     //     key, which is exactly why the six readers downstream of it were
     //     never at risk while the two hooks — which parse config.json
     //     themselves — were.
-    const KEYS = ['defaultVault', 'disabledVaults', 'referenceVault', 'vaultsRoot'];
-    const RAW_RECEIVER = /\b(cfg|config|conf)\s*(\?\.)?\s*\.\s*(defaultVault|disabledVaults|referenceVault|vaultsRoot)\b/;
+    // v0.90.0 — vaultReach/openVaults/alsoWritable/alsoLocked (decision
+    // portee-et-mode-ecriture-des-vaults) swept into the SAME class the day
+    // they were added, rather than left to become the 23rd unguarded site.
+    const KEYS = [
+      'defaultVault', 'disabledVaults', 'referenceVault', 'vaultsRoot',
+      'vaultReach', 'openVaults', 'alsoWritable', 'alsoLocked',
+    ];
+    const RAW_RECEIVER = /\b(cfg|config|conf)\s*(\?\.)?\s*\.\s*(defaultVault|disabledVaults|referenceVault|vaultsRoot|vaultReach|openVaults|alsoWritable|alsoLocked)\b/;
     const offenders = [];
     for (const { rel, abs } of scannedFiles()) {
       if (rel === HELPER_REL) continue;

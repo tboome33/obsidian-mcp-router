@@ -36,6 +36,7 @@ import { isProjectionPath, hasProjectionMarker } from '../helpers/okf-projection
 // Reuse the project's canonical vault-path-safety guard (single source of
 // truth for path policy) rather than a bespoke, weaker check.
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 
 export const TOOL_NAME = 'build_wiki_graph';
 
@@ -85,6 +86,7 @@ export const TOOL_DEFINITION = {
         type: 'boolean',
         description: 'When true (default), also write the derived `.understand-anything/knowledge-graph.json` copy for the UA dashboard.',
       },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
     required: [],
     additionalProperties: false,
@@ -396,9 +398,20 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   }
 
   // 7. write ×2 (unless dryRun) — the validated, sanitized graph.
+  //
+  // STRICT `!== true`, not a truthy check: the also-tier write gate
+  // (src/index.mjs's requiresAlsoTierCheck) exempts this call from the
+  // secondary-vault write check ONLY when `args.dryRun === true`, on the
+  // stated premise that this is "the SAME condition the tool's own writer
+  // branches on". A truthy-coercing `if (!dryRun)` here disagreed with that
+  // for any non-boolean truthy value (e.g. a client sending the string
+  // `"true"` — documented elsewhere in this codebase, see write-bundle.mjs's
+  // `recover` handling, as something a real MCP client does) — the gate
+  // would require the also-tier check for a call that, in truth, wrote
+  // nothing, an over-refusal on a soft-tier or `alsoLocked` secondary vault.
   const json = `${JSON.stringify(safeGraph, null, 2)}\n`;
   const written = [];
-  if (!dryRun) {
+  if (dryRun !== true) {
     await deps.writeFile(vault, CANONICAL_GRAPH_PATH, json);
     written.push(CANONICAL_GRAPH_PATH);
     if (writeUnderstandAnythingCopy) {
@@ -415,7 +428,7 @@ export async function buildWikiGraphTool(registry, args = {}, _deps = {}) {
   return ({
     vault: vault.name,
     kind: safeGraph.kind,
-    dryRun: Boolean(dryRun),
+    dryRun: dryRun === true,
     written,
     counts: {
       pages: pages.length,

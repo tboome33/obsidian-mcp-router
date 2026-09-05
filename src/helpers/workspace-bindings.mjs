@@ -191,12 +191,24 @@ export function readBinding(config, cwd) {
  * secondaries. Empty when there is no binding, which the caller reads as "all
  * vaults", never as "no vault".
  *
+ * Every PRODUCTION writer of `registry.workspaceBinding` sets it from
+ * `normalizeBinding()`'s output, where `also` is always a real array — but
+ * `registry.workspaceBinding` is documented (helpers/vault-reach.mjs) as read
+ * live rather than trusted as a fixed shape, and a caller reaching for "which
+ * vaults is this workspace bound to" may hand this a binding assembled by
+ * hand (a test double, a future defensive code path) rather than one that
+ * went through `normalizeBinding`. Guarding `also` here — the one place this
+ * question is answered — means every caller inherits the guard instead of
+ * each re-deriving it, or worse, assuming it and finding out via a spread of
+ * `undefined`.
+ *
  * @param {{ vault: string, also: string[] }|null} binding
  * @returns {string[]}
  */
 export function boundVaults(binding) {
   if (!binding) return [];
-  return [binding.vault, ...binding.also];
+  const also = Array.isArray(binding.also) ? binding.also : [];
+  return [binding.vault, ...also];
 }
 
 /**

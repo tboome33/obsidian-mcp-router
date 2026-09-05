@@ -19,7 +19,9 @@ The tool pings every ACTIVE vault in parallel and returns:
 - `defaultVault` — vault used when calls omit a `vault` argument (resolved by the 5-tier cascade)
 - `configPath` — where the registry is loaded from
 - `vaults[]` — active vaults, each with `name`, `type` (local|remote), `baseUrl`, `online`, `latencyMs`, `missingApiKey`, `error?`, `isDefault`
-- `disabled[]` — vaults skipped by the `disabledVaults` config. NOT pinged. Each entry: `name`, `type`, `reason` (currently always `"disabled"`).
+- `disabled[]` — vaults this session cannot use right now. NOT pinged. Each entry: `name`, `type`, `reason` — one of two things:
+  - `"disabled"` — skipped by the `disabledVaults` config.
+  - `not reachable from this workspace (vaultReach: "declared" — bind this workspace to it, or add it to openVaults)` — the vault is real and enabled, but this router install has `vaultReach: "declared"` active and this workspace's binding does not name it (nor is it in `openVaults`). This is the ONE case in `disabled[]` with a fix the user can act on in-session: point them at `confirm_workspace_binding` (to bind this workspace to it) rather than at `config.json`.
 
 ## Adapt the response to what the user asked
 

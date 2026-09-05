@@ -255,7 +255,9 @@
       "tools": [
         "list_vaults"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "confirm_workspace_binding"
+      ],
       "writeMode": "read-only",
       "requires": {
         "shell": false,

@@ -58,6 +58,7 @@ import { patchFileTool } from './patch-file.mjs';
 import { setFrontmatterTool } from './set-frontmatter.mjs';
 import { mergeFrontmatterTool } from './merge-frontmatter.mjs';
 import { deleteFileTool } from './delete-file.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 
 export const TOOL_NAME = 'write_bundle';
 
@@ -107,6 +108,7 @@ export const TOOL_DEFINITION = {
       },
       only: { type: 'array', items: { type: 'string' }, description: 'For a recovery run: restore ONLY these paths out of the journal. Use it when the listing shows files you know you edited yourself after the crash.' },
       confirm: { type: 'boolean', description: 'Required (true) to RUN a recovery. Ignored when applying a normal bundle.' },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
     required: [],
     additionalProperties: false,

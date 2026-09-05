@@ -35,6 +35,7 @@
  */
 import { searchSmart, getFileContent } from '../rest-client.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
+import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
 import {
   searchLocalIndex,
@@ -237,7 +238,10 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
           `Use unlock_vaults first or specify "${registry.lockedVault}" instead of "*".`,
       );
     }
-    const candidates = registry.vaults.filter((v) => !v.missingApiKey);
+    // Reachability applies to fan-out exactly like it applies to naming a
+    // vault directly — see the identical comment in tools/search.mjs, whose
+    // lockedVault check just above this shares this same call site.
+    const candidates = registry.vaults.filter((v) => !v.missingApiKey && isVaultReachable(v.name, registry));
     const settled = await Promise.allSettled(
       candidates.map(async (v) => ({ vault: v.name, ...(await searchOne(v)) })),
     );

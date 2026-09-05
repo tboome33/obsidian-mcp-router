@@ -1,0 +1,77 @@
+// Decision portee-et-mode-ecriture-des-vaults §1, trap 4: "list_vaults must
+// keep SHOWING what's unreachable, never hide it." Focused tests for the
+// reachability partition added to listVaults() — not a full-coverage suite
+// for the tool (no dedicated file existed before this lot).
+//
+// Vaults expected to end up REACHABLE use a loopback port nothing listens on
+// (connection-refused, sub-millisecond, no DNS/timeout wait) so these tests
+// stay fast and hermetic without mocking rest-client.mjs.
+
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { listVaults } from '../src/tools/list-vaults.mjs';
+
+const REFUSED = 'http://127.0.0.1:1'; // nothing listens on port 1
+
+function vault(name) {
+  return { name, type: 'remote', baseUrl: REFUSED, apiKey: 'k', timeoutMs: 500 };
+}
+
+describe('listVaults — reachability (trap 4)', () => {
+  test('vaultReach inactive (default) — every vault is pinged, none in disabled for reachability', async () => {
+    const registry = { vaults: [vault('a'), vault('b')], skipped: [], configPath: '/c' };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.vaults.map((v) => v.name).sort(), ['a', 'b']);
+    assert.deepEqual(out.disabled, []);
+  });
+
+  test('vaultReach: "declared", no binding, no openVaults — every vault moves to disabled, none pinged', async () => {
+    const registry = {
+      vaults: [vault('a'), vault('b')], skipped: [], configPath: '/c',
+      vaultReach: 'declared', openVaults: [], workspaceBinding: null,
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.vaults, [], 'unreachable vaults must not be pinged at all');
+    assert.deepEqual(out.disabled.map((d) => d.name).sort(), ['a', 'b']);
+    for (const d of out.disabled) {
+      assert.match(d.reason, /not reachable from this workspace/);
+    }
+  });
+
+  test('vaultReach: "declared" — reachable and unreachable vaults are correctly split', async () => {
+    const registry = {
+      vaults: [vault('work'), vault('reference'), vault('unrelated')],
+      skipped: [], configPath: '/c',
+      vaultReach: 'declared', openVaults: [],
+      workspaceBinding: { vault: 'work', also: ['reference'] },
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.vaults.map((v) => v.name).sort(), ['reference', 'work']);
+    assert.deepEqual(out.disabled.map((d) => d.name), ['unrelated']);
+  });
+
+  test('a genuinely disabled vault (registry.skipped) and an unreachable one both show up, with their OWN distinct reasons', async () => {
+    const registry = {
+      vaults: [vault('reachable')],
+      skipped: [{ name: 'off', type: 'local', reason: 'disabled' }],
+      configPath: '/c',
+      vaultReach: 'declared', openVaults: ['reachable'],
+    };
+    const out = await listVaults(registry);
+    assert.deepEqual(out.vaults.map((v) => v.name), ['reachable']);
+    const byName = Object.fromEntries(out.disabled.map((d) => [d.name, d.reason]));
+    assert.equal(byName.off, 'disabled');
+    assert.equal(byName.reachable, undefined, 'a reachable vault must not ALSO appear in disabled');
+  });
+
+  test('the default vault, when unreachable, yields defaultVaultStatus: null rather than a stale entry', async () => {
+    const registry = {
+      vaults: [vault('other')], skipped: [], configPath: '/c',
+      vaultReach: 'declared', openVaults: ['other'],
+      defaultVault: 'not-declared', workspaceBinding: null,
+    };
+    const out = await listVaults(registry);
+    assert.equal(out.defaultVaultStatus, null);
+  });
+});

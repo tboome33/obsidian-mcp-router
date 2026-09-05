@@ -67,7 +67,13 @@ export function classifyError(err) {
   // Internal errors are thrown as a plain Error (no `kind`). Recognize the
   // well-known router messages so they're categorized precisely.
   const msg = err && typeof err === 'object' ? String(err.message || '') : '';
-  if (/READONLY mode|read-only|is locked to vault/i.test(msg)) {
+  // "not reachable from this workspace" is the vaultReach: "declared" refusal
+  // (resolveVault(), lock_vault) — a vault that exists and is correctly
+  // configured, but this workspace's own binding/openVaults restricts naming
+  // it. Grouped with the other workspace-scoped access restrictions rather
+  // than with "Unknown vault" below, which means the vault itself does not
+  // exist at all.
+  if (/READONLY mode|read-only|is locked to vault|not reachable from this workspace/i.test(msg)) {
     return { errorCategory: 'permission', isRetryable: false };
   }
   if (/Unknown vault|No vault specified|has no API key/i.test(msg)) {

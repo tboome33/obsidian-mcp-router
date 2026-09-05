@@ -33,6 +33,7 @@ import {
   SOURCE_LEDGER_PATH,
   LEDGER_VERSION,
 } from '../helpers/source-ledger.mjs';
+import { CONFIRM_SECONDARY_WRITE_PROP } from '../helpers/vault-reach.mjs';
 
 export const RECORD_TOOL_NAME = 'record_source';
 export const AUDIT_TOOL_NAME = 'audit_sources';
@@ -58,6 +59,7 @@ export const RECORD_TOOL_DEFINITION = {
       independenceKey: { type: 'string', description: 'Override the derived registrable domain — use when the heuristic groups two genuinely independent publishers, or fails to group two arms of the same one.' },
       capturedAt: { type: 'string', description: 'ISO instant the content was fetched. Defaults to now.' },
       note: { type: 'string', description: 'Free-form note for a reviewer.' },
+      confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
     },
     required: ['kind', 'authority'],
     additionalProperties: false,

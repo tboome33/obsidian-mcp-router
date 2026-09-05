@@ -1,5 +1,6 @@
 import { searchSimple } from '../rest-client.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
+import { isVaultReachable } from '../helpers/vault-reach.mjs';
 
 export async function search(registry, { vault: name, query, contextLength = 100 } = {}) {
   if (!query) {
@@ -20,7 +21,17 @@ export async function search(registry, { vault: name, query, contextLength = 100
     // rejected promises — Promise.allSettled doesn't surface the input
     // each promise was bound to, and we don't want to lose the vault
     // name on failure (was previously rendered as "?").
-    const candidates = registry.vaults.filter((v) => !v.missingApiKey);
+    //
+    // Reachability applies to fan-out exactly like it applies to naming a
+    // vault directly — decision portee-et-mode-ecriture-des-vaults says
+    // reachability governs which vaults a workspace may even NAME, and "*"
+    // is a name for "every vault", not an escape from that rule. Without
+    // this filter, `vaultReach: "declared"` would stop `search({vault:
+    // "roland"})` but not `search({vault: "*"})`, which would still read
+    // (and return) content from every vault this workspace was just told it
+    // cannot reach — the same class of gap the lockedVault check above this
+    // was already fixed for at this exact call site.
+    const candidates = registry.vaults.filter((v) => !v.missingApiKey && isVaultReachable(v.name, registry));
     const results = await Promise.allSettled(
       candidates.map(async (v) => {
         const matches = await searchSimple(v, query, contextLength);

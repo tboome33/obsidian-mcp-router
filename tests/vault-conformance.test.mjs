@@ -740,3 +740,69 @@ describe('scheduler.runNow — the shared entry point', () => {
     assert.equal(await scheduler.runNow({}), null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// shouldSkip — Phase 3 fix (portee-ergonomie-refus-roadmap): a QUEUED
+// refresh must be re-checked against LIVE state at fire time, not the state
+// that was true when it was scheduled. Found by Codex review: a vault turned
+// `alsoLocked` mid-debounce (config hot-reloaded before the timer fired)
+// still received the queued write, defeating the hard tier's own "no
+// exceptions, ever" promise.
+// ---------------------------------------------------------------------------
+
+describe('createProjectionsScheduler — shouldSkip re-checks at fire time, not at noteWrite time', () => {
+  test('default (no shouldSkip) preserves the original unconditional behaviour', async () => {
+    const v = nextVault();
+    let runs = 0;
+    const scheduler = createProjectionsScheduler({ refresh: async () => { runs += 1; return {}; }, logError: () => {} });
+    await scheduler.runNow(v);
+    assert.equal(runs, 1);
+  });
+
+  test('shouldSkip TRUE at fire time cancels the refresh — runNow', async () => {
+    const v = nextVault();
+    let runs = 0;
+    const scheduler = createProjectionsScheduler({
+      refresh: async () => { runs += 1; return {}; },
+      logError: () => {},
+      shouldSkip: () => true,
+    });
+    const result = await scheduler.runNow(v);
+    assert.equal(result, null);
+    assert.equal(runs, 0, 'a vault shouldSkip refuses must never reach the refresh core');
+  });
+
+  test('shouldSkip is evaluated AGAIN at fire time — a vault locked AFTER noteWrite is still caught by a debounced flush', async () => {
+    const v = nextVault();
+    let runs = 0;
+    let locked = false; // false when noteWrite runs; flipped to true before the timer fires
+    const scheduler = createProjectionsScheduler({
+      refresh: async () => { runs += 1; return {}; },
+      delayMs: 5,
+      logError: () => {},
+      shouldSkip: () => locked,
+    });
+
+    scheduler.noteWrite(v, 'write_file', { path: 'wiki/a.md' });
+    assert.deepEqual(scheduler.pending(), [v.name], 'fixture sanity: a refresh must be queued');
+
+    // Simulate a config hot-reload landing DURING the debounce window —
+    // exactly the race Codex review found.
+    locked = true;
+
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(runs, 0, 'the queued refresh must consult LIVE state, not state captured at noteWrite time');
+  });
+
+  test('shouldSkip receives the SAME vault object the refresh core would have received', async () => {
+    const v = nextVault();
+    let seen = null;
+    const scheduler = createProjectionsScheduler({
+      refresh: async () => ({}),
+      logError: () => {},
+      shouldSkip: (vault) => { seen = vault; return false; },
+    });
+    await scheduler.runNow(v);
+    assert.equal(seen, v);
+  });
+});

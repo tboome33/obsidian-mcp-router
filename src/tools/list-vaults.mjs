@@ -18,6 +18,7 @@ import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
+import { isVaultReachable } from '../helpers/vault-reach.mjs';
 
 /**
  * The complete vocabulary of `*Source.origin` — the ONE authoritative list.
@@ -82,8 +83,20 @@ export function buildDefaultVaultStatus(defaultVaultName, pingedResults) {
 }
 
 export async function listVaults(registry) {
+  // Reachability (decision portee-et-mode-ecriture-des-vaults §1, trap 4 of
+  // the page: "list_vaults must keep SHOWING what's unreachable, never hide
+  // it"). Computed LIVE against `registry.workspaceBinding` for the same
+  // reason `resolveVault()` does — see helpers/vault-reach.mjs's header — so
+  // this partition can never go stale relative to what resolveVault() would
+  // actually accept a moment later. A no-op split (everything reachable)
+  // when `vaultReach` is inactive, which is the default.
+  const [reachable, unreachable] = registry.vaults.reduce(
+    (acc, v) => { acc[isVaultReachable(v.name, registry) ? 0 : 1].push(v); return acc; },
+    [[], []],
+  );
+
   const results = await Promise.all(
-    registry.vaults.map(async (v) => {
+    reachable.map(async (v) => {
       const ping = await pingVault(v);
       return {
         name: v.name,
@@ -100,15 +113,21 @@ export async function listVaults(registry) {
     }),
   );
 
-  // Disabled vaults from the registry's skipped[] list. Read-only metadata
-  // (no ping). Each entry has { name, type, reason }. Always returned, even
-  // when empty, so callers don't have to special-case "no disabled" vs
-  // "field missing".
-  const disabled = (registry.skipped || []).map((s) => ({
-    name: s.name,
-    type: s.type,
-    reason: s.reason,
-  }));
+  // Disabled vaults from the registry's skipped[] list, PLUS any vault this
+  // workspace cannot currently reach (not pinged, same reasoning as a
+  // genuinely disabled vault: no point spending a round-trip on a name
+  // resolveVault() would refuse anyway). Read-only metadata. Each entry has
+  // { name, type, reason }. Always returned, even when empty, so callers
+  // don't have to special-case "no disabled" vs "field missing".
+  const disabled = [
+    ...(registry.skipped || []).map((s) => ({ name: s.name, type: s.type, reason: s.reason })),
+    ...unreachable.map((v) => ({
+      name: v.name,
+      type: v.type,
+      reason: 'not reachable from this workspace (vaultReach: "declared" — bind this workspace '
+        + 'to it, or add it to `openVaults`)',
+    })),
+  ];
 
   // Default vault health summary (v0.10.0) — null when no default vault
   // resolved (empty registry / no cascade match) OR when the resolved

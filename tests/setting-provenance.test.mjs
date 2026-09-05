@@ -643,7 +643,12 @@ describe('GUARD — a setting is never assigned without its source, at start-up 
       'the binding candidate, taken only when the binding is locked',
     );
     codeMatch(
-      /validateLock\(fromBinding, fresh\.vaults, 'binding'\)/,
+      // `, fresh` — the 4th arg (Phase 2/3, portee-ergonomie-refus-roadmap):
+      // validateLock ALSO checks reachability when given a registry-like
+      // object, so `fresh` itself (which already carries vaultReach/
+      // openVaults/workspaceBinding) is threaded through here too, not just
+      // `fresh.vaults`.
+      /validateLock\(fromBinding, fresh\.vaults, 'binding', fresh\)/,
       'the binding candidate validated under its own context',
     );
     codeMatch(
@@ -655,7 +660,8 @@ describe('GUARD — a setting is never assigned without its source, at start-up 
       'the host is tried ONLY when the binding yielded no lock, and through the gate — never process.env',
     );
     codeMatch(
-      /validateLock\(fromHost, fresh\.vaults, 'env'\)/,
+      // Same 4th-arg addition as the binding candidate above.
+      /validateLock\(fromHost, fresh\.vaults, 'env', fresh\)/,
       'the host candidate validated under the env context',
     );
     codeMatch(

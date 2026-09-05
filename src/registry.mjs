@@ -47,7 +47,12 @@ import {
   disabledVaultEntries,
   registeredVaultPaths,
   vaultSlug,
+  vaultReachMode,
+  openVaultEntries,
+  alsoWritableEntries,
+  alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
+import { isVaultReachable } from './helpers/vault-reach.mjs';
 import { envKeyOrigin, envKeySourceFile } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
@@ -462,6 +467,18 @@ export async function loadRegistry({ configPath } = {}) {
 
   return {
     configPath: cfgPath,
+    // Reachability + the three write tiers (decision portee-et-mode-
+    // ecriture-des-vaults, 2026-09-04). Purely config-derived — unlike
+    // `lockedVault`/`autoEnrichMode`, nothing in this session can change them
+    // at runtime, so they are simply recomputed fresh on every load
+    // (including a hot-reload) rather than needing preserve-across-reload
+    // logic. `resolveVault()` below reads `this.vaultReach`/`this.openVaults`
+    // (static per load) together with `this.workspaceBinding` (live — see
+    // helpers/vault-reach.mjs's header for why that one is never baked in).
+    vaultReach: vaultReachMode(config),
+    openVaults: openVaultEntries(config),
+    alsoWritable: alsoWritableEntries(config),
+    alsoLocked: alsoLockedEntries(config),
     defaultVault,
     // The config's own `defaultVault`, carried so a caller that has to re-run
     // the cascade after mutating tier 0 (clearing a binding, in
@@ -507,6 +524,21 @@ export async function loadRegistry({ configPath } = {}) {
         throw new Error(
           `Vault "${target}" has no API key on disk. Open Obsidian on this vault, ` +
             `enable Local REST API plugin, then re-run setup-vault.mjs.`,
+        );
+      }
+      // Reachability (decision portee-et-mode-ecriture-des-vaults §1). A
+      // no-op unless `vaultReach: "declared"` is configured — see
+      // helpers/vault-reach.mjs. The SINGLE point of passage for this guard:
+      // every one of the ~26 call sites that resolve a vault by name goes
+      // through this method, so a check placed anywhere else would be the
+      // exact "reaches only its first call site" defect class this repo has
+      // already paid for four times (see the decision's own trap 1).
+      if (!isVaultReachable(v.name, this)) {
+        throw new Error(
+          `Vault "${v.name}" is registered but not reachable from this workspace `
+          + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, '
+          + 'nor is it in `openVaults`). Bind this workspace to it with confirm_workspace_binding, '
+          + 'add it to `openVaults` in config.json, or address a vault this workspace already declares.',
         );
       }
       return v;

@@ -333,8 +333,27 @@ export function configuredDefaultVault(cfg) {
  * @returns {string[]}
  */
 export function disabledVaultEntries(cfg) {
+  return stringArrayEntries(cfg, 'disabledVaults');
+}
+
+/**
+ * Shared body for every "array of vault names, hand-editable" config key in
+ * this module (`disabledVaults`, `openVaults`, `alsoWritable`, `alsoLocked`):
+ * absent/malformed container → `[]`, a bare string is NOT iterated
+ * character-by-character (that would silently "match" a one-letter vault
+ * slug instead of the name actually written), non-string/empty entries are
+ * dropped. Factored out rather than copied per key — this module's own
+ * opening argument is that the class of guard belongs in ONE place, and four
+ * byte-identical bodies differing only in the property name read is exactly
+ * the shape that argument is against.
+ *
+ * @param {unknown} cfg
+ * @param {string} key
+ * @returns {string[]}
+ */
+function stringArrayEntries(cfg, key) {
   if (!cfg || typeof cfg !== 'object') return [];
-  const raw = cfg.disabledVaults;
+  const raw = cfg[key];
   if (!Array.isArray(raw)) return [];
   return raw.filter((entry) => typeof entry === 'string' && entry !== '');
 }
@@ -380,4 +399,63 @@ export function vaultsRootPath(cfg) {
   if (!cfg || typeof cfg !== 'object') return null;
   const value = cfg.vaultsRoot;
   return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/**
+ * The config's `vaultReach` switch — validated, or null.
+ *
+ * `"declared"` is the only value that means anything today (decision
+ * portee-et-mode-ecriture-des-vaults §1): when set, a vault is reachable from
+ * a session only if that workspace's binding names it (`vault` or `also`), or
+ * it is listed in `openVaults`. ANYTHING ELSE — absent, a typo, an old value —
+ * falls back to null, which is today's unchanged behaviour (every registered
+ * vault reachable from everywhere). This is deliberately a closed vocabulary
+ * rather than a boolean: a future third mode can be added without a second
+ * reader having to learn a new truthy check.
+ *
+ * @param {unknown} cfg
+ * @returns {'declared'|null}
+ */
+export function vaultReachMode(cfg) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  return cfg.vaultReach === 'declared' ? 'declared' : null;
+}
+
+/**
+ * The config's `openVaults` — vault names reachable from ANY workspace even
+ * when `vaultReach: "declared"` is active — as an array of usable entries.
+ * Same container guard as `disabledVaultEntries` (a bare string is iterable
+ * character-by-character, which would silently "open" a one-letter vault
+ * slug instead of the one actually named).
+ *
+ * @param {unknown} cfg
+ * @returns {string[]}
+ */
+export function openVaultEntries(cfg) {
+  return stringArrayEntries(cfg, 'openVaults');
+}
+
+/**
+ * The config's `alsoWritable` — secondary (`also`) vaults a binding may write
+ * to directly, no friction (decision portee-et-mode-ecriture-des-vaults §2,
+ * tier 1 of 3). Same shape and same container guard as `openVaultEntries`.
+ *
+ * @param {unknown} cfg
+ * @returns {string[]}
+ */
+export function alsoWritableEntries(cfg) {
+  return stringArrayEntries(cfg, 'alsoWritable');
+}
+
+/**
+ * The config's `alsoLocked` — secondary (`also`) vaults that refuse EVERY
+ * write unconditionally, no conversational override possible (decision
+ * portee-et-mode-ecriture-des-vaults §2, tier 3 of 3 — the hard tier). Same
+ * shape and same container guard as `openVaultEntries`.
+ *
+ * @param {unknown} cfg
+ * @returns {string[]}
+ */
+export function alsoLockedEntries(cfg) {
+  return stringArrayEntries(cfg, 'alsoLocked');
 }

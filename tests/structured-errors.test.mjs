@@ -70,6 +70,28 @@ describe('classifyError — internal plain Error messages', () => {
     assert.equal(out.isRetryable, false);
   });
 
+  test('vault not reachable from this workspace (vaultReach: "declared") → permission, not retryable', () => {
+    const out = classifyError(new Error(
+      'Vault "reference" is registered but not reachable from this workspace (vaultReach: "declared" is '
+      + 'active, and this workspace\'s binding does not name it, nor is it in `openVaults`). Bind this '
+      + 'workspace to it with confirm_workspace_binding, add it to `openVaults` in config.json, or address '
+      + 'a vault this workspace already declares.',
+    ));
+    assert.equal(out.errorCategory, 'permission');
+    assert.equal(out.isRetryable, false);
+  });
+
+  test('lock_vault refusing an unreachable target also classifies as permission', () => {
+    const out = classifyError(new Error(
+      'lock_vault: cannot lock to "reference" — it is registered but not reachable from this workspace '
+      + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, nor is it in '
+      + '`openVaults`). Locking to it would refuse every subsequent call until unlock. Bind this workspace '
+      + 'to it with confirm_workspace_binding first, or add it to `openVaults` in config.json.',
+    ));
+    assert.equal(out.errorCategory, 'permission');
+    assert.equal(out.isRetryable, false);
+  });
+
   test('unknown vault → validation, not retryable', () => {
     const out = classifyError(new Error('Unknown vault "ghost". Known vaults: alpha, beta.'));
     assert.equal(out.errorCategory, 'validation');
