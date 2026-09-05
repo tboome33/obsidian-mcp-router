@@ -32,6 +32,7 @@ import {
   updateConfigBindings,
   withBinding,
   readBinding,
+  readRefusals,
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
 import {
@@ -462,6 +463,13 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // round 2, 2026-09-03. The registry object is the same one the server
     // holds, so this is the in-session half of the write.
     registry.workspaceBinding = b;
+    // AND THE REFUSALS WITH IT. `withBinding` drops a refusal of the vault
+    // being locked (binding is adopting); the first version of Phase 5 left
+    // this copy stale, so `list_vaults` went on listing a refusal the file no
+    // longer held and a suggested retraction was a no-op. (Codex, round on
+    // b59eb00.) A guard test holds every tool that assigns
+    // `registry.workspaceBinding` to assigning this too.
+    registry.workspaceRefusals = readRefusals(next, cwd);
     // AND SO DOES THE DEFAULT VAULT. The binding is tier 0 of the cascade, so
     // a persisted lock that moves the primary moves the session default with
     // it — otherwise `unlock_vaults` handed the session back to whatever the

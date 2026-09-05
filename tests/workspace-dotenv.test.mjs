@@ -26,6 +26,7 @@ import {
   classifyWorkspaceDotenvKey, parseDotenv, applyWorkspaceDotenv, workspaceDotenvValueRefusal,
   workspaceDotenvRefusals, appliedWorkspaceDotenvKeys, envKeySourceFile, envKeyOrigin, ENV_ORIGINS,
   workspaceDotenvWasConsulted,
+  dotenvRefusalHint, REFUSED_VAULT_KEY,
   _resetWorkspaceDotenvProvenance,
 } from '../src/helpers/workspace-dotenv.mjs';
 import { VALID_MODES, canonicalizeMode, spellingsOf } from '../src/helpers/auto-enrich-mode.mjs';
@@ -837,5 +838,64 @@ describe('the refusal is visible to the operator and invisible to Claude-through
     assert.doesNotMatch(r.stderr, /\.env:/, r.stderr);
     assert.doesNotMatch(r.stderr, /refused/, r.stderr);
     assert.doesNotMatch(r.stderr, /FullAuto/, r.stderr);
+  });
+});
+
+describe('dotenvRefusalHint — the portable refusal counts only from the file that proposed (decision refus-d-une-proposition-de-liaison)', () => {
+  // Codex, round on b59eb00: the first version read the raw environment, so a
+  // launcher exporting OBSIDIAN_ROUTER_REFUSED_VAULT beside a workspace file
+  // proposing the same vault skipped the one-time import and had the briefing
+  // accuse the project file of a refusal it never contained.
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', REFUSED_VAULT_KEY];
+  const clean = () => {
+    const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
+    for (const k of KEYS) delete process.env[k];
+    _resetWorkspaceDotenvProvenance();
+    return () => {
+      for (const [k, had, value] of saved) { if (had) process.env[k] = value; else delete process.env[k]; }
+      _resetWorkspaceDotenvProvenance();
+    };
+  };
+
+  test('both keys from this workspace\'s file → the value', () => {
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n${REFUSED_VAULT_KEY}=work\n`);
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(dotenvRefusalHint(), 'work');
+    } finally { restore(); }
+  });
+
+  test('the HOST exported it → null, whatever the file proposes', () => {
+    const restore = clean();
+    try {
+      process.env[REFUSED_VAULT_KEY] = 'work';
+      const ws = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(process.env[REFUSED_VAULT_KEY], 'work', 'the variable is there…');
+      assert.equal(dotenvRefusalHint(), null, '…but it is not the file\'s word');
+    } finally { restore(); }
+  });
+
+  test('the file refused, but the PROPOSAL came from the host → null: the line answers the file\'s own proposal, not the host\'s', () => {
+    const restore = clean();
+    try {
+      process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT = 'work';
+      const ws = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n${REFUSED_VAULT_KEY}=work\n`);
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(dotenvRefusalHint(), null);
+    } finally { restore(); }
+  });
+
+  test('no file consulted, or an empty value → null', () => {
+    const restore = clean();
+    try {
+      process.env[REFUSED_VAULT_KEY] = 'work';
+      assert.equal(dotenvRefusalHint(), null, 'nothing was loaded from any file');
+      const ws = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n${REFUSED_VAULT_KEY}=\n`);
+      delete process.env[REFUSED_VAULT_KEY];
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(dotenvRefusalHint(), null, 'an empty value names no vault');
+    } finally { restore(); }
   });
 });

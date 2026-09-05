@@ -615,6 +615,22 @@ describe('hooks/workspace-briefing.mjs', () => {
     assert.match(r.stdout, /proposes the vault "work"/);
   });
 
+  test('the same refusal exported by the HOST is not attributed to the file — no context is claimed', () => {
+    // The file proposes `work`; the launcher exports OBSIDIAN_ROUTER_REFUSED_VAULT=work.
+    // The line is not in the project file, so the briefing must not say it is.
+    // (Codex, round on b59eb00.)
+    const dir = fs.mkdtempSync(path.join(workDir, 'host-refused-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG(),
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n',
+      env: { OBSIDIAN_ROUTER_REFUSED_VAULT: 'work' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /This project's \.env proposes the vault "work"/);
+    assert.doesNotMatch(r.stdout, /recorded here before/);
+  });
+
   test('THE REINSTALL CASE end to end: the file proposes AND says it was refused before, the config has no answer → asked once, with the context', () => {
     const dir = fs.mkdtempSync(path.join(workDir, 'reinstall-'));
     const r = runHook({

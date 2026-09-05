@@ -208,6 +208,34 @@ been answered. Nothing changes for a workspace that never refuses anything.
   refusal. `list_vaults` derives its hint-status validator from the classifier's own vocabulary
   instead of a hand-copied list of five.
 
+#### Fixed — the review round on the first commit
+
+- **A host-exported `OBSIDIAN_ROUTER_REFUSED_VAULT` no longer passes for the file's.** The
+  portable refusal counts only when the loader took it from the same workspace `.env` it took the
+  proposal from; a launcher exporting the variable beside a project file proposing the same vault
+  used to skip the one-time import and have the briefing accuse the file of a refusal it never
+  contained.
+- **The `.env` writer, now shared, learnt three rules its two forks never had** — all three
+  pre-existing in `lock_vault --persist`, `set_auto_enrich_mode --persist` and `setup-vault
+  --link-workspace` alike: an `export KEY=value` line IS the key (it was missed, a bare twin was
+  appended below it, and the loader read the stale exported line first, so the persisted setting
+  never took effect); a `.env` that is a symbolic link is refused rather than written through (a
+  clone chose where the link points); and one writer at a time (two tools persisting into one file
+  read-modify-wrote it with nothing between them, and the last one erased the other's line while
+  both reported success) — the same `mkdir` lock the config writer takes.
+- **Every binding writer refreshes the live refusals.** `lock_vault --persist` and
+  `set_secondary_vault_mode` dropped a refusal on disk (through the shared transform) and left the
+  session's copy listing it, so `list_vaults` offered a retraction that was a no-op. A guard test
+  holds every tool that assigns the live binding to assigning the live refusals too.
+- `list_vaults`' description now says `previouslyRefused` is a fact about the file, carried
+  whatever the status, and meaningful for a signalled one only.
+
+Recorded, not fixed (roadmap, Phase 6): the session-start hook compares vault names lowercased
+where the server compares them exactly, so a `.env` proposing `dedibox` against a vault named
+`DEDIBOX` reads `unconfirmed` in the briefing and `unknown-vault` in `list_vaults` — a divergence
+older than this phase, unchanged by it, and the reason the two surfaces need one name-comparison
+rule.
+
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,

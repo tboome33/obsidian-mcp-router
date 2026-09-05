@@ -1188,8 +1188,12 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     return { root, ws, vault, configPath, read: () => JSON.parse(fs.readFileSync(configPath, 'utf8')) };
   };
 
-  /** Load the registry AS IF the router had started in `ws`. */
-  async function loadIn(sc) {
+  /**
+   * Load the registry AS IF the router had started in `ws`. `host` names
+   * variables the LAUNCHER set — present before the workspace file is read,
+   * so the loader records them as the host's, never the file's.
+   */
+  async function loadIn(sc, { host = {} } = {}) {
     const prevCwd = process.cwd();
     // BOTH gated variables are saved and cleared, not just the default vault:
     // a scenario whose `.env` carries a persisted lock has to reach the loader
@@ -1200,6 +1204,7 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
     _resetWorkspaceDotenvProvenance();
     for (const k of KEYS) delete process.env[k];
+    for (const [k, v] of Object.entries(host)) process.env[k] = v;
     process.chdir(sc.ws);
     try {
       applyWorkspaceDotenv({ cwd: sc.ws, env: process.env, warn: () => {} });
@@ -1588,6 +1593,19 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     assert.equal(reg.bindingHint.status, HINT_STATUS.REFUSED);
     assert.equal(reg.bindingHint.previouslyRefused, false, 'the file itself carries no refusal line');
     assert.deepEqual([...reg.workspaceRefusals.keys()], ['notes']);
+  });
+
+  test('a refusal the HOST exports is not the file\'s: the import runs, and no context is claimed for a line the file never had', async () => {
+    // Codex, round on b59eb00: the first version read OBSIDIAN_ROUTER_REFUSED_VAULT
+    // from the raw environment, so a launcher exporting it beside a file
+    // proposing the same vault skipped the import and had the briefing accuse
+    // the project file of a refusal it never contained. The hint counts only
+    // when the loader took it from the same workspace file as the proposal.
+    const sc = scenario();
+    const reg = await loadIn(sc, { host: { OBSIDIAN_ROUTER_REFUSED_VAULT: 'notes' } });
+    assert.equal(reg.bindingImported?.vault, 'notes', 'imported as if the variable were not there');
+    assert.equal(reg.bindingHint.status, HINT_STATUS.CONFIRMED);
+    assert.equal(reg.bindingHint.previouslyRefused, false, 'a fact about the FILE, and the file has no such line');
   });
 
   test('a refusal of ANOTHER vault does not stop the import (trap 1), and rides along on the registry', async () => {

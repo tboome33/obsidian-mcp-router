@@ -13,7 +13,7 @@ import path from 'node:path';
 
 import { setSecondaryVaultMode, SECONDARY_MODES, TOOL_DEFINITION } from '../src/tools/set-secondary-vault-mode.mjs';
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
-import { canonicalWorkspaceKey, readBinding, withBinding } from '../src/helpers/workspace-bindings.mjs';
+import { canonicalWorkspaceKey, readBinding, readRefusals, withBinding, withRefusal } from '../src/helpers/workspace-bindings.mjs';
 import { alsoWriteTierFor } from '../src/helpers/vault-reach.mjs';
 
 const CWD = process.cwd();
@@ -254,5 +254,18 @@ describe('the tiers survive the OTHER writers of the binding', () => {
     assert.deepEqual(reg.workspaceBinding.alsoLocked, ['ref'], 'the mode of a secondary that STAYS survives the re-confirmation');
     assert.deepEqual(reg.workspaceBinding.alsoWritable, [], 'the mode of a secondary that LEFT is gone with it');
     assert.equal(canonicalWorkspaceKey(CWD), r.workspace);
+  });
+
+  test('a stale refusal of a secondary is dropped when its mode is recorded — on disk AND in the live registry', async () => {
+    // A hand edit left `ref` both bound and refused. Recording its mode goes
+    // through `withBinding`, which drops the refusal of every bound vault;
+    // the live copy has to follow, or `list_vaults` lists a refusal the file
+    // no longer holds. (Codex, round on b59eb00 — found in lock.mjs, swept
+    // to this writer too.)
+    const { seam, current } = seams({ config: withRefusal(onDisk(), CWD, 'ref', { at: '2026-09-06' }) });
+    const reg = registryOf({ workspaceRefusals: new Map([['ref', '2026-09-06']]) });
+    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(readRefusals(current(), CWD).has('ref'), false, 'dropped on disk');
+    assert.equal(reg.workspaceRefusals.size, 0, 'and live');
   });
 });

@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { assertDotenvScalar } from '../src/helpers/dotenv-scalar.mjs';
+import { dotenvKeyLineRegex, assertDotenvNotSymlink, takeDotenvLock } from '../src/helpers/dotenv-writer.mjs';
 import { obsidianOpenUri, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
 import {
   updateConfigBindings,
@@ -1795,37 +1796,58 @@ function upsertEnvVarSync(file, key, value) {
   // quotes — which is why the caller's `quotedValue` wrapping did not contain
   // it either.
   assertDotenvScalar(value, key, file);
-  let lines = [];
-  if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
-  let firstIdx = -1;
-  for (let i = 0; i < lines.length; i++) { if (keyRegex.test(lines[i])) { firstIdx = i; break; } }
-  const newLine = `${key}=${value}`;
-  if (firstIdx === -1) {
-    if (lines.length === 0 || lines[lines.length - 1] === '') {
-      const at = lines.length === 0 ? 0 : lines.length - 1;
-      lines.splice(at, 0, newLine);
-    } else {
-      lines.push(newLine);
+  // The three rules the async writer learnt in the Codex round on b59eb00,
+  // shared through src/helpers/dotenv-writer.mjs rather than re-derived: an
+  // `export KEY=` line IS the key (matched and its prefix kept), a symlinked
+  // `.env` is refused (a clone chose where it points), and one writer at a
+  // time (a tool persisting a mode in a session must not race this script).
+  assertDotenvNotSymlink(file);
+  const release = takeDotenvLock(file);
+  try {
+    let lines = [];
+    if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    const keyRegex = dotenvKeyLineRegex(key);
+    let firstIdx = -1;
+    let prefix = '';
+    for (let i = 0; i < lines.length; i++) {
+      const m = keyRegex.exec(lines[i]);
+      if (m) { firstIdx = i; prefix = m[1]; break; }
     }
-  } else {
-    lines[firstIdx] = newLine;
+    if (firstIdx === -1) {
+      const newLine = `${key}=${value}`;
+      if (lines.length === 0 || lines[lines.length - 1] === '') {
+        const at = lines.length === 0 ? 0 : lines.length - 1;
+        lines.splice(at, 0, newLine);
+      } else {
+        lines.push(newLine);
+      }
+    } else {
+      lines[firstIdx] = `${prefix}${key}=${value}`;
+    }
+    let out = lines.join('\n');
+    if (!out.endsWith('\n')) out += '\n';
+    fs.writeFileSync(file, out, 'utf8');
+  } finally {
+    release();
   }
-  let out = lines.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  fs.writeFileSync(file, out, 'utf8');
 }
 
 function removeEnvVarSync(file, key) {
   if (!fs.existsSync(file)) return false;
-  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-  const keyRegex = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\s*=`);
-  const filtered = lines.filter((l) => !keyRegex.test(l));
-  if (filtered.length === lines.length) return false;
-  let out = filtered.join('\n');
-  if (!out.endsWith('\n')) out += '\n';
-  fs.writeFileSync(file, out, 'utf8');
-  return true;
+  assertDotenvNotSymlink(file);
+  const release = takeDotenvLock(file);
+  try {
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    const keyRegex = dotenvKeyLineRegex(key);
+    const filtered = lines.filter((l) => !keyRegex.test(l));
+    if (filtered.length === lines.length) return false;
+    let out = filtered.join('\n');
+    if (!out.endsWith('\n')) out += '\n';
+    fs.writeFileSync(file, out, 'utf8');
+    return true;
+  } finally {
+    release();
+  }
 }
 
 /**

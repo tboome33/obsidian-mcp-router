@@ -130,21 +130,38 @@ export const WORKSPACE_DOTENV_KEYS = Object.freeze([
 ]);
 
 /**
- * The vault a workspace file says was refused here before, or null.
+ * The vault THIS WORKSPACE'S FILE says was refused here before, or null.
  *
  * Only ever CONTEXT for the classifier: a value here changes no verdict on
  * its own — the registry's `workspaceRefusals` is what silences a proposal —
  * it makes the briefing say "a refusal of this was recorded here before" when
  * the same vault is proposed again with no answer in the registry (the
- * reinstall case the decision was written for). Read from the environment
- * like the proposal it answers, so the two agree on which file spoke.
+ * reinstall case the decision was written for), and it keeps the one-time
+ * import from binding that vault.
+ *
+ * GATED ON PROVENANCE. The first version read the raw environment, so a
+ * launcher or shell that happened to export OBSIDIAN_ROUTER_REFUSED_VAULT=notes
+ * beside a workspace file proposing `notes` made the import skip that vault
+ * and the briefing say the PROJECT FILE had recorded a refusal it never
+ * contained — a false claim about a file, which is the exact class
+ * `envKeyOrigin` exists to prevent one key over. (Codex, round on b59eb00.)
+ * ONE rule closes it: the value counts only when the loader took it from the
+ * SAME workspace file it took the proposal from. A key the loader did not
+ * apply from a file has no source file, so a host value fails the rule by
+ * construction — no separate origin check, and one witness for one rule. And
+ * a refusal line answers the proposal it stands beside: a host proposal is a
+ * different question, so a file refusal beside a host proposal counts for
+ * nothing either.
  *
  * @param {object} [env]
  * @returns {string|null}
  */
 export function dotenvRefusalHint(env = process.env) {
   const value = env?.[REFUSED_VAULT_KEY];
-  return typeof value === 'string' && value.trim() !== '' ? value : null;
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const proposalFile = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT', env);
+  if (!proposalFile || proposalFile !== envKeySourceFile(REFUSED_VAULT_KEY, env)) return null;
+  return value;
 }
 
 /**

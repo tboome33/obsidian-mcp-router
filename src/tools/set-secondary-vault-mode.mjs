@@ -51,6 +51,7 @@ import { writeFileAtomicSync } from '../helpers/write-file-atomic.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import {
   readBinding,
+  readRefusals,
   withBinding,
   canonicalWorkspaceKey,
   updateConfigBindings,
@@ -206,6 +207,10 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   // to `ref` is the self-contradiction `lock_vault` had to fix in round 5.
   const binding = readBinding(next, cwd);
   registry.workspaceBinding = binding;
+  // The refusals too: `withBinding` drops a stale refusal of any bound vault
+  // on its way through, and the live copy must say what the file says
+  // (Codex, round on b59eb00 — found one writer over, in lock.mjs).
+  registry.workspaceRefusals = readRefusals(next, cwd);
   if (binding) {
     registry.defaultVault = binding.vault;
     registry.defaultVaultSource = { origin: 'binding', variable: null };

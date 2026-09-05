@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import * as lockModule from '../src/tools/lock.mjs';
@@ -1032,6 +1033,45 @@ describe('confirm_workspace_binding — refuse: the user says NO (decision refus
     const r = await confirmWorkspaceBinding(registryOf(), { vault: 'notes', open: false }, seam);
     assert.deepEqual(r.refusalsDropped, []);
     assert.doesNotMatch(r.message, /refusal/);
+  });
+});
+
+describe('every binding writer refreshes the live refusals — the sweep behind I7', () => {
+  // `withBinding` drops a refusal of any vault it binds, in every writer. The
+  // first version of Phase 5 refreshed `registry.workspaceRefusals` after the
+  // confirmation tool only: `lock_vault --persist` on a refused vault dropped
+  // the refusal on disk and left the live copy listing it, so `list_vaults`
+  // offered a retraction that was a no-op. (Codex, round on b59eb00.)
+  const { _internals } = lockModule;
+
+  test('lock_vault --persist onto a refused vault drops the refusal on disk AND live', () => {
+    const config = withRefusal(ON_DISK(), CWD, 'notes', { at: '2026-09-06' });
+    const written = [];
+    const seam = { readFile: () => JSON.stringify(config), writeFile: (p, c) => written.push(JSON.parse(c)) };
+    const reg = registryOf({ workspaceRefusals: new Map([['notes', '2026-09-06']]) });
+    const r = _internals.recordLockInBinding(reg, CWD, 'notes', seam);
+    assert.equal(r?.vault, 'notes');
+    assert.equal(readRefusals(written[0], CWD).has('notes'), false, 'dropped on disk by withBinding');
+    assert.equal(reg.workspaceRefusals.size, 0, 'and the live registry says so too');
+  });
+
+  test('GUARD: every tool that assigns registry.workspaceBinding assigns registry.workspaceRefusals in the same file', () => {
+    // A textual sweep over the writers, so the next binding writer cannot
+    // refresh one field and forget the other. The two assignments travel
+    // together because the two facts do: `withBinding` may change both.
+    const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const toolsDir = path.join(ROOT, 'src', 'tools');
+    const offenders = [];
+    let writers = 0;
+    for (const name of fs.readdirSync(toolsDir)) {
+      if (!name.endsWith('.mjs')) continue;
+      const src = fs.readFileSync(path.join(toolsDir, name), 'utf8');
+      if (!/registry\.workspaceBinding\s*=[^=]/.test(src)) continue;
+      writers += 1;
+      if (!/registry\.workspaceRefusals\s*=[^=]/.test(src)) offenders.push(name);
+    }
+    assert.ok(writers >= 3, `expected the three known writers (confirm, lock, set-secondary-vault-mode), saw ${writers}`);
+    assert.deepEqual(offenders, [], 'a writer that refreshes the binding but not the refusals');
   });
 });
 

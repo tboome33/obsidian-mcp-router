@@ -787,3 +787,38 @@ describe('bin/obsidian-mcp-router --attach passthrough', () => {
     assert.match(res.out, /--attach <slug>/);
   });
 });
+
+describe('the synchronous .env writer follows the same three rules as the tools\' (Codex, round on b59eb00)', () => {
+  test('--link-workspace over an `export OBSIDIAN_ROUTER_DEFAULT_VAULT=` line rewrites THAT line, prefix kept — never a dead twin below it', () => {
+    // The loader strips `export `, so the exported line was read first and a
+    // bare line appended below it never took effect.
+    const sc = makeScenario();
+    fs.writeFileSync(path.join(sc.ws, '.env'), 'export OBSIDIAN_ROUTER_DEFAULT_VAULT=old\nKEEP=1\n');
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+    const text = fs.readFileSync(path.join(sc.ws, '.env'), 'utf8');
+    assert.equal((text.match(/OBSIDIAN_ROUTER_DEFAULT_VAULT=/g) || []).length, 1, 'one line');
+    assert.match(text, /^export OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault$/m);
+    assert.match(text, /^KEEP=1$/m);
+    // And --unlink-workspace sees the exported line too.
+    const un = run(sc, ['--unlink-workspace', sc.ws], { cwd: sc.root });
+    assert.equal(un.status, 0, un.out);
+    assert.doesNotMatch(fs.readFileSync(path.join(sc.ws, '.env'), 'utf8'), /DEFAULT_VAULT/);
+  });
+
+  test('a symlinked .env is refused — the target is not edited', (t) => {
+    const sc = makeScenario();
+    const target = path.join(sc.root, 'elsewhere.env');
+    fs.writeFileSync(target, 'UNTOUCHED=1\n');
+    try {
+      fs.symlinkSync(target, path.join(sc.ws, '.env'), 'file');
+    } catch (err) {
+      t.skip(`cannot create a symlink on this machine (${err.code})`);
+      return;
+    }
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.notEqual(res.status, 0, 'the command fails rather than writing through the link');
+    assert.match(res.out, /symbolic link/);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'UNTOUCHED=1\n');
+  });
+});

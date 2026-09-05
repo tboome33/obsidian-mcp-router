@@ -18,6 +18,8 @@ import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
+import { dotenvLockPath } from '../src/helpers/dotenv-writer.mjs';
+import fsSync from 'node:fs';
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
 import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/index.mjs';
@@ -1240,6 +1242,59 @@ describe('upsertDotenvVar / removeDotenvVar', () => {
     const content = await fs.readFile(envPath, 'utf8');
     assert.doesNotMatch(content, /FOO/);
     assert.match(content, /^MIDDLE=keep$/m);
+  });
+
+  test('an `export KEY=` line IS the key: updated in place, prefix kept, never shadowed by an appended twin', async () => {
+    // `parseDotenv` strips `export `, so the loader read the exported line
+    // FIRST and the bare line the writer appended was dead — a persisted
+    // setting that never took effect. (Codex, round on b59eb00.)
+    await fs.writeFile(envPath, 'export FOO=old\nB=2\n', 'utf8');
+    await upsertDotenvVar(envPath, 'FOO', 'new');
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.equal(content, 'export FOO=new\nB=2\n');
+    assert.equal((content.match(/FOO=/g) || []).length, 1, 'one line, not two');
+    // And removal sees it too.
+    assert.equal(await removeDotenvVar(envPath, 'FOO'), true);
+    assert.equal(await fs.readFile(envPath, 'utf8'), 'B=2\n');
+  });
+
+  test('a .env that is a SYMBOLIC LINK is refused, and its target untouched', async (t) => {
+    // A clone chose where the link points; writing through it edits a file
+    // outside the workspace. (Codex, round on b59eb00.)
+    const target = path.join(tmpDir, 'elsewhere.env');
+    await fs.writeFile(target, 'FOO=target\n', 'utf8');
+    try {
+      await fs.symlink(target, envPath, 'file');
+    } catch (err) {
+      // Windows without Developer Mode or the symlink privilege: the guard
+      // cannot be exercised here, and a skip says so rather than a green.
+      t.skip(`cannot create a symlink on this machine (${err.code})`);
+      return;
+    }
+    await assert.rejects(() => upsertDotenvVar(envPath, 'FOO', 'x'), /symbolic link/);
+    await assert.rejects(() => removeDotenvVar(envPath, 'FOO'), /symbolic link/);
+    assert.equal(await fs.readFile(target, 'utf8'), 'FOO=target\n', 'the target is exactly as it was');
+  });
+
+  test('one writer at a time: a held dotenv lock makes the write refuse, and nothing is changed', async () => {
+    // Two tools persisting into one file read-modify-wrote it with nothing
+    // between them, and the last one erased the other's line while both
+    // reported success. Held at the DEFAULT lock path, with the writer's own
+    // wait shortened, so the test proves the path the production call takes.
+    await fs.writeFile(envPath, 'A=1\n', 'utf8');
+    const release = acquireLock(dotenvLockPath(envPath));
+    assert.ok(release, 'the test holds the lock');
+    try {
+      await assert.rejects(() => upsertDotenvVar(envPath, 'FOO', 'bar', { waitMs: 0 }), /another process is writing/);
+      await assert.rejects(() => removeDotenvVar(envPath, 'A', { waitMs: 0 }), /another process is writing/);
+      assert.equal(await fs.readFile(envPath, 'utf8'), 'A=1\n');
+    } finally {
+      release();
+    }
+    // Released, the same call goes through — and leaves no lock behind.
+    await upsertDotenvVar(envPath, 'FOO', 'bar');
+    assert.match(await fs.readFile(envPath, 'utf8'), /^FOO=bar$/m);
+    assert.equal(fsSync.existsSync(dotenvLockPath(envPath)), false, 'the lock is released after the write');
   });
 });
 
