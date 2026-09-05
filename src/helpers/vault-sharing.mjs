@@ -95,6 +95,12 @@
 import fs from 'node:fs';
 import { canonicalWorkspaceKey, normalizeBinding, boundVaults, WORKSPACE_BINDINGS_KEY } from './workspace-bindings.mjs';
 import { isRecoveryCall } from './write-targets.mjs';
+// The ONE boundary that turns a config key into a list of names — container
+// guard included, so a hand-edited `openVaults: "roland"` is not iterated
+// character by character. Reading `config.openVaults` here by hand duplicated
+// that check and re-opened a class the repository swept shut on purpose; its
+// own scan caught it (tests/vault-slug.test.mjs).
+import { openVaultEntries } from './vault-slug.mjs';
 
 /**
  * Why a vault requires the precondition. Two reasons, deliberately kept
@@ -106,6 +112,11 @@ export const SHARING_REASONS = Object.freeze({
   MULTI_WORKSPACE: 'multi-workspace',
   /** Listed in `openVaults`: reachable everywhere, readership unknowable. */
   OPEN_VAULT: 'open-vault',
+  /**
+   * The binding registry could not be read, so how many workspaces declare
+   * this vault is UNKNOWN. Treated as shared — see `sharingRequirement`.
+   */
+  UNKNOWN: 'registry-unreadable',
 });
 
 /**
@@ -167,9 +178,43 @@ export function sharingRequirement(vaultName, registry, config) {
   // and the other from memory is how two gates that must agree about which
   // vaults are open end up disagreeing after a hand edit. Both follow the
   // registry, and a hand edit takes effect on hot-reload or restart.
-  const open = Array.isArray(registry?.openVaults) ? registry.openVaults : [];
-  if (open.includes(vaultName)) {
+  //
+  // AND IT COUNTS WHETHER OR NOT `vaultReach` IS ACTIVE — deliberate, not an
+  // oversight. `openVaults` is `vaultReach: "declared"`'s exception list, so
+  // one could argue it means nothing while that switch is off. But the two
+  // possible mistakes are not symmetric: counting it always can surprise
+  // somebody whose `openVaults` was inert with a refusal that explains itself
+  // and points at the fix, whereas counting it only under `vaultReach` would
+  // SILENTLY drop the protection from a user's shared personal vaults the day
+  // they turn the switch off. For a guard, the safe direction is the one that
+  // errs towards refusing. The sentence in the refusal stays true either way:
+  // with the switch off, every workspace really can reach every vault.
+  // OPEN IN EITHER VIEW COUNTS. Read from the fresh file AND from the
+  // registry, union. Codex round on 23bbbaa argued the first version's
+  // registry-only read the other way and was right: a vault ADDED to
+  // `openVaults` takes effect only after the watcher's delayed reload — and
+  // never at all with `--no-watch` or after a watcher error — so during that
+  // window blind writes were permitted. Reading the file alone would have the
+  // mirror hole (a vault still open in this session's registry but already
+  // removed from the file). For a guard, the union is the safe reading, and it
+  // is stricter-sooner in both directions.
+  const open = new Set([
+    ...(Array.isArray(registry?.openVaults) ? registry.openVaults : []),
+    ...openVaultEntries(config),
+  ]);
+  if (open.has(vaultName)) {
     return { required: true, reason: SHARING_REASONS.OPEN_VAULT, workspaces: [] };
+  }
+  // A CONFIG THAT COULD NOT BE READ IS "I DO NOT KNOW", NOT "NOBODY DECLARES
+  // IT". The first version returned `required: false` here, and a test blessed
+  // it — a guard that fails open the moment it cannot see is not a guard, and
+  // the whole point of this one is that the fact it needs lives in a file
+  // another process writes. Refusing costs one actionable message on a broken
+  // or momentarily-locked config; the other direction costs a silent clobber
+  // on a vault the router already knew was shared. (Codex round on 23bbbaa,
+  // found by both passes.)
+  if (!config) {
+    return { required: true, reason: SHARING_REASONS.UNKNOWN, workspaces: [] };
   }
   const workspaces = workspacesDeclaring(vaultName, config);
   if (workspaces.length > 1) {
@@ -196,9 +241,13 @@ export const IF_MATCH_EXEMPT = new Map([
   ['register_remote_vault',
     'Writes a `remoteVaults` entry to the router\'s own config.json, never to a vault.'],
   ['download_page_assets',
-    'Writes binary asset files to a filesystem directory (`outputDir`), a set of new files rather '
-    + 'than an edit to a known one, and it declares no per-file precondition. Its reachability and '
-    + 'write tier are still enforced, by path containment (assertAssetOutputDirWritable).'],
+    'Declares no per-file precondition, and cannot: it writes a batch of binary files to a '
+    + 'filesystem directory (`outputDir`). It is NOT unguarded — the dispatcher refuses it outright '
+    + 'when `outputDir` sits inside a shared vault (assertAssetOutputDirWritable), because it '
+    + 'CAN overwrite: `downloadOne` writes with a plain fs.writeFile and its collision set only '
+    + 'covers the current batch, never a file already on disk. The first version of this entry '
+    + 'claimed it only ever created new files — false, and an exemption whose reason is false is '
+    + 'worse than a missing one. (Codex round on 23bbbaa.)'],
   ['build_wiki_graph',
     'Regenerates a DERIVED artifact (the knowledge-graph JSON) wholesale from the vault\'s own '
     + 'content. There is no "content I read" to pin — the input is the whole vault — and two '
@@ -235,19 +284,25 @@ export function preconditionState(toolName, args = {}) {
   if (IF_MATCH_EXEMPT.has(toolName)) return 'not-applicable';
 
   if (toolName === 'write_bundle') {
-    // A RECOVERY RUN replays a journal; it applies no `steps[]` and carries its
-    // own guard, verified rather than assumed: `planRestore`'s decision table
-    // (helpers/write-bundle.mjs) answers `skip` for a path holding someone
-    // else's content — "undoing our own damage must not cause someone else's" —
-    // and names it in the report. That IS this requirement, one layer down.
-    // Its own limit is stated there and not restated here: an `observed`
-    // post-image (patch/append/frontmatter steps) can adopt a write that landed
-    // inside a single round trip.
+    // A RECOVERY RUN WRITES, AND ITS "OWN GUARD" DOES NOT COVER THIS CASE.
     //
-    // Named explicitly rather than left to fall through the loop below, where
-    // "no steps" would pass as vacuously satisfied — a hole that reads like a
-    // rule.
-    if (isRecoveryCall(args.recover)) return 'not-applicable';
+    // The first version exempted it, claiming `planRestore` answers `skip` for
+    // a path holding someone else's content. That is true only when the bundle
+    // KNOWS what it left there (`last`). A recovery replays a journal with an
+    // EMPTY last-state, and `planRestore`'s branch for `last == null` returns
+    // `{ action: 'restore', attribution: 'unverified' }` — it restores OVER the
+    // differing content on purpose, because abandoning a half-applied bundle
+    // breaks the guarantee C2 sells. So on a shared vault a recovery can undo
+    // another workspace's edit, with no precondition to stop it.
+    //
+    // The claim was written from the module header rather than from the branch;
+    // an exemption whose stated reason is false is worse than a missing one.
+    // (Codex round on 23bbbaa.) It is therefore `missing` — refused on a shared
+    // vault, with the read-only listing named as the way to proceed.
+    //
+    // The read-only LISTING (`recover: true`) never reaches here at all: the
+    // dispatcher's `requiresAlsoTierCheck` exempts it as a non-write.
+    if (isRecoveryCall(args.recover)) return 'missing';
     const steps = Array.isArray(args.steps) ? args.steps : [];
     // An empty bundle writes nothing. Not "satisfied": nothing to satisfy.
     if (steps.length === 0) return 'not-applicable';
@@ -265,6 +320,16 @@ export function preconditionState(toolName, args = {}) {
   if (toolName === 'execute_template') {
     return args.createFile === true ? 'missing' : 'not-applicable';
   }
+
+  // A DELETE THAT IS NOT CONFIRMED WRITES NOTHING. `delete_file` refuses
+  // without `confirm: true`, but `requiresAlsoTierCheck` only exempts the
+  // `preview` form, so this gate ran first and answered "you need ifMatch" to a
+  // call whose real problem was the missing confirmation — sending the caller
+  // to fetch a hash for a delete that was never going to happen. The handler's
+  // own refusal is the right one. (Codex round on 23bbbaa.) Handled here rather
+  // than in `requiresAlsoTierCheck`, which the write-tier gate shares and which
+  // has its own review history.
+  if (toolName === 'delete_file' && args.confirm !== true) return 'not-applicable';
 
   if (typeof args.ifMatch === 'string' && args.ifMatch !== '') return 'carried';
 
@@ -307,7 +372,10 @@ const PRECONDITION_HINT = {
     + 'source; leave `overwrite` false so an existing destination is refused rather than replaced',
   write_bundle:
     'give EVERY step its own `ifMatch` (or `ifNew: true` on a write step) — the bundle checks them '
-    + 'all before its first write, so a stale bundle refuses whole',
+    + 'all before its first write, so a stale bundle refuses whole. A RECOVERY RUN cannot be '
+    + 'guarded at all (it replays a journal with no per-path precondition and restores over '
+    + 'whatever is there), so on a shared vault it is refused: list first with `recover: true`, '
+    + 'which is read-only and always allowed, then repair the named files deliberately',
   execute_template:
     'this tool carries no precondition, so it cannot write to a shared vault: call it WITHOUT '
     + '`createFile` to get the rendered text back, then write that with write_file '
@@ -317,11 +385,31 @@ const DEFAULT_PRECONDITION_HINT =
   'pass `ifMatch` (the contentSha256 a get_file returned) so the change is refused with a 409 '
   + 'instead of overwriting what changed since you read it';
 
-/** The honest limit, in one sentence, carried by every refusal. */
+/**
+ * The honest limit, in one sentence, carried by every refusal.
+ *
+ * The second half grades the protection, and is not decoration. Only
+ * `write_file` with `ifMatch` against a bridge that serves `/vault-cas/` is a
+ * true atomic compare-and-swap. Everything else — `write_file`'s GET-compare
+ * fallback on an older bridge, and `assertContentMatches` for
+ * patch/append/frontmatter/move/delete — is check-then-mutate: it narrows the
+ * window from unbounded to one round trip, it does not close it.
+ *
+ * Codex (round on 23bbbaa) proposed refusing the non-atomic modes outright.
+ * Declined, with the reason on record: no atomic route exists for six of the
+ * seven tools, so that rule would leave a shared vault writable only by
+ * `write_file` against a recent bridge — it would not make the router safer,
+ * it would make it unusable and push the work back onto blind writes elsewhere.
+ * The decision asks for `ifMatch`; what `ifMatch` is worth is stated instead of
+ * overclaimed, the same way `write_bundle` grades its own attribution as
+ * `ours` / `observed` rather than pretending to isolation.
+ */
 const HONEST_LIMIT =
   'Honest limit: this protects writes that go through the router from EACH OTHER — not from a '
   + 'note saved in Obsidian itself on the machine hosting the vault, nor from a Sync/LiveSync '
-  + 'replica.';
+  + 'replica. And only `write_file` + `ifMatch` against a bridge serving /vault-cas/ is truly '
+  + 'atomic; the other checks run just before the write, which narrows the window to one round '
+  + 'trip rather than closing it.';
 
 /**
  * Refuse a write to a shared vault that carries no optimistic-concurrency
@@ -340,11 +428,18 @@ export function assertSharedVaultPrecondition(vault, registry, toolName, args = 
   const { required, reason, workspaces } = sharingRequirement(vault?.name, registry, config);
   if (!required) return;
 
-  const why = reason === SHARING_REASONS.OPEN_VAULT
-    ? 'it is listed in `openVaults`, so every workspace on this machine can reach it and its '
-      + 'readership is not knowable — the decision treats such a vault as shared by hypothesis'
-    : `${workspaces.length} workspaces declare it in your router config (${workspaces.join(', ')}), `
+  let why;
+  if (reason === SHARING_REASONS.OPEN_VAULT) {
+    why = 'it is listed in `openVaults`, so every workspace on this machine can reach it and its '
+      + 'readership is not knowable — the decision treats such a vault as shared by hypothesis';
+  } else if (reason === SHARING_REASONS.UNKNOWN) {
+    why = 'the router config could not be read just now, so how many workspaces declare this vault '
+      + 'is UNKNOWN — and an unknown answer is treated as shared rather than as "nobody". Check '
+      + 'that the config file is readable; the requirement lifts by itself as soon as it is';
+  } else {
+    why = `${workspaces.length} workspaces declare it in your router config (${workspaces.join(', ')}), `
       + 'so another session can be writing the same note right now';
+  }
 
   throw new Error(
     `${toolName}: vault "${vault?.name}" is SHARED — ${why}. A write with no optimistic-concurrency `
@@ -378,26 +473,33 @@ export function assertSharedVaultPrecondition(vault, registry, toolName, args = 
  * @param {(p: string) => {mtimeMs: number, size: number}} [opts.statFile]
  * @returns {{ current: () => object|null }}
  */
-export function createBindingsReader({ configPath, readFile, statFile } = {}) {
+export function createBindingsReader({ configPath, readFile } = {}) {
   const read = readFile || ((p) => fs.readFileSync(p, 'utf8'));
-  const stat = statFile || ((p) => fs.statSync(p));
   let lastGood = null;
-  let stamp = null;
+  let lastBytes = null;
 
-  return {
+  const reader = {
     current() {
       if (!configPath) return lastGood;
       try {
-        const st = stat(configPath);
-        const now = `${st.mtimeMs}:${st.size}`;
-        if (stamp === now) return lastGood;
-        const parsed = JSON.parse(read(configPath));
+        const bytes = read(configPath);
+        // THE BYTES ARE THE IDENTITY, not the metadata. The first version
+        // compared `mtimeMs` + `size` and skipped the read when they matched —
+        // and both Codex passes found the same hole in it: on a filesystem with
+        // coarse timestamps, one process can replace the config with
+        // same-length JSON inside a single tick (changing a workspace's vault
+        // name for another of equal length is enough), leaving this reader on a
+        // stale answer that permits a blind write. The stat was saving a 2 KB
+        // read next to an HTTP round trip; correctness is worth more than that.
+        // The cache now only avoids re-PARSING unchanged bytes.
+        if (bytes === lastBytes) return lastGood;
+        const parsed = JSON.parse(bytes);
         // A config that parses to a non-object is not a config. Keeping the
         // previous copy beats adopting `null`/an array and answering "no
         // workspace declares anything" for the rest of the session.
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           lastGood = parsed;
-          stamp = now;
+          lastBytes = bytes;
         }
         return lastGood;
       } catch {
@@ -405,4 +507,15 @@ export function createBindingsReader({ configPath, readFile, statFile } = {}) {
       }
     },
   };
+
+  // PRIMED HERE, while the file is known to be readable — the router has just
+  // loaded its registry from it. Without this the reader's first `current()`
+  // could be the one call that meets a transient failure (an antivirus lock, a
+  // rename racing the read) and answer `null` with no last-good copy, on a
+  // process that already knew the state. `sharingRequirement` treats `null` as
+  // "unknown, therefore shared", so the consequence was a refusal rather than a
+  // hole — but refusing a write the router had the answer for is still wrong.
+  // (Codex round on 23bbbaa, both passes.)
+  reader.current();
+  return reader;
 }

@@ -19,7 +19,11 @@ import { patchFileTool } from '../src/tools/patch-file.mjs';
 import { deleteFileTool } from '../src/tools/delete-file.mjs';
 import { moveFileTool } from '../src/tools/move-file.mjs';
 import { mergeFrontmatterTool } from '../src/tools/merge-frontmatter.mjs';
+import { appendToFileTool } from '../src/tools/append-to-file.mjs';
+import { setFrontmatterTool } from '../src/tools/set-frontmatter.mjs';
 import { contentSha256 } from '../src/helpers/content-hash.mjs';
+import { preconditionState, IF_MATCH_EXEMPT } from '../src/helpers/vault-sharing.mjs';
+import { _internals } from '../src/index.mjs';
 
 // --- Controllable fake server (Local REST API core + bridge routes) ---------
 
@@ -73,6 +77,15 @@ before(async () => {
       res.end('');
       return;
     }
+    // Core POST — how `append_to_file` writes. Missing until the Phase 4
+    // enforcement loop was added, which is why nothing had ever driven an
+    // append through this harness: it answered 500 "unexpected".
+    if (req.method === 'POST' && url.startsWith('/vault/')) {
+      recorded.corePost = { url, body };
+      res.writeHead(200, { 'Content-Type': 'text/markdown' });
+      res.end('');
+      return;
+    }
     if (req.method === 'DELETE' && url.startsWith('/vault/')) {
       recorded.coreDelete = { url };
       res.writeHead(200);
@@ -94,7 +107,7 @@ beforeEach(() => {
     vaultCas: { status: 404 }, // default: bridge route absent
     get: { status: 404 },
   };
-  recorded = { requests: [], corePut: null, corePatch: null, coreDelete: null };
+  recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
 });
 
 function vault() {
@@ -246,7 +259,7 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
   test('fallback STATUS MATRIX: 400/404/413/415 degrade — 401/403/500 hard-fail (codex #6)', async () => {
     // Degrading group: the fallback GET fires and the core PUT services the write.
     for (const status of [400, 404, 413, 415]) {
-      recorded = { requests: [], corePut: null, corePatch: null, coreDelete: null };
+      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
       behaviour.vaultCas = { status, body: {} };
       behaviour.get = { status: 200, body: 'current' };
       const out = await writeFileIfMatch(vault(), 'a.md', 'new', contentSha256('current'));
@@ -255,7 +268,7 @@ describe('writeFileIfMatch — fallback breadth & edge content', () => {
     }
     // Hard-error group: no fallback GET, no core PUT — the error surfaces.
     for (const status of [401, 403, 500]) {
-      recorded = { requests: [], corePut: null, corePatch: null, coreDelete: null };
+      recorded = { requests: [], corePut: null, corePatch: null, corePost: null, coreDelete: null };
       behaviour.vaultCas = { status, body: {} };
       behaviour.get = { status: 200, body: 'current' };
       await assert.rejects(
@@ -444,6 +457,98 @@ describe('write_file tool — atomic ifMatch end-to-end', () => {
 });
 
 // --- Guard → operation SEQUENCE (mismatch must SUPPRESS the underlying op) --
+
+/**
+ * EVERY TOOL THE SHARED-VAULT GATE CALLS "SATISFIABLE" REALLY ENFORCES THE
+ * PRECONDITION — proved by a LOOP over the producers, not by an assertion per
+ * site.
+ *
+ * Phase 4 (`helpers/vault-sharing.mjs`) refuses a write to a vault several
+ * workspaces share unless the call carries `ifMatch`. That gate's whole promise
+ * is "pass it and you are protected". A tool that ACCEPTED `ifMatch` and
+ * ignored it would satisfy the gate while offering nothing — the gate would
+ * then be worse than absent, because callers would rely on it. That exact
+ * regression has happened here before: `set_frontmatter` accepted the argument
+ * and ignored it until the C2 review, and its source still carries the note.
+ *
+ * The per-tool suite below covered four of the seven (patch, delete, move,
+ * merge) — `append_to_file` and `set_frontmatter` were enforced in the source
+ * and pinned by nothing. A denominator that is not asserted is a list that
+ * goes stale, so the set is DERIVED from the gate itself and checked total.
+ */
+describe('the shared-vault gate\'s promise: satisfying it really does protect', () => {
+  const STALE = contentSha256('STALE');
+  const CASES = {
+    write_file: { path: 'a.md', content: 'x' },
+    append_to_file: { path: 'a.md', content: 'x' },
+    patch_file: { path: 'a.md', operation: 'replace', targetType: 'block', target: 'b', content: 'c' },
+    set_frontmatter: { path: 'a.md', key: 'k', value: 'v' },
+    merge_frontmatter: { path: 'a.md', values: { k: 'v' } },
+    move_file: { from: 'a.md', to: 'b.md' },
+    delete_file: { path: 'a.md', confirm: true },
+  };
+  const RUN = {
+    write_file: writeFileTool,
+    append_to_file: appendToFileTool,
+    patch_file: patchFileTool,
+    set_frontmatter: setFrontmatterTool,
+    merge_frontmatter: mergeFrontmatterTool,
+    move_file: moveFileTool,
+    delete_file: deleteFileTool,
+  };
+  // EVERY mutating method, POST included. The round-3 lesson of the also-tier
+  // gate was exactly this: a "no write landed" assertion that ignores one verb
+  // is blind, not green — there, it was the audit line's POST.
+  const mutated = () => Boolean(recorded.corePut || recorded.corePatch || recorded.corePost || recorded.coreDelete);
+  // `move_file` refuses an existing destination unless told otherwise, and this
+  // fake answers 200 for every GET — so the destination always "exists". The
+  // precondition under test guards the SOURCE either way.
+  const MATCH_EXTRA = { move_file: { overwrite: true } };
+
+  test('the loop covers EVERY per-file write tool the gate expects a precondition from', () => {
+    // Derived from the gate, so a tool that gains `ifMatch` later cannot be
+    // enforced-in-theory and unproven here. `write_bundle` is excluded because
+    // it is a composite that runs these very handlers (its own suite covers
+    // it), and `execute_template` because the gate refuses it outright — it
+    // declares no precondition at all.
+    const expected = [..._internals.WRITE_TOOL_NAMES].filter(
+      (n) => !IF_MATCH_EXEMPT.has(n) && n !== 'write_bundle' && n !== 'execute_template',
+    );
+    assert.deepEqual(
+      expected.filter((n) => !(n in CASES)), [],
+      'a write tool the gate calls satisfiable is not exercised by this loop',
+    );
+    for (const name of expected) {
+      // The tool's own required arguments come with it: `delete_file` is not a
+      // write at all without `confirm: true`, and the gate stands aside for a
+      // call that cannot write.
+      assert.equal(
+        preconditionState(name, { ...CASES[name], ifMatch: STALE }), 'carried',
+        `${name} is not satisfiable by ifMatch`,
+      );
+    }
+  });
+
+  for (const name of Object.keys(CASES)) {
+    test(`${name}: a STALE ifMatch rejects and nothing reaches the vault`, async () => {
+      behaviour.get = { status: 200, body: 'current' };
+      await assert.rejects(
+        () => RUN[name](realRegistry(), { ...CASES[name], ifMatch: STALE }),
+        /changed since|precondition failed|no longer exists/i,
+        `${name} accepted a stale precondition`,
+      );
+      assert.equal(mutated(), false, `${name} mutated the vault despite a stale precondition`);
+    });
+
+    test(`${name}: a MATCHING ifMatch lets the write through`, async () => {
+      // Without this half the test above would pass for a tool that always
+      // throws — "refuses everything" is not "enforces the precondition".
+      behaviour.get = { status: 200, body: 'current' };
+      await RUN[name](realRegistry(), { ...CASES[name], ...(MATCH_EXTRA[name] || {}), ifMatch: contentSha256('current') });
+      assert.equal(mutated(), true, `${name} did not write even though the precondition held`);
+    });
+  }
+});
 
 describe('ifMatch guard suppresses the operation on mismatch (patch/delete/move/merge)', () => {
   test('delete_file: mismatch → rejects AND no core DELETE fires', async () => {

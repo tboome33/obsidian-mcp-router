@@ -41,32 +41,79 @@ describe('assertAssetOutputDirWritable', () => {
     ...extra,
   });
 
+  // Phase 4: the function now takes the binding registry AS IT IS ON DISK as a
+  // third argument, because a shared vault refuses this tool outright. Omitting
+  // it means "the config could not be read", which is treated as shared — so
+  // every case that expects the call to be ALLOWED has to say which world it is
+  // in. One workspace declaring both vaults is the unshared world.
+  const SOLO = { workspaceBindings: { 'i:\\only': { vault: 'work', also: ['ref'] } } };
+  const SHARED = {
+    workspaceBindings: {
+      'i:\\only': { vault: 'work', also: ['ref'] },
+      'i:\\other': { vault: 'ref', also: [] },
+    },
+  };
+
   test('an outputDir outside every registered vault is left alone (null, no throw)', () => {
-    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-elsewhere') }, reg()), null);
-    assert.equal(assertAssetOutputDirWritable({}, reg()), null);
+    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-elsewhere') }, reg(), SOLO), null);
+    assert.equal(assertAssetOutputDirWritable({}, reg(), SOLO), null);
   });
 
   test('inside the PRIMARY: allowed', () => {
-    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-Work', 'wiki', '.assets') }, reg())?.name, 'work');
+    assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-Work', 'wiki', '.assets') }, reg(), SOLO)?.name, 'work');
   });
 
   test('inside an alsoLocked secondary: refused, confirmed or not', () => {
-    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoLocked: ['ref'] })), /locked read-only/);
-    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg({ alsoLocked: ['ref'] })), /locked read-only/);
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoLocked: ['ref'] }), SOLO), /locked read-only/);
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg({ alsoLocked: ['ref'] }), SOLO), /locked read-only/);
   });
 
   test('inside a soft-tier secondary: refused without the flag, allowed with it', () => {
-    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg()), /SECONDARY vault/);
-    assert.equal(assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg())?.name, 'ref');
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg(), SOLO), /SECONDARY vault/);
+    assert.equal(assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg(), SOLO)?.name, 'ref');
   });
 
   test('inside an alsoWritable secondary: allowed', () => {
-    assert.equal(assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'] }))?.name, 'ref');
+    assert.equal(assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'] }), SOLO)?.name, 'ref');
   });
 
   test('inside a vault this workspace cannot REACH: refused, before the tier is even considered', () => {
     const r = reg({ vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } });
-    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, r), /not reachable from this workspace/);
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, r, SOLO), /not reachable from this workspace/);
+  });
+
+  // ---- Phase 4 (Codex round on 23bbbaa) ------------------------------------
+  // The exemption's first stated reason — "a set of new files rather than an
+  // edit to a known one" — was FALSE: `downloadOne` writes with a plain
+  // fs.writeFile and its collision set covers only the current batch, so an
+  // asset already on disk under the same name is overwritten. On a shared vault
+  // that is the silent clobber this phase exists to stop, by the one door with
+  // no `ifMatch` to offer.
+  test('inside a SHARED vault: refused, even with the secondary-write confirmation', () => {
+    assert.throws(
+      () => assertAssetOutputDirWritable({ outputDir: inside, confirmSecondaryWrite: true }, reg({ alsoWritable: ['ref'] }), SHARED),
+      /is SHARED.*2 workspaces declare it.*OUTSIDE the vault/s,
+    );
+  });
+
+  test('inside a vault listed in openVaults: refused for that reason', () => {
+    assert.throws(
+      () => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'], openVaults: ['ref'] }), SOLO),
+      /is SHARED.*openVaults/s,
+    );
+  });
+
+  test('reachability and the write tier are heard FIRST — a vault you cannot name is not "shared"', () => {
+    const r = reg({ vaultReach: 'declared', openVaults: [], workspaceBinding: { vault: 'work', also: [] } });
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, r, SHARED), /not reachable from this workspace/);
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoLocked: ['ref'] }), SHARED), /locked read-only/);
+  });
+
+  test('an unreadable binding registry fails CLOSED for this tool too', () => {
+    assert.throws(
+      () => assertAssetOutputDirWritable({ outputDir: inside }, reg({ alsoWritable: ['ref'] })),
+      /is SHARED.*could not be read/s,
+    );
   });
 });
 

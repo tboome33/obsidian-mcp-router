@@ -301,6 +301,35 @@ describe('E2E: an openVaults vault is shared by hypothesis', () => {
   });
 });
 
+describe('E2E: openVaults added to the FILE takes effect at once (Codex round on 23bbbaa)', () => {
+  test('a vault added to openVaults while the router runs is refused on the next write, watcher off', async () => {
+    // The first version read `openVaults` from the in-memory registry only, so
+    // a vault the user had just opened to every workspace kept accepting blind
+    // writes until a hot-reload — which never comes under --no-watch. Both
+    // views count now, and this proves the file half.
+    await withRouter({}, async ({ rt, vault, configPath }) => {
+      const before = await rt.call('tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'personal', path: NOTE, content: '# One\n' },
+      });
+      assert.ok(!isRefusal(before), `precondition: the first write must succeed — ${textOf(before)}`);
+      const puts = putsTo(vault, NOTE).length;
+
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.openVaults = ['personal'];
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+      const after = await rt.call('tools/call', {
+        name: 'write_file',
+        arguments: { vault: 'personal', path: NOTE, content: '# Two\n' },
+      });
+      assert.ok(isRefusal(after), `expected a refusal once the vault was opened, got: ${textOf(after)}`);
+      assert.match(textOf(after), /openVaults/);
+      assert.equal(putsTo(vault, NOTE).length, puts, 'the refused write must not have reached the vault');
+    });
+  });
+});
+
 describe('E2E: list_vaults says which vaults demand it, BEFORE a write is refused', () => {
   test('the flag flips for the vault a second workspace just declared, and only for it', async () => {
     await withRouter({}, async ({ rt, configPath }) => {

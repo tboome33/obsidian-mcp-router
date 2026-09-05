@@ -104,9 +104,27 @@ describe('sharingRequirement — one workspace writes freely, two do not', () =>
     assert.equal(r.reason, SHARING_REASONS.OPEN_VAULT);
   });
 
-  test('with NO readable config, openVaults still answers and the multi-workspace half cannot', () => {
-    assert.equal(sharingRequirement('roland', reg(['roland']), null).required, true);
-    assert.equal(sharingRequirement('ref', reg(['roland']), null).required, false);
+  test('an UNREADABLE config fails CLOSED — unknown is treated as shared, never as "nobody"', () => {
+    // Codex round on 23bbbaa, found by both passes: the first version returned
+    // `required: false` here and a test blessed it. A guard whose whole subject
+    // lives in a file another process writes must not go quiet the moment it
+    // cannot read that file.
+    const r = sharingRequirement('ref', reg(), null);
+    assert.equal(r.required, true);
+    assert.equal(r.reason, SHARING_REASONS.UNKNOWN);
+    assert.equal(sharingRequirement('roland', reg(['roland']), null).reason, SHARING_REASONS.OPEN_VAULT);
+  });
+
+  test('openVaults counts from EITHER view — the fresh file or the registry', () => {
+    // Codex argued the registry-only read the other way and was right: a vault
+    // ADDED to `openVaults` would otherwise wait for a hot-reload that never
+    // comes under --no-watch. The mirror case (still in the registry, already
+    // out of the file) matters too, hence the union.
+    assert.equal(sharingRequirement('fresh', reg(), { workspaceBindings: {}, openVaults: ['fresh'] }).required, true);
+    assert.equal(sharingRequirement('stale', reg(['stale']), { workspaceBindings: {} }).required, true);
+    assert.equal(sharingRequirement('neither', reg(), { workspaceBindings: {} }).required, false);
+    // A hand-broken openVaults must not throw or be iterated character by character.
+    assert.equal(sharingRequirement('x', reg(), { workspaceBindings: {}, openVaults: 'x' }).required, false);
   });
 });
 
@@ -114,11 +132,14 @@ describe('preconditionState — what a call brings to the table', () => {
   const CARRIES = { ifMatch: 'a'.repeat(64) };
 
   test('the seven per-file write tools: ifMatch present is carried, absent is missing', () => {
+    // `delete_file` needs `confirm: true` to be a write at all — without it the
+    // handler refuses on its own and this gate stands aside (see below).
+    const extra = (t) => (t === 'delete_file' ? { confirm: true } : {});
     for (const t of ['write_file', 'append_to_file', 'patch_file', 'set_frontmatter', 'merge_frontmatter', 'move_file', 'delete_file']) {
-      assert.equal(preconditionState(t, CARRIES), 'carried', t);
-      assert.equal(preconditionState(t, { path: 'x.md' }), 'missing', t);
-      assert.equal(preconditionState(t, { ifMatch: '' }), 'missing', `${t} — an empty string names nothing`);
-      assert.equal(preconditionState(t, { ifMatch: 12 }), 'missing', `${t} — a non-string is not a precondition`);
+      assert.equal(preconditionState(t, { ...extra(t), ...CARRIES }), 'carried', t);
+      assert.equal(preconditionState(t, { ...extra(t), path: 'x.md' }), 'missing', t);
+      assert.equal(preconditionState(t, { ...extra(t), ifMatch: '' }), 'missing', `${t} — an empty string names nothing`);
+      assert.equal(preconditionState(t, { ...extra(t), ifMatch: 12 }), 'missing', `${t} — a non-string is not a precondition`);
     }
   });
 
@@ -138,6 +159,15 @@ describe('preconditionState — what a call brings to the table', () => {
       assert.equal(preconditionState(t, {}), 'not-applicable', t);
       assert.equal(preconditionState(t, CARRIES), 'not-applicable', t);
     }
+  });
+
+  test('delete_file without confirm writes NOTHING, so the handler\'s own refusal must be the one the caller sees', () => {
+    // Codex round on 23bbbaa: this gate ran first and answered "you need
+    // ifMatch" to a delete whose real problem was the missing confirmation —
+    // sending the caller to fetch a hash for a delete that could never happen.
+    assert.equal(preconditionState('delete_file', { path: 'a.md' }), 'not-applicable');
+    assert.equal(preconditionState('delete_file', { path: 'a.md', confirm: false }), 'not-applicable');
+    assert.equal(preconditionState('delete_file', { path: 'a.md', confirm: true }), 'missing');
   });
 
   test('execute_template: a render is not-applicable, a createFile write is ALWAYS missing', () => {
@@ -163,12 +193,25 @@ describe('preconditionState — what a call brings to the table', () => {
       assert.equal(preconditionState('write_bundle', { steps: [{ op: 'delete', path: 'a.md', ...CARRIES }] }), 'carried');
     });
 
-    test('a RECOVERY RUN is not-applicable — it has its own, stronger guard', () => {
-      // A recovery replays a journal and never restores over a file somebody
-      // else changed; it applies no steps at all. Named explicitly, because
-      // falling through the step loop would call "no steps" satisfied — a hole
-      // that reads like a rule.
-      assert.equal(preconditionState('write_bundle', { recover: 'op-123', confirm: true }), 'not-applicable');
+    test('a RECOVERY RUN is MISSING — its "own guard" does not cover the recovery case', () => {
+      // The first version exempted it on a claim read from write-bundle's module
+      // header. Checked against the branch instead (Codex round on 23bbbaa):
+      // `planRestore` answers `skip` only when the bundle knows what it left
+      // there. A recovery replays with an EMPTY last-state, and that branch
+      // returns `{ action: 'restore', attribution: 'unverified' }` — it restores
+      // OVER differing content on purpose. So on a shared vault it can undo
+      // another workspace's edit, with nothing to stop it.
+      assert.equal(preconditionState('write_bundle', { recover: 'op-123', confirm: true }), 'missing');
+      // An ifMatch cannot rescue it either: recovery takes no per-path precondition.
+      assert.equal(preconditionState('write_bundle', { recover: 'op-123', confirm: true, ifMatch: 'a'.repeat(64) }), 'missing');
+    });
+
+    test('the refusal names the read-only listing as the way to proceed', () => {
+      const shared = cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'ref' } });
+      assert.throws(
+        () => assertSharedVaultPrecondition({ name: 'ref' }, { openVaults: [] }, 'write_bundle', { recover: 'op-1', confirm: true }, shared),
+        /recover: true.*read-only/s,
+      );
     });
 
     test('a bundle with no steps writes nothing, so there is nothing to satisfy', () => {
@@ -239,25 +282,33 @@ describe('assertSharedVaultPrecondition — the refusal, and everything it must 
 });
 
 describe('createBindingsReader — fresh enough for "the instant the second workspace declares it"', () => {
-  function fakeFs(initial) {
-    const state = { content: initial, mtimeMs: 1, size: initial.length, reads: 0, fail: null, statFail: null };
+  function fakeFs(initial, { fail = null } = {}) {
+    const state = { content: initial, reads: 0, fail };
     const reader = createBindingsReader({
       configPath: '/cfg/config.json',
       readFile: () => { state.reads += 1; if (state.fail) throw new Error(state.fail); return state.content; },
-      statFile: () => { if (state.statFail) throw new Error(state.statFail); return { mtimeMs: state.mtimeMs, size: state.size }; },
     });
-    state.set = (content) => { state.content = content; state.mtimeMs += 1; state.size = content.length; };
+    state.set = (content) => { state.content = content; };
     return { state, reader };
   }
 
   const ONE = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'ref' } } });
   const TWO = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'ref' } } });
+  // Same LENGTH as ONE, different meaning: the shape that a metadata-based
+  // freshness check (mtime + size) could not tell apart.
+  const ONE_ELSEWHERE = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'rfe' } } });
 
-  test('it parses the file, and does NOT re-parse while mtime and size are unchanged', () => {
-    const { state, reader } = fakeFs(ONE);
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 1);
-    reader.current(); reader.current();
-    assert.equal(state.reads, 1, 'the stat guard is what keeps this cheap enough for every write');
+  test('it is PRIMED at construction, while the file is known to be readable', () => {
+    // Without this, the reader's first `current()` could be the one call that
+    // meets a transient failure, on a process that had just loaded the very
+    // same file successfully at startup.
+    const { state } = fakeFs(ONE);
+    assert.equal(state.reads, 1, 'the constructor must read once');
+  });
+
+  test('unchanged bytes are not re-parsed — the cache is on the PARSE, never on the read', () => {
+    const { reader } = fakeFs(ONE);
+    assert.equal(reader.current(), reader.current(), 'the same object comes back while the bytes are identical');
   });
 
   test('a CHANGED file is picked up on the very next call — no restart, item 19 of the roadmap', () => {
@@ -265,17 +316,20 @@ describe('createBindingsReader — fresh enough for "the instant the second work
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 1);
     state.set(TWO);
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 2);
-    assert.equal(state.reads, 2);
   });
 
-  test('a size change with the SAME mtime is still picked up', () => {
-    // Coarse filesystem timestamps, or two atomic renames inside one
-    // millisecond, can leave mtimeMs equal while the content differs.
-    const { state, reader } = fakeFs(ONE);
-    reader.current();
-    state.content = TWO;
-    state.size = TWO.length; // mtime deliberately NOT advanced
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 2);
+  test('a SAME-LENGTH change is picked up too — the bytes are the identity, not the metadata', () => {
+    // Both Codex passes found the same hole in the first version, which skipped
+    // the read when `mtimeMs` and `size` matched: on a coarse-timestamp
+    // filesystem another process can swap a workspace's vault name for one of
+    // equal length inside a single tick, and the stale answer permits a blind
+    // write. Measured here rather than argued: identical length, different
+    // meaning, seen anyway.
+    const { state, reader } = fakeFs(ONE_ELSEWHERE);
+    assert.equal(ONE.length, ONE_ELSEWHERE.length, 'the fixture must actually be the same length');
+    assert.equal(workspacesDeclaring('ref', reader.current()).length, 0);
+    state.set(ONE);
+    assert.equal(workspacesDeclaring('ref', reader.current()).length, 1);
   });
 
   test('an unreadable or unparsable file keeps the LAST GOOD copy — a guard that fails open at the first hiccup is not a guard', () => {
@@ -288,9 +342,6 @@ describe('createBindingsReader — fresh enough for "the instant the second work
     state.set(ONE);
     state.fail = 'EBUSY';
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 2, 'nor must a transient read error');
-
-    state.statFail = 'EPERM';
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 2, 'nor a failing stat');
   });
 
   test('a config that parses to a non-object is not adopted', () => {
@@ -300,12 +351,10 @@ describe('createBindingsReader — fresh enough for "the instant the second work
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 2);
   });
 
-  test('with no good copy ever, it answers null rather than an empty config', () => {
-    const { state, reader } = fakeFs('nope');
-    state.fail = 'ENOENT';
+  test('with no good copy EVER, it answers null — and null means "shared", not "nobody"', () => {
+    const { reader } = fakeFs('nope', { fail: 'ENOENT' });
     assert.equal(reader.current(), null);
-    // And null is the documented degraded mode: openVaults still answers.
-    assert.equal(sharingRequirement('roland', { openVaults: ['roland'] }, null).required, true);
+    assert.equal(sharingRequirement('anything', { openVaults: [] }, null).required, true);
   });
 
   test('no configPath at all is a no-op reader, not a crash', () => {
@@ -355,6 +404,7 @@ describe('THE PARTITION — no write tool can be silently ungated', () => {
   test('every SATISFIABLE tool really can be satisfied — or the gate bricks it on every shared vault', () => {
     const sample = {
       write_bundle: { steps: [{ op: 'write', path: 'a.md', ifMatch: 'a'.repeat(64) }] },
+      delete_file: { confirm: true, ifMatch: 'a'.repeat(64) },
     };
     for (const name of SATISFIABLE) {
       const args = sample[name] || { ifMatch: 'a'.repeat(64) };

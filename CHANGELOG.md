@@ -67,7 +67,46 @@ only one workspace declares — which is the condition the decision set for the 
 
 The honest limit travels with the mechanism, in the refusal message and in `docs/remote-vaults.md`:
 compare-and-swap protects the writers that go through the router **from each other**, not from a
-note saved in Obsidian itself on the machine hosting the vault, nor from a Sync/LiveSync replica.
+note saved in Obsidian itself on the machine hosting the vault, nor from a Sync/LiveSync replica —
+and only `write_file` + `ifMatch` against a bridge serving `/vault-cas/` is truly atomic; the other
+checks run just before the write, narrowing the window to one round trip rather than closing it.
+
+#### Fixed in the adversarial round on this lot
+
+Two Codex passes (a plain review of the commit and an invariants pass) found six real defects,
+including two exemptions whose stated reason was FALSE — the worst kind, because a reviewer reads
+the claim instead of the code:
+
+- **`download_page_assets` on a shared vault is now refused.** Its exemption claimed it only ever
+  created new files. It does not: `downloadOne` writes with a plain `fs.writeFile`, and its
+  collision set covers only the current batch — an asset already on disk under the same name is
+  overwritten. It is the one write door with no `ifMatch` to offer, so on a shared vault it is
+  refused outright (download outside the vault, then bring files in with `write_file`).
+- **A `write_bundle` RECOVERY RUN is no longer exempt.** Its exemption cited a guard that does not
+  cover recovery: `planRestore` answers `skip` for someone else's content only when the bundle
+  knows what it left there. A recovery replays with an empty last-state and deliberately restores
+  over differing content as `unverified`. It is refused on a shared vault; the read-only
+  `recover: true` listing stays available.
+- **An unreadable config now fails CLOSED.** "I could not read the binding registry" is reported as
+  shared, not as "nobody declares it" — and the reader is primed at construction, while the file is
+  known to be readable.
+- **Freshness is decided by the config BYTES**, not by `mtime` + `size`: on a coarse-timestamp
+  filesystem another process can swap a workspace's vault name for one of equal length inside a
+  single tick.
+- **`openVaults` counts from either view** — the fresh file or the registry — so opening a vault to
+  every workspace takes effect at once instead of waiting for a hot-reload that never comes under
+  `--no-watch`.
+- **A `delete_file` without `confirm: true` writes nothing**, so the gate stands aside and the
+  handler's own confirmation refusal is the one the caller sees.
+
+Declined, with the reason on record: refusing the non-atomic `ifMatch` modes. Six of the seven
+per-file tools have no atomic route at all, so that rule would leave a shared vault writable only by
+`write_file` against a recent bridge. What the precondition is worth is stated instead of
+overclaimed.
+
+Also pinned by the round: every tool the gate calls satisfiable is now proved — by a loop over the
+producers, not an assertion per site — to actually ENFORCE the precondition it accepts.
+`append_to_file` and `set_frontmatter` enforced it in source and were pinned by nothing.
 
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 

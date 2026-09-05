@@ -166,7 +166,7 @@ import {
 // for why it is computed rather than declared, and re-read from the file.
 import {
   assertSharedVaultPrecondition, createBindingsReader, sharingRequirement, preconditionState,
-  IF_MATCH_EXEMPT,
+  IF_MATCH_EXEMPT, SHARING_REASONS,
 } from './helpers/vault-sharing.mjs';
 import {
   TOOL_DEFINITION as SET_SECONDARY_VAULT_MODE_TOOL_DEFINITION,
@@ -1560,7 +1560,7 @@ function queuedMaintenanceBlocked(vaultName, reg) {
  *
  * Pure apart from `path.resolve`; exported for tests through `_internals`.
  */
-function assertAssetOutputDirWritable(args, reg) {
+function assertAssetOutputDirWritable(args, reg, sharedConfig = null) {
   const owner = vaultContainingPath(args?.outputDir, reg);
   if (!owner) return null;
   if (!isVaultReachable(owner.name, reg)) {
@@ -1572,6 +1572,38 @@ function assertAssetOutputDirWritable(args, reg) {
     );
   }
   assertVaultWritable(owner, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: 'download_page_assets' });
+  // AND IT IS REFUSED OUTRIGHT ON A SHARED VAULT (Phase 4; Codex round on
+  // 23bbbaa). This tool declares no per-file precondition and cannot: it writes
+  // a batch of binary files. It is not harmless either — `downloadOne` writes
+  // with a plain fs.writeFile and its collision set covers only the current
+  // batch, so an asset already on disk under the same name is overwritten. On a
+  // vault several workspaces share, that is exactly the silent clobber this
+  // phase exists to stop, through the one door that has no `ifMatch` to offer.
+  //
+  // LAST of the three, deliberately: a vault this workspace cannot REACH, or
+  // one whose write tier forbids it, must hear that first — those are the more
+  // fundamental refusals, and "this vault is shared" would be a confusing thing
+  // to tell someone about a vault they may not name at all.
+  //
+  // `sharedConfig` omitted means the binding registry could not be read, which
+  // `sharingRequirement` reports as UNKNOWN and treats as shared. That is the
+  // fail-closed direction on purpose; the one production caller always passes
+  // the reader's answer.
+  const sharing = sharingRequirement(owner.name, reg, sharedConfig);
+  if (sharing.required) {
+    const why = sharing.reason === SHARING_REASONS.OPEN_VAULT
+      ? 'it is listed in `openVaults`'
+      : sharing.reason === SHARING_REASONS.UNKNOWN
+        ? 'the router config could not be read, so how many workspaces declare it is unknown'
+        : `${sharing.workspaces.length} workspaces declare it: ${sharing.workspaces.join(', ')}`;
+    throw new Error(
+      `download_page_assets: outputDir is inside vault "${owner.name}", which is SHARED (${why}). `
+      + 'This tool writes a batch of files with no per-file precondition, and it overwrites an asset '
+      + 'that already exists under the same name, so it cannot run against a shared vault. Download '
+      + 'to a directory OUTSIDE the vault, then bring in what you need with write_file '
+      + '(`ifNew: true` for a file that must not exist yet).',
+    );
+  }
   return owner;
 }
 
@@ -2993,7 +3025,7 @@ export async function startServer({ configPath, watch = true } = {}) {
       }
       // The one write tool that reaches a vault through the FILESYSTEM rather
       // than a `vault` argument — gated by where `outputDir` points instead.
-      if (name === 'download_page_assets') assertAssetOutputDirWritable(args, reg);
+      if (name === 'download_page_assets') assertAssetOutputDirWritable(args, reg, sharedVaultConfig());
 
       const result = await handler(reg, args);
 
