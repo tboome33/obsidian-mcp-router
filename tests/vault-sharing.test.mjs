@@ -30,23 +30,43 @@ import { _internals } from '../src/index.mjs';
 
 const cfg = (bindings) => ({ workspaceBindings: bindings });
 
+/**
+ * An ABSOLUTE workspace key on whichever platform the suite is running on.
+ *
+ * The keys used to be spelled `i:\a` outright, which is absolute on Windows
+ * and merely relative on POSIX — so `canonicalWorkspaceKey`'s `path.resolve`
+ * prefixed the runner's cwd and five assertions comparing against the literal
+ * failed on every Linux CI job, while passing on the machine this was written
+ * on. A green suite on one platform is not a green suite.
+ *
+ * Sorting is preserved across both spellings (`a` < `z` either way), which the
+ * ordering test below depends on.
+ */
+const W = (name) => (process.platform === 'win32' ? `i:\\${name}` : `/i/${name}`);
+const WIN_ONLY = { skip: process.platform !== 'win32' ? 'win32-only path semantics' : false };
+
 describe('workspacesDeclaring — the count that decides, read from the binding registry', () => {
   test('a vault counts a workspace whether it is the PRIMARY or a secondary', () => {
     const config = cfg({
-      'i:\\a': { vault: 'ref', also: [] },
-      'i:\\b': { vault: 'work', also: ['ref'] },
-      'i:\\c': { vault: 'other', also: ['elsewhere'] },
+      [W('a')]: { vault: 'ref', also: [] },
+      [W('b')]: { vault: 'work', also: ['ref'] },
+      [W('c')]: { vault: 'other', also: ['elsewhere'] },
     });
-    assert.deepEqual(workspacesDeclaring('ref', config), ['i:\\a', 'i:\\b']);
-    assert.deepEqual(workspacesDeclaring('work', config), ['i:\\b']);
+    assert.deepEqual(workspacesDeclaring('ref', config), [W('a'), W('b')]);
+    assert.deepEqual(workspacesDeclaring('work', config), [W('b')]);
     assert.deepEqual(workspacesDeclaring('nobody', config), []);
   });
 
-  test('ONE directory under two spellings is ONE workspace — a false positive here is undiagnosable', () => {
+  test('ONE directory under two spellings is ONE workspace — a false positive here is undiagnosable', WIN_ONLY, () => {
     // A hand-edited config can hold the same directory twice; `readBinding`
     // already canonicalises both sides before comparing, and so must the
     // counter, or a vault only one project uses acquires a requirement meant
     // for shared ones and the message names two workspaces that are one.
+    //
+    // win32-only on purpose: case-insensitivity and `\` ≡ `/` are Windows path
+    // semantics. On POSIX these two strings ARE two different directories, and
+    // asserting they collapse would assert a falsehood. Same treatment as the
+    // UNC-path test in the Phase 1 lot.
     const config = cfg({
       'I:\\Work\\Repo\\': { vault: 'ref', also: [] },
       'i:/work/repo': { vault: 'ref', also: [] },
@@ -56,13 +76,13 @@ describe('workspacesDeclaring — the count that decides, read from the binding 
 
   test('a malformed binding is not a workspace, and neither is an unusable key', () => {
     const config = cfg({
-      'i:\\a': { vault: 'ref' },
-      'i:\\b': { also: ['ref'] },        // no primary → normalizeBinding rejects it
-      'i:\\c': 'ref',                     // not an object
-      'i:\\d': { vault: '   ', also: ['ref'] },
+      [W('a')]: { vault: 'ref' },
+      [W('b')]: { also: ['ref'] },        // no primary → normalizeBinding rejects it
+      [W('c')]: 'ref',                     // not an object
+      [W('d')]: { vault: '   ', also: ['ref'] },
       '': { vault: 'ref' },               // key that cannot canonicalise
     });
-    assert.deepEqual(workspacesDeclaring('ref', config), ['i:\\a']);
+    assert.deepEqual(workspacesDeclaring('ref', config), [W('a')]);
   });
 
   test('no config, an empty one, or a hand-broken workspaceBindings all mean "nothing declared"', () => {
@@ -72,10 +92,10 @@ describe('workspacesDeclaring — the count that decides, read from the binding 
   });
 
   test('the answer is SORTED, so the refusal message does not depend on JSON key order', () => {
-    const a = workspacesDeclaring('ref', cfg({ 'i:\\z': { vault: 'ref' }, 'i:\\a': { vault: 'ref' } }));
-    const b = workspacesDeclaring('ref', cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\z': { vault: 'ref' } }));
+    const a = workspacesDeclaring('ref', cfg({ [W('z')]: { vault: 'ref' }, [W('a')]: { vault: 'ref' } }));
+    const b = workspacesDeclaring('ref', cfg({ [W('a')]: { vault: 'ref' }, [W('z')]: { vault: 'ref' } }));
     assert.deepEqual(a, b);
-    assert.deepEqual(a, ['i:\\a', 'i:\\z']);
+    assert.deepEqual(a, [W('a'), W('z')]);
   });
 });
 
@@ -83,16 +103,16 @@ describe('sharingRequirement — one workspace writes freely, two do not', () =>
   const reg = (openVaults = []) => ({ openVaults });
 
   test('a vault ONE workspace declares requires nothing — no behaviour change, which is the decision\'s condition', () => {
-    const r = sharingRequirement('ref', reg(), cfg({ 'i:\\a': { vault: 'ref' } }));
+    const r = sharingRequirement('ref', reg(), cfg({ [W('a')]: { vault: 'ref' } }));
     assert.equal(r.required, false);
     assert.equal(r.reason, null);
   });
 
   test('two workspaces make it required, and the reason names them', () => {
-    const r = sharingRequirement('ref', reg(), cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'w', also: ['ref'] } }));
+    const r = sharingRequirement('ref', reg(), cfg({ [W('a')]: { vault: 'ref' }, [W('b')]: { vault: 'w', also: ['ref'] } }));
     assert.equal(r.required, true);
     assert.equal(r.reason, SHARING_REASONS.MULTI_WORKSPACE);
-    assert.deepEqual(r.workspaces, ['i:\\a', 'i:\\b']);
+    assert.deepEqual(r.workspaces, [W('a'), W('b')]);
   });
 
   test('an openVaults vault is required BY HYPOTHESIS, even with zero declared workspaces', () => {
@@ -259,7 +279,7 @@ describe('preconditionState — what a call brings to the table', () => {
     });
 
     test('the refusal names `expect` and the read-only listing as the way through', () => {
-      const shared = cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'ref' } });
+      const shared = cfg({ [W('a')]: { vault: 'ref' }, [W('b')]: { vault: 'ref' } });
       assert.throws(
         () => assertSharedVaultPrecondition({ name: 'ref' }, { openVaults: [] }, 'write_bundle', { recover: OP, confirm: true }, shared),
         /`expect`.*currentSha256.*recover: true/s,
@@ -279,7 +299,7 @@ describe('preconditionState — what a call brings to the table', () => {
 });
 
 describe('assertSharedVaultPrecondition — the refusal, and everything it must NOT refuse', () => {
-  const shared = cfg({ 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'w', also: ['ref'] } });
+  const shared = cfg({ [W('a')]: { vault: 'ref' }, [W('b')]: { vault: 'w', also: ['ref'] } });
   const reg = { openVaults: [] };
   const V = { name: 'ref' };
 
@@ -289,7 +309,7 @@ describe('assertSharedVaultPrecondition — the refusal, and everything it must 
       (err) => {
         assert.match(err.message, /vault "ref" is SHARED/);
         assert.match(err.message, /2 workspaces declare it/, 'says how many');
-        assert.match(err.message, /i:\\a/, 'names them, so the user can check');
+        assert.ok(err.message.includes(W('a')), 'names them, so the user can check');
         assert.match(err.message, /`ifMatch`/, 'names the argument that satisfies it');
         assert.match(err.message, /`ifNew: true`/, 'and the one for a new file');
         assert.match(err.message, /Honest limit/, 'the decision requires the limit to travel WITH the mechanism');
@@ -301,7 +321,7 @@ describe('assertSharedVaultPrecondition — the refusal, and everything it must 
   test('the same call with a precondition passes, and so does any call on an unshared vault', () => {
     assert.doesNotThrow(() => assertSharedVaultPrecondition(V, reg, 'write_file', { ifMatch: 'a'.repeat(64) }, shared));
     assert.doesNotThrow(() => assertSharedVaultPrecondition(V, reg, 'write_file', { ifNew: true }, shared));
-    const alone = cfg({ 'i:\\a': { vault: 'ref' } });
+    const alone = cfg({ [W('a')]: { vault: 'ref' } });
     assert.doesNotThrow(() => assertSharedVaultPrecondition(V, reg, 'write_file', { path: 'a.md' }, alone));
   });
 
@@ -370,11 +390,11 @@ describe('createBindingsReader — fresh enough for "the instant the second work
     return { state, reader };
   }
 
-  const ONE = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'ref' } } });
-  const TWO = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'ref' }, 'i:\\b': { vault: 'ref' } } });
+  const ONE = JSON.stringify({ workspaceBindings: { [W('a')]: { vault: 'ref' } } });
+  const TWO = JSON.stringify({ workspaceBindings: { [W('a')]: { vault: 'ref' }, [W('b')]: { vault: 'ref' } } });
   // Same LENGTH as ONE, different meaning: the shape that a metadata-based
   // freshness check (mtime + size) could not tell apart.
-  const ONE_ELSEWHERE = JSON.stringify({ workspaceBindings: { 'i:\\a': { vault: 'rfe' } } });
+  const ONE_ELSEWHERE = JSON.stringify({ workspaceBindings: { [W('a')]: { vault: 'rfe' } } });
 
   test('it is PRIMED at construction, while the file is known to be readable', () => {
     // Without this, the reader's first `current()` could be the one call that

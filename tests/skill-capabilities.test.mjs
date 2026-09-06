@@ -603,6 +603,30 @@ describe('quick-reference freshness — pinning the SOURCE is only half the guar
     assert.match(issues[0].message, /disk gone/);
   });
 
+  test('a CRLF checkout of the SAME page is still fresh — the hash is content, not bytes', () => {
+    // The defect this closes, found by the first CI run that used the check:
+    // this repo checks out LF (`core.autocrlf=input`), a GitHub Windows runner
+    // checks out CRLF (`core.autocrlf=true`). Same commit, same content,
+    // different bytes — and `validate` failed on Windows while passing on
+    // Linux, reporting every page as stale. Chrome renders both identically,
+    // so the recorded hash must be a property of the page, not of whoever
+    // checked it out.
+    const root = makeRepo();
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const p = path.join(root, `docs/quick-reference-${lang}.html`);
+      const lf = fs.readFileSync(p, 'utf8');
+      assert.equal(lf.includes('\r\n'), false, 'the fixture must start out LF');
+      fs.writeFileSync(p, lf.replace(/\n/g, '\r\n'));
+    }
+    const rows = quickReferenceFreshness(root);
+    assert.deepEqual(
+      rows.map((r) => r.state),
+      rows.map(() => 'fresh'),
+      `a CRLF checkout must not read as stale: ${JSON.stringify(rows)}`,
+    );
+    assert.deepEqual(checkQuickReferenceFreshness(root), []);
+  });
+
   test('runCapabilityValidation actually RUNS the check — not just exports it', () => {
     // Every other test in this block calls checkQuickReferenceFreshness
     // directly, so deleting its one line in runCapabilityValidation would

@@ -73,10 +73,28 @@ export function quickReferenceVersions(repoRoot) {
   });
 }
 
-/** sha256 of a file's bytes, or null when it cannot be read. */
+/**
+ * sha256 of a page's CONTENT, with line endings normalised first.
+ *
+ * Hashing raw bytes made the freshness check non-portable and it failed on the
+ * very first CI run that used it: this repository's own checkout is
+ * `core.autocrlf=input` (LF on disk), while a GitHub Windows runner defaults
+ * to `core.autocrlf=true` and materialises the same commit with CRLF. Same
+ * commit, same content, different bytes — so the runner read every page as
+ * "changed since its PDF was rendered" and `npm run validate` failed on
+ * Windows while passing on Linux.
+ *
+ * The question this hash exists to answer is "was the PDF rendered from this
+ * CONTENT", and Chrome renders the two line-ending conventions identically.
+ * So CRLF is folded to LF before hashing, and the recorded value is a property
+ * of the page rather than of whoever checked it out.
+ *
+ * Returns null when the file cannot be read.
+ */
 export function sha256OfFile(abs) {
   try {
-    return crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
+    const text = fs.readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
+    return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
   } catch {
     return null;
   }
