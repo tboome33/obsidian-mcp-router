@@ -3168,9 +3168,34 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     const rawInterpolations = [];
     let fromLiterals = 0;
     let fromNewRegExp = 0;
+    // A SECOND MEASUREMENT, BUT ONLY WHEN THE FIRST LOOKS SLOW.
+    //
+    // A single timed run made this guard flaky on CI: `/[\[\]()]/` in
+    // `helpers/filters/image.mjs` is a bare character class, provably linear
+    // with no backtracking possible, and it was reported as quadratic after
+    // taking 6.7 ms on a GitHub runner — against 0.24 ms on the dev machine.
+    // The budget silently assumes a regex that matches FEW times; that one
+    // matches 16384 times on the open-pair bomb, so the loop really does do
+    // 16k `exec` calls, and JIT warm-up on a noisy shared runner is enough to
+    // cross 5 ms. A 28× environment spread cannot separate linear from
+    // quadratic at a 5 ms line on one cold sample.
+    //
+    // So a regex that clears the budget first time is done — the common case
+    // costs exactly what it did before. Only a regex that looks slow is
+    // measured again, and the MINIMUM of the two decides: runner noise
+    // disappears on the retry, while a genuinely quadratic regex is slow on
+    // every run (20 ms+ at this bomb size, per the note above) and still
+    // fails. The budget itself stays at 5 ms.
+    //
+    // Measuring twice UNCONDITIONALLY was the first attempt and it was worse
+    // than the flake: a planted catastrophic regex then ran four times and
+    // hung the suite for minutes instead of failing. A guard must fail fast on
+    // the thing it is guarding against.
+    const timeOnce = (re, bomb) => ms(() => { re.lastIndex = 0; let n = 0; while (re.exec(bomb) && n++ < 1e5); });
     const timeIt = (re, where, shown) => {
       for (const [shape, bomb] of BOMBS) {
-        const took = ms(() => { re.lastIndex = 0; let n = 0; while (re.exec(bomb) && n++ < 1e5); });
+        let took = timeOnce(re, bomb);
+        if (took > BUDGET_MS) took = Math.min(took, timeOnce(re, bomb));
         if (took > BUDGET_MS) {
           slow.push(`${where} took ${took.toFixed(1)} ms on the ${shape} bomb — /${shown}/`);
           break; // one report per regex is enough
