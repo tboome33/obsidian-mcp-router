@@ -633,6 +633,19 @@ describe('hooks/workspace-briefing.mjs', () => {
     assert.doesNotMatch(r.stdout, /proposes/);
   });
 
+  test('a secondary left in `also` after its vault was REMOVED is not satisfaction: the proposal says the vault is not registered', () => {
+    // Codex, round on 1fad78c: `confirmed` from the binding alone fell silent
+    // about a vault whose every resolution fails.
+    const dir = fs.mkdtempSync(path.join(workDir, 'stale-secondary-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG({ [canonicalWorkspaceKey(dir)]: { vault: 'notes', also: ['gone'], confirmedVia: 'tool' } }),
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=gone\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /proposes the vault "gone", which is not registered on this machine/);
+  });
+
   test('a bound workspace whose .env proposes a vault the machine does NOT have hears that it does not exist', () => {
     // The classifier used to answer `conflicts` for any hint beside a binding,
     // so the briefing said "the binding wins" and never that the vault is not

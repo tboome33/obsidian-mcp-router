@@ -574,8 +574,13 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
       // out for the primary and the wrong one for a secondary, where it would
       // throw away the primary and every other secondary to refuse one name;
       // the Fable round on 7efbad1 found the briefing sending a user there.
-      const primaryShown = safeForMessage(bound.vault, 80);
-      const remainder = bound.also.filter((n) => n !== name).map((n) => `"${safeForMessage(n, 80)}"`).join(', ');
+      // IDENTIFIERS IN AN ACTIONABLE COMMAND ARE NOT TRUNCATED. `safeForMessage`
+      // clips at its cap and marks the cut; a primary named with 81 characters
+      // came out altered, and the suggested re-confirmation failed with "not a
+      // registered vault" (Codex, round on 1fad78c). The control-character
+      // neutralisation stays; the cap is raised past any real vault name.
+      const primaryShown = safeForMessage(bound.vault, 4096);
+      const remainder = bound.also.filter((n) => n !== name).map((n) => `"${safeForMessage(n, 4096)}"`).join(', ');
       throw new Error(
         bound.vault === name
           ? `confirm_workspace_binding: this workspace is bound to "${shown}" as its primary, so that vault cannot be `
@@ -601,11 +606,23 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
   // from `cwd` — the same discipline as the one-time import — and it has to
   // be THIS workspace's file, so a test seam pointing `cwd` elsewhere cannot
   // make the tool write into the directory the process was started in.
-  const file = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT');
-  const fileProposedThisVault = Boolean(file)
-    && envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT') === ENV_ORIGINS.WORKSPACE_DOTENV
-    && process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT === name
-    && canonicalWorkspaceKey(path.dirname(file)) === key;
+  //
+  // A WORKSPACE FILE PROPOSES A VAULT THROUGH TWO LINES — the default-vault
+  // hint and the lock hint, which the one-time import decides first. The
+  // reader (`dotenvRefusalHint`) honours a refusal beside either; the first
+  // version of this writer looked at the default line alone, so a workspace
+  // whose only proposal was `OBSIDIAN_ROUTER_LOCKED=X` got a config-only
+  // refusal, and after a reinstall the untouched file had X imported LOCKED
+  // despite the explicit no (Codex, both engines, round on 1fad78c).
+  const proposalKey = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED'].find((envKey) => {
+    const source = envKeySourceFile(envKey);
+    return Boolean(source)
+      && envKeyOrigin(envKey) === ENV_ORIGINS.WORKSPACE_DOTENV
+      && process.env[envKey] === name
+      && canonicalWorkspaceKey(path.dirname(source)) === key;
+  }) || null;
+  const file = proposalKey ? envKeySourceFile(proposalKey) : null;
+  const fileProposedThisVault = Boolean(file);
   let hintWritten = false;
   let hintError = null;
   if (fileProposedThisVault) {
@@ -631,7 +648,7 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
     ? `, and ${REFUSED_VAULT_KEY}=${shown} was written to ${file} beside the line that proposed it. That line is the portable half: it survives an uninstall of the router and makes the question be asked once more, with this context, after a reinstall — it silences nobody by itself, so a clone of this repository carrying it is at worst asked once. It may travel with the project if the file is committed.`
     : fileProposedThisVault
       ? `. ${REFUSED_VAULT_KEY} could NOT be written to ${file} (${safeForMessage(hintError || 'unknown error', 120)}): the refusal is in force from your config alone; only the memory that would survive a reinstall is missing.`
-      : `. Nothing was written to this project's .env: the proposal in force did not come from that file (the host proposed "${shown}", or nothing did — a line the file may carry was not the one the router took), and a refusal is written only beside a line the router took from the file.`;
+      : `. Nothing was written to this project's .env: as the router loaded it, neither its OBSIDIAN_ROUTER_DEFAULT_VAULT nor its OBSIDIAN_ROUTER_LOCKED line proposed "${shown}" (the host may have; a line the host overrode does not count), and a refusal is written only beside a line the router took from the file.`;
   return {
     refused: true,
     vault: name,

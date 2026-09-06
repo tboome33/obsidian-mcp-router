@@ -28,6 +28,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { upsertDotenvVar, removeDotenvVar } from '../helpers/dotenv-writer.mjs';
+import { safeForMessage } from '../helpers/sanitize.mjs';
 import {
   updateConfigBindings,
   withBinding,
@@ -122,6 +123,7 @@ export async function lockVault(registry, args = {}) {
   registry.lockSource = { origin: 'runtime', variable: null };
 
   let hintWritten = false;
+  let hintError = null;
   let envPath = null;
   let bindingRecorded = null;
   if (persist) {
@@ -187,8 +189,25 @@ export async function lockVault(registry, args = {}) {
     // registered vaults are available again"; the next start then disagreed
     // with the session. Found in the sixth review, 2026-09-04.
     if (bindingRecorded) registry.lockSource = { origin: 'binding', variable: null };
-    await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
-    hintWritten = true;
+    // THE BINDING IS ALREADY RECORDED when this write runs, and the lock is in
+    // force in memory. A file the process cannot write — a read-only checkout,
+    // a lock another process held past the wait — must not turn that into a
+    // failed call: the first version let the error escape raw, and the caller
+    // saw a failure for a lock that was persisted. Reported instead, the way
+    // `unlock_vaults` and the refusal already do. (Codex, round on 1fad78c.)
+    try {
+      await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED', vault);
+      hintWritten = true;
+    } catch (err) {
+      // A VALUE the shared validator refuses is the caller's input being
+      // broken (a name carrying a newline would write extra lines): that is
+      // not a half-state to report, it is a call to fail — the security pin
+      // in tests/security-invariants.test.mjs holds this tool to it. Only the
+      // FILE's failures (unwritable, symlinked, held by another process) are
+      // reported.
+      if (err?.name === 'DotenvValueError') throw err;
+      hintError = safeForMessage(err?.message || String(err), 160);
+    }
   }
 
   // `persisted` MEANS "WILL SURVIVE A RESTART", and since v0.90.0 only the
@@ -200,12 +219,19 @@ export async function lockVault(registry, args = {}) {
   // `persisted: true` that meant "the .env, at least"); closing the gate that
   // same day turned it from misleading into false.
   const persisted = bindingRecorded !== null;
+  const hintFailed = hintError
+    ? ` OBSIDIAN_ROUTER_LOCKED could NOT be written to ${envPath} (${hintError}) — the portable hint for another machine is missing, nothing else.`
+    : '';
   return ({
     locked: true,
     vault,
     persisted,
     // The portable hint, reported separately from the thing that persists.
     hintWritten,
+    // Why it is missing when it is — a message, never a throw, because the
+    // lock is already in force and (when the config could be written) already
+    // recorded. Null when written, or never attempted.
+    hintError,
     envPath: hintWritten ? envPath : undefined,
     // What was recorded in the user's own config, or null when nothing was
     // (no persist asked, or a config that could not be written).
@@ -214,12 +240,14 @@ export async function lockVault(registry, args = {}) {
       `Router locked to "${vault}". ` +
       (persisted
         ? 'The workspace is bound to it in your own router config, so the lock survives a restart'
-          + (hintWritten ? `, and OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath} as a portable hint for another machine.` : '.')
+          + (hintWritten ? `, and OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath} as a portable hint for another machine.` : `.${hintFailed}`)
         : hintWritten
           ? `OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath}, but your router config could NOT be written`
             + ' — so this lock does NOT survive a restart: a lock named only by a project file is no longer'
             + ' applied at start-up. Fix the config permissions and run lock_vault again.'
-          : 'Lock is volatile (this session only). Use persist:true to make it survive restarts.'),
+          : hintError
+            ? `Your router config could NOT be written, and neither could the .env hint.${hintFailed} This lock is volatile (this session only); fix the permissions and run lock_vault again.`
+            : 'Lock is volatile (this session only). Use persist:true to make it survive restarts.'),
   });
 }
 

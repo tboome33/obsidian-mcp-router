@@ -87,7 +87,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
-import { normalizePathForCompare } from './vault-path-identity.mjs';
+import { normalizePathForCompare, stripExtendedPathPrefix } from './vault-path-identity.mjs';
 import { alsoLockedEntries } from './vault-slug.mjs';
 
 /**
@@ -171,7 +171,12 @@ export function vaultContainingPath(fsPath, registry) {
  * (Fable 5.1 round, verifying the gate's assumptions about existing code.)
  */
 function realOrResolved(p) {
-  const resolved = path.resolve(String(p).replace(/^\\\\\?\\/, ''));
+  // The extended-length prefix is folded by the shared helper, not stripped
+  // here: `\\?\UNC\server\share\x` has to become `\\server\share\x`, and
+  // the blind four-character strip this used to do made it the RELATIVE
+  // path `UNC\server\share\x` (Codex, round on 1fad78c — same defect in the
+  // dotenv writer's lock key, fixed in the one place both import).
+  const resolved = path.resolve(stripExtendedPathPrefix(String(p)));
   try {
     return fs.realpathSync.native(resolved);
   } catch {

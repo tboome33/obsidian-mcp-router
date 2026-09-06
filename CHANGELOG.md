@@ -275,12 +275,44 @@ rule.
   line the host merely overrode; the tool description and the `bind-workspace` skill say what "yes"
   means for `conflicts` (re-binding) and `unknown-vault` (register first).
 
-Recorded, not fixed (roadmap, Phase 6): on Windows a `mkdir` racing another process's removal of
-the same lock directory can fail with EPERM, which the lock primitive reports as an error rather
-than as contention (seen once, under parallel test files sharing one fixture path; not reproduced
-alone); and the pre-existing exposure of `confirm_workspace_binding`'s `vault`/`clear` and of
-`set_secondary_vault_mode` on gated deployments — whether the binding tools should be hidden there,
-as `register_remote_vault` is, is a design decision for the roadmap's last phase.
+Recorded, not fixed (roadmap, Phase 6): the pre-existing exposure of `confirm_workspace_binding`'s
+`vault`/`clear` and of `set_secondary_vault_mode` on gated deployments — whether the binding tools
+should be hidden there, as `register_remote_vault` is, is a design decision for the roadmap's last
+phase.
+
+#### Fixed — the Codex round on the Fable repairs (two engines, `gpt-5.6-terra` and `gpt-6-astra`)
+
+- **A refusal now answers the LOCK line on the writing side too.** The reader had learnt to honour
+  `OBSIDIAN_ROUTER_REFUSED_VAULT` beside `OBSIDIAN_ROUTER_LOCKED`; the writer still looked at the
+  DEFAULT line alone, so a workspace whose only proposal was a lock got a config-only refusal, and
+  after a reinstall its untouched `.env` had the vault imported LOCKED despite the explicit no.
+  Either proposal line counts for both halves; the message names both.
+- **The dotenv writer waits for another process's lock WITHOUT blocking the server.** The Fable
+  round had made the critical section synchronous; the wait in front of it still was, so a lock
+  held by another process (or left by a dead one) stalled every request for the bounded two
+  seconds. The tools' face polls with a timer now (`acquireLockAsync`); the setup script keeps the
+  synchronous acquirer. And a transient `EPERM`/`ENOTEMPTY` from `mkdir` — a Windows `mkdir` racing
+  another process's removal of the same lock directory — is retried until the deadline, after which
+  the ORIGINAL error surfaces, never "another process is writing".
+- **The extended UNC spelling shares its lock with the plain one.** Stripping `\\?\` blindly turned
+  `\\?\UNC\server\share\.env` into the RELATIVE `UNC\server\share\.env`, so two processes writing one
+  network-share file took two locks; the same blind strip sat in the asset-containment check. One
+  helper folds the prefix (`\\?\UNC\…` → `\\…`, `\\?\C:\…` → `C:\…`), imported by both.
+- **A stale secondary is not satisfaction.** A `.env` proposing a vault still listed in `also` but
+  no longer registered read `confirmed` — silence about a vault whose every resolution fails. Bound
+  AND registered is `confirmed`; bound and gone is `unknown-vault`.
+- **`lock_vault --persist` and `set_auto_enrich_mode --persist` report a `.env` they cannot write**
+  (`hintError` / `persistError`) instead of failing a call whose binding, lock or mode was already
+  applied. A value the shared validator refuses (a name carrying a newline) still fails the call.
+- The secondary-refusal remedy keeps identifiers intact: the suggested re-confirmation passed the
+  primary through the 80-character message sanitiser, which clips and marks the cut — an
+  81-character vault name came out altered and the suggested call failed.
+
+Recorded, not fixed (roadmap, Phase 6): a workspace `.env` that carries only `OBSIDIAN_ROUTER_LOCKED`
+is a proposal for the one-time import and for the refusal, but not for the briefing or
+`list_vaults`, which classify `OBSIDIAN_ROUTER_DEFAULT_VAULT` alone — after a reinstall such a file
+is not asked about; whether a file's lock line should be signalled as a proposal is a design
+question for the last phase.
 
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 

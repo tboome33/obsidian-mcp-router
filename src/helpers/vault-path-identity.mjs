@@ -45,6 +45,28 @@ export function isWindowsPath(p) {
 }
 
 /**
+ * Fold the Windows extended-length prefix into the ordinary spelling:
+ * `\\?\C:\x` → `C:\x`, and `\\?\UNC\server\share\x` → `\\server\share\x`.
+ * Anything else comes back unchanged.
+ *
+ * The UNC half is the one that bites. Two callers used to strip the four
+ * characters `\\?\` blindly, which turns `\\?\UNC\server\share\.env` into
+ * `UNC\server\share\.env` — a RELATIVE path that `path.resolve` then anchors
+ * in the current directory — so two processes writing one network-share file
+ * took two locks, and a containment check compared the wrong root. (Codex,
+ * both engines, round on 1fad78c.) One definition here, imported by both.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+export function stripExtendedPathPrefix(p) {
+  const s = String(p);
+  if (/^\\\\\?\\UNC\\/i.test(s)) return `\\\\${s.slice('\\\\?\\UNC\\'.length)}`;
+  if (/^\\\\\?\\/.test(s)) return s.slice('\\\\?\\'.length);
+  return s;
+}
+
+/**
  * Normalize a path for equality comparison, robust across OSes.
  *
  * Windows paths are normalized via `path.win32` and lowercased

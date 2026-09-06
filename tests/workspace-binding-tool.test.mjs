@@ -986,6 +986,20 @@ describe('confirm_workspace_binding — refuse: the user says NO (decision refus
     assert.equal(written.length, 0);
   });
 
+  test('the secondary remedy keeps identifiers INTACT — a long primary name is not truncated in the suggested call', async () => {
+    // Codex (gpt-6-astra), round on 1fad78c: the remedy passed the primary
+    // through the 80-character message sanitiser, which clips and marks the
+    // cut; an 81-character primary came out altered and the suggested call
+    // failed with "not a registered vault".
+    const long = 'p'.repeat(81);
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: long, also: ['work'] } } };
+    const { seam } = seams({ config });
+    await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, seam), (err) => {
+      assert.ok(err.message.includes(`vault: "${long}"`), `the identifier must survive whole: ${err.message}`);
+      return true;
+    });
+  });
+
   test('on a GATED deployment refuse and retract are unavailable, and nothing is written', async () => {
     // Fable round on 7efbad1, measured on the real server: under READONLY the
     // tool was exposed and `refuse` wrote the shared config AND the server's
@@ -1108,7 +1122,7 @@ describe('confirm_workspace_binding — refuse: the PORTABLE half, written only 
   // carried the proposal it is answering.
   const roots = [];
   after(() => { for (const r of roots) fs.rmSync(r, { recursive: true, force: true }); });
-  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_REFUSED_VAULT'];
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED', 'OBSIDIAN_ROUTER_REFUSED_VAULT'];
 
   async function withCleanEnv(fn) {
     const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
@@ -1164,6 +1178,22 @@ describe('confirm_workspace_binding — refuse: the PORTABLE half, written only 
     });
   });
 
+  test('a file whose ONLY proposal is a LOCK line receives the refusal beside it — the lock line is a proposal too', async () => {
+    // Codex, both engines, round on 1fad78c: the reader honoured a refusal
+    // beside the LOCKED line, the writer looked at the DEFAULT line alone — so
+    // this workspace got a config-only refusal, and after a reinstall its
+    // untouched file had the vault imported LOCKED despite the explicit no.
+    await withCleanEnv(async () => {
+      const ws = workspace('OBSIDIAN_ROUTER_LOCKED=work\n');
+      load(ws);
+      const r = await confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, { ...seams().seam, cwd: ws });
+      assert.equal(r.hintWritten, true);
+      const text = fs.readFileSync(path.join(ws, '.env'), 'utf8');
+      assert.match(text, /^OBSIDIAN_ROUTER_LOCKED=work$/m, 'the proposal stays');
+      assert.match(text, /^OBSIDIAN_ROUTER_REFUSED_VAULT=work$/m);
+    });
+  });
+
   test('a proposal from the HOST leaves the project file untouched — there is no line there to answer', async () => {
     await withCleanEnv(async () => {
       const ws = workspace('# nothing proposed here\n');
@@ -1175,9 +1205,10 @@ describe('confirm_workspace_binding — refuse: the PORTABLE half, written only 
       assert.equal(fs.readFileSync(path.join(ws, '.env'), 'utf8'), '# nothing proposed here\n');
       // Not "the file did not propose it" — the file MAY carry the line; the
       // host's value simply won (parent wins), so the router took nothing from
-      // the file and writes beside nothing. (Fable round on 7efbad1.)
-      assert.match(r.message, /the proposal in force did not come from that file/);
-      assert.doesNotMatch(r.message, /did not propose/);
+      // the file and writes beside nothing. (Fable round on 7efbad1; the
+      // sentence now names both proposal lines, round on 1fad78c.)
+      assert.match(r.message, /neither its OBSIDIAN_ROUTER_DEFAULT_VAULT nor its OBSIDIAN_ROUTER_LOCKED line proposed "work"/);
+      assert.match(r.message, /a line the host overrode does not count/);
     });
   });
 

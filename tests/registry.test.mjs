@@ -20,6 +20,8 @@ import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
 import { dotenvLockPath, dotenvKeyLineRegex, readDotenvVarSync } from '../src/helpers/dotenv-writer.mjs';
 import { parseDotenv } from '../src/helpers/workspace-dotenv.mjs';
+import { acquireLockAsync } from '../src/helpers/file-lock.mjs';
+import { stripExtendedPathPrefix } from '../src/helpers/vault-path-identity.mjs';
 import fsSync from 'node:fs';
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
@@ -897,6 +899,31 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(entry?.locked, true);
   });
 
+  test('lockVault with persist:true REPORTS a .env that cannot be written — the binding is recorded, the call does not fail', async () => {
+    // Round on 1fad78c: the dotenv write threw raw after the binding had been
+    // recorded and the lock applied, so the caller saw a failed lock that was
+    // in fact in force and persisted.
+    const reg = makeRegistry();
+    const configPath = path.join(tmpDir, 'lock-config-ro.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    reg.configPath = configPath;
+    const envPath = path.join(tmpDir, '.env');
+    await fs.writeFile(envPath, 'KEEP=1\n', 'utf8');
+    await fs.chmod(envPath, 0o444);
+    try {
+      const result = await lockVault(reg, { vault: 'alpha', persist: true });
+      assert.equal(result.persisted, true, 'the half that decides is recorded');
+      assert.equal(result.hintWritten, false);
+      assert.match(result.hintError, /EPERM|EACCES/);
+      assert.match(result.message, /survives a restart/);
+      assert.match(result.message, /could NOT be written/);
+      assert.equal(reg.lockedVault, 'alpha', 'and the lock is in force');
+      assert.equal(await fs.readFile(envPath, 'utf8'), 'KEEP=1\n', 'the file is untouched');
+    } finally {
+      await fs.chmod(envPath, 0o644);
+    }
+  });
+
   test('unlockVaults clears lockedVault', async () => {
     const reg = makeRegistry();
     reg.lockedVault = 'alpha';
@@ -1391,6 +1418,58 @@ describe('upsertDotenvVar / removeDotenvVar', () => {
       fsSync.rmSync(link, { recursive: true, force: true });
     }
   });
+
+  test('the extended UNC spelling and the plain UNC spelling share one lock — the prefix is FOLDED, not stripped', () => {
+    // Codex, both engines, round on 1fad78c: a blind strip of the four
+    // characters turned `\\?\UNC\server\share\x` into the RELATIVE path
+    // `UNC\server\share\x`, anchored in the current directory — two processes
+    // writing one network-share file took two locks.
+    const plain = '\\\\server\\share\\project\\.env';
+    const extended = '\\\\?\\UNC\\server\\share\\project\\.env';
+    assert.equal(stripExtendedPathPrefix(extended), plain);
+    assert.equal(stripExtendedPathPrefix('\\\\?\\C:\\p\\.env'), 'C:\\p\\.env');
+    assert.equal(stripExtendedPathPrefix('C:\\p\\.env'), 'C:\\p\\.env', 'an ordinary path is untouched');
+    assert.equal(stripExtendedPathPrefix('/posix/.env'), '/posix/.env');
+    assert.equal(dotenvLockPath(extended), dotenvLockPath(plain));
+  });
+
+  test('the ASYNC face waits for another process\'s lock WITHOUT blocking the loop, then reports contention', async () => {
+    // Round on 1fad78c: the synchronous wait still froze the server for the
+    // bounded 2 s under cross-process contention. The tools' face polls with a
+    // timer now — a 20 ms timer keeps firing while the writer waits.
+    await fs.writeFile(envPath, 'A=1\n', 'utf8');
+    const release = acquireLock(dotenvLockPath(envPath));
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 20);
+    try {
+      await assert.rejects(() => upsertDotenvVar(envPath, 'FOO', 'bar', { waitMs: 300 }), /another process is writing/);
+    } finally {
+      clearInterval(timer);
+      release();
+    }
+    assert.ok(ticks >= 5, `the loop kept turning while the writer waited (${ticks} ticks in 300 ms)`);
+    assert.equal(await fs.readFile(envPath, 'utf8'), 'A=1\n', 'and nothing was written');
+  });
+
+  test('a transient EPERM/ENOTEMPTY from mkdir — a racing removal on Windows — is retried; past the deadline the ORIGINAL error surfaces, never "contention"', async () => {
+    const dir = fsSync.mkdtempSync(path.join(tmpDir, 'transient-'));
+    const lockPath = path.join(dir, 'the.lock');
+    const eperm = () => Object.assign(new Error('EPERM: operation not permitted, mkdir'), { code: 'EPERM' });
+    let calls = 0;
+    const flaky = (p) => { calls += 1; if (calls <= 2) throw eperm(); fsSync.mkdirSync(p); };
+    const release = acquireLock(lockPath, { waitMs: 1000, pollMs: 1, mkdir: flaky });
+    assert.ok(release, 'acquired after two transient failures');
+    assert.equal(calls, 3);
+    release();
+    calls = 0;
+    const releaseAsync = await acquireLockAsync(lockPath, { waitMs: 1000, pollMs: 1, mkdir: flaky });
+    assert.ok(releaseAsync, 'the async twin retries the same way');
+    releaseAsync();
+    const always = () => { throw eperm(); };
+    assert.throws(() => acquireLock(lockPath, { waitMs: 0, mkdir: always }), /EPERM/);
+    await assert.rejects(() => acquireLockAsync(lockPath, { waitMs: 0, mkdir: always }), /EPERM/);
+    assert.equal(fsSync.existsSync(lockPath), false, 'no lock left behind');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1874,6 +1953,27 @@ describe('setAutoEnrichMode — tool handler', () => {
     assert.equal(reg.autoEnrichMode, 'FullAuto');
     await setAutoEnrichMode(reg, { mode: 'none' });
     assert.equal(reg.autoEnrichMode, 'off');
+  });
+
+  test('persist:true REPORTS a .env that cannot be written — the mode stays in force, the call does not fail', async () => {
+    // Round on 1fad78c: the dotenv write threw raw after the mode had been
+    // applied, so the caller saw a failed call for a mode that was in force.
+    const envPath = path.join(tmpDir, '.env');
+    await fs.writeFile(envPath, 'KEEP=1\n', 'utf8');
+    await fs.chmod(envPath, 0o444);
+    try {
+      const reg = { autoEnrichMode: 'ClaudeAsk' };
+      const result = await setAutoEnrichMode(reg, { mode: 'Hybrid', persist: true });
+      assert.equal(reg.autoEnrichMode, 'Hybrid', 'in force');
+      assert.equal(result.persisted, false);
+      assert.match(result.persistError, /EPERM|EACCES/);
+      assert.equal(result.persistRefused, null, 'not a refusal — an unwritable file');
+      assert.match(result.message, /could NOT be written/);
+      assert.equal(await fs.readFile(envPath, 'utf8'), 'KEEP=1\n', 'untouched');
+    } finally {
+      await fs.chmod(envPath, 0o644);
+      await fs.rm(envPath, { force: true });
+    }
   });
 
   test('rejects unknown mode with explicit error', async () => {

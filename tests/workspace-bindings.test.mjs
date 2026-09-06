@@ -286,6 +286,19 @@ describe('classifyBindingHint — the SIXTH status: a proposal the user REFUSED 
     assert.equal(classifyBindingHint({ hint: 'archive', binding, isRegistered }).status, HINT_STATUS.CONFLICTS);
   });
 
+  test('a hint naming a bound vault the machine no longer HAS is "unknown-vault", not "confirmed" — a stale binding is not satisfaction', () => {
+    // Codex (gpt-5.6-terra), round on 1fad78c: the bound check ran before the
+    // registration check, so a secondary left in `also` after its vault was
+    // removed silenced the very proposal that should have said "not
+    // registered on this machine".
+    const stale = normalizeBinding({ vault: 'notes', also: ['gone'] });
+    const c = classifyBindingHint({ hint: 'gone', binding: stale, isRegistered });
+    assert.equal(c.status, HINT_STATUS.UNKNOWN_VAULT);
+    assert.equal(hintIsWorthSignalling(c), true);
+    // …unless the user refused it — refusing is how the unknown-vault notice stops.
+    assert.equal(classifyBindingHint({ hint: 'gone', binding: stale, isRegistered, isRefused: (n) => n === 'gone' }).status, HINT_STATUS.REFUSED);
+  });
+
   test('TRAP 5 — the binding in force wins: the bound vault reads "confirmed" even against a stale refusal', () => {
     // The user refused X, then bound the workspace to X deliberately (by a
     // path that does not drop refusals — a hand edit). The briefing must not

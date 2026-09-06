@@ -117,6 +117,7 @@ export async function setAutoEnrichMode(registry, args = {}) {
   registry.autoEnrichModeSource = { origin: 'runtime', variable: null };
 
   let persisted = false;
+  let persistError = null;
   let envPath = null;
   // Why the mode was not written to the workspace file, when it was not. Null
   // when it was written, and null when nobody asked for persistence.
@@ -176,8 +177,20 @@ export async function setAutoEnrichMode(registry, args = {}) {
     // back after the next restart. The honest persistence is to write
     // the literal — `validateAutoEnrichMode("off")` recognizes it cleanly
     // via canonicalizeMode and the boot path keeps the user's intent.
-    await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_AUTO_ENRICH', mode);
-    persisted = true;
+    // THE MODE IS ALREADY IN FORCE when this write runs: a file the process
+    // cannot write (read-only checkout, a lock another process held) must
+    // not turn an applied mode into a failed call. Reported instead — the
+    // same rule the lock tool and the refusal follow. (Codex, round on 1fad78c.)
+    try {
+      await upsertDotenvVar(envPath, 'OBSIDIAN_ROUTER_AUTO_ENRICH', mode);
+      persisted = true;
+    } catch (err) {
+      // A value the shared validator refuses is a broken input, not a
+      // half-state: it fails the call, as lock_vault's does. (The mode is a
+      // canonical word here, so this branch is a rule kept for symmetry.)
+      if (err?.name === 'DotenvValueError') throw err;
+      persistError = safeForMessage(err?.message || String(err), 160);
+    }
   }
 
   return ({
@@ -189,12 +202,17 @@ export async function setAutoEnrichMode(registry, args = {}) {
     // Null both when it succeeded and when it was never requested, so a caller
     // can branch on it without also having to check `persist`.
     persistRefused,
+    // Why the write FAILED when it was attempted and allowed — a message,
+    // never a throw: the mode itself is in force for the session.
+    persistError,
     message:
       `Auto-enrichment mode set to "${mode}". ` +
       (persisted
         ? `OBSIDIAN_ROUTER_AUTO_ENRICH=${mode} written to ${envPath} — mode survives restart.`
         : persistRefused
           ? `Not persisted: ${persistRefused.reason}`
+          : persistError
+            ? `The mode is active for this session, but OBSIDIAN_ROUTER_AUTO_ENRICH could NOT be written to ${envPath} (${persistError}) — it will not survive a restart. Fix the file and run set_auto_enrich_mode again with persist:true.`
           // The advice has to match the mode. Telling a FullAuto caller to
           // "use persist:true" would send them at the one path that now
           // refuses — advice guaranteed to fail, which is worse than none.

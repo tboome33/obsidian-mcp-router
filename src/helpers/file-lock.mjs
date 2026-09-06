@@ -88,8 +88,19 @@ const OWNER_FILE = 'owner';
  * thing differs. The bootstrapper re-probes (the holder has very likely just
  * installed on its behalf); the config writer refuses the write and says so.
  *
+ * ONE TRANSIENT ERROR IS RETRIED. On Windows a `mkdir` that races another
+ * process's `rmSync` of the same directory — the holder releasing at the very
+ * instant the next writer arrives — can fail with EPERM or ENOTEMPTY for a
+ * few milliseconds while the directory is "delete pending". That is neither
+ * EEXIST nor an unwritable temp directory; the first version threw it raw and
+ * a writer failed for a reason nobody could act on (seen once under parallel
+ * test files sharing one fixture path; Codex, round on 1fad78c). Those two
+ * codes are retried until the deadline, and THEN the original error is thrown
+ * — so a directory that genuinely refuses still surfaces as itself, late
+ * rather than never.
+ *
  * @param {string} lockPath
- * @param {{ waitMs?: number, pollMs?: number, staleMs?: number, now?: () => number, sleep?: (ms: number) => void }} [opts]
+ * @param {{ waitMs?: number, pollMs?: number, staleMs?: number, now?: () => number, sleep?: (ms: number) => void, mkdir?: (p: string) => void }} [opts]
  * @returns {(() => void)|null}
  */
 export function acquireLock(lockPath, {
@@ -98,37 +109,105 @@ export function acquireLock(lockPath, {
   staleMs = LOCK_STALE_MS,
   now = Date.now,
   sleep = defaultSleep,
+  mkdir = defaultMkdir,
 } = {}) {
   const deadline = now() + waitMs;
-  const token = `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
-  const ownerPath = path.join(lockPath, OWNER_FILE);
+  const token = newToken();
   for (;;) {
-    try {
-      // BARE `mkdirSync`, NEVER `{ recursive: true }` — see the header.
-      fs.mkdirSync(lockPath);
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
+    const attempt = attemptLock(lockPath, token, { staleMs, now, mkdir });
+    if (attempt.state === 'acquired') return attempt.release;
+    if (attempt.state === 'reaped') continue;
+    if (now() >= deadline) {
+      if (attempt.state === 'transient') throw attempt.err;
+      return null;
+    }
+    sleep(pollMs);
+  }
+}
+
+/**
+ * The same lock, waited for WITHOUT blocking the event loop: the poll is a
+ * timer, not `Atomics.wait`. For callers that run inside the MCP server and
+ * must keep answering other requests while another process finishes its
+ * write — the dotenv writer's async face. Same contract as `acquireLock`:
+ * a release function, `null` on contention past `waitMs`, a throw for any
+ * other reason (transient errors retried until the deadline first).
+ *
+ * The mutual exclusion itself is unchanged — one `mkdir` per attempt — so a
+ * synchronous acquirer in another process and an asynchronous one here take
+ * turns on the same directory.
+ *
+ * @param {string} lockPath
+ * @param {{ waitMs?: number, pollMs?: number, staleMs?: number, now?: () => number, mkdir?: (p: string) => void }} [opts]
+ * @returns {Promise<(() => void)|null>}
+ */
+export async function acquireLockAsync(lockPath, {
+  waitMs = LOCK_WAIT_MS,
+  pollMs = LOCK_POLL_MS,
+  staleMs = LOCK_STALE_MS,
+  now = Date.now,
+  mkdir = defaultMkdir,
+} = {}) {
+  const deadline = now() + waitMs;
+  const token = newToken();
+  for (;;) {
+    const attempt = attemptLock(lockPath, token, { staleMs, now, mkdir });
+    if (attempt.state === 'acquired') return attempt.release;
+    if (attempt.state === 'reaped') continue;
+    if (now() >= deadline) {
+      if (attempt.state === 'transient') throw attempt.err;
+      return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+}
+
+/** The owner token: who took the lock, unguessably. */
+function newToken() {
+  return `${process.pid}:${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/** BARE `mkdirSync`, NEVER `{ recursive: true }` — see the header. A seam for the tests that simulate a racing removal. */
+function defaultMkdir(lockPath) {
+  fs.mkdirSync(lockPath);
+}
+
+/**
+ * One attempt at the lock, shared by the synchronous and the asynchronous
+ * acquirer so the two cannot drift.
+ *
+ * @returns {{ state: 'acquired', release: () => void } | { state: 'held' } | { state: 'reaped' } | { state: 'transient', err: Error }}
+ */
+function attemptLock(lockPath, token, { staleMs, now, mkdir }) {
+  const ownerPath = path.join(lockPath, OWNER_FILE);
+  try {
+    mkdir(lockPath);
+  } catch (err) {
+    if (err.code === 'EEXIST') {
       // Held by somebody. Reap it only if it looks abandoned; the release
       // below is what makes reaping a live holder harmless.
       try {
         const age = now() - fs.statSync(lockPath).mtimeMs;
         if (age > staleMs) {
           fs.rmSync(lockPath, { recursive: true, force: true });
-          continue;
+          return { state: 'reaped' };
         }
       } catch { /* raced with the holder releasing it — just retry */ }
-      if (now() >= deadline) return null;
-      sleep(pollMs);
-      continue;
+      return { state: 'held' };
     }
-    // Ours. Stamp it, so a release can tell whether it is still ours.
-    try {
-      fs.writeFileSync(ownerPath, token, 'utf8');
-    } catch (err) {
-      try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
-      throw err;
-    }
-    return () => {
+    if (err.code === 'EPERM' || err.code === 'ENOTEMPTY') return { state: 'transient', err };
+    throw err;
+  }
+  // Ours. Stamp it, so a release can tell whether it is still ours.
+  try {
+    fs.writeFileSync(ownerPath, token, 'utf8');
+  } catch (err) {
+    try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+  return {
+    state: 'acquired',
+    release: () => {
       // RELEASE ONLY WHAT IS STILL OURS. If a reaper took the lock over while
       // this process was suspended, the directory now belongs to them and
       // deleting it would let a third writer in.
@@ -136,8 +215,8 @@ export function acquireLock(lockPath, {
       try { current = fs.readFileSync(ownerPath, 'utf8'); } catch { /* gone, or reaped */ }
       if (current !== token) return;
       try { fs.rmSync(lockPath, { recursive: true, force: true }); } catch { /* best effort */ }
-    };
-  }
+    },
+  };
 }
 
 /**

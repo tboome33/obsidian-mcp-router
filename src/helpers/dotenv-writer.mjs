@@ -10,10 +10,10 @@
  * in one copy and not the others: the newline guard below was added to the
  * first copy alone for a whole review round while the setup script kept
  * writing injectable values. So the writer lives here once, the tools import
- * the async wrappers, and the setup script imports the synchronous core.
+ * the async faces, and the setup script imports the synchronous ones.
  *
  * ---------------------------------------------------------------------------
- * WHY THE CRITICAL SECTION IS SYNCHRONOUS
+ * WHY THE CRITICAL SECTION IS SYNCHRONOUS, AND THE WAIT BEFORE IT IS NOT
  * ---------------------------------------------------------------------------
  * The first shared version (7efbad1) took the inter-process `mkdir` lock and
  * then `await`ed the read and the write. A second writer in the SAME process
@@ -26,15 +26,22 @@
  * 7efbad1: two pipelined writers answered together at 10.07 s, a timer fired
  * once in ten seconds, one line lost.
  *
- * The cure is the one `updateConfigBindings` already uses: no `await` inside
- * the section. JavaScript runs one stretch of synchronous code at a time, so
- * two same-process writers cannot interleave at all — the second simply runs
- * after the first, no lock needed between them. The `mkdir` lock then only
- * ever meets another PROCESS, which is what it is for, and its wait is short
- * (`DOTENV_LOCK_WAIT_MS`) because a writer holds it for milliseconds: a
- * dead process's lock still costs that wait once, then a refusal, until the
- * lock's own stale reaping clears it. The async exports are thin wrappers so
- * the three tools keep their `await`.
+ * Two rules follow, and they are separate:
+ *
+ *   - NO `await` INSIDE THE SECTION. JavaScript runs one stretch of
+ *     synchronous code at a time, so two same-process writers cannot
+ *     interleave at all — the second simply runs after the first. The
+ *     read-modify-write lives in `*Unlocked` functions that are synchronous
+ *     by construction, and both faces call them.
+ *   - THE ASYNC FACE WAITS FOR THE LOCK WITHOUT BLOCKING. Two different
+ *     PROCESSES writing one file — two sessions in one workspace — still
+ *     meet at the `mkdir` lock; the synchronous acquirer would freeze the
+ *     server's loop for the wait (bounded, but a stall — the round on
+ *     1fad78c measured 2 s with a dead process's lock in the way). The
+ *     async face polls with a timer instead (`acquireLockAsync`), so a
+ *     server waiting on another process keeps answering everything else.
+ *     The setup script is synchronous end to end and keeps the synchronous
+ *     acquirer: a CLI blocking its own thread for two seconds is nothing.
  *
  * ---------------------------------------------------------------------------
  * THE RULES THE FORKS DID NOT HAVE
@@ -54,8 +61,9 @@
  *     same honest limits: a link on a PARENT directory is not detected, and
  *     a link created between the check and the write is not either.
  *   - ONE WRITER AT A TIME across processes, keyed on the PHYSICAL path: a
- *     junctioned parent, an 8.3 short name or a `\\?\` prefix used to yield
- *     a second lock for the same bytes.
+ *     junctioned parent, an 8.3 short name, a `\\?\` prefix or the extended
+ *     UNC spelling `\\?\UNC\server\share` used to yield a second lock for
+ *     the same bytes.
  *
  * What is NOT here, on purpose: a second parser. `parseDotenv` in
  * workspace-dotenv.mjs is the one reader; `readDotenvVarSync` below goes
@@ -66,14 +74,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertDotenvScalar } from './dotenv-scalar.mjs';
-import { acquireLock, lockPathFor } from './file-lock.mjs';
+import { acquireLock, acquireLockAsync, lockPathFor } from './file-lock.mjs';
 import { parseDotenv } from './workspace-dotenv.mjs';
+import { stripExtendedPathPrefix } from './vault-path-identity.mjs';
 
 /**
  * How long a writer waits for another PROCESS's lock. A writer holds the
  * lock for a read and a write of a small file — milliseconds — so two
- * seconds is generous for a live holder and cheap for a dead one. Shorter
- * than the config writer's default because this wait, too, is synchronous.
+ * seconds is generous for a live holder and cheap for a dead one.
  */
 export const DOTENV_LOCK_WAIT_MS = 2000;
 
@@ -95,11 +103,15 @@ export function dotenvKeyLineRegex(key) {
 /**
  * The file's PHYSICAL path, so two spellings of one file share a lock. The
  * file itself may not exist yet (the upsert creates it): then its parent is
- * resolved and the basename kept. A `\\?\` prefix is stripped first —
- * `realpathSync.native` would keep it and `lockPathFor` would hash it.
+ * resolved and the basename kept. The extended-length prefix is folded first
+ * through the shared helper — `\\?\UNC\server\share` becomes
+ * `\\server\share`, `\\?\C:\x` becomes `C:\x`. The first version stripped the
+ * four characters blindly, turned `\\?\UNC\server\…` into the RELATIVE path
+ * `UNC\server\…`, and two processes writing one share took two locks
+ * (Codex, both engines, round on 1fad78c).
  */
 function physicalPath(envPath) {
-  const resolved = path.resolve(String(envPath).replace(/^\\\\\?\\/, ''));
+  const resolved = path.resolve(stripExtendedPathPrefix(String(envPath)));
   try {
     return fs.realpathSync.native(resolved);
   } catch { /* absent — resolve the directory it will be created in */ }
@@ -139,13 +151,22 @@ export function assertDotenvNotSymlink(envPath) {
 }
 
 /**
- * Take the inter-process lock for `envPath`, or throw when another process
- * holds it past the wait — the alternative is exactly the lost update the
- * lock exists to prevent. Returns the release function.
- *
- * The message says what did NOT happen and no more: a caller may already
- * have recorded its config half (lock_vault writes the binding before the
- * hint), so "nothing was changed" would be false for it.
+ * The message when another process holds the lock past the wait. It says
+ * what did NOT happen and no more: a caller may already have recorded its
+ * config half (lock_vault writes the binding before the hint), so "nothing
+ * was changed" would be false for it.
+ */
+function contentionError(envPath) {
+  return new Error(
+    `another process is writing ${envPath} and did not finish in time: the .env line was NOT written `
+    + '(whatever this call had already recorded elsewhere stands). Run the command again.',
+  );
+}
+
+/**
+ * Take the inter-process lock for `envPath` SYNCHRONOUSLY, or throw when
+ * another process holds it past the wait. For the setup script; the tools
+ * use the async twin below. Returns the release function.
  *
  * @param {string} envPath
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams
@@ -153,12 +174,21 @@ export function assertDotenvNotSymlink(envPath) {
  */
 export function takeDotenvLock(envPath, { waitMs = DOTENV_LOCK_WAIT_MS, lock } = {}) {
   const release = lock ? lock() : acquireLock(dotenvLockPath(envPath), { waitMs });
-  if (!release) {
-    throw new Error(
-      `another process is writing ${envPath} and did not finish in time: the .env line was NOT written `
-      + '(whatever this call had already recorded elsewhere stands). Run the command again.',
-    );
-  }
+  if (!release) throw contentionError(envPath);
+  return release;
+}
+
+/**
+ * Take the inter-process lock for `envPath` WITHOUT blocking the event loop:
+ * the wait is a timer, not `Atomics.wait`. Same contract otherwise.
+ *
+ * @param {string} envPath
+ * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams
+ * @returns {Promise<() => void>}
+ */
+export async function takeDotenvLockAsync(envPath, { waitMs = DOTENV_LOCK_WAIT_MS, lock } = {}) {
+  const release = lock ? lock() : await acquireLockAsync(dotenvLockPath(envPath), { waitMs });
+  if (!release) throw contentionError(envPath);
   return release;
 }
 
@@ -184,9 +214,9 @@ export function readDotenvVarSync(envPath, key) {
 }
 
 /**
- * Set or update KEY=VALUE in the .env file at envPath, synchronously. Creates
- * the file if it doesn't exist. Preserves all other lines, including comments
- * and formatting.
+ * The read-modify-write itself — SYNCHRONOUS, and called only with the lock
+ * held. Creates the file if it doesn't exist. Preserves all other lines,
+ * including comments and formatting.
  *
  * Duplicate-line policy: updates the FIRST occurrence and leaves later
  * duplicates as-is. This matches the convention of the loader
@@ -196,6 +226,79 @@ export function readDotenvVarSync(envPath, key) {
  * line but the loader would still read the stale top one. CRLF line endings
  * on Windows are silently converted to LF on write — acceptable for .env
  * files which shells/Node parse equivalently with either ending.
+ */
+function upsertDotenvVarUnlocked(envPath, key, value) {
+  // One shared definition — see helpers/dotenv-scalar.mjs. The guard first
+  // lived in ONE copy of this function and nowhere else, which is why the
+  // setup script kept writing injectable values for a whole review round.
+  // (The faces check it before taking the lock too; the security guard
+  // requires the call HERE, in the function that writes.)
+  assertDotenvScalar(value, key, envPath);
+  let lines = [];
+  try {
+    lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+    // File doesn't exist — start with an empty array
+  }
+
+  // Find the FIRST occurrence of `<key>=` (start-of-line, ignoring
+  // surrounding whitespace and an `export ` prefix) and update it in place,
+  // prefix included. If absent, append.
+  const keyRegex = dotenvKeyLineRegex(key);
+  let firstIdx = -1;
+  let prefix = '';
+  for (let i = 0; i < lines.length; i++) {
+    const m = keyRegex.exec(lines[i]);
+    if (m) {
+      firstIdx = i;
+      prefix = m[1];
+      break;
+    }
+  }
+  if (firstIdx === -1) {
+    const newLine = `${key}=${value}`;
+    // Append, preserving trailing newline behavior
+    if (lines.length > 0 && lines[lines.length - 1] !== '') {
+      lines.push(newLine);
+    } else if (lines.length > 0) {
+      // Last line is empty (file ended with \n) — insert before it
+      lines.splice(lines.length - 1, 0, newLine);
+    } else {
+      lines.push(newLine);
+    }
+  } else {
+    lines[firstIdx] = `${prefix}${key}=${value}`;
+  }
+
+  // Always end with a newline
+  let out = lines.join('\n');
+  if (!out.endsWith('\n')) out += '\n';
+  fs.writeFileSync(envPath, out, 'utf8');
+}
+
+/** The removal itself — synchronous, lock held. True when at least one line went. */
+function removeDotenvVarUnlocked(envPath, key) {
+  let raw;
+  try {
+    raw = fs.readFileSync(envPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+  const lines = raw.split(/\r?\n/);
+  const keyRegex = dotenvKeyLineRegex(key);
+  const filtered = lines.filter((l) => !keyRegex.test(l));
+  if (filtered.length === lines.length) return false;
+  let out = filtered.join('\n');
+  if (!out.endsWith('\n')) out += '\n';
+  fs.writeFileSync(envPath, out, 'utf8');
+  return true;
+}
+
+/**
+ * Set or update KEY=VALUE in the .env file at envPath, synchronously (the
+ * setup script's face). A refused value or a symlinked file takes no lock.
  *
  * @param {string} envPath
  * @param {string} key
@@ -203,64 +306,19 @@ export function readDotenvVarSync(envPath, key) {
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
  */
 export function upsertDotenvVarSync(envPath, key, value, opts = {}) {
-  // One shared definition — see helpers/dotenv-scalar.mjs. The guard first
-  // lived in ONE copy of this function and nowhere else, which is why the
-  // setup script kept writing injectable values for a whole review round.
-  // Checked BEFORE the lock: a refused value takes no lock and touches nothing.
   assertDotenvScalar(value, key, envPath);
   assertDotenvNotSymlink(envPath);
   const release = takeDotenvLock(envPath, opts);
   try {
-    let lines = [];
-    try {
-      lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
-    } catch (err) {
-      if (err.code !== 'ENOENT') throw err;
-      // File doesn't exist — start with an empty array
-    }
-
-    // Find the FIRST occurrence of `<key>=` (start-of-line, ignoring
-    // surrounding whitespace and an `export ` prefix) and update it in place,
-    // prefix included. If absent, append.
-    const keyRegex = dotenvKeyLineRegex(key);
-    let firstIdx = -1;
-    let prefix = '';
-    for (let i = 0; i < lines.length; i++) {
-      const m = keyRegex.exec(lines[i]);
-      if (m) {
-        firstIdx = i;
-        prefix = m[1];
-        break;
-      }
-    }
-    if (firstIdx === -1) {
-      const newLine = `${key}=${value}`;
-      // Append, preserving trailing newline behavior
-      if (lines.length > 0 && lines[lines.length - 1] !== '') {
-        lines.push(newLine);
-      } else if (lines.length > 0) {
-        // Last line is empty (file ended with \n) — insert before it
-        lines.splice(lines.length - 1, 0, newLine);
-      } else {
-        lines.push(newLine);
-      }
-    } else {
-      lines[firstIdx] = `${prefix}${key}=${value}`;
-    }
-
-    // Always end with a newline
-    let out = lines.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(envPath, out, 'utf8');
+    upsertDotenvVarUnlocked(envPath, key, value);
   } finally {
     release();
   }
 }
 
 /**
- * Remove all `<key>=...` lines from the .env file, `export`-prefixed ones
- * included, synchronously. Returns true if at least one line was removed,
- * false if the file or the key was absent.
+ * Remove all `<key>=...` lines, synchronously. True if at least one line was
+ * removed, false if the file or the key was absent.
  *
  * @param {string} envPath
  * @param {string} key
@@ -271,34 +329,46 @@ export function removeDotenvVarSync(envPath, key, opts = {}) {
   assertDotenvNotSymlink(envPath);
   const release = takeDotenvLock(envPath, opts);
   try {
-    let raw;
-    try {
-      raw = fs.readFileSync(envPath, 'utf8');
-    } catch (err) {
-      if (err.code === 'ENOENT') return false;
-      throw err;
-    }
-
-    const lines = raw.split(/\r?\n/);
-    const keyRegex = dotenvKeyLineRegex(key);
-    const filtered = lines.filter((l) => !keyRegex.test(l));
-    if (filtered.length === lines.length) return false;
-
-    let out = filtered.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(envPath, out, 'utf8');
-    return true;
+    return removeDotenvVarUnlocked(envPath, key);
   } finally {
     release();
   }
 }
 
-/** The async face of `upsertDotenvVarSync`, for the tools that `await` it. The work itself is synchronous — see the header. */
+/**
+ * The tools' face of the upsert: the lock is awaited with a timer (the loop
+ * keeps running), the section itself is synchronous.
+ *
+ * @param {string} envPath
+ * @param {string} key
+ * @param {string} value
+ * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
+ */
 export async function upsertDotenvVar(envPath, key, value, opts = {}) {
-  return upsertDotenvVarSync(envPath, key, value, opts);
+  assertDotenvScalar(value, key, envPath);
+  assertDotenvNotSymlink(envPath);
+  const release = await takeDotenvLockAsync(envPath, opts);
+  try {
+    upsertDotenvVarUnlocked(envPath, key, value);
+  } finally {
+    release();
+  }
 }
 
-/** The async face of `removeDotenvVarSync`. */
+/**
+ * The tools' face of the removal.
+ *
+ * @param {string} envPath
+ * @param {string} key
+ * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
+ * @returns {Promise<boolean>}
+ */
 export async function removeDotenvVar(envPath, key, opts = {}) {
-  return removeDotenvVarSync(envPath, key, opts);
+  assertDotenvNotSymlink(envPath);
+  const release = await takeDotenvLockAsync(envPath, opts);
+  try {
+    return removeDotenvVarUnlocked(envPath, key);
+  } finally {
+    release();
+  }
 }

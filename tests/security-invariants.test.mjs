@@ -423,7 +423,10 @@ describe('GUARD: every write tool runs caller paths through the containment guar
         // The setup script's `upsertEnvVarSync` was the fourth copy; since
         // the Fable round on 7efbad1 it delegates to this one (the core is
         // synchronous), so it no longer builds a line and writes it itself.
-        'src/helpers/dotenv-writer.mjs:upsertDotenvVarSync()',
+        // …and since the round on 1fad78c the read-modify-write lives in ONE
+        // unlocked core both faces (sync for the script, async for the tools)
+        // call with the lock held; the faces build no line and write nothing.
+        'src/helpers/dotenv-writer.mjs:upsertDotenvVarUnlocked()',
       ],
       'the set of dotenv writer FUNCTIONS changed — either a writer moved out of reach of the unit finder, or a new one arrived',
     );

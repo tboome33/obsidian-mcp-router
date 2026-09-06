@@ -330,11 +330,18 @@ export function classifyBindingHint({ hint, binding, isRegistered, origin = null
   // is told what it means.
   const previouslyRefused = typeof fileRefusal === 'string' && fileRefusal !== '' && fileRefusal === hint;
   const verdict = (status) => ({ status, hint, boundTo, origin: from, previouslyRefused });
-  // BOUND IS SATISFIED — primary or secondary. A proposal naming a vault the
-  // workspace is already bound to has nothing left to ask.
-  if (binding && boundVaults(binding).includes(hint)) return verdict(HINT_STATUS.CONFIRMED);
-  if (typeof isRefused === 'function' && isRefused(hint) === true) return verdict(HINT_STATUS.REFUSED);
   const known = typeof isRegistered === 'function' && isRegistered(hint);
+  // BOUND IS SATISFIED — primary or secondary — when the machine HAS the
+  // vault. A proposal naming a vault the workspace is already bound to has
+  // nothing left to ask. A stale binding entry (a secondary in `also` that is
+  // no longer registered) is not satisfaction: the first version answered
+  // `confirmed` from the binding alone, and the briefing fell silent about a
+  // vault whose every resolution fails (Codex, round on 1fad78c).
+  if (binding && known && boundVaults(binding).includes(hint)) return verdict(HINT_STATUS.CONFIRMED);
+  // A refusal silences a registered vault and an unregistered one alike —
+  // refusing is how the unknown-vault notice stops, since there is nothing to
+  // register. So it is asked BEFORE the registration check.
+  if (typeof isRefused === 'function' && isRefused(hint) === true) return verdict(HINT_STATUS.REFUSED);
   // `conflicts` is documented as "a DIFFERENT registered vault": a hint the
   // machine does not have is `unknown-vault` whether or not a binding exists —
   // otherwise the briefing told a bound workspace that "the binding wins" over
