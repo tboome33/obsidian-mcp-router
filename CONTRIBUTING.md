@@ -25,7 +25,9 @@ Thanks for considering a contribution. This project is small and opinionated —
    - `bin/obsidian-mcp-router.mjs --help`
    - `README.md` (EN + FR) and the quick-reference pages (`docs/quick-reference-{en,fr}.html`), then **`npm run docs:quick-reference`** to re-render both PDFs and refresh `docs/quick-reference.manifest.json`
 
-   `npm run validate` refuses when a quick-reference page has changed since its PDF was rendered, so "edited the source, forgot the render" fails by name instead of shipping a PDF that contradicts the page. It also pins the artifact counters *in those pages* — they are not free-text: both state the command, tool and skill counts twice, and both sites are guarded.
+   `npm run validate` refuses when a quick-reference page has changed since its PDF was rendered, so "edited the source, forgot the render" fails by name instead of shipping a PDF that contradicts the page. It also pins the artifact counters *in those pages* — they are not free-text: both state the command, tool and skill counts twice, and both sites are guarded — and the **masthead version**, which must equal `package.json`'s.
+
+   `npm run bump` syncs both mastheads for you (only the masthead: the other version each page names is the release that shipped a feature, and stays). Because that edits the pages, their PDFs become stale and `validate` says so — run `npm run docs:quick-reference` before committing the bump. The bump prints this as step 2.
 
 ## Release process (for maintainers)
 

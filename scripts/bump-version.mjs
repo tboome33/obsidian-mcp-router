@@ -54,6 +54,9 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { parseSemver, compareSemver } from '../src/helpers/semver-compare.mjs';
+import {
+  QUICK_REFERENCE_PAGES, htmlRelPath, MASTHEAD_VERSION_RE,
+} from '../src/helpers/quick-reference.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,6 +241,39 @@ export function updateReadmeBadge(filePath, newVersion) {
 }
 
 /**
+ * Rewrite the MASTHEAD version of one quick-reference page.
+ *
+ * v0.91.0 shipped with both PDFs one release behind in the masthead, caught by
+ * hand at the last minute: this script synced five spots and had never touched
+ * these two pages, which state their version in `<div class="meta">v0.91.0 · …`.
+ * `npm run validate` now pins them (`checkQuickReferenceVersion`), and this
+ * keeps the pin from being a chore — bump moves them, validate confirms.
+ *
+ * ONLY the masthead. Each page names a version twice, and the other one is
+ * HISTORY: "Workspace→vault binding (v0.90.0)" names the release that shipped
+ * the feature. Advancing it would rewrite the past to make the present pass.
+ * The anchor lives in `src/helpers/quick-reference.mjs` so this script and the
+ * validator cannot disagree about which occurrence is the version.
+ *
+ * Idempotent. Throws when the masthead is missing, for the same reason
+ * `updateReadmeBadge` does: a silent no-op is how a version drifts.
+ */
+export function updateQuickReferenceVersion(filePath, newVersion) {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  const re = () => new RegExp(MASTHEAD_VERSION_RE.source, MASTHEAD_VERSION_RE.flags);
+  const matches = [...raw.matchAll(re())];
+  if (matches.length === 0) {
+    throw new Error(`No masthead version (class="meta">vX.Y.Z) found in ${filePath}.`);
+  }
+  if (matches.every((m) => m[2] === newVersion)) {
+    return { changed: false };
+  }
+  const updated = raw.replace(re(), (_m, p1) => `${p1}${newVersion}`);
+  fs.writeFileSync(filePath, updated);
+  return { changed: true };
+}
+
+/**
  * Bump every plugin/marketplace/package file to `newVersion`. Returns
  * a report `{ files: { [path]: { changed, before } }, changelog: { changed } }`.
  *
@@ -318,6 +354,24 @@ export function bumpAll(root, newVersion, { dryRun = false, withChangelog = true
     report.readme = updateReadmeBadge(readmePath, newVersion);
     if (dryRun) {
       fs.writeFileSync(readmePath, beforeReadme);
+    }
+  }
+
+  // The two quick-reference pages state the version in their masthead, and
+  // this script used to leave them behind — v0.91.0 nearly shipped its PDFs a
+  // release out of date. Optional per page, like the README: a fixture repo
+  // without them is not an error. Rewriting the page makes its PDF stale,
+  // which `npm run validate` reports until `npm run docs:quick-reference`
+  // runs — that chain is the point, not a nuisance.
+  report.quickReference = {};
+  for (const lang of QUICK_REFERENCE_PAGES) {
+    const rel = htmlRelPath(lang);
+    const abs = path.join(root, rel);
+    if (!fs.existsSync(abs)) continue;
+    const beforePage = fs.readFileSync(abs, 'utf8');
+    report.quickReference[rel] = updateQuickReferenceVersion(abs, newVersion);
+    if (dryRun) {
+      fs.writeFileSync(abs, beforePage);
     }
   }
 
@@ -440,6 +494,11 @@ if (isMain) {
     process.stdout.write(
       `${prefix}package-lock.json: ${report.lockfile.changed ? `synced → v${newVersion}` : 'unchanged (already at this version, or no lockfile)'}\n`,
     );
+    for (const [rel, res] of Object.entries(report.quickReference || {})) {
+      process.stdout.write(
+        `${prefix}${rel} masthead: ${res.changed ? `synced → v${newVersion}` : 'unchanged (already at this version)'}\n`,
+      );
+    }
     if (dryRun) {
       process.stdout.write('\n(Dry-run — no files were written.)\n');
     } else {
@@ -456,8 +515,10 @@ if (isMain) {
       process.stdout.write(
         '\nNext steps:\n' +
         '  1. Replace the CHANGELOG.md stub with the real entry.\n' +
-        `  2. Commit as usual — the post-commit hook auto-tags v${newVersion}.\n` +
-        '  3. npm run release   → pushes branch + tag, publishes the GitHub release.\n',
+        '  2. npm run docs:quick-reference   → re-render both PDFs (their pages just moved;\n' +
+        '     until you do, `npm run validate` reports them as stale, by design).\n' +
+        `  3. Commit as usual — the post-commit hook auto-tags v${newVersion}.\n` +
+        '  4. npm run release   → pushes branch + tag, publishes the GitHub release.\n',
       );
     }
     process.exit(0);

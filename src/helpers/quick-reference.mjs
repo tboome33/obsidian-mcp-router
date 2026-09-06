@@ -31,6 +31,48 @@ export const QUICK_REFERENCE_MANIFEST = 'docs/quick-reference.manifest.json';
 export const htmlRelPath = (lang) => `docs/quick-reference-${lang}.html`;
 export const pdfRelPath = (lang) => `docs/quick-reference-${lang}.pdf`;
 
+/**
+ * The MASTHEAD version, and only the masthead.
+ *
+ * Each page names a version twice and the two mean opposite things. The
+ * masthead — `<div class="meta">v0.91.0 · …` — states which release this card
+ * describes, and must move on every bump. The other is HISTORY: a line reading
+ * "Workspace→vault binding (v0.90.0)" names the release that shipped the
+ * feature, and advancing it would rewrite the past to make the present pass —
+ * the same trap the COUNTER_RULES header warns about for "N skills" strings.
+ *
+ * So the anchor is the `class="meta">v` prefix, never a bare `v\d+\.\d+\.\d+`.
+ * ONE definition, imported by the bump script that rewrites it and the
+ * validator that checks it: two copies of "which occurrence is the version"
+ * would drift, and the drifting one would be the check.
+ */
+export const MASTHEAD_VERSION_RE = /(class="meta">v)(\d+\.\d+\.\d+)/g;
+
+/**
+ * The masthead version each page currently claims.
+ *
+ * Returns one row per page, always, with `versions` as an ARRAY so the caller
+ * can tell "no masthead found" (the anchor stopped matching — a check
+ * switching itself off) from "two mastheads" (ambiguous) from the one healthy
+ * case. Never throws.
+ */
+export function quickReferenceVersions(repoRoot) {
+  return QUICK_REFERENCE_PAGES.map((lang) => {
+    const html = htmlRelPath(lang);
+    let text = null;
+    try {
+      text = fs.readFileSync(path.join(repoRoot, html), 'utf8');
+    } catch {
+      text = null;
+    }
+    const versions = text === null
+      ? null
+      : [...text.matchAll(new RegExp(MASTHEAD_VERSION_RE.source, MASTHEAD_VERSION_RE.flags))]
+        .map((m) => m[2]);
+    return { lang, html, versions };
+  });
+}
+
 /** sha256 of a file's bytes, or null when it cannot be read. */
 export function sha256OfFile(abs) {
   try {

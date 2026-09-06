@@ -4,6 +4,38 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [Unreleased]
+
+### The quick-reference masthead version is pinned, and the bump keeps it current
+
+v0.91.0 nearly shipped both PDFs a release behind: their masthead states the version, `npm run bump`
+syncs five spots and had never touched those two pages, and nothing checked them. It was caught by
+hand, minutes before the tag — which is not a control. The counters in those pages had just been
+pinned; the version had not. Same defect class, one field over.
+
+#### Added
+
+- **`npm run validate` pins the masthead version** of `docs/quick-reference-{en,fr}.html` against
+  `package.json`. A page one release behind, a page whose masthead was reworded so the check stops
+  matching, and a page carrying *two* mastheads are all reported — the middle one especially, since
+  a check that quietly stops matching is the failure this gate exists to prevent.
+- **`npm run bump` now syncs both mastheads**, so the pin is a confirmation rather than a chore, and
+  prints the re-render as step 2 of its next steps: editing the pages makes their PDFs stale, which
+  `validate` then reports until `npm run docs:quick-reference` runs. That chain is deliberate.
+- **Only the masthead moves.** Each page names a version twice and they mean opposite things: the
+  masthead states which release the card describes, while "Workspace→vault binding (v0.90.0)" names
+  the release that shipped the feature. Advancing that one would rewrite the past to make the
+  present pass. The anchor (`class="meta">v<x.y.z>`) lives in one place —
+  `src/helpers/quick-reference.mjs` — imported by the script that rewrites it and the validator that
+  checks it, because two copies of "which occurrence is the version" would drift and the drifting
+  one would be the check.
+- Tests on both halves, including one that fails if `runCapabilityValidation` stops *calling* the
+  version check, and one that fails if the anchor is widened to a bare `v<x.y.z>` and starts
+  swallowing the historical mention. Six mutation witnesses, each seen red at its own test, with the
+  restores `fsync`'d and the tree re-checked against a baseline — on this repository's virtual
+  drive, a `writeFileSync` plus an immediate read-back has already reported a successful restore
+  over a mutation that was still on disk.
+
 ## [0.91.0] — 2026-09-06 — a workspace declares which vaults it reaches, and what it may write there
 
 Six phases of one lot, implementing three decisions accepted on 2026-09-04

@@ -20,6 +20,7 @@ import {
   updateJsonVersion,
   insertChangelogStub,
   updateReadmeBadge,
+  updateQuickReferenceVersion,
 } from '../scripts/bump-version.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -54,9 +55,26 @@ function makeFakeRepo({
   changelog = `# Changelog\n\n## [Unreleased]\n\nNothing pending right now.\n\n## [0.13.0] — 2026-01-01 — initial\n\nInitial release.\n`,
   readmeVersion = null,
   packageLockVersion = null,
+  quickReferenceVersion = null,
 } = {}) {
   const root = fs.mkdtempSync(path.join(workDir, 'repo-'));
   scratchRoots.push(root);
+
+  // Optional quick-reference pages. Each carries the masthead the bump must
+  // move AND a historical mention it must not touch — the pair is the point.
+  if (quickReferenceVersion !== null) {
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    for (const lang of ['en', 'fr']) {
+      fs.writeFileSync(
+        path.join(root, 'docs', `quick-reference-${lang}.html`),
+        [
+          `<div class="meta">v${quickReferenceVersion} · the card</div>`,
+          '<p>Workspace→vault binding (v0.90.0): shipped then, and stays.</p>',
+          '',
+        ].join('\n'),
+      );
+    }
+  }
 
   fs.writeFileSync(
     path.join(root, 'package.json'),
@@ -452,6 +470,61 @@ describe('insertChangelogStub', () => {
 // ───────────────────────────────────────────────────────────────────
 // updateReadmeBadge — pure helper
 // ───────────────────────────────────────────────────────────────────
+
+describe('updateQuickReferenceVersion', () => {
+  const page = (root, lang) => path.join(root, 'docs', `quick-reference-${lang}.html`);
+
+  test('moves the masthead and leaves the HISTORICAL version alone', () => {
+    // The two versions on the page mean opposite things: the masthead states
+    // which release the card describes, the other names the release that
+    // shipped a feature. Advancing the second would rewrite the past.
+    const root = makeFakeRepo({ quickReferenceVersion: '0.91.0' });
+    const result = updateQuickReferenceVersion(page(root, 'en'), '0.92.0');
+    assert.equal(result.changed, true);
+    const html = fs.readFileSync(page(root, 'en'), 'utf8');
+    assert.match(html, /class="meta">v0\.92\.0/);
+    assert.match(html, /binding \(v0\.90\.0\)/, 'the historical mention must survive untouched');
+    assert.equal(html.includes('class="meta">v0.91.0'), false);
+  });
+
+  test('is idempotent — already at the target changes nothing', () => {
+    const root = makeFakeRepo({ quickReferenceVersion: '0.92.0' });
+    assert.equal(updateQuickReferenceVersion(page(root, 'en'), '0.92.0').changed, false);
+  });
+
+  test('throws when the masthead is gone, rather than silently doing nothing', () => {
+    // A silent no-op is exactly how a version drifts — the same reason
+    // updateReadmeBadge throws.
+    const root = makeFakeRepo({ quickReferenceVersion: '0.91.0' });
+    fs.writeFileSync(page(root, 'en'), '<p>no masthead here, only (v0.90.0) history</p>\n');
+    assert.throws(() => updateQuickReferenceVersion(page(root, 'en'), '0.92.0'), /No masthead version/);
+  });
+
+  test('bumpAll syncs BOTH pages, and reports each one', () => {
+    const root = makeFakeRepo({ quickReferenceVersion: '0.91.0' });
+    const report = bumpAll(root, '0.92.0', { withChangelog: false });
+    assert.deepEqual(
+      Object.keys(report.quickReference).sort(),
+      ['docs/quick-reference-en.html', 'docs/quick-reference-fr.html'],
+    );
+    for (const lang of ['en', 'fr']) {
+      assert.match(fs.readFileSync(page(root, lang), 'utf8'), /class="meta">v0\.92\.0/);
+    }
+  });
+
+  test('bumpAll skips the pages when the repo has none — a fixture is not an error', () => {
+    const report = bumpAll(makeFakeRepo({}), '0.92.0', { withChangelog: false });
+    assert.deepEqual(report.quickReference, {});
+  });
+
+  test('a dry run leaves both pages byte-identical', () => {
+    const root = makeFakeRepo({ quickReferenceVersion: '0.91.0' });
+    const before = ['en', 'fr'].map((l) => fs.readFileSync(page(root, l), 'utf8'));
+    bumpAll(root, '0.92.0', { dryRun: true, withChangelog: false });
+    const after = ['en', 'fr'].map((l) => fs.readFileSync(page(root, l), 'utf8'));
+    assert.deepEqual(after, before);
+  });
+});
 
 describe('updateReadmeBadge', () => {
   test('replaces all badge occurrences (EN + FR)', () => {

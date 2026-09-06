@@ -32,7 +32,7 @@ import {
   discoverSkills, discoverAgents, mentionedTools,
   validateDeclarations, checkAgentAllowlists, checkDocCounters, checkToolBreakdown,
   countArtifacts, runCapabilityValidation, renderIssues, stripEmphasis, mentionedSkills,
-  checkQuickReferenceFreshness,
+  checkQuickReferenceFreshness, checkQuickReferenceVersion,
 } from '../src/helpers/skill-capabilities.mjs';
 import {
   QUICK_REFERENCE_MANIFEST, QUICK_REFERENCE_PAGES, sha256OfFile, quickReferenceFreshness,
@@ -41,6 +41,9 @@ import { _internals } from '../src/index.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REAL_TOOL_NAMES = new Set(_internals.TOOLS.map((t) => t.name));
+/** A fixture's version — arbitrary, but the fixture's package.json and its
+ *  quick-reference mastheads must agree on it, which is what the pin checks. */
+const REPO_VERSION = '9.9.9';
 const REAL_WRITE_TOOLS = _internals.WRITE_TOOL_NAMES;
 
 // ---------------------------------------------------------------------------
@@ -103,19 +106,27 @@ function defaultReadme({ commands, skills, hooks, sites = {} }) {
  * `sites` shrinks a single rule's occurrences, the way `defaultReadme` does,
  * so "the rule still matches but guards fewer sites" is testable here too.
  */
-function defaultQuickReference({ commands, tools, skills, sites = {} }) {
+function defaultQuickReference({ commands, tools, skills, sites = {}, version = REPO_VERSION }) {
   const rep = (ruleId, sentence) => {
     const n = sites[ruleId] !== undefined ? sites[ruleId] : minMatchesFor(ruleId);
     return Array.from({ length: n }, () => `<p>${sentence}</p>`).join('\n');
   };
+  // The masthead AND a historical mention, because the pair is the point: the
+  // first must track the repo's version, the second names the release that
+  // shipped a feature and must never be advanced.
+  const masthead = version === null
+    ? '<div class="meta">no version here</div>'
+    : `<div class="meta">v${version} · the card</div>\n<p>binding (v0.1.0) shipped it</p>`;
   return {
     en: [
+      masthead,
       rep('quick-reference-en-commands', `${commands} slash commands`),
       rep('quick-reference-en-tools', `${tools} MCP tools`),
       rep('quick-reference-en-skills', `${skills} skills`),
       '',
     ].join('\n'),
     fr: [
+      masthead,
       rep('quick-reference-fr-commands', `${commands} slash commands`),
       rep('quick-reference-fr-tools', `${tools} outils MCP`),
       rep('quick-reference-fr-skills', `${skills} skills`),
@@ -164,6 +175,7 @@ function makeRepo({
   marketplaceJson,
   quickReferenceHtml,
   quickReferenceManifest,
+  packageVersion,
   omit = [],
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-fixture-'));
@@ -208,6 +220,13 @@ function makeRepo({
   // other. A fixture without them is a fixture the freshness check reports on,
   // so the harness builds a CLEAN pair by default and each test breaks the one
   // thing it is about.
+  // The version the quick-reference mastheads are checked against.
+  if (!omit.includes('package.json')) {
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'fixture', version: packageVersion ?? REPO_VERSION }, null, 2),
+    );
+  }
   if (!omit.includes('quick-reference')) {
     fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
     const pages = quickReferenceHtml
@@ -599,6 +618,93 @@ describe('quick-reference freshness — pinning the SOURCE is only half the guar
   test('the LIVE repo ships PDFs rendered from the current pages', () => {
     // Not a fixture: the real docs/, the artifact that actually ships.
     assert.deepEqual(checkQuickReferenceFreshness(REPO_ROOT), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The masthead must name the release the repo is at — and only the masthead
+// ---------------------------------------------------------------------------
+
+describe('quick-reference version — the counters were pinned, the version was not', () => {
+  test('a clean fixture agrees with its package.json', () => {
+    assert.deepEqual(checkQuickReferenceVersion(makeRepo(), REPO_VERSION), []);
+  });
+
+  test('a masthead one release behind is an error, in EITHER language', () => {
+    // v0.91.0 nearly shipped exactly this: `npm run bump` syncs five spots and
+    // had never touched these two pages.
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const pages = defaultQuickReference({ commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1 });
+      pages[lang] = pages[lang].replace(`class="meta">v${REPO_VERSION}`, 'class="meta">v9.9.8');
+      const root = makeRepo({ quickReferenceHtml: pages });
+      const issues = checkQuickReferenceVersion(root, REPO_VERSION);
+      assert.equal(issues.length, 1, `${lang}: ${JSON.stringify(issues)}`);
+      assert.equal(issues[0].code, 'quick-reference-version');
+      assert.match(issues[0].message, new RegExp(`quick-reference-${lang}\\.html states v9\\.9\\.8`));
+    }
+  });
+
+  test('the HISTORICAL version in the page is left alone', () => {
+    // Each page names a version twice and they mean opposite things. A check
+    // that matched a bare `v<x.y.z>` would demand rewriting the past to make
+    // the present pass — the trap this anchor exists to avoid.
+    const root = makeRepo();
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const body = fs.readFileSync(path.join(root, `docs/quick-reference-${lang}.html`), 'utf8');
+      assert.match(body, /binding \(v0\.1\.0\) shipped it/, 'the fixture must carry a historical mention');
+    }
+    assert.deepEqual(checkQuickReferenceVersion(root, REPO_VERSION), []);
+  });
+
+  test('a page whose masthead was reworded away is an error, not a silent pass', () => {
+    const root = makeRepo({
+      quickReferenceHtml: defaultQuickReference({
+        commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1, version: null,
+      }),
+    });
+    const issues = checkQuickReferenceVersion(root, REPO_VERSION);
+    assert.equal(issues.length, QUICK_REFERENCE_PAGES.length, JSON.stringify(issues));
+    assert.match(issues[0].message, /has no `class="meta">v<x\.y\.z>` masthead/);
+  });
+
+  test('two mastheads on one page is an error — which one states the release is ambiguous', () => {
+    const pages = defaultQuickReference({ commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1 });
+    pages.en += `\n<div class="meta">v9.9.8 · a second card</div>\n`;
+    const issues = checkQuickReferenceVersion(makeRepo({ quickReferenceHtml: pages }), REPO_VERSION);
+    const found = issues.find((i) => /quick-reference-en/.test(i.message));
+    assert.ok(found, JSON.stringify(issues));
+    assert.match(found.message, /has 2 mastheads/);
+  });
+
+  test('a missing repo version is reported, never compared against nothing', () => {
+    // Comparing every masthead against `undefined` would make them all wrong,
+    // or — worse, with a loose check — all right.
+    const issues = checkQuickReferenceVersion(makeRepo(), undefined);
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].message, /version was not supplied/);
+  });
+
+  test('a version helper that reports NOTHING is itself an error', () => {
+    const issues = checkQuickReferenceVersion(makeRepo(), REPO_VERSION, () => []);
+    assert.equal(issues.length, 1);
+    assert.match(issues[0].message, /reported no pages at all/);
+  });
+
+  test('runCapabilityValidation actually RUNS the version check', () => {
+    // Same reasoning as the freshness wiring test: every case above calls the
+    // function directly, so deleting its call site would leave them all green.
+    const pages = defaultQuickReference({ commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1 });
+    pages.en = pages.en.replace(`class="meta">v${REPO_VERSION}`, 'class="meta">v9.9.8');
+    const { issues } = validateRepo(makeRepo({ quickReferenceHtml: pages }));
+    assert.ok(
+      issues.find((i) => i.code === 'quick-reference-version'),
+      `the validator did not surface the stale masthead: ${renderIssues(issues)}`,
+    );
+  });
+
+  test('the LIVE repo mastheads name the version in its package.json', () => {
+    const version = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).version;
+    assert.deepEqual(checkQuickReferenceVersion(REPO_ROOT, version), []);
   });
 });
 

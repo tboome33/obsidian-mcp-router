@@ -58,7 +58,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cmp } from './total-order.mjs';
-import { quickReferenceFreshness, QUICK_REFERENCE_MANIFEST } from './quick-reference.mjs';
+import {
+  quickReferenceFreshness, quickReferenceVersions, QUICK_REFERENCE_MANIFEST,
+} from './quick-reference.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema + controlled vocabularies
@@ -1920,6 +1922,89 @@ export function checkQuickReferenceFreshness(repoRoot, freshness = quickReferenc
 }
 
 /**
+ * The quick-reference mastheads must name the version the repo is at.
+ *
+ * The counters in those pages are pinned; the VERSION was not, and v0.91.0
+ * shipped with both PDFs one release behind in the masthead until it was
+ * caught by hand. `npm run bump` syncs five spots and does not touch these
+ * pages, so nothing would have caught it on the next release either — the
+ * same defect class as the counters, one field over.
+ *
+ * Only the masthead is checked. The other version each page names is history
+ * (the release that shipped a feature) and must never be advanced.
+ *
+ * @param {string} repoRoot
+ * @param {string} version — the repo's current version (from package.json).
+ * @param {(root: string) => Array} [versions] — injected for the tests.
+ */
+export function checkQuickReferenceVersion(repoRoot, version, versions = quickReferenceVersions) {
+  if (typeof version !== 'string' || !version) {
+    return [issue(
+      'quick-reference-version',
+      'the repo version was not supplied to the quick-reference version check.',
+      'Pass package.json\'s `version`. Without it the mastheads would be compared against nothing and pass.',
+      'package.json',
+    )];
+  }
+
+  let rows;
+  try {
+    rows = versions(repoRoot);
+  } catch (err) {
+    return [issue(
+      'quick-reference-version',
+      `the quick-reference version check could not run (${err && err.message}).`,
+      'Fix src/helpers/quick-reference.mjs — until it runs, the mastheads are unverified, not verified.',
+      'src/helpers/quick-reference.mjs',
+    )];
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [issue(
+      'quick-reference-version',
+      'the quick-reference version check reported no pages at all.',
+      'QUICK_REFERENCE_PAGES is empty — a check with nothing to check is not a passing check.',
+      'src/helpers/quick-reference.mjs',
+    )];
+  }
+
+  const SYNC = 'Run `npm run bump <version>` (it syncs both mastheads), then `npm run docs:quick-reference`.';
+  const issues = [];
+  for (const row of rows) {
+    if (row.versions === null) {
+      issues.push(issue(
+        'quick-reference-version',
+        `${row.html} cannot be read, so its masthead version is unknown — not correct.`,
+        'Restore the page, or drop its language from QUICK_REFERENCE_PAGES.',
+        row.html,
+      ));
+    } else if (row.versions.length === 0) {
+      issues.push(issue(
+        'quick-reference-version',
+        `${row.html} has no \`class="meta">v<x.y.z>\` masthead — the version check has nothing to anchor on.`,
+        'The masthead was reworded. Restore it, or update MASTHEAD_VERSION_RE in src/helpers/quick-reference.mjs — a check that stops matching must be a deliberate edit.',
+        row.html,
+      ));
+    } else if (row.versions.length > 1) {
+      issues.push(issue(
+        'quick-reference-version',
+        `${row.html} has ${row.versions.length} mastheads (${row.versions.join(', ')}) — which one states the release is now ambiguous.`,
+        'Keep exactly one `class="meta">v<x.y.z>` per page.',
+        row.html,
+      ));
+    } else if (row.versions[0] !== version) {
+      issues.push(issue(
+        'quick-reference-version',
+        `${row.html} states v${row.versions[0]}; the repo is at v${version}.`,
+        SYNC,
+        row.html,
+      ));
+    }
+  }
+  return issues;
+}
+
+/**
  * Run every C8 check against a repo root.
  *
  * @param {string} repoRoot
@@ -1979,6 +2064,17 @@ export function runCapabilityValidation(repoRoot, { toolNames, writeToolNames } 
   issues.push(...checkDocCounters(repoRoot, counts));
   issues.push(...checkToolBreakdown(repoRoot));
   issues.push(...checkQuickReferenceFreshness(repoRoot));
+  // The repo's version, read from the one file that defines it. A package.json
+  // that cannot be read or carries no version is passed through as-is: the
+  // check itself reports that rather than comparing against `undefined` and
+  // silently passing.
+  let repoVersion;
+  try {
+    repoVersion = JSON.parse(readSafe(path.join(repoRoot, 'package.json')) ?? '{}').version;
+  } catch {
+    repoVersion = undefined;
+  }
+  issues.push(...checkQuickReferenceVersion(repoRoot, repoVersion));
 
   return { issues, counts, skillCount: skills.length };
 }
