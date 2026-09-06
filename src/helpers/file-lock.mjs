@@ -114,15 +114,42 @@ export function acquireLock(lockPath, {
   const deadline = now() + waitMs;
   const token = newToken();
   for (;;) {
-    const attempt = attemptLock(lockPath, token, { staleMs, now, mkdir });
-    if (attempt.state === 'acquired') return attempt.release;
-    if (attempt.state === 'reaped') continue;
-    if (now() >= deadline) {
-      if (attempt.state === 'transient') throw attempt.err;
-      return null;
-    }
-    sleep(pollMs);
+    const step = afterAttempt(attemptLock(lockPath, token, { staleMs, now, mkdir }), deadline, pollMs, now);
+    if (step.done) return step.release;
+    if (step.waitFor > 0) sleep(step.waitFor);
   }
+}
+
+/**
+ * What a failed attempt means — the ONE place the two acquirers agree, so
+ * their loops cannot drift the way the writer's two faces once did.
+ *
+ * `waitFor` is CLAMPED TO THE REMAINING BUDGET. Sleeping a full `pollMs`
+ * regardless of it made a caller wait far past what it asked for: with
+ * `{ waitMs: 10, pollMs: 150 }` and a holder that released at 30 ms, the lock
+ * was acquired at 160 ms — sixteen times the budget, and for the server's face
+ * a request held that much longer than the caller's own bound. (Codex,
+ * gpt-6-astra, round on faf5b4b.) The first attempt always happens, so
+ * `waitMs: 0` still means "try once", never "do not try".
+ *
+ * @param {{state: string, release?: () => void, err?: Error}} attempt
+ * @param {number} deadline
+ * @param {number} pollMs
+ * @param {() => number} now
+ * @returns {{ done: true, release: (() => void)|null } | { done: false, waitFor: number }}
+ */
+function afterAttempt(attempt, deadline, pollMs, now) {
+  if (attempt.state === 'acquired') return { done: true, release: attempt.release };
+  // A reaped stale lock is retried at once: the directory is gone, and waiting
+  // a poll interval to find that out would be the caller paying for another
+  // process's crash.
+  if (attempt.state === 'reaped') return { done: false, waitFor: 0 };
+  const remaining = deadline - now();
+  if (remaining <= 0) {
+    if (attempt.state === 'transient') throw attempt.err;
+    return { done: true, release: null };
+  }
+  return { done: false, waitFor: Math.min(pollMs, remaining) };
 }
 
 /**
@@ -151,14 +178,9 @@ export async function acquireLockAsync(lockPath, {
   const deadline = now() + waitMs;
   const token = newToken();
   for (;;) {
-    const attempt = attemptLock(lockPath, token, { staleMs, now, mkdir });
-    if (attempt.state === 'acquired') return attempt.release;
-    if (attempt.state === 'reaped') continue;
-    if (now() >= deadline) {
-      if (attempt.state === 'transient') throw attempt.err;
-      return null;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    const step = afterAttempt(attemptLock(lockPath, token, { staleMs, now, mkdir }), deadline, pollMs, now);
+    if (step.done) return step.release;
+    if (step.waitFor > 0) await new Promise((resolve) => setTimeout(resolve, step.waitFor));
   }
 }
 

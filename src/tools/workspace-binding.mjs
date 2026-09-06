@@ -44,7 +44,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeFileAtomicSync } from '../helpers/write-file-atomic.mjs';
-import { safeForMessage } from '../helpers/sanitize.mjs';
+import { safeForMessage, identifierForCall } from '../helpers/sanitize.mjs';
 import {
   HINT_STATUS,
   withBinding,
@@ -560,6 +560,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
  */
 async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv }, name) {
   const shown = safeForMessage(name, 80);
+  // The same name twice, for its two jobs: `shown` reads inside a sentence and
+  // may be clipped; `called` is spelled into a command and never is.
+  const called = identifierForCall(name);
   let alreadyRefused = false;
   const next = updateConfigBindings(configPath, (cfg) => {
     // A VAULT THIS WORKSPACE IS BOUND TO CANNOT BE REFUSED. The binding in
@@ -574,13 +577,14 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
       // out for the primary and the wrong one for a secondary, where it would
       // throw away the primary and every other secondary to refuse one name;
       // the Fable round on 7efbad1 found the briefing sending a user there.
-      // IDENTIFIERS IN AN ACTIONABLE COMMAND ARE NOT TRUNCATED. `safeForMessage`
-      // clips at its cap and marks the cut; a primary named with 81 characters
-      // came out altered, and the suggested re-confirmation failed with "not a
-      // registered vault" (Codex, round on 1fad78c). The control-character
-      // neutralisation stays; the cap is raised past any real vault name.
-      const primaryShown = safeForMessage(bound.vault, 4096);
-      const remainder = bound.also.filter((n) => n !== name).map((n) => `"${safeForMessage(n, 4096)}"`).join(', ');
+      // IDENTIFIERS IN AN ACTIONABLE COMMAND GO THROUGH `identifierForCall`.
+      // Raising the cap (round on 1fad78c) fixed the truncation and left the
+      // other half: a primary named `team"notes` produced
+      // `{ vault: "team"notes" }`, an invalid call (Codex on faf5b4b). The
+      // JSON literal is lossless and correctly escaped, and it brings its own
+      // quotes — so there are none around it here.
+      const primaryShown = identifierForCall(bound.vault);
+      const remainder = bound.also.filter((n) => n !== name).map(identifierForCall).join(', ');
       throw new Error(
         bound.vault === name
           ? `confirm_workspace_binding: this workspace is bound to "${shown}" as its primary, so that vault cannot be `
@@ -588,7 +592,7 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
             + '(confirm_workspace_binding({ clear: true })), or bind the workspace elsewhere; then refuse.'
           : `confirm_workspace_binding: "${shown}" is a SECONDARY of this workspace (in \`also\`), so it cannot be `
             + 'refused — a binding in force is the opposite answer. Re-confirm the binding without it first '
-            + `(confirm_workspace_binding({ vault: "${primaryShown}", also: [${remainder}] })), then refuse.`,
+            + `(confirm_workspace_binding({ vault: ${primaryShown}, also: [${remainder}] })), then refuse.`,
       );
     }
     alreadyRefused = readRefusals(cfg, cwd).has(name);
@@ -663,7 +667,7 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
         ? `"${shown}" was already refused for this workspace; nothing changed in your router config`
         : `Refused: this workspace will not be asked about the vault "${shown}" again. Recorded in your own router config, which is the answer that silences the question`)
       + where
-      + ` Bind it later with confirm_workspace_binding({ vault: "${shown}" }) — which drops the refusal — or take the refusal back with confirm_workspace_binding({ retract: "${shown}" }).`,
+      + ` Bind it later with confirm_workspace_binding({ vault: ${called} }) — which drops the refusal — or take the refusal back with confirm_workspace_binding({ retract: ${called} }).`,
   };
 }
 

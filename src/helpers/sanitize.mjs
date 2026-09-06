@@ -343,6 +343,40 @@ export function safeForMessage(value, maxLen = 200) {
 }
 
 /**
+ * An identifier spelled into a command the reader is meant to RUN — a vault
+ * name inside `confirm_workspace_binding({ vault: … })`, and every argument
+ * like it. Returns the JSON string literal, quotes included.
+ *
+ * A message and a command need opposite things from the same value, and
+ * `safeForMessage` gives only the first:
+ *
+ *   - IT TRUNCATES. A vault named with 81 characters came back clipped and
+ *     marked, so the suggested call named a vault that does not exist and
+ *     failed with "not a registered vault". (Codex, round on 1fad78c —
+ *     repaired at one call site, which is how it survived to be found again.)
+ *   - IT DOES NOT ESCAPE THE QUOTE. A vault named `team"notes` interpolated
+ *     between two quotes produced `{ vault: "team"notes" }` — not a syntax
+ *     error the reader can spot and fix, but a different, invalid call.
+ *     (Codex, round on faf5b4b.)
+ *
+ * `JSON.stringify` answers both, losslessly: the quote, the backslash and
+ * every control character come back as escapes a JSON or JavaScript reader
+ * turns into exactly the original name. Nothing is capped, because a command
+ * that does not carry the whole identifier is not a command — the prose around
+ * it still goes through `safeForMessage`, and that is where the cap belongs.
+ *
+ * A name carrying a newline reaches here only when something upstream let it
+ * through; `\n` in a JSON literal is that newline and nothing else, so the
+ * command stays one line and stays honest.
+ *
+ * @param {*} name
+ * @returns {string} the identifier as a quoted JSON string literal
+ */
+export function identifierForCall(name) {
+  return JSON.stringify(String(name));
+}
+
+/**
  * Sanitize full-page content. Larger cap, injection-neutralization ON by
  * default — content goes straight into Claude's context.
  *

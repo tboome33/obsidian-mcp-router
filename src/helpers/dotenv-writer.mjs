@@ -42,6 +42,20 @@
  *     server waiting on another process keeps answering everything else.
  *     The setup script is synchronous end to end and keeps the synchronous
  *     acquirer: a CLI blocking its own thread for two seconds is nothing.
+ *   - AND THE ASYNC FACE KEEPS CALL ORDER, per file, through a queue.
+ *     Suspending before the write bought the loop back and cost the
+ *     ordering the fully synchronous version had for free: a writer that
+ *     went into the timer wait could be overtaken by one that arrived later
+ *     and found the lock free. Measured on faf5b4b by the Codex round:
+ *     `set_auto_enrich_mode` persisting `Hybrid` and then `off` left the
+ *     session on `off` and the FILE on `Hybrid`, both calls reporting
+ *     success, so the next start-up re-enabled enrichment the user had just
+ *     switched off. Atomicity was never lost — the section stays
+ *     synchronous — only order, which for a file that is read at start-up
+ *     is the whole point. `queueDotenvWrite` chains each call of a process
+ *     behind the previous one FOR THAT PHYSICAL PATH, so the last caller
+ *     writes last. Different files do not wait for each other, and a failed
+ *     write does not poison the queue behind it.
  *
  * ---------------------------------------------------------------------------
  * THE RULES THE FORKS DID NOT HAVE
@@ -193,6 +207,50 @@ export async function takeDotenvLockAsync(envPath, { waitMs = DOTENV_LOCK_WAIT_M
 }
 
 /**
+ * The tail of each physical path's queue — the promise that settles when the
+ * write currently last in line is done. Never rejects (see below), so a
+ * failed write cannot cancel the ones behind it. An entry is dropped as soon
+ * as its own tail settles and nothing newer took its place, so the map holds
+ * one key per file being written RIGHT NOW, not one per file ever written.
+ */
+const dotenvWriteQueues = new Map();
+
+/**
+ * Run `task` after every async write this process has already started for the
+ * same physical file, and before every one it starts later. The key is
+ * computed synchronously, at call time, which is what makes the queue's order
+ * the CALLER's order rather than the order the lock happens to be won in.
+ *
+ * The synchronous faces do not queue: they cannot await, they hold the
+ * inter-process lock for the whole of their own read-modify-write, and their
+ * caller is a CLI that does one thing at a time. So a process that mixes the
+ * two faces on one file has atomicity (the `mkdir` lock and the synchronous
+ * sections give it that) but no ordering guarantee between the faces — which
+ * is why the tools use only the async ones.
+ *
+ * @template T
+ * @param {string} envPath
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
+function queueDotenvWrite(envPath, task) {
+  const key = physicalPath(envPath);
+  const previous = dotenvWriteQueues.get(key) || Promise.resolve();
+  // `previous` never rejects, so `then(task)` always runs `task`.
+  const mine = previous.then(task);
+  // What goes back into the map is the SWALLOWED form: the next writer waits
+  // for this one to finish, whether it succeeded or threw, and never inherits
+  // its rejection. The caller gets `mine`, with the real result or the real
+  // error.
+  const settled = mine.then(() => {}, () => {});
+  dotenvWriteQueues.set(key, settled);
+  settled.then(() => {
+    if (dotenvWriteQueues.get(key) === settled) dotenvWriteQueues.delete(key);
+  });
+  return mine;
+}
+
+/**
  * What the file currently says for `key` — the FIRST assignment, read by the
  * loader's own parser, `export` prefix and quotes handled the way the loader
  * handles them. `null` when the file or the key is absent.
@@ -336,8 +394,10 @@ export function removeDotenvVarSync(envPath, key, opts = {}) {
 }
 
 /**
- * The tools' face of the upsert: the lock is awaited with a timer (the loop
- * keeps running), the section itself is synchronous.
+ * The tools' face of the upsert: the call takes its place in this file's
+ * queue immediately, the lock is then awaited with a timer (the loop keeps
+ * running), and the section itself is synchronous. A refused value or a
+ * symlinked file throws before the call is queued at all.
  *
  * @param {string} envPath
  * @param {string} key
@@ -347,12 +407,14 @@ export function removeDotenvVarSync(envPath, key, opts = {}) {
 export async function upsertDotenvVar(envPath, key, value, opts = {}) {
   assertDotenvScalar(value, key, envPath);
   assertDotenvNotSymlink(envPath);
-  const release = await takeDotenvLockAsync(envPath, opts);
-  try {
-    upsertDotenvVarUnlocked(envPath, key, value);
-  } finally {
-    release();
-  }
+  return queueDotenvWrite(envPath, async () => {
+    const release = await takeDotenvLockAsync(envPath, opts);
+    try {
+      upsertDotenvVarUnlocked(envPath, key, value);
+    } finally {
+      release();
+    }
+  });
 }
 
 /**
@@ -365,10 +427,12 @@ export async function upsertDotenvVar(envPath, key, value, opts = {}) {
  */
 export async function removeDotenvVar(envPath, key, opts = {}) {
   assertDotenvNotSymlink(envPath);
-  const release = await takeDotenvLockAsync(envPath, opts);
-  try {
-    return removeDotenvVarUnlocked(envPath, key);
-  } finally {
-    release();
-  }
+  return queueDotenvWrite(envPath, async () => {
+    const release = await takeDotenvLockAsync(envPath, opts);
+    try {
+      return removeDotenvVarUnlocked(envPath, key);
+    } finally {
+      release();
+    }
+  });
 }

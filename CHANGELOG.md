@@ -314,6 +314,41 @@ is a proposal for the one-time import and for the refusal, but not for the brief
 is not asked about; whether a file's lock line should be signalled as a proposal is a design
 question for the last phase.
 
+#### Fixed — the second Codex round (`gpt-6-astra`), on the repairs above
+
+Six findings, six real, and both passes converged independently on the first — which the previous
+round's own repair had created.
+
+- **A `.env` write no longer lands out of order.** Making the lock wait asynchronous bought the
+  event loop back and lost the ordering the fully synchronous version had for free: a writer
+  already waiting on the timer was overtaken by one that arrived later and found the lock free.
+  `set_auto_enrich_mode` persisting `Hybrid` and then `off` left the session on `off` and the FILE
+  on `Hybrid`, both calls reporting success, so the next start-up re-enabled the enrichment the
+  user had just switched off. Same-process writes are now queued per physical file: the last caller
+  writes last. Atomicity was never lost — only order, which for a file read at start-up is the
+  whole point.
+- **`lock_vault --persist` refuses an unpersistable name BEFORE it locks anything.** The value
+  check lived only around the `.env` write, at the end: a vault named `safe\nINJECTED=false` had
+  the session locked and the binding written with `locked: true`, and then the call threw. The
+  previous round's claim that "a broken input is not a half-state" was false; asking the shared
+  validator up front, beside the promotion refusal, is what makes it true.
+- **An identifier spelled into a command is serialised, never quoted by hand.** Raising the
+  truncation cap fixed half the defect and left the other: a vault named `team"notes` produced
+  `confirm_workspace_binding({ vault: "team"notes" })`, an invalid call. Every actionable remedy —
+  the tool's two refusal errors, its success message, and the briefing's acceptance, refusal and
+  re-confirmation calls — now spells its arguments through one helper that emits a JSON string
+  literal: lossless, correctly escaped, never clipped. A sweep drives every producer with hostile
+  names, so a remedy written the old way fails without anyone remembering to test it.
+- **A secondary this machine no longer has is not "addressable by name".** The classifier repair
+  above made such a name read `unknown-vault`, and the briefing then said both "also bound and
+  addressable by name" and "not registered on this machine" in one session, offering a refusal the
+  tool throws on (a bound vault cannot be refused). The attachment line names the stale entries as
+  stale, and both lines point at the one remedy that works: re-confirm the binding without them.
+- **The wait for a lock never runs past the budget the caller asked for.** The poll interval was a
+  flat value whatever the time left, so `{ waitMs: 10, pollMs: 150 }` waited 160 ms. It is clamped
+  to the remaining budget now, in one decision both acquirers share; `waitMs: 0` still means "try
+  once", never "do not try".
+
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,

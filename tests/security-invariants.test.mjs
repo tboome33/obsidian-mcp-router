@@ -561,6 +561,14 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       const envPath = path.join(dir, '.env');
       const written = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : '';
       assert.ok(!written.includes('INJECTED'), `the injected line was persisted: ${JSON.stringify(written)}`);
+      // AND THE REFUSAL LEAVES NOTHING BEHIND. Rethrowing the validator's
+      // error made the CALL fail while the session was already locked to the
+      // hostile name and the binding already written with `locked: true` —
+      // "a broken input is not a half-state" was the claim, and it was false
+      // (Codex, gpt-6-astra, round on faf5b4b). The value is now refused in
+      // the same breath as the promotion check, before anything is applied.
+      assert.equal(registry.lockedVault, undefined, 'the session must not be locked by a refused call');
+      assert.equal(registry.lockSource, undefined, 'and no lock provenance recorded');
     } finally {
       process.chdir(cwd);
       fs.rmSync(dir, { recursive: true, force: true });

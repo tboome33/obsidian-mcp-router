@@ -200,6 +200,59 @@ describe('composeBriefing — what it says', () => {
     assert.match(ok, /bound to the vault "work"\./);
   });
 
+  test('a SECONDARY this machine no longer has is not "addressable by name", and the proposal naming it offers a remedy the tool accepts', () => {
+    // Codex (gpt-6-astra), round on faf5b4b — the consumer side of the
+    // classifier repair. With `notes` registered, a binding
+    // {vault: notes, also: [gone]} and a hint naming `gone`, the briefing said
+    // BOTH "gone … also bound and addressable by name" and "gone … is not
+    // registered on this machine", then offered `{ refuse: "gone" }` — which
+    // the tool throws on, because a bound vault cannot be refused.
+    const isRegistered = (n) => n === 'notes';
+    const out = composeBriefing({
+      binding: bind('notes', ['gone']),
+      hint: { status: 'unknown-vault', hint: 'gone', origin: 'workspace-dotenv' },
+      registeredCount: 1,
+      isRegistered,
+    });
+    assert.doesNotMatch(out, /"gone" also bound and addressable by name/);
+    assert.match(out, /"gone" is still listed but not registered on this machine any more/);
+    assert.match(out, /confirm_workspace_binding\(\{ vault: "notes", also: \[\] \}\)/);
+    // And the proposal sentence sends the reader THERE, not to a refusal.
+    assert.match(out, /cannot be refused while that stands/);
+    assert.doesNotMatch(out, /Refuse it with confirm_workspace_binding\(\{ refuse: "gone" \}\)/);
+
+    // A live secondary is unaffected, and an unbound unknown vault still gets
+    // the refusal — that remedy is the one the tool accepts there.
+    const live = composeBriefing({
+      binding: bind('notes', ['gone', 'kept']),
+      registeredCount: 1,
+      isRegistered: (n) => n === 'notes' || n === 'kept',
+    });
+    assert.match(live, /with "kept" also bound and addressable by name/);
+    assert.match(live, /"gone" is still listed but not registered/);
+    assert.match(live, /also: \["kept"\] \}\)/);
+    const unbound = composeBriefing({
+      binding: bind('notes'),
+      hint: { status: 'unknown-vault', hint: 'gone', origin: 'workspace-dotenv' },
+      registeredCount: 1,
+      isRegistered,
+    });
+    assert.match(unbound, /Refuse it with confirm_workspace_binding\(\{ refuse: "gone" \}\)/);
+  });
+
+  test('the briefing spells identifiers into its calls WITHOUT clipping them', () => {
+    // The same class as the tool's remedies (Codex on faf5b4b): `q()` caps at
+    // 80 characters for prose, and the acceptance and refusal calls used it.
+    const long = `l${'o'.repeat(80)}ng`;
+    const out = composeBriefing({
+      hint: { status: 'unconfirmed', hint: long, origin: 'workspace-dotenv' },
+      registeredCount: 1,
+      isRegistered: () => true,
+    });
+    assert.match(out, new RegExp(`confirm_workspace_binding\\(\\{ vault: "${long}" \\}\\)`));
+    assert.match(out, new RegExp(`confirm_workspace_binding\\(\\{ refuse: "${long}" \\}\\)`));
+  });
+
   test('a locked binding says so — it is the difference between a default and a wall', () => {
     const out = brief({ binding: bind('notes', [], true) });
     assert.match(out, /locked to it — no other vault answers/);

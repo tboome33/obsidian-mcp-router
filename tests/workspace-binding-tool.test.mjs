@@ -30,6 +30,7 @@ import {
   WORKSPACE_BINDINGS_KEY,
 } from '../src/helpers/workspace-bindings.mjs';
 import { applyWorkspaceDotenv, _resetWorkspaceDotenvProvenance } from '../src/helpers/workspace-dotenv.mjs';
+import { composeBriefing } from '../src/helpers/binding-briefing.mjs';
 
 const CWD = process.cwd();
 
@@ -998,6 +999,123 @@ describe('confirm_workspace_binding — refuse: the user says NO (decision refus
       assert.ok(err.message.includes(`vault: "${long}"`), `the identifier must survive whole: ${err.message}`);
       return true;
     });
+  });
+
+  test('every actionable remedy SERIALISES its identifiers — a name carrying a quote stays one valid argument, and a long one is never clipped', async () => {
+    // Codex (gpt-6-astra), round on faf5b4b: raising the cap fixed the
+    // truncation and left the other half. A primary named `team"notes`
+    // interpolated between two quotes produced
+    // `confirm_workspace_binding({ vault: "team"notes", … })` — not a typo the
+    // reader can spot, a different and invalid call. And the repair had
+    // reached ONE call site: the refusal's own success message still spelled
+    // the adoption and the retraction through the 80-character sanitiser.
+    const quoted = 'team"notes\\x';
+    const config = {
+      ...ON_DISK(),
+      [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: quoted, also: ['work', 'remote'] } },
+    };
+    const { seam } = seams({ config });
+    await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, seam), (err) => {
+      // The suggested call must PARSE, and parse back to the real names.
+      const m = /confirm_workspace_binding\(\{ vault: (".*?[^\\]"), also: \[(.*?)\] \}\)/s.exec(err.message);
+      assert.ok(m, `no parseable remedy in: ${err.message}`);
+      assert.equal(JSON.parse(m[1]), quoted, 'the primary round-trips through the literal');
+      assert.deepEqual(JSON.parse(`[${m[2]}]`), ['remote'], 'and so does what is left of `also`');
+      return true;
+    });
+
+    // The SUCCESS message names the two follow-up calls; both carry the whole
+    // identifier. An 81-character name is the case the cap used to cut.
+    const long = `l${'o'.repeat(80)}ng`;
+    const { seam: seam2 } = seams();
+    const res = await confirmWorkspaceBinding(registryOf(), { refuse: long }, seam2);
+    for (const verb of ['vault', 'retract']) {
+      const m = new RegExp(`confirm_workspace_binding\\(\\{ ${verb}: (".*?[^\\\\]") \\}\\)`).exec(res.message);
+      assert.ok(m, `no ${verb} remedy in: ${res.message}`);
+      assert.equal(JSON.parse(m[1]), long, `the ${verb} argument must be the whole name`);
+    }
+  });
+
+  test('SWEEP: EVERY producer of an actionable remedy survives a hostile name — the tool AND the briefing', async () => {
+    // THE CLASS, NOT THE SITE. Two rounds found this defect at one call site
+    // each — the truncation (round on 1fad78c) and then the unescaped quote
+    // (round on faf5b4b) — and each repair reached its own site only, which is
+    // this repository's recorded failure mode. So the rule is checked by
+    // driving every producer rather than by an assertion per message: a new
+    // remedy written the old way fails here without anyone remembering to add
+    // a test for it.
+    const HOSTILE = [
+      'team"notes',                 // the quote that broke the call
+      'back\\slash',                // and the escape that follows it
+      `l${'o'.repeat(80)}ng`,       // past the 80-character prose cap
+      "quote'and\"both",
+      'unicode-é—ø',
+    ];
+
+    /**
+     * Every `tool_name({ … })` in a message, with its string literals parsed.
+     * Deliberately NOT an eval: the whole point is that a badly spelled
+     * argument must be caught, and evaluating it would run the payload. A
+     * proper JSON literal regex finds the arguments; whatever quote is left
+     * over afterwards is the defect.
+     */
+    const callsIn = (text) => {
+      const out = [];
+      const call = /(?:confirm_workspace_binding|lock_vault|set_secondary_vault_mode|set_auto_enrich_mode)\(\{([^}]*)\}\)/g;
+      for (const m of text.matchAll(call)) {
+        const args = m[1];
+        const literals = [...args.matchAll(/"(?:[^"\\]|\\.)*"/g)].map((l) => l[0]);
+        const rest = literals.reduce((acc, l) => acc.replace(l, ''), args);
+        out.push({ whole: m[0], values: literals.map((l) => JSON.parse(l)), strayQuote: rest.includes('"') });
+      }
+      return out;
+    };
+
+    for (const hostile of HOSTILE) {
+      const seen = [];
+      // 1. The tool: the bound-primary refusal, the bound-secondary refusal
+      //    (whose remedy names the primary AND the remaining secondaries), and
+      //    the success message with its two follow-up calls.
+      const bound = { vault: hostile, also: ['work', hostile === 'work' ? 'other' : hostile] };
+      const cfgBound = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: bound } };
+      const { seam: s1 } = seams({ config: cfgBound });
+      await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: hostile }, s1), (err) => {
+        seen.push(err.message); return true;
+      });
+      const { seam: s2 } = seams({ config: cfgBound });
+      await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, s2), (err) => {
+        seen.push(err.message); return true;
+      });
+      const { seam: s3 } = seams();
+      seen.push((await confirmWorkspaceBinding(registryOf(), { refuse: hostile }, s3)).message);
+
+      // 2. The briefing: the three signalled statuses, and the stale-secondary
+      //    note in the attachment line.
+      for (const status of [HINT_STATUS.UNCONFIRMED, HINT_STATUS.UNKNOWN_VAULT, HINT_STATUS.CONFLICTS]) {
+        seen.push(composeBriefing({
+          binding: { vault: 'notes', also: [hostile], locked: false },
+          hint: { status, hint: hostile, origin: 'workspace-dotenv' },
+          registeredCount: 1,
+          isRegistered: (n) => n === 'notes',
+        }));
+      }
+
+      for (const message of seen) {
+        const calls = callsIn(String(message));
+        assert.ok(calls.length > 0, `no spelled call in a remedy for ${JSON.stringify(hostile)}: ${message}`);
+        for (const c of calls) {
+          assert.equal(c.strayQuote, false,
+            `an argument does not parse — the identifier was interpolated between bare quotes: ${c.whole}`);
+          for (const v of c.values) {
+            // Every value is either a name we passed in whole, or one of the
+            // fixture's own names. What must never appear is a CLIPPED form of
+            // the hostile name: that is the truncation defect.
+            assert.ok(!(v !== hostile && hostile.startsWith(v.slice(0, 40)) && v.length < hostile.length),
+              `an identifier was truncated inside a command: ${JSON.stringify(v)} for ${JSON.stringify(hostile)}`);
+          }
+        }
+      }
+    }
   });
 
   test('on a GATED deployment refuse and retract are unavailable, and nothing is written', async () => {

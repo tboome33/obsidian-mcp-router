@@ -28,6 +28,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { upsertDotenvVar, removeDotenvVar } from '../helpers/dotenv-writer.mjs';
+import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import {
   updateConfigBindings,
@@ -109,6 +110,18 @@ export async function lockVault(registry, args = {}) {
   if (persist && isPromotionOfLockedSecondary(vault, registry)) {
     throw lockedSecondaryPromotionError(promotionRefusal(vault));
   }
+
+  // A NAME THAT CANNOT BE PERSISTED IS REFUSED BEFORE ANYTHING IS APPLIED.
+  // The value check used to live only around the `.env` write, at the END of
+  // the persist path: a vault named `safe\nINJECTED=false` had the in-memory
+  // lock applied and the binding recorded with `locked: true` before the
+  // writer refused it, and the call then threw — a failed call that had
+  // locked the session and written the config. Round on faf5b4b (Codex,
+  // gpt-6-astra), which is also where the previous round's claim "a broken
+  // input is not a half-state" was measured false. Asking the same shared
+  // validator here, in the same breath as the promotion refusal, is what
+  // makes that claim true.
+  if (persist) assertDotenvScalar(vault, 'OBSIDIAN_ROUTER_LOCKED', path.join(process.cwd(), '.env'));
 
   // Apply the lock state BEFORE attempting persistence — even if the
   // persist write fails (refused below, or filesystem error), the
@@ -204,7 +217,9 @@ export async function lockVault(registry, args = {}) {
       // not a half-state to report, it is a call to fail — the security pin
       // in tests/security-invariants.test.mjs holds this tool to it. Only the
       // FILE's failures (unwritable, symlinked, held by another process) are
-      // reported.
+      // reported. The refusal that matters happens BEFORE anything is applied
+      // (see `assertDotenvScalar` above); this branch is the backstop that
+      // keeps a validator refusal from ever being reported as an I/O failure.
       if (err?.name === 'DotenvValueError') throw err;
       hintError = safeForMessage(err?.message || String(err), 160);
     }

@@ -48,7 +48,7 @@
  * `npm install`.
  */
 
-import { safeForMessage } from './sanitize.mjs';
+import { safeForMessage, identifierForCall } from './sanitize.mjs';
 import { HINT_STATUS, hintIsWorthSignalling } from './workspace-bindings.mjs';
 
 /**
@@ -140,8 +140,27 @@ function attachmentLine(binding, isRegistered) {
       + `${joinNames(binding.also)} ${binding.also.length > 1 ? 'stay' : 'stays'} bound and `
       + 'addressable by name again once it is lifted.';
   }
+  // A SECONDARY THIS MACHINE NO LONGER HAS is not "addressable by name". The
+  // primary already had this treatment (the branch at the top); the `also`
+  // list did not, so a binding keeping a deleted vault announced it as usable
+  // in one line while the proposal sentence below said it was not registered —
+  // two contradictory sentences in one briefing, and the remedy offered by the
+  // second one was refused by the tool because the name was still bound.
+  // (Codex, gpt-6-astra, round on faf5b4b.)
+  const known = typeof isRegistered === 'function' ? isRegistered : () => true;
+  const live = binding.also.filter((n) => known(n));
+  const stale = binding.also.filter((n) => !known(n));
+  const staleNote = stale.length === 0
+    ? ''
+    : ` ${joinNames(stale)} ${stale.length > 1 ? 'are' : 'is'} still listed but not registered on this `
+      + 'machine any more: re-confirm the binding without '
+      + `${stale.length > 1 ? 'them' : 'it'} (confirm_workspace_binding({ vault: ${identifierForCall(binding.vault)}`
+      + `, also: [${live.map(identifierForCall).join(', ')}] })) to stop this notice.`;
+  if (live.length === 0) {
+    return `This workspace is bound to the vault ${q(binding.vault)}.${staleNote}`;
+  }
   return `This workspace is bound to the vault ${q(binding.vault)}, `
-    + `with ${joinNames(binding.also)} also bound and addressable by name.`;
+    + `with ${joinNames(live)} also bound and addressable by name.${staleNote}`;
 }
 
 /**
@@ -174,9 +193,19 @@ function attachmentLine(binding, isRegistered) {
  *
  * @param {{ status: string, hint: string|null, origin: string|null, previouslyRefused?: boolean }|null} hint
  */
-function hintLine(hint) {
+function hintLine(hint, binding = null) {
   if (!hint || !hintIsWorthSignalling(hint)) return null;
   const name = q(hint.hint);
+  // The name as an ARGUMENT, never clipped and correctly escaped — the prose
+  // form above may be shortened, a command may not (see `identifierForCall`).
+  const called = identifierForCall(hint.hint);
+  // A PROPOSAL NAMING A VAULT THIS WORKSPACE IS STILL BOUND TO cannot be
+  // refused: the tool says so, because a binding in force is the opposite
+  // answer. Since a bound-but-deleted secondary reads `unknown-vault` (the
+  // classifier repair of faf5b4b), this line reached that state offering
+  // `refuse` — a remedy the tool throws on. The way out is the same one the
+  // attachment line above names: re-confirm the binding without it.
+  const boundStale = binding && Array.isArray(binding.also) && binding.also.includes(hint.hint);
   const who = hint.origin === 'workspace-dotenv'
     ? "This project's .env"
     : (hint.origin === 'host' ? 'The environment this router was started in' : 'The environment');
@@ -188,17 +217,21 @@ function hintLine(hint) {
     ? ' A refusal of it was recorded here before (the file carries OBSIDIAN_ROUTER_REFUSED_VAULT), '
       + 'but no refusal of it is recorded in your own router config, so you are asked once more.'
     : '';
-  const refuse = `confirm_workspace_binding({ refuse: ${name} })`;
+  const refuse = `confirm_workspace_binding({ refuse: ${called} })`;
   if (hint.status === HINT_STATUS.UNKNOWN_VAULT) {
+    const stop = boundStale
+      ? 'This workspace still lists it as a secondary, so it cannot be refused while that stands: '
+        + 're-confirm the binding without it (above), and this notice stops.'
+      : `Refuse it with ${refuse} and this notice stops.`;
     return `${who} proposes the vault ${name}, which is not registered on this machine; `
-      + `it was not applied.${before} Refuse it with ${refuse} and this notice stops.`;
+      + `it was not applied.${before} ${stop}`;
   }
   if (hint.status === HINT_STATUS.CONFLICTS) {
     return `${who} proposes ${name} instead; the binding above wins and the proposal was `
       + `not applied.${before} Refuse it with ${refuse} and this notice stops.`;
   }
   return `${who} proposes the vault ${name}; it was not applied.${before} Accept it with `
-    + `confirm_workspace_binding({ vault: ${name} }) if it is what you want, or refuse it with `
+    + `confirm_workspace_binding({ vault: ${called} }) if it is what you want, or refuse it with `
     + `${refuse} and you will not be asked again.`;
 }
 
@@ -304,7 +337,7 @@ export function composeBriefing({
     // Before the hint: when an import just happened, the hint that produced it
     // is now `confirmed` and silent anyway, and the import is the news.
     importedLine(imported),
-    hintLine(hint),
+    hintLine(hint, binding),
     modeLine(mode, modeRefused),
     actionsLine(),
   ].filter(Boolean);

@@ -1451,6 +1451,92 @@ describe('upsertDotenvVar / removeDotenvVar', () => {
     assert.equal(await fs.readFile(envPath, 'utf8'), 'A=1\n', 'and nothing was written');
   });
 
+  test('two async writes of one file apply in CALL order — the last caller wins on disk, as it does in the session', async () => {
+    // Codex (gpt-6-astra) on faf5b4b: making the wait asynchronous bought the
+    // event loop back and cost the ordering the synchronous version had for
+    // free. A writer already waiting on the timer was overtaken by one that
+    // arrived later and found the lock free, so `set_auto_enrich_mode`
+    // persisting Hybrid and then off left the session on `off` and the FILE on
+    // `Hybrid` — both calls reporting success — and the next start-up
+    // re-enabled the enrichment the user had just switched off.
+    const KEY = 'OBSIDIAN_ROUTER_AUTO_ENRICH';
+    await fs.writeFile(envPath, '', 'utf8');
+    const first = upsertDotenvVar(envPath, KEY, 'ClaudeAsk');
+    const second = upsertDotenvVar(envPath, KEY, 'Hybrid');
+    await first;
+    const third = upsertDotenvVar(envPath, KEY, 'off');
+    await Promise.all([second, third]);
+    assert.equal((await fs.readFile(envPath, 'utf8')).trim(), `${KEY}=off`,
+      'the last call started is the last line written');
+
+    // The same property with no await at all between the calls, and with a
+    // removal in the middle: a queue that only happened to work because each
+    // task took the lock on its first try would pass the case above.
+    const started = [];
+    for (let i = 0; i < 6; i += 1) started.push(upsertDotenvVar(envPath, KEY, `v${i}`));
+    started.push(removeDotenvVar(envPath, KEY));
+    started.push(upsertDotenvVar(envPath, KEY, 'last'));
+    await Promise.all(started);
+    assert.equal((await fs.readFile(envPath, 'utf8')).trim(), `${KEY}=last`);
+
+    // A failed write does not cancel the ones queued behind it. The refusal
+    // here is the shared validator's, raised before the call is queued at all.
+    await fs.writeFile(envPath, '', 'utf8');
+    const ok = upsertDotenvVar(envPath, KEY, 'Hybrid');
+    await assert.rejects(() => upsertDotenvVar(envPath, KEY, 'a\nB=evil'), /newline|DotenvValueError|refus/i);
+    const after = upsertDotenvVar(envPath, KEY, 'off');
+    await Promise.all([ok, after]);
+    assert.equal((await fs.readFile(envPath, 'utf8')).trim(), `${KEY}=off`);
+
+    // And two DIFFERENT files do not serialise against each other: the queue
+    // is per physical path, so a slow writer on one .env cannot delay another.
+    const otherDir = fsSync.mkdtempSync(path.join(tmpDir, 'other-'));
+    const otherEnv = path.join(otherDir, '.env');
+    const held = acquireLock(dotenvLockPath(envPath));
+    try {
+      const blocked = upsertDotenvVar(envPath, KEY, 'blocked', { waitMs: 400 });
+      await upsertDotenvVar(otherEnv, KEY, 'free');
+      assert.equal((await fs.readFile(otherEnv, 'utf8')).trim(), `${KEY}=free`,
+        'the other file was written while the first was still waiting');
+      await assert.rejects(() => blocked, /another process is writing/);
+    } finally {
+      held();
+    }
+  });
+
+  test('the wait NEVER runs past the budget the caller asked for — the poll interval is clamped to what is left', async () => {
+    // Codex (gpt-6-astra), round on faf5b4b: the sleep was a flat `pollMs`
+    // whatever the remaining budget, so `{ waitMs: 10, pollMs: 150 }` against a
+    // holder that let go at 30 ms acquired the lock at 160 ms — sixteen times
+    // the bound, and for the server's face a request held that much longer
+    // than its own caller allowed.
+    const dir = fsSync.mkdtempSync(path.join(tmpDir, 'budget-'));
+    const lockPath = path.join(dir, 'the.lock');
+    const held = acquireLock(lockPath);
+    try {
+      const startedAt = Date.now();
+      const got = await acquireLockAsync(lockPath, { waitMs: 10, pollMs: 150 });
+      const waited = Date.now() - startedAt;
+      assert.equal(got, null, 'the lock was held for the whole budget: contention, not acquisition');
+      assert.ok(waited < 120, `waited ${waited} ms for a 10 ms budget`);
+    } finally {
+      held();
+    }
+    // The synchronous acquirer shares the same rule through `afterAttempt`.
+    const held2 = acquireLock(lockPath);
+    try {
+      const startedAt = Date.now();
+      assert.equal(acquireLock(lockPath, { waitMs: 10, pollMs: 150 }), null);
+      assert.ok(Date.now() - startedAt < 120, 'the synchronous wait is clamped too');
+    } finally {
+      held2();
+    }
+    // And `waitMs: 0` still means ONE attempt, not none: a free lock is taken.
+    const free = await acquireLockAsync(lockPath, { waitMs: 0 });
+    assert.ok(free, 'a free lock is acquired even with no budget to wait');
+    free();
+  });
+
   test('a transient EPERM/ENOTEMPTY from mkdir — a racing removal on Windows — is retried; past the deadline the ORIGINAL error surfaces, never "contention"', async () => {
     const dir = fsSync.mkdtempSync(path.join(tmpDir, 'transient-'));
     const lockPath = path.join(dir, 'the.lock');
