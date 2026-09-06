@@ -410,23 +410,23 @@ describe('createBindingsReader — fresh enough for "the instant the second work
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 1);
   });
 
-  test('an unreadable or unparsable file keeps the LAST GOOD copy — a guard that fails open at the first hiccup is not a guard', () => {
+  test('an unreadable or unparsable file returns UNKNOWN even after a good copy', () => {
     const { state, reader } = fakeFs(TWO);
     assert.equal(workspacesDeclaring('ref', reader.current()).length, 2);
 
     state.set('{ this is not json');
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 2, 'a half-written file must not lift the requirement');
+    assert.equal(reader.current(), null, 'a half-written file cannot establish the current count');
 
     state.set(ONE);
     state.fail = 'EBUSY';
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 2, 'nor must a transient read error');
+    assert.equal(reader.current(), null, 'nor can a transient read error');
   });
 
   test('a config that parses to a non-object is not adopted', () => {
     const { state, reader } = fakeFs(TWO);
     reader.current();
     state.set('[]');
-    assert.equal(workspacesDeclaring('ref', reader.current()).length, 2);
+    assert.equal(reader.current(), null);
   });
 
   test('with no good copy EVER, it answers null — and null means "shared", not "nobody"', () => {

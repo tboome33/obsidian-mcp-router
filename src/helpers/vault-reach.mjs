@@ -53,10 +53,9 @@
  *
  *   - `alsoWritable` — direct write, no friction.
  *   - `alsoLocked`   — refused UNCONDITIONALLY for the SECONDARY role. No
- *     write parameter can lift this; only editing config.json removes a
- *     vault from the list. This is what makes "never, no exceptions" actually
- *     true rather than a description of what the model is supposed to do.
- *     The list is global but the ROLE is per binding — the decision keeps
+ *     write parameter can lift this. The mode tool or clearing the binding
+ *     removes a binding-local tier; global entries require a config edit to
+ *     remove their secondary restriction. The ROLE is per binding — the decision keeps
  *     the same base read-write in the workspace that maintains it, which
  *     declares it as PRIMARY from the start. Review round 3 found the one
  *     conversational way out: PROMOTING a locked secondary to primary from
@@ -313,10 +312,13 @@ export function assertVaultWritable(vault, registry, { confirmed = false, toolNa
     // in a refusal is the kind of text the sixth v0.90.0 review hunted.
     throw new Error(
       `Vault "${vault.name}" is locked read-only as a SECONDARY vault of this workspace `
-      + '(listed in `alsoLocked`). No parameter passed in conversation can override this — '
+      + '(listed in `alsoLocked`). No write-call parameter can override this — '
       + 'confirmSecondaryWrite is ignored here, and re-binding or persistently locking this workspace '
-      + 'onto that vault to make it the primary is refused while it is listed. Only editing '
-      + '`alsoLocked` in config.json lifts it. (A workspace that MAINTAINS that vault declares it as '
+      + 'onto that vault to make it the primary is refused while it is listed. For a binding-local '
+      + 'tier, set_secondary_vault_mode with mode: "writable" for this vault '
+      + 'removes it; clearing the binding also removes that binding-local tier. A global '
+      + '`alsoLocked` entry must be removed from config.json to lift the global secondary restriction. '
+      + '(A workspace that MAINTAINS that vault declares it as '
       + 'its primary from the start; this one declared it as a secondary.)',
     );
   }

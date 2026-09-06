@@ -865,7 +865,7 @@ describe('the live registry after a binding change — what THIS session sees', 
 });
 
 describe('confirm_workspace_binding — clearing, the third state', () => {
-  test('`clear: true` removes the binding and says ALL vaults are available', async () => {
+  test('`clear: true` removes the binding and explains reachability', async () => {
     const config = { [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes' } } };
     const { written, seam } = seams({ config });
     const r = await confirmWorkspaceBinding(registryOf(), { clear: true }, seam);
@@ -873,7 +873,7 @@ describe('confirm_workspace_binding — clearing, the third state', () => {
     assert.equal(r.cleared, true);
     assert.equal(r.boundTo, null);
     assert.deepEqual(r.previous, { vault: 'notes', also: [] });
-    assert.match(r.message, /All registered vaults are available again/);
+    assert.match(r.message, /vaultReach.*openVaults.*possibly none/);
     assert.equal(readBinding(written[0].config, CWD), null);
   });
 

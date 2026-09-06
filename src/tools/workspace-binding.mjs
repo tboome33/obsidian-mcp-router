@@ -270,6 +270,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         vaults: registry.vaults || [],
         configuredDefault: registry.configuredDefault,
         binding: null,
+        reach: registry,
       });
       registry.defaultVault = again.name;
       registry.defaultVaultSource = { origin: again.origin, variable: again.variable };
@@ -289,8 +290,8 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         // carrying an escape sequence or a newline reached this message raw —
         // measured on 2026-09-03. Every other config-derived value in this
         // file goes through `safeForMessage`; this one had been missed.
-        ? `This workspace is no longer bound to "${safeForMessage(had.vault, 80)}". All registered vaults are available again, and the default is resolved by the usual cascade.${stillLocked}`
-        : `This workspace had no binding; nothing changed. All registered vaults were, and remain, available.${stillLocked}`,
+        ? `This workspace is no longer bound to "${safeForMessage(had.vault, 80)}". Reachability still follows vaultReach: with "declared", only openVaults remain reachable (possibly none); otherwise registered vaults are available. The default follows the reachable cascade.${stillLocked}`
+        : `This workspace had no binding; nothing changed. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`,
     };
   }
 
@@ -298,7 +299,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   if (typeof primary !== 'string' || primary.trim() === '') {
     throw new Error(
       'confirm_workspace_binding: `vault` is required (the vault this workspace should be bound to). '
-      + 'Pass `clear: true` instead to remove the binding and return to all vaults.',
+      + 'Pass `clear: true` instead to remove the binding; vaultReach still determines reachability.',
     );
   }
   // A vault this workspace declared as an `alsoLocked` SECONDARY cannot be

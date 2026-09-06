@@ -2222,7 +2222,7 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
     // The binaries are therefore forced absent for everyone. What that costs is
     // written into the seven NOT_DRIVEN_REASONS rows below; what it does not
     // cost is the escape check, which still runs on every one of them.
-    const OPTIONAL_BINARIES = ['MARKITDOWN_PATH', 'DOCLING_PATH'];
+    const OPTIONAL_BINARIES = ['MARKITDOWN_PATH', 'DOCLING_PATH', 'PDF_IMAGES_PYTHON'];
     const savedEnv = OPTIONAL_BINARIES.map((k) => [k, process.env[k]]);
     for (const k of OPTIONAL_BINARIES) process.env[k] = path.join(scratch, 'no-such-binary');
 

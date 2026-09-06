@@ -75,8 +75,7 @@ const DEFAULT_MODE = 'ClaudeAsk';
  * story, and a briefing that offered only those two would misdescribe a
  * workspace bound to a primary plus secondaries.
  *
- * `null` is ALL, never "no vault" — the absence of a binding means every
- * registered vault stays addressable and the cascade picks the default.
+ * `null` means no binding; effective reachability still depends on vaultReach.
  *
  * @param {{ vault: string, also: string[] }|null} binding
  * @returns {'all'|'one'|'several'}
@@ -123,8 +122,9 @@ function attachmentLine(binding, isRegistered) {
     // wrong precisely where it matters — a census that is quietly short reads
     // as authoritative, and a guessed default is wrong exactly when a vault is
     // closed. `list_vaults` answers both, and the last line points there.
-    return 'This workspace is bound to no vault in particular: every registered vault is '
-      + "available, and list_vaults names this session's default.";
+    return 'This workspace has no binding. With vaultReach unset, registered vaults are available; '
+      + 'with vaultReach: "declared", only openVaults are reachable (possibly none). '
+      + "list_vaults reports effective reachability and this session's default.";
   }
   const locked = binding.locked ? ', and locked to it — no other vault answers' : '';
   if (state === 'one') {
@@ -135,11 +135,6 @@ function attachmentLine(binding, isRegistered) {
   // addressable by name" contradicted itself in one sentence. The guard is the
   // truth: secondaries stay bound, and answer again once the lock is lifted.
   // (Sixth review, 2026-09-04.)
-  if (binding.locked) {
-    return `This workspace is bound to the vault ${q(binding.vault)}${locked} while the lock holds; `
-      + `${joinNames(binding.also)} ${binding.also.length > 1 ? 'stay' : 'stays'} bound and `
-      + 'addressable by name again once it is lifted.';
-  }
   // A SECONDARY THIS MACHINE NO LONGER HAS is not "addressable by name". The
   // primary already had this treatment (the branch at the top); the `also`
   // list did not, so a binding keeping a deleted vault announced it as usable
@@ -156,6 +151,12 @@ function attachmentLine(binding, isRegistered) {
       + 'machine any more: re-confirm the binding without '
       + `${stale.length > 1 ? 'them' : 'it'} (confirm_workspace_binding({ vault: ${identifierForCall(binding.vault)}`
       + `, also: [${live.map(identifierForCall).join(', ')}] })) to stop this notice.`;
+  if (binding.locked) {
+    const secondary = live.length
+      ? ` ${joinNames(live)} ${live.length > 1 ? 'stay' : 'stays'} bound and addressable by name again once it is lifted.`
+      : '';
+    return `This workspace is bound to the vault ${q(binding.vault)}${locked} while the lock holds.${secondary}${staleNote}`;
+  }
   if (live.length === 0) {
     return `This workspace is bound to the vault ${q(binding.vault)}.${staleNote}`;
   }
@@ -205,7 +206,7 @@ function hintLine(hint, binding = null) {
   // classifier repair of faf5b4b), this line reached that state offering
   // `refuse` — a remedy the tool throws on. The way out is the same one the
   // attachment line above names: re-confirm the binding without it.
-  const boundStale = binding && Array.isArray(binding.also) && binding.also.includes(hint.hint);
+  const boundStale = binding && (binding.vault === hint.hint || binding.also?.includes(hint.hint));
   const who = hint.origin === 'workspace-dotenv'
     ? "This project's .env"
     : (hint.origin === 'host' ? 'The environment this router was started in' : 'The environment');
@@ -220,8 +221,8 @@ function hintLine(hint, binding = null) {
   const refuse = `confirm_workspace_binding({ refuse: ${called} })`;
   if (hint.status === HINT_STATUS.UNKNOWN_VAULT) {
     const stop = boundStale
-      ? 'This workspace still lists it as a secondary, so it cannot be refused while that stands: '
-        + 're-confirm the binding without it (above), and this notice stops.'
+      ? 'This workspace still binds it, so it cannot be refused while that stands: '
+        + 'use the binding repair described above first.'
       : `Refuse it with ${refuse} and this notice stops.`;
     return `${who} proposes the vault ${name}, which is not registered on this machine; `
       + `it was not applied.${before} ${stop}`;
@@ -303,9 +304,9 @@ function importedLine(imported) {
 
 /** The closing line: the two calls that answer "and how do I change this?". */
 function actionsLine() {
-  return 'list_vaults lists every registered vault, open or closed; confirm_workspace_binding '
+  return 'list_vaults lists reachable vaults, open or closed; confirm_workspace_binding '
     + 'changes what this workspace is bound to (one vault, several via `also`, or `clear: true` '
-    + 'for all) and opens a bound vault that is not running.';
+    + 'to remove the binding) and opens a bound vault that is not running.';
 }
 
 /**

@@ -472,7 +472,7 @@ Every session opens by telling you, in a few lines — that is the
 | --- | --- |
 | **one vault** | This directory is bound to it. It is the session default, and `list_vaults` shows `workspaceBinding` with an empty `also`. |
 | **several** | A primary plus secondaries (`also`), all bound and addressable by name. Only the primary is the default. |
-| **all** | No binding: every registered vault is available and the cascade picks the default. `workspaceBinding` is `null` — which never means "no vault". |
+| **all** | No binding (`workspaceBinding: null`). With `vaultReach` unset, registered vaults are available; with `vaultReach: "declared"`, only `openVaults` remain reachable, possibly none. The cascade chooses among reachable vaults. |
 
 **Where the binding lives, and why there.** In *your* `config.json`, under
 `workspaceBindings`, keyed by the directory's canonical path. That file is
@@ -497,7 +497,7 @@ node scripts/setup-vault.mjs --attach <vault> --also <other>
 
 or ask Claude, which calls `confirm_workspace_binding`: `{ vault }` to bind,
 `{ vault, also: [...] }` for several, `{ locked: true }` to restrict the
-session to it, `{ clear: true }` to go back to all vaults. A bound vault whose
+session to it, `{ clear: true }` to remove the binding. Reachability still follows `vaultReach`: when `"declared"`, only `openVaults` remain reachable (possibly none); when unset, registered vaults are available. A bound vault whose
 Obsidian is not running is opened for you — a closed vault does not answer, so
 a binding to one would be a promise that does not work.
 
@@ -579,7 +579,7 @@ read-write in another:
 
 | Tier | What a write does |
 | --- | --- |
-| `locked` | refused, unconditionally — no parameter lifts it, and the vault cannot be promoted to primary from a conversation |
+| `locked` | refused while this tier is in force; write parameters cannot override it. Change a binding-local tier with `set_secondary_vault_mode`, or clear the binding before re-binding. Global `alsoLocked` entries require a config edit to lift the secondary restriction. |
 | `soft` *(default)* | refused unless the call carries `confirmSecondaryWrite: true`, which Claude may set only after you have said yes |
 | `writable` | goes through, no friction |
 
@@ -1665,7 +1665,7 @@ Chaque session s'ouvre en te le disant, en quelques lignes — c'est le hook
 | --- | --- |
 | **un vault** | Ce dossier y est rattaché. C'est le défaut de la session, et `list_vaults` montre `workspaceBinding` avec un `also` vide. |
 | **plusieurs** | Un primaire plus des secondaires (`also`), tous rattachés et adressables par leur nom. Seul le primaire est le défaut. |
-| **tous** | Aucune liaison : tous les vaults enregistrés sont disponibles et la cascade choisit le défaut. `workspaceBinding` vaut `null` — ce qui ne veut jamais dire « aucun vault ». |
+| **tous** | Aucune liaison (`workspaceBinding: null`). Sans `vaultReach`, les vaults enregistrés sont disponibles ; avec `vaultReach: "declared"`, seuls les `openVaults` restent accessibles, éventuellement aucun. La cascade choisit parmi les vaults accessibles. |
 
 **Où vit la liaison, et pourquoi là.** Dans *ton* `config.json`, sous
 `workspaceBindings`, indexée par le chemin canonique du dossier. Ce fichier
@@ -1690,7 +1690,7 @@ node scripts/setup-vault.mjs --attach <vault> --also <autre>
 
 ou demande à Claude, qui appelle `confirm_workspace_binding` : `{ vault }` pour
 rattacher, `{ vault, also: [...] }` pour plusieurs, `{ locked: true }` pour
-restreindre la session, `{ clear: true }` pour revenir à tous les vaults. Un
+restreindre la session, `{ clear: true }` pour supprimer la liaison. L’accès dépend toujours de `vaultReach` : avec `"declared"`, seuls les `openVaults` restent accessibles (éventuellement aucun) ; sans ce réglage, les vaults enregistrés sont disponibles. Un
 vault rattaché dont Obsidian est fermé est ouvert pour toi — un vault fermé ne
 répond pas, donc une liaison vers lui serait une promesse qui ne marche pas.
 
@@ -1772,7 +1772,7 @@ strict dans un projet et ouvert dans un autre :
 
 | Palier | Ce que fait une écriture |
 | --- | --- |
-| `locked` | refusée, sans condition — aucun paramètre ne la lève, et le vault ne peut pas être promu principal depuis une conversation |
+| `locked` | refusée tant que ce palier est en vigueur ; les paramètres d’écriture ne le contournent pas. Modifier un palier local avec `set_secondary_vault_mode`, ou supprimer la liaison avant de la recréer. Une entrée globale `alsoLocked` nécessite une modification de la config pour lever la restriction secondaire. |
 | `soft` *(défaut)* | refusée sauf si l'appel porte `confirmSecondaryWrite: true`, que Claude ne pose qu'après ton oui explicite |
 | `writable` | passe, sans friction |
 
@@ -2191,7 +2191,7 @@ Trois règles que l'implémentation respecte — et que vous devriez respecter a
 | `merge_frontmatter` | Applique plusieurs mises à jour de frontmatter en séquence (non-atomique — voir ROADMAP pour l'alternative atomique). |
 | `lock_vault` / `unlock_vaults` | Restreint le router à un seul vault pour la session (isolation mono-vault). Voir la section **Mode lock**. |
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
-| `confirm_workspace_binding` | Lie ce dossier à un vault, dans ta propre config : `{ vault }`, `{ vault, also: [...] }` pour des secondaires, `{ locked: true }` pour restreindre la session, `{ clear: true }` pour revenir à tous les vaults, `{ refuse }` / `{ retract }` pour répondre à une proposition faite par un fichier de projet. Indisponible sur un déploiement gated. |
+| `confirm_workspace_binding` | Lie ce dossier à un vault, dans ta propre config : `{ vault }`, `{ vault, also: [...] }` pour des secondaires, `{ locked: true }` pour restreindre la session, `{ clear: true }` pour supprimer la liaison (l’accès reste régi par `vaultReach` et `openVaults`), `{ refuse }` / `{ retract }` pour répondre à une proposition faite par un fichier de projet. Indisponible sur un déploiement gated. |
 | `set_secondary_vault_mode` | Enregistre le palier d'écriture d'un SECONDAIRE de ce workspace — `locked`, `soft` ou `writable`. Par workspace : le même vault peut être strict dans un projet et ouvert dans un autre. Indisponible sur un déploiement gated. |
 | `register_remote_vault` | Ajoute à ta propre config un vault servi par le réseau (`{ name, baseUrl, apiKey }`), sans éditer de JSON à la main. Local uniquement (absent des déploiements gated). |
 | `get_view_link` | Construit un lien signé et expirant qui ouvre une page de vault dans l'agent de vue en lecture seule. |

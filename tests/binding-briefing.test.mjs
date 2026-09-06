@@ -176,11 +176,11 @@ describe('composeBriefing — what it says', () => {
     assert.doesNotMatch(out, /"work" and/);
   });
 
-  test('ALL: says every vault is available, and does NOT invent a default or a count', () => {
+  test('ALL: qualifies reachability, and does NOT invent a default or a count', () => {
     const out = brief({ binding: null, registeredCount: 23 });
-    assert.match(out, /bound to no vault in particular/);
-    assert.match(out, /every registered vault is available/);
-    assert.match(out, /list_vaults names this session's default/);
+    assert.match(out, /has no binding/);
+    assert.match(out, /vaultReach.*openVaults.*possibly none/);
+    assert.match(out, /list_vaults reports effective reachability/);
     // The count is a gate, never a claim: the hook cannot see VAULT_* entries
     // or the allowed-vaults whitelist, so a number printed here would be
     // quietly short while reading as authoritative.
@@ -333,9 +333,9 @@ describe('composeBriefing — what it says', () => {
 
   test('the closing line answers "and how do I change this\\?"', () => {
     const out = brief({ binding: bind('notes') });
-    assert.match(out, /list_vaults lists every registered vault, open or closed/);
+    assert.match(out, /list_vaults lists reachable vaults, open or closed/);
     assert.match(out, /confirm_workspace_binding/);
-    assert.match(out, /`clear: true` for all/);
+    assert.match(out, /`clear: true` to remove the binding/);
     assert.match(out, /opens a bound vault that is not running/);
   });
 });
@@ -724,7 +724,7 @@ describe('hooks/workspace-briefing.mjs', () => {
     const r = runHook({ config: CONFIG() });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, new RegExp(`^${BRIEFING_MARKER}$`, 'm'));
-    assert.match(r.stdout, /bound to no vault in particular/);
+    assert.match(r.stdout, /has no binding/);
   });
 
   test('it reads the binding for the cwd Claude Code sent, not the one it was spawned in', () => {

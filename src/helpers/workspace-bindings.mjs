@@ -42,8 +42,8 @@
  *
  *   - one    — a binding with `vault` and an empty `also`
  *   - several— a binding whose `also` names further vaults, all addressable
- *   - all    — no binding at all; the resolution cascade picks the default and
- *              every registered vault stays addressable by name
+ *   - all    — no binding at all; vaultReach/openVaults determine what remains
+ *              reachable and the cascade picks a default from that set
  *
  * `also` is new information for the router. `--attach a --also b` writes only
  * `a` into the dotenv file; `b` lives solely in the workspace's CLAUDE.md — a
@@ -60,7 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
-import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, isGatedDeployment } from './workspace-dotenv.mjs';
+import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
 /** The config key holding every binding. The seventh top-level key. */
@@ -210,7 +210,7 @@ export function normalizeBinding(raw) {
  * of the user (the confirmation tool, or `--attach`, which is itself an
  * explicit command). There is no "pending" state stored here — a hint that has
  * not been confirmed simply leaves no trace in the registry, which is what
- * makes "no binding" mean "all vaults" without ambiguity.
+ * distinguishes "no binding" from a confirmed attachment. Reachability is separate.
  *
  * @param {object} config the parsed router config
  * @param {string} cwd
@@ -250,8 +250,8 @@ export function readBinding(config, cwd) {
 
 /**
  * Every vault this workspace is bound to — the primary first, then the
- * secondaries. Empty when there is no binding, which the caller reads as "all
- * vaults", never as "no vault".
+ * secondaries. Empty when there is no binding; vaultReach/openVaults separately
+ * determine whether an unbound workspace can reach any vaults.
  *
  * Every PRODUCTION writer of `registry.workspaceBinding` sets it from
  * `normalizeBinding()`'s output, where `also` is always a real array — but
@@ -551,7 +551,7 @@ function unchangedBindings(base, all) {
 
 /**
  * A NEW config object with no binding for `cwd`. Pure, same reasoning as
- * `withBinding`. Removing a binding returns the workspace to "all vaults".
+ * `withBinding`. Removing a binding leaves reachability to vaultReach/openVaults.
  *
  * @param {object} config
  * @param {string} cwd
@@ -1008,10 +1008,11 @@ export function migrationDecision({
   // registering B later could never restore the isolation: a TRANSIENT
   // condition turned into a permanent verdict, which is exactly what
   // `CLOSING_REASONS` exists to prevent one level up.
-  if (fromFile(lockHint, lockHintOrigin) && refused(lockHint)) {
+  const lockFirst = workspaceLockProposed(lockHint, lockHintOrigin);
+  if (lockFirst && refused(lockHint)) {
     return no(IMPORT_REASON.REFUSED);
   }
-  if (fromFile(lockHint, lockHintOrigin) && !known(lockHint)) {
+  if (lockFirst && !known(lockHint)) {
     return no(IMPORT_REASON.UNKNOWN_VAULT);
   }
 
@@ -1023,8 +1024,9 @@ export function migrationDecision({
   const candidate = (value, origin, mtimeMs, locked) => (
     fromFile(value, origin) && known(value) && !refused(value) ? { vault: value, mtimeMs, locked } : null
   );
-  const chosen = candidate(lockHint, lockHintOrigin, lockMtimeMs, true)
-    || candidate(hint, hintOrigin, dotenvMtimeMs, false);
+  const chosen = lockFirst
+    ? candidate(lockHint, lockHintOrigin, lockMtimeMs, true)
+    : candidate(hint, hintOrigin, dotenvMtimeMs, false);
 
   if (!chosen) {
     // WHY IT WAS NOT A CANDIDATE, reported from the DEFAULT-vault hint, which

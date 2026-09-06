@@ -831,6 +831,8 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
       if (r.ok) {
         const entry = { sourceUrl: r.sourceUrl, savedAs: r.savedAs, bytes: r.bytes };
         if (r.dimensions) entry.dimensions = r.dimensions;
+        if (r.alreadyPresent) entry.alreadyPresent = r.alreadyPresent;
+        if (r.renamedFrom) entry.renamedFrom = r.renamedFrom;
         downloaded.push(entry);
         urlMap.set(r.sourceUrl, r.savedAs);
       } else if (r.reason === 'fetch-error') {

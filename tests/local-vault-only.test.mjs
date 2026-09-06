@@ -103,7 +103,7 @@ describe('gating hides the host-writers and only those', () => {
     assert.deepEqual(removed, [...LOCAL_ONLY_TOOL_NAMES].sort());
   });
 
-  test('SCAN: every read of a gate variable is INVENTORIED — a second "is this gated" decision cannot be written', async () => {
+  test('SCAN: every read of a gate variable is INVENTORIED — a second "is this gated" decision cannot be written', async (t) => {
     // THE CLASS, NOT THE SITE. The exposure gate in `startServer` computed
     // "gated" from OBSIDIAN_ROUTER_USER_ID alone while `isGatedDeployment` —
     // the predicate the sandbox check and the binding tools use — reads three
@@ -149,8 +149,12 @@ describe('gating hides the host-writers and only those', () => {
       'registry.mjs :: const allowedVaultsEnv = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;',
     ];
 
-    const READ = /\benv\.OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)\b/;
-    const collect = () => {
+    // Inventory these property reads on any identifier: aliases must not make
+    // a second decision invisible. A new unrelated object using these names
+    // also needs an explicit inventory entry, rather than a guessed data flow.
+    const READ = /\b[\w$]+\s*\.\s*OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)\b/g;
+    const BRACKET = /\b[\w$]+\s*\[\s*(['"])OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)\1\s*\]/g;
+    const collect = (scanRoot = SRC) => {
       const files = [];
       const walk = (dir) => {
         for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -159,14 +163,21 @@ describe('gating hides the host-writers and only those', () => {
           else if (e.name.endsWith('.mjs')) files.push(p);
         }
       };
-      walk(SRC);
+      walk(scanRoot);
       const found = [];
       for (const file of files) {
         const raw = fs.readFileSync(file, 'utf8');
         const lines = raw.split('\n');
-        blankStringsAndComments(raw).split('\n').forEach((l, i) => {
-          if (READ.test(l)) found.push(`${path.relative(SRC, file).split(path.sep).join('/')} :: ${lines[i].trim()}`);
-        });
+        const code = blankStringsAndComments(raw);
+        const offsets = [...code.matchAll(READ)].map((m) => m.index);
+        for (const m of raw.matchAll(BRACKET)) {
+          // The member prefix must be CODE; only its literal key is recovered
+          // from raw text. A comment/string mentioning the expression is inert.
+          const prefix = m[0].slice(0, m[0].indexOf('[') + 1);
+          if (code.slice(m.index, m.index + prefix.length) === prefix) offsets.push(m.index);
+        }
+        const lineNumbers = new Set(offsets.map((offset) => raw.slice(0, offset).split('\n').length - 1));
+        for (const i of lineNumbers) found.push(`${path.relative(scanRoot, file).split(path.sep).join('/')} :: ${lines[i].trim()}`);
       }
       return found;
     };
@@ -183,15 +194,20 @@ describe('gating hides the host-writers and only those', () => {
     const SECOND_DECISIONS = [
       "  const gated = !!(process.env.OBSIDIAN_ROUTER_USER_ID || '').trim();",
       '  const shared = !!(process.env.OBSIDIAN_ROUTER_USER_ID);',
+      "  const gated = !!process.env['OBSIDIAN_ROUTER_USER_ID'];",
+      '  const e = process.env; const gated = !!e.OBSIDIAN_ROUTER_USER_ID;',
       '  let isMultiTenant = process.env.OBSIDIAN_ROUTER_READONLY ? true : false;',
       '  const t = computeExposedTools(TOOLS, { gated: !!process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS });',
     ];
-    const probe = path.join(SRC, 'helpers', '__gate_scan_probe.mjs');
+    const os = await import('node:os');
+    const probeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-inventory-'));
+    t.after(() => fs.rmSync(probeRoot, { recursive: true, force: true }));
+    const probe = path.join(probeRoot, '__gate_scan_probe.mjs');
     for (const line of SECOND_DECISIONS) {
       fs.writeFileSync(probe, `export function probe() {\n${line}\n  return gated;\n}\n`, 'utf8');
       try {
-        const found = collect();
-        assert.ok(found.some((f) => f.startsWith('helpers/__gate_scan_probe.mjs ::')),
+        const found = collect(probeRoot);
+        assert.ok(found.some((f) => f.startsWith('__gate_scan_probe.mjs ::')),
           `the inventory must catch: ${line.trim()}`);
       } finally {
         fs.rmSync(probe, { force: true });
@@ -201,9 +217,9 @@ describe('gating hides the host-writers and only those', () => {
     // not a read: the blanking is what makes this inventory usable at all.
     fs.writeFileSync(probe, "// process.env.OBSIDIAN_ROUTER_USER_ID is read by isGatedDeployment\nexport const S = 'OBSIDIAN_ROUTER_READONLY';\n", 'utf8');
     try {
-      assert.deepEqual(collect().sort(), [...ALLOWED].sort(), 'prose and string literals are not reads');
+      assert.deepEqual(collect(probeRoot), [], 'prose and string literals are not reads');
     } finally {
-      fs.rmSync(probe, { force: true });
+      fs.rmSync(probeRoot, { recursive: true, force: true });
     }
   });
 

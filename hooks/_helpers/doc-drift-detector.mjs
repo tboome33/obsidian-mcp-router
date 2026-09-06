@@ -111,8 +111,9 @@ export function orderedVaultCandidates(cwd, cfg) {
 
   const seen = new Set();
   const out = [];
+  const disabled = new Set(disabledVaultEntries(cfg));
   const push = (vp) => {
-    if (vp && !seen.has(vp) && fs.existsSync(vp)) {
+    if (vp && !disabled.has(vaultSlug(cfg, vp)) && !seen.has(vp) && fs.existsSync(vp)) {
       seen.add(vp);
       out.push(vp);
     }
@@ -138,10 +139,10 @@ export function orderedVaultCandidates(cwd, cfg) {
   // the router does not serve.
   const bindingRaw = readBinding(cfg, cwd);
   const binding = bindingRaw && bindingIsActive(cfg, bindingRaw.vault) ? bindingRaw : null;
-  const slug = (binding?.vault || authoritativeDefaultVault() || '').trim().toLowerCase();
+  const slug = binding?.vault || authoritativeDefaultVault() || '';
   if (slug) {
     for (const vp of all) {
-      if (vaultSlug(cfg, vp).toLowerCase() === slug) { push(vp); break; }
+      if (vaultSlug(cfg, vp) === slug) { push(vp); break; }
     }
   }
 
@@ -152,10 +153,10 @@ export function orderedVaultCandidates(cwd, cfg) {
   // threw a TypeError out of this function — which two hooks call, both of
   // which must exit 0 whatever the config says. Same defect as the
   // `vaultNames` one swept in c4291e8, one key over.
-  const defaultSlug = (configuredDefaultVault(cfg) || '').toLowerCase();
+  const defaultSlug = configuredDefaultVault(cfg) || '';
   if (defaultSlug) {
     for (const vp of all) {
-      if (vaultSlug(cfg, vp).toLowerCase() === defaultSlug) { push(vp); break; }
+      if (vaultSlug(cfg, vp) === defaultSlug) { push(vp); break; }
     }
   }
 
@@ -176,11 +177,10 @@ export function orderedVaultCandidates(cwd, cfg) {
   // "template"`. The `String(s)` that stood here guarded the ELEMENTS and not
   // the container, and coerced a numeric entry into the name "123", which a
   // vault whose folder is called `123` really answers to. (v0.90.0)
-  const disabled = new Set(disabledVaultEntries(cfg).map((s) => s.toLowerCase()));
   const isTemplate = (vp) => /\.template$/i.test(vp);
   for (const vp of all) {
     if (isTemplate(vp)) continue;
-    if (disabled.has(vaultSlug(cfg, vp).toLowerCase())) continue;
+    if (disabled.has(vaultSlug(cfg, vp))) continue;
     push(vp);
   }
   // Templates last (almost never the right target, but include in case

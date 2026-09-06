@@ -233,15 +233,20 @@ export function isGatedDeployment(env = process.env) {
  */
 export function workspaceBindingProposal(env = process.env) {
   const dflt = env[DEFAULT_VAULT_KEY];
+  // Migration and the proposal use the same lock-first selection. A host lock
+  // is already authoritative and is never presented as a workspace proposal.
+  if (workspaceLockProposed(env[LOCKED_KEY], envKeyOrigin(LOCKED_KEY, env))) {
+    return { hint: env[LOCKED_KEY], origin: ENV_ORIGINS.WORKSPACE_DOTENV, key: LOCKED_KEY, byLock: true };
+  }
   if (typeof dflt === 'string' && dflt.trim() !== '') {
     return { hint: dflt, origin: envKeyOrigin(DEFAULT_VAULT_KEY, env), key: DEFAULT_VAULT_KEY, byLock: false };
   }
-  const lock = env[LOCKED_KEY];
-  const lockOrigin = envKeyOrigin(LOCKED_KEY, env);
-  if (typeof lock === 'string' && lock.trim() !== '' && lockOrigin === ENV_ORIGINS.WORKSPACE_DOTENV) {
-    return { hint: lock, origin: lockOrigin, key: LOCKED_KEY, byLock: true };
-  }
   return { hint: undefined, origin: null, key: null, byLock: false };
+}
+
+/** A workspace-file lock takes precedence over its default, even if unknown. */
+export function workspaceLockProposed(value, origin) {
+  return typeof value === 'string' && value.trim() !== '' && origin === ENV_ORIGINS.WORKSPACE_DOTENV;
 }
 
 /**

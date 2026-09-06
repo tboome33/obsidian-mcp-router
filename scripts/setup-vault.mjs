@@ -5851,7 +5851,7 @@ if (!vaultArg) {
     // slug) cannot see this: it never learns the folder-slug collision
     // happened, because the two calls' vaultNames slugs genuinely differ.
     const already = registeredVaultPaths(cfgForRoot)
-      .find((vp) => path.resolve(vp) === path.resolve(vaultArg));
+      .find((vp) => samePath(vp, vaultArg));
     if (already) {
       const existingName = vaultSlug(cfgForRoot, already);
       if (existingName.toLowerCase() !== nameFlag.toLowerCase()) {

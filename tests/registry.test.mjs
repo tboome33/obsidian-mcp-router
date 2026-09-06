@@ -33,6 +33,30 @@ import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath, pathBasename } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
 
+// Homedir guards must run against a throwaway home, never the operator's.
+function isolatedHomeSuite() {
+  let savedCwd, home, saved;
+  const keys = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'];
+  before(() => {
+    savedCwd = process.cwd();
+    saved = keys.map((k) => [k, process.env[k]]);
+    home = fsSync.mkdtempSync(path.join(os.tmpdir(), 'registry-home-'));
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.HOMEDRIVE = '';
+    process.env.HOMEPATH = home;
+    assert.equal(os.homedir(), home);
+  });
+  after(() => {
+    process.chdir(savedCwd);
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fsSync.rmSync(home, { recursive: true, force: true });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // normalizePathForCompare — pure unit tests
 // ---------------------------------------------------------------------------
@@ -1151,7 +1175,7 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     await lockVault(reg, { vault: 'alpha' });
     const r = await confirmWorkspaceBinding(reg, { clear: true }, clearSeams());
     assert.equal(reg.lockedVault, 'alpha', 'this session\'s own lock is not the binding\'s to lift');
-    assert.match(r.message, /All registered vaults are available again/);
+    assert.match(r.message, /vaultReach.*openVaults.*possibly none/);
     assert.match(r.message, /still locked to "alpha" by this session's own lock_vault call; unlock_vaults lifts it/,
       'but the sentence must not stop at "available again" while the guard refuses every other vault');
   });
@@ -1847,15 +1871,7 @@ describe('resolveVault() — reachability', () => {
 // ---------------------------------------------------------------------------
 
 describe('lockVault — homedir refusal (E.2)', () => {
-  let savedCwd;
-
-  before(() => {
-    savedCwd = process.cwd();
-  });
-
-  after(() => {
-    process.chdir(savedCwd);
-  });
+  isolatedHomeSuite();
 
   test('persist:true refuses when cwd is the user homedir', async () => {
     // Snapshot ~/.env state before to avoid false positive if a real .env exists
@@ -2226,15 +2242,7 @@ describe('setAutoEnrichMode — tool handler', () => {
 });
 
 describe('setAutoEnrichMode — homedir refusal (mirrors lock_vault E.2)', () => {
-  let savedCwd;
-
-  before(() => {
-    savedCwd = process.cwd();
-  });
-
-  after(() => {
-    process.chdir(savedCwd);
-  });
+  isolatedHomeSuite();
 
   test('persist:true refuses when cwd is the user homedir', async () => {
     // Snapshot ~/.env state before to avoid false positive if a real .env exists

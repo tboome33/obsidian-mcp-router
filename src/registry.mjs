@@ -478,6 +478,7 @@ export async function loadRegistry({ configPath } = {}) {
     vaults,
     configuredDefault,
     binding: workspaceBinding,
+    reach: { vaultReach: vaultReachMode(config), openVaults: openVaultEntries(config), workspaceBinding },
   });
   const defaultVault = resolvedDefault.name;
 
@@ -510,9 +511,8 @@ export async function loadRegistry({ configPath } = {}) {
     // Two SEPARATE fields, never folded into `defaultVaultSource`: a hint that
     // was not applied is not the source of what replaced it — the rule v0.89.0
     // established one setting over, applied here unchanged.
-    // `workspaceBinding` null means "no binding": every registered vault stays
-    // addressable and the cascade picks the default. That is the third state,
-    // "all vaults" — never "no vault".
+    // `workspaceBinding` null means "no binding": vaultReach still determines
+    // which vaults are addressable; the cascade picks among that reachable set.
     workspaceBinding,
     bindingHint,
     // WHICH vaults this workspace REFUSED, from the user's own config — the
@@ -845,7 +845,8 @@ function resolveDefaultVault({ vaults, configuredDefault }) {
  *
  * @returns {{ name: string|undefined, origin: string, variable: string|null }}
  */
-function resolveDefaultVaultWithSource({ vaults, configuredDefault, binding = null }) {
+function resolveDefaultVaultWithSource({ vaults, configuredDefault, binding = null, reach = {} }) {
+  vaults = vaults.filter((v) => isVaultReachable(v.name, reach));
   const isActive = (name) => name && vaults.some((v) => v.name === name);
   const fromEnv = (variable) => ({ origin: envKeyOrigin(variable), variable });
 

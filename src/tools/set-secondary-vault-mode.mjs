@@ -9,7 +9,9 @@
  * records one answer. The three modes, in the user's own words:
  *
  *   - `locked`   — lecture seule stricte : refused unconditionally, no
- *                  conversational override, no promotion to primary.
+ *                  write-call override, no direct promotion to primary while
+ *                  listed. This tool can change a binding-local tier; clearing
+ *                  the binding also removes its local tiers.
  *   - `soft`     — lecture seule, écriture possible sur demande : refused
  *                  unless the write carries `confirmSecondaryWrite: true`,
  *                  which the model may only set after asking the user.

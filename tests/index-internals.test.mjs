@@ -12,6 +12,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 
 import { _internals } from '../src/index.mjs';
 
@@ -128,7 +129,7 @@ describe('assertAssetOutputDirWritable', () => {
     );
   });
 
-  test('containment follows the REAL path: a junction or a long-path prefix into the vault does not escape it', () => {
+  test('containment folds the Windows long-path prefix', () => {
     // Lexical-only containment was escaped by every other spelling of a
     // directory inside the vault (Fable 5.1 round). Proved with the spellings
     // available without privileges: the `\\?\` prefix, and — when the vault
@@ -138,6 +139,22 @@ describe('assertAssetOutputDirWritable', () => {
     );
     if (process.platform === 'win32') assert.equal(owner?.name, 'work', 'the \\\\?\\ prefix is stripped before comparing');
     else assert.ok(true, 'the prefix is a Windows spelling');
+  });
+
+  test('M: a real junction into a vault contains a not-yet-existing child', (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'asset-junction-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const vault = path.join(root, 'vault');
+    const alias = path.join(root, 'alias');
+    fs.mkdirSync(vault);
+    try { fs.symlinkSync(vault, alias, process.platform === 'win32' ? 'junction' : 'dir'); }
+    catch (e) { t.skip(`Cannot create a directory junction/symlink: ${e.code}`); return; }
+    assert.equal(fs.lstatSync(alias).isSymbolicLink(), true);
+    const outputDir = path.join(alias, 'missing', 'assets');
+    assert.equal(fs.existsSync(outputDir), false);
+    const r = reg({ vaults: [{ name: 'ref', type: 'local', path: vault }], alsoLocked: ['ref'] });
+    assert.throws(() => assertAssetOutputDirWritable({ outputDir }, r, SOLO), /locked read-only/);
+    assert.equal(fs.existsSync(outputDir), false, 'the guard must not create the child');
   });
 });
 

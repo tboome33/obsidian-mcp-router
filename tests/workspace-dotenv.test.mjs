@@ -943,14 +943,14 @@ describe('workspaceBindingProposal — a file proposes through TWO lines, and th
     };
   };
 
-  test('the default line is the proposal when there is one', () => {
+  test('the workspace lock takes precedence over the default proposal', () => {
     const restore = clean();
     try {
       const ws = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\nOBSIDIAN_ROUTER_LOCKED=other\n');
       applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
       const p = workspaceBindingProposal();
-      assert.equal(p.hint, 'work');
-      assert.equal(p.byLock, false);
+      assert.equal(p.hint, 'other');
+      assert.equal(p.byLock, true);
       assert.equal(p.origin, 'workspace-dotenv');
     } finally { restore(); }
   });

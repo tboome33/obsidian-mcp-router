@@ -172,11 +172,8 @@ export function workspacesDeclaring(vaultName, config) {
  * @param {string} vaultName
  * @param {{ openVaults?: string[] }} registry the live registry (for `openVaults`)
  * @param {object|null} config the config as it is ON DISK RIGHT NOW, or null
- *   when it has never been readable — in which case the answer is UNKNOWN and
- *   treated as shared (fail closed; see below). `createBindingsReader` keeps
- *   the last good copy and is primed at construction precisely so this
- *   argument is null only when the router never managed to read its own
- *   config, which `loadRegistry` would have refused to start on.
+ *   when the current read failed — uncertainty is treated as shared, even
+ *   if an earlier read succeeded.
  * @returns {{ required: boolean, reason: string|null, workspaces: string[] }}
  */
 export function sharingRequirement(vaultName, registry, config) {
@@ -549,14 +546,9 @@ export function assertSharedVaultPrecondition(vault, registry, toolName, args = 
  * own config file, not a security boundary; the write path takes a real lock
  * and re-reads inside it.
  *
- * WHAT HAPPENS WHEN THE FILE CANNOT BE READ. The LAST GOOD copy is kept and
- * returned. A transient failure (a rename racing the read, a lock held by an
- * antivirus scanner) must not make a requirement disappear for one call — a
- * guard that fails open at the first hiccup is not a guard. When there has
- * never been a good copy, `null` comes back and `sharingRequirement` treats it
- * as UNKNOWN, which is refused like a shared vault — never as "nobody declares
- * it". The reader is primed at construction so that state is, in practice,
- * unreachable in a running router.
+ * A failed current read returns null (UNKNOWN). The parse cache survives for
+ * reuse after recovery, but a cached single-workspace answer cannot establish
+ * that no other workspace attached since the last successful read.
  *
  * @param {object} opts
  * @param {string} opts.configPath
@@ -591,21 +583,14 @@ export function createBindingsReader({ configPath, readFile } = {}) {
           lastGood = parsed;
           lastBytes = bytes;
         }
-        return lastGood;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? lastGood : null;
       } catch {
-        return lastGood;
+        return null;
       }
     },
   };
 
-  // PRIMED HERE, while the file is known to be readable — the router has just
-  // loaded its registry from it. Without this the reader's first `current()`
-  // could be the one call that meets a transient failure (an antivirus lock, a
-  // rename racing the read) and answer `null` with no last-good copy, on a
-  // process that already knew the state. `sharingRequirement` treats `null` as
-  // "unknown, therefore shared", so the consequence was a refusal rather than a
-  // hole — but refusing a write the router had the answer for is still wrong.
-  // (Codex round on 23bbbaa, both passes.)
+  // Prime the parse cache; every subsequent call still requires a fresh read.
   reader.current();
   return reader;
 }

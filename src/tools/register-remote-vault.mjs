@@ -47,7 +47,7 @@ function isHttpUrl(value) {
   try {
     const u = new URL(value);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    if (u.search || u.hash) return false;
+    if (value.includes('?') || value.includes('#')) return false;
     return true;
   } catch {
     return false;
