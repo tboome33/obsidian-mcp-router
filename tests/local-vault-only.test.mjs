@@ -103,44 +103,108 @@ describe('gating hides the host-writers and only those', () => {
     assert.deepEqual(removed, [...LOCAL_ONLY_TOOL_NAMES].sort());
   });
 
-  test('SCAN: nothing decides "is this deployment gated" from a raw env read', async () => {
+  test('SCAN: every read of a gate variable is INVENTORIED — a second "is this gated" decision cannot be written', async () => {
     // THE CLASS, NOT THE SITE. The exposure gate in `startServer` computed
-    // "gated" from OBSIDIAN_ROUTER_USER_ID alone while `isGatedDeployment`
-    // — the predicate the sandbox check and the binding tools use — reads
-    // three signals. A router gated by OBSIDIAN_ROUTER_ALLOWED_VAULTS or
-    // OBSIDIAN_ROUTER_READONLY therefore still EXPOSED `register_remote_vault`
-    // and let a caller write a vault into the shared config (Codex, round on
-    // the Phase 6 commit). The test below proves the predicate; this proves
-    // nothing computes a SECOND one, which is how the first drift happened.
+    // "gated" from OBSIDIAN_ROUTER_USER_ID alone while `isGatedDeployment` —
+    // the predicate the sandbox check and the binding tools use — reads three
+    // signals, so a router gated by OBSIDIAN_ROUTER_ALLOWED_VAULTS or
+    // OBSIDIAN_ROUTER_READONLY still EXPOSED `register_remote_vault` and let a
+    // caller write a vault into the shared config (Codex, round on the Phase 6
+    // commit).
+    //
+    // THE FIRST VERSION OF THIS SCAN KEYED ON THE VARIABLE NAME — anything
+    // matching `const *gated* = … process.env.X`. Mutating the scan showed the
+    // hole immediately: `const shared = !!(process.env.OBSIDIAN_ROUTER_USER_ID)`
+    // walks straight past it, and so does any decision under a name nobody
+    // thought of. A guard that depends on what the next author calls a variable
+    // is not a guard. So this pins the INVENTORY instead: every line of `src/`
+    // that reads one of the three, in either form, with the reason it is
+    // allowed to. Nine lines, all naming their purpose; a tenth fails here and
+    // its author has to say whether it is a gating decision (use
+    // `isGatedDeployment()`) or something else (add it below, with why).
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { fileURLToPath } = await import('node:url');
+    const { blankStringsAndComments } = await import('./_source-scan.mjs');
     const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
-    const HOME = path.join(SRC, 'helpers', 'workspace-dotenv.mjs'); // where the predicate lives
-    const files = [];
-    const walk = (dir) => {
-      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) walk(p);
-        else if (e.name.endsWith('.mjs')) files.push(p);
+
+    // path :: the exact source line, trimmed. Comments and string literals are
+    // blanked before matching, so prose about the rule never counts as a read.
+    const ALLOWED = [
+      // THE PREDICATE ITSELF. The one place the question "is this deployment
+      // gated" is answered, and the only place the three are read together.
+      "helpers/workspace-dotenv.mjs :: return TRUTHY.has(String(env.OBSIDIAN_ROUTER_READONLY || '').trim().toLowerCase())",
+      'helpers/workspace-dotenv.mjs :: || set(env.OBSIDIAN_ROUTER_ALLOWED_VAULTS)',
+      'helpers/workspace-dotenv.mjs :: || set(env.OBSIDIAN_ROUTER_USER_ID);',
+      // THE START-UP REPORT, which NAMES each signal it found rather than
+      // deciding anything with them (`assertSandboxConsistent`).
+      "index.mjs :: if (isReadonlyMode(env.OBSIDIAN_ROUTER_READONLY)) multiTenantSignals.push('OBSIDIAN_ROUTER_READONLY');",
+      'index.mjs :: if (env.OBSIDIAN_ROUTER_ALLOWED_VAULTS && env.OBSIDIAN_ROUTER_ALLOWED_VAULTS.trim()) {',
+      'index.mjs :: if (env.OBSIDIAN_ROUTER_USER_ID && env.OBSIDIAN_ROUTER_USER_ID.trim()) {',
+      // THE THREE SETTINGS APPLYING THEMSELVES — a different question from
+      // gatedness: the read-only MODE, the audit identity, and the whitelist
+      // doing its own filtering.
+      'index.mjs :: const readonly = isReadonlyMode(process.env.OBSIDIAN_ROUTER_READONLY);',
+      'index.mjs :: const rawUserId = process.env.OBSIDIAN_ROUTER_USER_ID;',
+      'registry.mjs :: const allowedVaultsEnv = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;',
+    ];
+
+    const READ = /\benv\.OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)\b/;
+    const collect = () => {
+      const files = [];
+      const walk = (dir) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, e.name);
+          if (e.isDirectory()) walk(p);
+          else if (e.name.endsWith('.mjs')) files.push(p);
+        }
+      };
+      walk(SRC);
+      const found = [];
+      for (const file of files) {
+        const raw = fs.readFileSync(file, 'utf8');
+        const lines = raw.split('\n');
+        blankStringsAndComments(raw).split('\n').forEach((l, i) => {
+          if (READ.test(l)) found.push(`${path.relative(SRC, file).split(path.sep).join('/')} :: ${lines[i].trim()}`);
+        });
       }
+      return found;
     };
-    walk(SRC);
-    // An assignment whose right-hand side reads one of the three gate
-    // variables and is used as a boolean — `const gated = !!(process.env.X)`,
-    // `const isGated = process.env.X ? … `. The predicate's own home is
-    // exempt, and so is the start-up REPORT, which names each signal it found
-    // rather than deciding anything.
-    const suspicious = /(?:const|let|var)\s+\w*[Gg]ated\w*\s*=\s*[^;\n]*process\.env\.OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)/;
-    const offenders = [];
-    for (const file of files) {
-      if (file === HOME) continue;
-      const text = fs.readFileSync(file, 'utf8');
-      for (const [i, line] of text.split('\n').entries()) {
-        if (suspicious.test(line)) offenders.push(`${path.relative(SRC, file)}:${i + 1}`);
+
+    assert.deepEqual(collect().sort(), [...ALLOWED].sort(),
+      'a read of a gate variable appeared or moved: if it decides whether the deployment is gated, '
+      + 'call isGatedDeployment() instead; if it is the setting applying itself, add it above with its reason');
+
+    // THE SCAN IS MUTATED HERE, in the test, because a class guard that never
+    // fires is decoration — and mutating the PREVIOUS version of this scan is
+    // exactly what exposed its name heuristic. Each of these is a second
+    // decision written a different way; the inventory catches all of them
+    // because it does not care what they are called.
+    const SECOND_DECISIONS = [
+      "  const gated = !!(process.env.OBSIDIAN_ROUTER_USER_ID || '').trim();",
+      '  const shared = !!(process.env.OBSIDIAN_ROUTER_USER_ID);',
+      '  let isMultiTenant = process.env.OBSIDIAN_ROUTER_READONLY ? true : false;',
+      '  const t = computeExposedTools(TOOLS, { gated: !!process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS });',
+    ];
+    const probe = path.join(SRC, 'helpers', '__gate_scan_probe.mjs');
+    for (const line of SECOND_DECISIONS) {
+      fs.writeFileSync(probe, `export function probe() {\n${line}\n  return gated;\n}\n`, 'utf8');
+      try {
+        const found = collect();
+        assert.ok(found.some((f) => f.startsWith('helpers/__gate_scan_probe.mjs ::')),
+          `the inventory must catch: ${line.trim()}`);
+      } finally {
+        fs.rmSync(probe, { force: true });
       }
     }
-    assert.deepEqual(offenders, [], `use isGatedDeployment() instead:\n${offenders.join('\n')}`);
+    // And a line that only MENTIONS the variable in a comment or a string is
+    // not a read: the blanking is what makes this inventory usable at all.
+    fs.writeFileSync(probe, "// process.env.OBSIDIAN_ROUTER_USER_ID is read by isGatedDeployment\nexport const S = 'OBSIDIAN_ROUTER_READONLY';\n", 'utf8');
+    try {
+      assert.deepEqual(collect().sort(), [...ALLOWED].sort(), 'prose and string literals are not reads');
+    } finally {
+      fs.rmSync(probe, { force: true });
+    }
   });
 
   test('"gated" means the SAME three signals everywhere — a whitelist alone hides them too', async () => {

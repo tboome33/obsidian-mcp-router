@@ -335,6 +335,36 @@ question for the last phase.
   deployment the workspace IS the server's own directory, shared by every caller — the reason
   `register_remote_vault` has always been hidden there.
 
+#### Fixed — the last Codex round, on the repairs above
+
+Seven findings, six real (the seventh had already been repaired in the working tree). The
+`codex review` pass returned nothing; the claims-fed pass found all seven — including three at
+callers the previous repair had left behind.
+
+- **An exact name keeps its identity all the way to the path.** The previous repair made
+  `resolveVaultBySlug` match exactly but TRIMMED first, which reopened the same hole one whitespace
+  over: with vaults named `notes` and `" notes "`, a binding to the second passed the membership
+  check verbatim and then resolved to the FIRST one's path. The exact pass no longer trims; only the
+  case-insensitive fallback does.
+- **`--link-workspace` records the vault's own name.** It resolves a slug case-insensitively as a
+  convenience and then persisted whatever was typed, so `--link-workspace <ws> MyVaulT` wrote a
+  binding the registry — which resolves exactly — could never resolve. The command reported success
+  and the default cascade fell straight through it.
+- **`--attach` no longer discards a distinct secondary as a duplicate.** Deduplication folded the
+  typed words to lowercase BEFORE resolving them, so `--attach notes --also NOTES` — two different
+  registered vaults — looked like one name twice and recorded `also: []`. Resolve first, then
+  deduplicate on the canonical name.
+- **The hooks' registered-name set is not STRICTER than the registry either.** Requiring `apiKey`
+  and `baseUrl` to be strings dropped a remote vault the registry serves (it tests truthiness), so a
+  workspace bound to it found its binding inactive and the hooks fell through to a different vault
+  entirely. Narrowing that substitutes one vault for another is the same defect the other way round.
+- **The `bind-workspace` wizard carries the lock into the call it executes.** Its opening paragraph
+  required `locked: true` for a lock-carried proposal; the step that actually calls the tool still
+  spelled a plain binding, so following the wizard recorded `locked: false`.
+- **The read-only refusal names every way out.** These release notes promise it names the two
+  standing remedies beside the per-write override; it named neither, so a user who never wanted the
+  friction for that vault was only ever told how to get past it once more.
+
 #### Fixed — the Codex round on Phase 6 itself
 
 Seven findings, seven real. Two of them were in code the phase's own claims depended on but no diff

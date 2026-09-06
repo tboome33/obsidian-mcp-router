@@ -60,11 +60,15 @@ When the user says it is done, call `list_vaults` again.
 
 > Do you want to bind vault `<name>` as the **primary** vault of this workspace? (yes / no)
 
+When you reached this vault from a proposal whose `bindingHint.byLock` is true, the file asked for a LOCK, so ask for that too — one question, not two:
+
+> Do you want to bind vault `<name>` as the **primary** vault of this workspace, and **lock** the session to it (no other vault answers until it is lifted)? (yes / no)
+
 Wait. "no" → Step 2. "yes" → Step 5.
 
 ## Step 5 — bind the primary
 
-Call `confirm_workspace_binding({ vault: "<name>", open: false })` — with the existing `also` as well when the workspace already had secondaries and only the primary changes, so nothing is dropped.
+Call `confirm_workspace_binding({ vault: "<name>", open: false })` — with the existing `also` as well when the workspace already had secondaries and only the primary changes, so nothing is dropped. **Add `locked: true` when Step 4 asked the lock question** (`bindingHint.byLock`): without it the call records `locked: false` and the user gets something narrower than what they agreed to, silently.
 
 Relay the result in one sentence: *"Bound: `<name>` is now the primary vault of this workspace."* Relay a refusal verbatim (the tool names the registered vaults when a name is unknown, and refuses to promote a secondary this workspace marked strict read-only).
 

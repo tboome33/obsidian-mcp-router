@@ -211,8 +211,19 @@ export function registeredVaultNames(cfg) {
     // Codex round on the Phase 6 commit, probing exactly this membership.
     if (!r || typeof r !== 'object') continue;
     if (r.enabled === false) continue;
+    // EXACTLY THE REGISTRY'S TEST, which is TRUTHINESS — `if (!r.name ||
+    // !r.baseUrl || !r.apiKey) continue`. The first repair required all three
+    // to be strings, which is stricter than the registry: a config whose
+    // `apiKey` is a number registers on the server and was dropped here, so a
+    // workspace BOUND to that vault found its binding "inactive" and
+    // `detectVaultContext` fell through to another answer entirely — narrowing
+    // that substitutes one vault for another is not the safe direction, it is
+    // the same defect wearing the other hat. (Codex, round on da6a371.) The
+    // NAME is still required to be a string, because it is what this set holds
+    // and what every comparison against it is.
+    if (!r.name || !r.baseUrl || !r.apiKey) continue;
     const name = typeof r.name === 'string' ? r.name : '';
-    if (!name.trim() || typeof r.baseUrl !== 'string' || !r.baseUrl || typeof r.apiKey !== 'string' || !r.apiKey) continue;
+    if (!name.trim()) continue;
     // The server registers `r.name` VERBATIM and matches `disabledVaults`
     // against it verbatim too, so the name kept here is the raw one.
     if (disabled.has(name)) continue;

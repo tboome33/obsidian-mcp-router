@@ -142,6 +142,22 @@ describe('assertVaultWritable', () => {
     assert.throws(() => assertVaultWritable(vault('ref'), registry), /SECONDARY vault/);
   });
 
+  test('the soft-tier refusal names EVERY way out — the per-write one and the two standing ones', () => {
+    // The release notes promise this message names both standing remedies;
+    // it named neither, so a user who never wanted the friction for this vault
+    // was told only how to get past it once, over and over. (Codex, round on
+    // da6a371 — a documentation promise the code did not keep.)
+    const registry = { workspaceBinding: { vault: 'work', also: ['ref'] }, alsoWritable: [], alsoLocked: [] };
+    assert.throws(() => assertVaultWritable(vault('ref'), registry, { toolName: 'write_file' }), (err) => {
+      assert.match(err.message, /confirmSecondaryWrite: true/, 'the per-write override, first');
+      assert.match(err.message, /set_secondary_vault_mode\(\{ vault: "ref", mode: "writable" \}\)/,
+        'the per-workspace standing remedy, with the identifier serialised');
+      assert.match(err.message, /`alsoWritable` list in config\.json/, 'and the global one');
+      assert.match(err.message, /their call, never yours/, 'both are the user\'s decision, not the model\'s');
+      return true;
+    });
+  });
+
   test('does not throw for a soft-tier secondary WHEN confirmed:true is passed', () => {
     const registry = { workspaceBinding: { vault: 'work', also: ['ref'] }, alsoWritable: [], alsoLocked: [] };
     assert.doesNotThrow(() => assertVaultWritable(vault('ref'), registry, { confirmed: true }));

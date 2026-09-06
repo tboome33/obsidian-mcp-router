@@ -89,6 +89,7 @@ import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
 import { normalizePathForCompare, stripExtendedPathPrefix } from './vault-path-identity.mjs';
 import { alsoLockedEntries } from './vault-slug.mjs';
+import { identifierForCall } from './sanitize.mjs';
 
 /**
  * The `confirmSecondaryWrite` schema property, shared BY IDENTITY across
@@ -319,10 +320,20 @@ export function assertVaultWritable(vault, registry, { confirmed = false, toolNa
   // tier === 'soft' — the one tier a caller CAN pass through, by asserting
   // (via `confirmed`) that it already obtained the user's explicit go-ahead.
   if (confirmed) return;
+  // THE REFUSAL NAMES EVERY WAY OUT, not just the per-write one. The per-write
+  // override answers "let me write this once"; a user who never wanted the
+  // friction for this vault at all is asking a different question, and the
+  // release notes promise this message answers it too — a promise the message
+  // did not keep. (Codex, round on da6a371.) The standing remedies come second,
+  // because the per-write one is what the caller should reach for by default.
   throw new Error(
     `Vault "${vault.name}" is a SECONDARY vault of this workspace and read-only by default `
     + '(not in `alsoWritable` or `alsoLocked`). Tell the user which vault and what you want to '
     + `write, get their explicit go-ahead in the conversation, then retry ${tool} with `
-    + 'confirmSecondaryWrite: true. Do not set that flag without having actually asked.',
+    + 'confirmSecondaryWrite: true. Do not set that flag without having actually asked. '
+    + 'If the user would rather stop being asked for this vault, the standing answers are '
+    + `set_secondary_vault_mode({ vault: ${identifierForCall(vault.name)}, mode: "writable" }) for this `
+    + 'workspace, or adding it to the `alsoWritable` list in config.json for every workspace — '
+    + 'both are their call, never yours to make on their behalf.',
   );
 }

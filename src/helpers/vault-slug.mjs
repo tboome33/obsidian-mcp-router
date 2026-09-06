@@ -213,28 +213,35 @@ export function vaultSlug(cfg, vaultPath) {
  */
 export function resolveVaultBySlug(cfg, slug) {
   if (!cfg || !slug) return null;
-  const raw = String(slug).trim();
-  if (!raw) return null;
+  const exact = String(slug);
+  if (!exact.trim()) return null;
 
-  // AN EXACT NAME RESOLVES TO ITS OWN VAULT. This used to lowercase both sides
-  // and take the first hit, so with two vaults named `notes` and `NOTES` a
-  // caller asking for `NOTES` — validated as registered and permitted by the
-  // whitelist under the server's exact rule — got the PATH of `notes`, the one
-  // the server excludes. The hooks then journalled, autocommitted and recalled
-  // into a vault every tool call refuses; the membership check being exact was
-  // not enough while the resolution that follows it was not. (Codex, round on
-  // the Phase 6 commit.)
+  // AN EXACT NAME RESOLVES TO ITS OWN VAULT — compared VERBATIM, the way the
+  // registry compares it (`resolveVault`: `x.name === target`). This used to
+  // lowercase both sides and take the first hit, so with two vaults named
+  // `notes` and `NOTES` a caller asking for `NOTES` — validated as registered
+  // and permitted by the whitelist under the server's exact rule — got the
+  // PATH of `notes`, the one the server excludes, and the hooks journalled,
+  // autocommitted and recalled into a vault every tool call refuses.
+  //
+  // AND THE EXACT PASS DOES NOT TRIM. The first repair trimmed before
+  // comparing, which reopened the same hole one whitespace over: with A named
+  // `notes` and B named `" notes "`, a binding to B passed `bindingIsActive`
+  // verbatim and then resolved to A's path. A name the registry accepts as
+  // itself must keep its identity all the way to the path. (Codex, rounds on
+  // the Phase 6 commit and on its repair.)
   for (const vaultPath of registeredVaultPaths(cfg)) {
-    if (vaultSlug(cfg, vaultPath) === raw) return vaultPath;
+    if (vaultSlug(cfg, vaultPath) === exact) return vaultPath;
   }
 
-  // No exact match: fall back to a case-insensitive one, because this resolver
-  // also serves people typing a name at a command line, where insisting on the
-  // exact case would be hostile for no safety gained. But ONLY when it is
-  // unambiguous — two vaults differing solely in case make the answer a guess,
-  // and a guess here is the wrong vault written into.
-  const target = raw.toLowerCase();
-  const folded = registeredVaultPaths(cfg).filter((vp) => vaultSlug(cfg, vp).toLowerCase() === target);
+  // No exact match: fall back to a case-insensitive one on the TRIMMED name,
+  // because this resolver also serves people typing a name at a command line,
+  // where insisting on the exact case — or on the absence of a stray space —
+  // would be hostile for no safety gained. But ONLY when it is unambiguous:
+  // two vaults folding onto one spelling make the answer a guess, and a guess
+  // here is the wrong vault written into.
+  const target = exact.trim().toLowerCase();
+  const folded = registeredVaultPaths(cfg).filter((vp) => vaultSlug(cfg, vp).trim().toLowerCase() === target);
   return folded.length === 1 ? folded[0] : null;
 }
 

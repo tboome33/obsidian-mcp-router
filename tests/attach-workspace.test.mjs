@@ -311,6 +311,24 @@ describe('--link-workspace / --unlink-workspace — the binding, not only the hi
     assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/);
   });
 
+  test('--link-workspace records the vault\'s OWN name, not the spelling that was typed', () => {
+    // Codex, round on da6a371: this command resolves a slug case-insensitively
+    // as a convenience, then persisted whatever the caller typed. The registry
+    // resolves a binding EXACTLY, so `--link-workspace <ws> MyVaulT` wrote a
+    // binding no session could resolve — the command reported success and the
+    // default cascade fell straight through it. `--attach` already stored the
+    // canonical slug; this path did not.
+    const sc = makeScenario();
+    const res = run(sc, ['--link-workspace', sc.ws, 'MyVaulT'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    const entry = cfg.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)];
+    assert.ok(entry, 'a binding was recorded');
+    assert.equal(entry.vault, 'myvault', 'the canonical slug, resolvable by the registry');
+    assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/,
+      'and the portable hint carries the same name');
+  });
+
   test('re-linking to the SAME vault keeps its lock; pointing elsewhere drops it', () => {
     const sc = makeScenario();
     const key = canonicalWorkspaceKey(sc.ws);
@@ -494,6 +512,41 @@ describe('--attach (CLI)', () => {
     assert.match(f.claudeMd, /vault: "other"/);
     assert.match(f.gitignore, /^\.env$/m);
     assert.match(f.gitignore, /^\.mcp\.json$/m);
+  });
+
+  test('two secondaries differing only in case are two vaults, not one duplicate', () => {
+    // Codex, round on da6a371: the deduplication folded the TYPED words to
+    // lowercase before resolving them, so `--attach notes --also NOTES` — two
+    // DISTINCT registered vaults — looked like one name twice. The secondary
+    // was dropped with a "duplicate" warning and the command exited zero
+    // having recorded `also: []`. Two arguments are duplicates only when they
+    // resolve to the same vault, which is a question only the resolver can
+    // answer.
+    const sc = makeScenario({ vaults: ['notes', 'NOTES'] });
+    // `makeVault` lowercases directory names for its map, so name the two
+    // through `vaultNames` to make them differ by case for the registry.
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    const [a, b] = Object.keys(cfg.portRegistry);
+    cfg.vaultNames = { [a]: 'notes', [b]: 'NOTES' };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'notes', '--also', 'NOTES']);
+    assert.equal(res.status, 0, res.out);
+    assert.doesNotMatch(res.out, /Ignoring duplicate/, 'they are not duplicates');
+    const after = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    const entry = after.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)];
+    assert.ok(entry, 'a binding was recorded');
+    assert.equal(entry.vault, 'notes');
+    assert.deepEqual(entry.also, ['NOTES'], 'the secondary survives, spelled as the registry spells it');
+
+    // And a REAL duplicate — the same vault named twice, in two spellings that
+    // resolve to it — is still dropped.
+    const sc2 = makeScenario();
+    const res2 = run(sc2, ['--attach', 'myvault', '--also', 'MyVaulT']);
+    assert.equal(res2.status, 0, res2.out);
+    assert.match(res2.out, /Ignoring duplicate/);
+    const after2 = JSON.parse(fs.readFileSync(sc2.configPath, 'utf8'));
+    assert.deepEqual(after2.workspaceBindings?.[canonicalWorkspaceKey(sc2.ws)]?.also, []);
   });
 
   test('AND writes the binding into the user\'s own config — the write that actually decides', () => {

@@ -299,6 +299,20 @@ describe('resolveVaultBySlug — an exact name resolves to ITS OWN vault', () =>
     assert.equal(resolveVaultBySlug(cfg, 'Notes'), null);
   });
 
+  test('the exact pass does not TRIM either — a name the registry accepts keeps its identity', () => {
+    // Codex, round on the repair: the first version trimmed before comparing,
+    // which reopened the same hole one whitespace over. With A named `notes`
+    // and B named `" notes "`, a binding to B passed `bindingIsActive`
+    // verbatim — the server registers B under that name — and then resolved to
+    // A's PATH, so journalling and autocommit went to A.
+    const padded = { portRegistry: { [A]: 27124, [B]: 27125 }, vaultNames: { [A]: 'notes', [B]: ' notes ' } };
+    assert.equal(resolveVaultBySlug(padded, ' notes '), B, 'the padded name is B, exactly');
+    assert.equal(resolveVaultBySlug(padded, 'notes'), A, 'and the bare one is A');
+    // The fold fallback still trims — but only when nothing matched exactly,
+    // and only when the fold is unambiguous. Here both fold onto `notes`.
+    assert.equal(resolveVaultBySlug(padded, 'NOTES'), null, 'ambiguous once folded: refused, not guessed');
+  });
+
   test('the case-insensitive convenience survives where it is unambiguous', () => {
     // The command line is a real caller: `--attach WORK` for a vault named
     // `work` must keep working when nothing else folds onto it.

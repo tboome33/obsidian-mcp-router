@@ -603,8 +603,10 @@ secondaries, one tier question per secondary, then a table of what it recorded.
 When more than one workspace declares the same vault, a blind write to it is
 refused: the call must carry a **precondition**. `write_file` takes `ifMatch`
 (the `contentSha256` a read returned) or `ifNew: true`; `patch_file`,
-`append_to_file`, `delete_file`, `move_file` and `merge_frontmatter` take
-`ifMatch`; a `write_bundle` needs one **per step** (`ifMatch`, or `ifNew: true`
+`append_to_file`, `set_frontmatter`, `merge_frontmatter`, `move_file` and
+`delete_file` take `ifMatch` (`delete_file` also accepts the seal its
+`preview: true` call returned); a `write_bundle` needs one **per step**
+(`ifMatch`, or `ifNew: true`
 on a write step), or the `approvedPlanSha256` a `preview: true` call returned —
 `expect` is the precondition of a *recovery* run, not of an ordinary bundle;
 `download_page_assets` takes `createOnly`; `execute_template` is create-only at
@@ -1781,9 +1783,10 @@ secondaires, une question de palier par secondaire, puis un tableau de ce qui a
 Quand plusieurs workspaces déclarent le même vault, une écriture à l'aveugle y
 est refusée : l'appel doit porter une **précondition**. `write_file` prend
 `ifMatch` (le `contentSha256` renvoyé par une lecture) ou `ifNew: true` ;
-`patch_file`, `append_to_file`, `delete_file`, `move_file` et
-`merge_frontmatter` prennent `ifMatch` ; un `write_bundle` en veut une **par
-étape** (`ifMatch`, ou `ifNew: true` sur une étape d'écriture), ou le
+`patch_file`, `append_to_file`, `set_frontmatter`, `merge_frontmatter`,
+`move_file` et `delete_file` prennent `ifMatch` (`delete_file` accepte aussi le
+sceau qu'a renvoyé son appel `preview: true`) ; un `write_bundle` en veut une
+**par étape** (`ifMatch`, ou `ifNew: true` sur une étape d'écriture), ou le
 `approvedPlanSha256` qu'a renvoyé un appel `preview: true` — `expect` est la
 précondition d'une *reprise*, pas d'un bundle ordinaire ;
 `download_page_assets` prend `createOnly` ; `execute_template` est

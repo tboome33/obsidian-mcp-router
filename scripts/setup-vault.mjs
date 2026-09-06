@@ -2123,16 +2123,25 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     // twenty-third copy on the commit that introduces it.
     return { slug: vaultSlug(cfg, vp), path: vp };
   };
+  // RESOLVE FIRST, THEN DEDUPLICATE — on the CANONICAL slug each argument
+  // resolved to, never on the spelling the caller typed. Folding the typed
+  // words to lowercase before resolving them made `--attach notes --also
+  // NOTES` — two DISTINCT registered vaults — look like one name twice: the
+  // secondary was dropped with a "duplicate" warning and the command exited
+  // successfully having recorded `also: []`. Two arguments are duplicates only
+  // when they name the same vault, which is a question only the resolver can
+  // answer. (Codex, round on da6a371.)
   const primary = resolve1(primarySlug, 'Primary');
-  const seen = new Set([primary.slug.toLowerCase()]);
+  const seen = new Set([primary.slug]);
   const secondaries = [];
   for (const s of alsoSlugs) {
-    if (seen.has(String(s).trim().toLowerCase())) {
+    const resolved = resolve1(s, 'Secondary');
+    if (seen.has(resolved.slug)) {
       warn(`Ignoring duplicate --also "${s}" (already the primary or listed twice).`);
       continue;
     }
-    seen.add(String(s).trim().toLowerCase());
-    secondaries.push(resolve1(s, 'Secondary'));
+    seen.add(resolved.slug);
+    secondaries.push(resolved);
   }
 
   const steps = [];
@@ -4769,8 +4778,8 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   }
 
   // --link-workspace : also requires the vault-slug arg
-  const vaultSlug = args[2];
-  if (!vaultSlug) fail('--link-workspace requires both <workspace-path> AND <vault-slug>');
+  const requestedSlug = args[2];
+  if (!requestedSlug) fail('--link-workspace requires both <workspace-path> AND <vault-slug>');
 
   const cfg = loadConfig();
   const paths = registeredVaultPaths(cfg);
@@ -4781,15 +4790,24 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   // the two in this file that called `.toLowerCase()` on whatever `vaultNames`
   // happened to hold.
   //
-  // NOTE the local `const vaultSlug = args[2]` above shadows the imported
-  // `vaultSlug` helper inside this block, which is why the two module-level
-  // names used here are `resolveVaultBySlug` / `knownVaultSlugs`.
-  const vaultPath = resolveVaultBySlug(cfg, vaultSlug);
+  // The argument is `requestedSlug`, not `vaultSlug`: the local used to carry
+  // the imported helper's name and shadowed it for the whole block, which is
+  // why the canonical slug below could not be computed here at all.
+  const vaultPath = resolveVaultBySlug(cfg, requestedSlug);
   if (!vaultPath) {
-    fail(`Vault slug "${vaultSlug}" not in portRegistry.\n   Known slugs: ${knownVaultSlugs(cfg).join(', ')}`);
+    fail(`Vault slug "${requestedSlug}" not in portRegistry.\n   Known slugs: ${knownVaultSlugs(cfg).join(', ')}`);
   }
 
-  linkWorkspaceToVault({ workspacePath: wsPath, vaultPath, vaultSlug });
+  // WHAT GETS RECORDED IS THE VAULT'S OWN NAME, not the spelling that was
+  // typed. `resolveVaultBySlug` accepts a case-insensitive spelling as a
+  // convenience; the registry resolves a binding EXACTLY, so persisting
+  // `NoTeS` for a vault named `notes` wrote a binding no session could ever
+  // resolve — the command exited successfully and the default cascade fell
+  // straight through it. `--attach` already records the canonical slug; this
+  // path did not. (Codex, round on da6a371.)
+  const canonicalSlug = vaultSlug(cfg, vaultPath);
+
+  linkWorkspaceToVault({ workspacePath: wsPath, vaultPath, vaultSlug: canonicalSlug });
 
   // v0.65.0 (W4.2) — honor --claude-workspace HERE too. Before this, the flag
   // was wired only into the bootstrap subcommand, so a standalone re-link wrote

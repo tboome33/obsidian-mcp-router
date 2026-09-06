@@ -252,8 +252,8 @@ describe('composeBriefing — what it says', () => {
       isRegistered: () => true,
     });
     assert.match(byLock, /confirm_workspace_binding\(\{ vault: "work", locked: true \}\)/);
-    assert.match(byLock, /the line proposing it is a LOCK/);
-    assert.match(byLock, /restricts this session to that vault/);
+    assert.match(byLock, /proposes the vault "work" as a LOCK/);
+    assert.match(byLock, /which restricts this session to that vault, since that is what the file asked for/);
 
     // The default line is unchanged: no lock proposed, none offered.
     const byDefault = composeBriefing({
@@ -561,6 +561,17 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
       ],
     };
     assert.deepEqual([...registeredVaultNames(cfg)], ['good']);
+    // BUT NOT STRICTER THAN THE REGISTRY EITHER. `loadRegistry` tests
+    // TRUTHINESS (`if (!r.name || !r.baseUrl || !r.apiKey) continue`), so an
+    // entry whose apiKey is a number IS served; requiring a string here made
+    // the hook drop a vault the server serves, and a workspace bound to it
+    // found its binding "inactive" — `detectVaultContext` then answered with a
+    // different vault entirely. Narrowing that substitutes one vault for
+    // another is the same defect wearing the other hat. (Codex, round on
+    // da6a371.)
+    const oddKey = { remoteVaults: [{ name: 'numeric', baseUrl: 'https://127.0.0.1:27140', apiKey: 12345 }] };
+    assert.deepEqual([...registeredVaultNames(oddKey)], ['numeric'], 'the registry serves it, so this set holds it');
+    assert.equal(bindingIsActive(oddKey, 'numeric'), true);
     for (const absent of ['MissingKey', 'MissingUrl', 'DisabledRemote']) {
       assert.equal(bindingIsActive(cfg, absent), false, `${absent} must not read as active`);
     }
