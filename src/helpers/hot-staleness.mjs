@@ -32,9 +32,13 @@
  *     several). A vault whose root can't be resolved is SKIPPED (fail-open),
  *     never blocked.
  *   - OUTCOME-AWARE: a request is not an effect. A `tool_use` counts only when
- *     the `tool_result` that answers it exists and is not an error — see
- *     `extractToolResultOutcomes` for why the asymmetric alternative was
- *     rejected.
+ *     the `tool_result` that answers it exists and is not an error — and for
+ *     `write_bundle`, which reports failure by RETURNING `ok:false` instead of
+ *     throwing, only when its report says `ok` AND, per step, `status: 'ok'`
+ *     (a `patch` that found nothing to do is `skipped` inside an applied
+ *     bundle). See `extractToolResultOutcomes` for why the asymmetric
+ *     alternative was rejected, `resultAppliedWrite` for the call-level bundle
+ *     exception, and `appliedBundleStep` for the per-step one.
  *
  * Zero deps. Pure functions; all I/O (config, fs, platform) is injected by
  * the caller via `ctx`.
@@ -121,7 +125,7 @@ export function isTrackedWriteTool(name) {
 }
 
 /**
- * Parse a JSONL transcript string → `Map<tool_use_id, 'ok'|'error'>`, one
+ * Parse a JSONL transcript string → `Map<tool_use_id, { isError, text }>`, one
  * entry per `tool_result` block found. An id absent from the map has NO
  * result in the transcript (call still in flight, or the file was truncated).
  *
@@ -136,6 +140,10 @@ export function isTrackedWriteTool(name) {
  * `isError` is accepted alongside `is_error` because that is the spelling in
  * the MCP `CallToolResult` the host maps from; only `is_error` was observed
  * here, so the second branch is defensive breadth, not a measurement.
+ *
+ * `text` is carried because `is_error` is not the whole story: `write_bundle`
+ * reports a failure, and reports which of its steps were no-ops, INSIDE this
+ * payload. Only `resultAppliedWrite` and `parseToolResultReport` read it.
  *
  * WHY THIS EXISTS AT ALL. The classifier used to read only the assistant's
  * REQUESTS, so a `wiki-meta/hot.md` write that FAILED — a concurrency 409, an
@@ -162,10 +170,129 @@ export function extractToolResultOutcomes(jsonlText) {
       if (!c || c.type !== 'tool_result') continue;
       const id = c.tool_use_id;
       if (typeof id !== 'string' || !id) continue;
-      outcomes.set(id, c.is_error === true || c.isError === true ? 'error' : 'ok');
+      outcomes.set(id, {
+        isError: c.is_error === true || c.isError === true,
+        text: resultText(c.content),
+      });
     }
   }
   return outcomes;
+}
+
+/**
+ * The readable payload of a `tool_result`, whatever container it arrived in.
+ * MEASURED on the same transcripts: a SUCCESSFUL router write carries an ARRAY
+ * of blocks (`[{ type: 'text', text: '<the JSON the tool returned>' }]`, 222 of
+ * them), while a failure arrives as a bare STRING. Both shapes occur, so both
+ * are read; anything else yields `''`.
+ *
+ * What `''` COSTS is tool-specific, and saying otherwise would overstate it: for
+ * `write_bundle` the report becomes unreadable, so the call cannot be shown to
+ * have applied and counts as nothing. For every other tracked tool the payload
+ * is never consulted — `is_error` alone decides — so an empty text changes
+ * nothing.
+ */
+function resultText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  let out = '';
+  for (const block of content) {
+    if (block && typeof block.text === 'string') out += block.text;
+  }
+  return out;
+}
+
+/**
+ * Did this call actually WRITE? `isError` answers it for every TRACKED tool that
+ * signals failure by throwing — which is all of them but `write_bundle`.
+ * (Untracked tools are not this function's business: `merge_frontmatter`, for
+ * one, also reports a partial failure in its result, and the bundle's own
+ * `RESULT_FAILURE_PROBES` table exists for exactly that. It never reaches here.)
+ *
+ * `write_bundle` IS THE EXCEPTION, and it is the tool that writes the most
+ * files at once. Its own contract says so: "a failure mid-bundle RETURNS this
+ * report with `ok:false` rather than throwing; only refusals BEFORE the first
+ * write throw." The dispatcher's `wrapResult` never sets `isError` on a value a
+ * handler RETURNED — only the catch-all around a throw does — so a bundle that
+ * failed at step 3 and rolled every file back reaches the transcript as
+ * `is_error: false`. Pairing on `is_error` alone therefore left this guard's
+ * original blind spot fully open for bundles: a rolled-back `wiki-meta/hot.md`
+ * refresh would still have cleared the vault. Fixing the throw path and calling
+ * the class closed was the same mistake one layer up.
+ *
+ * So a bundle counts only when its own report says so: the predicate is exactly
+ * `JSON.parse(text)?.ok === true`, the flag the producer sets beside
+ * `outcome: 'applied'`. `ok` is the field read — not `outcome`, which is listed
+ * here (`rolled-back`, `rolled-back-unverified`, `rolled-back-partial`) to say
+ * what a failing bundle looks like, not as a second gate. A report that cannot
+ * be parsed counts as nothing. Two consequences worth naming:
+ *
+ *   - `preview: true` writes nothing and its report carries no `ok` field, so it
+ *     stops counting as a write here. `writeTargets` gates on `recover` but not
+ *     on `preview`, so a preview used to mark a vault stale for files it had
+ *     only described. That hole closes as a side effect of asking the right
+ *     question — "did it apply?" rather than "was it requested?".
+ *   - KNOWN LIMIT, deliberately not covered: `rolled-back-partial` means some
+ *     files are still dirty. Counting the whole call as nothing can therefore
+ *     MISS a note that survived the rollback, and no hot refresh is demanded for
+ *     it. That is the same fail-open direction as an unanswered call, chosen for
+ *     the same reason and by the same symmetric rule — never the direction that
+ *     falsely certifies a refresh. Per-step attribution is what a fix would need.
+ *
+ * Deliberately NOT done: reading failure out of arbitrary result PROSE. The
+ * check is the producer's own structured field or nothing — a scanner that
+ * guesses at English is a scanner that will be wrong in a new way next release.
+ */
+export function resultAppliedWrite(toolName, outcome) {
+  if (!outcome || outcome.isError) return false;
+  if (bareTrackedToolName(toolName) !== 'write_bundle') return true;
+  return parseToolResultReport(outcome)?.ok === true;
+}
+
+/**
+ * The structured report a tool returned, or `null` when there is none to read.
+ * Split out from `resultAppliedWrite` because the bundle's report is needed
+ * TWICE: once to decide whether the call applied at all, and once to decide
+ * WHICH of its steps did — see `appliedBundleStep`.
+ */
+export function parseToolResultReport(outcome) {
+  if (!outcome || typeof outcome.text !== 'string' || !outcome.text) return null;
+  try {
+    return JSON.parse(outcome.text);
+  } catch {
+    return null; // an unreadable report is not a proven write
+  }
+}
+
+/**
+ * Did the bundle step at input position `i` actually change the file?
+ *
+ * `ok: true` does NOT mean every step wrote. A `patch` step whose target already
+ * satisfied the patch is reported `status: 'skipped'` — that is the producer's
+ * only skip probe (`RESULT_SKIP_PROBES`, keyed on `patch`, fired when
+ * `patched === false`) — and the bundle still finishes `ok: true,
+ * outcome: 'applied'`. `patch` IS one of this guard's tracked content ops, so
+ * reading only the top-level flag credited a no-op as a write. A bundle whose
+ * `wiki-meta/hot.md` patch changed nothing would have cleared the vault: the
+ * SAME defect class as the one this module was just repaired for — a request
+ * counted as an effect — surviving one level further down. Third instance;
+ * hence the check moved to where the producer states the fact, per step.
+ *
+ * Report entries carry `index`, which `validateSteps` assigns as the step's
+ * position in the caller's array, so they map back exactly. A step with no
+ * matching entry, or any status other than `ok` (`skipped` / `failed` /
+ * `not-run`), did not write.
+ *
+ * `report === undefined` means the caller supplied no outcome at all — the
+ * direct unit tests, and anyone asking only "what did this call TARGET?". Then
+ * nothing is filtered. A report that IS present but carries no `steps` array
+ * filters everything out, by the same rule that governs a missing result.
+ */
+function appliedBundleStep(report, i) {
+  if (report === undefined) return true;
+  if (!report || !Array.isArray(report.steps)) return false;
+  const entry = report.steps.find((e) => e && e.index === i);
+  return !!entry && entry.status === 'ok';
 }
 
 /**
@@ -219,11 +346,18 @@ export function extractWriteToolUses(jsonlText) {
       // The pairing key. A block with no usable id can never be shown to have
       // succeeded, so it falls under the same rule as a missing result.
       const id = typeof c.id === 'string' && c.id ? c.id : null;
-      if (!id || outcomes.get(id) !== 'ok') continue;
+      if (!id) continue;
+      const outcome = outcomes.get(id);
+      if (!resultAppliedWrite(c.name, outcome)) continue;
       out.push({
         id,
         toolName: c.name,
         input: c.input && typeof c.input === 'object' ? c.input : {},
+        // Carried so target extraction can honour the PER-STEP verdict, not just
+        // the call-level one. Only a bundle has anything to say here.
+        ...(bareTrackedToolName(c.name) === 'write_bundle'
+          ? { report: parseToolResultReport(outcome) }
+          : {}),
       });
     }
   }
@@ -271,7 +405,7 @@ function normAbs(p, isWin) {
  * re-reads". This was that copy. What stays local is only what is genuinely this
  * guard's own policy: which tools count as NOTE CONTENT at all.
  */
-export function targetsFromToolUse({ toolName, input } = {}) {
+export function targetsFromToolUse({ toolName, input, report } = {}) {
   const inp = input && typeof input === 'object' ? input : {};
 
   // Built-in Write/Edit/MultiEdit carry an ABSOLUTE `file_path`.
@@ -287,14 +421,19 @@ export function targetsFromToolUse({ toolName, input } = {}) {
   if (!bare) return none;
   if (isFrontmatterOnlyPatch(bare, inp)) return none;
 
-  // A bundle's steps are filtered to the content-writing ones BEFORE the shared
-  // extractor runs, so `writeTargets` stays the sole authority on the recovery
-  // gate and on the `steps[].path` shape, while the exclusion policy is applied
-  // to its input rather than re-derived from its output.
+  // A bundle's steps are filtered BEFORE the shared extractor runs, so
+  // `writeTargets` stays the sole authority on the recovery gate and on the
+  // `steps[].path` shape, while both policies are applied to its input rather
+  // than re-derived from its output. Two filters, different questions:
+  //   - is this step's op NOTE CONTENT at all? (this guard's own policy)
+  //   - did it actually change the file? (the producer's per-step verdict)
+  // `filter` preserves order, which the per-target ordering in `findStaleVaults`
+  // depends on.
   const args = bare === 'write_bundle' && Array.isArray(inp.steps)
-    ? { ...inp, steps: inp.steps.filter((s) => {
+    ? { ...inp, steps: inp.steps.filter((s, i) => {
       const stepTool = STEP_OP_TO_TOOL[s?.op];
-      return isTrackedWriteTool(stepTool) && !isFrontmatterOnlyPatch(stepTool, s);
+      if (!isTrackedWriteTool(stepTool) || isFrontmatterOnlyPatch(stepTool, s)) return false;
+      return appliedBundleStep(report, i);
     }) }
     : inp;
 
@@ -372,11 +511,13 @@ export function classifyToolUse(toolUse, ctx = {}) {
  * ordering, `content:true, hot:true` would pass forever after the first
  * refresh — codex review+ P1.)
  *
- * Indices are per-APPLIED-`tool_use` (monotonic): the sequence
- * `extractWriteToolUses` returns, which is the requests that came back without
- * an error, in transcript order. A vault is stale iff
- * `lastContent >= 0 && lastContent > lastHot` (a hot write at the same index
- * as a content write is impossible for our tracked tools).
+ * Indices are per-APPLIED-TARGET (monotonic), walked in transcript order over
+ * the calls `extractWriteToolUses` kept — i.e. the ones shown to have written.
+ * A vault is stale iff `lastContent >= 0 && lastContent > lastHot`. Every
+ * target gets its OWN position, including each step of a `write_bundle`, so a
+ * hot write and a content write can never share an index and the strict `>` is
+ * safe. That was previously asserted rather than arranged, and it was false for
+ * bundles — see the loop below.
  */
 export function findStaleVaults(jsonlText, ctx = {}) {
   const toolUses = extractWriteToolUses(jsonlText);
@@ -385,17 +526,28 @@ export function findStaleVaults(jsonlText, ctx = {}) {
 
   for (const r of ctx.vaultRoots || []) rawByKey.set(normAbs(r, !!ctx.isWin), r);
 
+  // ONE POSITION PER TARGET, not per tool call. A `write_bundle` writes several
+  // files in ONE `tool_use`, in the order its steps are listed, and giving them
+  // all the same index made `lastContent === lastHot` — which the stale test
+  // (`lastContent > lastHot`) reads as fresh. A single bundle that refreshed
+  // `wiki-meta/hot.md` and THEN wrote a note came out clean, in the tool built
+  // to write "the note, an index, the journal, hot.md" together. The old comment
+  // here asserted that equality was "impossible for our tracked tools"; it was
+  // false from the moment `write_bundle` joined the set, and measuring it was
+  // what showed the claim had never been tested. `classifyToolUse` returns
+  // targets in step order, so counting per target restores the real sequence —
+  // and now makes the equality genuinely unreachable.
   let idx = 0;
   for (const tu of toolUses) {
     for (const { vaultKey, vaultRootRaw, kind } of classifyToolUse(tu, ctx)) {
+      const position = idx++;
       if (!vaultKey || kind === 'other') continue; // unresolvable or irrelevant → skip
       if (vaultRootRaw && !rawByKey.has(vaultKey)) rawByKey.set(vaultKey, vaultRootRaw);
       const cur = byVault.get(vaultKey) || { lastContent: -1, lastHot: -1 };
-      if (kind === 'content') cur.lastContent = idx;
-      else if (kind === 'hot') cur.lastHot = idx;
+      if (kind === 'content') cur.lastContent = position;
+      else if (kind === 'hot') cur.lastHot = position;
       byVault.set(vaultKey, cur);
     }
-    idx += 1;
   }
 
   const stale = [];

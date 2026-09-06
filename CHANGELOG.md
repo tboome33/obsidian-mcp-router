@@ -29,9 +29,39 @@ is invisible in normal use because it only manifests when a write fails.
 
 - **`src/helpers/hot-staleness.mjs` now pairs every `tool_use` with the `tool_result` that answers
   it**, by id, and counts a call only when that result exists and is not an error. New export
-  `extractToolResultOutcomes(jsonlText)` → `Map<tool_use_id, 'ok'|'error'>` makes the pairing
+  `extractToolResultOutcomes(jsonlText)` → `Map<tool_use_id, { isError, text }>` makes the pairing
   itself testable rather than an invisible step inside the filter; `extractWriteToolUses` returns
   only the writes that landed, and `findStaleVaults` inherits the rule unchanged.
+- **`write_bundle` reports failure WITHOUT `is_error`, and the first version of this fix did not
+  notice** — an adversarial review round caught it. The bundle's contract says it: "a failure
+  mid-bundle RETURNS this report with `ok:false` rather than throwing; only refusals BEFORE the
+  first write throw", and the dispatcher's `wrapResult` never marks a RETURNED value as an error.
+  So a bundle that refreshed hot.md, failed at step 3 and rolled every file back arrived as
+  `is_error: false` and cleared the vault — the original blind spot, still fully open for the tool
+  that writes the most files at once. Fixing the throw path and calling the class closed was the
+  same mistake one layer up. New export `resultAppliedWrite(toolName, outcome)` counts a bundle
+  only when its own report says `ok === true`; a failing bundle (`rolled-back`,
+  `rolled-back-unverified`, `rolled-back-partial`) and any report that cannot be parsed count as
+  nothing. Failure is read from the producer's structured field, never from result prose.
+- **And `ok: true` does not mean every STEP wrote** — a second review round found the same defect
+  class one level further down. The producer's `RESULT_SKIP_PROBES` table has exactly one entry: a
+  `patch` whose target already satisfied it is reported `status: 'skipped'`, while the bundle still
+  finishes `ok: true, outcome: 'applied'`. `patch` is one of this guard's tracked content ops, so a
+  bundle whose `wiki-meta/hot.md` patch changed nothing would have cleared the vault on a no-op.
+  Target attribution now honours the per-step verdict: a step counts only when the report entry at
+  its index says `ok`, and `skipped` / `failed` / `not-run` write nothing. Three instances of "a
+  request counted as an effect" in one module, each found only by asking the producer rather than
+  the request.
+- **A `preview: true` bundle stopped counting as a write.** `writeTargets` gates on `recover` but
+  not on `preview`, so a preview — which writes nothing — used to enumerate its targets and could
+  mark a vault stale for files it had only described. Its report carries no `ok` field, so asking
+  "did it apply?" closes that without a second gate.
+- **Every target now gets its OWN ordering position, including each step of a bundle.** They used
+  to share one index per `tool_use`, which made `lastContent === lastHot` — and the stale test is a
+  strict `>`. A single bundle that refreshed hot.md and THEN wrote a note came out clean, in the
+  very tool documented as writing "the note, an index, the journal, hot.md" together. The old
+  comment asserting that equality was "impossible for our tracked tools" had been false since
+  `write_bundle` joined the tracked set; it is now true by construction rather than by assertion.
 - **The transcript shapes were measured, not assumed** — ten real transcripts under
   `~/.claude/projects/`, 16 731 `tool_use` blocks: a request is a chunk of an `assistant` entry
   keyed `{type,id,name,input,caller}`; an answer is a chunk of a `user` entry keyed
@@ -53,22 +83,43 @@ nothing and passes. The cost was measured before it was chosen: 2 of those 16 73
 result, both the single call in flight while the file was being read, neither a write. The hook's
 fail-open posture is otherwise untouched.
 
+#### Known limit, chosen rather than overlooked
+
+`rolled-back-partial` means some files are still dirty. Counting the whole call as nothing can
+therefore MISS a note that survived the rollback, and no hot refresh is demanded for it. That is
+the same fail-open direction as an unanswered call, taken by the same symmetric rule — never the
+direction that falsely certifies a refresh. Closing it needs per-step attribution, which the report
+carries but this guard does not yet read. Asserted in a test so it stays a decision.
+
 #### Tests
 
-`tests/hot-cache-guard.test.mjs` — **65/65 green**, up from 46 (19 added). The fixtures now carry unique
-`tool_use` ids and emit the answering `tool_result`, because the old helper stamped every block with
-the literal `'x'` and could not express "this call failed and that one did not". Added: a refused
-hot refresh keeps the vault stale (pure **and** through the real subprocess), a successful one still
-clears it, a failed retry followed by a successful one clears it, a refused *note* write blocks
-nothing, a transcript with no results at all is fail-open, ordering still counts only applied
-writes, and a refused `write_bundle` writes none of its notes.
+`tests/hot-cache-guard.test.mjs` — **83/83 green**, up from 46 (37 added). The fixtures now carry
+unique `tool_use` ids and emit the answering `tool_result` in the measured container (an array of
+text blocks holding the tool's JSON), because the old helper stamped every block with the literal
+`'x'`, could not express "this call failed and that one did not", and could not express a bundle
+report at all. Added: a refused hot refresh keeps the vault stale (pure **and** through the real
+subprocess), a successful one still clears it, a failed retry followed by a successful one clears
+it, a refused *note* write blocks nothing, a transcript with no results at all is fail-open, a
+rolled-back bundle neither clears nor stales, a preview bundle writes nothing, and the two step
+orders inside one bundle are distinguishable.
 
-Four mutations, four distinct red sets, restored and verified by hash: ignoring the outcome
+Eight mutations, eight distinct red sets, each restored and verified by hash: ignoring the outcome
 entirely (15 red), reading an error result as success (11 red, absent-result tests staying green),
-reading an absent result as success (5 red, failed-write tests staying green), and dropping the
-id keying (6 red). Class sweep: `hot-staleness.mjs` is the only transcript classifier in the repo —
-`vault-link-linter` reads only the last assistant text, and the two other hooks that mention
-`transcript_path` only document it. **1/1 sites.**
+reading an absent result as success (5 red, failed-write tests staying green), dropping the id
+keying (6 red), ignoring the bundle's own `ok:false` verdict (8 red), sharing one index per
+`tool_use` again (3 red, and only the bundle-ordering tests — the pre-existing ordering tests stay
+green, so the change did not alter the old semantics), pairing the Nth request with the Nth
+result (2 red), and ignoring the per-step verdict (5 red).
+
+That last mutation is the point of a review round: the **first** version of the "pairing is BY ID"
+test did not fail under it. Every fixture emitted its result immediately after its own request, so
+positional pairing satisfied it — a witness green for a reason unrelated to its name. It was
+rebuilt with shuffled results, an unrelated result, and an unanswered request between answered
+ones, and only then did it bite.
+
+Class sweep: `hot-staleness.mjs` is the only transcript classifier in the repo — `vault-link-linter`
+reads only the last assistant text, and the two other hooks that mention `transcript_path` only
+document it. **1/1 sites.**
 
 Out of scope by design and unchanged: a note written through `Bash` still escapes detection, which
 is the documented consequence of scanning the tool transcript instead of `git diff`.

@@ -27,6 +27,7 @@ import {
   isBuiltinWriteTool,
   extractWriteToolUses,
   extractToolResultOutcomes,
+  resultAppliedWrite,
   targetsFromToolUse,
   pathKind,
   findStaleVaults,
@@ -62,25 +63,70 @@ function nextToolUseId() {
  * Returns the two lines already joined, so every `jsonl(...)`/`run([...])` call
  * site keeps working unchanged.
  */
-function toolUseLine(name, input, { isError = false, result = 'present' } = {}) {
+function toolUseLine(name, input, { isError = false, result = 'present', report } = {}) {
   const id = nextToolUseId();
-  const use = JSON.stringify({
-    type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
-  });
+  const use = useLine(id, name, input);
   if (result === 'none') return use;
-  return use + '\n' + toolResultLine(id, { isError });
+  return use + '\n' + resultLine(id, { isError, ...(report === undefined ? {} : { report }) });
 }
 
-/** The answering half on its own — for pairing a result to an id built by hand. */
-function toolResultLine(toolUseId, { isError = false, content = 'ok' } = {}) {
+/** The request half on its own, with an id chosen by the caller. */
+function useLine(toolUseId, name, input) {
+  return JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: toolUseId, name, input }] },
+  });
+}
+
+/**
+ * The answering half on its own. `content` is an ARRAY of text blocks holding
+ * the JSON the tool returned — the shape MEASURED for a successful router write
+ * (222 of them across ten transcripts). It matters: `write_bundle` reports a
+ * mid-bundle failure INSIDE this payload, not through `is_error`.
+ */
+function resultLine(toolUseId, { isError = false, report = { ok: true, outcome: 'applied' } } = {}) {
   return JSON.stringify({
     type: 'user',
     message: {
       role: 'user',
-      content: [{ tool_use_id: toolUseId, type: 'tool_result', content, is_error: isError }],
+      content: [{
+        tool_use_id: toolUseId,
+        type: 'tool_result',
+        content: [{ type: 'text', text: typeof report === 'string' ? report : JSON.stringify(report, null, 2) }],
+        is_error: isError,
+      }],
     },
   });
+}
+
+/**
+ * A bundle whose report says every step applied. `statuses` overrides the
+ * per-step verdict — `ok: true` does NOT imply every step wrote, because a
+ * `patch` that found its target already satisfied is reported `skipped` while
+ * the bundle still finishes `applied`.
+ */
+function appliedBundleLine(steps, vault = 'a', statuses = null) {
+  const stepResults = steps.map((s, index) => ({
+    index, op: s.op, path: s.path, status: statuses ? statuses[index] : 'ok',
+  }));
+  return toolUseLine('mcp__obsidian-router__write_bundle', { vault, steps },
+    { report: {
+      vault, operationId: 'op', ok: true, outcome: 'applied',
+      applied: stepResults.filter((s) => s.status === 'ok').length,
+      total: steps.length,
+      steps: stepResults,
+    } });
+}
+
+/**
+ * A bundle that failed mid-way and rolled back. `is_error` is FALSE — the
+ * dispatcher never marks a RETURNED value as an error — and the failure lives
+ * only in `ok: false`. This is the fixture the outcome pairing could not see.
+ */
+function rolledBackBundleLine(steps, vault = 'a', outcome = 'rolled-back') {
+  return toolUseLine('mcp__obsidian-router__write_bundle', { vault, steps },
+    { report: { vault, operationId: 'op', ok: false, outcome, applied: 1, total: steps.length,
+      failedStep: { index: 1, op: 'write', path: steps[steps.length - 1]?.path }, error: 'HTTP 409' } });
 }
 
 /** A tracked write the vault REFUSED (409, offline vault, denied path). */
@@ -321,16 +367,31 @@ describe('extractWriteToolUses', () => {
     assert.deepEqual(extractWriteToolUses(t), []);
   });
 
-  test('the pairing is BY ID — one failure does not condemn its neighbours', () => {
-    // Every fixture block used to carry the id `'x'`. If the pairing regressed
-    // to "any result in the file", or to "the last result wins", this mixed
-    // transcript would return 0 or 3 instead of the two that landed.
+  test('the pairing is BY ID, not by position', () => {
+    // THE PREVIOUS VERSION OF THIS TEST DID NOT TEST ITS OWN NAME (codex, round
+    // 1, finding 4). It emitted every result immediately after its own request,
+    // so an implementation pairing the Nth request with the Nth result passed it
+    // without ever comparing an id. This fixture separates the two orders: the
+    // results arrive SHUFFLED, an unrelated result for a tool that was never
+    // requested sits in the middle, and an UNANSWERED request sits between two
+    // answered ones. Positional pairing gets a different answer here.
     const t = jsonl(
-      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/ok-1.md', vault: 'a' }),
-      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/refused.md', vault: 'a' }),
-      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/ok-2.md', vault: 'a' }),
+      useLine('u_one', 'mcp__obsidian-router__write_file', { path: 'wiki/ok-1.md', vault: 'a' }),
+      useLine('u_two', 'mcp__obsidian-router__write_file', { path: 'wiki/never-answered.md', vault: 'a' }),
+      useLine('u_three', 'mcp__obsidian-router__write_file', { path: 'wiki/refused.md', vault: 'a' }),
+      useLine('u_four', 'mcp__obsidian-router__write_file', { path: 'wiki/ok-2.md', vault: 'a' }),
+      resultLine('u_three', { isError: true }),   // out of order, and an error
+      resultLine('u_stranger'),                   // answers nothing in this transcript
+      resultLine('u_four'),
+      resultLine('u_one'),
     );
-    assert.deepEqual(extractWriteToolUses(t).map((u) => u.input.path), ['wiki/ok-1.md', 'wiki/ok-2.md']);
+    assert.deepEqual(
+      extractWriteToolUses(t).map((u) => u.input.path),
+      ['wiki/ok-1.md', 'wiki/ok-2.md'],
+      'only the two ids with a non-error result of their own may survive',
+    );
+    // Positional pairing would have matched u_one↔error and u_two↔stranger.
+    assert.deepEqual(extractWriteToolUses(t).map((u) => u.id), ['u_one', 'u_four']);
   });
 
   test('extractToolResultOutcomes reads the measured shape, is_error and all', () => {
@@ -343,39 +404,99 @@ describe('extractWriteToolUses', () => {
     const ids = [...t.matchAll(/"id":"(toolu_fixture_\d+)"/g)].map((m) => m[1]);
     assert.equal(ids.length, 3);
     const outcomes = extractToolResultOutcomes(t);
-    assert.equal(outcomes.get(ids[0]), 'ok');
-    assert.equal(outcomes.get(ids[1]), 'error');
+    assert.equal(outcomes.get(ids[0]).isError, false);
+    assert.equal(outcomes.get(ids[1]).isError, true);
     assert.equal(outcomes.has(ids[2]), false, 'an unanswered call has no entry at all');
   });
 
   test('the MCP spelling `isError` is honoured too', () => {
     const t = jsonl(
-      JSON.stringify({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_camel', name: 'mcp__obsidian-router__write_file', input: { path: 'wiki/a.md' } }] },
-      }),
+      useLine('toolu_camel', 'mcp__obsidian-router__write_file', { path: 'wiki/a.md' }),
       JSON.stringify({
         type: 'user',
         message: { role: 'user', content: [{ tool_use_id: 'toolu_camel', type: 'tool_result', content: 'boom', isError: true }] },
       }),
     );
-    assert.equal(extractToolResultOutcomes(t).get('toolu_camel'), 'error');
+    assert.equal(extractToolResultOutcomes(t).get('toolu_camel').isError, true);
     assert.deepEqual(extractWriteToolUses(t), []);
   });
 
   test('a result with no is_error field at all is a success', () => {
     const t = jsonl(
-      JSON.stringify({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bare', name: 'mcp__obsidian-router__write_file', input: { path: 'wiki/a.md' } }] },
-      }),
+      useLine('toolu_bare', 'mcp__obsidian-router__write_file', { path: 'wiki/a.md' }),
       JSON.stringify({
         type: 'user',
         message: { role: 'user', content: [{ tool_use_id: 'toolu_bare', type: 'tool_result', content: 'done' }] },
       }),
     );
-    assert.equal(extractToolResultOutcomes(t).get('toolu_bare'), 'ok');
+    assert.equal(extractToolResultOutcomes(t).get('toolu_bare').isError, false);
     assert.equal(extractWriteToolUses(t).length, 1);
+  });
+
+  test('a result payload is read from BOTH measured containers (array of blocks, bare string)', () => {
+    // Success arrives as an array of text blocks, failure as a bare string.
+    // `write_bundle`'s verdict lives inside that payload, so reading only one
+    // container would silently mean "no report" for the other.
+    const asArray = jsonl(
+      useLine('u_arr', 'mcp__obsidian-router__write_bundle', { vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }] }),
+      resultLine('u_arr', { report: { ok: true, outcome: 'applied' } }),
+    );
+    assert.equal(extractWriteToolUses(asArray).length, 1);
+    assert.equal(extractToolResultOutcomes(asArray).get('u_arr').text.includes('"ok": true'), true);
+
+    const asString = jsonl(
+      useLine('u_str', 'mcp__obsidian-router__write_bundle', { vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }] }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ tool_use_id: 'u_str', type: 'tool_result', content: '{"ok":true,"outcome":"applied"}', is_error: false }] },
+      }),
+    );
+    assert.equal(extractWriteToolUses(asString).length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resultAppliedWrite — the tool that reports failure WITHOUT is_error
+// ---------------------------------------------------------------------------
+
+describe('resultAppliedWrite (write_bundle reports failure in its RESULT)', () => {
+  const bundle = 'mcp__obsidian-router__write_bundle';
+
+  test('the throw path: is_error decides for every ordinary tool', () => {
+    assert.equal(resultAppliedWrite('mcp__obsidian-router__write_file', { isError: false, text: 'anything' }), true);
+    assert.equal(resultAppliedWrite('mcp__obsidian-router__write_file', { isError: true, text: 'Error: ...' }), false);
+    assert.equal(resultAppliedWrite('mcp__obsidian-router__write_file', undefined), false);
+  });
+
+  test('a bundle counts ONLY when its own report says ok:true', () => {
+    assert.equal(resultAppliedWrite(bundle, { isError: false, text: '{"ok":true,"outcome":"applied"}' }), true);
+    for (const outcome of ['rolled-back', 'rolled-back-unverified', 'rolled-back-partial']) {
+      assert.equal(
+        resultAppliedWrite(bundle, { isError: false, text: JSON.stringify({ ok: false, outcome }) }),
+        false,
+        `${outcome} is not an applied write`,
+      );
+    }
+  });
+
+  test('a preview writes nothing, and its report carries no ok field', () => {
+    // `writeTargets` gates on `recover` but NOT on `preview`, so a preview used
+    // to enumerate targets and mark a vault stale for files it only described.
+    // Asking "did it apply?" closes that without a second gate.
+    const previewReport = { vault: 'a', preview: true, steps: [], targets: ['wiki/a.md'], approvedPlanSha256: 'x' };
+    assert.equal(resultAppliedWrite(bundle, { isError: false, text: JSON.stringify(previewReport) }), false);
+  });
+
+  test('an unreadable or truncated bundle report is not a proven write', () => {
+    for (const text of ['', 'not json', '{"ok":true', 'Ready to run 3 step(s)']) {
+      assert.equal(resultAppliedWrite(bundle, { isError: false, text }), false, JSON.stringify(text));
+    }
+  });
+
+  test('ok must be the boolean true, not merely truthy', () => {
+    for (const ok of ['true', 1, 'yes', {}]) {
+      assert.equal(resultAppliedWrite(bundle, { isError: false, text: JSON.stringify({ ok }) }), false, JSON.stringify(ok));
+    }
   });
 });
 
@@ -637,17 +758,162 @@ describe('findStaleVaults', () => {
     assert.deepEqual(stale.map((s) => s.vaultRoot), ['/vaults/A']);
   });
 
-  test('write_bundle: a refused bundle writes none of its notes', () => {
-    // The tool that writes the most files at once, and the one whose failure
-    // used to look identical to twelve successful notes.
-    const applied = jsonl(toolUseLine('mcp__obsidian-router__write_bundle', {
-      vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }],
-    }));
+  test('write_bundle: a bundle refused BEFORE the first write writes none of its notes', () => {
+    // A refusal in pre-flight throws, so it arrives as is_error — the ordinary
+    // path. The interesting case is the next test.
+    const applied = jsonl(appliedBundleLine([{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }]));
     assert.equal(findStaleVaults(applied, CTX).stale.length, 1);
     const refused = jsonl(failedToolUseLine('mcp__obsidian-router__write_bundle', {
       vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }],
     }));
     assert.equal(findStaleVaults(refused, CTX).stale.length, 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // codex round 1, finding A — the blind spot was only half closed.
+  //
+  // `write_bundle` reports a mid-bundle failure by RETURNING `ok:false`, and the
+  // dispatcher never marks a returned value as an error. So a rolled-back hot
+  // refresh reached the transcript as `is_error: false` and cleared the vault:
+  // the original defect, still open for the tool that writes the most files.
+  // -------------------------------------------------------------------------
+
+  test('a ROLLED-BACK bundle does not clear the vault, though is_error is false', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      rolledBackBundleLine([{ op: 'write', path: 'wiki-meta/hot.md' }]),
+    );
+    const { stale } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1, 'a rolled-back hot refresh is not a refresh');
+    assert.equal(stale[0].vaultRoot, '/vaults/A');
+  });
+
+  test('a ROLLED-BACK bundle does not make a vault stale either (same symmetric rule)', () => {
+    const t = jsonl(rolledBackBundleLine([{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }]));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 0);
+    assert.equal(byVault.size, 0);
+  });
+
+  test('every non-applied outcome is treated alike, including rolled-back-partial', () => {
+    // KNOWN LIMIT, asserted so it is a decision and not an accident: a partial
+    // rollback leaves some files dirty, and counting the call as nothing can
+    // MISS such a note. That is the fail-open direction, chosen deliberately —
+    // never the direction that falsely certifies a refresh.
+    for (const outcome of ['rolled-back', 'rolled-back-unverified', 'rolled-back-partial']) {
+      const t = jsonl(rolledBackBundleLine([{ op: 'write', path: 'wiki/a.md' }], 'a', outcome));
+      assert.equal(findStaleVaults(t, CTX).byVault.size, 0, outcome);
+    }
+  });
+
+  test('a preview bundle writes nothing, so it cannot make a vault stale', () => {
+    const t = jsonl(toolUseLine('mcp__obsidian-router__write_bundle',
+      { vault: 'a', preview: true, steps: [{ op: 'write', path: 'wiki/a.md' }] },
+      { report: { vault: 'a', preview: true, targets: ['wiki/a.md'], approvedPlanSha256: 'x' } }));
+    assert.equal(findStaleVaults(t, CTX).byVault.size, 0);
+  });
+
+  // -------------------------------------------------------------------------
+  // codex round 1, finding B — every target needs its OWN ordering position.
+  //
+  // A bundle writes several files in ONE tool_use. Sharing one index made
+  // lastContent === lastHot, which the strict `>` reads as fresh, so a bundle
+  // that refreshed hot and THEN wrote a note came out clean — in the very tool
+  // documented as writing "the note, an index, the journal, hot.md" together.
+  // -------------------------------------------------------------------------
+
+  test('inside ONE bundle: hot refreshed, then a note written → stale', () => {
+    const t = jsonl(appliedBundleLine([
+      { op: 'write', path: 'wiki-meta/hot.md' },
+      { op: 'write', path: 'wiki/new-note.md' },
+    ]));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1, 'the note follows the refresh, so the cache is behind');
+    assert.deepEqual(byVault.get('/vaults/A'), { lastContent: 1, lastHot: 0 });
+  });
+
+  test('inside ONE bundle: note written, then hot refreshed → not stale', () => {
+    const t = jsonl(appliedBundleLine([
+      { op: 'write', path: 'wiki/new-note.md' },
+      { op: 'write', path: 'wiki-meta/hot.md' },
+    ]));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 0);
+    assert.deepEqual(byVault.get('/vaults/A'), { lastContent: 0, lastHot: 1 });
+  });
+
+  // -------------------------------------------------------------------------
+  // codex round 2 — `ok: true` does not mean every step WROTE.
+  //
+  // `RESULT_SKIP_PROBES` in the producer has exactly one entry: a `patch` whose
+  // target already satisfied it reports `status: 'skipped'`, and the bundle
+  // still finishes `ok: true, outcome: 'applied'`. `patch` is a tracked content
+  // op here, so reading only the call-level flag credited a no-op as a write —
+  // the same "a request is not an effect" defect, one level further down.
+  // -------------------------------------------------------------------------
+
+  test('a SKIPPED hot.md patch inside an applied bundle does not clear the vault', () => {
+    const t = jsonl(appliedBundleLine(
+      [{ op: 'write', path: 'wiki/a.md' }, { op: 'patch', path: 'wiki-meta/hot.md', targetType: 'heading', target: 'Hot', content: 'x' }],
+      'a',
+      ['ok', 'skipped'], // the patch changed nothing
+    ));
+    const { stale } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1, 'a no-op patch on hot.md is not a refresh');
+    assert.equal(stale[0].vaultRoot, '/vaults/A');
+  });
+
+  test('a SKIPPED note patch inside an applied bundle does not make the vault stale', () => {
+    // The other side of the same rule: nothing was written, so nothing is owed.
+    const t = jsonl(appliedBundleLine(
+      [{ op: 'patch', path: 'wiki/a.md', targetType: 'heading', target: 'S', content: 'x' }],
+      'a',
+      ['skipped'],
+    ));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 0);
+    assert.equal(byVault.size, 0);
+  });
+
+  test('a FAILED or NOT-RUN step inside an otherwise-applied bundle writes nothing', () => {
+    for (const status of ['failed', 'not-run']) {
+      const t = jsonl(appliedBundleLine([{ op: 'write', path: 'wiki/a.md' }], 'a', [status]));
+      assert.equal(findStaleVaults(t, CTX).byVault.size, 0, status);
+    }
+  });
+
+  test('per-step filtering keeps ORDER — a skipped first step does not reorder the rest', () => {
+    // The step filter feeds the per-target ordering, so dropping a step must
+    // shift positions without swapping them.
+    const t = jsonl(appliedBundleLine(
+      [
+        { op: 'patch', path: 'wiki/skipped.md', targetType: 'heading', target: 'S', content: 'x' },
+        { op: 'write', path: 'wiki-meta/hot.md' },
+        { op: 'write', path: 'wiki/written-after.md' },
+      ],
+      'a',
+      ['skipped', 'ok', 'ok'],
+    ));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.deepEqual(byVault.get('/vaults/A'), { lastContent: 1, lastHot: 0 });
+    assert.equal(stale.length, 1, 'the note still follows the refresh once the skip is dropped');
+  });
+
+  test('an applied bundle whose report carries no steps array counts nothing', () => {
+    // A report present but unreadable at the step level cannot prove which files
+    // moved — the same rule as a missing result.
+    const t = jsonl(toolUseLine('mcp__obsidian-router__write_bundle',
+      { vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }] },
+      { report: { vault: 'a', ok: true, outcome: 'applied' } }));
+    assert.equal(findStaleVaults(t, CTX).byVault.size, 0);
+  });
+
+  test('the two orders are DISTINGUISHABLE — no shared index can collapse them', () => {
+    const positions = (steps) => findStaleVaults(jsonl(appliedBundleLine(steps)), CTX).byVault.get('/vaults/A');
+    const hotFirst = positions([{ op: 'write', path: 'wiki-meta/hot.md' }, { op: 'write', path: 'wiki/n.md' }]);
+    const noteFirst = positions([{ op: 'write', path: 'wiki/n.md' }, { op: 'write', path: 'wiki-meta/hot.md' }]);
+    assert.notDeepEqual(hotFirst, noteFirst);
+    assert.notEqual(hotFirst.lastContent, hotFirst.lastHot, 'a target never shares a position with another');
   });
 });
 
