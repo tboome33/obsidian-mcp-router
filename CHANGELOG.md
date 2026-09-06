@@ -4,7 +4,23 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased]
+## [0.91.0] — 2026-09-06 — a workspace declares which vaults it reaches, and what it may write there
+
+Six phases of one lot, implementing three decisions accepted on 2026-09-04
+(`portee-et-mode-ecriture-des-vaults`, `ergonomie-creation-liaison-vaults`,
+`refus-d-une-proposition-de-liaison`). Creating and binding a vault from the conversation;
+reachability a workspace declares; three write tiers for a secondary vault; a precondition on
+every write to a vault two workspaces share; and the right to say **no** to a binding a project
+file proposes.
+
+**Two breaking changes, both named in full below** — a secondary vault opens read-only by default,
+and a vault two workspaces already declare starts refusing blind writes with no configuration
+change at all. Each is written up with the lines that restore the old behaviour.
+
+Reviewed to exhaustion: every phase had its own adversarial round (some four), and then the LOT
+had one — which found five P1s that no per-phase review could see, all of them at a seam between
+two phases. That last round is the reason this release is worth trusting, and the reason the
+method note at the end of this entry exists.
 
 ### Vault creation gets easier, and a new tool registers a remote vault from the conversation
 
@@ -575,6 +591,33 @@ carrying the claim — the failure this repository keeps paying for, this time i
   new check (every other test calls it directly, so deleting the call site would otherwise leave
   them all green), and one that asserts the check reports something rather than vacuously passing
   on an empty page list. Six mutation witnesses, each seen red at its own test.
+
+### Method — what reviewing this lot taught, since it changed how the release was built
+
+Every phase was reviewed adversarially before being called finished — Phase 1 twice, Phases 2-3
+four times, Phase 4 twice, Phase 5 three times, Phase 6 twice — with the phase's own numbered
+invariants handed to the reviewer as input. Two shapes of pass were used throughout and they do
+not find the same things: a free `codex review --commit`, and a claims-fed `codex exec` given the
+commit's own assertions. On this repository the claims-fed pass is consistently the productive
+one; the free pass returned its first clean report of the whole lot at the very round where the
+other found six real defects.
+
+Then the LOT was reviewed as a whole, which had never been done. Eighteen findings, **five of them
+P1, and all five at a seam between two phases**: one phase sets a rule, the next adds a mechanism,
+and nobody re-reads the rule in light of the mechanism. A per-phase review cannot reach there by
+construction — it only ever sees one diff. Three host-state writers had escaped a rule Phase 6
+had applied to the two tools in front of it; the automatic import was forging the very binding
+those tools refuse; a junction plus a not-yet-created child slipped past every vault gate, letting
+the FIRST write into a read-only-strict vault through and refusing the rest; the symlink refusal
+had been silently invalidated when a wait became asynchronous two phases later; and an exact
+REMOTE vault name resolved to a local vault's directory.
+
+Three lessons are worth carrying out of it. A gate that lets the first write through and stops the
+rest **looks enforced and is not** — the worst of both worlds, because it reads as closed. **Moved
+code is new code**: a guard stays correct only as long as what surrounds it does not move.
+And a check covers the documents it was pointed at, not the class of documents carrying the claim
+— which is how two published PDFs went a whole catalogue behind while the gate stayed green, and
+why the last commit of this release extends that gate rather than just fixing the numbers.
 
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 
