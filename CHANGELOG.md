@@ -6,6 +6,46 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ## [Unreleased]
 
+### The placement guide caught up with the binding — and stopped teaching a rule the router refuses
+
+`docs/auto-enrichment.md` had not moved since v0.89.0, while v0.90.0 and v0.91.0 rebuilt the thing
+it depends on: what binds a session to a vault. The guide still described four places the consigne
+can live and left the reader to assume the binding worked the way it used to. Three of its
+statements had become wrong, and one was wrong in the direction that costs the most — the
+copy-paste guard for the global `CLAUDE.md` told the reader that a bare
+`OBSIDIAN_ROUTER_DEFAULT_VAULT` binds the session, which is exactly what the shipped consigne
+(`templates/wiki/CLAUDE.md`) says it does NOT do. A reader following the doc wrote a rule the router
+had already been changed to refuse.
+
+#### Fixed
+
+- **The binding is now stated once, upstream of every channel.** A new section names the single
+  authority — the binding registry in the user's own config, written by `confirm_workspace_binding`
+  and surfaced as `workspaceBinding` — plus the plugin's `SessionStart` briefing, and the fact that
+  `OBSIDIAN_ROUTER_DEFAULT_VAULT` in a project file is a *proposal* (`bindingHint`), never an
+  applied setting. The one file-borne case that still counts as a binding is named too: a workspace
+  whose own `.env` carries a `VAULT_PATH` pointing at the workspace directory itself.
+- **The Channel 4 guard no longer contradicts the consigne it tells you to paste**, in both
+  languages. It now reads `workspaceBinding`, and says in as many words that a bare
+  `OBSIDIAN_ROUTER_DEFAULT_VAULT` is not enough.
+- **The section name to look for is the one that exists.** Four passages told the reader to find
+  `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` in their vault's `CLAUDE.md`; the template has
+  read `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` since v0.8.2. The old
+  heading is still named, as what a pre-v0.8.2 vault carries — otherwise the correction just trades
+  one false negative for another.
+
+#### Added
+
+- **Channel 5 — the `CLAUDE.md` of a code repository bound to a vault**, the standard shape since
+  v0.90.0 and the one case none of the four channels covered. Claude Code auto-loads the *workspace*
+  root's `CLAUDE.md`, and there the workspace is the repo: the vault's own `CLAUDE.md` is never
+  loaded, and what the binding contributes at session start is the briefing and the vault's
+  `wiki-meta/hot.md` — the state cache, not the rules. Two setups (a pointer that reads the vault's
+  rules once per session, or the self-contained copy), plus a note that the tool prefix differs
+  between a plain MCP server entry and the Claude Code plugin.
+- The counts that referenced "four channels" from outside — `README.md` (both languages) and
+  `docs/features/07-wiki-gestion-de-connaissances.md` — now say five and name the new one.
+
 ### The quick-reference masthead version is pinned, and the bump keeps it current
 
 v0.91.0 nearly shipped both PDFs a release behind: their masthead states the version, `npm run bump`

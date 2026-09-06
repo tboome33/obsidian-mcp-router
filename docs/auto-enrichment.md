@@ -4,18 +4,29 @@
 
 Phase 0 of the auto-enrichment system makes Claude proactively suggest wiki saves at three natural moments during a conversation: validation pins, result-obtained digests, and topic-switch checkpoints. The mechanics are documented in the consigne itself ([`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md), `## Auto-enrichment` section).
 
-This file answers a different question: **where do you place the consigne so Claude actually applies it?** Four channels, one per Claude surface, all interoperable.
+This file answers a different question: **where do you place the consigne so Claude actually applies it?** Five channels, one per Claude surface, all interoperable — plus, upstream of all of them, the binding that decides WHICH vault the session writes to.
 
 ## TL;DR
 
 | Surface | Channel | Persistence | Best for |
 |---|---|---|---|
 | Claude Code (workspace IS a vault) | Vault root `CLAUDE.md` | Per-vault, in the vault itself | The default — auto-loaded when you `cd` into the vault |
+| Claude Code (code repo bound to a vault) | Repo `CLAUDE.md` + `confirm_workspace_binding` | Per-workspace; the binding lives in your own config | The standard shape since v0.90 — the vault sits elsewhere on disk |
 | Claude Desktop / Claude.ai (Project mode) | Project instructions | Per-project, cloud-synced | A workspace dedicated to a vault (e.g. "Trading Journal" → vault `tradingview`) |
 | Claude Desktop / Claude.ai (chat free mode) | Memory | Cloud-synced, regenerated nightly | Identity-based routing ("I'm Donald" → vault `donald`) |
 | Any Claude Code session | `~/.claude/CLAUDE.md` (global) | Local to your machine | Power users who want the consigne everywhere |
 
 You can combine multiple channels — they don't conflict. Claude reads ALL the consignes loaded in its context and applies the activation rules.
+
+## Upstream of every channel — what binds the session to a vault
+
+Every consigne self-gates on one question: *is this session bound to a vault?* Since v0.90 that question has a single authority — the **binding registry in your own config**, written by `confirm_workspace_binding`, never by a file that travels with a cloned repository.
+
+- `confirm_workspace_binding({ vault })` binds this workspace to a vault (`also: [...]` adds secondaries, `clear: true` unbinds). `list_vaults` reports the result as `workspaceBinding` — an object with an empty `also` means one vault, a non-empty `also` several, `null` means no binding at all.
+- When the router runs as the Claude Code plugin, its `SessionStart` hook opens each session with a briefing naming the bound vault and the auto-enrichment mode the session starts in.
+- A project `.env` can no longer **choose** the vault. `OBSIDIAN_ROUTER_DEFAULT_VAULT` is a *proposal*: `list_vaults` surfaces it as `bindingHint` and the router does not apply it (accepted decision `liaison-workspace-vault-hors-depot`). The one file-borne case still counted as a binding is a workspace whose own `.env` carries a `VAULT_PATH` pointing at the workspace directory itself — the "this folder is a vault" case `setup-vault.mjs` writes.
+
+Read `workspaceBinding`; never infer the binding from an environment variable.
 
 ## Channel 1 — Vault root `CLAUDE.md` (Claude Code, workspace = vault)
 
@@ -25,7 +36,7 @@ You can combine multiple channels — they don't conflict. Claude reads ALL the 
 
 **Setup**: nothing to do — every vault scaffolded with `/obsidian-router:wiki` after v0.8.1 gets it automatically. For existing vaults bootstrapped before v0.8.1, copy the `## Auto-enrichment` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) and paste it at the bottom of your vault's `CLAUDE.md`.
 
-**Verification**: open `<vault>/CLAUDE.md` and look for the `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` section. If present, you're set.
+**Verification**: open `<vault>/CLAUDE.md` and look for the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section. If present, you're set. (Vaults scaffolded before v0.8.2 carry the older heading `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — same section, one mode; re-copying from the template gives you the four.)
 
 ## Channel 2 — Claude Project instructions (Claude Desktop / Claude.ai)
 
@@ -55,7 +66,7 @@ Activation:
 
 From the next conversation in this Project, Claude reads the rules from the vault's CLAUDE.md (loaded once on first wiki interaction) and applies the consigne. Saves go to `<VAULT_NAME>` automatically.
 
-**Variant — fully self-contained Project**: if you don't want Claude to read the rules from the vault every session (extra MCP call), copy the entire `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directly into the Project instructions. Trade-off: the Project instructions become heavier (~80 lines) but no runtime fetch.
+**Variant — fully self-contained Project**: if you don't want Claude to read the rules from the vault every session (extra MCP call), copy the entire `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directly into the Project instructions. Trade-off: the Project instructions become heavier (~80 lines) but no runtime fetch.
 
 ## Channel 3 — Memory (Claude Desktop, identity-based routing)
 
@@ -87,24 +98,49 @@ From the next conversation in this Project, Claude reads the rules from the vaul
 ## Auto-enrichment (global)
 
 Apply the consigne below ONLY when:
-- The current Claude Code session has a vault bound (`VAULT_PATH` in `.env`, OR `OBSIDIAN_ROUTER_DEFAULT_VAULT` set, OR explicit user opt-in)
+- The current Claude Code session is bound to a vault — `list_vaults` reports a non-null `workspaceBinding`, OR the working directory IS a vault whose own `.env` carries a `VAULT_PATH` pointing at that same directory, OR the user explicitly opted in this session. A bare `OBSIDIAN_ROUTER_DEFAULT_VAULT` is NOT enough: the router reports it as `bindingHint` and does not apply it.
 - The obsidian-mcp-router MCP is available
 
-[paste the full Phase 0 consigne here]
+[paste the full `## Auto-enrichment` consigne here]
 ```
 
 **Caveat**: this enables tracking on every machine session. If you have many short / ad-hoc sessions where you don't want wiki proposals, the digest noise can be annoying. Most users prefer Channels 1+2 (per-vault and per-project) over the global option.
 
+## Channel 5 — Repo `CLAUDE.md` (Claude Code, code workspace bound to a vault)
+
+**When it applies**: Claude Code launched from a code repository that is *bound* to a vault living elsewhere on disk (`confirm_workspace_binding({ vault: "…" })`). Since v0.90 this is the standard shape — the workspace is the project, the vault is its knowledge base.
+
+**Why it needs its own channel**: Claude Code auto-loads the `CLAUDE.md` at the *workspace* root, and here the workspace is the repo, not the vault. The vault's own `CLAUDE.md` is never loaded automatically, so Channel 1 does not cover this case. What the binding gives you at session start is the router's briefing (bound vault + auto-enrichment mode) and the vault's `wiki-meta/hot.md` — the state cache, not the rules.
+
+**Setup** — two options:
+
+1. **Pointer** (light): add a short section to the repo's `CLAUDE.md` telling Claude to load the rules from the vault once per session:
+
+   ```markdown
+   ## Auto-enrichment → vault `<VAULT_NAME>`
+
+   This workspace is bound to the vault `<VAULT_NAME>`. At the first auto-enrichment-relevant
+   moment, read its rules once — `get_file({ vault: "<VAULT_NAME>", path: "CLAUDE.md" })`,
+   section `## Auto-enrichment` — and apply them for the rest of the session.
+   ```
+
+2. **Self-contained** (no runtime fetch): copy the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) into the repo's `CLAUDE.md`. Heavier (~80 lines), but nothing to fetch.
+
+**Tool prefix**: spell the call with the prefix your session actually shows — `mcp__obsidian-router__get_file` when the router is a plain MCP server entry, `mcp__plugin_obsidian-router_router__get_file` when it comes from the Claude Code plugin.
+
+**Verification**: `list_vaults` returns a non-null `workspaceBinding` naming the vault, and the session briefing names the starting mode.
+
 ## Combining channels
 
-The four channels are additive, not exclusive. A typical "all-in" multi-vault setup:
+The five channels are additive, not exclusive. A typical "all-in" multi-vault setup:
 
 - **Vault `personal`'s `CLAUDE.md`** → consigne loaded when working from a personal-vault workspace in Claude Code
+- **Repo `my-app/CLAUDE.md`** → bound to vault `my-app-notes` via `confirm_workspace_binding`, so development sessions file into the project's own knowledge base
 - **Project "Trading Journal"** instructions → bound to vault `tradingview` for Claude Desktop trading conversations
 - **Project "Personal"** instructions → bound to vault `personal` for personal Claude Desktop conversations
 - **Memory** → asks "which user?" and proposes vault matching at chat start, when no Project is active (useful when several people share the Claude account)
 
-Each channel handles a different surface; they compose cleanly because the consigne self-gates on "is a vault bound?" — only one channel's binding fires at a time, depending on context.
+Each channel handles a different surface; they compose cleanly because the consigne self-gates on "is a vault bound?" — and that gate has one authority, the binding described above.
 
 ## The four modes — what fits when
 
@@ -190,18 +226,29 @@ Phase 1 (v0.8.2) covers the operational core. Phase 2 will add:
 
 La Phase 0 du système d'auto-enrichissement fait que Claude propose proactivement de sauver dans le wiki à trois moments naturels d'une conversation : pins de validation, digests post-résultat, et checkpoints au changement de sujet. La mécanique est documentée dans la consigne elle-même ([`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md), section `## Auto-enrichment`).
 
-Ce fichier répond à une autre question : **où placer la consigne pour que Claude l'applique réellement ?** Quatre canaux, un par surface Claude, tous interopérables.
+Ce fichier répond à une autre question : **où placer la consigne pour que Claude l'applique réellement ?** Cinq canaux, un par surface Claude, tous interopérables — plus, en amont de tous, la liaison qui décide DANS QUEL vault la session écrit.
 
 ### En bref
 
 | Surface | Canal | Persistance | Pour quoi |
 |---|---|---|---|
 | Claude Code (workspace = vault) | `CLAUDE.md` racine du vault | Per-vault, dans le vault | Le défaut — auto-chargé quand tu `cd` dans le vault |
+| Claude Code (dépôt de code lié à un vault) | `CLAUDE.md` du dépôt + `confirm_workspace_binding` | Per-workspace ; la liaison vit dans ta propre config | Le cas standard depuis la v0.90 — le vault est ailleurs sur le disque |
 | Claude Desktop / Claude.ai (mode Project) | Instructions du Project | Per-projet, sync cloud | Un workspace dédié à un vault (ex : "Journal Trading" → vault `tradingview`) |
 | Claude Desktop / Claude.ai (chat libre) | Memory | Sync cloud, régénérée chaque nuit | Routing par identité ("c'est Donald" → vault `donald`) |
 | N'importe quelle session Claude Code | `~/.claude/CLAUDE.md` (global) | Local à ta machine | Pour ceux qui veulent la consigne partout |
 
 Tu peux combiner plusieurs canaux — ils ne se contredisent pas. Claude lit toutes les consignes chargées dans son contexte et applique les règles d'activation.
+
+### En amont de tous les canaux — ce qui lie la session à un vault
+
+Chaque consigne s'auto-gate sur une seule question : *cette session est-elle liée à un vault ?* Depuis la v0.90, cette question a une autorité unique — le **registre de liaisons dans ta propre config**, écrit par `confirm_workspace_binding`, jamais par un fichier qui voyage avec un dépôt cloné.
+
+- `confirm_workspace_binding({ vault })` lie ce workspace à un vault (`also: [...]` ajoute des secondaires, `clear: true` délie). `list_vaults` rend le résultat dans `workspaceBinding` — un objet avec un `also` vide = UN vault, un `also` non vide = plusieurs, `null` = aucune liaison.
+- Quand le router tourne comme plugin Claude Code, son hook `SessionStart` ouvre chaque session par un briefing qui nomme le vault lié et le mode d'auto-enrichissement de départ.
+- Un `.env` de projet ne peut plus **choisir** le vault. `OBSIDIAN_ROUTER_DEFAULT_VAULT` est une *proposition* : `list_vaults` la remonte comme `bindingHint` et le router ne l'applique pas (décision acceptée `liaison-workspace-vault-hors-depot`). Le seul cas porté par un fichier qui compte encore comme liaison : un workspace dont le `.env` porte un `VAULT_PATH` pointant sur le dossier du workspace lui-même — le cas « ce dossier EST un vault » qu'écrit `setup-vault.mjs`.
+
+Lis `workspaceBinding` ; ne déduis jamais la liaison d'une variable d'environnement.
 
 ### Canal 1 — `CLAUDE.md` racine du vault (Claude Code, workspace = vault)
 
@@ -211,7 +258,7 @@ Tu peux combiner plusieurs canaux — ils ne se contredisent pas. Claude lit tou
 
 **Setup** : rien à faire — chaque vault scaffold avec `/obsidian-router:wiki` après v0.8.1 l'a automatiquement. Pour les vaults existants bootstrappés avant v0.8.1, copie la section `## Auto-enrichment` depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) et colle-la en bas du `CLAUDE.md` de ton vault.
 
-**Vérification** : ouvre `<vault>/CLAUDE.md` et cherche la section `## Auto-enrichment (Phase 0 — ClaudeAsk mode)`. Si présente, tu es bon.
+**Vérification** : ouvre `<vault>/CLAUDE.md` et cherche la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)`. Si présente, tu es bon. (Les vaults scaffoldés avant la v0.8.2 portent l'ancien titre `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — même section, un seul mode ; recopier depuis le template te donne les quatre.)
 
 ### Canal 2 — Instructions de Project Claude (Claude Desktop / Claude.ai)
 
@@ -241,7 +288,7 @@ Activation :
 
 À partir de la prochaine conversation dans ce Project, Claude lit les règles depuis le `CLAUDE.md` du vault (chargé une fois à la première interaction wiki) et applique la consigne. Les saves vont automatiquement dans `<NOM_VAULT>`.
 
-**Variante — Project fully self-contained** : si tu ne veux pas que Claude lise les règles depuis le vault à chaque session (appel MCP supplémentaire), copie la section `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` complète depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directement dans les instructions du Project. Trade-off : les instructions du Project deviennent plus lourdes (~80 lignes) mais zéro fetch runtime.
+**Variante — Project fully self-contained** : si tu ne veux pas que Claude lise les règles depuis le vault à chaque session (appel MCP supplémentaire), copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` complète depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directement dans les instructions du Project. Trade-off : les instructions du Project deviennent plus lourdes (~80 lignes) mais zéro fetch runtime.
 
 ### Canal 3 — Memory (Claude Desktop, routing par identité)
 
@@ -273,24 +320,50 @@ Activation :
 ## Auto-enrichissement (global)
 
 Applique la consigne ci-dessous SEULEMENT quand :
-- La session Claude Code courante a un vault bind (`VAULT_PATH` dans `.env`, OU `OBSIDIAN_ROUTER_DEFAULT_VAULT` posé, OU opt-in explicite utilisateur)
+- La session Claude Code courante est liée à un vault — `list_vaults` rend un `workspaceBinding` non nul, OU le répertoire courant EST un vault dont le `.env` porte un `VAULT_PATH` pointant sur ce même répertoire, OU l'utilisateur a explicitement opt-in cette session. Un `OBSIDIAN_ROUTER_DEFAULT_VAULT` nu ne suffit PAS : le router le remonte comme `bindingHint` et ne l'applique pas.
 - Le MCP obsidian-mcp-router est disponible
 
-[colle ici la consigne Phase 0 complète]
+[colle ici la consigne `## Auto-enrichment` complète]
 ```
 
 **Caveat** : ça active le tracking sur chaque session machine. Si tu as beaucoup de sessions courtes / ad-hoc où tu ne veux pas de propositions wiki, le bruit des digests devient pénible. La plupart préfèrent les Canaux 1+2 (per-vault et per-project) plutôt que le global.
 
+### Canal 5 — `CLAUDE.md` du dépôt (Claude Code, workspace de code lié à un vault)
+
+**Quand ça s'applique** : Claude Code lancé depuis un dépôt de code *lié* à un vault qui vit ailleurs sur le disque (`confirm_workspace_binding({ vault: "…" })`). Depuis la v0.90, c'est la forme standard — le workspace est le projet, le vault est sa base de connaissances.
+
+**Pourquoi il lui faut son propre canal** : Claude Code auto-charge le `CLAUDE.md` à la racine du *workspace*, et ici le workspace est le dépôt, pas le vault. Le `CLAUDE.md` du vault n'est jamais chargé automatiquement — le Canal 1 ne couvre donc pas ce cas. Ce que la liaison te donne au démarrage, c'est le briefing du router (vault lié + mode d'auto-enrichissement) et le `wiki-meta/hot.md` du vault : le cache d'état, pas les règles.
+
+**Setup** — deux options :
+
+1. **Pointeur** (léger) : ajoute une courte section au `CLAUDE.md` du dépôt, qui dit à Claude de charger les règles depuis le vault une fois par session :
+
+   ```markdown
+   ## Auto-enrichissement → vault `<NOM_VAULT>`
+
+   Ce workspace est lié au vault `<NOM_VAULT>`. Au premier moment pertinent pour
+   l'auto-enrichissement, lis ses règles une fois — `get_file({ vault: "<NOM_VAULT>",
+   path: "CLAUDE.md" })`, section `## Auto-enrichment` — et applique-les pour le
+   reste de la session.
+   ```
+
+2. **Self-contained** (zéro fetch runtime) : copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) dans le `CLAUDE.md` du dépôt. Plus lourd (~80 lignes), mais rien à aller chercher.
+
+**Préfixe d'outil** : écris l'appel avec le préfixe que ta session affiche réellement — `mcp__obsidian-router__get_file` quand le router est une entrée de serveur MCP classique, `mcp__plugin_obsidian-router_router__get_file` quand il vient du plugin Claude Code.
+
+**Vérification** : `list_vaults` rend un `workspaceBinding` non nul qui nomme le vault, et le briefing de session nomme le mode de départ.
+
 ### Combiner les canaux
 
-Les quatre canaux sont additifs, pas exclusifs. Un setup "tout-en-un" multi-vaults :
+Les cinq canaux sont additifs, pas exclusifs. Un setup "tout-en-un" multi-vaults :
 
 - **`CLAUDE.md` du vault `personal`** → consigne chargée quand on bosse depuis un workspace personal-vault en Claude Code
+- **`CLAUDE.md` du dépôt `mon-app`** → lié au vault `mon-app-notes` via `confirm_workspace_binding`, pour que les sessions de dev classent dans la base de connaissances du projet
 - **Instructions du Project "Journal Trading"** → bind au vault `tradingview` pour les conversations trading sur Claude Desktop
 - **Instructions du Project "Personnel"** → bind au vault `personal` pour les conversations perso sur Claude Desktop
 - **Memory** → demande "quel utilisateur ?" et propose le matching de vault au début du chat, quand aucun Project n'est actif (utile quand plusieurs personnes partagent le compte Claude)
 
-Chaque canal gère une surface différente ; ils se composent proprement parce que la consigne s'auto-gate sur "est-ce qu'un vault est bind ?" — un seul canal de binding fire à la fois, selon le contexte.
+Chaque canal gère une surface différente ; ils se composent proprement parce que la consigne s'auto-gate sur "est-ce qu'un vault est lié ?" — et ce gate a une seule autorité, la liaison décrite plus haut.
 
 ### Les quatre modes — quel mode pour quel usage
 
