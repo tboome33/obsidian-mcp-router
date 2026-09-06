@@ -268,4 +268,33 @@ describe('the tiers survive the OTHER writers of the binding', () => {
     assert.equal(readRefusals(current(), CWD).has('ref'), false, 'dropped on disk');
     assert.equal(reg.workspaceRefusals.size, 0, 'and live');
   });
+
+  test('on a GATED deployment the tier cannot be recorded, and nothing is written', async () => {
+    // Same rule as `confirm_workspace_binding`, closed in Phase 6: the
+    // workspace on a gated router is the SERVER's directory, in a config every
+    // tenant shares — one caller could open a vault for writing on behalf of
+    // all of them, which is the opposite of what the tier exists for.
+    for (const [gate, value] of [
+      ['OBSIDIAN_ROUTER_READONLY', 'true'],
+      ['OBSIDIAN_ROUTER_ALLOWED_VAULTS', 'notes'],
+      ['OBSIDIAN_ROUTER_USER_ID', 'u1'],
+    ]) {
+      const had = Object.hasOwn(process.env, gate);
+      const prev = process.env[gate];
+      process.env[gate] = value;
+      try {
+        const { seam, written } = seams();
+        for (const mode of ['locked', 'soft', 'writable']) {
+          await assert.rejects(
+            () => setSecondaryVaultMode(registryOf(), { vault: 'ref', mode }, seam),
+            /not available on a gated deployment/,
+            `${gate} ${mode}`,
+          );
+        }
+        assert.equal(written.length, 0, `${gate}: nothing may reach the shared config`);
+      } finally {
+        if (had) process.env[gate] = prev; else delete process.env[gate];
+      }
+    }
+  });
 });

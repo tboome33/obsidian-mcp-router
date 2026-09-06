@@ -22,6 +22,24 @@ By default, the Local REST API plugin only listens on `127.0.0.1`. To expose it 
 
 ## Step 2 — add the vault to the router
 
+### From a conversation — `register_remote_vault`
+
+The quickest path, and the one that does not involve finding a JSON file:
+
+```
+register_remote_vault({ name: "qnap", baseUrl: "https://192.168.0.11:27125", apiKey: "…" })
+```
+
+It writes the entry into your own `config.json` — the same block described
+below, with the same fields, validated before it lands: the name must not
+collide with a vault you already have, the URL must be http(s), and the key is
+never echoed back. The tool is **local-only**: it is absent from gated
+deployments (`OBSIDIAN_ROUTER_READONLY`, `OBSIDIAN_ROUTER_ALLOWED_VAULTS` or
+`OBSIDIAN_ROUTER_USER_ID` set), where the config is shared by every caller and
+one session must not add a vault for all of them.
+
+### By hand
+
 Edit `~/.claude/obsidian-mcp-router/config.json` and add an entry to `remoteVaults`:
 
 ```json
@@ -152,6 +170,32 @@ Four details worth knowing before you meet the refusal:
 Tools that regenerate a derived artifact from the vault's own content (`build_wiki_graph`, `build_search_index`, `refresh_okf_projections`) are exempt: there is no "content I read" to pin, and two sessions racing produce the same file from the same source. `record_source` is exempt because it already does its own compare-and-swap on the shared ledger. `provision_vault` and `register_remote_vault` address no note in an existing vault.
 
 **The honest limit, stated with the mechanism rather than left implicit.** These checks protect writes that go through the router **from each other**. An edit already saved in Obsidian's own editor on the host machine IS caught — its hash differs from what you read; a save that lands after the check is not, and an Obsidian Sync / LiveSync replica never passes through the REST API this router calls at all. And only `write_file` + `ifMatch` (directly, or as a `write_bundle` write step) against a bridge that serves `/vault-cas/` is a true atomic compare-and-swap; every other check — the GET-compare fallback on an older bridge, the checks behind `ifNew`, `approvedPlanSha256`, `expect`, and the per-file guards of the other tools — runs just before the write, which narrows the window to one round trip rather than closing it. Two narrower limits, for the same reason: `move_file`'s precondition guards the **source**, so with `overwrite: true` the destination can still be replaced (the default, `overwrite: false`, refuses an existing destination outright); and the router's own maintenance writes — the audit line, the first-contact repair, the projections refresh — carry no precondition, being regenerations rather than edits.
+
+## Reachability — a registered vault is not automatically an addressable one
+
+Registering a remote vault makes it *available*; whether a given session may
+address it is a separate question, and one you can now answer per workspace.
+With `"vaultReach": "declared"` in `config.json`, a vault answers a session only
+if that workspace's binding names it (as `vault` or in `also`), or if it is in
+**`openVaults`** — the exception list for a vault that should stay reachable
+from everywhere, the Desktop chat included, which has no workspace at all. The
+switch is off by default: an installation that does not set it behaves exactly
+as before.
+
+This matters more for remote vaults than for local ones. A remote vault is
+often the shared one — the NAS, the family knowledge base, the vault two
+machines both reach — and "every session can address every registered vault" is
+precisely the default that lets a project write into it by accident. Note the
+interaction with the section above: a vault in `openVaults` is treated as
+**shared by hypothesis**, so its writes always need a precondition.
+
+A workspace's *secondary* vaults (`also`) are read-only by default, on three
+tiers — `locked` (refused outright), `soft` (a write must carry
+`confirmSecondaryWrite: true`, which Claude may set only after you said yes) and
+`writable`. Record one with `set_secondary_vault_mode({ vault, mode })`, or run
+the `/bind-workspace` wizard, which asks per secondary. The tier is recorded per
+workspace, so the same remote vault can be strict in one project and read-write
+in another.
 
 ## Latency considerations
 

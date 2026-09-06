@@ -118,10 +118,19 @@ import { canonicalizeMode } from './auto-enrich-mode.mjs';
  */
 export const REFUSED_VAULT_KEY = 'OBSIDIAN_ROUTER_REFUSED_VAULT';
 
+/**
+ * THE TWO LINES BY WHICH A WORKSPACE FILE PROPOSES A VAULT. Named because
+ * four things now ask the same question of them — the one-time import, the
+ * refusal's reader, its writer, and `workspaceBindingProposal` below — and a
+ * literal repeated in four places is how three of them stay right.
+ */
+export const DEFAULT_VAULT_KEY = 'OBSIDIAN_ROUTER_DEFAULT_VAULT';
+export const LOCKED_KEY = 'OBSIDIAN_ROUTER_LOCKED';
+
 /** The keys the router's own writers put into a workspace .env, and the two sandbox keys. */
 export const WORKSPACE_DOTENV_KEYS = Object.freeze([
-  'OBSIDIAN_ROUTER_DEFAULT_VAULT',
-  'OBSIDIAN_ROUTER_LOCKED',
+  DEFAULT_VAULT_KEY,
+  LOCKED_KEY,
   'OBSIDIAN_ROUTER_AUTO_ENRICH',
   REFUSED_VAULT_KEY,
   'VAULT_PATH',
@@ -197,6 +206,68 @@ export function isGatedDeployment(env = process.env) {
   return TRUTHY.has(String(env.OBSIDIAN_ROUTER_READONLY || '').trim().toLowerCase())
     || set(env.OBSIDIAN_ROUTER_ALLOWED_VAULTS)
     || set(env.OBSIDIAN_ROUTER_USER_ID);
+}
+
+/**
+ * WHICH LINE OF A WORKSPACE FILE IS THE PROPOSAL, and where it came from.
+ *
+ * A workspace `.env` proposes a vault through TWO lines, not one:
+ * `OBSIDIAN_ROUTER_DEFAULT_VAULT` and `OBSIDIAN_ROUTER_LOCKED`. The one-time
+ * import decides on both (the lock line first), and since the round on
+ * `1fad78c` the refusal reads beside both and since `faf5b4b` writes beside
+ * both. The two surfaces that TELL the user — the session briefing and
+ * `list_vaults` — still classified the default line alone, so a file carrying
+ * only a lock line was never asked about: it proposed a vault, the import
+ * would act on it, and nothing said so. Phase 6 closes that third surface, the
+ * design question the roadmap parked.
+ *
+ * ONLY THE FILE'S LOCK LINE COUNTS. A lock the HOST sets is an authority — it
+ * is applied — so reporting it as "proposed and not applied" would be false,
+ * and the briefing's whole contract is that it never says that. The default
+ * line keeps its existing behaviour whatever its origin; the lock line is
+ * promoted to a proposal only when the loader took it from this workspace's
+ * file, which is the same test the refusal's two halves already make.
+ *
+ * @param {object} [env]
+ * @returns {{ hint: string|undefined, origin: string|null, key: string|null, byLock: boolean }}
+ */
+export function workspaceBindingProposal(env = process.env) {
+  const dflt = env[DEFAULT_VAULT_KEY];
+  if (typeof dflt === 'string' && dflt.trim() !== '') {
+    return { hint: dflt, origin: envKeyOrigin(DEFAULT_VAULT_KEY, env), key: DEFAULT_VAULT_KEY, byLock: false };
+  }
+  const lock = env[LOCKED_KEY];
+  const lockOrigin = envKeyOrigin(LOCKED_KEY, env);
+  if (typeof lock === 'string' && lock.trim() !== '' && lockOrigin === ENV_ORIGINS.WORKSPACE_DOTENV) {
+    return { hint: lock, origin: lockOrigin, key: LOCKED_KEY, byLock: true };
+  }
+  return { hint: undefined, origin: null, key: null, byLock: false };
+}
+
+/**
+ * THE refusal every workspace-binding writer gives on a gated deployment —
+ * one sentence, so the tools cannot explain the same rule differently.
+ *
+ * A gated router serves several callers from ONE process whose cwd is the
+ * server's own directory. Every one of these tools writes THAT workspace's
+ * binding, in a config all the tenants share: one caller's answer standing for
+ * everyone, written by a remote hand. `register_remote_vault` has been hidden
+ * from gated deployments since it existed for the same reason; `refuse` and
+ * `retract` were closed when the Fable round measured them writing both halves
+ * under READONLY. Phase 6 of `portee-ergonomie-refus-roadmap` closes the rest
+ * of the family rather than leaving two doors of one room locked.
+ *
+ * @param {string} tool the tool name, as the caller writes it
+ * @param {string} what a short noun phrase for what would be written
+ * @returns {Error}
+ */
+export function gatedDeploymentRefusal(tool, what) {
+  return new Error(
+    `${tool}: not available on a gated deployment (OBSIDIAN_ROUTER_READONLY, `
+    + 'OBSIDIAN_ROUTER_ALLOWED_VAULTS or OBSIDIAN_ROUTER_USER_ID is set): the workspace here is the '
+    + `server's own directory, shared by every caller, and ${what} recorded there would answer for all `
+    + 'of them. Run this from a session that lives in the project itself.',
+  );
 }
 
 /**

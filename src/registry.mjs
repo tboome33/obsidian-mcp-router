@@ -53,7 +53,7 @@ import {
   alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
-import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint } from './helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint, workspaceBindingProposal } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
   readBinding,
@@ -452,8 +452,14 @@ export async function loadRegistry({ configPath } = {}) {
     binding: workspaceBinding,
     refusals: workspaceRefusals,
   } = importDotenvHintOnce(config, cfgPath, vaults);
+  // WHICH LINE PROPOSED, and where it came from. A workspace file proposes a
+  // vault through its default-vault line OR, failing that, its own lock line —
+  // the one the import decides first and the refusal writes beside. Only the
+  // FILE's lock counts: a lock the host sets is applied, so calling it a
+  // proposal that was not applied would be false. (Phase 6.)
+  const proposal = workspaceBindingProposal();
   const bindingHint = classifyBindingHint({
-    hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+    hint: proposal.hint,
     binding: workspaceBinding,
     isRegistered: (name) => vaults.some((v) => v.name === name),
     // WHERE the proposal came from, from the dotenv loader's own record. The
@@ -461,7 +467,7 @@ export async function loadRegistry({ configPath } = {}) {
     // host did, and the session-start briefing names the file the user should
     // go and edit — so a proposal from the host must not be reported as this
     // project's .env. The loader is the only thing that knows the difference.
-    origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    origin: proposal.origin,
     // The two halves of a refusal (decision refus-d-une-proposition-de-
     // liaison): the user's config decides, the workspace file only remembers.
     isRefused: (name) => workspaceRefusals.has(name),

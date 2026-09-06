@@ -477,7 +477,7 @@ describe('classifyBindingHint — the origin it now carries', () => {
 });
 
 describe('registeredVaultNames — what a hook can honestly know', () => {
-  test('local and remote vaults, lowercased, minus what disabledVaults hides', () => {
+  test('local and remote vaults SPELLED AS THE SERVER SPELLS THEM, minus what disabledVaults hides', () => {
     const cfg = {
       portRegistry: { 'C:\\VAULTS\\Notes': 27124, 'C:\\VAULTS\\Work': 27125, 'C:\\VAULTS\\Old': 27126 },
       vaultNames: { 'C:\\VAULTS\\Work': 'work-journal' },
@@ -485,7 +485,43 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
       // by NAME and by PATH — the registry accepts both, and so must this
       disabledVaults: ['gone', 'C:\\VAULTS\\Old'],
     };
-    assert.deepEqual([...registeredVaultNames(cfg)].sort(), ['notes', 'shared', 'work-journal']);
+    // A local name is the slug (`defaultNameFromPath` lowercases a basename);
+    // a REMOTE name is whatever the config wrote, and the server registers it
+    // verbatim. This set used to lowercase both, which made it disagree with
+    // the server about `Shared` — see the next test.
+    assert.deepEqual([...registeredVaultNames(cfg)].sort(), ['Shared', 'notes', 'work-journal']);
+  });
+
+  test('names are compared EXACTLY, the way the server compares them — the hook is never wider than the registry', () => {
+    // Recorded by the Codex round on `b59eb00`, fixed in Phase 6: the server
+    // resolves with `x.name === target`, the hook lowercased. A config holding
+    // `DEDIBOX` beside a proposal naming `dedibox` therefore read `unconfirmed`
+    // in the briefing and `unknown-vault` in `list_vaults`, and the
+    // confirmation the briefing offered was refused by the tool. Worse,
+    // `bindingIsActive` said yes where the cascade said no, so journaling,
+    // autocommit and recall wrote into a vault the server does not serve.
+    const cfg = { remoteVaults: [{ name: 'DEDIBOX' }] };
+    assert.equal(bindingIsActive(cfg, 'DEDIBOX'), true);
+    assert.equal(bindingIsActive(cfg, 'dedibox'), false, 'the server would refuse this name');
+    // The briefing agrees with the tool: a differently-cased proposal is a
+    // vault this machine does not have.
+    const out = composeBriefing({
+      hint: { status: 'unknown-vault', hint: 'dedibox', origin: 'workspace-dotenv' },
+      registeredCount: 1,
+      isRegistered: (n) => registeredVaultNames(cfg).has(String(n).trim()),
+    });
+    assert.match(out, /"dedibox", which is not registered on this machine/);
+    // And the whitelist narrows exactly too: `ALLOWED_VAULTS` is compared
+    // verbatim by the registry.
+    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_ALLOWED_VAULTS');
+    const prev = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
+    process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = 'dedibox';
+    try {
+      assert.equal(registeredVaultNames(cfg).size, 0, 'a differently-cased whitelist entry does not admit it');
+    } finally {
+      if (had) process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS = prev;
+      else delete process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS;
+    }
   });
 
   test('bindingIsActive agrees with the cascade: a disabled or absent vault is NOT bound', () => {
@@ -499,7 +535,7 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
       disabledVaults: ['work'],
     };
     assert.equal(bindingIsActive(cfg, 'notes'), true);
-    assert.equal(bindingIsActive(cfg, 'NOTES'), true, 'compared case-insensitively, like the slug');
+    assert.equal(bindingIsActive(cfg, 'NOTES'), false, 'compared exactly, like resolveVault');
     assert.equal(bindingIsActive(cfg, 'work'), false, 'disabled is not active');
     assert.equal(bindingIsActive(cfg, 'ghost'), false, 'never registered');
     for (const bad of [null, undefined, '', '   ', 42, {}]) {

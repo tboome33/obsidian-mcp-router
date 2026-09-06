@@ -60,7 +60,7 @@ import {
 import { readBinding, readRefusals, classifyBindingHint } from '../src/helpers/workspace-bindings.mjs';
 import { composeBriefing } from '../src/helpers/binding-briefing.mjs';
 import { canonicalizeMode } from '../src/helpers/auto-enrich-mode.mjs';
-import { envKeyOrigin, workspaceDotenvRefusals, dotenvRefusalHint } from '../src/helpers/workspace-dotenv.mjs';
+import { workspaceDotenvRefusals, dotenvRefusalHint, workspaceBindingProposal } from '../src/helpers/workspace-dotenv.mjs';
 
 // ---- Resolve cwd from stdin or env ----------------------------------
 // Read BEFORE the dotenv load: the file to read is this workspace's, and the
@@ -126,13 +126,20 @@ function build() {
   // line only adds "this was refused here before" when the config has no
   // answer any more.
   const refusals = readRefusals(cfg, cwd);
+  // WHICH LINE PROPOSED — the default-vault line, or this file's own lock line
+  // when it carries no default. The same selector the server uses, so the two
+  // surfaces cannot disagree about whether there is a proposal at all.
+  const proposal = workspaceBindingProposal();
   const hint = classifyBindingHint({
-    hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+    hint: proposal.hint,
     binding,
-    // Names are compared lowercased because that is how the registry derives a
-    // slug from a path; `registeredVaultNames` stores them the same way.
-    isRegistered: (name) => registered.has(String(name).trim().toLowerCase()),
-    origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    // Names are compared EXACTLY, which is what the server does
+    // (`resolveVault`: `x.name === target`). Lowercasing here made the hook
+    // wider than the server: `DEDIBOX` in the config beside a proposal naming
+    // `dedibox` read `unconfirmed` here and `unknown-vault` there, and the
+    // confirmation this line offered was refused by the tool.
+    isRegistered: (name) => registered.has(String(name).trim()),
+    origin: proposal.origin,
     isRefused: (name) => refusals.has(name),
     fileRefusal: dotenvRefusalHint(),
   });
@@ -150,7 +157,7 @@ function build() {
     mode,
     modeRefused,
     registeredCount: registered.size,
-    isRegistered: (name) => registered.has(String(name).trim().toLowerCase()),
+    isRegistered: (name) => registered.has(String(name).trim()),
     // The hook cannot see what the SERVER's start-up imported — it is a
     // separate process, and the import runs where the registry loads. What it
     // can see is the binding's own provenance: `confirmedVia: 'migration'`

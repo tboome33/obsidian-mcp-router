@@ -60,7 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
-import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint } from './workspace-dotenv.mjs';
+import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
 /** The config key holding every binding. The seventh top-level key. */
@@ -1101,11 +1101,12 @@ export function withMigrationState(config, { at, cwd = null, recordImported = fa
  */
 export function refreshRegistryBindingHint(registry) {
   if (!registry || typeof registry !== 'object') return null;
+  const proposal = workspaceBindingProposal();
   registry.bindingHint = classifyBindingHint({
-    hint: process.env.OBSIDIAN_ROUTER_DEFAULT_VAULT,
+    hint: proposal.hint,
     binding: registry.workspaceBinding || null,
     isRegistered: (name) => (registry.vaults || []).some((v) => v.name === name),
-    origin: envKeyOrigin('OBSIDIAN_ROUTER_DEFAULT_VAULT'),
+    origin: proposal.origin,
     isRefused: (name) => registry.workspaceRefusals instanceof Map && registry.workspaceRefusals.has(name),
     fileRefusal: dotenvRefusalHint(),
   });

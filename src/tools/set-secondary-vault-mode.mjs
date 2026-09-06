@@ -57,6 +57,7 @@ import {
   updateConfigBindings,
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
+import { isGatedDeployment, gatedDeploymentRefusal } from '../helpers/workspace-dotenv.mjs';
 
 export const TOOL_NAME = 'set_secondary_vault_mode';
 
@@ -81,7 +82,9 @@ export const TOOL_DEFINITION = {
     + 'writable in another. The vault must ALREADY be a secondary of this workspace (confirm_workspace_binding with '
     + '`also`) — this never binds. It never qualifies the primary, which is always read-write. Call it once per '
     + 'secondary, with the mode the user chose; the "configure-secondary-vaults" skill is the guided conversation '
-    + 'that detects the open vaults and asks the question for each.',
+    + 'that detects the open vaults and asks the question for each. Not available on a gated deployment '
+    + '(OBSIDIAN_ROUTER_READONLY / ALLOWED_VAULTS / USER_ID): the workspace there is the server\'s own directory, '
+    + 'shared by every caller, so one caller would be opening a vault for writing on behalf of all of them.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -132,6 +135,15 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   const key = canonicalWorkspaceKey(cwd);
   if (!key) {
     throw new Error('set_secondary_vault_mode: no usable working directory, so there is no workspace whose secondary to qualify.');
+  }
+
+  // NOT ON A GATED DEPLOYMENT — the same rule, and the same sentence, as
+  // `confirm_workspace_binding`. This tool writes a write TIER onto the
+  // server's own workspace binding, in the config every tenant shares: one
+  // caller could open a vault for writing on behalf of all of them, which is
+  // the opposite of what the tier exists for. Closed in Phase 6.
+  if (isGatedDeployment()) {
+    throw gatedDeploymentRefusal('set_secondary_vault_mode', "a secondary's write tier");
   }
 
   const vault = args.vault;

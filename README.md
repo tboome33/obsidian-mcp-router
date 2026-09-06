@@ -522,14 +522,87 @@ already on disk counts as older. Both cases are announced by the session
 briefing like any other import, which is what makes them cost one sentence to
 undo rather than a year of misfiled notes.
 
-Two more things to know on that path. If you run the router from a checkout
+One more thing to know on that path. If you run the router from a checkout
 rather than the plugin and wired your hooks before this version, re-run
 `node scripts/setup-vault.mjs --install-hooks` once: the import runs inside the
 router for everyone, but the briefing that announces it is a hook your older
-`settings.json` does not carry. And a proposal you do not want cannot be
-declined yet, only adopted or left standing: a hint in a `.env` you did not
-write keeps being reported at every session until you adopt it or remove the
-line.
+`settings.json` does not carry.
+
+### Saying no to a proposal
+
+A hint you do not want used to have no exit — you adopted it or you endured it,
+re-announced at every session, because nothing could record that the question
+had been answered. It can now be **refused**, and the refusal is written on two
+sides that do different jobs:
+
+| Where | What it is | Effect |
+| --- | --- | --- |
+| your `config.json`, under `workspaceRefusals` | the **authority** | silence: the hint reads `refused`, the briefing says nothing, the one-time import never binds that vault |
+| the project's `.env`, as `OBSIDIAN_ROUTER_REFUSED_VAULT` | a **portable hint** | silences nobody; it survives uninstalling the router, and after a reinstall the question is asked *once* more, with that context |
+
+```
+confirm_workspace_binding({ refuse: "<vault>" })   # record the no
+confirm_workspace_binding({ retract: "<vault>" })  # take it back
+```
+
+A refusal names **one vault**, so a `.env` that later proposes a different one
+is still reported. Binding a vault drops its refusal — binding is adopting. The
+vault a workspace is bound to cannot be refused at all: the binding is already
+the opposite answer. And the `.env` half is written **only into the file that
+proposed the vault**, by its `OBSIDIAN_ROUTER_DEFAULT_VAULT` or its
+`OBSIDIAN_ROUTER_LOCKED` line — a proposal that came from your shell or your MCP
+host leaves the project file untouched. So a repository that gets committed with
+a refusal in it can, at worst, make a colleague be asked a question once.
+
+On a multi-tenant deployment (`OBSIDIAN_ROUTER_READONLY`,
+`OBSIDIAN_ROUTER_ALLOWED_VAULTS` or `OBSIDIAN_ROUTER_USER_ID` set) none of the
+binding tools are available: the workspace there is the server's own directory,
+shared by every caller, so one answer would stand for all of them.
+
+### Which vaults a workspace may reach, and which it may write
+
+Two switches, both **off by default** — nothing changes for an installation
+that does not set them.
+
+**Reachability.** With `"vaultReach": "declared"` in `config.json`, a registered
+vault answers a session only if that workspace's binding names it (as `vault` or
+in `also`), or if it is listed in **`openVaults`** — the exception list that
+keeps a personal vault reachable from everywhere, including the Desktop chat,
+which has no workspace at all. `list_vaults` keeps *showing* an unreachable
+vault, in `disabled[]`, with the reason.
+
+**Write tiers.** A workspace's secondaries (`also`) are read-only by default.
+Three tiers, per workspace, so the same vault can be strict in one project and
+read-write in another:
+
+| Tier | What a write does |
+| --- | --- |
+| `locked` | refused, unconditionally — no parameter lifts it, and the vault cannot be promoted to primary from a conversation |
+| `soft` *(default)* | refused unless the call carries `confirmSecondaryWrite: true`, which Claude may set only after you have said yes |
+| `writable` | goes through, no friction |
+
+The primary is always read-write. Record a tier with
+`set_secondary_vault_mode({ vault, mode })`, or let the **`/bind-workspace`**
+wizard walk you through the whole thing — where we are, the primary, the
+secondaries, one tier question per secondary, then a table of what it recorded.
+
+### Vaults two workspaces share
+
+When more than one workspace declares the same vault, a blind write to it is
+refused: the call must carry a **precondition**. `write_file` takes `ifMatch`
+(the `contentSha256` a read returned) or `ifNew: true`; `patch_file`,
+`append_to_file`, `delete_file`, `move_file` and `merge_frontmatter` take
+`ifMatch`; `write_bundle` takes `expect`; `download_page_assets` takes
+`createOnly`; `execute_template` is create-only at the bridge. `list_vaults`
+reports it per vault as `writesRequireIfMatch`, so you can see which vaults are
+in that state rather than discovering it from a refusal.
+
+### Remote vaults, from a conversation
+
+`register_remote_vault({ name, baseUrl, apiKey })` adds a vault served over the
+network to your own config without editing JSON by hand — the conversational
+half of the `remoteVaults` block documented below. It is hidden on multi-tenant
+deployments, where the config is shared.
 
 ### Which hooks the plugin turns on by itself
 
@@ -852,7 +925,7 @@ See [`examples/config.example.json`](./examples/config.example.json) for a compl
 
 ### Running the router without the vaults' disks
 
-A router that only speaks REST — on a dev box, in a container, behind a hub — cannot read the vaults' files. Measured on 2026-08-31 across all 50 tools in isolated processes: **the only universal disk dependency is credential resolution.** For a *local* vault (a `portRegistry` entry) the router reads the API key out of the vault's own `data.json` before any tool runs. Move that key into the config and the dependency disappears — no tool in the tested set needs vault disk any more.
+A router that only speaks REST — on a dev box, in a container, behind a hub — cannot read the vaults' files. Measured on 2026-08-31 across the 50 tools that existed then, in isolated processes: **the only universal disk dependency is credential resolution.** For a *local* vault (a `portRegistry` entry) the router reads the API key out of the vault's own `data.json` before any tool runs. Move that key into the config and the dependency disappears — no tool in the tested set needs vault disk any more.
 
 `scripts/gen-remote-config.mjs` performs that move:
 
@@ -913,6 +986,10 @@ Three rules the implementation keeps, and that you should keep too if you edit `
 | `merge_frontmatter` | Apply multiple frontmatter updates in sequence (non-atomic — see ROADMAP for atomic alternative). |
 | `lock_vault` / `unlock_vaults` | Restrict the router to a single vault for the session (single-vault isolation). See the **Lock mode** section. |
 | `set_auto_enrich_mode` | Switch the wiki auto-enrichment mode between `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
+| `confirm_workspace_binding` | Bind this directory to a vault, in your own config: `{ vault }`, `{ vault, also: [...] }` for secondaries, `{ locked: true }` to restrict the session, `{ clear: true }` to go back to every vault, `{ refuse }` / `{ retract }` to answer a proposal a project file made. Unavailable on gated deployments. |
+| `set_secondary_vault_mode` | Record the write tier of one SECONDARY of this workspace — `locked`, `soft` or `writable`. Per workspace, so the same vault can be strict in one project and read-write in another. Unavailable on gated deployments. |
+| `register_remote_vault` | Add a vault served over the network (`{ name, baseUrl, apiKey }`) to your own config, without editing JSON by hand. Local-only (absent on gated deployments). |
+| `get_view_link` | Build a signed, expiring link that opens a vault page in the read-only view agent. |
 | `plan_vault` | **Read-only.** Plan the creation of a NEW local vault: returns computed defaults + a structured questionnaire (the 5 wiki modes, themes installed in the source, registered vaults to copy config from, plugin profiles) + warnings — without writing anything. Feeds the guided wizard; chain with `provision_vault`. Local-only (absent on gated deployments). |
 | `provision_vault` | Create a NEW local vault in one call from the wizard answers (typically `plan_vault` defaults + adjustments). Returns a step-by-step report + port, insecurePort, openUri and probe result. Refuses paths outside the known vault roots unless `allowOutsideRoots: true`; `--from-vault` copies config only (credentials excluded, port + API key regenerated). Local-only. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convert a local file to markdown via the bundled `markitdown` Python CLI. Image OCR and audio transcription require the `[all]` extras (opt-in: `npm run install-markitdown`). Returns markdown text only — chain with `write_file` to persist. |
@@ -1606,14 +1683,89 @@ sur le disque compte comme antérieur. Les deux cas sont annoncés par le
 briefing de session comme n'importe quel import, et c'est ce qui les rend
 réparables en une phrase.
 
-Deux choses encore sur ce chemin. Si tu fais tourner le router depuis un
+Une chose encore sur ce chemin. Si tu fais tourner le router depuis un
 checkout plutôt que le plugin et que tes hooks ont été câblés avant cette
 version, relance une fois `node scripts/setup-vault.mjs --install-hooks` :
 l'import tourne dans le router pour tout le monde, mais le briefing qui
-l'annonce est un hook que ton ancien `settings.json` ne porte pas. Et une
-proposition dont tu ne veux pas ne se refuse pas encore, elle s'adopte ou
-reste en suspens : un indice dans un `.env` que tu n'as pas écrit est signalé
-à chaque session jusqu'à ce que tu l'adoptes ou retires la ligne.
+l'annonce est un hook que ton ancien `settings.json` ne porte pas.
+
+### Dire non à une proposition
+
+Un indice dont tu ne voulais pas n'avait aucune sortie — tu l'adoptais ou tu le
+subissais, réannoncé à chaque session, parce que rien ne pouvait enregistrer que
+la question avait reçu sa réponse. Il se **refuse** désormais, et le refus
+s'écrit des deux côtés, qui ne font pas le même travail :
+
+| Où | Ce que c'est | Effet |
+| --- | --- | --- |
+| ton `config.json`, sous `workspaceRefusals` | l'**autorité** | silence : l'indice se lit `refused`, le briefing ne dit plus rien, l'import unique ne liera jamais ce vault |
+| le `.env` du projet, en `OBSIDIAN_ROUTER_REFUSED_VAULT` | un **indice portable** | ne fait taire personne ; il survit à une désinstallation du router, et après une réinstallation la question est posée *une* fois de plus, avec ce contexte |
+
+```
+confirm_workspace_binding({ refuse: "<vault>" })   # enregistrer le non
+confirm_workspace_binding({ retract: "<vault>" })  # le reprendre
+```
+
+Un refus nomme **un vault**, donc un `.env` qui en propose un autre plus tard
+est quand même signalé. Lier un vault fait tomber son refus — lier, c'est
+adopter. Le vault auquel un workspace est lié ne peut pas être refusé : la
+liaison est déjà la réponse inverse. Et la moitié `.env` n'est écrite **que dans
+le fichier qui a proposé ce vault**, par sa ligne `OBSIDIAN_ROUTER_DEFAULT_VAULT`
+ou sa ligne `OBSIDIAN_ROUTER_LOCKED` — une proposition venue de ton shell ou de
+ton hôte MCP laisse le fichier du projet intact. Un dépôt committé avec un refus
+dedans peut donc, au pire, faire poser une question à un collègue, une fois.
+
+Sur un déploiement multi-tenant (`OBSIDIAN_ROUTER_READONLY`,
+`OBSIDIAN_ROUTER_ALLOWED_VAULTS` ou `OBSIDIAN_ROUTER_USER_ID` posé), aucun des
+outils de liaison n'est disponible : le workspace y est le répertoire du serveur
+lui-même, partagé par tous les appelants, et une réponse vaudrait pour tous.
+
+### Quels vaults un workspace peut atteindre, et lesquels il peut écrire
+
+Deux interrupteurs, **inactifs par défaut** — rien ne change pour une
+installation qui ne les pose pas.
+
+**Atteignabilité.** Avec `"vaultReach": "declared"` dans `config.json`, un vault
+enregistré ne répond à une session que si la liaison de ce workspace le nomme
+(en `vault` ou dans `also`), ou s'il figure dans **`openVaults`** — la liste
+d'exception qui garde un vault personnel atteignable de partout, y compris
+depuis le chat Desktop, qui n'a pas de workspace. `list_vaults` continue de
+*montrer* un vault inatteignable, dans `disabled[]`, avec sa raison.
+
+**Paliers d'écriture.** Les secondaires d'un workspace (`also`) sont en lecture
+seule par défaut. Trois paliers, par workspace, pour qu'un même vault soit
+strict dans un projet et ouvert dans un autre :
+
+| Palier | Ce que fait une écriture |
+| --- | --- |
+| `locked` | refusée, sans condition — aucun paramètre ne la lève, et le vault ne peut pas être promu principal depuis une conversation |
+| `soft` *(défaut)* | refusée sauf si l'appel porte `confirmSecondaryWrite: true`, que Claude ne pose qu'après ton oui explicite |
+| `writable` | passe, sans friction |
+
+Le principal est toujours en lecture-écriture. On enregistre un palier avec
+`set_secondary_vault_mode({ vault, mode })`, ou on laisse l'assistant
+**`/bind-workspace`** dérouler l'ensemble — où on en est, le principal, les
+secondaires, une question de palier par secondaire, puis un tableau de ce qui a
+été enregistré.
+
+### Les vaults que deux workspaces partagent
+
+Quand plusieurs workspaces déclarent le même vault, une écriture à l'aveugle y
+est refusée : l'appel doit porter une **précondition**. `write_file` prend
+`ifMatch` (le `contentSha256` renvoyé par une lecture) ou `ifNew: true` ;
+`patch_file`, `append_to_file`, `delete_file`, `move_file` et
+`merge_frontmatter` prennent `ifMatch` ; `write_bundle` prend `expect` ;
+`download_page_assets` prend `createOnly` ; `execute_template` est
+création-seule côté bridge. `list_vaults` le rapporte par vault en
+`writesRequireIfMatch`, pour que tu le voies au lieu de le découvrir sur un
+refus.
+
+### Enregistrer un vault distant depuis une conversation
+
+`register_remote_vault({ name, baseUrl, apiKey })` ajoute à ta propre config un
+vault servi par le réseau, sans éditer de JSON à la main — la moitié
+conversationnelle du bloc `remoteVaults` documenté plus bas. L'outil est caché
+sur les déploiements multi-tenant, où la config est partagée.
 
 ### Les hooks que le plugin active tout seul
 
@@ -1912,7 +2064,7 @@ Voir [`examples/config.example.json`](./examples/config.example.json) pour un ex
 
 #### Faire tourner le routeur sans les disques des vaults
 
-Un routeur qui ne parle que REST — machine de dev, conteneur, derrière un hub — ne peut pas lire les fichiers des vaults. Mesuré le 2026-08-31 sur les 50 outils, en processus isolés : **la seule dépendance universelle au disque est la résolution de la clé d'API.** Pour un vault *local* (une entrée de `portRegistry`), le routeur va chercher la clé dans le `data.json` du vault avant que le moindre outil ne s'exécute. Déplacez cette clé dans la config et la dépendance disparaît — plus aucun outil de l'échantillon éprouvé n'a besoin du disque.
+Un routeur qui ne parle que REST — machine de dev, conteneur, derrière un hub — ne peut pas lire les fichiers des vaults. Mesuré le 2026-08-31 sur les 50 outils d'alors, en processus isolés : **la seule dépendance universelle au disque est la résolution de la clé d'API.** Pour un vault *local* (une entrée de `portRegistry`), le routeur va chercher la clé dans le `data.json` du vault avant que le moindre outil ne s'exécute. Déplacez cette clé dans la config et la dépendance disparaît — plus aucun outil de l'échantillon éprouvé n'a besoin du disque.
 
 `scripts/gen-remote-config.mjs` fait ce déplacement :
 
@@ -1973,6 +2125,10 @@ Trois règles que l'implémentation respecte — et que vous devriez respecter a
 | `merge_frontmatter` | Applique plusieurs mises à jour de frontmatter en séquence (non-atomique — voir ROADMAP pour l'alternative atomique). |
 | `lock_vault` / `unlock_vaults` | Restreint le router à un seul vault pour la session (isolation mono-vault). Voir la section **Mode lock**. |
 | `set_auto_enrich_mode` | Bascule le mode d'auto-enrichissement wiki entre `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`. |
+| `confirm_workspace_binding` | Lie ce dossier à un vault, dans ta propre config : `{ vault }`, `{ vault, also: [...] }` pour des secondaires, `{ locked: true }` pour restreindre la session, `{ clear: true }` pour revenir à tous les vaults, `{ refuse }` / `{ retract }` pour répondre à une proposition faite par un fichier de projet. Indisponible sur un déploiement gated. |
+| `set_secondary_vault_mode` | Enregistre le palier d'écriture d'un SECONDAIRE de ce workspace — `locked`, `soft` ou `writable`. Par workspace : le même vault peut être strict dans un projet et ouvert dans un autre. Indisponible sur un déploiement gated. |
+| `register_remote_vault` | Ajoute à ta propre config un vault servi par le réseau (`{ name, baseUrl, apiKey }`), sans éditer de JSON à la main. Local uniquement (absent des déploiements gated). |
+| `get_view_link` | Construit un lien signé et expirant qui ouvre une page de vault dans l'agent de vue en lecture seule. |
 | `plan_vault` | **Read-only.** Planifie la création d'un NOUVEAU vault local : retourne les défauts calculés + un questionnaire structuré (les 5 modes wiki, les thèmes installés dans la source, les vaults enregistrés dont copier la config, les profils de plugins) + avertissements — sans rien écrire. Alimente le wizard guidé ; enchaîner avec `provision_vault`. Local uniquement (absent des déploiements gated). |
 | `provision_vault` | Crée un NOUVEAU vault local en un appel depuis les réponses du wizard (typiquement les défauts de `plan_vault` + ajustements). Retourne un rapport étape par étape + port, insecurePort, openUri et résultat de probe. Refuse les chemins hors des racines de vaults connues sauf `allowOutsideRoots: true` ; `--from-vault` copie la config seule (credentials exclus, port + clé API régénérés). Local uniquement. |
 | `pdf_to_markdown` · `docx_to_markdown` · `xlsx_to_markdown` · `pptx_to_markdown` · `image_to_markdown` · `audio_to_markdown` | Convertit un fichier local en markdown via le CLI Python `markitdown`. OCR image et transcription audio nécessitent les extras `[all]` (opt-in : `npm run install-markitdown`). Retourne du texte markdown — chaîne avec `write_file` pour persister. |

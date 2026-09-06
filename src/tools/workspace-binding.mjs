@@ -68,6 +68,7 @@ import {
   ENV_ORIGINS,
   REFUSED_VAULT_KEY,
   isGatedDeployment,
+  gatedDeploymentRefusal,
 } from '../helpers/workspace-dotenv.mjs';
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
@@ -147,6 +148,18 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     throw new Error('confirm_workspace_binding: no usable working directory, so there is no workspace to bind.');
   }
 
+  // NOT ON A GATED DEPLOYMENT — for ANY verb. `refuse` and `retract` were
+  // closed when the Fable round on 7efbad1 measured them writing the shared
+  // config and the server's own `.env` under READONLY; `vault`, `also`,
+  // `locked` and `clear` have exactly the same exposure and were left open
+  // only because they predate that round. Every path of this tool writes the
+  // SERVER's workspace binding into a config all the tenants share, which is
+  // why `register_remote_vault` is hidden there too. Closed in Phase 6, the
+  // design question the roadmap parked.
+  if (isGatedDeployment()) {
+    throw gatedDeploymentRefusal('confirm_workspace_binding', 'a workspace binding');
+  }
+
   // Everything below goes through `updateConfigBindings`, the ONE writer of
   // `workspaceBindings` on disk: it re-reads the file (another session,
   // `--attach` or a hand edit may have touched it) and writes atomically (the
@@ -178,25 +191,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         + 'binding a vault are two separate calls.',
       );
     }
-    // NOT ON A GATED DEPLOYMENT. Under OBSIDIAN_ROUTER_READONLY, ALLOWED_VAULTS
-    // or USER_ID the router serves several callers from ONE process whose cwd
-    // is the server's own directory: a refusal recorded there lands in the
-    // shared config under the server's key and, if that directory's `.env`
-    // proposed the vault, as a line in the SERVER's `.env` — one caller's
-    // answer standing for all of them, written by a remote hand. The same
-    // reason `register_remote_vault` is hidden from gated deployments.
-    // Measured by the Fable round on 7efbad1: under READONLY the tool was
-    // exposed and `refuse` wrote both halves. (The `vault`/`clear` verbs have
-    // the same exposure and predate this phase; that question is on the
-    // roadmap, Phase 6.)
-    if (isGatedDeployment()) {
-      throw new Error(
-        `confirm_workspace_binding: \`${verbs[0]}\` is not available on a gated deployment `
-        + '(OBSIDIAN_ROUTER_READONLY, OBSIDIAN_ROUTER_ALLOWED_VAULTS or OBSIDIAN_ROUTER_USER_ID is set): the '
-        + 'workspace here is the server\'s own directory, shared by every caller, and a refusal recorded there '
-        + 'would answer for all of them. Refuse from a session that runs in the project itself.',
-      );
-    }
+    // The gated refusal is at the top of this function now, for every verb.
     const ctx = { registry, cwd, key, configPath, io, upsertDotenv };
     return verbs[0] === 'refuse'
       ? refuseProposal(ctx, refusalName(args.refuse, 'refuse'))

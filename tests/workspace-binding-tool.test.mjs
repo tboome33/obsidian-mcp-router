@@ -1118,21 +1118,35 @@ describe('confirm_workspace_binding — refuse: the user says NO (decision refus
     }
   });
 
-  test('on a GATED deployment refuse and retract are unavailable, and nothing is written', async () => {
+  test('on a GATED deployment NO verb of this tool writes — refuse, retract, bind and clear alike', async () => {
     // Fable round on 7efbad1, measured on the real server: under READONLY the
     // tool was exposed and `refuse` wrote the shared config AND the server's
-    // own `.env` — one caller's answer standing for every tenant.
-    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_READONLY');
-    const prev = process.env.OBSIDIAN_ROUTER_READONLY;
-    process.env.OBSIDIAN_ROUTER_READONLY = 'true';
-    try {
-      const { written, seam } = seams();
-      for (const args of [{ refuse: 'work' }, { retract: 'work' }]) {
-        await assert.rejects(() => confirmWorkspaceBinding(registryOf(), args, seam), /not available on a gated deployment/, JSON.stringify(args));
+    // own `.env` — one caller's answer standing for every tenant. `vault`,
+    // `also`, `locked` and `clear` had exactly the same exposure and were left
+    // open only because they predate that round; Phase 6 closes the family, as
+    // `register_remote_vault` has always been closed there.
+    const GATES = ['OBSIDIAN_ROUTER_READONLY', 'OBSIDIAN_ROUTER_ALLOWED_VAULTS', 'OBSIDIAN_ROUTER_USER_ID'];
+    const VALUES = { OBSIDIAN_ROUTER_READONLY: 'true', OBSIDIAN_ROUTER_ALLOWED_VAULTS: 'notes', OBSIDIAN_ROUTER_USER_ID: 'u1' };
+    for (const gate of GATES) {
+      const had = Object.hasOwn(process.env, gate);
+      const prev = process.env[gate];
+      process.env[gate] = VALUES[gate];
+      try {
+        const { written, seam } = seams();
+        for (const args of [
+          { refuse: 'work' }, { retract: 'work' },
+          { vault: 'notes' }, { vault: 'notes', also: ['work'] }, { vault: 'notes', locked: true }, { clear: true },
+        ]) {
+          await assert.rejects(
+            () => confirmWorkspaceBinding(registryOf(), args, seam),
+            /not available on a gated deployment/,
+            `${gate} ${JSON.stringify(args)}`,
+          );
+        }
+        assert.equal(written.length, 0, `${gate}: nothing may reach the shared config`);
+      } finally {
+        if (had) process.env[gate] = prev; else delete process.env[gate];
       }
-      assert.equal(written.length, 0);
-    } finally {
-      if (had) process.env.OBSIDIAN_ROUTER_READONLY = prev; else delete process.env.OBSIDIAN_ROUTER_READONLY;
     }
   });
 

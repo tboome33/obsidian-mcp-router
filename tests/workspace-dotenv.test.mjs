@@ -26,7 +26,7 @@ import {
   classifyWorkspaceDotenvKey, parseDotenv, applyWorkspaceDotenv, workspaceDotenvValueRefusal,
   workspaceDotenvRefusals, appliedWorkspaceDotenvKeys, envKeySourceFile, envKeyOrigin, ENV_ORIGINS,
   workspaceDotenvWasConsulted,
-  dotenvRefusalHint, REFUSED_VAULT_KEY,
+  dotenvRefusalHint, REFUSED_VAULT_KEY, workspaceBindingProposal,
   _resetWorkspaceDotenvProvenance,
 } from '../src/helpers/workspace-dotenv.mjs';
 import { VALID_MODES, canonicalizeMode, spellingsOf } from '../src/helpers/auto-enrich-mode.mjs';
@@ -922,6 +922,69 @@ describe('dotenvRefusalHint — the portable refusal counts only from the file t
       delete process.env[REFUSED_VAULT_KEY];
       applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
       assert.equal(dotenvRefusalHint(), null, 'an empty value names no vault');
+    } finally { restore(); }
+  });
+});
+
+describe('workspaceBindingProposal — a file proposes through TWO lines, and the surfaces that TELL the user now read both', () => {
+  // Phase 6, the design question the roadmap parked: the one-time import
+  // decides on the lock line and the refusal writes beside it, but the
+  // briefing and `list_vaults` classified the default line alone — so a `.env`
+  // carrying only OBSIDIAN_ROUTER_LOCKED proposed a vault nobody was ever
+  // asked about, and after a reinstall the import would act on it in silence.
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED'];
+  const clean = () => {
+    const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
+    for (const k of KEYS) delete process.env[k];
+    _resetWorkspaceDotenvProvenance();
+    return () => {
+      for (const [k, had, value] of saved) { if (had) process.env[k] = value; else delete process.env[k]; }
+      _resetWorkspaceDotenvProvenance();
+    };
+  };
+
+  test('the default line is the proposal when there is one', () => {
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace('OBSIDIAN_ROUTER_DEFAULT_VAULT=work\nOBSIDIAN_ROUTER_LOCKED=other\n');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      const p = workspaceBindingProposal();
+      assert.equal(p.hint, 'work');
+      assert.equal(p.byLock, false);
+      assert.equal(p.origin, 'workspace-dotenv');
+    } finally { restore(); }
+  });
+
+  test('a file carrying ONLY a lock line proposes that vault', () => {
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace('OBSIDIAN_ROUTER_LOCKED=work\n');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      const p = workspaceBindingProposal();
+      assert.equal(p.hint, 'work', 'the import decides on this line, so the user must be asked about it');
+      assert.equal(p.byLock, true);
+      assert.equal(p.key, 'OBSIDIAN_ROUTER_LOCKED');
+    } finally { restore(); }
+  });
+
+  test('a lock the HOST set is not a proposal — it is applied, and calling it "not applied" would be false', () => {
+    const restore = clean();
+    try {
+      process.env.OBSIDIAN_ROUTER_LOCKED = 'work';
+      const ws = tmpWorkspace('# nothing here\n');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(workspaceBindingProposal().hint, undefined);
+    } finally { restore(); }
+  });
+
+  test('no line at all → no proposal', () => {
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace('OBSIDIAN_ROUTER_AUTO_ENRICH=Hybrid\n');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      const p = workspaceBindingProposal();
+      assert.equal(p.hint, undefined);
+      assert.equal(p.key, null);
     } finally { restore(); }
   });
 });

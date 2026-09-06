@@ -314,6 +314,27 @@ is a proposal for the one-time import and for the refusal, but not for the brief
 is not asked about; whether a file's lock line should be signalled as a proposal is a design
 question for the last phase.
 
+#### Changed — Phase 6: the two surfaces that TELL the user, and the tools a shared server exposes
+
+- **A workspace file proposes through TWO lines, and both are now signalled.** The one-time import
+  decides on `OBSIDIAN_ROUTER_LOCKED` as well as `OBSIDIAN_ROUTER_DEFAULT_VAULT`, and the refusal
+  reads and writes beside either — but the briefing and `list_vaults` classified the default line
+  alone, so a `.env` carrying only a lock line proposed a vault nobody was ever asked about. One
+  selector now answers "which line proposed, and where did it come from" for the server, the hook
+  and the tool. A lock the HOST sets is still not a proposal: it is applied, so reporting it as
+  "not applied" would be false.
+- **The hook compares vault names exactly, as the server does.** `resolveVault` matches
+  `x.name === target`; the session briefing lowercased. A config holding `DEDIBOX` beside a proposal
+  naming `dedibox` therefore read `unconfirmed` in the briefing and `unknown-vault` in
+  `list_vaults`, and the confirmation the briefing offered was refused by the tool — while
+  `bindingIsActive` told journaling, autocommit and recall to write into a vault the server does not
+  serve. One rule for both surfaces, and the server's is the rule.
+- **No binding tool writes on a gated deployment.** `refuse` and `retract` were closed when they
+  were measured writing the shared config under `OBSIDIAN_ROUTER_READONLY`; `confirm_workspace_binding`'s
+  other verbs and `set_secondary_vault_mode` had the same exposure and are closed too. On such a
+  deployment the workspace IS the server's own directory, shared by every caller — the reason
+  `register_remote_vault` has always been hidden there.
+
 #### Fixed — the second Codex round (`gpt-6-astra`), on the repairs above
 
 Six findings, six real, and both passes converged independently on the first — which the previous
@@ -352,8 +373,19 @@ round's own repair had created.
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,
-accepted 2026-09-04). Both switches are OFF by default: nothing changes for an installation that
-does not set them.
+accepted 2026-09-04).
+
+**BREAKING — a workspace's SECONDARY vaults are read-only by default.** Reachability
+(`vaultReach: "declared"`) is opt-in and changes nothing until you set it, but the write tier is
+not: from this release, a vault in a binding's `also` is refused a write unless the call carries
+`confirmSecondaryWrite: true` (the `soft` tier, the default) — measured on a config that sets
+neither `vaultReach` nor any tier list. Only the PRIMARY is read-write with no friction. If you had
+secondaries and expected them to accept writes as they did before, one of two lines restores that,
+per vault: `set_secondary_vault_mode({ vault, mode: "writable" })` for this workspace, or the
+`alsoWritable` list in `config.json` for every workspace at once. Nothing is lost when you do not:
+the write is refused with a message naming both, and reads are unaffected. This is the point of the
+decision rather than a side effect — a vault a project merely *also* uses should not be written into
+without someone saying so — but it is a default that reverses, so it is named here as one.
 
 #### Added
 

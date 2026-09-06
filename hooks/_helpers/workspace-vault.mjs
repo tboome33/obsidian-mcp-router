@@ -152,8 +152,21 @@ export { defaultNameFromPath, resolveVaultBySlug };
  * 2026-09-03. It is a comma-separated list of slugs, so reading it here costs
  * no dependency.
  *
+ * NAMES ARE COMPARED EXACTLY, THE WAY THE SERVER COMPARES THEM. Every name
+ * comparison here used to be lowercased, and the server's are not: it resolves
+ * a vault with `x.name === target` (`resolveVault`), filters the whitelist with
+ * `allowed.has(v.name)` and hides a disabled one with `disabled.has(name)`. So
+ * a config holding `DEDIBOX` beside a proposal naming `dedibox` had the hook
+ * call the name registered while the server refused it — the briefing offered a
+ * confirmation `confirm_workspace_binding` throws on, and `bindingIsActive`
+ * told journaling, autocommit and recall to write into a vault the server does
+ * not serve. That last direction is the one this function's own docblock
+ * forbids: short of the registry is acceptable, WIDER than it is not. One rule
+ * for both surfaces, and the server's is the rule. (Codex round on `b59eb00`,
+ * recorded then, fixed in Phase 6.)
+ *
  * @param {object|null} cfg the parsed router config
- * @returns {Set<string>} vault names, lowercased for comparison
+ * @returns {Set<string>} vault names, spelled as the server spells them
  */
 export function registeredVaultNames(cfg) {
   const out = new Set();
@@ -161,11 +174,12 @@ export function registeredVaultNames(cfg) {
 
   // The whitelist, when the instance runs gated. Same parse as
   // `src/registry.mjs`: comma-separated slugs, blanks dropped, compared
-  // lowercased like every other name in this function. `null` means no
-  // whitelist is in effect, which is the ordinary desktop case.
+  // exactly — that file builds the set from the raw pieces and asks
+  // `allowed.has(v.name)`. `null` means no whitelist is in effect, which is
+  // the ordinary desktop case.
   const allowedRaw = process.env.OBSIDIAN_ROUTER_ALLOWED_VAULTS || '';
   const allowed = allowedRaw.trim()
-    ? new Set(allowedRaw.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
+    ? new Set(allowedRaw.split(',').map((s) => s.trim()).filter(Boolean))
     : null;
   const permitted = (name) => !allowed || allowed.has(name);
 
@@ -177,16 +191,20 @@ export function registeredVaultNames(cfg) {
   // readers. The `vaultNames` sweep turned all three into one boundary, so
   // this function now asks the helper instead of re-deriving the answer —
   // which is also what keeps it out of that sweep's scan guard.
-  const disabled = new Set(disabledVaultEntries(cfg).map((d) => d.toLowerCase()));
+  const disabled = new Set(disabledVaultEntries(cfg));
   for (const vp of registeredVaultPaths(cfg)) {
-    const name = vaultSlug(cfg, vp).toLowerCase();
-    if (!name || disabled.has(name) || disabled.has(String(vp).toLowerCase())) continue;
+    const name = vaultSlug(cfg, vp);
+    if (!name || disabled.has(name) || disabled.has(String(vp))) continue;
     if (!permitted(name)) continue;
     out.add(name);
   }
   for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
-    const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
-    if (!name || disabled.has(name)) continue;
+    // The server registers `r.name` VERBATIM and matches `disabledVaults`
+    // against it verbatim too, so the name kept here is the raw one. The trim
+    // is only the emptiness guard: a whitespace-only name is skipped, which
+    // leaves this set narrower than the registry rather than wider.
+    const name = typeof r?.name === 'string' ? r.name : '';
+    if (!name.trim() || disabled.has(name)) continue;
     if (!permitted(name)) continue;
     out.add(name);
   }
@@ -218,7 +236,7 @@ export function registeredVaultNames(cfg) {
  */
 export function bindingIsActive(cfg, name) {
   if (typeof name !== 'string' || !name) return false;
-  return registeredVaultNames(cfg).has(name.trim().toLowerCase());
+  return registeredVaultNames(cfg).has(name.trim());
 }
 
 /**
@@ -236,7 +254,7 @@ function excludedByWhitelist(cfg, dirPath) {
   const match = registeredVaultPaths(cfg)
     .find((vp) => normalizePathForCompare(path.resolve(vp)) === target);
   if (!match) return false;
-  return !registeredVaultNames(cfg).has(vaultSlug(cfg, match).toLowerCase());
+  return !registeredVaultNames(cfg).has(vaultSlug(cfg, match));
 }
 
 // ---------------------------------------------------------------------------
