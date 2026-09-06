@@ -4,7 +4,23 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
-## [Unreleased]
+## [0.91.1] — 2026-09-06 — the release that makes the tag point at a green CI
+
+**Nothing a user runs changed.** Every fix here is in test or tooling code, and v0.91.0's shipped
+bundle was already clean — the C9 export gate passed over all 585 tracked files at that tag. What
+was wrong is that `main` had been red since the six-phase lot landed, and v0.91.0 was tagged on a
+red run because the checklist's "CI confirmed green" was ticked from three locally-passing gates
+without the run ever being opened. This release exists so the tag points at four green jobs.
+
+The three defects share one shape, worth carrying forward: **a measurement that is only correct on
+the machine it was written on.** A hash of raw bytes that a different `core.autocrlf` invalidates;
+a path literal that is absolute on one platform and relative on the other; a wall-clock budget that
+a shared runner's warm-up crosses without any pathology at all. Local gates measure one platform,
+one checkout, one filesystem — CI measures four, and only CI answers the question the checklist
+asks.
+
+Also carried: the quick-reference masthead pin (with `npm run bump` now syncing it), and the
+auto-enrichment placement guide catching up with the binding.
 
 ### The placement guide caught up with the binding — and stopped teaching a rule the router refuses
 
@@ -75,6 +91,40 @@ pinned; the version had not. Same defect class, one field over.
   restores `fsync`'d and the tree re-checked against a baseline — on this repository's virtual
   drive, a `writeFileSync` plus an immediate read-back has already reported a successful restore
   over a mutation that was still on disk.
+
+### CI is green again on all four jobs — three measurements that were only correct on one machine
+
+`main` had been red since the six-phase lot landed, and v0.91.0 was published on a red run: the
+release checklist's "CI confirmed green" was ticked from three locally-passing gates without the
+run ever being opened. All three defects are in TEST and TOOLING code — **nothing a user runs
+changed**, and the v0.91.0 bundle itself was clean (the C9 export gate passed over all 585 tracked
+files at the tag). They share one shape: a measurement that is only correct on the machine it was
+written on.
+
+#### Fixed
+
+- **The quick-reference freshness hash was not portable.** It hashed each page's raw BYTES, so it
+  answered "was this PDF rendered from these bytes" when the question is "…from this CONTENT". This
+  repository checks out `core.autocrlf=input` (LF); a GitHub Windows runner defaults to `true` and
+  materialises the same commit with CRLF — so every Windows job read both pages as stale and
+  `npm run validate` failed there while passing on Linux. Line endings are now folded before
+  hashing, pinned by a test that rewrites a fixture to CRLF and requires it to stay `fresh`. The
+  gate shipped two commits earlier was found wrong by its own first run on a second platform, which
+  is the argument for it rather than against it.
+- **The shared-vault test fixtures were Windows-only.** `tests/vault-sharing.test.mjs` keyed its
+  workspaces `i:\a`, which is absolute on Windows and merely RELATIVE on POSIX, so
+  `canonicalWorkspaceKey`'s `path.resolve` prefixed the runner's cwd and five assertions failed on
+  every Linux job. Keys are now built platform-appropriately, and the one test that genuinely
+  asserts Windows path semantics (`I:\Work\Repo\` ≡ `i:/work/repo`) is marked win32-only rather
+  than made to assert a falsehood on POSIX — the treatment the Phase 1 UNC test already had.
+- **The ReDoS timing guard reported a bare character class as quadratic.** `/[\[\]()]/` has no
+  alternation and no nesting and cannot backtrack, but it matches 16384 times on the open-pair
+  bomb, so the loop really does 16k `exec` calls — and JIT warm-up on a shared runner cleared the
+  5 ms budget (6.7 ms there against 0.24 ms locally). A regex that clears the budget first time is
+  still judged first time; only one that looks slow is re-measured, and the minimum of the two
+  decides. The budget stays at 5 ms and nothing was relaxed: a quadratic regex is slow on every run.
+  Measuring twice unconditionally was the first attempt and was worse than the flake — a planted
+  catastrophic regex then ran four times and hung the suite instead of failing.
 
 ## [0.91.0] — 2026-09-06 — a workspace declares which vaults it reaches, and what it may write there
 
