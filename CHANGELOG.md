@@ -515,6 +515,40 @@ without someone saying so — but it is a default that reverses, so it is named 
   secondary now has a path (Step 1 → the one question for that vault), and "only: X" in the
   detect step accepts an existing secondary for the same purpose.
 
+### Documentation — the catalogue caught up with the code, and the limits are written down
+
+#### Added
+
+- **A `Limits — what the router does not do` section in both README halves.** The README said what
+  the router can do and never said, in one place, what it will not: it does not read a vault from
+  disk (a closed Obsidian is offline, not degraded — there is no filesystem fallback, deliberately);
+  it does not install, sync or deploy Obsidian, has no git integration, and never *merges* — when
+  two writers collide it refuses; a repository's dotenv file has no authority, only seven keys and
+  only as a proposal; secondaries are read-only by default; a vault two workspaces declare requires
+  a precondition computed from the registry, which can switch on with no edit of yours; `ifMatch` is
+  atomic only with bridge ≥ 0.7.0; reachability is opt-in and cuts hard; nothing persists on a gated
+  deployment; and the optional pieces are genuinely optional.
+- **The two workspace-binding commands are in the catalogue.** `/bind-workspace` and
+  `/configure-secondary-vaults` existed and shipped, but the categorised tables listed 51 of the 53
+  commands — the headline counter said 53 while the sum of the category headers said 51, in both
+  languages and in both quick-reference PDFs.
+- **The automatic maintenance pass is documented, with its three knobs** —
+  `OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE`, `OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS` and
+  `OBSIDIAN_ROUTER_PROJECTIONS_DEBOUNCE_MS` (default 15 s) were read by the code and named nowhere
+  in the README.
+- `confirm_workspace_binding`, `set_secondary_vault_mode` and `register_remote_vault` now appear in
+  the Capabilities table, not only in the prose further down.
+
+#### Fixed
+
+- **The quick-reference PDFs were a version behind the catalogue.** Both were rendered from pages
+  claiming `51 slash commands · 51 MCP tools · 47 skills`; the truth is 53 · 53 · 48, and
+  `set_secondary_vault_mode` and `register_remote_vault` were absent from the tool tables.
+  Re-rendered (EN + FR, 14 pages each) and verified by extracting the PDF text rather than by
+  trusting the HTML. Worth noting for next time: `npm run validate` pins those counters in
+  `README.md` and `docs/architecture.md` but not in `docs/quick-reference-*.html`, which is exactly
+  why those two drifted and the README did not.
+
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 
 Two lots, both about trusting a file less. The first takes AUTHORITY away from the workspace

@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.90.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (51 slash commands · 51 MCP tools · 47 skills)<br>
+  <div class="meta">v0.90.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (53 slash commands · 53 MCP tools · 48 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -312,7 +312,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 <div class="page-break"></div>
 
 <div class="header">
-  <h1>51 slash commands <span class="subtitle">/obsidian-router:&lt;name&gt; · auto-trigger on natural language (EN + FR)</span></h1>
+  <h1>53 slash commands <span class="subtitle">/obsidian-router:&lt;name&gt; · auto-trigger on natural language (EN + FR)</span></h1>
 </div>
 
 <div class="cat-header">🔧 17 MCP wrappers — one per core vault tool</div>
@@ -346,6 +346,14 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <tr><td class="cmd">lock</td><td class="desc">Restrict the session to one vault (volatile or <code>--persist</code>)</td><td class="trigger">"I only want to work on X" / "verrouille sur X"</td></tr>
   <tr><td class="cmd">unlock</td><td class="desc">Lift the lock, restore multi-vault routing</td><td class="trigger">"unlock vaults" / "déverrouille les vaults"</td></tr>
   <tr><td class="cmd">auto-mode</td><td class="desc">Set the auto-enrichment mode (ClaudeAsk / Hybrid / FullAuto / off)</td><td class="trigger">"switch to Hybrid mode" / "passe en mode Hybrid"</td></tr>
+</table>
+
+<div class="cat-header">🔗 2 workspace-binding commands (which vault this project writes to)</div>
+
+<table class="slash">
+  <tr><th>Command</th><th>Effect</th><th>Trigger phrase (EN/FR)</th></tr>
+  <tr><td class="cmd">bind-workspace</td><td class="desc">Wizard — bind this workspace to a PRIMARY vault, then optionally secondaries with a write tier each; also names an unanswered proposal from the project's dotenv file, and records a "no" as a refusal</td><td class="trigger">"which vault is this project attached to" / "rattache ce workspace à un vault"</td></tr>
+  <tr><td class="cmd">configure-secondary-vaults</td><td class="desc">Same wizard entered at its SECONDARY step — declare the secondaries and pick each write tier: read-only strict / on request / read-write</td><td class="trigger">"add a secondary vault" / "mets X en lecture seule pour ce projet"</td></tr>
 </table>
 
 <div class="cat-header">🩺 7 conversational helpers (setup + diagnostic)</div>
@@ -395,7 +403,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <div class="page-break"></div>
 
-<h2>The 51 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
+<h2>The 53 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
 
 <table class="config">
   <tr>
@@ -415,12 +423,12 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
     <td><strong>Templater.</strong> Render a template, optionally write the result; args via <code>tp.mcpTools.prompt("key")</code>.</td>
   </tr>
   <tr>
-    <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding</td>
-    <td><strong>Router state.</strong> Single-vault isolation; auto-enrichment mode switch; confirm or clear this workspace's vault binding (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> for several, <code>{ clear: true }</code> for all vaults) — records it in your own <code>config.json</code>, never in the project.</td>
+    <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding · set_secondary_vault_mode</td>
+    <td><strong>Router state &amp; workspace binding.</strong> Single-vault isolation; auto-enrichment mode switch; confirm, refuse or clear this workspace's vault binding (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> for several, <code>{ refuse: true }</code> to say no to a proposal, <code>{ clear: true }</code> for all vaults) — recorded in your own <code>config.json</code>, never in the project. <code>set_secondary_vault_mode</code> sets a secondary's <strong>write tier</strong>: <code>locked</code> (server-side refusal, no override), <code>soft</code> (the default — refused until confirmed once with <code>confirmSecondaryWrite</code>), <code>writable</code>. On a gated deployment (<code>READONLY</code> / <code>ALLOWED_VAULTS</code> / <code>USER_ID</code>) both are refused: one directory serves every caller, so a persisted answer would speak for all of them.</td>
   </tr>
   <tr>
-    <td>plan_vault · provision_vault</td>
-    <td><strong>Vault provisioning.</strong> Read-only plan (defaults + questionnaire + warnings) → one-call creation (plugins, port, API key, wiki scaffold, registry). Local-only.</td>
+    <td>plan_vault · provision_vault · register_remote_vault</td>
+    <td><strong>Vault provisioning.</strong> Read-only plan (defaults + questionnaire + warnings) → one-call creation (plugins, port, API key, wiki scaffold, registry). Local-only. <code>register_remote_vault</code> records an already-running <em>remote</em> vault (name, <code>baseUrl</code>, <code>apiKey</code>) straight from a conversation — always into <code>config.json</code>, never into a project's dotenv file, and hidden on gated deployments.</td>
   </tr>
   <tr>
     <td>pdf/docx/xlsx/pptx/image/audio_to_markdown</td>

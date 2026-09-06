@@ -37,7 +37,8 @@ What you get:
 | File management | `move_file` (also accepts `ifMatch`, checked against the source) |
 | Templater | `execute_template` |
 | Router state | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Vault provisioning | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine |
+| Workspace binding | `confirm_workspace_binding` (bind this workspace to a primary vault, add secondaries, refuse a proposal), `set_secondary_vault_mode` (a secondary's write tier: `locked` / `soft` / `writable`) |
+| Vault provisioning | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine; `register_remote_vault` records an already-running remote vault (URL + key) straight from a conversation |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
 | Wiki maintenance & sources | `write_bundle` (journaled multi-file bundle — all-or-nothing apply with rollback), `refresh_okf_projections` (regenerate the generated OKF navigation), `build_search_index` (local BM25 search tier, works on every vault), `record_source` / `audit_sources` (provenance ledger for ingested content) |
@@ -45,6 +46,28 @@ What you get:
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
 Semantic search (`search_smart`), Templater execution (`execute_template`) and click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl` on write results) require the [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) plugin to be installed in each target vault — it registers the matching `/search/smart`, `/templates/execute` and `/open/*` routes on Local REST API. Bridge **≥ 0.7.0** also registers `PUT /vault-cas/*`, which makes `ifMatch` writes **atomic** (read-compare-write inside the Obsidian process); without it, `ifMatch` still works everywhere through a checked — but non-atomic — GET-compare fallback. Bridge **≥ 0.9.0** additionally serves `GET /smart-env/sources` — the Smart Connections vector store, a dot-directory Local REST API itself will not serve — which is what lets `find_twin_pages` run against a **remote** vault; and its loopback-only `GET /ping?v=<vault>` answers 200 only for the vault actually listening on that port, the one-click self-test behind click-to-open port checks. The conversion tools require Python 3.10+ on `PATH` plus an explicit `npm run install-markitdown` (opt-in) — see the **Conversion tools — runtime dependencies** section below. Everything else works against the standard Local REST API endpoints alone.
+
+## Limits — what the router does **not** do
+
+Worth reading before you design anything on top of it. None of these are bugs; they are the boundaries of the design.
+
+**It does not read your vault from disk.** Every call goes over HTTPS to the Local REST API of a **running** Obsidian. Close Obsidian and the vault is simply unreachable (`ECONNREFUSED`) — the router will not fall back to the filesystem, deliberately, because the filesystem cannot honour the plugin's locks, the bridge's atomic writes, or the vault's own indexes. A vault whose Obsidian is closed is not "degraded"; it is offline.
+
+**It does not run, install, sync or deploy Obsidian itself.** It configures and talks to vaults. Provisioning a vault (`provision_vault`) writes a vault skeleton; it does not install Obsidian, open it, or keep two machines in sync. There is no git integration and no conflict *resolution* — when two writers collide the router **refuses**, it never merges.
+
+**A repository's dotenv file has no authority.** It may *propose* — seven keys, no more; anything else in it is ignored and named on the router's stderr. Your own router config (`~/.claude/obsidian-mcp-router/config.json`) decides. This is the whole grid: **the dotenv file proposes, the config decides.** A cloned repository can therefore never redirect your writes; at most it can raise a question, once.
+
+**Secondary vaults are read-only by default.** A vault a workspace declares under `also`, without appearing in any tier list, opens at the `soft` tier: reads work, and a write is refused until it is confirmed once (`confirmSecondaryWrite: true`) or the vault is promoted permanently (`set_secondary_vault_mode({ mode: "writable" })`, or the config's `alsoWritable`). `alsoLocked` is stronger still — a **server-side** refusal no parameter can override.
+
+**A vault two workspaces declare requires a precondition on every write.** The requirement is *computed* from the binding registry, never declared, so it can switch on without you editing anything. `write_file` and its siblings then refuse a blind call and want `ifMatch` (or `ifNew`, a per-step precondition, or an approved-plan seal). This protects writers who go through the router **from each other** — it cannot see an edit made directly in Obsidian's UI.
+
+**`ifMatch` is only atomic with the bridge.** With `obsidian-mcp-router-bridge` ≥ 0.7.0 the compare-and-write happens inside the Obsidian process. Without it the check still runs everywhere, but as a GET-compare-then-write: a narrow window remains.
+
+**Reachability is opt-in, and cuts hard when on.** With `vaultReach: "declared"` a workspace reaches only the vaults it declares, plus `openVaults`. An unbound session — Claude Desktop chat, for instance — sees only `openVaults`. That is the intent; it is also the fastest way to make every vault vanish at once if you set it without an exception list.
+
+**On a gated deployment, nothing persists.** When `OBSIDIAN_ROUTER_READONLY`, `OBSIDIAN_ROUTER_ALLOWED_VAULTS` or `OBSIDIAN_ROUTER_USER_ID` is set, one directory serves many callers, so a persisted answer would speak for all of them: the binding tools, `register_remote_vault`, and the `persist` form of `lock_vault` / `unlock_vaults` / `set_auto_enrich_mode` are refused or hidden. Session-only forms still work.
+
+**Optional pieces are genuinely optional.** Semantic search (`search_smart`), Templater (`execute_template`) and click-to-open need the bridge plugin in each target vault. The conversion tools need Python 3.10+ and an explicit `npm run install-markitdown`. Docling is a separate opt-in again. Without them those tools report their missing dependency rather than guessing.
 
 ## Deployment modes
 
@@ -166,6 +189,15 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **53 slash
 | `/obsidian-router:auto-mode` | Set the wiki auto-enrichment mode (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`); `--persist` writes to `.env`, except `FullAuto` — see below | *"switch to Hybrid mode"*, *"save everything automatically"* (→ FullAuto), *"stop auto-saving"* (→ off) / *"passe en mode Hybrid"*, *"sauve tout automatiquement"*, *"arrête de sauver auto"* |
 
 See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and the auto-enrichment callout below for the full designs and concrete use cases.
+
+### 🔗 2 workspace-binding commands (which vault this project writes to)
+
+| Command | Effect | Trigger phrasings |
+|---|---|---|
+| `/obsidian-router:bind-workspace` | Deterministic wizard: bind this workspace to a **primary** vault (detects the open vaults, asks, confirms, binds), then optionally to **secondary** vaults with a write tier each. Also names a proposal the project's dotenv file made that nobody answered — and a "no" is recorded as a refusal | *"which vault is this project attached to"*, *"bind this workspace to a vault"* / *"à quel vault ce projet est-il rattaché"*, *"rattache ce workspace à un vault"* |
+| `/obsidian-router:configure-secondary-vaults` | Same wizard, entered at its **secondary vaults** step: declare the secondaries and pick each one's write tier — read-only strict, read-only with writes on request, or read-write | *"add a secondary vault"*, *"make X read-only for this project"* / *"ajoute un vault secondaire"*, *"mets X en lecture seule pour ce projet"* |
+
+Both write to **your own router config**, for this workspace only — never into the repository. See [Which vaults a workspace may reach, and which it may write](#which-vaults-a-workspace-may-reach-and-which-it-may-write).
 
 ### 🩺 7 conversational helpers
 
@@ -648,6 +680,18 @@ Installing the plugin activates exactly three hooks, with no opt-in step, becaus
 
 All three are silent no-ops if no vault is configured. `workspace-briefing` ships here rather than opt-in on purpose: it is the disclosure that makes the binding registry visible, and a binding the router imported from a project's `.env` is only safe to import because it announces itself at the start of every session. Its opt-out is the one the workspace `.env` cannot set — a file that could silence the report about itself would be the hole this whole feature closes. **The other eight hooks stay opt-in** via `node scripts/setup-vault.mjs --install-hooks`, because they commit to git, write session transcripts into a vault, block the end of a turn, or call the network — none of which is a defensible default for someone who just installed a plugin. `--hooks-status` shows which are wired, which come from the plugin, and warns if any is doing both (which would fire it twice per event).
 
+### Automatic vault maintenance (and its three knobs)
+
+After a write, and again on first contact with a vault in a session, the router runs one **maintenance pass**: it regenerates the vault's OKF navigation projections, then rebuilds the local BM25 search index — both inside a single hold of that vault's lock, so two sessions can never interleave halfway through. The pass is debounced, so a burst of writes costs one pass rather than one per file, and it never runs against a vault that is read-only, unreachable, or below the write tier the workspace declared.
+
+| Variable | Effect | Default |
+| --- | --- | --- |
+| `OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE` | Switches the whole maintenance pass off. Reads and writes still work; the projections and the index simply stop being refreshed for you — call `refresh_okf_projections` and `build_search_index` yourself when you want them | off (pass enabled) |
+| `OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS` | Keeps the pass but skips the OKF projection refresh, leaving the BM25 index rebuild | off (projections enabled) |
+| `OBSIDIAN_ROUTER_PROJECTIONS_DEBOUNCE_MS` | How long the router waits after the last write before flushing. A positive integer; anything else falls back to the default | `15000` (15 s) |
+
+The first two accept any of `true` / `1` / `yes` / `on`. Both are `OBSIDIAN_ROUTER_NO_*` opt-outs, so a workspace dotenv file may set them — they switch a convenience off, never a guard.
+
 ### Staying up to date
 
 The router ships a SessionStart hook (`hooks/check-router-update.mjs`) that checks GitHub once per 24 hours and surfaces a notice if a newer version is available. The notice tells Claude to relay it on its first response of the session, so you find out without having to remember to check.
@@ -675,7 +719,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 51 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 53 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -1334,7 +1378,8 @@ Ce que tu obtiens :
 | Gestion de fichiers | `move_file` |
 | Templater | `execute_template` |
 | État du router | `lock_vault`, `unlock_vaults`, `set_auto_enrich_mode` |
-| Provisionnement de vault | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) |
+| Liaison de workspace | `confirm_workspace_binding` (rattacher ce workspace à un vault principal, ajouter des secondaires, refuser une proposition), `set_secondary_vault_mode` (palier d'écriture d'un secondaire : `locked` / `soft` / `writable`) |
+| Provisionnement de vault | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) ; `register_remote_vault` enregistre depuis une conversation un vault distant déjà en service (URL + clé) |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Aussi `pdf_to_images` (rend les pages d'un PDF en PNG que le modèle peut *voir*) et `filter_relevant_blocks` (filtre de pertinence BM25 sur du markdown déjà acquis). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
 | Maintenance du wiki & sources | `write_bundle` (bundle multi-fichiers journalisé — application tout-ou-rien avec rollback), `refresh_okf_projections` (régénère la navigation OKF générée), `build_search_index` (index BM25 local, marche sur tous les vaults), `record_source` / `audit_sources` (registre de provenance du contenu ingéré) |
@@ -1342,6 +1387,28 @@ Ce que tu obtiens :
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
 La recherche sémantique (`search_smart`), l'exécution Templater (`execute_template`) et les liens click-to-open (`build_open_link`, `open_in_obsidian`, le `clickToOpenUrl` auto-émis sur les résultats d'écriture) nécessitent que le plugin [`obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) soit installé dans chaque vault cible — il enregistre les routes correspondantes `/search/smart`, `/templates/execute` et `/open/*` sur Local REST API. Le bridge **≥ 0.7.0** enregistre aussi `PUT /vault-cas/*`, qui rend les écritures `ifMatch` **atomiques** (lecture-comparaison-écriture dans le process Obsidian) ; sans lui, `ifMatch` marche partout via un repli vérifié mais non atomique. Le bridge **≥ 0.9.0** sert en plus `GET /smart-env/sources` — le magasin de vecteurs Smart Connections, un dot-répertoire que Local REST API refuse lui-même de servir — ce qui permet à `find_twin_pages` de tourner sur un vault **distant** ; et son `GET /ping?v=<vault>` (loopback seul) ne répond 200 que pour le vault qui écoute réellement sur ce port — l'auto-test en un clic derrière les vérifications de ports du click-to-open. Les outils de conversion nécessitent Python 3.10+ sur le `PATH` plus un `npm run install-markitdown` explicite (opt-in) — voir la section anglaise « Conversion tools — runtime dependencies ». Tout le reste fonctionne contre les endpoints standards de Local REST API seuls.
+
+### Limites — ce que le routeur ne fait **pas**
+
+À lire avant de construire quoi que ce soit par-dessus. Aucune de ces limites n'est un bug : ce sont les frontières du design.
+
+**Il ne lit pas ton vault sur le disque.** Chaque appel part en HTTPS vers la Local REST API d'un Obsidian **en cours d'exécution**. Ferme Obsidian et le vault est simplement injoignable (`ECONNREFUSED`) — le routeur ne bascule pas sur le système de fichiers, et c'est délibéré : le système de fichiers ne peut honorer ni les verrous du plugin, ni les écritures atomiques du bridge, ni les index propres au vault. Un vault dont Obsidian est fermé n'est pas « dégradé », il est hors service.
+
+**Il ne lance pas, n'installe pas, ne synchronise pas et ne déploie pas Obsidian.** Il configure des vaults et leur parle. Provisionner un vault (`provision_vault`) écrit un squelette de vault ; ça n'installe pas Obsidian, ne l'ouvre pas et ne maintient pas deux machines en phase. Il n'y a aucune intégration git et aucune *résolution* de conflit — quand deux écrivains se télescopent, le routeur **refuse**, il ne fusionne jamais.
+
+**Le fichier dotenv d'un dépôt n'a aucune autorité.** Il peut *proposer* — sept clés, pas une de plus ; tout le reste y est ignoré et nommé sur la sortie d'erreur du routeur. C'est ta propre config (`~/.claude/obsidian-mcp-router/config.json`) qui décide. Toute la grille tient là : **le fichier dotenv PROPOSE, la config DÉCIDE.** Un dépôt cloné ne peut donc jamais rediriger tes écritures ; au pire, il pose une question, une fois.
+
+**Les vaults secondaires sont en lecture seule par défaut.** Un vault déclaré par un workspace sous `also`, sans figurer dans aucune liste de palier, s'ouvre au palier `soft` : les lectures passent, et une écriture est refusée tant qu'elle n'a pas été confirmée une fois (`confirmSecondaryWrite: true`) ou que le vault n'a pas été promu définitivement (`set_secondary_vault_mode({ mode: "writable" })`, ou la liste `alsoWritable` de la config). `alsoLocked` est plus fort encore — un refus **côté serveur** qu'aucun paramètre ne peut outrepasser.
+
+**Un vault que deux workspaces déclarent exige une précondition à chaque écriture.** L'exigence est *calculée* depuis le registre de liaisons, jamais déclarée : elle peut donc s'activer sans que tu aies rien édité. `write_file` et ses frères refusent alors un appel aveugle et veulent `ifMatch` (ou `ifNew`, une précondition par étape, ou un sceau de plan approuvé). Ces vérifications protègent les écrivains qui passent par le routeur **les uns des autres** — elles ne voient pas une édition faite directement dans l'interface d'Obsidian.
+
+**`ifMatch` n'est atomique qu'avec le bridge.** Avec `obsidian-mcp-router-bridge` ≥ 0.7.0, la comparaison-écriture a lieu dans le process Obsidian. Sans lui, la vérification tourne quand même partout, mais en GET-comparer-puis-écrire : une fenêtre étroite subsiste.
+
+**L'atteignabilité est optionnelle, et coupe net quand elle est active.** Avec `vaultReach: "declared"`, un workspace n'atteint que les vaults qu'il déclare, plus `openVaults`. Une session non liée — le chat Claude Desktop, par exemple — ne voit que `openVaults`. C'est l'intention ; c'est aussi le moyen le plus rapide de faire disparaître tous les vaults d'un coup si tu la poses sans liste d'exception.
+
+**Sur un déploiement gated, rien ne persiste.** Quand `OBSIDIAN_ROUTER_READONLY`, `OBSIDIAN_ROUTER_ALLOWED_VAULTS` ou `OBSIDIAN_ROUTER_USER_ID` est posé, un seul répertoire sert plusieurs appelants : une réponse persistée parlerait pour tous. Les outils de liaison, `register_remote_vault`, et la forme `persist` de `lock_vault` / `unlock_vaults` / `set_auto_enrich_mode` y sont refusés ou cachés. Les formes valables pour la session seule continuent de marcher.
+
+**Les briques optionnelles le sont vraiment.** La recherche sémantique (`search_smart`), Templater (`execute_template`) et le click-to-open ont besoin du bridge dans chaque vault cible. Les outils de conversion ont besoin de Python 3.10+ et d'un `npm run install-markitdown` explicite. Docling est encore un opt-in distinct. Sans eux, ces outils annoncent la dépendance qui manque au lieu de deviner.
 
 ### Modes de déploiement
 
@@ -1441,6 +1508,15 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **53 slash
 | `/obsidian-router:auto-mode` | Set le mode d'auto-enrichissement wiki (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`) ; `--persist` écrit dans `.env`, sauf `FullAuto` — voir plus bas | *"passe en mode Hybrid"*, *"sauve tout automatiquement"* (→ FullAuto), *"arrête de sauver auto"* (→ off) / *"switch to Hybrid mode"*, *"save everything automatically"*, *"stop auto-saving"* |
 
 Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le callout auto-enrichissement plus bas pour les designs complets et cas d'usage concrets.
+
+#### 🔗 2 commandes de liaison de workspace (dans quel vault ce projet écrit)
+
+| Commande | Effet | Phrases déclencheuses |
+|---|---|---|
+| `/obsidian-router:bind-workspace` | Assistant déterministe : rattache ce workspace à un vault **principal** (détecte les vaults ouverts, demande, confirme, lie), puis éventuellement à des vaults **secondaires** avec un palier d'écriture chacun. Nomme aussi une proposition faite par le fichier dotenv du projet à laquelle personne n'a répondu — et un « non » est enregistré comme un refus | *"à quel vault ce projet est-il rattaché"*, *"rattache ce workspace à un vault"* / *"which vault is this project attached to"*, *"bind this workspace to a vault"* |
+| `/obsidian-router:configure-secondary-vaults` | Le même assistant, entré directement à son étape **vaults secondaires** : déclare les secondaires et choisit le palier d'écriture de chacun — lecture seule stricte, lecture seule avec écriture sur demande, ou lecture-écriture | *"ajoute un vault secondaire"*, *"mets X en lecture seule pour ce projet"* / *"add a secondary vault"*, *"make X read-only for this project"* |
+
+Les deux écrivent dans **ta propre config du router**, pour ce workspace uniquement — jamais dans le dépôt. Voir [Quels vaults un workspace peut atteindre, et lesquels il peut écrire](#quels-vaults-un-workspace-peut-atteindre-et-lesquels-il-peut-écrire).
 
 #### 🩺 7 helpers conversationnels
 
@@ -1845,6 +1921,18 @@ Installer le plugin active exactement trois hooks, sans étape d'activation, par
 
 Les trois sont des no-op silencieux sans vault configuré. `workspace-briefing` est ici plutôt qu'en opt-in par construction : c'est lui qui rend visible le registre de liaisons, et une liaison que le router a importée depuis le `.env` d'un projet n'est sûre à importer que parce qu'elle s'annonce au début de chaque session. Son opt-out est le seul que le `.env` du workspace ne peut pas poser — un fichier capable de couper le message qui parle de lui serait exactement le trou que cette fonctionnalité ferme. **Les huit autres hooks restent opt-in** via `node scripts/setup-vault.mjs --install-hooks` : ils commitent dans git, écrivent les transcriptions de session dans un vault, bloquent la fin d'un tour ou appellent le réseau — rien de tout cela n'est un défaut défendable pour quelqu'un qui vient d'installer un plugin. `--hooks-status` montre lesquels sont câblés, lesquels viennent du plugin, et alerte si l'un fait les deux (il se déclencherait deux fois par événement).
 
+### Maintenance automatique des vaults (et ses trois boutons)
+
+Après une écriture, et de nouveau au premier contact avec un vault dans une session, le routeur exécute une **passe de maintenance** : il régénère les projections de navigation OKF du vault, puis reconstruit l'index de recherche BM25 local — les deux dans une seule prise du verrou de ce vault, pour que deux sessions ne puissent jamais s'entrelacer à mi-parcours. La passe est débouncée (une rafale d'écritures coûte une passe, pas une par fichier) et ne tourne jamais contre un vault en lecture seule, injoignable, ou sous le palier d'écriture que le workspace a déclaré.
+
+| Variable | Effet | Défaut |
+| --- | --- | --- |
+| `OBSIDIAN_ROUTER_NO_AUTO_CONFORMANCE` | Coupe toute la passe de maintenance. Les lectures et écritures continuent ; les projections et l'index cessent simplement d'être rafraîchis pour toi — appelle `refresh_okf_projections` et `build_search_index` toi-même quand tu les veux | inactif (passe activée) |
+| `OBSIDIAN_ROUTER_NO_OKF_PROJECTIONS` | Garde la passe mais saute le rafraîchissement des projections OKF, en ne laissant que la reconstruction de l'index BM25 | inactif (projections activées) |
+| `OBSIDIAN_ROUTER_PROJECTIONS_DEBOUNCE_MS` | Combien de temps le routeur attend après la dernière écriture avant de vider la file. Un entier positif ; toute autre valeur retombe sur le défaut | `15000` (15 s) |
+
+Les deux premières acceptent `true` / `1` / `yes` / `on`. Ce sont des opt-outs `OBSIDIAN_ROUTER_NO_*`, donc un fichier dotenv de workspace peut les poser — ils coupent un confort, jamais une garde.
+
 ### Rester à jour
 
 Le router ship un hook SessionStart (`hooks/check-router-update.mjs`) qui check GitHub une fois par 24h et émet une notice si une nouvelle version est disponible. La notice demande à Claude de la relayer sur sa première réponse de la session — tu es au courant sans avoir besoin de penser à check.
@@ -1872,7 +1960,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 51 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 53 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 

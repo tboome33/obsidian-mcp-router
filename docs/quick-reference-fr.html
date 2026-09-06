@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.90.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (51 slash commands · 51 outils MCP · 47 skills)<br>
+  <div class="meta">v0.90.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (53 slash commands · 53 outils MCP · 48 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -310,7 +310,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 <div class="page-break"></div>
 
 <div class="header">
-  <h1>51 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · auto-déclenchement en langage naturel (FR + EN)</span></h1>
+  <h1>53 slash commands <span class="subtitle">/obsidian-router:&lt;nom&gt; · auto-déclenchement en langage naturel (FR + EN)</span></h1>
 </div>
 
 <div class="cat-header">🔧 17 wrappers MCP — un par outil de base du vault</div>
@@ -344,6 +344,14 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr><td class="cmd">lock</td><td class="desc">Restreint la session à un vault (volatile ou <code>--persist</code>)</td><td class="trigger">« verrouille sur X » / "I only want to work on X"</td></tr>
   <tr><td class="cmd">unlock</td><td class="desc">Lève le lock, restaure le routage multi-vault</td><td class="trigger">« déverrouille les vaults » / "unlock vaults"</td></tr>
   <tr><td class="cmd">auto-mode</td><td class="desc">Règle le mode d'auto-enrichissement (ClaudeAsk / Hybrid / FullAuto / off)</td><td class="trigger">« passe en mode Hybrid » / "switch to Hybrid mode"</td></tr>
+</table>
+
+<div class="cat-header">🔗 2 commandes de liaison de workspace (dans quel vault ce projet écrit)</div>
+
+<table class="slash">
+  <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
+  <tr><td class="cmd">bind-workspace</td><td class="desc">Assistant — rattache ce workspace à un vault PRINCIPAL, puis éventuellement à des secondaires avec un palier d'écriture chacun ; nomme aussi une proposition du fichier dotenv du projet restée sans réponse, et enregistre un « non » comme un refus</td><td class="trigger">« à quel vault ce projet est-il rattaché » / "bind this workspace to a vault"</td></tr>
+  <tr><td class="cmd">configure-secondary-vaults</td><td class="desc">Le même assistant entré à son étape SECONDAIRES — déclare les secondaires et choisit chaque palier : lecture seule stricte / sur demande / lecture-écriture</td><td class="trigger">« ajoute un vault secondaire » / "make X read-only for this project"</td></tr>
 </table>
 
 <div class="cat-header">🩺 7 helpers conversationnels (setup + diagnostic)</div>
@@ -393,7 +401,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 51 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 53 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>
@@ -413,12 +421,12 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
     <td><strong>Templater.</strong> Rend un template, écrit optionnellement le résultat ; arguments via <code>tp.mcpTools.prompt("clé")</code>.</td>
   </tr>
   <tr>
-    <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding</td>
-    <td><strong>État du router.</strong> Isolation mono-vault ; bascule du mode d'auto-enrichissement ; confirme ou efface la liaison de ce workspace (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> pour plusieurs, <code>{ clear: true }</code> pour tous les vaults) — enregistrée dans ton propre <code>config.json</code>, jamais dans le projet.</td>
+    <td>lock_vault · unlock_vaults · set_auto_enrich_mode · confirm_workspace_binding · set_secondary_vault_mode</td>
+    <td><strong>État du router &amp; liaison de workspace.</strong> Isolation mono-vault ; bascule du mode d'auto-enrichissement ; confirme, refuse ou efface la liaison de ce workspace (<code>{ vault }</code>, <code>{ vault, also: [...] }</code> pour plusieurs, <code>{ refuse: true }</code> pour dire non à une proposition, <code>{ clear: true }</code> pour tous les vaults) — enregistrée dans ton propre <code>config.json</code>, jamais dans le projet. <code>set_secondary_vault_mode</code> règle le <strong>palier d'écriture</strong> d'un secondaire : <code>locked</code> (refus côté serveur, aucun outrepassement), <code>soft</code> (le défaut — refusé tant qu'il n'est pas confirmé une fois par <code>confirmSecondaryWrite</code>), <code>writable</code>. Sur un déploiement gated (<code>READONLY</code> / <code>ALLOWED_VAULTS</code> / <code>USER_ID</code>), les deux sont refusés : un seul répertoire sert tous les appelants, donc une réponse persistée parlerait pour tous.</td>
   </tr>
   <tr>
-    <td>plan_vault · provision_vault</td>
-    <td><strong>Provisionnement de vault.</strong> Plan read-only (défauts + questionnaire + avertissements) → création en un appel (plugins, port, clé API, scaffold wiki, registre). Local uniquement.</td>
+    <td>plan_vault · provision_vault · register_remote_vault</td>
+    <td><strong>Provisionnement de vault.</strong> Plan read-only (défauts + questionnaire + avertissements) → création en un appel (plugins, port, clé API, scaffold wiki, registre). Local uniquement. <code>register_remote_vault</code> enregistre depuis une conversation un vault <em>distant</em> déjà en service (nom, <code>baseUrl</code>, <code>apiKey</code>) — toujours dans <code>config.json</code>, jamais dans le fichier dotenv d'un projet, et caché sur les déploiements gated.</td>
   </tr>
   <tr>
     <td>pdf/docx/xlsx/pptx/image/audio_to_markdown</td>
