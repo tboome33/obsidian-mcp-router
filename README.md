@@ -588,8 +588,10 @@ The primary is always read-write. Record a tier with
 wizard walk you through the whole thing — where we are, the primary, the
 secondaries, one tier question per secondary, then a table of what it recorded.
 
-> **Upgrading, and you already had secondaries.** This is the one default that
-> reverses: before this release a vault in `also` accepted writes like any
+> **Upgrading, and you already had secondaries.** This is one of the two
+> defaults this release reverses (the other is a vault two workspaces declare,
+> which stops accepting blind writes — see *Vaults two workspaces share*
+> below): before this release a vault in `also` accepted writes like any
 > other; from now on it is `soft`, and a write that does not carry
 > `confirmSecondaryWrite: true` is refused — with no `vaultReach` set and no
 > tier list in your config. Two ways back, per vault:
@@ -611,8 +613,21 @@ on a write step), or the `approvedPlanSha256` a `preview: true` call returned �
 `expect` is the precondition of a *recovery* run, not of an ordinary bundle;
 `download_page_assets` takes `createOnly`; `execute_template` is create-only at
 the bridge. `list_vaults`
-reports it per vault as `writesRequireIfMatch`, so you can see which vaults are
-in that state rather than discovering it from a refusal.
+reports it per vault as `writesRequireIfMatch` and `sharingReason`, so you can
+see which vaults are in that state rather than discovering it from a refusal.
+
+> **Upgrading, and a vault of yours is already shared.** This is the second
+> default this release reverses, and it needs no configuration change to reach
+> you: the requirement is *computed* from your binding registry, so if two
+> workspaces already declare one vault, a `write_file` that worked yesterday is
+> refused today. A vault in `openVaults` counts as shared by hypothesis, since
+> its readership cannot be known. Nothing is lost when you meet it — the
+> refusal names what satisfies it — but a caller that never passed `ifMatch`
+> now has to. If a vault is shared only by accident, the way back is to stop
+> declaring it from the second workspace (`confirm_workspace_binding`); there
+> is deliberately no switch to turn the requirement off, because a switch would
+> read as "this vault is safe to overwrite blindly", which is the belief that
+> loses a note.
 
 ### Remote vaults, from a conversation
 
@@ -1767,9 +1782,12 @@ Le principal est toujours en lecture-écriture. On enregistre un palier avec
 secondaires, une question de palier par secondaire, puis un tableau de ce qui a
 été enregistré.
 
-> **Mise à jour, si tu avais déjà des secondaires.** C'est le seul défaut qui
-> s'inverse : avant cette version, un vault dans `also` acceptait les écritures
-> comme n'importe quel autre ; désormais il est `soft`, et une écriture qui ne
+> **Mise à jour, si tu avais déjà des secondaires.** C'est l'un des deux
+> défauts que cette version inverse (l'autre est un vault que deux workspaces
+> déclarent, qui cesse d'accepter les écritures à l'aveugle — voir *Les vaults
+> que deux workspaces partagent* plus bas) : avant cette version, un vault dans
+> `also` acceptait les écritures comme n'importe quel autre ; désormais il est
+> `soft`, et une écriture qui ne
 > porte pas `confirmSecondaryWrite: true` est refusée — sans aucun
 > `vaultReach` posé et sans aucune liste de palier dans ta config. Deux façons
 > de revenir en arrière, par vault :
@@ -1791,8 +1809,22 @@ sceau qu'a renvoyé son appel `preview: true`) ; un `write_bundle` en veut une
 précondition d'une *reprise*, pas d'un bundle ordinaire ;
 `download_page_assets` prend `createOnly` ; `execute_template` est
 création-seule côté bridge. `list_vaults` le rapporte par vault en
-`writesRequireIfMatch`, pour que tu le voies au lieu de le découvrir sur un
-refus.
+`writesRequireIfMatch` et `sharingReason`, pour que tu le voies au lieu de le
+découvrir sur un refus.
+
+> **Mise à jour, si un de tes vaults est déjà partagé.** C'est le second défaut
+> que cette version inverse, et il n'a besoin d'aucun changement de config pour
+> t'atteindre : l'exigence est *calculée* depuis ton registre de liaisons, donc
+> si deux workspaces déclarent déjà un même vault, un `write_file` qui marchait
+> hier est refusé aujourd'hui. Un vault dans `openVaults` compte comme partagé
+> par hypothèse, son lectorat n'étant pas connaissable. Rien n'est perdu quand
+> tu le rencontres — le refus nomme ce qui le satisfait — mais un appelant qui
+> ne passait jamais `ifMatch` doit désormais le faire. Si un vault n'est
+> partagé que par accident, la sortie est de cesser de le déclarer depuis le
+> second workspace (`confirm_workspace_binding`) ; il n'y a délibérément aucun
+> interrupteur pour désactiver l'exigence, parce qu'un interrupteur se lirait
+> « ce vault est sûr à écraser à l'aveugle », ce qui est exactement la croyance
+> qui fait perdre une note.
 
 ### Enregistrer un vault distant depuis une conversation
 

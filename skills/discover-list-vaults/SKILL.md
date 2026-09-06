@@ -19,9 +19,9 @@ The tool pings every ACTIVE vault in parallel and returns:
 - `defaultVault` — vault used when calls omit a `vault` argument (resolved by the 5-tier cascade)
 - `configPath` — where the registry is loaded from
 - `vaults[]` — active vaults, each with `name`, `type` (local|remote), `baseUrl`, `online`, `latencyMs`, `missingApiKey`, `error?`, `isDefault`
-- `disabled[]` — vaults this session cannot use right now. NOT pinged. Each entry: `name`, `type`, `reason` — one of two things:
-  - `"disabled"` — skipped by the `disabledVaults` config.
-  - `not reachable from this workspace (vaultReach: "declared" — bind this workspace to it, or add it to openVaults)` — the vault is real and enabled, but this router install has `vaultReach: "declared"` active and this workspace's binding does not name it (nor is it in `openVaults`). This is the ONE case in `disabled[]` with a fix the user can act on in-session: point them at `confirm_workspace_binding` (to bind this workspace to it) rather than at `config.json`.
+- `disabled[]` — vaults this session cannot use right now. NOT pinged. Each entry: `name`, `type`, `reason`, `awaitingDeclaration` — and that last field is the one that matters, because the array holds two different absences:
+  - `awaitingDeclaration: false` — the operator said no: skipped by the `disabledVaults` config, or a malformed entry. Nothing the user does in a session changes it.
+  - `awaitingDeclaration: true` — the vault is real, enabled and healthy; this router install has `vaultReach: "declared"` active and this workspace has simply never declared it. This is the case with a fix the user can act on in-session: `confirm_workspace_binding` binds this workspace to it (and opens it if its Obsidian is not running), which is what makes it answer. Never describe such a vault as unavailable — it is one call away, and `config.json` is not the way. `/bind-workspace` offers exactly these as candidates.
 
 ## Adapt the response to what the user asked
 

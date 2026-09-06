@@ -40,6 +40,20 @@ Phase 4 of the `portee-ergonomie-refus-roadmap` (decision
 `ergonomie-creation-liaison-vaults`, point 6, accepted 2026-09-04). Nothing changes for a vault
 only one workspace declares — which is the condition the decision set for the feature.
 
+**BREAKING — a vault two workspaces already declare starts refusing blind writes, with no
+configuration change.** This is the second of the two defaults this release reverses, and it needs
+naming as plainly as the first: the requirement is COMPUTED from the binding registry, so an
+installation that has not edited anything, but whose config happens to declare one vault from two
+workspaces, will see `write_file` (and its siblings) refuse a call that worked yesterday. The same
+holds for a vault listed in `openVaults`, which is treated as shared by hypothesis because its
+readership cannot be known. Nothing is lost when you meet it — the refusal names what satisfies it
+and `list_vaults` reports `writesRequireIfMatch` and `sharingReason` per vault, so a session can
+see the state before being refused — but a caller that never passed `ifMatch` now has to. The way
+back, if a vault is shared only by accident, is to stop declaring it from the second workspace
+(`confirm_workspace_binding`); there is deliberately no switch to turn the requirement off, because
+a switch would be read as "this vault is safe to overwrite blindly", which is exactly the belief
+that loses a note.
+
 #### Added
 
 - **`ifMatch` becomes REQUIRED on a shared vault.** A vault that two or more workspaces declare

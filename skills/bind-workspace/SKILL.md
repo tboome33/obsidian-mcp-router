@@ -33,7 +33,11 @@ Call `list_vaults`.
 
 ## Step 2 — the vaults that are open
 
-The candidates are the entries of `vaults[]` with `online: true`. (A vault in `disabled[]` is never a candidate — disabled, or unreachable under `vaultReach: "declared"`; if the user asks for one of those, explain why it is absent.)
+The candidates are the entries of `vaults[]` with `online: true`, **plus every entry of `disabled[]` whose `awaitingDeclaration` is true**.
+
+That second group is the reason this step exists at all. `disabled[]` holds two different absences and `awaitingDeclaration` tells them apart: `false` means the operator said no (`disabledVaults`, or a malformed entry) and the vault is never a candidate; `true` means the vault is registered and healthy and this workspace has simply never declared it, under `vaultReach: "declared"`. Excluding those made the wizard unable to offer the very vaults it exists to declare — on a workspace with no binding and no `openVaults`, every vault is in that group and the wizard had nothing to show. Such a vault is not pinged, so it has no `online`: say it is *"registered, not yet declared by this project"* rather than guessing whether it is open, and let Step 5 open it (`confirm_workspace_binding` opens a bound vault whose Obsidian is not running).
+
+If the user asks for a vault whose `awaitingDeclaration` is false, explain that the operator disabled it and that binding will not change that.
 
 - At least one candidate → show the list and ask:
 

@@ -132,15 +132,36 @@ export async function listVaults(registry, sharedConfig = null) {
   // workspace cannot currently reach (not pinged, same reasoning as a
   // genuinely disabled vault: no point spending a round-trip on a name
   // resolveVault() would refuse anyway). Read-only metadata. Each entry has
-  // { name, type, reason }. Always returned, even when empty, so callers
-  // don't have to special-case "no disabled" vs "field missing".
+  // { name, type, reason, awaitingDeclaration }. Always returned, even when
+  // empty, so callers don't have to special-case "no disabled" vs "field
+  // missing".
+  //
+  // TWO KINDS OF ABSENCE LIVED IN ONE ARRAY, AND THAT LOCKED A DOOR FROM THE
+  // INSIDE. A vault the user DISABLED (or one the registry skipped as
+  // malformed) is not a candidate for anything — the operator said no. A vault
+  // that is merely UNREACHABLE under `vaultReach: "declared"` is the opposite:
+  // it is registered, healthy and available, and the only thing missing is the
+  // declaration the `bind-workspace` wizard exists to make. The wizard read
+  // the array as one kind and excluded both, so on a workspace with no binding
+  // and no `openVaults` it could offer nothing at all — and binding is what
+  // would have made the candidates appear. Measured by the whole-lot review
+  // (2026-09-06); it is trap 3 of the decision `portee-et-mode-ecriture-des-
+  // vaults`, which required the binding TOOL to stay able to name such a
+  // vault, one layer above where the trap actually bit.
+  //
+  // So the distinction is DATA, not prose a reader has to parse out of
+  // `reason`: `awaitingDeclaration: true` means "registered and healthy, this
+  // workspace has simply never declared it — bind it and it answers".
   const disabled = [
-    ...(registry.skipped || []).map((s) => ({ name: s.name, type: s.type, reason: s.reason })),
+    ...(registry.skipped || []).map((s) => ({
+      name: s.name, type: s.type, reason: s.reason, awaitingDeclaration: false,
+    })),
     ...unreachable.map((v) => ({
       name: v.name,
       type: v.type,
       reason: 'not reachable from this workspace (vaultReach: "declared" — bind this workspace '
         + 'to it, or add it to `openVaults`)',
+      awaitingDeclaration: true,
     })),
   ];
 
