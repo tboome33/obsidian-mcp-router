@@ -9,46 +9,73 @@
  * made three, and this repository's recorded failure mode is a fix that lands
  * in one copy and not the others: the newline guard below was added to the
  * first copy alone for a whole review round while the setup script kept
- * writing injectable values. So the writer lives here once, and the tools
- * import it.
+ * writing injectable values. So the writer lives here once, the tools import
+ * the async wrappers, and the setup script imports the synchronous core.
  *
- * THREE RULES THE COPIES DID NOT HAVE, found by the Codex round on b59eb00 —
- * all three pre-existing in both copies, and all three fixed here once (and
- * in the setup script's synchronous twin, which shares the line regex and
- * the lock path through the two exports below):
+ * ---------------------------------------------------------------------------
+ * WHY THE CRITICAL SECTION IS SYNCHRONOUS
+ * ---------------------------------------------------------------------------
+ * The first shared version (7efbad1) took the inter-process `mkdir` lock and
+ * then `await`ed the read and the write. A second writer in the SAME process
+ * — two tool calls the client pipelines, `lock_vault --persist` beside
+ * `set_auto_enrich_mode --persist` — arrived during that await, found the lock
+ * held, and spun in the lock's synchronous `Atomics.wait` for the full 10 s
+ * budget: the server's event loop was frozen, every other request waited, and
+ * the second write then failed with "another process is writing" while the
+ * only writer was this very process. Measured by the Fable review round on
+ * 7efbad1: two pipelined writers answered together at 10.07 s, a timer fired
+ * once in ten seconds, one line lost.
  *
- *   - `export KEY=value` IS the key. `parseDotenv` strips an optional
- *     `export ` prefix, so a file written that way is read like any other —
- *     but the writers matched `^\s*KEY\s*=` only, saw no line, and APPENDED a
- *     bare one. The loader then read the first occurrence: the stale exported
- *     value won, and the line just written was dead. The prefix is recognised
- *     and preserved.
+ * The cure is the one `updateConfigBindings` already uses: no `await` inside
+ * the section. JavaScript runs one stretch of synchronous code at a time, so
+ * two same-process writers cannot interleave at all — the second simply runs
+ * after the first, no lock needed between them. The `mkdir` lock then only
+ * ever meets another PROCESS, which is what it is for, and its wait is short
+ * (`DOTENV_LOCK_WAIT_MS`) because a writer holds it for milliseconds: a
+ * dead process's lock still costs that wait once, then a refusal, until the
+ * lock's own stale reaping clears it. The async exports are thin wrappers so
+ * the three tools keep their `await`.
+ *
+ * ---------------------------------------------------------------------------
+ * THE RULES THE FORKS DID NOT HAVE
+ * ---------------------------------------------------------------------------
+ *   - `export KEY=value` IS the key — spelled exactly as `parseDotenv` reads
+ *     it: `export`, ONE space, then any whitespace. The loader is the
+ *     reference (`startsWith('export ')`, then `trim()`); the first shared
+ *     version matched `export\s+`, so `export<TAB>KEY=old` was rewritten in
+ *     place while the loader read that line as a key literally named
+ *     `export\tKEY` — a persisted setting that never took effect. A table
+ *     test feeds the same lines to the loader and to this regex.
  *   - A `.env` THAT IS A SYMBOLIC LINK IS REFUSED. The loader reads through a
  *     link happily; a writer that follows it edits whatever the link points
  *     at, outside the workspace — and a workspace is often a cloned
- *     repository, whose author chose where the link points. An `lstat` on the
+ *     repository, whose author chose where the link points. `lstat` on the
  *     final component, the same check `agent-host-install` makes, with the
- *     same honest limit: a link on a PARENT directory is not detected.
- *   - ONE WRITER AT A TIME. Two tools persisting into the same file
- *     read-modify-write it with nothing between them; whichever wrote last
- *     erased the other's line while both reported success. The same `mkdir`
- *     lock the config writer takes, keyed on the file's canonical path.
+ *     same honest limits: a link on a PARENT directory is not detected, and
+ *     a link created between the check and the write is not either.
+ *   - ONE WRITER AT A TIME across processes, keyed on the PHYSICAL path: a
+ *     junctioned parent, an 8.3 short name or a `\\?\` prefix used to yield
+ *     a second lock for the same bytes.
  *
- * What is NOT here, on purpose: the reader. `parseDotenv` in
- * workspace-dotenv.mjs is the one parser; this module only edits lines, and
- * it matches keys the way that parser does (first `KEY=` at start of line,
- * an optional `export ` prefix, surrounding whitespace ignored) so that what
- * the writer touches is what the loader reads.
- *
- * Node builtins plus two dependency-free helpers: `assertDotenvScalar` is the
- * whole reason a shared writer is worth having, and the lock is the config
- * writer's own.
+ * What is NOT here, on purpose: a second parser. `parseDotenv` in
+ * workspace-dotenv.mjs is the one reader; `readDotenvVarSync` below goes
+ * through it, so a caller asking "what does the file currently say for KEY"
+ * gets the loader's answer and not a near copy of it.
  */
 
-import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
+import fs from 'node:fs';
+import path from 'node:path';
 import { assertDotenvScalar } from './dotenv-scalar.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
+import { parseDotenv } from './workspace-dotenv.mjs';
+
+/**
+ * How long a writer waits for another PROCESS's lock. A writer holds the
+ * lock for a read and a write of a small file — milliseconds — so two
+ * seconds is generous for a live holder and cheap for a dead one. Shorter
+ * than the config writer's default because this wait, too, is synchronous.
+ */
+export const DOTENV_LOCK_WAIT_MS = 2000;
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -56,34 +83,52 @@ function escapeRegex(s) {
 
 /**
  * The line shape the loader reads as an assignment of `key`: optional
- * leading whitespace, an optional `export ` prefix, the key, `=`. Group 1 is
- * the prefix, kept when the line is rewritten so `export FOO=old` becomes
+ * leading whitespace, an optional `export ` prefix (one space, then any
+ * whitespace — `parseDotenv`'s exact rule), the key, `=`. Group 1 is the
+ * prefix, kept when the line is rewritten so `export FOO=old` becomes
  * `export FOO=new` and stays sourceable by a shell.
  */
 export function dotenvKeyLineRegex(key) {
-  return new RegExp(`^(\\s*(?:export\\s+)?)${escapeRegex(key)}\\s*=`);
+  return new RegExp(`^(\\s*(?:export \\s*)?)${escapeRegex(key)}\\s*=`);
 }
 
 /**
- * The lock every dotenv mutation takes — one family, keyed on the canonical
+ * The file's PHYSICAL path, so two spellings of one file share a lock. The
+ * file itself may not exist yet (the upsert creates it): then its parent is
+ * resolved and the basename kept. A `\\?\` prefix is stripped first —
+ * `realpathSync.native` would keep it and `lockPathFor` would hash it.
+ */
+function physicalPath(envPath) {
+  const resolved = path.resolve(String(envPath).replace(/^\\\\\?\\/, ''));
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch { /* absent — resolve the directory it will be created in */ }
+  try {
+    return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * The lock every dotenv mutation takes — one family, keyed on the physical
  * file path. The tag is spelled `env-file` rather than the obvious word
  * because the loader guard in tests/workspace-dotenv.test.mjs reads that word
  * in quotes, anywhere in src/, as an import of the npm package it forbids.
  */
 export function dotenvLockPath(envPath) {
-  return lockPathFor(envPath, 'env-file');
+  return lockPathFor(physicalPath(envPath), 'env-file');
 }
 
 /**
  * Refuse to write THROUGH a link. `lstat` looks at the final component only,
  * so this is the file itself, not its parents — the limit is stated in the
- * header. A missing file is fine (the upsert creates it). Synchronous, so
- * the setup script's synchronous writers can share it.
+ * header. A missing file is fine (the upsert creates it).
  *
  * @param {string} envPath
  */
 export function assertDotenvNotSymlink(envPath) {
-  const st = fsSync.lstatSync(envPath, { throwIfNoEntry: false });
+  const st = fs.lstatSync(envPath, { throwIfNoEntry: false });
   if (st?.isSymbolicLink()) {
     throw new Error(
       `refusing to write ${envPath}: it is a symbolic link, and a workspace file that points elsewhere `
@@ -94,30 +139,54 @@ export function assertDotenvNotSymlink(envPath) {
 }
 
 /**
- * Take the dotenv lock for `envPath`, or throw when another process holds it
- * — the alternative is exactly the lost update the lock exists to prevent.
- * Returns the release function.
+ * Take the inter-process lock for `envPath`, or throw when another process
+ * holds it past the wait — the alternative is exactly the lost update the
+ * lock exists to prevent. Returns the release function.
+ *
+ * The message says what did NOT happen and no more: a caller may already
+ * have recorded its config half (lock_vault writes the binding before the
+ * hint), so "nothing was changed" would be false for it.
  *
  * @param {string} envPath
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams
  * @returns {() => void}
  */
-export function takeDotenvLock(envPath, { waitMs, lock } = {}) {
-  const release = lock
-    ? lock()
-    : acquireLock(dotenvLockPath(envPath), waitMs === undefined ? {} : { waitMs });
+export function takeDotenvLock(envPath, { waitMs = DOTENV_LOCK_WAIT_MS, lock } = {}) {
+  const release = lock ? lock() : acquireLock(dotenvLockPath(envPath), { waitMs });
   if (!release) {
     throw new Error(
-      `another process is writing ${envPath} and did not finish in time. Nothing was changed — run the command again.`,
+      `another process is writing ${envPath} and did not finish in time: the .env line was NOT written `
+      + '(whatever this call had already recorded elsewhere stands). Run the command again.',
     );
   }
   return release;
 }
 
 /**
- * Set or update KEY=VALUE in the .env file at envPath. Creates the file
- * if it doesn't exist. Preserves all other lines, including comments and
- * formatting.
+ * What the file currently says for `key` — the FIRST assignment, read by the
+ * loader's own parser, `export` prefix and quotes handled the way the loader
+ * handles them. `null` when the file or the key is absent.
+ *
+ * @param {string} envPath
+ * @param {string} key
+ * @returns {string|null}
+ */
+export function readDotenvVarSync(envPath, key) {
+  let text;
+  try {
+    text = fs.readFileSync(envPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+  const first = parseDotenv(text).find((entry) => entry.key === key);
+  return first ? first.value : null;
+}
+
+/**
+ * Set or update KEY=VALUE in the .env file at envPath, synchronously. Creates
+ * the file if it doesn't exist. Preserves all other lines, including comments
+ * and formatting.
  *
  * Duplicate-line policy: updates the FIRST occurrence and leaves later
  * duplicates as-is. This matches the convention of the loader
@@ -133,7 +202,7 @@ export function takeDotenvLock(envPath, { waitMs, lock } = {}) {
  * @param {string} value
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
  */
-export async function upsertDotenvVar(envPath, key, value, opts = {}) {
+export function upsertDotenvVarSync(envPath, key, value, opts = {}) {
   // One shared definition — see helpers/dotenv-scalar.mjs. The guard first
   // lived in ONE copy of this function and nowhere else, which is why the
   // setup script kept writing injectable values for a whole review round.
@@ -144,8 +213,7 @@ export async function upsertDotenvVar(envPath, key, value, opts = {}) {
   try {
     let lines = [];
     try {
-      const raw = await fs.readFile(envPath, 'utf8');
-      lines = raw.split(/\r?\n/);
+      lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
     } catch (err) {
       if (err.code !== 'ENOENT') throw err;
       // File doesn't exist — start with an empty array
@@ -183,7 +251,7 @@ export async function upsertDotenvVar(envPath, key, value, opts = {}) {
     // Always end with a newline
     let out = lines.join('\n');
     if (!out.endsWith('\n')) out += '\n';
-    await fs.writeFile(envPath, out, 'utf8');
+    fs.writeFileSync(envPath, out, 'utf8');
   } finally {
     release();
   }
@@ -191,21 +259,21 @@ export async function upsertDotenvVar(envPath, key, value, opts = {}) {
 
 /**
  * Remove all `<key>=...` lines from the .env file, `export`-prefixed ones
- * included. Returns true if at least one line was removed, false if the file
- * or the key was absent.
+ * included, synchronously. Returns true if at least one line was removed,
+ * false if the file or the key was absent.
  *
  * @param {string} envPath
  * @param {string} key
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
- * @returns {Promise<boolean>}
+ * @returns {boolean}
  */
-export async function removeDotenvVar(envPath, key, opts = {}) {
+export function removeDotenvVarSync(envPath, key, opts = {}) {
   assertDotenvNotSymlink(envPath);
   const release = takeDotenvLock(envPath, opts);
   try {
     let raw;
     try {
-      raw = await fs.readFile(envPath, 'utf8');
+      raw = fs.readFileSync(envPath, 'utf8');
     } catch (err) {
       if (err.code === 'ENOENT') return false;
       throw err;
@@ -218,9 +286,19 @@ export async function removeDotenvVar(envPath, key, opts = {}) {
 
     let out = filtered.join('\n');
     if (!out.endsWith('\n')) out += '\n';
-    await fs.writeFile(envPath, out, 'utf8');
+    fs.writeFileSync(envPath, out, 'utf8');
     return true;
   } finally {
     release();
   }
+}
+
+/** The async face of `upsertDotenvVarSync`, for the tools that `await` it. The work itself is synchronous — see the header. */
+export async function upsertDotenvVar(envPath, key, value, opts = {}) {
+  return upsertDotenvVarSync(envPath, key, value, opts);
+}
+
+/** The async face of `removeDotenvVarSync`. */
+export async function removeDotenvVar(envPath, key, opts = {}) {
+  return removeDotenvVarSync(envPath, key, opts);
 }

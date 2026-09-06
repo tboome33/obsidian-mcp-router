@@ -29,7 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import https from 'node:https';
 import { assertDotenvScalar } from '../src/helpers/dotenv-scalar.mjs';
-import { dotenvKeyLineRegex, assertDotenvNotSymlink, takeDotenvLock } from '../src/helpers/dotenv-writer.mjs';
+import { upsertDotenvVarSync, removeDotenvVarSync, readDotenvVarSync } from '../src/helpers/dotenv-writer.mjs';
 import { obsidianOpenUri, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
 import {
   updateConfigBindings,
@@ -1788,66 +1788,22 @@ function writeMcpJson(vaultPath, force) {
 // is mostly sync, and async/await here adds no value.
 // ---------------------------------------------------------------------------
 function upsertEnvVarSync(file, key, value) {
-  // Shared definition — see src/helpers/dotenv-scalar.mjs. THIS is the writer
-  // that stayed injectable after the guard was added to `lock.mjs` alone: a
-  // vault slug of `safe\nOBSIDIAN_ROUTER_READONLY=false\nINJECTED` wrote three
-  // lines here, the middle one re-enabling write access at the next start.
-  // Quoting does not help — both readers split into lines before they look at
-  // quotes — which is why the caller's `quotedValue` wrapping did not contain
-  // it either.
-  assertDotenvScalar(value, key, file);
-  // The three rules the async writer learnt in the Codex round on b59eb00,
-  // shared through src/helpers/dotenv-writer.mjs rather than re-derived: an
-  // `export KEY=` line IS the key (matched and its prefix kept), a symlinked
-  // `.env` is refused (a clone chose where it points), and one writer at a
-  // time (a tool persisting a mode in a session must not race this script).
-  assertDotenvNotSymlink(file);
-  const release = takeDotenvLock(file);
-  try {
-    let lines = [];
-    if (fs.existsSync(file)) lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    const keyRegex = dotenvKeyLineRegex(key);
-    let firstIdx = -1;
-    let prefix = '';
-    for (let i = 0; i < lines.length; i++) {
-      const m = keyRegex.exec(lines[i]);
-      if (m) { firstIdx = i; prefix = m[1]; break; }
-    }
-    if (firstIdx === -1) {
-      const newLine = `${key}=${value}`;
-      if (lines.length === 0 || lines[lines.length - 1] === '') {
-        const at = lines.length === 0 ? 0 : lines.length - 1;
-        lines.splice(at, 0, newLine);
-      } else {
-        lines.push(newLine);
-      }
-    } else {
-      lines[firstIdx] = `${prefix}${key}=${value}`;
-    }
-    let out = lines.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(file, out, 'utf8');
-  } finally {
-    release();
-  }
+  // THE ONE WRITER, and no longer a twin of it. This function used to be the
+  // third copy of the dotenv upsert — the one that stayed injectable after the
+  // newline guard was added to `lock.mjs` alone (a vault slug of
+  // `safe\nOBSIDIAN_ROUTER_READONLY=false\nINJECTED` wrote three lines here,
+  // the middle one re-enabling write access at the next start), and later the
+  // one whose lock nothing tested and whose symlink check ran after an
+  // `existsSync` that followed the link (Fable round on 7efbad1). The shared
+  // writer's core is synchronous since that round, so this script — mostly
+  // synchronous by construction — calls it directly: the scalar guard, the
+  // `export` prefix, the symlink refusal and the inter-process lock are one
+  // definition, tested once, in src/helpers/dotenv-writer.mjs.
+  upsertDotenvVarSync(file, key, value);
 }
 
 function removeEnvVarSync(file, key) {
-  if (!fs.existsSync(file)) return false;
-  assertDotenvNotSymlink(file);
-  const release = takeDotenvLock(file);
-  try {
-    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    const keyRegex = dotenvKeyLineRegex(key);
-    const filtered = lines.filter((l) => !keyRegex.test(l));
-    if (filtered.length === lines.length) return false;
-    let out = filtered.join('\n');
-    if (!out.endsWith('\n')) out += '\n';
-    fs.writeFileSync(file, out, 'utf8');
-    return true;
-  } finally {
-    release();
-  }
+  return removeDotenvVarSync(file, key);
 }
 
 /**
@@ -1892,21 +1848,13 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
   // sets out to fix. Read the previous value (if any) and surface a warning
   // when we're about to switch the workspace from vault A to vault B. The
   // upsert itself is unchanged; the warn fires before it.
-  let previousSlug = null;
-  if (fs.existsSync(envPath)) {
-    const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
-    for (const line of lines) {
-      const m = line.match(/^\s*OBSIDIAN_ROUTER_DEFAULT_VAULT\s*=\s*(.*?)\s*$/);
-      if (m) {
-        // Strip matched outer quotes (mirrors dotenv parser).
-        let value = m[1];
-        const quoted = value.match(/^"(.*)"$|^'(.*)'$/);
-        if (quoted) value = quoted[1] ?? quoted[2];
-        previousSlug = value;
-        break;
-      }
-    }
-  }
+  // READ THROUGH THE LOADER'S OWN PARSER — an `export ` prefix, the quotes,
+  // the first occurrence — so the warning fires for exactly the line the
+  // router would have read. The hand-rolled regex that stood here matched
+  // bare lines only: an `export OBSIDIAN_ROUTER_DEFAULT_VAULT=old` line was
+  // rebound without a word. (Fable round on 7efbad1 — the fourth reader of
+  // that line in this file, missed by the sweep that fixed the writers.)
+  const previousSlug = readDotenvVarSync(envPath, 'OBSIDIAN_ROUTER_DEFAULT_VAULT');
   if (previousSlug && previousSlug !== vaultSlug && !opts.quiet) {
     warn(
       `Rebinding workspace ${workspacePath} from vault "${previousSlug}" to "${vaultSlug}".\n` +

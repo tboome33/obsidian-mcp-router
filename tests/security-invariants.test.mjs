@@ -416,12 +416,14 @@ describe('GUARD: every write tool runs caller paths through the containment guar
     assert.deepEqual(
       writerFunctions.slice().sort(),
       [
-        'scripts/setup-vault.mjs:upsertEnvVarSync()',
         'scripts/setup-vault.mjs:writeEnvFile()',
         // lock.mjs and auto-enrich.mjs each carried a fork of this writer;
         // both moved here when confirm_workspace_binding({ refuse }) became
         // the third caller (decision refus-d-une-proposition-de-liaison).
-        'src/helpers/dotenv-writer.mjs:upsertDotenvVar()',
+        // The setup script's `upsertEnvVarSync` was the fourth copy; since
+        // the Fable round on 7efbad1 it delegates to this one (the core is
+        // synchronous), so it no longer builds a line and writes it itself.
+        'src/helpers/dotenv-writer.mjs:upsertDotenvVarSync()',
       ],
       'the set of dotenv writer FUNCTIONS changed — either a writer moved out of reach of the unit finder, or a new one arrived',
     );

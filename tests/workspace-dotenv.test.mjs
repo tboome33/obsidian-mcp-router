@@ -846,7 +846,7 @@ describe('dotenvRefusalHint — the portable refusal counts only from the file t
   // launcher exporting OBSIDIAN_ROUTER_REFUSED_VAULT beside a workspace file
   // proposing the same vault skipped the one-time import and had the briefing
   // accuse the project file of a refusal it never contained.
-  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', REFUSED_VAULT_KEY];
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED', REFUSED_VAULT_KEY];
   const clean = () => {
     const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
     for (const k of KEYS) delete process.env[k];
@@ -884,6 +884,32 @@ describe('dotenvRefusalHint — the portable refusal counts only from the file t
       const ws = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n${REFUSED_VAULT_KEY}=work\n`);
       applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
       assert.equal(dotenvRefusalHint(), null);
+    } finally { restore(); }
+  });
+
+  test('a file proposing through its LOCK line alone (no DEFAULT line) is answered by its refusal too', () => {
+    // Fable round on 7efbad1: judged against the DEFAULT line only, a
+    // `LOCKED=notes` + `REFUSED_VAULT=notes` file had `notes` imported LOCKED
+    // after a reinstall. A workspace file proposes a vault through two lines.
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace(`OBSIDIAN_ROUTER_LOCKED=notes\n${REFUSED_VAULT_KEY}=notes\n`);
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(dotenvRefusalHint(), 'notes');
+    } finally { restore(); }
+  });
+
+  test('a value changed IN THIS PROCESS since the load is not the file\'s any more → null', () => {
+    // The origin check is not redundant with the same-file check: the latter
+    // asks about files, the former about the VALUE. Measured red by the Fable
+    // round on 7efbad1 after the check had been dropped as redundant.
+    const restore = clean();
+    try {
+      const ws = tmpWorkspace(`OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n${REFUSED_VAULT_KEY}=work\n`);
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      assert.equal(dotenvRefusalHint(), 'work', 'before the mutation');
+      process.env[REFUSED_VAULT_KEY] = 'somewhere-else';
+      assert.equal(dotenvRefusalHint(), null, 'a runtime value is not attributed to the file');
     } finally { restore(); }
   });
 

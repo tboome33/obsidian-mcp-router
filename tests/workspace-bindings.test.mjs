@@ -263,6 +263,29 @@ describe('classifyBindingHint — the SIXTH status: a proposal the user REFUSED 
     assert.equal(hintIsWorthSignalling(c), true);
   });
 
+  test('a hint naming a SECONDARY the workspace is bound to is "confirmed" — bound is satisfied, primary or not', () => {
+    // Fable round on 7efbad1: a secondary fell to `conflicts`, so the briefing
+    // told a workspace bound to notes + work that "the binding wins" over
+    // `work` and offered a refusal the tool rejected (the vault is bound).
+    const several = normalizeBinding({ vault: 'notes', also: ['work'] });
+    const c = classifyBindingHint({ hint: 'work', binding: several, isRegistered });
+    assert.equal(c.status, HINT_STATUS.CONFIRMED);
+    assert.equal(hintIsWorthSignalling(c), false);
+    // …and a stale refusal of that secondary does not change it (trap 5, one role over).
+    assert.equal(classifyBindingHint({ hint: 'work', binding: several, isRegistered, isRefused: refusedWork }).status, HINT_STATUS.CONFIRMED);
+  });
+
+  test('a bound workspace whose hint names a vault the machine does NOT have is "unknown-vault", not "conflicts"', () => {
+    // `conflicts` is documented as "a DIFFERENT registered vault". The old order
+    // answered it for any hint beside a binding, so the briefing said "the
+    // binding wins" and never that the vault does not exist.
+    const c = classifyBindingHint({ hint: 'ghost', binding, isRegistered });
+    assert.equal(c.status, HINT_STATUS.UNKNOWN_VAULT);
+    assert.equal(c.boundTo, 'notes', 'the binding is still named beside it');
+    // A registered, different vault is still `conflicts`.
+    assert.equal(classifyBindingHint({ hint: 'archive', binding, isRegistered }).status, HINT_STATUS.CONFLICTS);
+  });
+
   test('TRAP 5 — the binding in force wins: the bound vault reads "confirmed" even against a stale refusal', () => {
     // The user refused X, then bound the workspace to X deliberately (by a
     // path that does not drop refusals — a hand edit). The briefing must not
@@ -1593,6 +1616,20 @@ describe('the ONE-TIME import, END TO END through loadRegistry', () => {
     assert.equal(reg.bindingHint.status, HINT_STATUS.REFUSED);
     assert.equal(reg.bindingHint.previouslyRefused, false, 'the file itself carries no refusal line');
     assert.deepEqual([...reg.workspaceRefusals.keys()], ['notes']);
+  });
+
+  test('THE REINSTALL CASE, LOCK FLAVOUR: a .env carrying only LOCKED=X + REFUSED_VAULT=X imports nothing — the refusal answers the lock line too', async () => {
+    // Fable round on 7efbad1: the file-side refusal was judged against the
+    // DEFAULT_VAULT line only, so this file — a clone of a workspace someone
+    // had locked, then refused, then --unlink-workspace'd (which removes the
+    // DEFAULT line alone) — had `notes` imported LOCKED at the first start
+    // after a reinstall. A workspace file proposes through two lines.
+    const sc = scenario({ dotenv: 'OBSIDIAN_ROUTER_LOCKED=notes\nOBSIDIAN_ROUTER_REFUSED_VAULT=notes\n' });
+    const reg = await loadIn(sc);
+    assert.equal(reg.bindingImported, null, 'the lock hint is refused by the file that carries it');
+    assert.equal(reg.workspaceBinding, null);
+    assert.equal(reg.lockedVault ?? null, null);
+    assert.deepEqual(sc.read()[MIGRATION_KEY].imported, [], 'and the window stays open');
   });
 
   test('a refusal the HOST exports is not the file\'s: the import runs, and no context is claimed for a line the file never had', async () => {

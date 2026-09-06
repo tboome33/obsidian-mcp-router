@@ -180,9 +180,13 @@ function hintLine(hint) {
   const who = hint.origin === 'workspace-dotenv'
     ? "This project's .env"
     : (hint.origin === 'host' ? 'The environment this router was started in' : 'The environment');
+  // "NO REFUSAL of it is recorded", not "no answer": with `conflicts` the
+  // config does hold an answer for this workspace — a binding to another
+  // vault — and the first wording contradicted the line above it. (Fable
+  // round on 7efbad1, found twice over.)
   const before = hint.previouslyRefused === true
     ? ' A refusal of it was recorded here before (the file carries OBSIDIAN_ROUTER_REFUSED_VAULT), '
-      + 'but your own router config has no answer for this workspace, so you are asked once more.'
+      + 'but no refusal of it is recorded in your own router config, so you are asked once more.'
     : '';
   const refuse = `confirm_workspace_binding({ refuse: ${name} })`;
   if (hint.status === HINT_STATUS.UNKNOWN_VAULT) {

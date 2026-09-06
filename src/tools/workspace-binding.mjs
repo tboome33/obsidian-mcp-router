@@ -67,6 +67,7 @@ import {
   envKeySourceFile,
   ENV_ORIGINS,
   REFUSED_VAULT_KEY,
+  isGatedDeployment,
 } from '../helpers/workspace-dotenv.mjs';
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
@@ -175,6 +176,25 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         `confirm_workspace_binding: \`${verbs[0]}\` cannot be combined with `
         + `${[...verbs.slice(1), ...others].map((k) => `\`${k}\``).join(', ')} — refusing a proposal and `
         + 'binding a vault are two separate calls.',
+      );
+    }
+    // NOT ON A GATED DEPLOYMENT. Under OBSIDIAN_ROUTER_READONLY, ALLOWED_VAULTS
+    // or USER_ID the router serves several callers from ONE process whose cwd
+    // is the server's own directory: a refusal recorded there lands in the
+    // shared config under the server's key and, if that directory's `.env`
+    // proposed the vault, as a line in the SERVER's `.env` — one caller's
+    // answer standing for all of them, written by a remote hand. The same
+    // reason `register_remote_vault` is hidden from gated deployments.
+    // Measured by the Fable round on 7efbad1: under READONLY the tool was
+    // exposed and `refuse` wrote both halves. (The `vault`/`clear` verbs have
+    // the same exposure and predate this phase; that question is on the
+    // roadmap, Phase 6.)
+    if (isGatedDeployment()) {
+      throw new Error(
+        `confirm_workspace_binding: \`${verbs[0]}\` is not available on a gated deployment `
+        + '(OBSIDIAN_ROUTER_READONLY, OBSIDIAN_ROUTER_ALLOWED_VAULTS or OBSIDIAN_ROUTER_USER_ID is set): the '
+        + 'workspace here is the server\'s own directory, shared by every caller, and a refusal recorded there '
+        + 'would answer for all of them. Refuse from a session that runs in the project itself.',
       );
     }
     const ctx = { registry, cwd, key, configPath, io, upsertDotenv };
@@ -548,11 +568,22 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
     // question — and the day the binding is cleared, the stale "no" would
     // silence a proposal the user had adopted in between. Asked of the FILE,
     // inside the lock, like every decision that ends in a write here.
-    if (boundVaults(readBinding(cfg, cwd)).includes(name)) {
+    const bound = readBinding(cfg, cwd);
+    if (bound && boundVaults(bound).includes(name)) {
+      // THE REMEDY DEPENDS ON THE ROLE. "Clear the binding" is the right way
+      // out for the primary and the wrong one for a secondary, where it would
+      // throw away the primary and every other secondary to refuse one name;
+      // the Fable round on 7efbad1 found the briefing sending a user there.
+      const primaryShown = safeForMessage(bound.vault, 80);
+      const remainder = bound.also.filter((n) => n !== name).map((n) => `"${safeForMessage(n, 80)}"`).join(', ');
       throw new Error(
-        `confirm_workspace_binding: this workspace is bound to "${shown}", so that vault cannot be `
-        + 'refused — a binding in force is the opposite answer. Clear the binding first '
-        + '(confirm_workspace_binding({ clear: true })), or bind the workspace elsewhere; then refuse.',
+        bound.vault === name
+          ? `confirm_workspace_binding: this workspace is bound to "${shown}" as its primary, so that vault cannot be `
+            + 'refused — a binding in force is the opposite answer. Clear the binding first '
+            + '(confirm_workspace_binding({ clear: true })), or bind the workspace elsewhere; then refuse.'
+          : `confirm_workspace_binding: "${shown}" is a SECONDARY of this workspace (in \`also\`), so it cannot be `
+            + 'refused — a binding in force is the opposite answer. Re-confirm the binding without it first '
+            + `(confirm_workspace_binding({ vault: "${primaryShown}", also: [${remainder}] })), then refuse.`,
       );
     }
     alreadyRefused = readRefusals(cfg, cwd).has(name);
@@ -600,7 +631,7 @@ async function refuseProposal({ registry, cwd, key, configPath, io, upsertDotenv
     ? `, and ${REFUSED_VAULT_KEY}=${shown} was written to ${file} beside the line that proposed it. That line is the portable half: it survives an uninstall of the router and makes the question be asked once more, with this context, after a reinstall — it silences nobody by itself, so a clone of this repository carrying it is at worst asked once. It may travel with the project if the file is committed.`
     : fileProposedThisVault
       ? `. ${REFUSED_VAULT_KEY} could NOT be written to ${file} (${safeForMessage(hintError || 'unknown error', 120)}): the refusal is in force from your config alone; only the memory that would survive a reinstall is missing.`
-      : `. Nothing was written to this project's .env: that file did not propose "${shown}" (the proposal came from the host, or there is none), and a refusal is written only beside the line it answers.`;
+      : `. Nothing was written to this project's .env: the proposal in force did not come from that file (the host proposed "${shown}", or nothing did — a line the file may carry was not the one the router took), and a refusal is written only beside a line the router took from the file.`;
   return {
     refused: true,
     vault: name,

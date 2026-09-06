@@ -99,11 +99,18 @@ export const WORKSPACE_REFUSALS_KEY = 'workspaceRefusals';
 export const HINT_STATUS = Object.freeze({
   /** No hint in the environment at all. */
   NONE: 'none',
-  /** The hint names exactly the vault the confirmed binding names. Nothing to say. */
+  /**
+   * The hint names a vault the confirmed binding names — the primary, or a
+   * secondary in `also`. Nothing to say: what the file proposed is in force.
+   * (A secondary used to fall to `conflicts`, so a workspace bound to
+   * `work` + `personal` whose `.env` proposed `personal` was told at every
+   * start that "the binding wins" over a vault it WAS bound to, and offered
+   * a refusal the tool then rejected. Fable round on 7efbad1.)
+   */
   CONFIRMED: 'confirmed',
   /** The hint names a REGISTERED vault this workspace has not confirmed. Signalled, never applied. */
   UNCONFIRMED: 'unconfirmed',
-  /** The hint names a vault this machine does not have. Signalled, never applied. */
+  /** The hint names a vault this machine does not have — bound or not. Signalled, never applied. */
   UNKNOWN_VAULT: 'unknown-vault',
   /** A binding exists and the hint names a DIFFERENT registered vault. Signalled; the binding wins. */
   CONFLICTS: 'conflicts',
@@ -323,11 +330,17 @@ export function classifyBindingHint({ hint, binding, isRegistered, origin = null
   // is told what it means.
   const previouslyRefused = typeof fileRefusal === 'string' && fileRefusal !== '' && fileRefusal === hint;
   const verdict = (status) => ({ status, hint, boundTo, origin: from, previouslyRefused });
-  if (binding && hint === binding.vault) return verdict(HINT_STATUS.CONFIRMED);
+  // BOUND IS SATISFIED — primary or secondary. A proposal naming a vault the
+  // workspace is already bound to has nothing left to ask.
+  if (binding && boundVaults(binding).includes(hint)) return verdict(HINT_STATUS.CONFIRMED);
   if (typeof isRefused === 'function' && isRefused(hint) === true) return verdict(HINT_STATUS.REFUSED);
-  if (binding) return verdict(HINT_STATUS.CONFLICTS);
   const known = typeof isRegistered === 'function' && isRegistered(hint);
-  return verdict(known ? HINT_STATUS.UNCONFIRMED : HINT_STATUS.UNKNOWN_VAULT);
+  // `conflicts` is documented as "a DIFFERENT registered vault": a hint the
+  // machine does not have is `unknown-vault` whether or not a binding exists —
+  // otherwise the briefing told a bound workspace that "the binding wins" over
+  // a vault that does not exist, and never that it does not exist.
+  if (!known) return verdict(HINT_STATUS.UNKNOWN_VAULT);
+  return verdict(binding ? HINT_STATUS.CONFLICTS : HINT_STATUS.UNCONFIRMED);
 }
 
 /**

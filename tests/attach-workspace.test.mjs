@@ -821,4 +821,30 @@ describe('the synchronous .env writer follows the same three rules as the tools\
     assert.match(res.out, /symbolic link/);
     assert.equal(fs.readFileSync(target, 'utf8'), 'UNTOUCHED=1\n');
   });
+
+  test('the rebind warning reads the previous value with the LOADER\'s eyes — an exported line is a binding too', () => {
+    // Fable round on 7efbad1: the hand-rolled regex behind the warning matched
+    // bare lines only, so an `export OBSIDIAN_ROUTER_DEFAULT_VAULT=old` line was
+    // rebound without a word.
+    const sc = makeScenario();
+    fs.writeFileSync(path.join(sc.ws, '.env'), 'export OBSIDIAN_ROUTER_DEFAULT_VAULT=old\n');
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+    assert.match(res.out, /Rebinding workspace .* from vault "old" to "myvault"/);
+  });
+
+  test('`export<TAB>KEY=` is NOT the key for the loader, so the writer leaves that line alone and adds the real one', () => {
+    // The loader reads `export` + ONE space; a tab after `export` makes the
+    // whole `export\tOBSIDIAN…` the key. The first shared writer matched
+    // `export\s+`, rewrote that line in place, and the loader never saw the
+    // new value. Writer and loader now share one shape.
+    const TAB = String.fromCharCode(9);
+    const sc = makeScenario();
+    fs.writeFileSync(path.join(sc.ws, '.env'), `export${TAB}OBSIDIAN_ROUTER_DEFAULT_VAULT=old\n`);
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.equal(res.status, 0, res.out);
+    const text = fs.readFileSync(path.join(sc.ws, '.env'), 'utf8');
+    assert.match(text, /^OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault$/m, 'a real line the loader reads');
+    assert.match(text, new RegExp(`^export${TAB}OBSIDIAN_ROUTER_DEFAULT_VAULT=old$`, 'm'), 'the odd line is left as it was');
+  });
 });

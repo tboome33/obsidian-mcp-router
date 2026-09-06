@@ -968,13 +968,40 @@ describe('confirm_workspace_binding — refuse: the user says NO (decision refus
     assert.equal(written.length, 0);
   });
 
-  test('the vault this workspace is BOUND to cannot be refused — primary or secondary, read from the file inside the lock', async () => {
-    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } } };
+  test('the vault this workspace is BOUND to cannot be refused — primary or secondary, read from the file inside the lock, each with ITS way out', async () => {
+    const config = { ...ON_DISK(), [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work', 'remote'] } } };
     const { written, seam } = seams({ config });
-    for (const name of ['notes', 'work']) {
-      await assert.rejects(() => confirmWorkspaceBinding(registryOf(), { refuse: name }, seam), /bound to "[^"]+", so that vault cannot be refused/, name);
-    }
+    // The primary: clear the binding, or bind elsewhere.
+    await assert.rejects(
+      () => confirmWorkspaceBinding(registryOf(), { refuse: 'notes' }, seam),
+      /bound to "notes" as its primary, so that vault cannot be refused.*clear: true/s,
+    );
+    // A secondary: "clear the binding" would throw away the primary and every
+    // other secondary to refuse one name — the way out is a re-confirmation
+    // without it, spelled with the names that stay. (Fable round on 7efbad1.)
+    await assert.rejects(
+      () => confirmWorkspaceBinding(registryOf(), { refuse: 'work' }, seam),
+      /"work" is a SECONDARY of this workspace.*confirm_workspace_binding\(\{ vault: "notes", also: \["remote"\] \}\)/s,
+    );
     assert.equal(written.length, 0);
+  });
+
+  test('on a GATED deployment refuse and retract are unavailable, and nothing is written', async () => {
+    // Fable round on 7efbad1, measured on the real server: under READONLY the
+    // tool was exposed and `refuse` wrote the shared config AND the server's
+    // own `.env` — one caller's answer standing for every tenant.
+    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_READONLY');
+    const prev = process.env.OBSIDIAN_ROUTER_READONLY;
+    process.env.OBSIDIAN_ROUTER_READONLY = 'true';
+    try {
+      const { written, seam } = seams();
+      for (const args of [{ refuse: 'work' }, { retract: 'work' }]) {
+        await assert.rejects(() => confirmWorkspaceBinding(registryOf(), args, seam), /not available on a gated deployment/, JSON.stringify(args));
+      }
+      assert.equal(written.length, 0);
+    } finally {
+      if (had) process.env.OBSIDIAN_ROUTER_READONLY = prev; else delete process.env.OBSIDIAN_ROUTER_READONLY;
+    }
   });
 
   test('refusing twice is honest — "already refused", and the config is NOT rewritten', async () => {
@@ -1146,7 +1173,11 @@ describe('confirm_workspace_binding — refuse: the PORTABLE half, written only 
       assert.equal(r.refused, true);
       assert.equal(r.hintWritten, false);
       assert.equal(fs.readFileSync(path.join(ws, '.env'), 'utf8'), '# nothing proposed here\n');
-      assert.match(r.message, /did not propose "work"/);
+      // Not "the file did not propose it" — the file MAY carry the line; the
+      // host's value simply won (parent wins), so the router took nothing from
+      // the file and writes beside nothing. (Fable round on 7efbad1.)
+      assert.match(r.message, /the proposal in force did not come from that file/);
+      assert.doesNotMatch(r.message, /did not propose/);
     });
   });
 

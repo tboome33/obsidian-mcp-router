@@ -18,7 +18,8 @@ import os from 'node:os';
 
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
-import { dotenvLockPath } from '../src/helpers/dotenv-writer.mjs';
+import { dotenvLockPath, dotenvKeyLineRegex, readDotenvVarSync } from '../src/helpers/dotenv-writer.mjs';
+import { parseDotenv } from '../src/helpers/workspace-dotenv.mjs';
 import fsSync from 'node:fs';
 import { confirmWorkspaceBinding } from '../src/tools/workspace-binding.mjs';
 import { setAutoEnrichMode, canonicalizeMode, VALID_MODES } from '../src/tools/auto-enrich.mjs';
@@ -1295,6 +1296,100 @@ describe('upsertDotenvVar / removeDotenvVar', () => {
     await upsertDotenvVar(envPath, 'FOO', 'bar');
     assert.match(await fs.readFile(envPath, 'utf8'), /^FOO=bar$/m);
     assert.equal(fsSync.existsSync(dotenvLockPath(envPath)), false, 'the lock is released after the write');
+  });
+
+  test('the contention message says what did NOT happen, and does not claim nothing was changed', async () => {
+    // lock_vault writes its binding before the hint: "nothing was changed"
+    // was false for it. (Fable round on 7efbad1.)
+    await fs.writeFile(envPath, 'A=1\n', 'utf8');
+    const release = acquireLock(dotenvLockPath(envPath));
+    try {
+      await assert.rejects(() => upsertDotenvVar(envPath, 'FOO', 'bar', { waitMs: 0 }), (err) => {
+        assert.match(err.message, /the \.env line was NOT written/);
+        assert.doesNotMatch(err.message, /Nothing was changed/);
+        return true;
+      });
+    } finally {
+      release();
+    }
+  });
+
+  test('TWO WRITERS IN ONE PROCESS neither freeze the loop nor lose a line — the critical section has no await inside', async () => {
+    // Fable round on 7efbad1: the first shared writer took the mkdir lock and
+    // then awaited the read; a second same-process writer spun in the lock's
+    // synchronous wait for the full 10 s budget, the event loop frozen, and
+    // then failed with "another process is writing" — the only writer being
+    // this process. Two pipelined tool calls (lock_vault --persist beside
+    // set_auto_enrich_mode --persist) reproduced it on the real server.
+    await fs.writeFile(envPath, 'A=1\n', 'utf8');
+    let ticks = 0;
+    const timer = setInterval(() => { ticks += 1; }, 10);
+    const started = Date.now();
+    try {
+      await Promise.all([
+        upsertDotenvVar(envPath, 'ONE', '1'),
+        upsertDotenvVar(envPath, 'TWO', '2'),
+        removeDotenvVar(envPath, 'A'),
+      ]);
+    } finally {
+      clearInterval(timer);
+    }
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 1500, `three concurrent writers took ${elapsed} ms — a synchronous wait is spinning`);
+    const content = await fs.readFile(envPath, 'utf8');
+    assert.match(content, /^ONE=1$/m);
+    assert.match(content, /^TWO=2$/m, 'no lost update');
+    assert.doesNotMatch(content, /^A=/m);
+  });
+
+  test('the writer\'s line regex and the loader\'s parser agree on EVERY line shape — one reader, one writer', () => {
+    // Fable round on 7efbad1: the writer matched `export\s+`, the loader
+    // `startsWith('export ')` — so `export<TAB>FOO=old` was rewritten in place
+    // while the loader read that line as a key named `export\tFOO`: a
+    // persisted setting that never took effect. The loader is the reference.
+    const TAB = String.fromCharCode(9);
+    const NBSP = String.fromCharCode(0xa0);
+    const BOM = String.fromCharCode(0xfeff);
+    const lines = [
+      'FOO=1', '  FOO=1', 'FOO =1', 'export FOO=1', 'export  FOO=1', `export ${TAB}FOO=1`, '  export FOO=1',
+      `${BOM}FOO=1`, `${BOM}export FOO=1`, 'FOO==1', 'FOO="a b"',
+      `export${TAB}FOO=1`, `export${NBSP}FOO=1`, 'exportFOO=1', 'EXPORT FOO=1', '# FOO=1', 'FOOD=1', 'XFOO=1', 'FOO', '=1', '',
+    ];
+    const re = dotenvKeyLineRegex('FOO');
+    for (const line of lines) {
+      const loaderSees = parseDotenv(line).some((e) => e.key === 'FOO');
+      assert.equal(re.test(line), loaderSees, `writer and loader disagree on ${JSON.stringify(line)}`);
+    }
+  });
+
+  test('readDotenvVarSync answers with the loader\'s eyes: export prefix, quotes, first occurrence', async () => {
+    await fs.writeFile(envPath, '# c\nexport FOO="a b"\nFOO=second\n', 'utf8');
+    assert.equal(readDotenvVarSync(envPath, 'FOO'), 'a b');
+    assert.equal(readDotenvVarSync(envPath, 'BAR'), null);
+    assert.equal(readDotenvVarSync(path.join(tmpDir, 'absent.env'), 'FOO'), null);
+  });
+
+  test('the lock is keyed on the PHYSICAL file: a junctioned parent and the real directory share one lock', (t) => {
+    // Fable round on 7efbad1: two spellings of one file — through a junction,
+    // an 8.3 name or a `\\?\` prefix — took two locks, and two writers met
+    // nothing. Windows junctions need no privilege, so this runs everywhere.
+    const real = fsSync.mkdtempSync(path.join(tmpDir, 'real-'));
+    const link = path.join(tmpDir, `link-${Date.now()}`);
+    try {
+      fsSync.symlinkSync(real, link, 'junction');
+    } catch (err) {
+      t.skip(`cannot create a junction/symlink here (${err.code})`);
+      return;
+    }
+    try {
+      assert.equal(dotenvLockPath(path.join(link, '.env')), dotenvLockPath(path.join(real, '.env')),
+        'the file does not exist yet: the parent is resolved');
+      fsSync.writeFileSync(path.join(real, '.env'), 'A=1\n');
+      assert.equal(dotenvLockPath(path.join(link, '.env')), dotenvLockPath(path.join(real, '.env')),
+        'and once it exists, the file itself is resolved');
+    } finally {
+      fsSync.rmSync(link, { recursive: true, force: true });
+    }
   });
 });
 

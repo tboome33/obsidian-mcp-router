@@ -236,6 +236,52 @@ where the server compares them exactly, so a `.env` proposing `dedibox` against 
 older than this phase, unchanged by it, and the reason the two surfaces need one name-comparison
 rule.
 
+#### Fixed — the Fable 5.1 round on the repairs (three angles, one of them the real server)
+
+- **The repair's own lock froze the server.** The shared `.env` writer took the inter-process
+  `mkdir` lock and then `await`ed the read; a second writer in the SAME process — two pipelined
+  tool calls, `lock_vault --persist` beside `set_auto_enrich_mode --persist` — spun in the lock's
+  synchronous wait for ten seconds, every other request waited, and the second write then failed
+  with "another process is writing" while the only writer was this process. The critical section
+  is synchronous now, as the config writer's has always been: same-process writers cannot
+  interleave, the lock only ever meets another process, and its wait is two seconds. The
+  contention message says what was not written and no longer claims nothing was changed
+  (`lock_vault` records its binding before the hint).
+- **A `.env` proposing a vault the workspace is bound to as a SECONDARY is satisfied.** It read
+  `conflicts`; the briefing said "the binding wins" over a vault the workspace WAS bound to and
+  offered a refusal the tool then rejected — at every session start. Bound is bound, primary or
+  secondary: `confirmed`, silence. And a bound workspace whose `.env` names a vault the machine does
+  not have now hears `unknown-vault` rather than `conflicts`, as the vocabulary always said.
+- **The lock line is a proposal too.** The file-side refusal was judged against
+  `OBSIDIAN_ROUTER_DEFAULT_VAULT` alone; a `.env` carrying `OBSIDIAN_ROUTER_LOCKED=X` +
+  `OBSIDIAN_ROUTER_REFUSED_VAULT=X` — a clone of a workspace someone had locked, refused, then
+  `--unlink-workspace`'d, which removes the DEFAULT line alone — had X imported LOCKED at the first
+  start after a reinstall. Either line counts. And a value changed in-process since the load is not
+  attributed to the file: the origin check the previous round dropped as redundant is back, with
+  the witness that proves it is not.
+- **`refuse` and `retract` are unavailable on a gated deployment** (READONLY / ALLOWED_VAULTS /
+  USER_ID). Measured on the real server: the tool was exposed and `refuse` wrote the shared config
+  AND the server's own `.env` — one caller's answer standing for every tenant. The `vault`/`clear`
+  verbs have the same exposure and predate this phase; see below.
+- The writer's `export` prefix now matches exactly what the loader reads (`export`, one space) —
+  `export<TAB>KEY=` was rewritten in place while the loader read another key; the setup script's
+  `--link-workspace` rebind warning reads the previous value through the loader's parser (an exported
+  line used to be rebound without a word); its synchronous writers delegate to the shared one (the
+  fourth copy is gone); and the dotenv lock is keyed on the physical path (a junctioned parent no
+  longer yields a second lock).
+- Text: the reinstall context says "no refusal of it is recorded in your own router config" (with
+  `conflicts` the config does hold a binding); `previouslyRefused` is described as the file AS
+  LOADED AT START-UP; the refusal message no longer says the file "did not propose" a vault whose
+  line the host merely overrode; the tool description and the `bind-workspace` skill say what "yes"
+  means for `conflicts` (re-binding) and `unknown-vault` (register first).
+
+Recorded, not fixed (roadmap, Phase 6): on Windows a `mkdir` racing another process's removal of
+the same lock directory can fail with EPERM, which the lock primitive reports as an error rather
+than as contention (seen once, under parallel test files sharing one fixture path; not reproduced
+alone); and the pre-existing exposure of `confirm_workspace_binding`'s `vault`/`clear` and of
+`set_secondary_vault_mode` on gated deployments — whether the binding tools should be hidden there,
+as `register_remote_vault` is, is a design decision for the roadmap's last phase.
+
 ### A vault a workspace never declared stops answering, and a secondary vault opens read-only
 
 Phases 2 and 3 of the `portee-ergonomie-refus-roadmap` (decision `portee-et-mode-ecriture-des-vaults`,

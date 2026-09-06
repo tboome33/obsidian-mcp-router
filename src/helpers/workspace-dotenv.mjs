@@ -139,19 +139,30 @@ export const WORKSPACE_DOTENV_KEYS = Object.freeze([
  * reinstall case the decision was written for), and it keeps the one-time
  * import from binding that vault.
  *
- * GATED ON PROVENANCE. The first version read the raw environment, so a
- * launcher or shell that happened to export OBSIDIAN_ROUTER_REFUSED_VAULT=notes
- * beside a workspace file proposing `notes` made the import skip that vault
- * and the briefing say the PROJECT FILE had recorded a refusal it never
- * contained — a false claim about a file, which is the exact class
- * `envKeyOrigin` exists to prevent one key over. (Codex, round on b59eb00.)
- * ONE rule closes it: the value counts only when the loader took it from the
- * SAME workspace file it took the proposal from. A key the loader did not
- * apply from a file has no source file, so a host value fails the rule by
- * construction — no separate origin check, and one witness for one rule. And
- * a refusal line answers the proposal it stands beside: a host proposal is a
- * different question, so a file refusal beside a host proposal counts for
- * nothing either.
+ * GATED ON PROVENANCE, in two halves that answer two different questions.
+ * The first version read the raw environment, so a launcher or shell that
+ * happened to export OBSIDIAN_ROUTER_REFUSED_VAULT=notes beside a workspace
+ * file proposing `notes` made the import skip that vault and the briefing say
+ * the PROJECT FILE had recorded a refusal it never contained — a false claim
+ * about a file, which is the exact class `envKeyOrigin` exists to prevent one
+ * key over. (Codex, round on b59eb00.)
+ *
+ *   - Is the value the FILE's? `envKeyOrigin` answers `workspace-dotenv`
+ *     only when the loader applied it from a file AND the environment still
+ *     holds that value; a value changed since is `runtime`, and this function
+ *     must not attribute a runtime value to a file. (The Fable round on
+ *     7efbad1 measured exactly that after an in-process mutation, when this
+ *     check had been dropped as "redundant" with the next one — it is not:
+ *     the next one asks about files, this one about the value.)
+ *   - Is it from the SAME file as a proposal it can answer? A refusal line
+ *     answers the proposal it stands beside. A workspace file proposes a
+ *     vault through TWO lines — `OBSIDIAN_ROUTER_DEFAULT_VAULT`, and
+ *     `OBSIDIAN_ROUTER_LOCKED`, which the one-time import decides first —
+ *     so either counts. The first version looked at the default line alone,
+ *     and a `.env` carrying `LOCKED=notes` + `REFUSED_VAULT=notes` with no
+ *     default line had `notes` imported LOCKED after a reinstall (Fable
+ *     round on 7efbad1). A host proposal is a different question, so a file
+ *     refusal beside a host-only proposal counts for nothing.
  *
  * @param {object} [env]
  * @returns {string|null}
@@ -159,9 +170,10 @@ export const WORKSPACE_DOTENV_KEYS = Object.freeze([
 export function dotenvRefusalHint(env = process.env) {
   const value = env?.[REFUSED_VAULT_KEY];
   if (typeof value !== 'string' || value.trim() === '') return null;
-  const proposalFile = envKeySourceFile('OBSIDIAN_ROUTER_DEFAULT_VAULT', env);
-  if (!proposalFile || proposalFile !== envKeySourceFile(REFUSED_VAULT_KEY, env)) return null;
-  return value;
+  if (envKeyOrigin(REFUSED_VAULT_KEY, env) !== ENV_ORIGINS.WORKSPACE_DOTENV) return null;
+  const source = envKeySourceFile(REFUSED_VAULT_KEY, env);
+  const proposalFiles = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED'].map((k) => envKeySourceFile(k, env));
+  return source && proposalFiles.includes(source) ? value : null;
 }
 
 /**

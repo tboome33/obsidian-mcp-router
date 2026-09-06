@@ -324,7 +324,10 @@ describe('composeBriefing — the hint, and WHO proposed it', () => {
     });
     assert.match(out, /A refusal of it was recorded here before/);
     assert.match(out, /OBSIDIAN_ROUTER_REFUSED_VAULT/);
-    assert.match(out, /your own router config has no answer for this workspace, so you are asked once more/);
+    // "no REFUSAL of it is recorded" — with `conflicts` the config does hold an
+    // answer (a binding elsewhere), so "no answer" contradicted the line above.
+    assert.match(out, /no refusal of it is recorded in your own router config, so you are asked once more/);
+    assert.doesNotMatch(out, /has no answer/);
     assert.match(out, /confirm_workspace_binding\(\{ vault: "other" \}\)/, 'both answers are still offered');
     assert.match(out, /confirm_workspace_binding\(\{ refuse: "other" \}\)/);
     const plain = brief({ binding: null, hint: hintOf(HINT_STATUS.UNCONFIRMED, 'workspace-dotenv') });
@@ -613,6 +616,36 @@ describe('hooks/workspace-briefing.mjs', () => {
     });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /proposes the vault "work"/);
+  });
+
+  test('a .env proposing a SECONDARY the workspace is bound to is satisfied — silence, not "the binding wins"', () => {
+    // Fable round on 7efbad1: bound to notes + work, `.env` proposing `work`
+    // read `conflicts`, the briefing said the binding won over a vault it WAS
+    // bound to and offered a refusal the tool then rejected — every start.
+    const dir = fs.mkdtempSync(path.join(workDir, 'secondary-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG({ [canonicalWorkspaceKey(dir)]: { vault: 'notes', also: ['work'], confirmedVia: 'tool' } }),
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=work\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /"work" also bound/);
+    assert.doesNotMatch(r.stdout, /proposes/);
+  });
+
+  test('a bound workspace whose .env proposes a vault the machine does NOT have hears that it does not exist', () => {
+    // The classifier used to answer `conflicts` for any hint beside a binding,
+    // so the briefing said "the binding wins" and never that the vault is not
+    // registered — the one fact the user needed.
+    const dir = fs.mkdtempSync(path.join(workDir, 'bound-unknown-'));
+    const r = runHook({
+      cwd: dir,
+      config: CONFIG({ [canonicalWorkspaceKey(dir)]: { vault: 'notes', confirmedVia: 'tool' } }),
+      dotenv: 'OBSIDIAN_ROUTER_DEFAULT_VAULT=ghost\n',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /proposes the vault "ghost", which is not registered on this machine/);
+    assert.doesNotMatch(r.stdout, /the binding above wins/);
   });
 
   test('the same refusal exported by the HOST is not attributed to the file — no context is claimed', () => {
