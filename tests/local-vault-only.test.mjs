@@ -102,6 +102,78 @@ describe('gating hides the host-writers and only those', () => {
     const removed = [...nameSet(open)].filter((n) => !nameSet(gated).has(n)).sort();
     assert.deepEqual(removed, [...LOCAL_ONLY_TOOL_NAMES].sort());
   });
+
+  test('SCAN: nothing decides "is this deployment gated" from a raw env read', async () => {
+    // THE CLASS, NOT THE SITE. The exposure gate in `startServer` computed
+    // "gated" from OBSIDIAN_ROUTER_USER_ID alone while `isGatedDeployment`
+    // — the predicate the sandbox check and the binding tools use — reads
+    // three signals. A router gated by OBSIDIAN_ROUTER_ALLOWED_VAULTS or
+    // OBSIDIAN_ROUTER_READONLY therefore still EXPOSED `register_remote_vault`
+    // and let a caller write a vault into the shared config (Codex, round on
+    // the Phase 6 commit). The test below proves the predicate; this proves
+    // nothing computes a SECOND one, which is how the first drift happened.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+    const HOME = path.join(SRC, 'helpers', 'workspace-dotenv.mjs'); // where the predicate lives
+    const files = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.endsWith('.mjs')) files.push(p);
+      }
+    };
+    walk(SRC);
+    // An assignment whose right-hand side reads one of the three gate
+    // variables and is used as a boolean — `const gated = !!(process.env.X)`,
+    // `const isGated = process.env.X ? … `. The predicate's own home is
+    // exempt, and so is the start-up REPORT, which names each signal it found
+    // rather than deciding anything.
+    const suspicious = /(?:const|let|var)\s+\w*[Gg]ated\w*\s*=\s*[^;\n]*process\.env\.OBSIDIAN_ROUTER_(?:USER_ID|ALLOWED_VAULTS|READONLY)/;
+    const offenders = [];
+    for (const file of files) {
+      if (file === HOME) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      for (const [i, line] of text.split('\n').entries()) {
+        if (suspicious.test(line)) offenders.push(`${path.relative(SRC, file)}:${i + 1}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `use isGatedDeployment() instead:\n${offenders.join('\n')}`);
+  });
+
+  test('"gated" means the SAME three signals everywhere — a whitelist alone hides them too', async () => {
+    // Codex, round on the Phase 6 commit: this gate read
+    // OBSIDIAN_ROUTER_USER_ID alone while the rest of the tree —
+    // `isGatedDeployment`, the sandbox consistency check, and the binding
+    // tools' own refusal — read three signals. So a router gated by
+    // OBSIDIAN_ROUTER_ALLOWED_VAULTS or OBSIDIAN_ROUTER_READONLY still EXPOSED
+    // `register_remote_vault`, and a caller wrote a vault into the shared
+    // config. Two spellings of one word is one too many.
+    const { isGatedDeployment } = await import('../src/helpers/workspace-dotenv.mjs');
+    const GATES = [
+      ['OBSIDIAN_ROUTER_USER_ID', 'u1'],
+      ['OBSIDIAN_ROUTER_ALLOWED_VAULTS', 'notes'],
+      ['OBSIDIAN_ROUTER_READONLY', 'true'],
+    ];
+    for (const [key, value] of GATES) {
+      const had = Object.hasOwn(process.env, key);
+      const prev = process.env[key];
+      process.env[key] = value;
+      try {
+        assert.equal(isGatedDeployment(), true, `${key} must read as gated`);
+        const g = nameSet(computeExposedTools(TOOLS, { gated: isGatedDeployment(), viewAgentConfigured: true }));
+        for (const n of LOCAL_ONLY_TOOL_NAMES) {
+          assert.ok(!g.has(n), `${n} must be hidden under ${key}`);
+        }
+      } finally {
+        if (had) process.env[key] = prev; else delete process.env[key];
+      }
+    }
+    // And an ungated router keeps them.
+    assert.equal(isGatedDeployment(), false, 'no gate set here');
+  });
 });
 
 describe('a local-vault-only tool says so, and proves it at call time', () => {

@@ -240,6 +240,31 @@ describe('composeBriefing — what it says', () => {
     assert.match(unbound, /Refuse it with confirm_workspace_binding\(\{ refuse: "gone" \}\)/);
   });
 
+  test('a proposal carried by the LOCK line offers an acceptance that locks — the answer matches the question', () => {
+    // Found by the Phase 6 end-to-end measurement through the real hook: a
+    // `.env` carrying only OBSIDIAN_ROUTER_LOCKED is now signalled, and the
+    // acceptance offered was plain `{ vault }` — which binds WITHOUT the lock.
+    // A user saying yes would get something other than what the file proposed,
+    // with nothing said about the difference.
+    const byLock = composeBriefing({
+      hint: { status: 'unconfirmed', hint: 'work', origin: 'workspace-dotenv', byLock: true },
+      registeredCount: 1,
+      isRegistered: () => true,
+    });
+    assert.match(byLock, /confirm_workspace_binding\(\{ vault: "work", locked: true \}\)/);
+    assert.match(byLock, /the line proposing it is a LOCK/);
+    assert.match(byLock, /restricts this session to that vault/);
+
+    // The default line is unchanged: no lock proposed, none offered.
+    const byDefault = composeBriefing({
+      hint: { status: 'unconfirmed', hint: 'work', origin: 'workspace-dotenv', byLock: false },
+      registeredCount: 1,
+      isRegistered: () => true,
+    });
+    assert.match(byDefault, /confirm_workspace_binding\(\{ vault: "work" \}\)/);
+    assert.doesNotMatch(byDefault, /locked: true/);
+  });
+
   test('the briefing spells identifiers into its calls WITHOUT clipping them', () => {
     // The same class as the tool's remedies (Codex on faf5b4b): `q()` caps at
     // 80 characters for prose, and the acceptance and refusal calls used it.
@@ -448,6 +473,27 @@ describe('composeBriefing — silence and budget', () => {
 describe('classifyBindingHint — the origin it now carries', () => {
   const isRegistered = (n) => n === 'notes' || n === 'other';
 
+  test('byLock is carried through too — which of the file\'s two lines proposed, for every status', () => {
+    // Phase 6: a `.env` carrying only OBSIDIAN_ROUTER_LOCKED is a proposal,
+    // and the ONLY way its consumers can spell an acceptance that matches it
+    // (`{ vault, locked: true }`) is this flag. Dropping it in the classifier
+    // left every consumer offering a plain binding for a proposal that asked
+    // for a locked one, with no test noticing.
+    for (const [args, status] of [
+      [{ hint: 'other', binding: null }, HINT_STATUS.UNCONFIRMED],
+      [{ hint: 'ghost', binding: null }, HINT_STATUS.UNKNOWN_VAULT],
+      [{ hint: 'other', binding: { vault: 'notes', also: [] } }, HINT_STATUS.CONFLICTS],
+    ]) {
+      const on = classifyBindingHint({ ...args, isRegistered, origin: 'workspace-dotenv', byLock: true });
+      assert.equal(on.status, status, JSON.stringify(args));
+      assert.equal(on.byLock, true, `byLock must survive ${status}`);
+      const off = classifyBindingHint({ ...args, isRegistered, origin: 'workspace-dotenv' });
+      assert.equal(off.byLock, false, `and default to false for ${status}`);
+    }
+    // No hint at all: the field is present and false, never absent.
+    assert.equal(classifyBindingHint({ hint: '', binding: null, isRegistered, byLock: true }).byLock, false);
+  });
+
   test('the origin is carried through, never inferred from the value', () => {
     for (const origin of ['workspace-dotenv', 'host', 'runtime', 'unknown']) {
       const c = classifyBindingHint({ hint: 'other', binding: null, isRegistered, origin });
@@ -481,7 +527,12 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
     const cfg = {
       portRegistry: { 'C:\\VAULTS\\Notes': 27124, 'C:\\VAULTS\\Work': 27125, 'C:\\VAULTS\\Old': 27126 },
       vaultNames: { 'C:\\VAULTS\\Work': 'work-journal' },
-      remoteVaults: [{ name: 'Shared' }, { name: 'gone' }],
+      // Well-formed entries: the registry drops one that lacks `baseUrl` or
+      // `apiKey`, and so does this set (see the membership test below).
+      remoteVaults: [
+        { name: 'Shared', baseUrl: 'https://127.0.0.1:27130', apiKey: 'KEY-shared-DO-NOT-LEAK-0000' },
+        { name: 'gone', baseUrl: 'https://127.0.0.1:27131', apiKey: 'KEY-gone-DO-NOT-LEAK-0000' },
+      ],
       // by NAME and by PATH — the registry accepts both, and so must this
       disabledVaults: ['gone', 'C:\\VAULTS\\Old'],
     };
@@ -492,6 +543,30 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
     assert.deepEqual([...registeredVaultNames(cfg)].sort(), ['Shared', 'notes', 'work-journal']);
   });
 
+  test('a remote entry the REGISTRY would skip is not in this set either — malformed, keyless or switched off', () => {
+    // Codex, round on the Phase 6 commit, probing hook-versus-server
+    // membership: `loadRegistry` drops a remoteVaults entry missing `name`,
+    // `baseUrl` or `apiKey`, and one whose `enabled` is false, before
+    // `disabledVaults` is consulted. This set read only `name`, so two vaults
+    // the server does not serve were in it — the WIDER direction, which
+    // `bindingIsActive` turns into journaling and autocommit writing to a vault
+    // every tool call refuses.
+    const cfg = {
+      remoteVaults: [
+        { name: 'good', baseUrl: 'https://127.0.0.1:27125', apiKey: 'KEY-good-DO-NOT-LEAK-0000' },
+        { name: 'MissingKey', baseUrl: 'https://127.0.0.1:27126' },
+        { name: 'MissingUrl', apiKey: 'KEY-nourl-DO-NOT-LEAK-0000' },
+        { name: 'DisabledRemote', baseUrl: 'https://127.0.0.1:27127', apiKey: 'KEY-off-DO-NOT-LEAK-0000', enabled: false },
+        { baseUrl: 'https://127.0.0.1:27128', apiKey: 'KEY-noname-DO-NOT-LEAK-0000' },
+      ],
+    };
+    assert.deepEqual([...registeredVaultNames(cfg)], ['good']);
+    for (const absent of ['MissingKey', 'MissingUrl', 'DisabledRemote']) {
+      assert.equal(bindingIsActive(cfg, absent), false, `${absent} must not read as active`);
+    }
+    assert.equal(bindingIsActive(cfg, 'good'), true);
+  });
+
   test('names are compared EXACTLY, the way the server compares them — the hook is never wider than the registry', () => {
     // Recorded by the Codex round on `b59eb00`, fixed in Phase 6: the server
     // resolves with `x.name === target`, the hook lowercased. A config holding
@@ -500,9 +575,16 @@ describe('registeredVaultNames — what a hook can honestly know', () => {
     // confirmation the briefing offered was refused by the tool. Worse,
     // `bindingIsActive` said yes where the cascade said no, so journaling,
     // autocommit and recall wrote into a vault the server does not serve.
-    const cfg = { remoteVaults: [{ name: 'DEDIBOX' }] };
+    const cfg = {
+      remoteVaults: [{ name: 'DEDIBOX', baseUrl: 'https://127.0.0.1:27132', apiKey: 'KEY-dedibox-DO-NOT-LEAK-0000' }],
+    };
     assert.equal(bindingIsActive(cfg, 'DEDIBOX'), true);
     assert.equal(bindingIsActive(cfg, 'dedibox'), false, 'the server would refuse this name');
+    // NOR is the name trimmed: `resolveVault` compares the raw value, so a
+    // `.env` line reading `OBSIDIAN_ROUTER_LOCKED=" DEDIBOX "` is an unknown
+    // vault on both surfaces rather than registered here and unknown there.
+    // (Codex, round on the Phase 6 commit.)
+    assert.equal(bindingIsActive(cfg, ' DEDIBOX '), false, 'the spaces are part of the name the server compares');
     // The briefing agrees with the tool: a differently-cased proposal is a
     // vault this machine does not have.
     const out = composeBriefing({

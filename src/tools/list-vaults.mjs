@@ -264,6 +264,12 @@ export async function listVaults(registry, sharedConfig = null) {
       // (this project's file) against `host` (the user's own MCP declaration);
       // naming the wrong one sends the user to the wrong file.
       origin: ENV_ORIGIN_SET.has(h.origin) ? h.origin : null,
+      // WHICH of the file's two proposal lines carried it. `true` means
+      // OBSIDIAN_ROUTER_LOCKED — the file is asking for a LOCKED binding, so
+      // an acceptance that omits `locked: true` gives the user something other
+      // than what they said yes to. False for the default-vault line, and for
+      // a proposal that came from the host.
+      byLock: h.byLock === true,
     };
   };
   // The one-time import's report. Three fields, all required, the vault name

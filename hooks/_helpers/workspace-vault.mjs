@@ -199,12 +199,23 @@ export function registeredVaultNames(cfg) {
     out.add(name);
   }
   for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
+    // THE SAME THREE REASONS THE REGISTRY SKIPS A REMOTE ENTRY. `loadRegistry`
+    // drops an entry that is missing any of `name`, `baseUrl` or `apiKey` (it
+    // calls it malformed and says so on stderr) and one whose `enabled` is
+    // false, BEFORE `disabledVaults` is even consulted. Reading only `name`
+    // here put two vaults in this set that the server does not serve — an
+    // entry whose key was never filled in, and one switched off — which is
+    // this function being WIDER than the registry, the one direction its own
+    // docblock forbids: `bindingIsActive` would then hand journaling,
+    // autocommit and recall a vault every tool call refuses. Found by the
+    // Codex round on the Phase 6 commit, probing exactly this membership.
+    if (!r || typeof r !== 'object') continue;
+    if (r.enabled === false) continue;
+    const name = typeof r.name === 'string' ? r.name : '';
+    if (!name.trim() || typeof r.baseUrl !== 'string' || !r.baseUrl || typeof r.apiKey !== 'string' || !r.apiKey) continue;
     // The server registers `r.name` VERBATIM and matches `disabledVaults`
-    // against it verbatim too, so the name kept here is the raw one. The trim
-    // is only the emptiness guard: a whitespace-only name is skipped, which
-    // leaves this set narrower than the registry rather than wider.
-    const name = typeof r?.name === 'string' ? r.name : '';
-    if (!name.trim() || disabled.has(name)) continue;
+    // against it verbatim too, so the name kept here is the raw one.
+    if (disabled.has(name)) continue;
     if (!permitted(name)) continue;
     out.add(name);
   }
@@ -236,7 +247,13 @@ export function registeredVaultNames(cfg) {
  */
 export function bindingIsActive(cfg, name) {
   if (typeof name !== 'string' || !name) return false;
-  return registeredVaultNames(cfg).has(name.trim());
+  // NOT TRIMMED, because the registry does not trim either: `resolveVault`
+  // compares `x.name === target` against the raw value. Trimming here made a
+  // `.env` line reading `OBSIDIAN_ROUTER_LOCKED=" notes "` read as registered
+  // in the briefing and unknown in `list_vaults`, and the confirmation the
+  // briefing then offered — with the spaces in it — was refused by the tool.
+  // (Codex, round on the Phase 6 commit.)
+  return registeredVaultNames(cfg).has(name);
 }
 
 /**

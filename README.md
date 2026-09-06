@@ -561,8 +561,10 @@ shared by every caller, so one answer would stand for all of them.
 
 ### Which vaults a workspace may reach, and which it may write
 
-Two switches, both **off by default** — nothing changes for an installation
-that does not set them.
+Two mechanisms, and they do **not** have the same default. Reachability is
+opt-in and changes nothing until you set it. The write tier is **on**, and if
+you already had secondaries it changes what they accept — see the upgrade note
+at the end of this section.
 
 **Reachability.** With `"vaultReach": "declared"` in `config.json`, a registered
 vault answers a session only if that workspace's binding names it (as `vault` or
@@ -586,14 +588,27 @@ The primary is always read-write. Record a tier with
 wizard walk you through the whole thing — where we are, the primary, the
 secondaries, one tier question per secondary, then a table of what it recorded.
 
+> **Upgrading, and you already had secondaries.** This is the one default that
+> reverses: before this release a vault in `also` accepted writes like any
+> other; from now on it is `soft`, and a write that does not carry
+> `confirmSecondaryWrite: true` is refused — with no `vaultReach` set and no
+> tier list in your config. Two ways back, per vault:
+> `set_secondary_vault_mode({ vault, mode: "writable" })` for this workspace,
+> or the `alsoWritable` list in `config.json` for every workspace at once.
+> Reads are unaffected, and the refusal names both remedies, so nothing is lost
+> if you meet it before reading this.
+
 ### Vaults two workspaces share
 
 When more than one workspace declares the same vault, a blind write to it is
 refused: the call must carry a **precondition**. `write_file` takes `ifMatch`
 (the `contentSha256` a read returned) or `ifNew: true`; `patch_file`,
 `append_to_file`, `delete_file`, `move_file` and `merge_frontmatter` take
-`ifMatch`; `write_bundle` takes `expect`; `download_page_assets` takes
-`createOnly`; `execute_template` is create-only at the bridge. `list_vaults`
+`ifMatch`; a `write_bundle` needs one **per step** (`ifMatch`, or `ifNew: true`
+on a write step), or the `approvedPlanSha256` a `preview: true` call returned —
+`expect` is the precondition of a *recovery* run, not of an ordinary bundle;
+`download_page_assets` takes `createOnly`; `execute_template` is create-only at
+the bridge. `list_vaults`
 reports it per vault as `writesRequireIfMatch`, so you can see which vaults are
 in that state rather than discovering it from a refusal.
 
@@ -1722,8 +1737,10 @@ lui-même, partagé par tous les appelants, et une réponse vaudrait pour tous.
 
 ### Quels vaults un workspace peut atteindre, et lesquels il peut écrire
 
-Deux interrupteurs, **inactifs par défaut** — rien ne change pour une
-installation qui ne les pose pas.
+Deux mécanismes, et ils n'ont **pas** le même défaut. L'atteignabilité est
+optionnelle et ne change rien tant que tu ne la poses pas. Le palier
+d'écriture, lui, est **actif**, et si tu avais déjà des secondaires il change
+ce qu'ils acceptent — voir la note de mise à jour en fin de section.
 
 **Atteignabilité.** Avec `"vaultReach": "declared"` dans `config.json`, un vault
 enregistré ne répond à une session que si la liaison de ce workspace le nomme
@@ -1748,13 +1765,27 @@ Le principal est toujours en lecture-écriture. On enregistre un palier avec
 secondaires, une question de palier par secondaire, puis un tableau de ce qui a
 été enregistré.
 
+> **Mise à jour, si tu avais déjà des secondaires.** C'est le seul défaut qui
+> s'inverse : avant cette version, un vault dans `also` acceptait les écritures
+> comme n'importe quel autre ; désormais il est `soft`, et une écriture qui ne
+> porte pas `confirmSecondaryWrite: true` est refusée — sans aucun
+> `vaultReach` posé et sans aucune liste de palier dans ta config. Deux façons
+> de revenir en arrière, par vault :
+> `set_secondary_vault_mode({ vault, mode: "writable" })` pour ce workspace, ou
+> la liste `alsoWritable` de `config.json` pour tous les workspaces à la fois.
+> Les lectures ne changent pas, et le refus nomme les deux remèdes : rien n'est
+> perdu si tu le rencontres avant d'avoir lu ceci.
+
 ### Les vaults que deux workspaces partagent
 
 Quand plusieurs workspaces déclarent le même vault, une écriture à l'aveugle y
 est refusée : l'appel doit porter une **précondition**. `write_file` prend
 `ifMatch` (le `contentSha256` renvoyé par une lecture) ou `ifNew: true` ;
 `patch_file`, `append_to_file`, `delete_file`, `move_file` et
-`merge_frontmatter` prennent `ifMatch` ; `write_bundle` prend `expect` ;
+`merge_frontmatter` prennent `ifMatch` ; un `write_bundle` en veut une **par
+étape** (`ifMatch`, ou `ifNew: true` sur une étape d'écriture), ou le
+`approvedPlanSha256` qu'a renvoyé un appel `preview: true` — `expect` est la
+précondition d'une *reprise*, pas d'un bundle ordinaire ;
 `download_page_assets` prend `createOnly` ; `execute_template` est
 création-seule côté bridge. `list_vaults` le rapporte par vault en
 `writesRequireIfMatch`, pour que tu le voies au lieu de le découvrir sur un

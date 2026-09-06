@@ -230,8 +230,16 @@ function hintLine(hint, binding = null) {
     return `${who} proposes ${name} instead; the binding above wins and the proposal was `
       + `not applied.${before} Refuse it with ${refuse} and this notice stops.`;
   }
+  // THE ACCEPTANCE MATCHES THE PROPOSAL. A file proposing through its
+  // OBSIDIAN_ROUTER_LOCKED line is asking for a LOCKED binding; offering plain
+  // `{ vault }` would give a user who said yes something narrower than what
+  // they agreed to, without saying so.
+  const accept = hint.byLock === true
+    ? `confirm_workspace_binding({ vault: ${called}, locked: true }) — the line proposing it is a LOCK, so `
+      + 'accepting it restricts this session to that vault'
+    : `confirm_workspace_binding({ vault: ${called} })`;
   return `${who} proposes the vault ${name}; it was not applied.${before} Accept it with `
-    + `confirm_workspace_binding({ vault: ${called} }) if it is what you want, or refuse it with `
+    + `${accept} if it is what you want, or refuse it with `
     + `${refuse} and you will not be asked again.`;
 }
 

@@ -468,6 +468,7 @@ export async function loadRegistry({ configPath } = {}) {
     // go and edit — so a proposal from the host must not be reported as this
     // project's .env. The loader is the only thing that knows the difference.
     origin: proposal.origin,
+    byLock: proposal.byLock,
     // The two halves of a refusal (decision refus-d-une-proposition-de-
     // liaison): the user's config decides, the workspace file only remembers.
     isRefused: (name) => workspaceRefusals.has(name),

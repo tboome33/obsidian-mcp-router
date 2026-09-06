@@ -138,8 +138,9 @@ function build() {
     // wider than the server: `DEDIBOX` in the config beside a proposal naming
     // `dedibox` read `unconfirmed` here and `unknown-vault` there, and the
     // confirmation this line offered was refused by the tool.
-    isRegistered: (name) => registered.has(String(name).trim()),
+    isRegistered: (name) => registered.has(String(name)),
     origin: proposal.origin,
+    byLock: proposal.byLock,
     isRefused: (name) => refusals.has(name),
     fileRefusal: dotenvRefusalHint(),
   });
@@ -157,7 +158,7 @@ function build() {
     mode,
     modeRefused,
     registeredCount: registered.size,
-    isRegistered: (name) => registered.has(String(name).trim()),
+    isRegistered: (name) => registered.has(String(name)),
     // The hook cannot see what the SERVER's start-up imported — it is a
     // separate process, and the import runs where the registry loads. What it
     // can see is the binding's own provenance: `confirmedVia: 'migration'`

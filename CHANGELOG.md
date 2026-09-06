@@ -335,6 +335,37 @@ question for the last phase.
   deployment the workspace IS the server's own directory, shared by every caller — the reason
   `register_remote_vault` has always been hidden there.
 
+#### Fixed — the Codex round on Phase 6 itself
+
+Seven findings, seven real. Two of them were in code the phase's own claims depended on but no diff
+touched, which is where this lot's worst defects have consistently been.
+
+- **An exact vault name resolves to its own vault.** Making the hooks' membership test exact was
+  half the repair: `resolveVaultBySlug` still lowercased both sides and returned the first hit, so
+  with two vaults named `notes` and `NOTES` a hook that had just validated `NOTES` against the
+  server's exact rule resolved it to the PATH of `notes` — the vault the server excludes — and
+  journalling, autocommit and recall wrote there. Exact first; a case-insensitive fallback survives
+  only where it is unambiguous, because two vaults differing solely in case make the answer a guess.
+- **`register_remote_vault` is hidden on every gated deployment, not just one of the three.** The
+  tool-exposure gate read `OBSIDIAN_ROUTER_USER_ID` alone while `isGatedDeployment` — the predicate
+  the sandbox check and the binding tools use — reads three signals, so a router gated by
+  `OBSIDIAN_ROUTER_ALLOWED_VAULTS` or `OBSIDIAN_ROUTER_READONLY` still exposed it and a caller could
+  write a vault into the shared config. One predicate now, plus a scan that refuses a second one.
+- **Accepting a proposal carried by the lock line applies the lock.** The new surface reported such
+  a file, then offered `confirm_workspace_binding({ vault })` — which records `locked: false`,
+  giving a user who said yes something other than what the file proposed. The classifier carries
+  which line proposed (`bindingHint.byLock`), and the briefing, `list_vaults` and the skill spell an
+  acceptance that matches, saying that it restricts the session.
+- **Names are compared raw on both surfaces.** Dropping the lowercase left a trim: a line reading
+  `OBSIDIAN_ROUTER_LOCKED=" notes "` was registered for the hook and unknown for the server, and the
+  confirmation the briefing offered — spaces included — was refused by the tool.
+- **A remote entry the registry skips is not in the hooks' set either.** `loadRegistry` drops an
+  entry missing `name`, `baseUrl` or `apiKey`, and one whose `enabled` is false; the hooks read only
+  the name, so two vaults the server does not serve read as active there.
+- **Both READMEs stop repeating the claim this release corrects** ("nothing changes for an
+  installation that does not set them"), and describe the `write_bundle` precondition correctly:
+  ordinary bundles need one per step or the approved-plan seal — `expect` is the recovery form.
+
 #### Fixed — the second Codex round (`gpt-6-astra`), on the repairs above
 
 Six findings, six real, and both passes converged independently on the first — which the previous

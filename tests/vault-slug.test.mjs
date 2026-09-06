@@ -276,6 +276,39 @@ describe('vaultSlug — always a string, so the callers .toLowerCase() safely', 
   });
 });
 
+describe('resolveVaultBySlug — an exact name resolves to ITS OWN vault', () => {
+  // Codex, round on the Phase 6 commit: with two vaults whose names differ
+  // only in case, this resolver lowercased both sides and returned the FIRST
+  // hit. So a hook that had just checked `NOTES` against the server's exact
+  // rule — registered, and permitted by the whitelist — resolved it to the
+  // PATH of `notes`, the vault the server excludes, and journalling,
+  // autocommit and recall wrote there. Making the membership check exact was
+  // not enough while the resolution behind it was not.
+  const A = 'C:\\VAULTS\\A';
+  const B = 'C:\\VAULTS\\B';
+  const cfg = { portRegistry: { [A]: 27124, [B]: 27125 }, vaultNames: { [A]: 'notes', [B]: 'NOTES' } };
+
+  test('the exact spelling wins over an earlier case-folded one', () => {
+    assert.equal(resolveVaultBySlug(cfg, 'NOTES'), B);
+    assert.equal(resolveVaultBySlug(cfg, 'notes'), A);
+  });
+
+  test('a spelling that matches neither exactly is refused when it is ambiguous', () => {
+    // `Notes` folds onto BOTH: answering either would be a guess, and a guess
+    // here is the wrong vault written into.
+    assert.equal(resolveVaultBySlug(cfg, 'Notes'), null);
+  });
+
+  test('the case-insensitive convenience survives where it is unambiguous', () => {
+    // The command line is a real caller: `--attach WORK` for a vault named
+    // `work` must keep working when nothing else folds onto it.
+    const one = { portRegistry: { [A]: 27124 }, vaultNames: { [A]: 'work' } };
+    assert.equal(resolveVaultBySlug(one, 'WORK'), A);
+    assert.equal(resolveVaultBySlug(one, ' work '), A, 'surrounding whitespace is still trimmed');
+    assert.equal(resolveVaultBySlug(one, 'ghost'), null);
+  });
+});
+
 describe('registeredVaultPaths / knownVaultSlugs', () => {
   test('a non-object portRegistry enumerates to nothing', () => {
     for (const bad of [undefined, null, 'C:\\VAULTS\\A', 42, ['C:\\VAULTS\\A']]) {

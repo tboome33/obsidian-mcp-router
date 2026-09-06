@@ -319,17 +319,26 @@ export function boundVaults(binding) {
  * }} opts
  * @returns {{ status: string, hint: string|null, boundTo: string|null, origin: string|null, previouslyRefused: boolean }}
  */
-export function classifyBindingHint({ hint, binding, isRegistered, origin = null, isRefused = null, fileRefusal = null }) {
+export function classifyBindingHint({
+  hint, binding, isRegistered, origin = null, isRefused = null, fileRefusal = null, byLock = false,
+}) {
   const boundTo = binding?.vault || null;
   const from = typeof origin === 'string' && origin ? origin : null;
   if (typeof hint !== 'string' || hint.trim() === '') {
-    return { status: HINT_STATUS.NONE, hint: null, boundTo, origin: null, previouslyRefused: false };
+    return { status: HINT_STATUS.NONE, hint: null, boundTo, origin: null, previouslyRefused: false, byLock: false };
   }
   // A FACT about the file, reported whatever the verdict: the consumers that
   // phrase it only do so for a signalled status, and a reader of `list_vaults`
   // is told what it means.
   const previouslyRefused = typeof fileRefusal === 'string' && fileRefusal !== '' && fileRefusal === hint;
-  const verdict = (status) => ({ status, hint, boundTo, origin: from, previouslyRefused });
+  // WHICH LINE PROPOSED, carried so the consumers can spell an acceptance that
+  // matches the proposal. A file proposing through `OBSIDIAN_ROUTER_LOCKED`
+  // asks for a LOCKED binding; offering plain `{ vault }` there would hand the
+  // user something other than what they said yes to — the sixth v0.90.0 review
+  // called that class of sentence out, and the Phase 6 measurement through the
+  // real hook found this one.
+  const lockLine = byLock === true;
+  const verdict = (status) => ({ status, hint, boundTo, origin: from, previouslyRefused, byLock: lockLine });
   const known = typeof isRegistered === 'function' && isRegistered(hint);
   // BOUND IS SATISFIED — primary or secondary — when the machine HAS the
   // vault. A proposal naming a vault the workspace is already bound to has
@@ -1107,6 +1116,7 @@ export function refreshRegistryBindingHint(registry) {
     binding: registry.workspaceBinding || null,
     isRegistered: (name) => (registry.vaults || []).some((v) => v.name === name),
     origin: proposal.origin,
+    byLock: proposal.byLock,
     isRefused: (name) => registry.workspaceRefusals instanceof Map && registry.workspaceRefusals.has(name),
     fileRefusal: dotenvRefusalHint(),
   });

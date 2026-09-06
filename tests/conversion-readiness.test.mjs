@@ -1075,7 +1075,20 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       status: 'unconfirmed', hint: 'beta', boundTo: 'alpha', origin: 'workspace-dotenv',
       // Phase 5 — always present, false unless the registry says true.
       previouslyRefused: false,
+      // Phase 6 — WHICH of the file's two lines proposed. Same rule: always
+      // present, false unless the registry says true.
+      byLock: false,
     }, 'the hint too, origin included');
+
+    // And the value crosses when it is true: a proposal carried by the file's
+    // OBSIDIAN_ROUTER_LOCKED line is one the reader must accept WITH the lock,
+    // so a boundary that flattened it would have Claude offer a plain binding
+    // for a proposal that asked for a locked one.
+    const byLock = await listVaults({
+      ...bound,
+      bindingHint: { ...bound.bindingHint, byLock: true },
+    });
+    assert.equal(byLock.bindingHint.byLock, true, 'the lock-carried proposal crosses as such');
   });
 
   test('the boundary refuses what it cannot vouch for, rather than passing it half-true', async () => {
