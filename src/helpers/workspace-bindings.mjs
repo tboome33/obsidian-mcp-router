@@ -60,7 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
-import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal } from './workspace-dotenv.mjs';
+import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
 /** The config key holding every binding. The seventh top-level key. */
@@ -794,6 +794,24 @@ export const IMPORT_REASON = Object.freeze({
    * closing reason: a refusal can be retracted, and the file can change.
    */
   REFUSED: 'refused',
+  /**
+   * The router is a GATED deployment — one process serving several callers
+   * from ONE directory, with ONE config. Never imported there, and NOT a
+   * closing reason: the same config may later be read by an ordinary local
+   * router, where the import is legitimate again.
+   *
+   * The import is a deliberate act of trust in a project file, and what makes
+   * it defensible is that it ANNOUNCES ITSELF at the top of every session (the
+   * `workspace-briefing` hook). On a gated deployment that hook does not exist
+   * — the callers are MCP clients elsewhere, not Claude Code sessions in this
+   * directory — so the one thing that made the import acceptable is absent
+   * exactly where the binding it writes would answer for every tenant.
+   * Measured on 2026-09-06 by the whole-lot review: under
+   * `OBSIDIAN_ROUTER_READONLY` the import wrote `confirmedVia: "migration"`
+   * into the shared config, while `confirm_workspace_binding` refused a caller
+   * the very same write.
+   */
+  GATED_DEPLOYMENT: 'gated-deployment',
 });
 
 /**
@@ -956,6 +974,12 @@ export function migrationDecision({
     reason,
     record: CLOSING_REASONS.includes(reason),
   });
+  // BEFORE EVERY OTHER QUESTION, because on a gated deployment the answer is
+  // the same whatever the file says: a binding written into a config every
+  // tenant shares, for the SERVER's own directory, with no session briefing to
+  // announce it. `confirm_workspace_binding` refuses a caller that write; the
+  // import must not make it automatically. See IMPORT_REASON.GATED_DEPLOYMENT.
+  if (isGatedDeployment()) return no(IMPORT_REASON.GATED_DEPLOYMENT);
   if (binding) return no(IMPORT_REASON.ALREADY_BOUND);
   if (alreadyImported) return no(IMPORT_REASON.ALREADY_CONSIDERED);
 

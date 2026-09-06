@@ -397,6 +397,16 @@ export function detectVaultContext(cwd, cfg) {
   if (!bindingIsActive(cfg, slug)) return null;
   const vp = resolveVaultBySlug(cfg, slug);
   if (!vp) return null;
+  //   (d) AND THE ANSWER MUST MATCH THE QUESTION. `resolveVaultBySlug` keeps a
+  //       case-insensitive fallback for people typing at a command line; a
+  //       HOOK is not typing, it is carrying a name the registry already
+  //       admitted, so a folded match here would be a substitution. Measured:
+  //       a remote vault `NOTES` (admitted, whitelisted) resolved to the local
+  //       directory of `notes` (excluded), and every workspace-bound hook
+  //       wrote there under the other one's name. The resolver refuses that
+  //       particular case at its source now; this line is the general form of
+  //       the rule, and it costs one comparison. (Codex, whole-lot review.)
+  if (vaultSlug(cfg, vp) !== slug) return null;
   const bound = resolveScaffold(vp, 'catalog', { fs, path });
   if (!bound) return null;
   return {

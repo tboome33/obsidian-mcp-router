@@ -1117,7 +1117,47 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
       decide({ dotenvMtimeMs: Date.parse('2026-09-04T00:00:00Z') }).reason,
       decide({ isRefused: (n) => n === 'notes' }).reason,
     ]);
+    // The gated reason needs the environment, not an argument: the predicate
+    // reads `process.env` at call time, like every other consumer of it.
+    const had = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_READONLY');
+    const prev = process.env.OBSIDIAN_ROUTER_READONLY;
+    process.env.OBSIDIAN_ROUTER_READONLY = 'true';
+    try {
+      seen.add(decide().reason);
+    } finally {
+      if (had) process.env.OBSIDIAN_ROUTER_READONLY = prev;
+      else delete process.env.OBSIDIAN_ROUTER_READONLY;
+    }
     assert.deepEqual([...seen].sort(), Object.values(IMPORT_REASON).sort());
+  });
+
+  test('a GATED deployment never imports — whatever the file says, and before every other question', () => {
+    // The whole-lot review, 2026-09-06: under `OBSIDIAN_ROUTER_READONLY` the
+    // import wrote `confirmedVia: "migration"` into the config every tenant
+    // shares, from the SERVER's own directory, while
+    // `confirm_workspace_binding` refused a caller the very same write. What
+    // makes the import defensible is that it announces itself at the top of
+    // every session — and that hook does not exist on a gated deployment.
+    const GATES = [['OBSIDIAN_ROUTER_READONLY', 'true'], ['OBSIDIAN_ROUTER_ALLOWED_VAULTS', 'notes'], ['OBSIDIAN_ROUTER_USER_ID', 'u1']];
+    for (const [key, value] of GATES) {
+      const had = Object.hasOwn(process.env, key);
+      const prev = process.env[key];
+      process.env[key] = value;
+      try {
+        // The most importable case there is: a registered vault, from a file,
+        // older than the window, never considered, never refused.
+        const d = decide();
+        assert.equal(d.import, false, `${key} still imported`);
+        assert.equal(d.reason, IMPORT_REASON.GATED_DEPLOYMENT, key);
+        // And NOT a closing reason: the same config read by an ordinary local
+        // router must still be importable there.
+        assert.equal(d.record, false, `${key} closed the window for good`);
+      } finally {
+        if (had) process.env[key] = prev; else delete process.env[key];
+      }
+    }
+    // Ungated, the same call imports — the gate is what refuses, not the rule.
+    assert.equal(decide().import, true);
   });
 });
 

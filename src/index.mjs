@@ -173,7 +173,7 @@ import {
   setSecondaryVaultMode,
 } from './tools/set-secondary-vault-mode.mjs';
 import { canonicalVaultPath as guardVaultPath } from './helpers/vault-path-guard.mjs';
-import { envKeyOrigin, workspaceDotenvRefusals, isGatedDeployment } from './helpers/workspace-dotenv.mjs';
+import { envKeyOrigin, workspaceDotenvRefusals, isGatedDeployment, gatedDeploymentRefusal } from './helpers/workspace-dotenv.mjs';
 
 const TOOLS = [
   {
@@ -1278,6 +1278,40 @@ const TOOL_HANDLERS = {
 // tenant's sessions through a vault (baseUrl + apiKey) the planting tenant
 // chose. Exported for testing.
 const LOCAL_ONLY_TOOL_NAMES = new Set(['plan_vault', 'provision_vault', 'register_remote_vault']);
+
+/**
+ * THE ARGUMENT THAT MAKES A SESSION TOOL WRITE HOST STATE — tool name → the
+ * flag that turns it from "this session" into "this machine, from now on".
+ *
+ * WHY A MAP AND NOT THREE MORE GUARDS. Phase 6 established the rule that a
+ * gated deployment — one process serving several callers from ONE directory,
+ * with ONE config — must not let a caller record anything that answers for the
+ * others, and applied it to `confirm_workspace_binding` and
+ * `set_secondary_vault_mode`. Measured afterwards through the real server over
+ * JSON-RPC under `OBSIDIAN_ROUTER_READONLY`: `lock_vault({ persist: true })`
+ * still wrote a binding into the shared config (`confirmedVia: "lock"`) and a
+ * line into the SERVER's own dotenv file, `unlock_vaults({ persist: true })` lifted
+ * it again, and `set_auto_enrich_mode({ persist: true })` wrote the server's
+ * dotenv file — one caller's enrichment mode for every tenant at the next start.
+ * Two of the five writers were closed and three were not, which is this
+ * repository's most expensive recurring shape: a rule applied at the sites its
+ * author happened to be looking at.
+ *
+ * SO THE PERSIST FLAG IS REFUSED, NOT THE TOOL. `lock_vault` without `persist`
+ * restricts THIS session and writes nothing — a legitimate and useful thing to
+ * do on a shared router, and hiding the tool would take it away. The refusal is
+ * therefore about the argument, and the tools that write host state on EVERY
+ * path (the two closed in Phase 6) keep refusing at their own entry.
+ *
+ * A behavioural sweep drives every tool under a gated deployment and fails if
+ * any call writes the config or that file without being named here — the map
+ * cannot silently fall behind the tools.
+ */
+const HOST_STATE_PERSIST_ARG = new Map([
+  ['lock_vault', 'persist'],
+  ['unlock_vaults', 'persist'],
+  ['set_auto_enrich_mode', 'persist'],
+]);
 
 /**
  * Tools that need the TARGET VAULT to have a local disk — a different question,
@@ -3007,6 +3041,23 @@ export async function startServer({ configPath, watch = true } = {}) {
           `Tool "${name}" is disabled on this deployment ` +
             `(OBSIDIAN_ROUTER_USER_ID is set — the local-only vault-provisioning ` +
             `tools are hidden). Use the local, non-gated router to create vaults.`,
+        );
+      }
+      // THIRD GATE, SAME REASON AS THE OTHER TWO, one argument narrower. A
+      // gated deployment serves several callers from ONE directory with ONE
+      // config, so a caller must not record anything that answers for the
+      // others. `confirm_workspace_binding` and `set_secondary_vault_mode`
+      // refuse at their own entry because every path of theirs writes; these
+      // three write only when asked to PERSIST, and their session-only
+      // behaviour stays available — locking this session to a vault on a
+      // shared router is legitimate, and taking it away would be a loss for no
+      // safety. Measured before this gate existed: all three wrote (a binding
+      // under `confirmedVia: "lock"`, and the server's own dotenv file).
+      const persistArg = gated ? HOST_STATE_PERSIST_ARG.get(name) : undefined;
+      if (persistArg && args?.[persistArg] === true) {
+        throw gatedDeploymentRefusal(
+          `${name} with \`${persistArg}: true\``,
+          'a setting persisted on this machine',
         );
       }
       // Map-based dispatch (IMP-3). The boot-time cross-check between TOOLS

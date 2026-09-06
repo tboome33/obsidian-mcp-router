@@ -90,7 +90,7 @@ import path from 'node:path';
 import { assertDotenvScalar } from './dotenv-scalar.mjs';
 import { acquireLock, acquireLockAsync, lockPathFor } from './file-lock.mjs';
 import { parseDotenv } from './workspace-dotenv.mjs';
-import { stripExtendedPathPrefix } from './vault-path-identity.mjs';
+import { realPathWithMissingTail } from './real-path.mjs';
 
 /**
  * How long a writer waits for another PROCESS's lock. A writer holds the
@@ -125,15 +125,14 @@ export function dotenvKeyLineRegex(key) {
  * (Codex, both engines, round on 1fad78c).
  */
 function physicalPath(envPath) {
-  const resolved = path.resolve(stripExtendedPathPrefix(String(envPath)));
-  try {
-    return fs.realpathSync.native(resolved);
-  } catch { /* absent — resolve the directory it will be created in */ }
-  try {
-    return path.join(fs.realpathSync.native(path.dirname(resolved)), path.basename(resolved));
-  } catch {
-    return resolved;
-  }
+  // ONE LEVEL WAS NOT THE RULE, it was this function's depth. It resolved the
+  // file, else its parent — enough for a `.env` in a directory that exists,
+  // and nothing more. The asset-containment guard had the same idea with no
+  // levels at all and paid for it (a junction plus a not-yet-created child
+  // escaped every vault gate; Codex, whole-lot review 2026-09-06). Both ask
+  // the shared resolver now: nearest existing ancestor, junction folded there,
+  // missing tail re-appended.
+  return realPathWithMissingTail(envPath);
 }
 
 /**
@@ -405,11 +404,24 @@ export function removeDotenvVarSync(envPath, key, opts = {}) {
  * @param {{ waitMs?: number, lock?: () => (() => void)|null }} [opts] test seams for the lock
  */
 export async function upsertDotenvVar(envPath, key, value, opts = {}) {
+  // The VALUE is refused up front: it cannot change while we wait, and a
+  // caller passing a broken one should hear so without taking a queue slot.
   assertDotenvScalar(value, key, envPath);
-  assertDotenvNotSymlink(envPath);
   return queueDotenvWrite(envPath, async () => {
     const release = await takeDotenvLockAsync(envPath, opts);
     try {
+      // THE SYMLINK CHECK BELONGS INSIDE THE LOCK, immediately before the
+      // synchronous read-modify-write. It used to run before the queue and the
+      // lock wait — which is a window the async faces made real: replace the
+      // file with a link to somewhere outside the workspace while a writer
+      // waits, and the core then reads and writes THROUGH it, having checked a
+      // file that no longer exists. The check was correct when everything was
+      // synchronous (7efbad1) and was quietly invalidated by making the wait
+      // asynchronous. (Codex, whole-lot review of the six phases, 2026-09-06.)
+      // The residual window is now one synchronous stretch — nothing can run
+      // between this line and the write — which is as closed as a check-then-
+      // write gets without an O_NOFOLLOW open.
+      assertDotenvNotSymlink(envPath);
       upsertDotenvVarUnlocked(envPath, key, value);
     } finally {
       release();
@@ -426,10 +438,11 @@ export async function upsertDotenvVar(envPath, key, value, opts = {}) {
  * @returns {Promise<boolean>}
  */
 export async function removeDotenvVar(envPath, key, opts = {}) {
-  assertDotenvNotSymlink(envPath);
   return queueDotenvWrite(envPath, async () => {
     const release = await takeDotenvLockAsync(envPath, opts);
     try {
+      // Inside the lock, for the reason spelled out in `upsertDotenvVar`.
+      assertDotenvNotSymlink(envPath);
       return removeDotenvVarUnlocked(envPath, key);
     } finally {
       release();

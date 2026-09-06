@@ -87,7 +87,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { boundVaults } from './workspace-bindings.mjs';
-import { normalizePathForCompare, stripExtendedPathPrefix } from './vault-path-identity.mjs';
+import { normalizePathForCompare } from './vault-path-identity.mjs';
+import { realPathWithMissingTail } from './real-path.mjs';
 import { alsoLockedEntries } from './vault-slug.mjs';
 import { identifierForCall } from './sanitize.mjs';
 
@@ -172,17 +173,19 @@ export function vaultContainingPath(fsPath, registry) {
  * (Fable 5.1 round, verifying the gate's assumptions about existing code.)
  */
 function realOrResolved(p) {
-  // The extended-length prefix is folded by the shared helper, not stripped
-  // here: `\\?\UNC\server\share\x` has to become `\\server\share\x`, and
-  // the blind four-character strip this used to do made it the RELATIVE
-  // path `UNC\server\share\x` (Codex, round on 1fad78c — same defect in the
-  // dotenv writer's lock key, fixed in the one place both import).
-  const resolved = path.resolve(stripExtendedPathPrefix(String(p)));
-  try {
-    return fs.realpathSync.native(resolved);
-  } catch {
-    return resolved;
-  }
+  // THE NEAREST EXISTING ANCESTOR, not "the path or nothing". This used to
+  // fall back to the purely LEXICAL `path.resolve` the moment `realpathSync`
+  // threw — which is exactly what an `outputDir` about to be CREATED does. A
+  // junction `alias` into a protected vault plus a not-yet-existing
+  // `alias/new-assets` therefore resolved to a string still containing
+  // `alias`, matched no vault root, and the containment check answered "this
+  // belongs to no vault": the first `download_page_assets` call wrote inside a
+  // vault declared read-only strict, and only the SECOND was refused, once the
+  // directory existed. (Codex, whole-lot review, 2026-09-06.) The shared
+  // helper walks up to what does exist, folds the junction there, and
+  // re-appends the tail — and the dotenv lock key, which had a one-level
+  // version of the same idea, now asks the same function.
+  return realPathWithMissingTail(p);
 }
 
 /**

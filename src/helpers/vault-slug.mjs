@@ -234,6 +234,17 @@ export function resolveVaultBySlug(cfg, slug) {
     if (vaultSlug(cfg, vaultPath) === exact) return vaultPath;
   }
 
+  // A NAME THAT EXACTLY NAMES A REMOTE VAULT HAS NO LOCAL PATH — and must not
+  // be answered with a folded local one. `registeredVaultPaths` lists local
+  // entries only, so `NOTES` (a remote vault) missed the exact pass above and
+  // the fallback below happily returned the path of local `notes`: the hooks
+  // then journalled, autocommitted and recalled into a vault the whitelist
+  // excluded, under a slug that named a different one. The honest answer for a
+  // remote name is "no local directory". (Codex, whole-lot review, 2026-09-06.)
+  for (const r of Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : []) {
+    if (r && typeof r.name === 'string' && r.name === exact) return null;
+  }
+
   // No exact match: fall back to a case-insensitive one on the TRIMMED name,
   // because this resolver also serves people typing a name at a command line,
   // where insisting on the exact case — or on the absence of a stray space —
