@@ -26,6 +26,7 @@ import {
   isTrackedWriteTool,
   isBuiltinWriteTool,
   extractWriteToolUses,
+  extractToolResultOutcomes,
   targetsFromToolUse,
   pathKind,
   findStaleVaults,
@@ -39,12 +40,59 @@ const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'hot-cache-update-promp
 // Helpers for building synthetic transcripts
 // ---------------------------------------------------------------------------
 
-function toolUseLine(name, input) {
-  return JSON.stringify({
+// Ids are UNIQUE per call. A real transcript pairs a `tool_result` to its
+// `tool_use` by id; the fixtures used to stamp every block with the literal
+// `'x'`, which cannot express "this call failed and that one did not" and would
+// have let one result speak for the whole file.
+let toolUseSeq = 0;
+function nextToolUseId() {
+  toolUseSeq += 1;
+  return `toolu_fixture_${toolUseSeq}`;
+}
+
+/**
+ * A `tool_use` block AND the `tool_result` that answers it — the shape a real
+ * transcript has, keys copied from a measured one: the request is a chunk of an
+ * `assistant` entry (`{type,id,name,input}`), the answer a chunk of a `user`
+ * entry (`{tool_use_id,type,content,is_error}`).
+ *
+ * The default is a SUCCESS, because that is what "the session wrote this note"
+ * has always meant in these tests. `{ isError: true }` makes the call fail;
+ * `{ result: 'none' }` emits the request alone, the in-flight/truncated case.
+ * Returns the two lines already joined, so every `jsonl(...)`/`run([...])` call
+ * site keeps working unchanged.
+ */
+function toolUseLine(name, input, { isError = false, result = 'present' } = {}) {
+  const id = nextToolUseId();
+  const use = JSON.stringify({
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'x', name, input }] },
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+  });
+  if (result === 'none') return use;
+  return use + '\n' + toolResultLine(id, { isError });
+}
+
+/** The answering half on its own — for pairing a result to an id built by hand. */
+function toolResultLine(toolUseId, { isError = false, content = 'ok' } = {}) {
+  return JSON.stringify({
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ tool_use_id: toolUseId, type: 'tool_result', content, is_error: isError }],
+    },
   });
 }
+
+/** A tracked write the vault REFUSED (409, offline vault, denied path). */
+function failedToolUseLine(name, input) {
+  return toolUseLine(name, input, { isError: true });
+}
+
+/** A tracked write whose result never reached the transcript (in flight / truncated). */
+function unansweredToolUseLine(name, input) {
+  return toolUseLine(name, input, { result: 'none' });
+}
+
 function textLine(text) {
   return JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
 }
@@ -245,7 +293,6 @@ describe('extractWriteToolUses', () => {
       toolUseLine('mcp__obsidian-router__move_file', { from: 'wiki/a.md', to: 'wiki/b.md', vault: 'a' }),
       toolUseLine('Read', { file_path: '/x' }),
       toolUseLine('Edit', { file_path: '/vaults/A/wiki/b.md' }),
-      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x' }] } }),
     );
     const got = extractWriteToolUses(t);
     // write_file + Edit are tracked; search/move_file/Read are not.
@@ -256,6 +303,78 @@ describe('extractWriteToolUses', () => {
   test('skips malformed lines, tolerates empty', () => {
     assert.deepEqual(extractWriteToolUses(''), []);
     const t = 'not json\n' + toolUseLine('Write', { file_path: '/vaults/A/wiki/x.md' }) + '\n{bad';
+    assert.equal(extractWriteToolUses(t).length, 1);
+  });
+
+  // ---- outcome pairing --------------------------------------------------
+  // A request is not an effect. Everything below is the fix for the original
+  // blind spot: the classifier read the assistant's `tool_use` blocks and never
+  // asked whether the call came back.
+
+  test('a write the vault REFUSED is not an applied write', () => {
+    const t = jsonl(failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }));
+    assert.deepEqual(extractWriteToolUses(t), []);
+  });
+
+  test('a write with NO tool_result is not an applied write (absent ≠ success)', () => {
+    const t = jsonl(unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }));
+    assert.deepEqual(extractWriteToolUses(t), []);
+  });
+
+  test('the pairing is BY ID — one failure does not condemn its neighbours', () => {
+    // Every fixture block used to carry the id `'x'`. If the pairing regressed
+    // to "any result in the file", or to "the last result wins", this mixed
+    // transcript would return 0 or 3 instead of the two that landed.
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/ok-1.md', vault: 'a' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/refused.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/ok-2.md', vault: 'a' }),
+    );
+    assert.deepEqual(extractWriteToolUses(t).map((u) => u.input.path), ['wiki/ok-1.md', 'wiki/ok-2.md']);
+  });
+
+  test('extractToolResultOutcomes reads the measured shape, is_error and all', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md' }),          // → toolu_fixture_N
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/b.md' }),    // → toolu_fixture_N+1
+      unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/c.md' }),// → toolu_fixture_N+2
+    );
+    // Read the ids back out of the fixture rather than guessing the counter.
+    const ids = [...t.matchAll(/"id":"(toolu_fixture_\d+)"/g)].map((m) => m[1]);
+    assert.equal(ids.length, 3);
+    const outcomes = extractToolResultOutcomes(t);
+    assert.equal(outcomes.get(ids[0]), 'ok');
+    assert.equal(outcomes.get(ids[1]), 'error');
+    assert.equal(outcomes.has(ids[2]), false, 'an unanswered call has no entry at all');
+  });
+
+  test('the MCP spelling `isError` is honoured too', () => {
+    const t = jsonl(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_camel', name: 'mcp__obsidian-router__write_file', input: { path: 'wiki/a.md' } }] },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ tool_use_id: 'toolu_camel', type: 'tool_result', content: 'boom', isError: true }] },
+      }),
+    );
+    assert.equal(extractToolResultOutcomes(t).get('toolu_camel'), 'error');
+    assert.deepEqual(extractWriteToolUses(t), []);
+  });
+
+  test('a result with no is_error field at all is a success', () => {
+    const t = jsonl(
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bare', name: 'mcp__obsidian-router__write_file', input: { path: 'wiki/a.md' } }] },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ tool_use_id: 'toolu_bare', type: 'tool_result', content: 'done' }] },
+      }),
+    );
+    assert.equal(extractToolResultOutcomes(t).get('toolu_bare'), 'ok');
     assert.equal(extractWriteToolUses(t).length, 1);
   });
 });
@@ -416,6 +535,120 @@ describe('findStaleVaults', () => {
   test('empty transcript → not stale', () => {
     assert.equal(findStaleVaults('', CTX).stale.length, 0);
   });
+
+  // -------------------------------------------------------------------------
+  // Outcome awareness — THE BLIND SPOT (found 2026-09-07 by codex review).
+  //
+  // The classifier read the assistant's REQUESTS and never asked whether the
+  // call came back. So a hot.md write that FAILED — a concurrency 409, an
+  // offline vault, a refused path — cleared the vault exactly like one that
+  // succeeded, and the turn ended clean while the cache had not moved. A false
+  // assurance is worse at that instant than no guard at all.
+  // -------------------------------------------------------------------------
+
+  test('note written, then the hot refresh FAILS → still stale (the blind spot)', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    const { stale } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1, 'a refused hot.md write must not whitewash the session');
+    assert.equal(stale[0].vaultRoot, '/vaults/A');
+  });
+
+  test('note written, then the hot refresh SUCCEEDS → not stale (non-regression)', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('a FAILED hot refresh, then a successful retry → not stale', () => {
+    // The realistic recovery: the 409 is retried in the same turn and lands.
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('the correction cuts BOTH ways: a note write that FAILED does not make a vault stale', () => {
+    // The mirror-image defect the fix must not introduce. Nothing was written,
+    // so there is nothing for hot.md to be behind.
+    const t = jsonl(failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }));
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 0);
+    assert.equal(byVault.size, 0, 'a refused write does not even count as touching the vault');
+  });
+
+  test('a note write with NO tool_result does not make a vault stale (absent ≠ success)', () => {
+    const t = jsonl(unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }));
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('a hot refresh with NO tool_result does not clear the vault (absent ≠ success)', () => {
+    // The other half of the same rule, and the reason it is stated symmetrically:
+    // an unseen hot write is not a hot write.
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    const { stale } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 1);
+    assert.equal(stale[0].vaultRoot, '/vaults/A');
+  });
+
+  test('a transcript with NO tool_result AT ALL → fail-open, nothing stale', () => {
+    // Another host's transcript format, or a half-flushed file. Counting the
+    // unresolved note writes here (the asymmetric "block when in doubt" rule)
+    // would block every turn that touched a vault on a file we could not read.
+    const t = jsonl(
+      unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      unansweredToolUseLine('mcp__obsidian-router__patch_file', { path: 'wiki/b.md', targetType: 'heading', target: 'S', content: 'x', vault: 'b' }),
+      unansweredToolUseLine('Edit', { file_path: '/vaults/B/wiki/c.md' }),
+    );
+    const { stale, byVault } = findStaleVaults(t, CTX);
+    assert.equal(stale.length, 0);
+    assert.equal(byVault.size, 0);
+  });
+
+  test('ordering survives: only APPLIED writes are indexed', () => {
+    // hot(ok) → note(FAILED) → nothing else. If the refused note kept its slot
+    // in the sequence it would land after the hot refresh and re-stale the
+    // vault, which is the ordering rule firing on a write that never happened.
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/b.md', vault: 'a' }),
+    );
+    assert.equal(findStaleVaults(t, CTX).stale.length, 0);
+  });
+
+  test('per-vault: A\'s hot refresh failed, B\'s landed → only A stale', () => {
+    const t = jsonl(
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/a.md', vault: 'a' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'a' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/b.md', vault: 'b' }),
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'b' }),
+    );
+    const { stale } = findStaleVaults(t, CTX);
+    assert.deepEqual(stale.map((s) => s.vaultRoot), ['/vaults/A']);
+  });
+
+  test('write_bundle: a refused bundle writes none of its notes', () => {
+    // The tool that writes the most files at once, and the one whose failure
+    // used to look identical to twelve successful notes.
+    const applied = jsonl(toolUseLine('mcp__obsidian-router__write_bundle', {
+      vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }],
+    }));
+    assert.equal(findStaleVaults(applied, CTX).stale.length, 1);
+    const refused = jsonl(failedToolUseLine('mcp__obsidian-router__write_bundle', {
+      vault: 'a', steps: [{ op: 'write', path: 'wiki/a.md' }, { op: 'write', path: 'wiki/b.md' }],
+    }));
+    assert.equal(findStaleVaults(refused, CTX).stale.length, 0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -467,6 +700,28 @@ describe('hot-cache-update-prompt hook (subprocess)', () => {
       toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/note.md', vault: 'fake-vault' }),
       toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'fake-vault' }),
     ]);
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('BLOCKS (exit 2) when the hot.md refresh itself failed', () => {
+    // End-to-end proof of the blind spot: before the outcome pairing this exact
+    // transcript exited 0 — the guard certified a refresh that the vault had
+    // refused.
+    const r = run([
+      toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/note.md', vault: 'fake-vault' }),
+      failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'fake-vault' }),
+    ]);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /fake-vault/);
+  });
+
+  test('passes (exit 0) when the wiki/ NOTE write is the one that failed', () => {
+    const r = run([failedToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/note.md', vault: 'fake-vault' })]);
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('passes (exit 0) on a transcript with no tool_result at all (fail-open)', () => {
+    const r = run([unansweredToolUseLine('mcp__obsidian-router__write_file', { path: 'wiki/note.md', vault: 'fake-vault' })]);
     assert.equal(r.status, 0, r.stderr);
   });
 

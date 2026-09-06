@@ -31,6 +31,10 @@
  *   - PER-VAULT: each vault judged independently (a session can touch
  *     several). A vault whose root can't be resolved is SKIPPED (fail-open),
  *     never blocked.
+ *   - OUTCOME-AWARE: a request is not an effect. A `tool_use` counts only when
+ *     the `tool_result` that answers it exists and is not an error — see
+ *     `extractToolResultOutcomes` for why the asymmetric alternative was
+ *     rejected.
  *
  * Zero deps. Pure functions; all I/O (config, fs, platform) is injected by
  * the caller via `ctx`.
@@ -117,13 +121,86 @@ export function isTrackedWriteTool(name) {
 }
 
 /**
- * Parse a JSONL transcript string → array of `{ toolName, input }` for
- * every write-flavored `tool_use` block in assistant messages. Robust to
- * malformed lines (skipped) and missing fields.
+ * Parse a JSONL transcript string → `Map<tool_use_id, 'ok'|'error'>`, one
+ * entry per `tool_result` block found. An id absent from the map has NO
+ * result in the transcript (call still in flight, or the file was truncated).
+ *
+ * SHAPES ARE MEASURED, NOT ASSUMED (10 real transcripts under
+ * `~/.claude/projects/`, 16 731 `tool_use` blocks):
+ *   - a `tool_use` is a content chunk of an `entry.type === "assistant"` line,
+ *     keyed `{ type, id, name, input, caller }` — the identity is `c.id`;
+ *   - a `tool_result` is a content chunk of an `entry.type === "user"` line,
+ *     keyed `{ tool_use_id, type, content, is_error }`;
+ *   - a failed call really does carry `is_error: true` AND its `tool_use_id`
+ *     (observed on a router write refused with `HTTP 404`).
+ * `isError` is accepted alongside `is_error` because that is the spelling in
+ * the MCP `CallToolResult` the host maps from; only `is_error` was observed
+ * here, so the second branch is defensive breadth, not a measurement.
+ *
+ * WHY THIS EXISTS AT ALL. The classifier used to read only the assistant's
+ * REQUESTS, so a `wiki-meta/hot.md` write that FAILED — a concurrency 409, an
+ * offline vault, a refused path — satisfied the guard exactly like one that
+ * succeeded. The turn ended clean while the cache had not moved: a false
+ * assurance, which is worse at that instant than no guard at all.
+ */
+export function extractToolResultOutcomes(jsonlText) {
+  const outcomes = new Map();
+  if (!jsonlText || typeof jsonlText !== 'string') return outcomes;
+  for (const rawLine of jsonlText.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!entry || entry.type !== 'user') continue;
+    const msg = entry.message || entry;
+    const chunks = Array.isArray(msg.content) ? msg.content : [];
+    for (const c of chunks) {
+      if (!c || c.type !== 'tool_result') continue;
+      const id = c.tool_use_id;
+      if (typeof id !== 'string' || !id) continue;
+      outcomes.set(id, c.is_error === true || c.isError === true ? 'error' : 'ok');
+    }
+  }
+  return outcomes;
+}
+
+/**
+ * Parse a JSONL transcript string → array of `{ id, toolName, input }` for
+ * every write-flavored `tool_use` block that ACTUALLY WROTE: one the
+ * assistant requested AND whose `tool_result` came back without an error.
+ * Robust to malformed lines (skipped) and missing fields.
+ *
+ * THE RULE FOR A `tool_use` WITH NO `tool_result`, stated once and applied to
+ * both sides: an absent result is not a success, so the call is not counted —
+ * neither as a note write nor as a hot refresh. Two consequences, both wanted:
+ *
+ *   - a hot.md write still in flight (or lost to a truncated transcript) does
+ *     not clear a vault, so the guard never certifies a refresh it did not see
+ *     land — the whole point of the fix;
+ *   - a NOTE write in the same state does not mark a vault stale either, so the
+ *     correction cannot produce the mirror-image defect of blocking a turn for
+ *     a write that never happened.
+ *
+ * Treating the two sides differently was the tempting alternative — count an
+ * unresolved note write, ignore an unresolved hot write, i.e. "block when in
+ * doubt". It was rejected: a transcript whose results are missing WHOLESALE
+ * (another host's format, a half-flushed file) would then block every turn that
+ * touched a vault, and this hook must never wedge a session on a file it could
+ * not read. Under the symmetric rule that case counts nothing and passes.
+ *
+ * The cost of the symmetric rule was measured before it was chosen: across ten
+ * real transcripts, 2 of 16 731 `tool_use` blocks had no result, both of them
+ * the single call in flight while the file was being read, and neither a write.
+ * At Stop-hook time the results of a finished turn are already on disk.
  */
 export function extractWriteToolUses(jsonlText) {
   const out = [];
   if (!jsonlText || typeof jsonlText !== 'string') return out;
+  const outcomes = extractToolResultOutcomes(jsonlText);
   for (const rawLine of jsonlText.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -139,7 +216,12 @@ export function extractWriteToolUses(jsonlText) {
     for (const c of chunks) {
       if (!c || c.type !== 'tool_use') continue;
       if (!isTrackedWriteTool(c.name)) continue;
+      // The pairing key. A block with no usable id can never be shown to have
+      // succeeded, so it falls under the same rule as a missing result.
+      const id = typeof c.id === 'string' && c.id ? c.id : null;
+      if (!id || outcomes.get(id) !== 'ok') continue;
       out.push({
+        id,
         toolName: c.name,
         input: c.input && typeof c.input === 'object' ? c.input : {},
       });
@@ -290,7 +372,9 @@ export function classifyToolUse(toolUse, ctx = {}) {
  * ordering, `content:true, hot:true` would pass forever after the first
  * refresh — codex review+ P1.)
  *
- * Indices are per-`tool_use` (monotonic). A vault is stale iff
+ * Indices are per-APPLIED-`tool_use` (monotonic): the sequence
+ * `extractWriteToolUses` returns, which is the requests that came back without
+ * an error, in transcript order. A vault is stale iff
  * `lastContent >= 0 && lastContent > lastHot` (a hot write at the same index
  * as a content write is impossible for our tracked tools).
  */

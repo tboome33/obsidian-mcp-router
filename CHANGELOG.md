@@ -4,6 +4,75 @@ All notable changes to `obsidian-mcp-router` (the npm package + Claude Code plug
 
 For per-version detail (architecture decisions, alternatives considered, deferred work), see [ROADMAP.md](./ROADMAP.md). This file is the user-facing summary.
 
+## [Unreleased]
+
+> Promote this section by hand at the next `npm run bump`: the script inserts the new version
+> stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
+> the way v0.36.1's entry was filed under Docling for a month.
+
+### The hot-cache guard stopped accepting a write that never happened
+
+`hooks/hot-cache-update-prompt.mjs` blocks the end of a turn when the session wrote a note under a
+vault's `wiki/` without refreshing that vault's `wiki-meta/hot.md`. Its classifier
+(`src/helpers/hot-staleness.mjs`) read the assistant's **requests** and never asked whether the call
+came back: the string `tool_result` appeared zero times in the file. So a `hot.md` write that
+**failed** — a concurrency 409, an offline vault, a refused path — satisfied the guard exactly like
+one that succeeded. The turn ended clean while the cache had not moved.
+
+That is worse than the guard being absent at that instant. An absent guard leaves the operator
+knowing the cache is unverified; this one issued a clean bill of health for a refresh the vault had
+refused. The blind spot is original, not a regression: the classifier dates from 2026-06-03
+(`50ed5d3`) and last moved 2026-08-07 (`7ff58a6`, v0.71.0), so v0.90 and v0.91 never touched it. It
+is invisible in normal use because it only manifests when a write fails.
+
+#### Fixed
+
+- **`src/helpers/hot-staleness.mjs` now pairs every `tool_use` with the `tool_result` that answers
+  it**, by id, and counts a call only when that result exists and is not an error. New export
+  `extractToolResultOutcomes(jsonlText)` → `Map<tool_use_id, 'ok'|'error'>` makes the pairing
+  itself testable rather than an invisible step inside the filter; `extractWriteToolUses` returns
+  only the writes that landed, and `findStaleVaults` inherits the rule unchanged.
+- **The transcript shapes were measured, not assumed** — ten real transcripts under
+  `~/.claude/projects/`, 16 731 `tool_use` blocks: a request is a chunk of an `assistant` entry
+  keyed `{type,id,name,input,caller}`; an answer is a chunk of a `user` entry keyed
+  `{tool_use_id,type,content,is_error}`; a failure really does carry `is_error: true` **and** its
+  `tool_use_id`.
+
+#### The rule chosen for a `tool_use` with no `tool_result`, and why
+
+An absent result is **not** a success, and the rule is applied **symmetrically** — such a call
+counts neither as a note write nor as a hot refresh. Both halves are wanted: an unseen `hot.md`
+write cannot clear a vault (the point of the fix), and an unseen *note* write cannot mark one stale
+(the mirror-image defect the correction must not introduce).
+
+The asymmetric alternative — count unresolved note writes, ignore unresolved hot writes, i.e. "block
+when in doubt" — was rejected. A transcript whose results are missing wholesale (another host's
+format, a half-flushed file) would then block every turn that touched a vault, and this hook must
+never wedge a session on a file it could not read. Under the symmetric rule that case counts
+nothing and passes. The cost was measured before it was chosen: 2 of those 16 731 blocks had no
+result, both the single call in flight while the file was being read, neither a write. The hook's
+fail-open posture is otherwise untouched.
+
+#### Tests
+
+`tests/hot-cache-guard.test.mjs` — **65/65 green**, up from 46 (19 added). The fixtures now carry unique
+`tool_use` ids and emit the answering `tool_result`, because the old helper stamped every block with
+the literal `'x'` and could not express "this call failed and that one did not". Added: a refused
+hot refresh keeps the vault stale (pure **and** through the real subprocess), a successful one still
+clears it, a failed retry followed by a successful one clears it, a refused *note* write blocks
+nothing, a transcript with no results at all is fail-open, ordering still counts only applied
+writes, and a refused `write_bundle` writes none of its notes.
+
+Four mutations, four distinct red sets, restored and verified by hash: ignoring the outcome
+entirely (15 red), reading an error result as success (11 red, absent-result tests staying green),
+reading an absent result as success (5 red, failed-write tests staying green), and dropping the
+id keying (6 red). Class sweep: `hot-staleness.mjs` is the only transcript classifier in the repo —
+`vault-link-linter` reads only the last assistant text, and the two other hooks that mention
+`transcript_path` only document it. **1/1 sites.**
+
+Out of scope by design and unchanged: a note written through `Bash` still escapes detection, which
+is the documented consequence of scanning the tool transcript instead of `git diff`.
+
 ## [0.91.1] — 2026-09-06 — the release that makes the tag point at a green CI
 
 **Nothing a user runs changed.** Every fix here is in test or tooling code, and v0.91.0's shipped
