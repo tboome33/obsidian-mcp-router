@@ -287,6 +287,13 @@ export function parseToolResultReport(outcome) {
  * direct unit tests, and anyone asking only "what did this call TARGET?". Then
  * nothing is filtered. A report that IS present but carries no `steps` array
  * filters everything out, by the same rule that governs a missing result.
+ *
+ * The report is TRUSTED as the producer's own output, not validated against the
+ * request: matching is on `index` alone, and `path`/`op` are not cross-checked.
+ * A self-inconsistent report could therefore misattribute a verdict. Left as is
+ * deliberately — the producer has no route to one, and a path cross-check would
+ * have to replicate `canonicalVaultPath`, whose disagreement would silently drop
+ * legitimate steps. Revisit if a bundle report ever crosses a trust boundary.
  */
 function appliedBundleStep(report, i) {
   if (report === undefined) return true;

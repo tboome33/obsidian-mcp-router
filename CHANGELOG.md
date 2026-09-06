@@ -85,11 +85,15 @@ fail-open posture is otherwise untouched.
 
 #### Known limit, chosen rather than overlooked
 
-`rolled-back-partial` means some files are still dirty. Counting the whole call as nothing can
-therefore MISS a note that survived the rollback, and no hot refresh is demanded for it. That is
-the same fail-open direction as an unanswered call, taken by the same symmetric rule — never the
-direction that falsely certifies a refresh. Closing it needs per-step attribution, which the report
-carries but this guard does not yet read. Asserted in a test so it stays a decision.
+Step statuses are read for SUCCESSFUL bundles only. A failing bundle is rejected whole, so
+`rolled-back-partial` — where some files are still dirty — can MISS a note that survived the
+rollback, and no hot refresh is demanded for it. That is the same fail-open direction as an
+unanswered call, taken by the same symmetric rule — never the direction that falsely certifies a
+refresh.
+
+Closing it needs more than the per-step statuses this guard now reads: those record what each step
+APPLIED, not what survived the undo. The surviving state is in the report's `rollback` block, and
+attributing it correctly is the work this limit defers. Asserted in a test so it stays a decision.
 
 #### Tests
 
@@ -111,11 +115,11 @@ keying (6 red), ignoring the bundle's own `ok:false` verdict (8 red), sharing on
 green, so the change did not alter the old semantics), pairing the Nth request with the Nth
 result (2 red), and ignoring the per-step verdict (5 red).
 
-That last mutation is the point of a review round: the **first** version of the "pairing is BY ID"
-test did not fail under it. Every fixture emitted its result immediately after its own request, so
-positional pairing satisfied it — a witness green for a reason unrelated to its name. It was
-rebuilt with shuffled results, an unrelated result, and an unanswered request between answered
-ones, and only then did it bite.
+The positional-pairing mutation is the point of a review round: the **first** version of the
+"pairing is BY ID" test did not fail under it. Every fixture emitted its result immediately after
+its own request, so positional pairing satisfied it — a witness green for a reason unrelated to its
+name. It was rebuilt with shuffled results, an unrelated result, and an unanswered request between
+answered ones, and only then did it bite.
 
 Class sweep: `hot-staleness.mjs` is the only transcript classifier in the repo — `vault-link-linter`
 reads only the last assistant text, and the two other hooks that mention `transcript_path` only
