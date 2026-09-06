@@ -545,9 +545,36 @@ without someone saying so — but it is a default that reverses, so it is named 
   claiming `51 slash commands · 51 MCP tools · 47 skills`; the truth is 53 · 53 · 48, and
   `set_secondary_vault_mode` and `register_remote_vault` were absent from the tool tables.
   Re-rendered (EN + FR, 14 pages each) and verified by extracting the PDF text rather than by
-  trusting the HTML. Worth noting for next time: `npm run validate` pins those counters in
-  `README.md` and `docs/architecture.md` but not in `docs/quick-reference-*.html`, which is exactly
-  why those two drifted and the README did not.
+  trusting the HTML.
+
+### The quick-reference pages join the C8 gate
+
+The counters were pinned in `README.md` and `docs/architecture.md` and nowhere else, so the two
+documents with the widest readership drifted a whole catalogue while `npm run validate` stayed
+green. The gate covered the documents it had been pointed at rather than the CLASS of documents
+carrying the claim — the failure this repository keeps paying for, this time in the docs.
+
+#### Added
+
+- **Six counter rules for `docs/quick-reference-{en,fr}.html`** (commands, tools, skills — each
+  `minMatches: 2`, because both pages state each count at the masthead AND the section heading, and
+  losing one site must be a deliberate edit). The FR page deliberately gets no `commandes` rule: it
+  heads its categories "3 commandes d'état", "2 commandes de liaison", "24 commandes de gestion",
+  and matching those sub-counts against the total would fail forever.
+- **`npm run docs:quick-reference`** — renders both PDFs through headless Chromium (found via
+  `CHROME_PATH` or the usual per-platform locations) and writes `docs/quick-reference.manifest.json`,
+  recording the sha256 of each page it rendered from. Chrome exits 0 on plenty of non-renders, so
+  the script checks the artifact, not the exit code.
+- **A freshness check in the C8 validator.** Pinning the source is only half the guard: the artifact
+  people read is a separate file someone has to remember to regenerate, so fixing the HTML and
+  forgetting the render would leave the counter rules green over a PDF still carrying the old
+  number. `validate` now refuses when a page has moved since its PDF was rendered, and names the
+  command that fixes it. Every page is reported in one of its own states — `stale`, `unrecorded`,
+  `pdf-missing`, `html-missing` — never silently skipped.
+- Tests for all of it, including one that fails if `runCapabilityValidation` stops *calling* the
+  new check (every other test calls it directly, so deleting the call site would otherwise leave
+  them all green), and one that asserts the check reports something rather than vacuously passing
+  on an empty page list. Six mutation witnesses, each seen red at its own test.
 
 ## [0.90.0] — 2026-09-04 — a project's file stops deciding which vault you are in
 

@@ -741,7 +741,7 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
    * The exact shape of the tree. A finder that loses a site, a site that
    * loses its guard, and an exemption that grows are all the same red.
    */
-  const EXPECTED = Object.freeze({ total: 37, guarded: 22, exempt: 15, sdkTransports: 1 });
+  const EXPECTED = Object.freeze({ total: 38, guarded: 22, exempt: 16, sdkTransports: 1 });
 
   /**
    * Sites that inherit the environment ON PURPOSE. Each entry pins the file,
@@ -755,6 +755,7 @@ describe('GUARD — every spawn in src/, scripts/, hooks/, bin/ passes subproces
     { file: 'scripts/bump-version.mjs', commands: ['git', 'git'], why: 'release tooling in the developer shell: `git config core.hooksPath`' },
     { file: 'scripts/create-release.mjs', commands: ['gh', 'git', 'git', 'git', 'git'], why: 'release tooling in the developer shell: git, and `gh`, which authenticates through GH_TOKEN or its own keyring' },
     { file: 'scripts/export-gate.mjs', commands: ['git'], why: 'release tooling in the developer shell: `git ls-tree`' },
+    { file: 'scripts/render-quick-reference.mjs', commands: ['chrome'], why: 'documentation tooling in the developer shell: headless Chromium printing the quick-reference PDFs needs that shell (browser install layout, fonts, CHROME_PATH, proxies/CA bundles for nothing it fetches but which the binary reads anyway), it renders a LOCAL file:// page and no vault content, and the parent holds no router secret — the same footing as the other release-time scripts above' },
     { file: 'scripts/install-docling.mjs', commands: ['cmd'], why: 'interactive installer in the user shell: pip mirrors, proxies and CA bundles are open-ended configuration, and the parent IS the shell' },
     { file: 'scripts/install-markitdown.mjs', commands: ['cmd'], why: 'interactive installer in the user shell (same reasoning as install-docling.mjs)' },
     // v0.90.0 — the three desktop openers MOVED, they did not multiply. They

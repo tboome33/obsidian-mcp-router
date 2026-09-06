@@ -23,7 +23,9 @@ Thanks for considering a contribution. This project is small and opinionated —
 4. If the change adds a new MCP tool or env var, document it in:
    - The tool description in `src/index.mjs` `TOOLS` array
    - `bin/obsidian-mcp-router.mjs --help`
-   - `README.md` (EN + FR) and the quick-reference PDFs (`docs/quick-reference-{en,fr}.html` → re-render via Chrome headless)
+   - `README.md` (EN + FR) and the quick-reference pages (`docs/quick-reference-{en,fr}.html`), then **`npm run docs:quick-reference`** to re-render both PDFs and refresh `docs/quick-reference.manifest.json`
+
+   `npm run validate` refuses when a quick-reference page has changed since its PDF was rendered, so "edited the source, forgot the render" fails by name instead of shipping a PDF that contradicts the page. It also pins the artifact counters *in those pages* — they are not free-text: both state the command, tool and skill counts twice, and both sites are guarded.
 
 ## Release process (for maintainers)
 

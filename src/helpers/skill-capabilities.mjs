@@ -58,6 +58,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cmp } from './total-order.mjs';
+import { quickReferenceFreshness, QUICK_REFERENCE_MANIFEST } from './quick-reference.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema + controlled vocabularies
@@ -1511,6 +1512,69 @@ export const COUNTER_RULES = Object.freeze([
     label: 'MCP tools',
     minMatches: 1,
   },
+  // The two quick-reference pages. They were NOT pinned until v0.90.0, and
+  // they are the artifact with the widest readership — linked from both README
+  // halves, and the page someone prints. Unwatched, they went a whole
+  // catalogue behind: both claimed 51 slash commands, 51 MCP tools and 47
+  // skills while the README, which IS pinned, stayed correct at 53/53/48. The
+  // gate covered the documents it had been pointed at rather than the class of
+  // documents carrying the claim, which is the failure this repository keeps
+  // paying for. Each page states its three counts twice — the masthead and the
+  // section heading — so `minMatches: 2` makes losing one of the two sites a
+  // deliberate edit here rather than an accident there.
+  //
+  // The FR page deliberately has no `commandes` rule: it heads its categories
+  // "3 commandes d'état", "2 commandes de liaison", "24 commandes de gestion",
+  // and a rule matching those sub-counts against the TOTAL would fail forever.
+  // `slash commands` is untranslated in both pages and is the total.
+  {
+    id: 'quick-reference-en-commands',
+    file: 'docs/quick-reference-en.html',
+    pattern: /(\d+) slash commands/g,
+    counts: 'commands',
+    label: 'slash commands',
+    minMatches: 2,
+  },
+  {
+    id: 'quick-reference-en-tools',
+    file: 'docs/quick-reference-en.html',
+    pattern: /(\d+) MCP tools/g,
+    counts: 'tools',
+    label: 'MCP tools',
+    minMatches: 2,
+  },
+  {
+    id: 'quick-reference-en-skills',
+    file: 'docs/quick-reference-en.html',
+    pattern: /(\d+) skills/g,
+    counts: 'skills',
+    label: 'skills',
+    minMatches: 2,
+  },
+  {
+    id: 'quick-reference-fr-commands',
+    file: 'docs/quick-reference-fr.html',
+    pattern: /(\d+) slash commands/g,
+    counts: 'commands',
+    label: 'slash commands',
+    minMatches: 2,
+  },
+  {
+    id: 'quick-reference-fr-tools',
+    file: 'docs/quick-reference-fr.html',
+    pattern: /(\d+) outils MCP/g,
+    counts: 'tools',
+    label: 'outils MCP',
+    minMatches: 2,
+  },
+  {
+    id: 'quick-reference-fr-skills',
+    file: 'docs/quick-reference-fr.html',
+    pattern: /(\d+) skills/g,
+    counts: 'skills',
+    label: 'skills',
+    minMatches: 2,
+  },
   {
     id: 'plugin-commands',
     file: '.claude-plugin/plugin.json',
@@ -1775,6 +1839,87 @@ export function checkToolBreakdown(repoRoot) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The quick-reference PDFs must have been rendered from the pages as they
+ * stand now.
+ *
+ * Pinning the counters in the two HTML sources (COUNTER_RULES above) is only
+ * half the guard. The artifact people actually read is the PDF — that is what
+ * both READMEs link and what someone prints — and it is a SEPARATE file that
+ * somebody has to remember to regenerate. Fix the HTML, forget the render, and
+ * the counter rules go green over a PDF that still carries the old number:
+ * the same drift one step further along, and harder to see because the source
+ * now looks right.
+ *
+ * So `scripts/render-quick-reference.mjs` records the sha256 of each page it
+ * rendered from, and this check refuses when a page has moved since. Every
+ * page is reported in one of its own states — missing source, missing PDF,
+ * never recorded, stale — because a check that quietly skips what it cannot
+ * find is the exact failure this module exists to prevent.
+ *
+ * @param {string} repoRoot
+ * @param {(root: string) => Array} [freshness] — injected for the tests, which
+ *        drive fixture repositories without a Chrome anywhere near them.
+ */
+export function checkQuickReferenceFreshness(repoRoot, freshness = quickReferenceFreshness) {
+  const issues = [];
+  let rows;
+  try {
+    rows = freshness(repoRoot);
+  } catch (err) {
+    return [issue(
+      'quick-reference-unreadable',
+      `the quick-reference freshness check could not run (${err && err.message}).`,
+      'Fix scripts/render-quick-reference.mjs — until it runs, the PDFs are unverified, not verified.',
+      QUICK_REFERENCE_MANIFEST,
+    )];
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return [issue(
+      'quick-reference-unreadable',
+      'the quick-reference freshness check reported no pages at all.',
+      'QUICK_REFERENCE_PAGES in scripts/render-quick-reference.mjs is empty — a check with nothing to check is not a passing check.',
+      QUICK_REFERENCE_MANIFEST,
+    )];
+  }
+
+  const RENDER = 'Run `npm run docs:quick-reference` to re-render both PDFs and refresh the manifest.';
+  for (const row of rows) {
+    if (row.state === 'fresh') continue;
+    if (row.state === 'html-missing') {
+      issues.push(issue(
+        'quick-reference-missing',
+        `${row.html} does not exist, but the validator watches it.`,
+        `Restore the page, or drop its language from QUICK_REFERENCE_PAGES and its rules from COUNTER_RULES — together.`,
+        row.html,
+      ));
+    } else if (row.state === 'pdf-missing') {
+      issues.push(issue(
+        'quick-reference-missing',
+        `${row.pdf} does not exist, but ${row.html} does — the page nobody can read is the published one.`,
+        RENDER,
+        row.pdf,
+      ));
+    } else if (row.state === 'unrecorded') {
+      issues.push(issue(
+        'quick-reference-stale',
+        `nothing records which version of ${row.html} produced ${row.pdf}.`,
+        RENDER,
+        QUICK_REFERENCE_MANIFEST,
+      ));
+    } else {
+      issues.push(issue(
+        'quick-reference-stale',
+        `${row.html} has changed since ${row.pdf} was rendered — the PDF still carries the older page.`,
+        RENDER,
+        row.pdf,
+      ));
+    }
+  }
+  return issues;
+}
+
+/**
  * Run every C8 check against a repo root.
  *
  * @param {string} repoRoot
@@ -1833,6 +1978,7 @@ export function runCapabilityValidation(repoRoot, { toolNames, writeToolNames } 
 
   issues.push(...checkDocCounters(repoRoot, counts));
   issues.push(...checkToolBreakdown(repoRoot));
+  issues.push(...checkQuickReferenceFreshness(repoRoot));
 
   return { issues, counts, skillCount: skills.length };
 }

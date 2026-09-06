@@ -283,7 +283,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
-    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 51 commandes + 47 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
+    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 53 commandes + 48 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>

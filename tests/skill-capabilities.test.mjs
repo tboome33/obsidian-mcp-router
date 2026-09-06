@@ -32,7 +32,11 @@ import {
   discoverSkills, discoverAgents, mentionedTools,
   validateDeclarations, checkAgentAllowlists, checkDocCounters, checkToolBreakdown,
   countArtifacts, runCapabilityValidation, renderIssues, stripEmphasis, mentionedSkills,
+  checkQuickReferenceFreshness,
 } from '../src/helpers/skill-capabilities.mjs';
+import {
+  QUICK_REFERENCE_MANIFEST, QUICK_REFERENCE_PAGES, sha256OfFile, quickReferenceFreshness,
+} from '../src/helpers/quick-reference.mjs';
 import { _internals } from '../src/index.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -92,6 +96,55 @@ function defaultReadme({ commands, skills, hooks, sites = {} }) {
 }
 
 /**
+ * The two quick-reference pages, each stating its three counts at BOTH sites
+ * the real pages use (masthead + section heading), so a fixture exercises the
+ * `minMatches: 2` rules rather than passing on one lucky occurrence.
+ *
+ * `sites` shrinks a single rule's occurrences, the way `defaultReadme` does,
+ * so "the rule still matches but guards fewer sites" is testable here too.
+ */
+function defaultQuickReference({ commands, tools, skills, sites = {} }) {
+  const rep = (ruleId, sentence) => {
+    const n = sites[ruleId] !== undefined ? sites[ruleId] : minMatchesFor(ruleId);
+    return Array.from({ length: n }, () => `<p>${sentence}</p>`).join('\n');
+  };
+  return {
+    en: [
+      rep('quick-reference-en-commands', `${commands} slash commands`),
+      rep('quick-reference-en-tools', `${tools} MCP tools`),
+      rep('quick-reference-en-skills', `${skills} skills`),
+      '',
+    ].join('\n'),
+    fr: [
+      rep('quick-reference-fr-commands', `${commands} slash commands`),
+      rep('quick-reference-fr-tools', `${tools} outils MCP`),
+      rep('quick-reference-fr-skills', `${skills} skills`),
+      '',
+    ].join('\n'),
+  };
+}
+
+/**
+ * Record each page's CURRENT hash, i.e. "the PDFs were rendered from exactly
+ * these bytes". `override` replaces the recorded value for a page so a test
+ * can say "this one is stale" without needing a Chrome to prove it.
+ */
+function writeQuickReferenceManifest(root, langs, override = {}) {
+  const renderedFrom = {};
+  for (const lang of langs) {
+    const rel = `docs/quick-reference-${lang}.html`;
+    renderedFrom[rel] = Object.prototype.hasOwnProperty.call(override, rel)
+      ? override[rel]
+      : sha256OfFile(path.join(root, rel));
+  }
+  fs.writeFileSync(
+    path.join(root, QUICK_REFERENCE_MANIFEST),
+    `${JSON.stringify({ renderedFrom }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+/**
  * Build a throwaway repo on disk.
  *
  * `skills` maps skill name → SKILL.md body. `declarations` is the parsed
@@ -109,6 +162,8 @@ function makeRepo({
   architecture,
   pluginJson,
   marketplaceJson,
+  quickReferenceHtml,
+  quickReferenceManifest,
   omit = [],
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'c8-fixture-'));
@@ -148,6 +203,24 @@ function makeRepo({
     fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(root, 'docs', 'architecture.md'),
       architecture ?? `Holds **${nTools} MCP tools**: everything (${nTools}).\n`);
+  }
+  // The two quick-reference pages, their PDFs, and the record tying one to the
+  // other. A fixture without them is a fixture the freshness check reports on,
+  // so the harness builds a CLEAN pair by default and each test breaks the one
+  // thing it is about.
+  if (!omit.includes('quick-reference')) {
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    const pages = quickReferenceHtml
+      ?? defaultQuickReference({ commands: commands.length, tools: nTools, skills: nSkills });
+    for (const [lang, body] of Object.entries(pages)) {
+      fs.writeFileSync(path.join(root, `docs/quick-reference-${lang}.html`), body);
+      if (!omit.includes('quick-reference-pdf')) {
+        fs.writeFileSync(path.join(root, `docs/quick-reference-${lang}.pdf`), `%PDF-1.4 ${lang}\n`);
+      }
+    }
+    if (!omit.includes('quick-reference-manifest')) {
+      writeQuickReferenceManifest(root, Object.keys(pages), quickReferenceManifest);
+    }
   }
   if (!omit.includes('plugin')) {
     fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
@@ -342,6 +415,57 @@ describe('§2.17 case 3 — the validator catches a FALSE DOC COUNTER', () => {
     assert.match(found.message, new RegExp(`down from the ${min} it is meant to guard`));
   });
 
+  test('a quick-reference page that undercounts is an error, in EITHER language', () => {
+    // The regression this whole rule set exists for: both pages sat at
+    // "51 slash commands · 51 MCP tools · 47 skills" for a whole release while
+    // the README — which WAS pinned — stayed correct. Each language is
+    // asserted separately: one shared assertion would pass while the other
+    // page rotted.
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const pages = defaultQuickReference({ commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1 });
+      pages[lang] = pages[lang].replace(/\b1 slash commands/g, '99 slash commands');
+      const root = makeRepo({ quickReferenceHtml: pages });
+      const { issues } = validateRepo(root);
+      const found = issues.find((i) => i.ruleId === `quick-reference-${lang}-commands`);
+      assert.ok(found, `${lang}: ${renderIssues(issues)}`);
+      assert.equal(found.code, 'doc-counter');
+      assert.match(found.message, /claims 99 slash commands; the repo has 1/);
+    }
+  });
+
+  test('a quick-reference rule that matches NOTHING is itself an error', () => {
+    // A page reworded so the rule stops matching must be LOUD: that is a
+    // check switching itself off, which is how the PDFs drifted unnoticed.
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const pages = defaultQuickReference({ commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1 });
+      pages[lang] = pages[lang].replace(/\d+ skills/g, 'lots of skills');
+      const root = makeRepo({ quickReferenceHtml: pages });
+      const { issues } = validateRepo(root);
+      const found = issues.find((i) => i.ruleId === `quick-reference-${lang}-skills`);
+      assert.ok(found, `${lang}: ${renderIssues(issues)}`);
+      assert.equal(found.code, 'counter-site-missing');
+      assert.match(found.message, /matched nothing/);
+    }
+  });
+
+  test('a quick-reference page that states its count ONCE instead of twice is an error', () => {
+    // Both real pages carry each count at the masthead AND the section
+    // heading. Losing one leaves a correct number under half the guard.
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const id = `quick-reference-${lang}-tools`;
+      const min = minMatchesFor(id);
+      assert.ok(min >= 2, `${id} should guard at least two sites`);
+      const pages = defaultQuickReference({
+        commands: 1, tools: REAL_TOOL_NAMES.size, skills: 1, sites: { [id]: min - 1 },
+      });
+      const root = makeRepo({ quickReferenceHtml: pages });
+      const { issues } = validateRepo(root);
+      const found = issues.find((i) => i.ruleId === id && i.code === 'counter-site-missing');
+      assert.ok(found, `${lang}: ${renderIssues(issues)}`);
+      assert.match(found.message, new RegExp(`down from the ${min} it is meant to guard`));
+    }
+  });
+
   test('a missing counter FILE is an error, not a silent skip', () => {
     const root = makeRepo({ omit: ['README.md'] });
     const { issues } = validateRepo(root);
@@ -362,6 +486,121 @@ describe('§2.17 case 3 — the validator catches a FALSE DOC COUNTER', () => {
 // ---------------------------------------------------------------------------
 // The honesty rule
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The published PDF must have been rendered from the page as it stands
+// ---------------------------------------------------------------------------
+
+describe('quick-reference freshness — pinning the SOURCE is only half the guard', () => {
+  test('a clean fixture is fresh in both languages', () => {
+    const root = makeRepo();
+    const rows = quickReferenceFreshness(root);
+    assert.deepEqual(rows.map((r) => r.lang), [...QUICK_REFERENCE_PAGES]);
+    assert.deepEqual(rows.map((r) => r.state), rows.map(() => 'fresh'), JSON.stringify(rows));
+    assert.deepEqual(checkQuickReferenceFreshness(root), []);
+  });
+
+  test('editing a page without re-rendering is an error — the whole point', () => {
+    // The failure this closes: someone fixes a counter in the HTML, the
+    // COUNTER_RULES above go green, and the PDF everyone actually reads still
+    // carries the old number. One page is touched at a time so the message
+    // has to name the right one.
+    for (const lang of QUICK_REFERENCE_PAGES) {
+      const root = makeRepo();
+      fs.appendFileSync(path.join(root, `docs/quick-reference-${lang}.html`), '<p>edited after the render</p>\n');
+      const rows = quickReferenceFreshness(root);
+      assert.equal(rows.find((r) => r.lang === lang).state, 'stale');
+      for (const other of QUICK_REFERENCE_PAGES.filter((l) => l !== lang)) {
+        assert.equal(rows.find((r) => r.lang === other).state, 'fresh');
+      }
+      const issues = checkQuickReferenceFreshness(root);
+      assert.equal(issues.length, 1, JSON.stringify(issues));
+      assert.equal(issues[0].code, 'quick-reference-stale');
+      assert.match(issues[0].message, new RegExp(`quick-reference-${lang}\\.html has changed`));
+      assert.match(issues[0].fix, /npm run docs:quick-reference/);
+    }
+  });
+
+  test('a page nothing has ever recorded is an error, not a pass', () => {
+    // "No hash for it" must never read as "nothing to check" — a check that
+    // skips what it cannot see is the shape that let this drift happen.
+    const root = makeRepo({ omit: ['quick-reference-manifest'] });
+    const rows = quickReferenceFreshness(root);
+    assert.deepEqual(rows.map((r) => r.state), rows.map(() => 'unrecorded'));
+    const issues = checkQuickReferenceFreshness(root);
+    assert.equal(issues.length, QUICK_REFERENCE_PAGES.length);
+    for (const i of issues) assert.equal(i.code, 'quick-reference-stale');
+  });
+
+  test('a manifest that records only ONE page leaves the other reported', () => {
+    // A half-written manifest is the plausible accident: it must not buy
+    // silence for the page it omits.
+    const root = makeRepo();
+    const only = QUICK_REFERENCE_PAGES[0];
+    const rel = `docs/quick-reference-${only}.html`;
+    fs.writeFileSync(
+      path.join(root, QUICK_REFERENCE_MANIFEST),
+      JSON.stringify({ renderedFrom: { [rel]: sha256OfFile(path.join(root, rel)) } }, null, 2),
+    );
+    const rows = quickReferenceFreshness(root);
+    assert.equal(rows.find((r) => r.lang === only).state, 'fresh');
+    for (const other of QUICK_REFERENCE_PAGES.slice(1)) {
+      assert.equal(rows.find((r) => r.lang === other).state, 'unrecorded');
+    }
+  });
+
+  test('a published PDF that has gone missing is an error', () => {
+    const root = makeRepo({ omit: ['quick-reference-pdf'] });
+    const issues = checkQuickReferenceFreshness(root);
+    assert.equal(issues.length, QUICK_REFERENCE_PAGES.length, JSON.stringify(issues));
+    for (const i of issues) assert.equal(i.code, 'quick-reference-missing');
+    assert.match(issues[0].message, /the page nobody can read is the published one/);
+  });
+
+  test('a missing SOURCE page is an error, not a silent skip', () => {
+    const root = makeRepo();
+    fs.rmSync(path.join(root, `docs/quick-reference-${QUICK_REFERENCE_PAGES[0]}.html`));
+    const issues = checkQuickReferenceFreshness(root);
+    const found = issues.find((i) => i.code === 'quick-reference-missing');
+    assert.ok(found, JSON.stringify(issues));
+    assert.match(found.message, /does not exist, but the validator watches it/);
+  });
+
+  test('a freshness helper that reports NOTHING is itself an error', () => {
+    // The check's own kill-switch. If QUICK_REFERENCE_PAGES were ever emptied,
+    // every per-page assertion above would vacuously pass and the gate would
+    // be off while reading green — the exact failure mode this module exists
+    // to prevent, so it is asserted rather than assumed.
+    const issues = checkQuickReferenceFreshness(makeRepo(), () => []);
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].code, 'quick-reference-unreadable');
+    assert.match(issues[0].message, /reported no pages at all/);
+  });
+
+  test('a freshness helper that THROWS is reported, never swallowed', () => {
+    const issues = checkQuickReferenceFreshness(makeRepo(), () => { throw new Error('disk gone'); });
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].code, 'quick-reference-unreadable');
+    assert.match(issues[0].message, /disk gone/);
+  });
+
+  test('runCapabilityValidation actually RUNS the check — not just exports it', () => {
+    // Every other test in this block calls checkQuickReferenceFreshness
+    // directly, so deleting its one line in runCapabilityValidation would
+    // leave them all green while `npm run validate` stopped checking. A
+    // check that exists and is never called is the same as no check.
+    const root = makeRepo();
+    fs.appendFileSync(path.join(root, `docs/quick-reference-${QUICK_REFERENCE_PAGES[0]}.html`), '<p>drift</p>\n');
+    const { issues } = validateRepo(root);
+    const found = issues.find((i) => i.code === 'quick-reference-stale');
+    assert.ok(found, `the validator did not surface the stale page: ${renderIssues(issues)}`);
+  });
+
+  test('the LIVE repo ships PDFs rendered from the current pages', () => {
+    // Not a fixture: the real docs/, the artifact that actually ships.
+    assert.deepEqual(checkQuickReferenceFreshness(REPO_ROOT), []);
+  });
+});
 
 describe('honesty rule — a tier must be substantiated or admitted', () => {
   const base = { skills: { alpha: 'Call `get_file`.' } };
@@ -1232,6 +1471,12 @@ describe('the live repo', () => {
       'plugin-agents',
       'plugin-commands',
       'plugin-skills',
+      'quick-reference-en-commands',
+      'quick-reference-en-skills',
+      'quick-reference-en-tools',
+      'quick-reference-fr-commands',
+      'quick-reference-fr-skills',
+      'quick-reference-fr-tools',
       'readme-commands',
       'readme-hooks',
       'readme-skills',
