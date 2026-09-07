@@ -150,6 +150,52 @@ describe('setup-vault.mjs wizard flags', () => {
     for (const s of ['Reptiles', 'Habitats', 'Diets']) assert.match(idx, new RegExp(`## ${s}`));
   });
 
+  test('--wiki-mode code seeds NO Sessions area and names wiki-meta/Sessions/ instead', () => {
+    // v0.92.0. The `code` mode used to seed a `## Sessions` area under `wiki/`,
+    // while the session journals live in `wiki-meta/Sessions/` (v0.12.8). An
+    // agent looking up where a session recap belonged read catalog.md, found
+    // the heading, and filed there — two homes, no cross-reference. Asserted
+    // end-to-end on the CLI, not just on the constant: the seed passes through
+    // a guard now, and only running it proves the guard did not eat the mode.
+    const target = path.join(workDir, 'CodeVault');
+    const r = run([target, '--wiki-mode', 'code']);
+    assert.equal(r.status, 0, r.stderr);
+    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
+    assert.match(idx, /^mode: code$/m);
+    assert.match(idx, /## Codebases/, 'the mode still seeds its real areas');
+    assert.match(idx, /## Runbooks/);
+    assert.ok(!/^##\s+Sessions\s*$/m.test(idx), 'no Sessions AREA heading under wiki/');
+    assert.match(
+      idx, /`wiki-meta\/Sessions\/` — \*\*where session notes go\*\*/,
+      'the catalog must answer the question that produced the misfile',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(target, 'wiki', 'Sessions')),
+      'a fresh code vault must not carry a wiki/Sessions/ directory',
+    );
+    assert.ok(
+      fs.existsSync(path.join(target, 'wiki-meta', 'Sessions')),
+      'the canonical session directory is still scaffolded',
+    );
+  });
+
+  test('--wiki-sections cannot smuggle a wiki-meta-owned area back in, and says so', () => {
+    // The `domain` mode's sections are composed by an LLM at provisioning time.
+    // No static list and no review sees them, so the guard has to hold at the
+    // seeder — and a dropped section must be REPORTED, never silently lost.
+    const target = path.join(workDir, 'DomainSessionsVault');
+    const r = run([target, '--wiki-mode', 'domain', '--wiki-sections', 'Interviews,sessions,Transcripts']);
+    assert.equal(r.status, 0, r.stderr);
+    const idx = fs.readFileSync(path.join(target, 'wiki-meta', 'catalog.md'), 'utf8');
+    assert.match(idx, /## Interviews/);
+    assert.match(idx, /## Transcripts/);
+    assert.ok(!/^##\s+sessions\s*$/mi.test(idx), 'the owned name is dropped whatever its case');
+    assert.match(
+      `${r.stdout}${r.stderr}`, /sessions.*NOT seeded/is,
+      'the dropped section must appear in the CLI output, not vanish',
+    );
+  });
+
   test('--name writes a custom slug into config vaultNames', () => {
     const target = path.join(workDir, 'RawName');
     const r = run([target, '--name', 'Pretty Name']);

@@ -89,6 +89,8 @@ import {
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
 import { generateSearchIndexOnDisk } from '../src/helpers/bm25-index-fs.mjs';
 import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
+import { partitionSeededAreas } from '../src/helpers/session-folder-collision.mjs';
+import { WIKI_MODE_SECTIONS } from '../src/helpers/wiki-mode-sections.mjs';
 import {
   buildProvisionPlan,
   resolveSourceVault,
@@ -2270,22 +2272,41 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
 // Does NOT touch CLAUDE.md — that's owned by the `meta-attach-vault`
 // conventions-picker step (and by the `wiki` skill for the wiki block).
 
-// Wizard `--wiki-mode` section seeds. The engine stays 100% deterministic: for
-// the `domain` mode the frontend (LLM) translates the user's one-line domain
-// description into a flat section list passed via `--wiki-sections`, and the
-// engine simply lays those out. When no mode is given, scaffoldWikiMeta uses
-// the shipped generic template verbatim (unchanged pre-wizard behaviour).
-const WIKI_MODE_SECTIONS = {
-  personal: ['People', 'Concepts', 'Decisions', 'References', 'Projects'],
-  research: ['Papers', 'Concepts', 'Hypotheses', 'Methodology', 'Findings'],
-  business: ['Competitors', 'Clients', 'Decisions', 'Stakeholders', 'Meetings'],
-  code: ['Codebases', 'Architecture Decisions (ADR)', 'Runbooks', 'Concepts', 'Sessions'],
-};
+// The `--wiki-mode` section seeds live in `src/helpers/wiki-mode-sections.mjs`
+// (imported above). They were a `const` here until v0.92.0; this file is a CLI
+// that runs on import, so the only way a test could check them was to regex the
+// source — and that regex had blind spots a review found. Moving the data to a
+// module the test can import removes the parser and its blind spots at once.
 
 function buildModeCatalogContent(mode, sections) {
-  const list = (mode === 'domain' && sections && sections.length)
+  // `Object.hasOwn`, not a bare lookup. `WIKI_MODE_SECTIONS['toString']` finds
+  // `Object.prototype.toString` — a truthy non-array that `||` never replaces
+  // with the personal fallback, and `--wiki-mode` is not validated upstream, so
+  // `--wiki-mode toString` reaches here. Before the seed guard existed, that
+  // value crashed the `for…of` below; the guard turned the crash into an empty
+  // catalogue with no warning, which a second review round caught. A loud
+  // failure must not become a silent one on the way to being fixed.
+  const known = Object.hasOwn(WIKI_MODE_SECTIONS, mode) && Array.isArray(WIKI_MODE_SECTIONS[mode])
+    && WIKI_MODE_SECTIONS[mode].length > 0;
+  if (mode && mode !== 'domain' && !known) {
+    warn(`Unknown --wiki-mode "${mode}" — seeding the "personal" areas instead.`);
+  }
+  const requested = (mode === 'domain' && sections && sections.length)
     ? sections
-    : (WIKI_MODE_SECTIONS[mode] || WIKI_MODE_SECTIONS.personal);
+    : (known ? WIKI_MODE_SECTIONS[mode] : WIKI_MODE_SECTIONS.personal);
+  // The single funnel every mode passes through. A static list can be reviewed
+  // once; the `domain` mode's sections are composed by an LLM at provisioning
+  // time and no review ever sees them, so the guard has to live HERE rather
+  // than in the constant above — otherwise "Sessions" walks back in the first
+  // time someone describes their domain as being about sessions.
+  const { areas: list, rejected } = partitionSeededAreas(requested);
+  for (const name of rejected) {
+    warn(
+      `Wiki area "${name}" NOT seeded into catalog.md — wiki-meta/${name.trim()}/ already owns that name. ` +
+      `Session content belongs there (the session-auto-journal hook writes it); a second area under wiki/ ` +
+      `would give the same content type two homes.`,
+    );
+  }
   // v0.59.4 — map-of-maps seeding. The pre-0.59.4 seed said "add a row for
   // every new page", which is precisely what grew one vault's catalog to
   // 70 KB / 115 rows: unreadable in a single tool call, and a guaranteed
@@ -2303,7 +2324,10 @@ function buildModeCatalogContent(mode, sections) {
     '## Wiki Core\n\n' +
     '- [[overview]] — what this wiki covers\n' +
     '- [[hot]] — recent-context cache, rewritten (not appended) each session\n' +
-    '- [[journal]] — thin session index, one line per milestone\n';
+    '- [[journal]] — thin session index, one line per milestone\n' +
+    '- `wiki-meta/Sessions/` — **where session notes go**, one file per session, written automatically. '
+      + 'It is not an area of this catalog and never gets a `## Sessions` section below: `wiki/` is for the '
+      + 'knowledge, `wiki-meta/` for the record of the sessions that produced it.\n';
   for (const header of list) {
     body += `\n## ${header}\n\n_Area — link its generated index here once it has pages._\n`;
   }

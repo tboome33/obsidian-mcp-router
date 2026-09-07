@@ -15,13 +15,22 @@
  *
  * Safety mirrors the tool: an UNMARKED file at a reserved path is a conflict
  * (reported, untouched); only marker-carrying files are rewritten or deleted.
- * Also tidies the pre-v0.12.8 `wiki/sessions/` ghost directory when EMPTY.
+ * Also tidies the pre-v0.12.8 `wiki/sessions/` ghost directory when EMPTY, and
+ * REPORTS (never repairs) the case that directory becomes when it is not empty:
+ * session content living under `wiki/` while `wiki-meta/Sessions/` holds the
+ * journals the auto-journal hook writes. Two homes for one content type, which
+ * is how a `code`-mode vault ended up with a hand-written recap under
+ * `wiki/Sessions/` and two raw journals under `wiki-meta/Sessions/`, unlinked.
+ * Repair is left to a human because the `wiki/` files may be curated pages that
+ * belong in a real content area, not raw logs to fold into `wiki-meta/`.
  *
  * `--all-vaults` walks the router config's portRegistry; `--vault` is
  * repeatable and adds unregistered vaults (the registry lists the SERVED
  * fleet, not the existing one — 3 known strays).
  *
- * Exit codes: 0 OK · 1 bad usage or any vault reporting conflicts.
+ * Exit codes: 0 OK · 1 bad usage, any vault reporting conflicts, or a
+ * `session-folder-collision`. A `session-folder-stray` (content under `wiki/`
+ * with nothing to reconcile against) is a warning and keeps the exit code at 0.
  */
 
 import fs from 'node:fs';
@@ -30,6 +39,12 @@ import path from 'node:path';
 
 import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
+import {
+  WIKI_META_OWNED_AREAS,
+  PROJECTION_BASENAMES,
+  detectSessionFolderCollision,
+} from '../src/helpers/session-folder-collision.mjs';
+import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
 
 const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
   ? path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG)
@@ -102,6 +117,81 @@ function tidyGhostSessionsDir(vaultAbs, apply) {
   return true;
 }
 
+/**
+ * Vault-relative `.md` entries under the `wiki/` and `wiki-meta/` directories
+ * whose name a `wiki-meta/` folder owns — the input `detectSessionFolderCollision`
+ * expects. Deliberately NOT a full-tree walk: only the handful of directories
+ * that can collide are opened, so this stays free on a 700-file vault.
+ *
+ * Directory matching is case-insensitive because the fleet carries both
+ * spellings (`wiki/sessions/` from the pre-v0.12.8 layout, `wiki/Sessions/`
+ * from the catalogue seed) and Windows treats them as one directory.
+ *
+ * TWO THINGS THIS DOES BEYOND LISTING, both found by an adversarial review:
+ *
+ * 1. It reads the generated-marker of every file at a RESERVED basename, rather
+ *    than letting the detector assume `index.md` means generated. This repo's
+ *    own projection writer treats an unmarked file at a reserved path as a
+ *    user-owned conflict; a hand-written `wiki/Sessions/index.md` is content and
+ *    must be reported. At most a couple of files per vault are read.
+ *
+ * 2. It REPORTS enumeration failures instead of swallowing them. A `catch` that
+ *    returns nothing turns "I could not look" into "there is nothing there",
+ *    and a vault whose `wiki/` side was unreadable would then be printed `ok`.
+ *    Same rule the router's own conformance pass learned (`INCOMPLETE_VIEW_SKIPS`
+ *    in `src/helpers/vault-conformance.mjs`): a skipped read is not a clean one.
+ *
+ * @returns {{entries: Array<{path: string, generated: boolean}>, unreadable: string[]}}
+ */
+function collectOwnedAreaEntries(vaultAbs) {
+  const owned = new Set(WIKI_META_OWNED_AREAS.map((a) => a.toLowerCase()));
+  const reserved = new Set(PROJECTION_BASENAMES.map((b) => b.toLowerCase()));
+  const entries = [];
+  const unreadable = [];
+
+  for (const root of ['wiki', 'wiki-meta']) {
+    let children;
+    try {
+      children = fs.readdirSync(path.join(vaultAbs, root), { withFileTypes: true });
+    } catch (err) {
+      // A MISSING root is a fact about the vault; anything else is a failure to
+      // observe, and the two must not be conflated.
+      if (err?.code !== 'ENOENT') unreadable.push(`${root}/ (${err?.code || err?.message})`);
+      continue;
+    }
+    for (const dir of children) {
+      if (!dir.isDirectory() || !owned.has(dir.name.toLowerCase())) continue;
+      const walk = (relDir) => {
+        let inner;
+        try {
+          inner = fs.readdirSync(path.join(vaultAbs, relDir), { withFileTypes: true });
+        } catch (err) {
+          unreadable.push(`${relDir}/ (${err?.code || err?.message})`);
+          return;
+        }
+        for (const child of inner) {
+          const rel = `${relDir}/${child.name}`;
+          if (child.isDirectory()) { walk(rel); continue; }
+          if (!child.name.toLowerCase().endsWith('.md')) continue;
+          let generated = false;
+          if (reserved.has(child.name.toLowerCase())) {
+            try {
+              generated = hasProjectionMarker(fs.readFileSync(path.join(vaultAbs, rel), 'utf8'));
+            } catch (err) {
+              // Unreadable: fall through as CONTENT (generated stays false) so
+              // the file is reported, and say the view was incomplete.
+              unreadable.push(`${rel} (${err?.code || err?.message})`);
+            }
+          }
+          entries.push({ path: rel, generated });
+        }
+      };
+      walk(`${root}/${dir.name}`);
+    }
+  }
+  return { entries, unreadable };
+}
+
 const args = parseArgs(process.argv);
 let anyConflict = false;
 const rows = [];
@@ -118,8 +208,29 @@ for (const vaultAbs of args.resolved) {
   try {
     const r = generateProjectionsOnDisk(vaultAbs, { apply: args.apply });
     const ghostTidied = tidyGhostSessionsDir(vaultAbs, args.apply);
+    // Read-only, and deliberately AFTER the refresh: the refresh deletes the
+    // `index.md` of a directory that no longer has content, so running the
+    // detector first would count a stale projection as evidence of a folder
+    // that is already gone.
+    const scan = collectOwnedAreaEntries(vaultAbs);
+    const { findings: sessionFindings } = detectSessionFolderCollision(scan.entries);
     if (r.conflicts.length > 0) anyConflict = true;
-    rows.push({ vault: vaultAbs, status: r.conflicts.length ? 'conflicts' : 'ok', ...r, ghostTidied });
+    if (sessionFindings.some((f) => f.severity === 'error')) anyConflict = true;
+    // An incomplete view is not a clean one. It does not fail the run — the
+    // projections themselves may have succeeded — but the vault must never be
+    // printed `ok`, because "no collision found" was not actually established.
+    const status = r.conflicts.length ? 'conflicts'
+      : sessionFindings.length ? 'drift'
+        : scan.unreadable.length ? 'partial'
+          : 'ok';
+    rows.push({
+      vault: vaultAbs,
+      status,
+      ...r,
+      ghostTidied,
+      sessionFindings,
+      unreadable: scan.unreadable,
+    });
   } catch (err) {
     anyConflict = true;
     rows.push({ vault: vaultAbs, status: 'failed', error: err.message });
@@ -138,6 +249,13 @@ for (const r of rows) {
       `${r.ghostTidied ? ', ghost wiki/sessions/ removed' : ''}`,
   );
   for (const c of r.conflicts) console.log(`      ⚠ conflict (unmarked file, untouched): ${c}`);
+  for (const f of r.sessionFindings ?? []) {
+    console.log(`      ${f.severity === 'error' ? '✗' : '⚠'} ${f.rule}: ${f.detail}`);
+    for (const wf of f.wikiFiles) console.log(`          ${wf}`);
+  }
+  for (const u of r.unreadable ?? []) {
+    console.log(`      ⚠ could not read ${u} — the Sessions scan of this vault is INCOMPLETE`);
+  }
 }
 const tally = rows.reduce((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {});
 console.log(`  ${Object.entries(tally).map(([k, v]) => `${k}: ${v}`).join(' · ')}`);

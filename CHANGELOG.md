@@ -128,6 +128,176 @@ document it. **1/1 sites.**
 Out of scope by design and unchanged: a note written through `Bash` still escapes detection, which
 is the documented consequence of scanning the tool transcript instead of `git diff`.
 
+### Two folders named "Sessions", and no one told the agent which one to use
+
+A `code`-mode vault ended with a hand-written session recap under `wiki/Sessions/` and two raw
+journals under `wiki-meta/Sessions/`, unlinked. Nothing had broken: the agent asked `catalog.md`
+where a session note belongs — the documented way to find out — and `catalog.md` said `Sessions`,
+because the `code` wiki mode seeded that area. Meanwhile `wiki-meta/Sessions/` has been the home of
+session journals since v0.12.8, which MOVED them out of `wiki/` for exactly this reason, and is what
+the auto-generated header of `journal.md` points at, what the `save` skill refuses to write to, and
+what `DEFAULT_EXCLUDE_FOLDERS` keeps out of the search corpus. Two homes, one heading, no warning.
+
+The root cause is not only that `catalog.md` gave a wrong answer — it is that it gave **no** answer
+about where session notes go, so an area heading with the right word was the best available match.
+
+#### Fixed
+
+- **`WIKI_MODE_SECTIONS.code` no longer seeds `Sessions`.** It was the only section across the four
+  static modes whose name a `wiki-meta/` folder already owns; `personal`, `research` and `business`
+  were clear. The mode keeps four areas rather than gaining an invented fifth, and this also closes
+  a disagreement that was already visible in the repo: the user-facing description in `WIKI_MODES`
+  (`scripts/vault-plan.mjs`) has always read "codebases, architecture decisions (ADR), runbooks" —
+  it never mentioned Sessions.
+- **The seeded catalogue now names `wiki-meta/Sessions/` in its Wiki Core block**, in every mode,
+  saying it is where session notes go and that it never becomes a `## Sessions` area. Removing the
+  wrong answer without supplying the right one would have left the same silence.
+- **`templates/reference-vault-skeleton/wiki-meta/catalog.md` lost its own `## Sessions` area** and
+  gained the same pointer. It reaches only the `.template` reference vault, but that vault is what a
+  human reads to learn the convention, and it was teaching the opposite.
+- **A guard at the single funnel, not at the known site.** New pure module
+  `src/helpers/session-folder-collision.mjs`; `partitionSeededAreas` runs inside
+  `buildModeCatalogContent`, so a reserved name cannot re-enter through a future static mode list
+  **or** through the `domain` mode's sections — which an LLM composes at provisioning time and which
+  no review ever sees. A dropped section is reported on stderr, never silently lost.
+- **The mode seeds moved to `src/helpers/wiki-mode-sections.mjs`.** `scripts/setup-vault.mjs` is a
+  CLI that runs on import, so a test could only reach the list by regexing the source — see the
+  review section below for what that cost.
+- **`docs/vault-wizard.md`**'s mode table and the `wiki-lint` skill + agent updated.
+
+#### Added — the detector, because the seed fix helps no existing vault
+
+`detectSessionFolderCollision(entries)` (pure: vault-relative paths in, findings out) reports
+`session-folder-collision` (ERROR — content under both `wiki/<area>/` and `wiki-meta/<area>/`) and
+`session-folder-stray` (WARNING — content under `wiki/` only: a pre-v0.12.8 vault whose migration
+never ran). Case-insensitive, because the fleet carries both `Sessions` and the older `sessions`,
+and every finding names each file by its FULL path. A file the caller marks `generated: true` does
+not count as content — a generated projection outlives the pages that caused it, so counting one
+would flag exactly the vaults whose misfiled note was just moved away. The caller decides that from
+the marker, never from the basename (see the review section).
+
+Wired into `scripts/okf-projections.mjs --all-vaults` (fleet-wide, offline, works with Obsidian
+closed — it already tidied the *empty* `wiki/sessions/` ghost; this reports the non-empty case) and
+documented as Check O of `wiki-lint`, sharing the one implementation. **Exit-code change**: a
+collision now exits 1 alongside a projection conflict; a stray keeps the exit at 0. Nothing
+automated calls this CLI.
+
+**It reports, and never repairs.** The `wiki/` files turned out to be *curated* pages — an incident
+write-up, a project recap — not raw logs. Folding those into `wiki-meta/Sessions/` would bury them
+in a folder excluded from search. The destination is a real content area and only the user can name
+it.
+
+#### Fleet measurement
+
+30 vaults scanned on disk (24 registered + 6 strays the port registry does not see): **4 with a
+collision**, and only **one** of them came from the `code`-mode seed. The other three carry the
+pre-v0.12.8 lowercase `wiki/sessions/` whose files `migrateSessionsToWikiMeta` never merged — 1, 2
+and 11 files. So the seed fix alone would have read as closed while three vaults stayed wrong, which
+is why the detector is not optional follow-up work. **No repair was applied**: the 15 files are the
+user's content, and their destination is his call.
+
+#### What the adversarial review round changed
+
+Four defects, all in the *fix*, none in the diagnosis. Two of them are the same mistake this entry
+opens by describing — trusting a name instead of asking the thing itself.
+
+- **A reserved BASENAME was taken as proof a file was generated.** The detector skipped every
+  `index.md` and `log.md`. But `planProjectionWrites` in this same repo treats an UNMARKED file at a
+  reserved path as a user-owned conflict and refuses to touch it — the basename has never been the
+  authority here. So a hand-written `wiki/Sessions/index.md` beside a canonical journal produced NO
+  finding, and a hand-written `wiki-meta/Sessions/log.md` downgraded a real collision to a warning.
+  The marker decides now: the pure detector takes `{path, generated}` entries, and the CLI reads the
+  `> Generated by obsidian-mcp-router` line out of the two files per vault that can carry it. A bare
+  string means "not known to be generated", i.e. content — over-reporting a projection is a false
+  positive a human dismisses at a glance; under-reporting a hand-written page is the silence this
+  module exists to end.
+- **One directory per side, overwritten by whichever file came last.** `wiki/Sessions/` and
+  `wiki/sessions/` can coexist on a case-sensitive filesystem, and the report then placed a file in
+  a directory it is not in — with the misplaced file changing when the input order changed. Findings
+  now carry each file's FULL vault-relative path and the sorted set of directories actually seen.
+- **The producer scan had blind spots and could pass vacuously.** It regexed
+  `WIKI_MODE_SECTIONS` out of `scripts/setup-vault.mjs`, matching single-quoted strings on single
+  lines only: a `"Sessions"` entry, or a new mode written as a multi-line array, was invisible to the
+  test whose entire job was to see it. A scan with a blind spot is worse than no scan — it reports
+  the class swept. The data moved to **`src/helpers/wiki-mode-sections.mjs`** and the test imports
+  the real object, so there is no parser left to go blind; a companion test asserts the repo holds
+  exactly ONE declaration of that name, so a shadowing copy in the provisioner fails here. The
+  template list is now DISCOVERED under `templates/` rather than hard-coded, and every sweep asserts
+  its own denominator (modes, sections, templates, headings inspected) so an empty discovery fails.
+- **An unreadable directory was silently read as an empty one.** `catch { continue }` turned "I
+  could not look" into "there is nothing there", and a vault whose `wiki/` side was unreadable would
+  have been printed `ok`. The scan now collects enumeration failures, prints them, and gives such a
+  vault the status `partial` — never `ok`. A *missing* directory stays silent: that is a fact about
+  the vault, not a failure to observe it. Same rule the router's own conformance pass already
+  learned (`INCOMPLETE_VIEW_SKIPS`).
+
+#### What the SECOND review round changed — it attacked the repairs
+
+Round 2 was handed the repairs as the payload, and found four more. Two of them are the round-1
+lesson recurring one level up, and one is a defect the repair itself created.
+
+- **Markdown that RENDERS as the owned name walked straight through.** A section called
+  `Sessions ##` passed the guard, and the seeder emitted `## Sessions ##` — which Markdown renders
+  as a heading named **Sessions**. `**Sessions**` did the same. Worse, the template sweep asks the
+  very same predicate, so the guard and its supposedly independent scan were blind *together*, which
+  is the one shape a pair of checks must never have. `isWikiMetaOwnedArea` now compares what a name
+  renders as: trailing separator, ATX closing hashes and wrapping emphasis are peeled before the
+  comparison. Only WRAPPING markup goes — `Sessions de travail`, `Session Notes` and `**Session**
+  notes` are untouched.
+- **The repair turned a loud failure into a silent one.** `WIKI_MODE_SECTIONS[mode]` finds
+  `Object.prototype.toString` for `--wiki-mode toString`, a truthy non-array that `||` never
+  replaces with the personal fallback — and `--wiki-mode` is validated nowhere upstream, so it is
+  reachable from the CLI and from `provision_vault`. Before the guard existed that value crashed the
+  `for…of`; afterwards `partitionSeededAreas` handed back empty halves and the vault was born with a
+  catalogue containing zero content areas, exit 0, no warning. **Measured, not reasoned about**:
+  `--wiki-mode toString --bare` produced a catalogue whose only `##` heading was `Wiki Core`.
+  `Object.hasOwn` + an array check now decide, and an unknown mode warns and falls back.
+- **The "exactly one definition" test had precisely the blind spot it was written to remove.**
+  `const unused = 0, WIKI_MODE_SECTIONS = {…}` is invisible to its regex, as is a comment between
+  the keyword and the name. Tightening the regex would only move the blind spot, so the load-bearing
+  proof is now BEHAVIOURAL: for every mode in the imported object, the provisioning CLI is run and
+  the `##` headings of the catalogue it wrote are compared to that mode's array. A shadowing copy, a
+  stale import, a guard that ate a section and a silent fallback all surface there as a difference
+  in the file that actually shipped. The source-text test survives as a secondary net — now walking
+  the whole repo and matching any binding of the name — and says so in its own comment.
+- **No fixture proved the marker read was load-bearing.** The CLI test used an *unmarked*
+  `index.md`, which stays content whether or not the marker is read; a mutation that simply stopped
+  reading it would have passed. Added the mirror fixture: a genuinely marked projection under
+  `wiki/Sessions/` must produce no finding and exit 0.
+
+Neither round could run a shell (a sandbox ACL error on this machine), so neither certified the
+repository-wide or fleet claims — those were verified here instead, and the round-2 report says so
+per claim rather than implying coverage it did not have.
+
+#### Class sweep — 3/3 producers of a catalogue area
+
+`WIKI_MODE_SECTIONS`, the shipped catalogue templates, and the `domain` mode's runtime sections.
+`templates/wiki-meta/catalog.md` (the generic no-mode template) was already clear, and the
+skeleton's `CLAUDE.md` already documented `wiki-meta/Sessions/` correctly.
+
+`tests/session-folder-collision.test.mjs` (31) — the last group is a **sweep**, not one assertion
+per site: it walks every mode of the imported object and every catalogue template discovered under
+`templates/`, drives the provisioning CLI once per mode to compare what was SEEDED against what was
+imported, and drives the fleet CLI for the rules only a caller can enforce (marker reading,
+incomplete views). Plus 2 end-to-end tests in `tests/setup-vault-wizard-flags.test.mjs`. Every sweep
+asserts its own denominator — modes ≥ 4, sections ≥ 16, templates ≥ 2, headings ≥ 5 — so a discovery
+that silently returns nothing fails instead of going green.
+
+**Eighteen mutations, all caught**, each restored and verified by hash against a baseline, with a
+green full run after the last restore. Stated precisely, because a second review round was right to
+challenge a looser claim: there are **fourteen distinct witness sets**, not eighteen. M1–M3
+(`Sessions` back in the `code` list, a double-quoted `"Sessions"`, a new mode with a multi-line
+array) share one — correctly, since they are one rule written three ways; what matters is that M2
+and M3 *escaped* the pre-review scan, which is why it was replaced. M14/M15 (closing hashes,
+emphasis) likewise share the markdown-normalisation witness, and M11/M12/M13 share the
+incomplete-view witness while failing it for three different reasons (swallowed error, `ok` on an
+incomplete scan, and a *missing* directory reported as unreadable — the false-positive mirror).
+The remaining ten each have their own: the skeleton heading, a `## **Sessions** ##` heading planted
+in a template, the Wiki Core pointer, a reserved basename trusted again (4 red), one directory per
+side, the seeder's guard removed, a second `WIKI_MODE_SECTIONS` shadowing the import, an unknown
+mode seeding an empty catalogue, the CLI not reading the marker, and the CLI not EXCLUDING a
+genuinely marked projection.
+
 ## [0.91.1] — 2026-09-06 — the release that makes the tag point at a green CI
 
 **Nothing a user runs changed.** Every fix here is in test or tooling code, and v0.91.0's shipped

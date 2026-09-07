@@ -90,10 +90,25 @@ tools are unavailable (see *Security gates* below), drive layer 0 directly.
 | `personal` | second brain | People, Concepts, Decisions, References, Projects |
 | `research` | studying a subject | Papers, Concepts, Hypotheses, Methodology, Findings |
 | `business` | a business | Competitors, Clients, Decisions, Stakeholders, Meetings |
-| `code` | tied to a repo | Codebases, Architecture Decisions (ADR), Runbooks, Concepts, Sessions |
+| `code` | tied to a repo | Codebases, Architecture Decisions (ADR), Runbooks, Concepts |
 | `domain` | custom | the flat section list you pass in `wikiMode.sections` |
 
 Default: `code` when a workspace is bound, else `personal`.
+
+**No mode seeds a `Sessions` area, and `domain` cannot pass one.** Session notes
+live in `wiki-meta/Sessions/`, written one file per session by the
+`session-auto-journal` hook — that has been their home since v0.12.8, which moved
+them out of `wiki/` so generated logs would stop sitting among content pages.
+Until v0.92.0 the `code` mode seeded a competing `## Sessions` area into
+`catalog.md`; an agent looking up where a session recap belonged found that
+heading, filed there, and the vault ended with two unlinked `Sessions` folders.
+`partitionSeededAreas` (`src/helpers/session-folder-collision.mjs`) now drops any
+seeded area whose name a `wiki-meta/` folder owns — including one an LLM composes
+for `domain` — and warns instead of silently discarding it. The mode lists
+themselves live in `src/helpers/wiki-mode-sections.mjs`, importable so a test can
+read the real object instead of parsing this CLI's source. Existing vaults are
+found by the offline fleet scan `node scripts/okf-projections.mjs --all-vaults`,
+which reports the collision per vault (and exits 1 on one).
 
 ## Security gates
 
