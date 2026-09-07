@@ -108,7 +108,9 @@ for `domain` — and warns instead of silently discarding it. The mode lists
 themselves live in `src/helpers/wiki-mode-sections.mjs`, importable so a test can
 read the real object instead of parsing this CLI's source. Existing vaults are
 found by the offline fleet scan `node scripts/okf-projections.mjs --all-vaults`,
-which reports the collision per vault (and exits 1 on one).
+which reports the collision per vault (and exits 1 on one) — and, from inside a
+session, by `refresh_okf_projections` (any explicit call, `check: true` included),
+whose `sessions` block wiki-lint's Check O reads.
 
 ## Security gates
 

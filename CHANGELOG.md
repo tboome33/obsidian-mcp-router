@@ -305,6 +305,49 @@ at ~70 ms each, the signature of an import-time crash — and the fleet CLI prin
 Caught before commit by running the suites, but worth naming: the "repairs seed the next round's
 defects" pattern holds even for a comment.
 
+#### Reachable from a session — Check O inside `refresh_okf_projections`
+
+The fleet CLI needs a shell. The vault where the incident happened was being driven from a session
+with none, through the router — so a check only an operator at a terminal can run is invisible
+exactly where the misfile occurs. Every explicit `refresh_okf_projections` call (`check: true`
+included, the one wiki-lint's Check L already makes) now returns a `sessions` block:
+`findings[]` (`session-folder-collision` / `session-folder-stray`, each with `wikiFiles`,
+`metaFiles`, `detail`), or `skipped` when `wiki-meta/` could not be listed in full.
+
+- **The `wiki/` half costs nothing new.** The refresh has already walked `wiki/` and read every file
+  at a projection path fail-closed; the marker verdict comes from those same bytes — an unmarked
+  `wiki/Sessions/index.md` is the planner's `conflict` and the scan's content, from one read.
+- **The `wiki-meta/` half is one top-level listing plus one walk per owned directory**, fail-closed
+  the way the refresh is: a listing that errors (not a 404) yields `skipped: enumeration-failed`,
+  never an empty finding list; a missing `wiki-meta/` is clean.
+- **OFF for the automatic callers.** `sessionScan` defaults to false, so the debounced middleware
+  and the first-contact repair keep exactly the REST traffic and result shape they had; only the
+  MCP wrapper turns it on.
+- **Outside the C3 seal.** A finding changes no write, so a seal taken with `check: true` still
+  verifies on the apply that follows — and a scanned and an unscanned check seal identically.
+
+`skills/wiki-lint/SKILL.md` Check O now reads the block from that call and keeps the manual
+`list_files` walk as the fallback; `commands/okf-projections.md` reports it.
+
+**Measured with a second engine before wiring.** Codex was handed the skill text alone and a
+simulated vault (a marked `index.md`, a hand-written `log.md`, a hand-written `archive/index.md`,
+one recap, two journals, a catalogue still carrying `## Sessions`). It counted 4 of 5 `wiki/` files
+as content, excluded only the marked one, walked the subdirectory, named the catalogue heading,
+proposed no move and left the destination to the user. Its one remark was a real tension in the
+skill — "propose a fix for every ERROR" against "never propose a move" — now resolved by an explicit
+exception paragraph in step 4.
+
+Not measured here: the live router in this session still runs the pre-change code until restarted,
+so the wrapper is proven through the in-memory harness, not against a live vault.
+
+11 tests in `tests/refresh-okf-projections.test.mjs`, and seven mutations of the wiring, each with
+its own witness: the scan ON by default; the wrapper forgetting to turn it on; the marker verdict no
+longer read from the snapshot (2 red); a `wiki-meta/` listing error read as "no `wiki-meta/`"; a
+failing walk inside `wiki-meta/Sessions/` swallowed; the scan leaking into the C3 seal; apply mode
+dropping the block. The seal mutation had to be re-aimed once — its first version referenced a
+variable before its declaration and turned 18 tests red for a reason unrelated to the seal, which
+is the "you mutated the wrong line" signal, not coverage.
+
 #### Class sweep — 3/3 producers of a catalogue area
 
 `WIKI_MODE_SECTIONS`, the shipped catalogue templates, and the `domain` mode's runtime sections.

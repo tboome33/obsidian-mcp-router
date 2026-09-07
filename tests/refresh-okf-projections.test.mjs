@@ -210,6 +210,171 @@ describe('refreshProjectionsForVault', () => {
     assert.deepEqual(writes, []);
   });
 
+  // ---------------------------------------------------------------------------
+  // Check O — two folders named "Sessions" — through the tool (v0.92.0).
+  //
+  // The rule is `helpers/session-folder-collision.mjs`'s and has its own tests;
+  // what is tested HERE is the wiring: the wiki/ half comes from the refresh's
+  // own snapshot (so the marker verdict is the planner's), the wiki-meta/ half
+  // from one extra listing, the scan is fail-closed, it never touches the C3
+  // seal, and the automatic callers never pay for it.
+  // ---------------------------------------------------------------------------
+
+  const META = { 'wiki-meta/catalog.md': '# Catalog\n' };
+
+  test('Check O: content on both sides → session-folder-collision in check mode', async () => {
+    const { deps, writes } = makeVaultFs({
+      ...META,
+      'wiki/Sessions/2026-09-07-recap.md': PAGE('Recap'),
+      'wiki-meta/Sessions/2026-09-07-0930-x.md': '---\ntype: session\n---\n# S\n',
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, null);
+    assert.equal(r.sessions.findings.length, 1);
+    const [f] = r.sessions.findings;
+    assert.equal(f.rule, 'session-folder-collision');
+    assert.equal(f.severity, 'error');
+    assert.deepEqual(f.wikiFiles, ['wiki/Sessions/2026-09-07-recap.md']);
+    assert.deepEqual(f.metaFiles, ['wiki-meta/Sessions/2026-09-07-0930-x.md']);
+    assert.deepEqual(r.sessions.metaDirs, ['wiki-meta/Sessions']);
+    assert.deepEqual(writes, [], 'check mode still writes nothing');
+  });
+
+  test('Check O: a MARKED wiki/Sessions/index.md is excluded — the verdict is the planner\'s bytes', async () => {
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/Sessions/index.md': `# Sessions\n\n${projectionMarkerLine()}\n`,
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.deepEqual(r.sessions.findings, []);
+  });
+
+  test('Check O: an UNMARKED wiki/Sessions/index.md is BOTH a conflict and session content', async () => {
+    // A conflict needs a generated index to collide WITH, so the directory
+    // must hold a content page; with the page there, the planner wants to write
+    // `wiki/Sessions/index.md`, finds a hand-written one, and reports it —
+    // while the scan counts that same file as session content. Same bytes,
+    // two verdicts, both right.
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/a/p.md': PAGE('P'),
+      'wiki/Sessions/recap.md': PAGE('Recap'),
+      'wiki/Sessions/index.md': '# Mes sessions\n\nÉcrit main.\n',
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.ok(r.conflicts.includes('wiki/Sessions/index.md'), `the planner's word: ${JSON.stringify(r.conflicts)}`);
+    assert.equal(r.sessions.findings[0]?.rule, 'session-folder-collision', 'and the scan\'s');
+    assert.deepEqual(r.sessions.findings[0].wikiFiles, ['wiki/Sessions/index.md', 'wiki/Sessions/recap.md']);
+  });
+
+  test('Check O: an UNMARKED index.md in a dir with NO content pages is still session content', async () => {
+    // No generated index is planned for an empty directory, so there is no
+    // conflict to report — but the hand-written file is content all the same,
+    // and the scan must not inherit the planner's silence.
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/a/p.md': PAGE('P'),
+      'wiki/Sessions/index.md': '# Mes sessions\n\nÉcrit main.\n',
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.deepEqual(r.conflicts, [], 'nothing generated for that dir → nothing to conflict with');
+    assert.equal(r.sessions.findings[0]?.rule, 'session-folder-collision');
+    assert.deepEqual(r.sessions.findings[0].wikiFiles, ['wiki/Sessions/index.md']);
+  });
+
+  test('Check O: wiki/ side only → stray; wiki-meta/ side only → nothing', async () => {
+    const stray = makeVaultFs({ ...META, 'wiki/sessions/old.md': PAGE('Old') });
+    const rs = await refreshProjectionsForVault(VAULT, stray.deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(rs.sessions.findings[0]?.rule, 'session-folder-stray');
+    assert.equal(rs.sessions.findings[0]?.severity, 'warning');
+
+    const clean = makeVaultFs({ ...META, 'wiki/a/p.md': PAGE('P'), 'wiki-meta/Sessions/x.md': '# S\n' });
+    const rc = await refreshProjectionsForVault(VAULT, clean.deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.deepEqual(rc.sessions.findings, []);
+    assert.deepEqual(rc.sessions.metaDirs, ['wiki-meta/Sessions']);
+  });
+
+  test('Check O: a vault with no wiki-meta/ at all is clean, not skipped', async () => {
+    const { deps } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
+    const listFilesIn = async (v, dir) => {
+      if (dir === 'wiki-meta') throw Object.assign(new Error('404'), { kind: 'not_found' });
+      return deps.listFilesIn(v, dir);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, listFilesIn }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.deepEqual(r.sessions, { findings: [], skipped: null, metaDirs: [] });
+  });
+
+  test('Check O: FAIL CLOSED — a wiki-meta/ listing that ERRORS is skipped, never "no collision"', async () => {
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/Sessions/recap.md': PAGE('Recap'),
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const listFilesIn = async (v, dir) => {
+      if (dir === 'wiki-meta') throw new Error('500 upstream');
+      return deps.listFilesIn(v, dir);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, listFilesIn }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, 'enumeration-failed');
+    assert.deepEqual(r.sessions.findings, [], 'a stray verdict here would be a lie: the wiki-meta side was never seen');
+    // And the projections part of the call is unaffected.
+    assert.equal(r.mode, 'check');
+  });
+
+  test('Check O: a failing walk INSIDE wiki-meta/Sessions/ is skipped too', async () => {
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/Sessions/recap.md': PAGE('Recap'),
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const listFilesIn = async (v, dir) => {
+      if (dir === 'wiki-meta/Sessions') throw new Error('timeout');
+      return deps.listFilesIn(v, dir);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, listFilesIn }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, 'enumeration-failed');
+  });
+
+  test('Check O: OFF by default — the automatic callers see no sessions block and no extra listing', async () => {
+    const { deps } = makeVaultFs({ ...META, 'wiki/Sessions/recap.md': PAGE('Recap'), 'wiki-meta/Sessions/x.md': '# S\n' });
+    const dirs = [];
+    const listFilesIn = async (v, dir) => { dirs.push(dir); return deps.listFilesIn(v, dir); };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, listFilesIn }, { check: true, now: '2026-09-07' });
+    assert.equal('sessions' in r, false);
+    assert.ok(!dirs.includes('wiki-meta'), `wiki-meta was listed: ${dirs.join(', ')}`);
+  });
+
+  test('Check O: the scan never enters the C3 seal — a check seal still verifies on apply', async () => {
+    const { deps } = makeVaultFs({
+      ...META,
+      'wiki/a/p.md': PAGE('P'),
+      'wiki/Sessions/recap.md': PAGE('Recap'),
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const checked = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-07-30' });
+    assert.equal(checked.sessions.findings.length, 1);
+    const applied = await refreshProjectionsForVault(VAULT, deps, {
+      approvedPlanSha256: checked.approvedPlanSha256, sessionScan: true, now: '2026-07-30',
+    });
+    assert.equal(applied.mode, 'apply');
+    assert.equal(applied.sessions.findings.length, 1, 'apply reports it too');
+    // The seal is identical with and without the scan.
+    const unscanned = await refreshProjectionsForVault(VAULT, makeVaultFs({
+      ...META, 'wiki/a/p.md': PAGE('P'), 'wiki/Sessions/recap.md': PAGE('Recap'), 'wiki-meta/Sessions/x.md': '# S\n',
+    }).deps, { check: true, now: '2026-07-30' });
+    assert.equal(unscanned.approvedPlanSha256, checked.approvedPlanSha256);
+  });
+
+  test('Check O: the tool wrapper turns the scan ON', async () => {
+    const { deps } = makeVaultFs({ ...META, 'wiki/Sessions/recap.md': PAGE('Recap'), 'wiki-meta/Sessions/x.md': '# S\n' });
+    const registry = { resolveVault: () => VAULT };
+    const r = await refreshOkfProjectionsTool(registry, { check: true }, { ...deps, now: '2026-09-07' });
+    assert.equal(r.sessions?.findings?.[0]?.rule, 'session-folder-collision');
+  });
+
   test('tool wrapper resolves the vault through the registry', async () => {
     const { deps } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
     const registry = { resolveVault: (n) => ({ name: n ?? 'default-vault' }) };
