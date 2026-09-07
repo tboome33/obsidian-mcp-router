@@ -337,8 +337,15 @@ proposed no move and left the destination to the user. Its one remark was a real
 skill — "propose a fix for every ERROR" against "never propose a move" — now resolved by an explicit
 exception paragraph in step 4.
 
-Not measured here: the live router in this session still runs the pre-change code until restarted,
-so the wrapper is proven through the in-memory harness, not against a live vault.
+**Measured against live vaults, through the real router process.** The plugin serves the router
+from its cache (the installed `0.91.1` release), so a restart does not pick this change up — the
+session's own `refresh_okf_projections` kept answering without a `sessions` block. The proof was
+run instead by spawning `bin/obsidian-mcp-router.mjs` from the working tree, speaking JSON-RPC over
+stdio against the real Local REST API, `--config` on a copy (verified byte-identical afterwards: the
+spawned router wrote nothing). On the bound router vault: 171 pages, `wiki-meta/Sessions` listed in
+full (777 journals), a clean verdict. On the incident vault, opened for the purpose: one
+`session-folder-collision`, naming only the recap under `wiki/Sessions/` — the generated
+`index.md` beside it excluded by its marker — against the two journals under `wiki-meta/Sessions/`.
 
 11 tests in `tests/refresh-okf-projections.test.mjs`, and seven mutations of the wiring, each with
 its own witness: the scan ON by default; the wrapper forgetting to turn it on; the marker verdict no
