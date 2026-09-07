@@ -4,7 +4,7 @@ description: Health-check the wiki — orphans, dead wikilinks, index drift, fro
 
 Invoke the `wiki-lint` skill on the target vault.
 
-Modes: default (structural checks A-H) · `--deep` (digest-based checks I-L) · `--okf <path>` (Check M: validate an OKF knowledge bundle — dedicated command: `/obsidian-router:okf-check`).
+Modes: default (structural checks A-H, plus N — decision coherence — and O — two folders named "Sessions") · `--deep` (digest-based checks I-L) · `--okf <path>` (Check M: validate an OKF knowledge bundle — dedicated command: `/obsidian-router:okf-check`).
 
 Default behavior:
 - Read-only: produce the diagnostic report, no mutations.

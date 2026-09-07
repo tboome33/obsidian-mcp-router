@@ -55,13 +55,21 @@ export const WIKI_META_OWNED_AREAS = Object.freeze(['Sessions']);
 const OWNED_LOWER = new Set(WIKI_META_OWNED_AREAS.map((a) => a.toLowerCase()));
 
 /**
- * Basenames the OKF projections reserve. Exported so a caller knows which files
- * are worth reading the generated-marker out of; the detector itself does NOT
- * use this list to skip anything — a reserved basename is not proof a file was
- * generated, and treating it as such was a real defect (see
- * `detectSessionFolderCollision`).
+ * The canonical spelling of an owned area, or null when the name is not owned.
+ * What `partitionSeededAreas`' caller should print: a bold-wrapped Sessions is
+ * rejected because it RENDERS as Sessions, and the remedy must name the folder
+ * that exists — `wiki-meta/Sessions/` — not one spelled with the rejected
+ * markup. (Written without the literal example on purpose: a bold marker
+ * followed by a slash is the sequence that closes this comment.)
+ *
+ * @param {unknown} name
+ * @returns {string | null}
  */
-export const PROJECTION_BASENAMES = Object.freeze(['index.md', 'log.md']);
+export function ownedAreaFor(name) {
+  if (typeof name !== 'string') return null;
+  const key = normaliseAreaName(name);
+  return WIKI_META_OWNED_AREAS.find((a) => a.toLowerCase() === key) ?? null;
+}
 
 /**
  * Would a catalogue area of this name collide with a `wiki-meta/` folder?
@@ -75,8 +83,7 @@ export const PROJECTION_BASENAMES = Object.freeze(['index.md', 'log.md']);
  * @returns {boolean}
  */
 export function isWikiMetaOwnedArea(name) {
-  if (typeof name !== 'string') return false;
-  return OWNED_LOWER.has(normaliseAreaName(name));
+  return ownedAreaFor(name) !== null;
 }
 
 /**

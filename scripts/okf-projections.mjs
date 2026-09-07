@@ -41,10 +41,9 @@ import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
 import {
   WIKI_META_OWNED_AREAS,
-  PROJECTION_BASENAMES,
   detectSessionFolderCollision,
 } from '../src/helpers/session-folder-collision.mjs';
-import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
+import { hasProjectionMarker, isProjectionPath } from '../src/helpers/okf-projections.mjs';
 
 const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
   ? path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG)
@@ -129,11 +128,15 @@ function tidyGhostSessionsDir(vaultAbs, apply) {
  *
  * TWO THINGS THIS DOES BEYOND LISTING, both found by an adversarial review:
  *
- * 1. It reads the generated-marker of every file at a RESERVED basename, rather
+ * 1. It reads the generated-marker of every file at a RESERVED path, rather
  *    than letting the detector assume `index.md` means generated. This repo's
  *    own projection writer treats an unmarked file at a reserved path as a
  *    user-owned conflict; a hand-written `wiki/Sessions/index.md` is content and
- *    must be reported. At most a couple of files per vault are read.
+ *    must be reported. At most a couple of files per vault are read. "Reserved"
+ *    is `isProjectionPath`'s word, not a second list kept here: the router
+ *    only ever generates `index.md` under `wiki/` (any depth) and `wiki/log.md`
+ *    at the root, so `wiki/Sessions/log.md` and anything under `wiki-meta/` is
+ *    content without a read.
  *
  * 2. It REPORTS enumeration failures instead of swallowing them. A `catch` that
  *    returns nothing turns "I could not look" into "there is nothing there",
@@ -145,7 +148,6 @@ function tidyGhostSessionsDir(vaultAbs, apply) {
  */
 function collectOwnedAreaEntries(vaultAbs) {
   const owned = new Set(WIKI_META_OWNED_AREAS.map((a) => a.toLowerCase()));
-  const reserved = new Set(PROJECTION_BASENAMES.map((b) => b.toLowerCase()));
   const entries = [];
   const unreadable = [];
 
@@ -174,7 +176,7 @@ function collectOwnedAreaEntries(vaultAbs) {
           if (child.isDirectory()) { walk(rel); continue; }
           if (!child.name.toLowerCase().endsWith('.md')) continue;
           let generated = false;
-          if (reserved.has(child.name.toLowerCase())) {
+          if (isProjectionPath(rel)) {
             try {
               generated = hasProjectionMarker(fs.readFileSync(path.join(vaultAbs, rel), 'utf8'));
             } catch (err) {
@@ -219,8 +221,10 @@ for (const vaultAbs of args.resolved) {
     // An incomplete view is not a clean one. It does not fail the run — the
     // projections themselves may have succeeded — but the vault must never be
     // printed `ok`, because "no collision found" was not actually established.
+    // `sessions`, not `drift`: that word already means "the OKF projections are
+    // out of date" in `refresh_okf_projections --check` and wiki-lint.
     const status = r.conflicts.length ? 'conflicts'
-      : sessionFindings.length ? 'drift'
+      : sessionFindings.length ? 'sessions'
         : scan.unreadable.length ? 'partial'
           : 'ok';
     rows.push({

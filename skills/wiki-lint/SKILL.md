@@ -11,7 +11,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 
 The skill has three modes :
 
-- **Default (structural)** — runs Checks A through H. Cheap, scans page metadata + wikilinks + citations only. The right mode for routine health checks.
+- **Default (structural)** — runs Checks A through H, plus N (decision-layer coherence) and O (two folders named "Sessions"). Cheap, scans page metadata + wikilinks + citations + two directory listings only. The right mode for routine health checks.
 - **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L (plus Check J-bis, C11, which needs no digest — it reads the Smart Connections vector store and reports itself unavailable where there is none), which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
 - **`--okf <path>` (v0.33.0+)** — runs Check M ONLY : validates an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1) against the spec's three conformance rules. The path is either a bundle exported by `wiki-export --target okf` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned repo containing a third-party bundle. This mode doesn't lint the wiki itself.
 

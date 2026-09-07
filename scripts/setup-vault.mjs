@@ -89,7 +89,7 @@ import {
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
 import { generateSearchIndexOnDisk } from '../src/helpers/bm25-index-fs.mjs';
 import { hasProjectionMarker } from '../src/helpers/okf-projections.mjs';
-import { partitionSeededAreas } from '../src/helpers/session-folder-collision.mjs';
+import { partitionSeededAreas, ownedAreaFor } from '../src/helpers/session-folder-collision.mjs';
 import { WIKI_MODE_SECTIONS } from '../src/helpers/wiki-mode-sections.mjs';
 import {
   buildProvisionPlan,
@@ -2302,7 +2302,7 @@ function buildModeCatalogContent(mode, sections) {
   const { areas: list, rejected } = partitionSeededAreas(requested);
   for (const name of rejected) {
     warn(
-      `Wiki area "${name}" NOT seeded into catalog.md — wiki-meta/${name.trim()}/ already owns that name. ` +
+      `Wiki area "${name}" NOT seeded into catalog.md — wiki-meta/${ownedAreaFor(name)}/ already owns that name. ` +
       `Session content belongs there (the session-auto-journal hook writes it); a second area under wiki/ ` +
       `would give the same content type two homes.`,
     );

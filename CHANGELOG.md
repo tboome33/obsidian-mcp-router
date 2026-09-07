@@ -269,13 +269,49 @@ Neither round could run a shell (a sandbox ACL error on this machine), so neithe
 repository-wide or fleet claims — those were verified here instead, and the round-2 report says so
 per claim rather than implying coverage it did not have.
 
+#### What the THIRD round changed — a fresh model on the committed bytes
+
+Round 3 (Fable 5.1, on commit `01e4460`, attacking the round-2 repairs and the code they assume)
+found four points, all minor, none a regression a user would have met — and one build-breaking
+typo of its own on the way to fixing them, which is the round's real lesson.
+
+- **A second copy of a reserved-name rule.** The helper exported `PROJECTION_BASENAMES =
+  ['index.md', 'log.md']` for the CLI to decide which files were worth a marker read. But the
+  router's own word on the subject is `isProjectionPath`, and it says something narrower:
+  `index.md` at any depth under `wiki/`, `log.md` at the ROOT only. So `wiki/Sessions/log.md` can
+  never be a projection, marker or not — a hand-written page that happens to open with the marker
+  line would have vanished from the scan. The CLI now asks `isProjectionPath`; the export is gone,
+  and the detector's test states the rule as "no basename is special here, only the caller's
+  verdict is".
+- **The rejection message printed the rejected markup as a folder name** —
+  `wiki-meta/**Sessions**/`. New `ownedAreaFor(name)` returns the canonical spelling, and the
+  remedy names the folder that exists.
+- **Two docs still said the default lint mode runs "Checks A-H".** Check O (and N, which was
+  already missing) now appear in `commands/wiki-lint.md` and the skill's mode list.
+- **The CLI status word `drift` was already taken** — it means "OKF projections out of date" in
+  `refresh_okf_projections --check` and wiki-lint. Renamed `sessions`, so the tally line reads
+  `ok: 16 · no-wiki: 4 · sessions: 4` and cannot be confused with the other kind.
+
+Also verified this round, because a review must check what the change ASSUMES: the MCP path
+(`provision_vault`) drives the same CLI through `vault-wizard-engine.mjs`, passes `--wiki-sections`,
+and reads the child's stdout by a nonce'd marker line — so the new `warn()` lines on stdout break
+nothing; the `.mcpb` bundle was built and stages both new helpers; the fleet scan on the real 30
+vaults reports the same four collisions and, on the incident vault, names only the recap — the
+generated `wiki/Sessions/index.md` beside it is now excluded by the marker, on real data.
+
+The typo: the fix's own JSDoc wrote the example `wiki-meta/**Sessions**/`, and the sequence `**/`
+closes a block comment. Every consumer of the helper failed to import — 23 red in the wizard suite
+at ~70 ms each, the signature of an import-time crash — and the fleet CLI printed nothing at all.
+Caught before commit by running the suites, but worth naming: the "repairs seed the next round's
+defects" pattern holds even for a comment.
+
 #### Class sweep — 3/3 producers of a catalogue area
 
 `WIKI_MODE_SECTIONS`, the shipped catalogue templates, and the `domain` mode's runtime sections.
 `templates/wiki-meta/catalog.md` (the generic no-mode template) was already clear, and the
 skeleton's `CLAUDE.md` already documented `wiki-meta/Sessions/` correctly.
 
-`tests/session-folder-collision.test.mjs` (31) — the last group is a **sweep**, not one assertion
+`tests/session-folder-collision.test.mjs` (33) — the last group is a **sweep**, not one assertion
 per site: it walks every mode of the imported object and every catalogue template discovered under
 `templates/`, drives the provisioning CLI once per mode to compare what was SEEDED against what was
 imported, and drives the fleet CLI for the rules only a caller can enforce (marker reading,
@@ -283,9 +319,9 @@ incomplete views). Plus 2 end-to-end tests in `tests/setup-vault-wizard-flags.te
 asserts its own denominator — modes ≥ 4, sections ≥ 16, templates ≥ 2, headings ≥ 5 — so a discovery
 that silently returns nothing fails instead of going green.
 
-**Eighteen mutations, all caught**, each restored and verified by hash against a baseline, with a
+**Nineteen mutations, all caught**, each restored and verified by hash against a baseline, with a
 green full run after the last restore. Stated precisely, because a second review round was right to
-challenge a looser claim: there are **fourteen distinct witness sets**, not eighteen. M1–M3
+challenge a looser claim: there are **fifteen distinct witness sets**, not nineteen. M1–M3
 (`Sessions` back in the `code` list, a double-quoted `"Sessions"`, a new mode with a multi-line
 array) share one — correctly, since they are one rule written three ways; what matters is that M2
 and M3 *escaped* the pre-review scan, which is why it was replaced. M14/M15 (closing hashes,
@@ -295,8 +331,9 @@ incomplete scan, and a *missing* directory reported as unreadable — the false-
 The remaining ten each have their own: the skeleton heading, a `## **Sessions** ##` heading planted
 in a template, the Wiki Core pointer, a reserved basename trusted again (4 red), one directory per
 side, the seeder's guard removed, a second `WIKI_MODE_SECTIONS` shadowing the import, an unknown
-mode seeding an empty catalogue, the CLI not reading the marker, and the CLI not EXCLUDING a
-genuinely marked projection.
+mode seeding an empty catalogue, the CLI not reading the marker, the CLI not EXCLUDING a
+genuinely marked projection, and — round 3's — the CLI keeping a basename list of its own, which
+excludes a marked `wiki/Sessions/log.md` that `isProjectionPath` says is content.
 
 ## [0.91.1] — 2026-09-06 — the release that makes the tag point at a green CI
 
