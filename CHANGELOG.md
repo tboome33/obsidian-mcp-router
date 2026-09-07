@@ -10,6 +10,8 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.92.0] — 2026-09-07 — two folders named "Sessions", and a hot-cache guard that asks the result
+
 ### The hot-cache guard stopped accepting a write that never happened
 
 `hooks/hot-cache-update-prompt.mjs` blocks the end of a turn when the session wrote a note under a
