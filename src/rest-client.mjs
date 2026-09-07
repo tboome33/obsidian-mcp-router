@@ -16,6 +16,33 @@ import { safeForMessage } from './helpers/sanitize.mjs';
 const insecureAgent = new Agent({ connect: { rejectUnauthorized: false } });
 const secureAgent = new Agent();
 
+/**
+ * The vault-relative path `pingVault` asks for when it needs to tell a refused
+ * key from a misleading public route. Deliberately one that cannot exist: the
+ * question is "was the key accepted", never "what is in this vault". A vault
+ * that somehow DOES hold this file answers 200, which reads as "key accepted" —
+ * the fail-safe direction, since the only thing a 200 can do here is stop the
+ * probe from condemning a vault.
+ */
+const IDENTITY_PROBE_PATH = 'router-identity-probe.does-not-exist';
+
+/** Cap on the confirming round trip — see `pingVault`. */
+const IDENTITY_CONFIRM_TIMEOUT_MS = 3000;
+
+/**
+ * The confirming request's budget: the vault's own, capped, and never a value
+ * `request()` would have to interpret. A configured `timeoutMs` of 0, a negative
+ * number or NaN would sail through a bare `Math.min` and mean whatever the
+ * transport happens to do with it; here anything that is not a positive finite
+ * number falls back to the cap, so the bound is a bound.
+ */
+function identityConfirmTimeout(vault) {
+  const own = vault?.timeoutMs;
+  return Number.isFinite(own) && own > 0
+    ? Math.min(own, IDENTITY_CONFIRM_TIMEOUT_MS)
+    : IDENTITY_CONFIRM_TIMEOUT_MS;
+}
+
 function agentFor(vault) {
   return vault.tlsInsecure ? insecureAgent : secureAgent;
 }
@@ -380,18 +407,164 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
 
 // --- Public API ---
 
+/**
+ * Is this vault reachable — and is the thing that answered actually THIS vault?
+ *
+ * IDENTITY, NOT MERELY LIVENESS. `GET /` on Local REST API is a PUBLIC endpoint:
+ * it answers 200 with `{status:"OK", manifest, versions, authenticated}` to
+ * anyone, key or no key. So "it answered" only ever proved that SOME Obsidian
+ * REST server holds that port — never that it is the vault we mean. When two
+ * vaults are configured for one port the loser fails to bind, and the winner
+ * cheerfully answers the loser's ping.
+ *
+ * Measured on Roland's fleet, 2026-09-08: `C:\VAULTS\Roland` was CLOSED in
+ * Obsidian, another vault held its port 27126, and `list_vaults` reported
+ * `roland: online: true` with a latency. Reading that line, nobody would go
+ * looking for a port collision.
+ *
+ * The signal that separates the two is already in the same response, for free:
+ * `authenticated` is true only when the server accepted the key WE sent.
+ * Verified against the live fleet before being relied on — right vault + our
+ * key → true; squatter + our key → false, HTTP 200.
+ *
+ * WHAT THIS PROVES, AND WHAT IT DOES NOT — stated because the first draft
+ * overclaimed and an adversarial review caught it:
+ *   - It proves the endpoint ACCEPTED THIS VAULT'S KEY. It does NOT prove the
+ *     vault is unique, because keys are not guaranteed unique: a vault copied
+ *     folder-and-all carries its source's key. Measured on this very fleet
+ *     (2026-09-08): `C:\VAULTS\.template` and a copy of it on another drive
+ *     share one apiKey. Two vaults with one key are indistinguishable here.
+ *   - A refusal does NOT prove a squatter either: a STALE stored key gives the
+ *     same answer. Both causes are named in the message rather than one being
+ *     asserted.
+ *
+ * Four verdicts, because "cannot tell" is not "wrong":
+ *   - `confirmed`   — it answered and accepted a key we actually sent.
+ *   - `rejected`    — it answered and REFUSED this vault's key, and a SECOND,
+ *                     authenticated request confirmed the refusal (see below).
+ *                     Either something else holds the port, or the stored key is
+ *                     stale. Reported `online: false`: the credentials this
+ *                     router holds cannot read or write it, so calling it up
+ *                     would promise something no tool can deliver.
+ *   - `unreachable` — nothing answered at all.
+ *   - `unverified`  — it answered, but identity could not be established. FOUR
+ *                     ways in: it said nothing about authentication (an older
+ *                     plugin); we hold no key for it (`missingApiKey`, already
+ *                     reported on its own); it said "not authenticated" and the
+ *                     confirming request did NOT come back with a refusal (it
+ *                     succeeded, timed out, or the connection dropped). Liveness
+ *                     only, and the pre-identity behaviour is preserved:
+ *                     `online: true`. Silence must not be read as a denial — nor
+ *                     as a confirmation.
+ *
+ * WHY A SECOND REQUEST BEFORE CONDEMNING. `GET /` is a public route, so a proxy
+ * may cache it, or answer it anonymously while forwarding authenticated routes
+ * correctly — in which case `authenticated:false` says nothing about whether
+ * this router can actually use the vault. Taking a healthy vault offline is the
+ * worst thing this function can do, so the demotion is CONFIRMED against a route
+ * that genuinely requires the key, and only a real 401 there decides it. The
+ * extra round trip happens only on the failing path.
+ *
+ * @param {object} vault
+ * @returns {Promise<{online: boolean, identity: 'confirmed'|'rejected'|'unverified'|'unreachable',
+ *                    latencyMs: number, info?: unknown, error?: string}>}
+ */
 export async function pingVault(vault) {
   const start = Date.now();
   try {
     const info = await request(vault, 'GET', '/');
+    const latencyMs = Date.now() - start;
+    // OWN property only, and on a plain object only. `info` is parsed JSON off
+    // the network: a plain `info.authenticated` walks the prototype chain, so a
+    // response that omits the field entirely could still yield `false` from
+    // `Object.prototype` and condemn a healthy vault. `Object.hasOwn` keeps
+    // "absent" distinguishable from "false", which is the whole difference
+    // between `unverified` and `rejected`.
+    const authenticated =
+      info && typeof info === 'object' && !Array.isArray(info) && Object.hasOwn(info, 'authenticated')
+        ? info.authenticated
+        : undefined;
+
+    // Gated on actually HAVING sent a key. Without one `authenticated:false` is
+    // the expected answer for the right vault, and calling that a squatter
+    // would turn `missingApiKey` into a phantom port collision.
+    if (authenticated === false && vault.apiKey) {
+      // CONFIRM before condemning — see the header. Only a genuine 401 on a
+      // route that REQUIRES the key demotes the vault; anything else (it works,
+      // it times out, the host vanished between the two calls) leaves the
+      // public route's word unconfirmed, and an unconfirmed accusation must not
+      // take a working vault offline.
+      //
+      // The route is a path chosen because it is overwhelmingly unlikely to
+      // exist: authorisation is checked BEFORE existence, so a wrong key answers
+      // 401 and a right key answers 404 — the two verdicts we need — without
+      // listing a directory or naming a real note. Measured against Local REST
+      // API 4.0.2: `/vault/` with the right key returns 200 and 57 bytes of root
+      // listing; this route returns 404 in 50 bytes, and 401 with a wrong key.
+      //
+      // Two things this deliberately does NOT claim. It cannot GUARANTEE no read:
+      // a vault is free to contain a file by this name, and then the answer is
+      // 200 with its content. That is the fail-safe direction — a 200 leaves the
+      // vault `online` and `unverified`, so the worst case is that the probe
+      // declines to condemn. And the name carries no leading dot on purpose:
+      // a dot-file would collide with real content even less often, but any
+      // gateway with a policy against dot-paths would answer 401 for a reason
+      // that has nothing to do with the key, and THAT failure is not fail-safe —
+      // it would take a healthy vault offline. Collision costs a wasted probe;
+      // a spurious 401 costs the user their vault.
+      //
+      // BOUNDED, and deliberately tighter than the vault's own budget. The
+      // first call already answered, so the endpoint is up and a confirmation
+      // that does not come back quickly is not going to; without a cap, a
+      // server that answers `/` instantly and then hangs would make every ping
+      // pay a second full timeout, and `list_vaults` pings the whole fleet.
+      // A timeout here is NOT a refusal — it leaves the verdict `unverified`.
+      let refusalConfirmed = false;
+      try {
+        await request(vault, 'GET', `/vault/${IDENTITY_PROBE_PATH}`, {
+          timeoutMs: identityConfirmTimeout(vault),
+        });
+      } catch (err) {
+        refusalConfirmed = err?.kind === 'unauthorized';
+      }
+      if (refusalConfirmed) {
+        return {
+          online: false,
+          identity: 'rejected',
+          latencyMs: Date.now() - start,
+          error:
+            `[${vault.name}] a server IS listening at ${vault.baseUrl}, but it REFUSED this vault's ` +
+            `API key (confirmed with an authenticated request). TWO causes look identical from here ` +
+            `and both are worth checking: something ELSE holds this port — a vault absent from ` +
+            `portRegistry can squat one without ever appearing in the collision report — or the key ` +
+            `stored for this vault is stale. Nothing was read from it. ` +
+            `\`node <router-repo>/scripts/setup-vault.mjs --check-ports\` answers the first; ` +
+            `Obsidian → Settings → Local REST API → API Key answers the second.`,
+          info,
+        };
+      }
+    }
+
     return {
       online: true,
+      // `confirmed` is gated on HAVING SENT A KEY, not only on the answer.
+      // Without one, `authenticated: true` cannot mean "it accepted ours" — a
+      // cached or proxy-generated body can carry that shape, and claiming
+      // confirmation from it would promise exactly what the header says this
+      // function does not prove. Keyless vaults stay `unverified`, which is what
+      // `missingApiKey` already tells the reader.
+      identity: authenticated === true && vault.apiKey ? 'confirmed' : 'unverified',
+      // Measured at RETURN, not before the confirmation round trip: on the
+      // `authenticated:false` path this function may have waited for a second
+      // request, and reporting the first call's latency would hide that wait
+      // from the very listing a user reads to spot a slow vault.
       latencyMs: Date.now() - start,
       info,
     };
   } catch (err) {
     return {
       online: false,
+      identity: 'unreachable',
       latencyMs: Date.now() - start,
       error: err.message,
     };

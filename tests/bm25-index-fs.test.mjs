@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { generateSearchIndexOnDisk } from '../src/helpers/bm25-index-fs.mjs';
+import { defaultNameFromPath } from '../src/helpers/vault-slug.mjs';
 import {
   automaticIndexAction,
   indexProblem,
@@ -63,6 +64,48 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(vaultDir, { recursive: true, force: true });
+});
+
+// The same NAMING divergence the projections carried, at its second site: this
+// disk generator and the `build_search_index` tool both stamp a name into the
+// index (`vault`), and the tool uses `vault.name` — the registry slug.
+//
+// Worth being exact about the blast radius, because it is NOT the projections':
+// index idempotence is decided by `fingerprint`, and `vault` is in neither the
+// fingerprint nor the integrity digest. A disagreeing name therefore causes NO
+// rewrite loop. What it does is put a name the user never uses into every
+// diagnostic built from it — `absentIndexMessage`, `staleIndexMessage`,
+// `rebuildHint` — including the one that tells them which vault to pass to
+// `build_search_index`. Wrong name, unusable instruction.
+describe('generateSearchIndexOnDisk — the recorded vault name', () => {
+  test('defaults to the registry slug, not the on-disk folder case', () => {
+    const mixed = fs.mkdtempSync(path.join(os.tmpdir(), 'bm25-MixedCase-'));
+    try {
+      fs.mkdirSync(path.join(mixed, 'wiki'), { recursive: true });
+      fs.writeFileSync(path.join(mixed, 'wiki', 'x.md'), PAGE('X', 'Corps.'), 'utf8');
+      generateSearchIndexOnDisk(mixed, { apply: true });
+
+      const idx = JSON.parse(fs.readFileSync(path.join(mixed, ...SEARCH_INDEX_PATH.split('/')), 'utf8'));
+      assert.equal(idx.vault, defaultNameFromPath(mixed));
+      assert.notEqual(idx.vault, path.basename(mixed));
+    } finally {
+      fs.rmSync(mixed, { recursive: true, force: true });
+    }
+  });
+
+  test('an explicit name still wins', () => {
+    const mixed = fs.mkdtempSync(path.join(os.tmpdir(), 'bm25-Explicit-'));
+    try {
+      fs.mkdirSync(path.join(mixed, 'wiki'), { recursive: true });
+      fs.writeFileSync(path.join(mixed, 'wiki', 'x.md'), PAGE('X', 'Corps.'), 'utf8');
+      generateSearchIndexOnDisk(mixed, { apply: true, vaultName: 'chosen-name' });
+
+      const idx = JSON.parse(fs.readFileSync(path.join(mixed, ...SEARCH_INDEX_PATH.split('/')), 'utf8'));
+      assert.equal(idx.vault, 'chosen-name');
+    } finally {
+      fs.rmSync(mixed, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('generateSearchIndexOnDisk — construction', () => {

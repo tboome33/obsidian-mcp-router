@@ -17,6 +17,7 @@ import path from 'node:path';
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
+import { defaultNameFromPath } from './vault-slug.mjs';
 import {
   buildProjections,
   planProjectionWrites,
@@ -49,14 +50,25 @@ function walkWiki(vaultAbs) {
  * @param {object} [opts]
  * @param {boolean} [opts.apply=false] Write/delete; false = plan only.
  * @param {string} [opts.now] Injected ISO date (defaults to today).
- * @param {string} [opts.vaultName] Root-index heading (defaults to basename).
+ * @param {string} [opts.vaultName] Root-index heading. Defaults to the name the
+ *   REGISTRY resolves this vault by — pass the configured slug explicitly when
+ *   the config overrides it (`vaultSlug(cfg, vaultPath)`).
  * @returns {{written: string[], deleted: string[], unchanged: number,
  *            conflicts: string[], pagesScanned: number, applied: boolean}}
  */
 export function generateProjectionsOnDisk(vaultPath, opts = {}) {
   const apply = opts.apply === true;
   const now = opts.now || new Date().toISOString().slice(0, 10);
-  const vaultName = opts.vaultName || path.basename(vaultPath);
+  // NOT `path.basename(vaultPath)`. The other generator of these same files —
+  // `refresh_okf_projections` over REST — titles the root index with
+  // `vault.name`, the registry slug. A basename default disagrees with it on
+  // every vault whose folder is not already the slug (`TradingView` vs
+  // `tradingview`, `.template` vs `template`), and then each entry point undoes
+  // the other's `wiki/index.md` forever. `defaultNameFromPath` IS the registry's
+  // own fallback, so the two now agree by construction rather than by luck.
+  // F2 in vault-birth-conformance.test.mjs fixed this at setup-vault's call
+  // site; leaving the default wrong let the fleet CLI keep falling in.
+  const vaultName = opts.vaultName || defaultNameFromPath(vaultPath);
 
   const all = walkWiki(vaultPath);
   const pages = [];

@@ -10,6 +10,152 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+
+## [0.93.0] — 2026-09-08 — two checkers that reported success they had not established
+
+
+Both defects were found by USING the fleet, not by reading it, and both had the same shape: a
+signal that reported success it had not established. One invented work that did not exist; the
+other hid a vault that was not there.
+
+#### The fleet checker reported drift that was not drift
+
+`node scripts/okf-projections.mjs --all-vaults` announced a pending write on **18 of 24 vaults**,
+every run, forever. Nothing had drifted. Two generators produce the same `wiki/index.md`, and they
+disagreed on its title: the `refresh_okf_projections` tool titles the root index `vault.name` — the
+REGISTRY slug — while the disk generators defaulted to `path.basename(vaultPath)`, the ON-DISK
+folder case. On any vault whose folder is not already its slug (`TradingView` vs `tradingview`,
+`.template` vs `template`) each entry point undid the other's file, permanently.
+
+The correlation is exact and was measured before anything was changed: the 6 vaults reporting
+`0 written` were precisely those whose folder name already equalled their configured name. That is
+the whole explanation, not a sample of it.
+
+This is a class defect finished late rather than a new one. `F2` in
+`tests/vault-birth-conformance.test.mjs` names this exact divergence and closed it for
+`setup-vault.mjs` — at the CALL SITE. The helper's default stayed wrong, so the fleet CLI kept
+falling in. A fix that reaches only its first site reads as closed while the class stays open.
+
+- **`src/helpers/okf-projections-fs.mjs` and `src/helpers/bm25-index-fs.mjs` now default to
+  `defaultNameFromPath(vaultPath)`** — the registry's OWN fallback — so the disk and REST paths
+  agree by construction instead of by coincidence.
+- **`scripts/okf-projections.mjs` passes the configured slug** (`vaultSlug`), so a `vaultNames`
+  override such as `DEDIBOX` wins over the directory name, exactly as the router resolves it.
+- **The search-index site is fixed for a DIFFERENT consequence, stated so nobody "optimises" it
+  back.** Index idempotence is decided by `fingerprint`, and the recorded `vault` is in neither the
+  fingerprint nor the integrity digest, so a disagreeing name caused no rewrite loop there. It leaked
+  somewhere worse: `rebuildHint` tells the reader which vault to pass to `build_search_index`, and a
+  name the router does not answer to makes that instruction fail.
+
+After the fix, measured on the same fleet: **23 of 24 report `0 written`**. The one that still
+reports work has genuine, unrelated drift — which is the point of a signal.
+
+#### `list_vaults` called a CLOSED vault online, because another vault answered for it
+
+`pingVault` did `GET /` and returned `online: true` on any 200. That endpoint is **public** on
+Obsidian's Local REST API: it answers 200 to anyone, key or no key. So "it answered" only ever
+proved that SOME Obsidian REST server held that port — never that it was the vault being asked
+about. When two vaults are configured for one port the loser fails to bind and the winner
+cheerfully answers the loser's ping.
+
+Measured on a real fleet: `C:\VAULTS\Roland` was closed in Obsidian, an unregistered vault held its
+port 27126, and `list_vaults` reported `roland: online: true` with a latency. Authenticated
+`GET /vault/` on that port returned 401 with Roland's key and 200 with the squatter's. Reading that
+`online: true`, nobody would go looking for a port collision. `portCollisions` was empty throughout,
+because it only considers vaults present in `portRegistry` and the squatter was not.
+
+- **`pingVault` now establishes IDENTITY, not merely liveness**, and reports it as a new
+  `identity` field on every `list_vaults` row: `confirmed` (answered and accepted this vault's key),
+  `rejected` (answered and REFUSED it), `unreachable`, `unverified` (answered, but identity could
+  not be established — no key held, an older plugin, or a confirmation that did not come back).
+- **A refusal is CONFIRMED before it condemns.** The public route's word alone does not take a vault
+  offline: a second request is made to a path chosen because it cannot exist
+  (`/vault/.router-identity-probe.does-not-exist`), and only a genuine 401 there decides. Measured
+  against Local REST API 4.0.2 — authorisation is checked before existence, so the right key answers
+  404 in 50 bytes and a wrong key answers 401. Confirming identity must not become a reason to read
+  somebody's files, so the probe lists nothing. The confirming call is capped at 3 s; a timeout there
+  is not a refusal.
+- **`confirm_workspace_binding` no longer relaunches Obsidian on a refused key.** It is the one
+  "offline" that opening a window cannot fix — in the squatter case the new window cannot bind the
+  port either — so it records `{launched: false, reason: 'key-refused'}` and says so.
+
+**What this proves, and what it does not.** Acceptance of this vault's key is strong evidence, not
+proof of uniqueness: API keys are not guaranteed unique, and a vault copied folder-and-all carries
+its source's key. Measured on this very fleet — `C:\VAULTS\.template` and a copy of it on another
+drive share one key. Two vaults with one key remain indistinguishable here. Symmetrically, a
+`rejected` verdict does not prove a squatter: a STALE stored key looks identical from outside. Both
+causes are named to the user rather than one being asserted.
+
+**Deliberately not done:** the collision detector still cannot see a squatter absent from
+`portRegistry` — which is exactly the vault that caused the incident. Finding those needs a
+filesystem scan of vault ROOTS, and there is no configured notion of roots yet (the accepted
+`ergonomie-creation-liaison-vaults` decision would give `vaultsRoot` that meaning). The identity
+probe makes the symptom honest at the affected vault, which is what the operator actually needs.
+
+#### Three adversarial rounds, and what they cost
+
+The first draft of both fixes passed its tests and was wrong in seven ways. Round 1 found that a
+`vaultName` fold assumed every filesystem is case-insensitive, that two of the new tests passed
+against the OLD code, and that a comment claimed own-property semantics the code did not implement.
+Round 2 attacked the REPAIRS and found five more — two of them created by the repairs: a keyless
+vault could be reported `confirmed`, and the added confirmation round trip was invisible in the
+reported latency. Round 3 attacked those and found three more, again mostly in the repairs.
+
+**The case-fold took all four versions to get right, and each one looked finished.** Fold
+everything → fold only when unambiguous → decide by `fs.realpathSync.native`, which asks the
+filesystem whether two paths are one directory instead of assuming which OS we are on → and finally
+stop returning the PATH on ambiguity. That last one is the instructive failure: returning the path
+read as a safe fallback, but the path was itself a registry key, so `vaultSlug` looked it up and
+returned its override anyway — the exact guess the ambiguity check existed to refuse. The helper now
+returns `null` for "no key", and the caller goes to `defaultNameFromPath`, which is nobody's
+override. Both phases refuse ambiguity, including the exact-match phase, since `path.resolve`
+normalises `<vault>` and `<vault>/.` onto one directory.
+
+**One repair would have broken CI on the Linux leg only:** a test spelled a vault path in another
+case and expected it to resolve — true on NTFS, a non-existent path on ext4. Same class as the
+`i:\x` literal that broke the matrix before. The fixture now MEASURES the filesystem it runs on;
+the measurement is LAZY rather than evaluated in the `describe` body, because whether a top-level
+`before` has run by then is a property of the test runner, not of the file (it has on the Node this
+was written against — measured — but CI runs Node 20 and 22 and the suite must not depend on the
+answer).
+
+**The confirmation route changed for a risk asymmetry, not a preference.** It started as the vault
+ROOT LISTING, which read files to answer a question about a key. It became a path chosen because it
+is overwhelmingly unlikely to exist — and then lost its leading dot, because a dot-file collides
+with real content less often but any gateway with a policy against dot-paths would answer 401 for a
+reason unrelated to the key. A collision costs a wasted probe and leaves the vault online; a
+spurious 401 costs the user their vault. The two failure modes are not symmetric, so the name is
+chosen against the expensive one. The claim "nothing is read" is now stated as what it is: a vault
+MAY contain a file by that name, and if it does the answer is 200 — which is the fail-safe
+direction, since a 200 makes the probe decline to condemn.
+
+#### Tests
+
+New `tests/vault-identity-probe.test.mjs` stands up real HTTP servers rather than stubbing the
+client — including a squatter that answers on another vault's port with a different key, an older
+plugin that reports no authentication at all, and a proxy shape whose public route looks anonymous
+while its authenticated routes work (the false-positive guard: taking a HEALTHY vault offline is the
+worst thing this probe can do). All 8 fail against the pre-fix code, measured by reverting it.
+
+`tests/okf-projections-fs.test.mjs` gains ALTERNATING entry-point tests — REST-then-CLI and
+CLI-then-REST — because a first version ran the CLI twice and passed either way. The parity test now
+runs the REST tool's own code path (`buildProjections` then `planProjectionWrites`) over the disk
+generator's output; it is a shared-generator contract test, not a full REST integration test, and
+says so.
+
+Suite: **5614 pass, 0 fail** (3 skipped, all filesystem-conditional by design).
+
+#### Known limits, stated rather than implied
+
+- `identity: 'confirmed'` does not prove uniqueness (shared keys, above), and `rejected` does not
+  prove a squatter (a stale key is indistinguishable). Both are said in the tool description.
+- The confirming request can be defeated by a gateway with a route-specific authentication policy;
+  the probe path is chosen to make that as unlikely as the alternatives allow, not to rule it out.
+- `portCollisions` still only sees vaults in `portRegistry`.
+- The projections parity test is a shared-generator contract test; it does not invoke
+  `refresh_okf_projections` end to end, so a REST-side change to how pages are assembled would not
+  be caught by it.
+
 ## [0.92.0] — 2026-09-07 — two folders named "Sessions", and a hot-cache guard that asks the result
 
 ### The hot-cache guard stopped accepting a write that never happened

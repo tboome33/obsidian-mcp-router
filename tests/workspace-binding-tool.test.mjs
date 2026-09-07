@@ -79,7 +79,7 @@ const ON_DISK = () => ({
   remoteVaults: [{ name: 'remote', baseUrl: 'https://r/' }],
 });
 
-function seams({ config = ON_DISK(), launch, openVaults = ['notes'] } = {}) {
+function seams({ config = ON_DISK(), launch, openVaults = ['notes'], rejectedVaults = [] } = {}) {
   const written = [];
   const launched = [];
   const pinged = [];
@@ -93,7 +93,10 @@ function seams({ config = ON_DISK(), launch, openVaults = ['notes'] } = {}) {
       writeFile: (p, c) => written.push({ path: p, config: JSON.parse(c) }),
       ping: async (v) => {
         pinged.push(v.name);
-        return { online: openVaults.includes(v.name) };
+        // `rejectedVaults` reproduces what pingVault returns when a server
+        // answers on the vault's port and REFUSES its key.
+        if (rejectedVaults.includes(v.name)) return { online: false, identity: 'rejected' };
+        return { online: openVaults.includes(v.name), identity: openVaults.includes(v.name) ? 'confirmed' : 'unreachable' };
       },
       launch: launch || ((name) => {
         launched.push(name);
@@ -437,6 +440,31 @@ describe('confirm_workspace_binding — opening what is not open', () => {
     assert.deepEqual(r.opened, []);
     assert.deepEqual(pinged, ['work']);
     assert.equal(r.boundTo, 'work');
+  });
+
+  // A REFUSED KEY IS NOT A CLOSED VAULT. The identity probe reports
+  // `online:false, identity:'rejected'` when a server answers on the vault's
+  // port and turns its key away — something else holds the port, or the key is
+  // stale. Launching Obsidian fixes neither: in the squatter case the new
+  // window cannot bind the port either, so the user gets a window, no vault and
+  // no explanation. The tool description promises this exemption; this test is
+  // what makes the code honour it. (Codex review of the identity probe.)
+  test('a vault whose key was REFUSED is reported, never relaunched', async () => {
+    const { launched, seam } = seams({ openVaults: [], rejectedVaults: ['work'] });
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
+
+    assert.deepEqual(launched, [], 'opening Obsidian cannot fix a refused key');
+    assert.equal(r.opened.length, 1, 'and it must not pass in silence either');
+    assert.equal(r.opened[0].vault, 'work');
+    assert.equal(r.opened[0].launched, false);
+    assert.equal(r.opened[0].reason, 'key-refused');
+  });
+
+  test('a genuinely closed vault is still opened — the exemption is narrow', async () => {
+    // Guards the repair above from over-reaching: only `rejected` is exempt.
+    const { launched, seam } = seams({ openVaults: [] });
+    await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
+    assert.deepEqual(launched, ['Work']);
   });
 
   test('a ping that throws is treated as CLOSED, not as a failure of the whole call', async () => {

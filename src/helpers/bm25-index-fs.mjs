@@ -41,6 +41,7 @@ import {
 } from './bm25-index.mjs';
 import { isProjectionPath } from './okf-projections.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
+import { defaultNameFromPath } from './vault-slug.mjs';
 
 /**
  * Walk `<vault>/wiki` for .md files (vault-relative posix paths).
@@ -108,7 +109,8 @@ function legacyIndexState(stored, fingerprint) {
  * @param {string} vaultPath Absolute vault root
  * @param {object} [opts]
  * @param {boolean} [opts.apply=false] Write; false = plan only.
- * @param {string}  [opts.vaultName] Recorded in the index (defaults to basename).
+ * @param {string}  [opts.vaultName] Recorded in the index. Defaults to the name
+ *   the REGISTRY resolves this vault by, matching `build_search_index`.
  * @param {boolean} [opts.preserveForeignIndexFile=true] Never overwrite a file
  *   at the index path that does not claim to be one of our indexes.
  * @returns {{
@@ -121,7 +123,16 @@ function legacyIndexState(stored, fingerprint) {
 export function generateSearchIndexOnDisk(vaultPath, opts = {}) {
   const apply = opts.apply === true;
   const preserveForeign = opts.preserveForeignIndexFile !== false;
-  const vaultName = opts.vaultName || path.basename(vaultPath);
+  // Same naming rule as the projections' disk generator, for a DIFFERENT
+  // consequence — worth stating so nobody "optimises" this back to a basename.
+  // Index idempotence is decided by `fingerprint`, and the recorded `vault` is
+  // in neither the fingerprint nor the integrity digest, so a disagreeing name
+  // causes no rewrite loop here. It leaks somewhere worse: every diagnostic
+  // built from it (`absentIndexMessage`, `staleIndexMessage`, `rebuildHint`)
+  // names the vault, and `rebuildHint` tells the reader which vault to pass to
+  // `build_search_index`. A basename the router does not answer to makes that
+  // instruction fail. `defaultNameFromPath` is the registry's own fallback.
+  const vaultName = opts.vaultName || defaultNameFromPath(vaultPath);
 
   if (!fs.existsSync(path.join(vaultPath, 'wiki'))) {
     // Not a wiki vault. Silence, not an error — the same posture the projections

@@ -119,6 +119,15 @@ export async function listVaults(registry, sharedConfig = null) {
         description: v.description,
         isDefault: v.name === registry.defaultVault,
         online: ping.online,
+        // WHY it is up or down, which `online` alone cannot say. The one that
+        // matters is "rejected": a server answered on this vault's port and
+        // refused this vault's key — EITHER something else holds the port OR
+        // the stored key is stale, and from here the two are indistinguishable
+        // (saying only the first was the first draft's mistake). That case used
+        // to read as `online: true` — see pingVault. Always present, like the
+        // two fields below it: a caller must never have to tell "not verified"
+        // from "this router is too old to know".
+        identity: ping.identity ?? 'unverified',
         latencyMs: ping.latencyMs,
         error: ping.error,
         missingApiKey: v.missingApiKey || false,

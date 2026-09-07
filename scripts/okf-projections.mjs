@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
+import { registeredVaultPaths, vaultSlug, defaultNameFromPath } from '../src/helpers/vault-slug.mjs';
 import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs';
 import {
   WIKI_META_OWNED_AREAS,
@@ -77,18 +77,25 @@ function parseArgs(argv) {
     else usage(`Unknown argument: ${a}`);
   }
   const paths = [];
-  if (args.allVaults) {
-    let cfg = {};
-    try {
-      cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-    } catch {
-      usage(`--all-vaults needs a readable router config at ${CONFIG_PATH}`);
-    }
-    // Through the accessor: the container is validated there, so a hand-edited
-  // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and
-  // "1". Sixth key of the `vaultNames` class, swept in the final review.
-  paths.push(...registeredVaultPaths(cfg));
+  // Read BEST-EFFORT even without --all-vaults: the config is what names a
+  // vault, and `--vault <dir>` on a registered vault must still get the name the
+  // router would use, or the CLI writes a title the next REST refresh undoes.
+  // An unreadable config is only fatal for --all-vaults, which cannot work
+  // without it; for --vault it simply means "no override", and `vaultSlug`
+  // falls back to the path-derived default.
+  let cfg = {};
+  try {
+    cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch {
+    if (args.allVaults) usage(`--all-vaults needs a readable router config at ${CONFIG_PATH}`);
   }
+  if (args.allVaults) {
+    // Through the accessor: the container is validated there, so a hand-edited
+    // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and
+    // "1". Sixth key of the `vaultNames` class, swept in the final review.
+    paths.push(...registeredVaultPaths(cfg));
+  }
+  args.cfg = cfg;
   paths.push(...args.vaults);
   if (paths.length === 0) usage('Nothing to do — pass --vault <dir> and/or --all-vaults.');
 
@@ -101,6 +108,77 @@ function parseArgs(argv) {
     args.resolved.push(abs);
   }
   return args;
+}
+
+/**
+ * The registry key this absolute path IS, or NULL when no single registered
+ * vault can be shown to be it. Callers must treat null as "no override" and go
+ * to the path-derived default — see `resolvedVaultName` for why that matters.
+ *
+ * `vaultSlug` looks its override up by EXACT key, so a path that differs from
+ * the config's spelling only in case (`c:\vaults\x` for `C:\VAULTS\X`, which
+ * NTFS treats as one directory) would silently miss the override and get the
+ * path-derived default instead — the very divergence this CLI exists to avoid.
+ *
+ * EXACT FIRST, THEN FILESYSTEM IDENTITY — NEVER A LEXICAL GUESS. Case folding
+ * is not universally safe: on a case-sensitive filesystem (Linux, or a Windows
+ * directory with per-directory case sensitivity enabled) `/vaults/Foo` and
+ * `/vaults/foo` are two DIFFERENT vaults, and folding them hands one vault the
+ * other's configured name — a wrong title written into somebody's wiki.
+ *
+ * Two adversarial rounds shaped this. The first draft folded unconditionally.
+ * The second folded when exactly one key matched, which still fails the case
+ * the reviewer then named precisely: register `/vaults/Foo` as `alpha`, run the
+ * CLI against a DIFFERENT, existing, unregistered `/vaults/foo`, and exactly one
+ * key folds — onto the wrong vault. Uniqueness in the registry is not evidence
+ * about the disk.
+ *
+ * So the fold is decided by the filesystem itself. `fs.realpathSync.native`
+ * returns the canonical on-disk spelling, so two paths naming ONE directory
+ * converge on NTFS and stay distinct on ext4 — the actual question, answered by
+ * the OS rather than by an assumption about which OS we are on. A key that does
+ * not exist on disk cannot be shown to be the same directory, so it does not
+ * fold; ambiguity still falls back to the path.
+ */
+function registryKeyFor(cfg, abs) {
+  const keys = registeredVaultPaths(cfg);
+  // The exact phase is ambiguity-aware too: `path.resolve` normalises, so
+  // `<vault>\.` and `<vault>` are one and the same key here, and taking the
+  // first of two would be the same silent guess the fold phase refuses.
+  const exact = keys.filter((key) => path.resolve(key) === abs);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  let canonicalTarget;
+  try {
+    canonicalTarget = fs.realpathSync.native(abs);
+  } catch {
+    return null; // the path we were asked about is gone; nothing to match against
+  }
+  const sameDirectory = keys.filter((key) => {
+    try {
+      return fs.realpathSync.native(path.resolve(key)) === canonicalTarget;
+    } catch {
+      return false; // a registry key that is not on this disk is not this vault
+    }
+  });
+  return sameDirectory.length === 1 ? sameDirectory[0] : null;
+}
+
+/**
+ * The name the ROUTER would resolve for this vault directory.
+ *
+ * NULL FROM `registryKeyFor` MEANS "NO KEY", AND MUST NOT BE HANDED BACK TO
+ * `vaultSlug`. An earlier version returned the path itself on ambiguity, which
+ * looked like a safe fallback and was not: `vaultSlug(cfg, abs)` then looked
+ * `abs` up as a literal key and cheerfully returned ITS override — so a config
+ * registering both `<vault>` (as `alpha`) and `<vault>/.` (as `beta`) still got
+ * `alpha`, the very guess the ambiguity check existed to refuse. Found by the
+ * third adversarial round. Ambiguity now goes straight to the path-derived
+ * default, which is the only answer that is nobody's override.
+ */
+function resolvedVaultName(cfg, abs) {
+  const key = registryKeyFor(cfg, abs);
+  return key === null ? defaultNameFromPath(abs) : vaultSlug(cfg, key);
 }
 
 /** Remove the pre-v0.12.8 `wiki/sessions/` ghost — only when truly empty. */
@@ -208,7 +286,13 @@ for (const vaultAbs of args.resolved) {
     continue;
   }
   try {
-    const r = generateProjectionsOnDisk(vaultAbs, { apply: args.apply });
+    // The name the ROUTER would use, not the folder's on-disk case — otherwise
+    // this CLI and `refresh_okf_projections` write different `# Title` lines
+    // into wiki/index.md and each undoes the other forever.
+    const r = generateProjectionsOnDisk(vaultAbs, {
+      apply: args.apply,
+      vaultName: resolvedVaultName(args.cfg, vaultAbs),
+    });
     const ghostTidied = tidyGhostSessionsDir(vaultAbs, args.apply);
     // Read-only, and deliberately AFTER the refresh: the refresh deletes the
     // `index.md` of a directory that no longer has content, so running the

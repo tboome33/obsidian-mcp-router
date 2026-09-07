@@ -492,6 +492,19 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       if (!v) continue;
       const alive = await ping(v).catch(() => ({ online: false }));
       if (alive?.online) continue;
+      // A REFUSED KEY IS NOT A CLOSED VAULT, and this is the one "offline" that
+      // must NOT be answered by launching Obsidian. `identity: 'rejected'` means
+      // a server DID answer on this vault's port and turned our key away —
+      // either something else holds the port, or the stored key is stale.
+      // Opening a window fixes neither: in the squatter case the new window
+      // cannot bind the port either, so the user would get a window, no vault,
+      // and no explanation. Say what happened instead. (Found by the Codex
+      // review of the identity probe: the tool description promised this
+      // exemption and the code did not honour it.)
+      if (alive?.identity === 'rejected') {
+        opened.push({ vault: name, launched: false, uri: null, reason: 'key-refused' });
+        continue;
+      }
       // The Obsidian-side label is the on-disk basename WITH its casing, not
       // the router's lowercased slug — the URI handler matches what Obsidian
       // registered. Remote vaults have no local path and nothing to open.
