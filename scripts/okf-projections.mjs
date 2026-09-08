@@ -139,6 +139,15 @@ function parseArgs(argv) {
  * the OS rather than by an assumption about which OS we are on. A key that does
  * not exist on disk cannot be shown to be the same directory, so it does not
  * fold; ambiguity still falls back to the path.
+ *
+ * EXACT-KEY PRECEDENCE, stated because it is a choice: an exact registered key
+ * wins BEFORE filesystem aliases are consulted. A config that registers one
+ * directory under two spellings (the path as `alpha`, a junction to it as
+ * `beta`) therefore gets whichever override it was invoked with, not an
+ * ambiguity refusal. Two registry entries for one directory is a configuration
+ * error in its own right — both read the same `data.json`, so `--check-ports`
+ * reports them as a port collision — and this CLI does not paper over it, nor
+ * detect it: it answers the spelling it was given. (Pen-test review, finding 7.)
  */
 function registryKeyFor(cfg, abs) {
   const keys = registeredVaultPaths(cfg);
@@ -174,7 +183,10 @@ function registryKeyFor(cfg, abs) {
  * registering both `<vault>` (as `alpha`) and `<vault>/.` (as `beta`) still got
  * `alpha`, the very guess the ambiguity check existed to refuse. Found by the
  * third adversarial round. Ambiguity now goes straight to the path-derived
- * default, which is the only answer that is nobody's override.
+ * default — the one answer for which no override was consulted. (Not "nobody's
+ * override": an unregistered stray named like a registered vault gets that
+ * vault's default slug, and there is nothing here to tell the two apart — the
+ * `--vault` argument is the operator's own word.)
  */
 function resolvedVaultName(cfg, abs) {
   const key = registryKeyFor(cfg, abs);

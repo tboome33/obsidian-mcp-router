@@ -170,6 +170,192 @@ describe('pingVault — identity, not just liveness', () => {
     assert.ok(r.error);
   });
 
+  // ANSWERED IS NOT ABSENT — the pen-test round, finding 4. Everything the
+  // outer catch used to call `unreachable` had in fact ANSWERED: a 403, a 5xx,
+  // a refused redirect (a 302 is an answer). `confirm_workspace_binding` opens
+  // Obsidian on `unreachable` alone, so each of those sent it to open a window
+  // against a port something else was holding. Real servers, like the rest of
+  // this file: the claim is about what comes back over the wire.
+  async function serveOnce(handler) {
+    const s = http.createServer(handler);
+    await new Promise((r) => s.listen(0, '127.0.0.1', r));
+    return { s, baseUrl: `http://127.0.0.1:${s.address().port}` };
+  }
+  for (const status of [403, 404, 500]) {
+    test(`a server answering ${status} on the public route is UNVERIFIED and offline — never unreachable`, async () => {
+      const { s, baseUrl } = await serveOnce((req, res) => {
+        res.writeHead(status, { 'content-type': 'application/json' });
+        res.end('{}');
+      });
+      try {
+        const r = await pingVault(vaultAt('held', baseUrl, 'KEY-A'));
+        assert.equal(r.online, false);
+        assert.equal(r.identity, 'unverified', 'something answered — "unreachable" would send the binding off to open a window');
+        assert.match(r.error, new RegExp(`HTTP ${status}`), 'the status is named, so the reader can tell a 403 from a 500');
+      } finally {
+        s.close();
+      }
+    });
+  }
+
+  test('a refused cross-host redirect is an ANSWER, not an absence', async () => {
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      res.writeHead(302, { location: 'http://localhost:1/' });
+      res.end();
+    });
+    try {
+      const r = await pingVault(vaultAt('redirecting', baseUrl, 'KEY-A'));
+      assert.equal(r.online, false);
+      assert.equal(r.identity, 'unverified');
+      assert.match(r.error, /cross-origin redirect/);
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  const closeServer = (s) => new Promise((r) => { s.closeAllConnections?.(); s.close(r); });
+
+  test('a public route that never answers within the budget is still unreachable — nothing is KNOWN to be listening', async () => {
+    let connections = 0;
+    const { s, baseUrl } = await serveOnce(() => { connections++; /* accepts the request, never answers */ });
+    try {
+      const t0 = Date.now();
+      const r = await pingVault({ ...vaultAt('mute', baseUrl, 'KEY-A'), timeoutMs: 300 });
+      assert.ok(Date.now() - t0 >= 280, 'the budget was actually waited for');
+      assert.equal(connections, 1, 'the request reached the server — this is a stall, not a refused connection');
+      assert.equal(r.online, false);
+      assert.equal(r.identity, 'unreachable', 'no status ever arrived: nothing is KNOWN to be listening');
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  // RESPONSE EXHAUSTION — the round-7 attack, and the measurement behind the
+  // `request()` change: a listener that sends the HEADERS at once and then
+  // stalls the body held `pingVault` for 15 s and counting against a 2 s
+  // budget, because the clock stopped when the headers arrived. `list_vaults`
+  // pings the fleet under one `Promise.all`, so one such port hung the whole
+  // listing. Three shapes, one budget.
+  test('headers 200 then a body that never arrives: the budget holds, and it is an ANSWER (unverified), not an absence', async () => {
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"status":"OK","authenticated":'); // and never ends
+    });
+    try {
+      const t0 = Date.now();
+      const r = await pingVault({ ...vaultAt('stalled', baseUrl, 'KEY-A'), timeoutMs: 400 });
+      const wall = Date.now() - t0;
+      assert.ok(wall < 5000, `must return within the budget, took ${wall}ms (the previous client took 300 s here)`);
+      assert.equal(r.online, false);
+      assert.equal(r.identity, 'unverified', 'a status arrived, so something is listening');
+      assert.match(r.error, /did not arrive within 400ms/);
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  test('root fine, but the CONFIRMING probe stalls its body: capped, and the vault stays online/unverified', async () => {
+    const urls = [];
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      urls.push(req.url);
+      if (req.url === '/') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'OK', authenticated: false }));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.write('{"mes'); // stalls
+    });
+    try {
+      const t0 = Date.now();
+      const r = await pingVault({ ...vaultAt('probe-stalls', baseUrl, 'KEY-A'), timeoutMs: 400 });
+      assert.ok(Date.now() - t0 < 5000);
+      assert.deepEqual(urls, ['/', '/vault/router-identity-probe.does-not-exist'], 'the probe WAS issued — this is a stalled confirmation, not a skipped one');
+      assert.equal(r.online, true, 'the public route answered; a stalled confirmation must not condemn');
+      assert.equal(r.identity, 'unverified');
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  test('a 401 whose body stalls is still a refusal — the status decides, within the budget', async () => {
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.write('{"message":'); // stalls
+    });
+    try {
+      const t0 = Date.now();
+      const r = await pingVault({ ...vaultAt('gated-stall', baseUrl, 'KEY-A'), timeoutMs: 400 });
+      assert.ok(Date.now() - t0 < 5000);
+      assert.equal(r.identity, 'rejected');
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  // The bounded body reader replaced Fetch's `json()`, which strips a leading
+  // UTF-8 BOM; `Buffer.toString` does not, and `JSON.parse` refuses U+FEFF.
+  // A healthy answer with a BOM must still be a healthy answer.
+  test('a BOM-prefixed JSON answer is still read — and still confirmed', async () => {
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify({ status: 'OK', authenticated: true }))]));
+    });
+    try {
+      const r = await pingVault(vaultAt('bom', baseUrl, 'KEY-A'));
+      assert.equal(r.online, true);
+      assert.equal(r.identity, 'confirmed');
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  // Finding 5 of the same round: `rejected` on the public-route 401 was not
+  // gated on having SENT a key, unlike `confirmed` and the probe path. Without
+  // a key nothing of ours was refused — a gate that wants a key even for the
+  // public route turned away an empty hand.
+  test('a 401 on the public route for a vault we hold NO key for is UNVERIFIED — nothing of ours was refused', async () => {
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Authorization required.', errorCode: 40101 }));
+    });
+    try {
+      const r = await pingVault(vaultAt('keyless-gated', baseUrl, null));
+      assert.equal(r.online, false);
+      assert.equal(r.identity, 'unverified', 'no key was sent, so no key was refused');
+      assert.match(r.error, /NO key/);
+    } finally {
+      await closeServer(s);
+    }
+  });
+
+  // Pen-test scenario A2, kept as a witness of the residue this probe CANNOT
+  // close: a listener that is not Obsidian at all — a dev server on the port —
+  // answers the probe 404 without ever looking at the key. It is `online` and
+  // `unverified`, which is the honest verdict; what must not happen is a caller
+  // reading `online` as "the vault is open". That caller's test lives in
+  // workspace-binding-tool.test.mjs.
+  test('a listener that answers without checking keys is online and UNVERIFIED — never confirmed', async () => {
+    const seen = [];
+    const { s, baseUrl } = await serveOnce((req, res) => {
+      seen.push({ url: req.url, auth: Boolean(req.headers.authorization) });
+      const root = req.url === '/';
+      res.writeHead(root ? 200 : 404, { 'content-type': 'application/json' });
+      res.end(root ? JSON.stringify({ status: 'OK', authenticated: false }) : JSON.stringify({ message: 'Not found' }));
+    });
+    try {
+      const r = await pingVault(vaultAt('squatted-by-a-dev-server', baseUrl, 'KEY-A'));
+      assert.equal(r.online, true);
+      assert.equal(r.identity, 'unverified');
+      // The probe WAS issued, with the key, and the 404 it got proves nothing:
+      // this listener would 404 anyone. That is the whole residue.
+      assert.deepEqual(seen.map((x) => x.url), ['/', '/vault/router-identity-probe.does-not-exist']);
+      assert.ok(seen.every((x) => x.auth), 'both requests carried the key — the listener simply ignored it');
+    } finally {
+      await closeServer(s);
+    }
+  });
+
   // THE FALSE POSITIVE GUARD — the worst thing this function can do is take a
   // WORKING vault offline. A proxy may answer the public `/` anonymously (or
   // from cache) while forwarding authenticated routes perfectly well. The public

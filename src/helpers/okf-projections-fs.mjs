@@ -66,7 +66,8 @@ export function generateProjectionsOnDisk(vaultPath, opts = {}) {
   // every vault whose folder is not already the slug (`TradingView` vs
   // `tradingview`, `.template` vs `template`), and then each entry point undoes
   // the other's `wiki/index.md` forever. `defaultNameFromPath` IS the registry's
-  // own fallback, so the two now agree by construction rather than by luck.
+  // own fallback, so the two DEFAULTS agree; a configured `vaultNames` override
+  // still has to arrive through `opts.vaultName`, or the two disagree again.
   // F2 in vault-birth-conformance.test.mjs fixed this at setup-vault's call
   // site; leaving the default wrong let the fleet CLI keep falling in.
   const vaultName = opts.vaultName || defaultNameFromPath(vaultPath);

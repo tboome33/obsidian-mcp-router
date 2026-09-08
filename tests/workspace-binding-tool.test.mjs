@@ -79,7 +79,7 @@ const ON_DISK = () => ({
   remoteVaults: [{ name: 'remote', baseUrl: 'https://r/' }],
 });
 
-function seams({ config = ON_DISK(), launch, openVaults = ['notes'], rejectedVaults = [] } = {}) {
+function seams({ config = ON_DISK(), launch, openVaults = ['notes'], rejectedVaults = [], unverifiedVaults = [], heldVaults = [] } = {}) {
   const written = [];
   const launched = [];
   const pinged = [];
@@ -93,9 +93,17 @@ function seams({ config = ON_DISK(), launch, openVaults = ['notes'], rejectedVau
       writeFile: (p, c) => written.push({ path: p, config: JSON.parse(c) }),
       ping: async (v) => {
         pinged.push(v.name);
-        // `rejectedVaults` reproduces what pingVault returns when a server
-        // answers on the vault's port and REFUSES its key.
+        // Each list reproduces one shape pingVault actually returns (see
+        // vault-identity-probe.test.mjs for the wire-level witnesses):
+        //   rejectedVaults   — a server answered and REFUSED the key
+        //   unverifiedVaults — it answered, online, identity not established
+        //                      (older plugin, keyless, proxy, or a squatter
+        //                      that never checks keys)
+        //   heldVaults       — it answered with something unusable (403, 5xx,
+        //                      a refused redirect): offline, unverified
         if (rejectedVaults.includes(v.name)) return { online: false, identity: 'rejected' };
+        if (unverifiedVaults.includes(v.name)) return { online: true, identity: 'unverified' };
+        if (heldVaults.includes(v.name)) return { online: false, identity: 'unverified' };
         return { online: openVaults.includes(v.name), identity: openVaults.includes(v.name) ? 'confirmed' : 'unreachable' };
       },
       launch: launch || ((name) => {
@@ -460,18 +468,95 @@ describe('confirm_workspace_binding — opening what is not open', () => {
     assert.equal(r.opened[0].reason, 'key-refused');
   });
 
-  test('a genuinely closed vault is still opened — the exemption is narrow', async () => {
-    // Guards the repair above from over-reaching: only `rejected` is exempt.
+  test('a genuinely closed vault is still opened — `unreachable` is the one verdict a window changes', async () => {
+    // Guards the repairs around it from over-reaching: nothing connected, so
+    // a window is exactly the remedy.
     const { launched, seam } = seams({ openVaults: [] });
     await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
     assert.deepEqual(launched, ['Work']);
   });
 
-  test('a ping that throws is treated as CLOSED, not as a failure of the whole call', async () => {
-    const { launched, seam } = seams();
-    seam.ping = async () => { throw new Error('ECONNREFUSED'); };
+  // THE DECISION IS MADE ON IDENTITY, NOT ON `online` — pen-test scenario A2
+  // (review finding 2). A listener that answers without checking keys (a dev
+  // server on the vault's port) is `online: true, identity: 'unverified'`, and
+  // `if (alive.online) continue` read that as "the vault is open": the vault
+  // stayed closed and nobody was told. The honest answer is neither silence nor
+  // a launch — a window cannot take a held port back, and the vault may
+  // genuinely be open with an older plugin — but a REPORT, so the user, who can
+  // see their screen, decides.
+  test('a vault that answers but cannot be shown to be itself is REPORTED, never relaunched, never passed over in silence', async () => {
+    const { launched, seam } = seams({ openVaults: [], unverifiedVaults: ['work'] });
     const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
-    assert.deepEqual(launched, ['Work']);
+
+    assert.deepEqual(launched, [], 'its Obsidian may already be open — and if not, a window cannot free the port');
+    assert.equal(r.opened.length, 1, 'and it must not pass in silence: that silence was the bug');
+    assert.equal(r.opened[0].vault, 'work');
+    assert.equal(r.opened[0].launched, false);
+    assert.equal(r.opened[0].reason, 'identity-unverified');
+    assert.equal(r.opened[0].online, true, 'the entry says whether the answer was usable');
+  });
+
+  // Review finding 4, seen from this side: a 403, a 5xx or a refused redirect
+  // used to come back `unreachable`, which sent this loop off to open a window
+  // against a port that something else holds.
+  test('a port that answers with something unusable (403, 5xx, a refused redirect) is reported, never relaunched', async () => {
+    const { launched, seam } = seams({ openVaults: [], heldVaults: ['work'] });
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
+
+    assert.deepEqual(launched, [], 'a window cannot take a held port back');
+    assert.equal(r.opened.length, 1);
+    assert.equal(r.opened[0].reason, 'identity-unverified');
+    assert.equal(r.opened[0].online, false);
+  });
+
+  test('the message names what was NOT opened and why, and never counts it as "not running"', async () => {
+    const { seam } = seams({ openVaults: [], unverifiedVaults: ['work'], rejectedVaults: ['notes'] });
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work', also: ['notes'] }, seam);
+
+    assert.doesNotMatch(r.message, /Opening \d/, 'nothing was launched, so nothing is "opening"');
+    assert.match(r.message, /"work" answered but could not be shown to be the vault itself/);
+    assert.match(r.message, /"notes" answered on its port but REFUSED the stored key/);
+  });
+
+  test('a ping WITHOUT a verdict is unknown, and unknown is reported — never launched on `online` alone', async () => {
+    // Every real producer sets a verdict (`pingVault` always does), so a ping
+    // without one is a shape this code has never seen — and reading its
+    // `online` as the old binary would reintroduce the exact decision this
+    // repair removed.
+    const closed = seams({ openVaults: [] });
+    closed.seam.ping = async () => ({ online: false });
+    const r1 = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, closed.seam);
+    assert.deepEqual(closed.launched, []);
+    assert.equal(r1.opened[0]?.reason, 'ping-failed');
+
+    const open = seams({ openVaults: [] });
+    open.seam.ping = async () => ({ online: true });
+    const r2 = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, open.seam);
+    assert.deepEqual(open.launched, []);
+    assert.equal(r2.opened[0]?.reason, 'ping-failed', '`online` without a verdict is not read at all');
+  });
+
+  test('the diagnostic of the ping travels with the entry — an old plugin and a gateway 403 read differently', async () => {
+    const { seam } = seams({ openVaults: [] });
+    seam.ping = async () => ({ online: false, identity: 'unverified', error: '[work] a server answered ... (forbidden, HTTP 403)' });
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
+    assert.match(r.opened[0].error, /HTTP 403/);
+  });
+
+  test('a ping that THROWS is reported as unverified — never a launch, never a failure of the whole call', async () => {
+    // `pingVault` catches its own errors, so a throw here is a defect of the
+    // seam or of a peer, and a defect is not evidence that the vault is
+    // closed (round-7 review: "unexpected failures must not become launch
+    // authorisation"). The binding is still recorded.
+    const { launched, seam } = seams();
+    seam.ping = async () => { throw new Error('boom'); };
+    const r = await confirmWorkspaceBinding(registryOf(), { vault: 'work' }, seam);
+    assert.deepEqual(launched, []);
+    assert.equal(r.opened.length, 1);
+    assert.equal(r.opened[0].reason, 'ping-failed', 'unknown is unknown — not "something answered"');
+    assert.match(r.opened[0].error, /ping failed before returning a verdict: boom/);
+    assert.match(r.message, /could not be pinged at all/);
+    assert.doesNotMatch(r.message, /answered but could not be shown/, 'a failed ping must not be narrated as an answering port');
     assert.equal(r.boundTo, 'work', 'the binding is recorded regardless');
   });
 

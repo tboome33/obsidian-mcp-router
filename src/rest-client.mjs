@@ -18,11 +18,13 @@ const secureAgent = new Agent();
 
 /**
  * The vault-relative path `pingVault` asks for when it needs to tell a refused
- * key from a misleading public route. Deliberately one that cannot exist: the
- * question is "was the key accepted", never "what is in this vault". A vault
- * that somehow DOES hold this file answers 200, which reads as "key accepted" —
- * the fail-safe direction, since the only thing a 200 can do here is stop the
- * probe from condemning a vault.
+ * key from a misleading public route. Deliberately one that is overwhelmingly
+ * unlikely to exist: the question is "was the key accepted", never "what is in
+ * this vault". A vault that DOES hold this file answers 200, which establishes
+ * nothing about identity and leaves the verdict `unverified` — the fail-safe
+ * direction, since the only thing a 200 can do here is stop the probe from
+ * condemning a vault. (Pen-tested: a listener answering 200 on this path is
+ * `online`, `unverified`.)
  */
 const IDENTITY_PROBE_PATH = 'router-identity-probe.does-not-exist';
 
@@ -289,8 +291,24 @@ function encodePath(p) {
 async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
   let currentUrl = `${vault.baseUrl}${urlPath}`;
   let res;
+  // The status of the LAST redirect we followed. A hop that then fails at the
+  // transport level (times out, resets) must not erase the fact that the
+  // endpoint ANSWERED — it did, with a 3xx — or `pingVault` would read the
+  // failure as "nothing listening" and send the binding off to open a window
+  // on an answering port. (Round-8 review, finding 1.)
+  let lastAnsweredStatus = null;
+  // A redirect response we will not use is DISCARDED, not abandoned: its body
+  // is never read, and a listener that follows its `302` with an endless body
+  // would otherwise keep the connection — and the buffer — alive after this
+  // call had returned. (Round-8 review, finding 3.)
+  const discard = (r) => r?.body?.cancel().catch(() => {});
   for (let depth = 0; depth <= 3; depth++) {
-    res = await fetch(currentUrl, { ...fetchOpts, redirect: 'manual' });
+    try {
+      res = await fetch(currentUrl, { ...fetchOpts, redirect: 'manual' });
+    } catch (err) {
+      if (lastAnsweredStatus !== null && err && typeof err === 'object') err.answeredStatus = lastAnsweredStatus;
+      throw err;
+    }
 
     if (res.status < 300 || res.status >= 400) return { res, currentUrl };
 
@@ -301,22 +319,38 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
 
     // Cloudflare Access on the redirect target.
     if (/cloudflareaccess\.com$/i.test(target.hostname)) {
+      await discard(res);
       throw makeCfAccessError(vault, urlPath, res.status);
     }
 
-    // Block cross-host redirects — auth headers would be needed at a host
-    // we did not authenticate against, which is unsafe regardless of TLS.
+    // Block cross-ORIGIN redirects — auth headers would be needed at an
+    // endpoint we did not authenticate against, which is unsafe regardless
+    // of TLS. The origin is host AND port: on loopback every vault is a port,
+    // so "same host" alone let a listener on port A redirect the router — key
+    // and all — to port B, and have B's answer attributed to A's registry
+    // entry (pen-test scenario A5, 2026-09-08). The one cross-port redirect
+    // allowed is the classical reverse-proxy UPGRADE, http on the default port
+    // to https on the default port, on the same hostname — and ONLY that
+    // mapping: an upgrade to an arbitrary https port would let a loopback
+    // listener on port A send the key to a self-signed listener on port B
+    // whenever `tlsInsecure` is set, which is every local vault (round-8
+    // review, finding 2). Speaking TLS does not make B the vault.
     const here = new URL(currentUrl);
-    if (target.hostname !== here.hostname) {
+    const portOf = (u) => u.port || (u.protocol === 'https:' ? '443' : '80');
+    const upgrade =
+      here.protocol === 'http:' && target.protocol === 'https:' &&
+      portOf(here) === '80' && portOf(target) === '443';
+    if (target.hostname !== here.hostname || (portOf(target) !== portOf(here) && !upgrade)) {
+      await discard(res);
       throw new RestApiError(
-        `[${vault.name}] refused cross-host redirect from ${here.hostname} to ${target.hostname}`,
+        `[${vault.name}] refused cross-origin redirect from ${here.host} to ${target.host}`,
         {
           kind: 'unknown',
           vaultName: vault.name,
           urlPath,
           status: res.status,
           hint:
-            'Cross-host redirects are blocked to keep the API key from being sent to a host you did not authenticate against. Configure your reverse proxy to keep redirects same-host.',
+            'Redirects to another host or port are blocked to keep the API key from being sent to an endpoint you did not authenticate against (the one exception is an http→https upgrade between the default ports on the same host). Configure your reverse proxy to keep redirects on the same origin.',
         },
       );
     }
@@ -328,6 +362,7 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
     // dangerous because it changes the security posture of the channel
     // we already authenticated over.
     if (here.protocol === 'https:' && target.protocol === 'http:') {
+      await discard(res);
       throw new RestApiError(
         `[${vault.name}] refused HTTPS→HTTP downgrade redirect to ${target.toString()}`,
         {
@@ -342,14 +377,17 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
     }
 
     if (depth === 3) {
+      await discard(res);
       throw new RestApiError(
         `[${vault.name}] too many redirects (>3) starting at ${urlPath}`,
         { kind: 'unknown', vaultName: vault.name, urlPath, status: res.status },
       );
     }
 
+    await discard(res);
+    lastAnsweredStatus = res.status;
     currentUrl = target.toString();
-    // Same host → fall through, headers (incl. Authorization) preserved verbatim.
+    // Same origin → fall through, headers (incl. Authorization) preserved verbatim.
   }
   return { res, currentUrl };
 }
@@ -363,46 +401,142 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
   const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : vault.timeoutMs;
   const timeout = setTimeout(() => controller.abort(), budget);
 
+  // THE BUDGET RUNS UNTIL THE BODY HAS BEEN READ, not until the headers have.
+  // The first version cleared the timer in a `finally` around the fetch — i.e.
+  // the moment the HEADERS arrived — and read the body afterwards with no clock
+  // at all. Pen-tested (2026-09-08): a listener that answers `200 OK` at once
+  // and then never sends the body held `pingVault` for 15 s and counting on a
+  // 2 s budget (undici's own body timeout is 300 s), and `list_vaults` pings the
+  // whole fleet under one `Promise.all`, so ONE such port hung the whole
+  // listing. Same for a 401 whose body stalls, and for the probe's 404.
   let res;
   let finalUrl;
   try {
-    const result = await fetchWithSafeRedirect(vault, urlPath, {
-      method,
-      dispatcher: agentFor(vault),
-      headers: { ...authHeaders(vault), ...headers },
-      body,
-      signal: controller.signal,
-    });
-    res = result.res;
-    finalUrl = result.currentUrl;
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err instanceof RestApiError) throw err;
-    throw categorizeFetchError(err, vault, urlPath, budget);
+    try {
+      const result = await fetchWithSafeRedirect(vault, urlPath, {
+        method,
+        dispatcher: agentFor(vault),
+        headers: { ...authHeaders(vault), ...headers },
+        body,
+        signal: controller.signal,
+      });
+      res = result.res;
+      finalUrl = result.currentUrl;
+    } catch (err) {
+      if (err instanceof RestApiError) throw err;
+      const categorized = categorizeFetchError(err, vault, urlPath, budget);
+      // A hop that failed AFTER a redirect had answered keeps that status:
+      // the endpoint is not absent, it sent us somewhere that then failed.
+      if (Number.isInteger(err?.answeredStatus)) categorized.status = err.answeredStatus;
+      throw categorized;
+    }
+
+    if (!res.ok) {
+      // A stalled or oversized error body must not hide the status that was
+      // already known: read what arrives within the budget, classify on the
+      // status regardless.
+      const text = await readBodyBounded(res).catch(() => '');
+      throw categorizeHttpStatus(res.status, res.statusText, text, vault, urlPath);
+    }
+
+    // Defense in depth: if a same-host redirect chain somehow ends up on a
+    // cloudflareaccess.com URL with status 200 (page-served via custom domain
+    // mapping, etc.), surface it as cf_access too.
+    if (/cloudflareaccess\.com/i.test(finalUrl || '')) {
+      throw makeCfAccessError(vault, urlPath, res.status);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    let text;
+    try {
+      text = await readBodyBounded(res);
+    } catch (err) {
+      throw categorizeBodyError(err, vault, urlPath, budget, res.status);
+    }
+    // Accept both "application/json" and any vendor-specific "+json" subtype
+    // (e.g. application/vnd.olrapi.note+json from Local REST API content
+    // negotiation).
+    if (json && /\bapplication\/(?:[a-z0-9.+-]+\+)?json\b/i.test(contentType)) {
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        throw categorizeBodyError(err, vault, urlPath, budget, res.status);
+      }
+    }
+    return text;
   } finally {
     clearTimeout(timeout);
   }
+}
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw categorizeHttpStatus(res.status, res.statusText, text, vault, urlPath);
-  }
+/**
+ * Ceiling on a response body, decoded. The largest legitimate answer measured
+ * on this fleet is the whole vector store of its biggest vault (22 MB,
+ * `/smart-env/sources`); the ceiling sits an order of magnitude above it so
+ * that a listener cannot make the router allocate without bound — a chunked
+ * body carries no Content-Length to check up front, so the count is kept while
+ * reading.
+ */
+const MAX_RESPONSE_BYTES = 256 * 1024 * 1024;
 
-  // Defense in depth: if a same-host redirect chain somehow ends up on a
-  // cloudflareaccess.com URL with status 200 (page-served via custom domain
-  // mapping, etc.), surface it as cf_access too.
-  if (/cloudflareaccess\.com/i.test(finalUrl || '')) {
-    throw makeCfAccessError(vault, urlPath, res.status);
+/**
+ * Read a response body under the request's abort signal AND under a byte
+ * ceiling. `res.text()` would do the first; nothing did the second.
+ */
+async function readBodyBounded(res) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => {});
+      const err = new Error(`response body exceeds ${MAX_RESPONSE_BYTES} bytes`);
+      err.name = 'ResponseTooLarge';
+      throw err;
+    }
+    chunks.push(value);
   }
+  // `TextDecoder`, not `Buffer.toString`: the Fetch `text()`/`json()` this
+  // replaces strips a leading UTF-8 BOM, and `Buffer` keeps U+FEFF, which
+  // `JSON.parse` then refuses — a BOM-prefixed healthy answer would have gone
+  // from accepted to `unverified`. (Round-8 review, finding 5.)
+  return new TextDecoder('utf-8').decode(Buffer.concat(chunks));
+}
 
-  const contentType = res.headers.get('content-type') || '';
-  // Accept both "application/json" and any vendor-specific "+json" subtype
-  // (e.g. application/vnd.olrapi.note+json from Local REST API content
-  // negotiation).
-  if (json && /\bapplication\/(?:[a-z0-9.+-]+\+)?json\b/i.test(contentType)) {
-    return await res.json();
+/**
+ * A body that could not be read AFTER a status had arrived. It carries that
+ * status: the difference between "nothing answered" and "something answered
+ * and then stalled" is exactly what `pingVault` needs to keep from sending
+ * `confirm_workspace_binding` off to open a window on a held port.
+ */
+function categorizeBodyError(err, vault, urlPath, budget, status) {
+  if (err?.name === 'AbortError') {
+    return new RestApiError(
+      `[${vault.name}] answered HTTP ${status} on ${urlPath} but the body did not arrive within ${budget}ms`,
+      {
+        kind: 'timeout',
+        vaultName: vault.name,
+        status,
+        urlPath,
+        hint:
+          'The server sent headers and then stalled. Something IS listening on this port; if it is not the vault, find what holds the port.',
+      },
+    );
   }
-  return await res.text();
+  if (err?.name === 'ResponseTooLarge') {
+    return new RestApiError(
+      `[${vault.name}] answered HTTP ${status} on ${urlPath} with a body over ${MAX_RESPONSE_BYTES} bytes — refused`,
+      { kind: 'unknown', vaultName: vault.name, status, urlPath },
+    );
+  }
+  return new RestApiError(
+    `[${vault.name}] answered HTTP ${status} on ${urlPath} but the body could not be read: ${safeForMessage(err?.message ?? String(err), 200)}`,
+    { kind: 'unknown', vaultName: vault.name, status, urlPath },
+  );
 }
 
 // --- Public API ---
@@ -428,42 +562,53 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
  * key → true; squatter + our key → false, HTTP 200.
  *
  * WHAT THIS PROVES, AND WHAT IT DOES NOT — stated because the first draft
- * overclaimed and an adversarial review caught it:
- *   - It proves the endpoint ACCEPTED THIS VAULT'S KEY. It does NOT prove the
- *     vault is unique, because keys are not guaranteed unique: a vault copied
- *     folder-and-all carries its source's key. Measured on this very fleet
- *     (2026-09-08): `C:\VAULTS\.template` and a copy of it on another drive
- *     share one apiKey. Two vaults with one key are indistinguishable here.
- *   - A POSITIVE `authenticated: true` is TAKEN ON TRUST, and that asymmetry is
- *     deliberate. A refusal is confirmed against an authenticated route before
- *     it costs anyone anything; an acceptance is not, because confirming every
- *     healthy vault would double the fleet's ping cost to re-prove the common
- *     case. So a cached or proxy-generated body claiming acceptance yields
- *     `confirmed` without the key ever having been evaluated for THIS request.
- *     `confirmed` gates nothing — it is a report, not a permission — which is
- *     what makes the trade acceptable; a caller must not read it as authority.
+ * overclaimed, an adversarial review caught it, and a penetration test then
+ * narrowed it again:
+ *   - `confirmed` means the endpoint CLAIMED it accepted this vault's key. The
+ *     SERVER is never authenticated: a bearer key over loopback goes to whoever
+ *     holds the port, and a listener that answers `authenticated: true` without
+ *     looking at the header is `confirmed` (pen-tested, scenario A1). Nor are
+ *     keys guaranteed unique: a vault copied folder-and-all carries its source's
+ *     key (the fleet had one such pair on 2026-09-08, since rotated). So
+ *     `confirmed` is the common healthy case reported as such — evidence, never
+ *     proof — and it gates nothing: it is a report, not a permission. Resisting
+ *     a malicious listener would take server authentication (a pinned
+ *     certificate checked BEFORE the key is sent), which is a transport change,
+ *     not a verdict.
+ *   - A POSITIVE answer is TAKEN ON TRUST, and that asymmetry is deliberate. A
+ *     refusal is confirmed against an authenticated route before it costs
+ *     anyone anything; an acceptance is not, because confirming every healthy
+ *     vault would double the fleet's ping cost to re-prove the common case.
  *   - A refusal does NOT prove a squatter either: a STALE stored key gives the
  *     same answer. Both causes are named in the message rather than one being
  *     asserted.
  *
  * Four verdicts, because "cannot tell" is not "wrong":
- *   - `confirmed`   — it answered and accepted a key we actually sent.
- *   - `rejected`    — it answered and REFUSED this vault's key, and a SECOND,
- *                     authenticated request confirmed the refusal (see below).
- *                     Either something else holds the port, or the stored key is
- *                     stale. Reported `online: false`: the credentials this
- *                     router holds cannot read or write it, so calling it up
- *                     would promise something no tool can deliver.
- *   - `unreachable` — nothing answered at all.
- *   - `unverified`  — it answered, but identity could not be established. FOUR
- *                     ways in: it said nothing about authentication (an older
- *                     plugin); we hold no key for it (`missingApiKey`, already
- *                     reported on its own); it said "not authenticated" and the
- *                     confirming request did NOT come back with a refusal (it
- *                     succeeded, timed out, or the connection dropped). Liveness
- *                     only, and the pre-identity behaviour is preserved:
- *                     `online: true`. Silence must not be read as a denial — nor
- *                     as a confirmation.
+ *   - `confirmed`   — it answered and said it accepted a key we actually sent.
+ *   - `rejected`    — it answered and REFUSED this vault's key: either the
+ *                     confirming authenticated request came back 401, or the
+ *                     public route itself did. Either something else holds the
+ *                     port, or the stored key is stale. Reported `online: false`:
+ *                     the credentials this router holds cannot read or write it,
+ *                     so calling it up would promise something no tool can
+ *                     deliver.
+ *   - `unreachable` — no connection, or none within the budget. Nothing is known
+ *                     to be listening. The ONE verdict under which
+ *                     `confirm_workspace_binding` opens Obsidian, because it is
+ *                     the one a window can change.
+ *   - `unverified`  — something answered, and identity could not be
+ *                     established. With `online: true`: it said nothing about
+ *                     authentication (an older plugin); we hold no key for it
+ *                     (`missingApiKey`, already reported on its own); it said
+ *                     "not authenticated" and the confirming request did NOT
+ *                     come back with a refusal (it succeeded, timed out, or the
+ *                     connection dropped) — and, pen-tested (A2), a listener that
+ *                     is not Obsidian at all and answers without checking keys.
+ *                     With `online: false`: it answered with something the
+ *                     router cannot use — a 403, a 5xx, a refused redirect, a
+ *                     401 for a vault we hold no key for. Liveness at most; never
+ *                     a denial, never a confirmation, and never a reason to open
+ *                     a window, since the port is held by SOMETHING.
  *
  * WHY A SECOND REQUEST BEFORE CONDEMNING. `GET /` is a public route, so a proxy
  * may cache it, or answer it anonymously while forwarding authenticated routes
@@ -545,7 +690,7 @@ export async function pingVault(vault) {
             `API key (confirmed with an authenticated request). TWO causes look identical from here ` +
             `and both are worth checking: something ELSE holds this port — a vault absent from ` +
             `portRegistry can squat one without ever appearing in the collision report — or the key ` +
-            `stored for this vault is stale. Nothing was read from it. ` +
+            `stored for this vault is stale. No vault listing was requested. ` +
             `\`node <router-repo>/scripts/setup-vault.mjs --check-ports\` answers the first; ` +
             `Obsidian → Settings → Local REST API → API Key answers the second.`,
           info,
@@ -581,23 +726,69 @@ export async function pingVault(vault) {
     // `rejected`, so it went on to launch Obsidian on a vault whose credentials
     // are the problem. Found by the fourth review round, reproduced against a
     // server that 401s its root before it was believed.
+    //
+    // GATED ON HAVING SENT A KEY, like `confirmed` is. Without one nothing of
+    // ours was refused — a gate that wants a key for the public route turned
+    // away an empty hand — so the verdict is `unverified`, and `missingApiKey`
+    // already says why. (Pen-test review, finding 5.)
+    const latencyMs = Date.now() - start;
     if (err?.kind === 'unauthorized') {
+      if (vault.apiKey) {
+        return {
+          online: false,
+          identity: 'rejected',
+          latencyMs,
+          error:
+            `[${vault.name}] a server IS listening at ${vault.baseUrl} and REFUSED this vault's API key ` +
+            `on the public route itself. TWO causes look identical from here: the key stored for this ` +
+            `vault is stale, or something in front of it (a gateway, a proxy) is answering. Opening ` +
+            `Obsidian fixes neither. Original error: ${err.message}`,
+        };
+      }
       return {
         online: false,
-        identity: 'rejected',
-        latencyMs: Date.now() - start,
+        identity: 'unverified',
+        latencyMs,
         error:
-          `[${vault.name}] a server IS listening at ${vault.baseUrl} and REFUSED this vault's API key ` +
-          `on the public route itself. TWO causes look identical from here: the key stored for this ` +
-          `vault is stale, or something in front of it (a gateway, a proxy) is answering. Opening ` +
-          `Obsidian fixes neither. Original error: ${err.message}`,
+          `[${vault.name}] a server at ${vault.baseUrl} requires authentication even on the public ` +
+          `route, and this router holds NO key for this vault (missingApiKey). Nothing was refused ` +
+          `because nothing was offered: add the key before reading anything into this. ` +
+          `Original error: ${err.message}`,
       };
+    }
+    // ANSWERED IS NOT ABSENT. Only a connection-level failure — nothing
+    // listening, or nothing within the budget — is `unreachable`. A 403, a
+    // 5xx, a refused redirect, a body the client would not take: a server DID
+    // answer, the router cannot use the answer, and whose server it is cannot
+    // be said. That is `unverified` with `online: false`, and for
+    // `confirm_workspace_binding` it is NOT a reason to open a window — the port
+    // is held by something, and a window cannot take it back. Before this
+    // branch existed, every one of those read as `unreachable` and sent the
+    // binding off to launch Obsidian against a port it could never bind.
+    // (Pen-test review, finding 4: a refused cross-host redirect — a 302, i.e.
+    // an answer — was being reported as "nothing answered".)
+    //
+    // A TIMEOUT WITH A STATUS IS AN ANSWER. `request()` now keeps its clock
+    // running through the body, and a body that stalls after the headers
+    // arrived throws `timeout` WITH the status it had already seen: something
+    // is listening, it just will not finish. That is not `unreachable` — the
+    // round-7 review named exactly this hole, and the measurement behind it was
+    // worse than a misclassification: before the clock covered the body, the
+    // ping did not time out at all.
+    const message = safeForMessage(err?.message ?? String(err), 400);
+    const answered = Number.isInteger(err?.status);
+    if (!answered && (err?.kind === 'unreachable' || err?.kind === 'timeout')) {
+      return { online: false, identity: 'unreachable', latencyMs, error: message };
     }
     return {
       online: false,
-      identity: 'unreachable',
-      latencyMs: Date.now() - start,
-      error: err.message,
+      identity: 'unverified',
+      latencyMs,
+      error:
+        `[${vault.name}] a server answered at ${vault.baseUrl} but the router could not use the ` +
+        `answer (${err?.kind ?? 'error'}${answered ? `, HTTP ${err.status}` : ''}); ` +
+        `whose server it is cannot be said from here, and opening Obsidian will not free the port. ` +
+        `Original error: ${message}`,
     };
   }
 }

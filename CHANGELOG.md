@@ -11,6 +11,104 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > the way v0.36.1's entry was filed under Docling for a month.
 
 
+## [0.93.2] — 2026-09-08 — the identity verdict, pen-tested: the clock that stopped at the headers
+
+The identity verdict of v0.93.0 was penetration-tested the same evening — rogue listeners on
+loopback against the working-tree `pingVault` (real sockets), every key of a 27-vault fleet tried
+against every open vault, junctions and look-alike folders against the OKF name resolver, and
+traversal/precondition/secondary-write probes through the live router — and the results were
+handed to an adversarial review, twice. The probe held where it claimed to (refusals, type
+confusion, a `__proto__` body that left `Object.prototype` untouched, credential isolation: 25 open
+vaults × 28 keys including the template's rotated-out one, 0 anomalies; no traversal through `..`,
+a backslash or `%2e%2e`; no write past the secondary or the shared-vault guard). What did not hold
+was around it: the REST client's clock stopped when the headers arrived, a same-host redirect could
+change port, three classes of "something answered" were reported as "nothing answered", and the
+caller that acts on the verdict was deciding on `online` alone.
+
+### Fixed
+
+- **A listener that sent headers and then stalled the body held the router past its budget.**
+  `request()` cleared its timer the moment the headers arrived and read the body with no clock at
+  all — undici's own body timeout is 300 s. Measured: `200 OK` then silence held `pingVault` for
+  15 s and counting on a 2 s budget, and `list_vaults` pings the fleet under one `Promise.all`, so
+  one such port hung the whole listing; a 401 whose body stalls, and the probe's 404, the same. The
+  budget now runs until the body has been read, an error body that stalls no longer hides the status
+  already known, a body that stalls AFTER a status is a `timeout` carrying that status (an answer,
+  see below), and a body is refused past 256 MiB of response bytes — an order of magnitude above the
+  largest legitimate answer measured on this fleet (22 MB, a whole vector store), and a ceiling on
+  what is buffered, not on heap: decoding and parsing still happen after it, synchronously. The
+  decoder strips a leading UTF-8 BOM, as Fetch's `json()` did. Pre-existing; every REST call
+  benefits. The witness is its own measurement: run against the previous client, the stalled-body
+  test took 304 s to fail.
+- **A same-host redirect could change PORT, key and all.** The follower compared hostnames only.
+  On loopback every vault is a port, so a listener on port A answering `302 → 127.0.0.1:B` had the
+  router carry the bearer key to B and report B's answer under A's registry entry (pen-test
+  scenario A5; the initiating listener already held the key, B newly received it). Redirects are
+  now same-ORIGIN: host and port, with ONE exception — the classical reverse-proxy upgrade, http on
+  the default port to https on the default port, same hostname. Not "any http→https": every local
+  vault runs with `tlsInsecure`, so an upgrade to an arbitrary https port would have been the same
+  attack over TLS (round-8 review). Two more holes in the follower closed on the way: a hop that
+  fails AFTER a redirect answered keeps that redirect's status (an endpoint that said "302" is not
+  absent), and a discarded redirect response has its body cancelled rather than abandoned, so a
+  `302` followed by an endless body no longer keeps a connection and a buffer alive after the call
+  returned. Witnessed: the sink is never contacted, never sees the key, and the endless body does
+  not hold the call.
+- **`pingVault` called every non-401 error reaching its outer catch `unreachable`.** A 403, a 5xx, a 404 on the public
+  route, a refused cross-host redirect — a 302 is an answer — all fell through the outer catch as
+  "nothing answered". `confirm_workspace_binding` launches Obsidian on `unreachable` alone, so each
+  of those sent it to open a window against a port something else was holding. Only a
+  connection-level failure (`unreachable`, or a `timeout` before any status) is `unreachable` now;
+  an answer the router cannot use — including a status followed by a stalled body — is
+  `unverified` with `online: false`, and the error names the kind and the HTTP status.
+- **A 401 on the public route was `rejected` even when NO key had been sent.** `confirmed` and the
+  probe path were gated on having sent a key; the public-route branch was not, so a keyless vault
+  behind an authentication gate was reported as having its key refused. Nothing of ours was
+  refused: it is `unverified`, and `missingApiKey` already says why.
+- **`confirm_workspace_binding` decided on `online`, not on identity.** A listener that answers
+  without checking keys — a dev server on the vault's port, anything but Obsidian — is
+  `online: true, identity: 'unverified'`, and `if (alive.online) continue` read that as "the vault
+  is open": the closed vault of the morning's bug, hidden by a different squatter. The decision is
+  now made on the verdict: `confirmed` → nothing to do; `rejected` → reported as `key-refused`;
+  `unverified` → reported as `identity-unverified` with its `online` flag, and NOT launched (its
+  Obsidian may already be open, and a window cannot take a held port back); `unreachable` → opened,
+  the one case a window changes. A ping that throws, or returns no verdict, is UNKNOWN — reported
+  as `ping-failed`, never a launch authorisation, and never narrated as "something answered" either,
+  which it did not establish. Each reported entry carries the ping's own diagnostic (`error`), so
+  an older plugin reads differently from a gateway 403 or a stalled body. The message says "sent an
+  open request" rather than asserting the vault was not running, and never counts a reported vault
+  as such.
+
+### Changed
+
+- **What `confirmed` claims, narrowed again.** The tool description, the module header and the
+  probe-path comment said the server "accepted" the key and the probe path "cannot exist". A
+  listener that answers `authenticated: true` without reading the header is `confirmed` (measured);
+  a vault may hold the probe file. `confirmed` now reads as "the endpoint CLAIMED it accepted the
+  key — the server itself is never authenticated", and resisting a malicious listener is named for
+  what it is: a transport change (a pinned certificate checked before the key is sent), not a
+  verdict. `rejected` is described as either the confirming request or the public route refusing.
+- **`okf-projections.mjs` states its exact-key precedence.** A config registering one directory
+  under two spellings gets the override of the spelling it was invoked with; that is a
+  configuration error (two registry keys reading one `data.json` carry one port pair, which the
+  registry's port-collision check flags), not one the resolver resolves.
+
+### Known limits
+
+- **A bearer key over loopback reaches whoever holds the port.** In every scenario of the harness
+  the listener received the key on its first request; this is the pre-existing shape of the design,
+  not a regression of the probe, and `confirmed` is worded accordingly. A "discriminating probe" (a
+  deliberately wrong key first, the real one only after a 401) would filter a naive yes-man and
+  nothing adaptive; resisting a malicious listener takes server authentication, which this release
+  does not attempt.
+- **A listener that is not Obsidian and answers without checking keys is `online`, `unverified`.**
+  The probe cannot tell it from an older plugin; what changed is that the binding now REPORTS it
+  instead of reading it as the open vault.
+- **The running routers on a machine do not pick this up until the plugin is updated and the host
+  restarted.** Both live routers on the test machine still answered `list_vaults` without an
+  `identity` field after v0.93.1 was released: a working-tree test is not a deployment check, and
+  the end-to-end check (a rogue listener on a closed vault's port, through the live router) is the
+  operator's next step, not this entry's claim.
+
 ## [0.93.1] — 2026-09-08 — the convention snippet that kept re-teaching the trap
 
 v0.92.0 stopped the `code` wiki mode from seeding a `Sessions` area, and the same day's fleet pass

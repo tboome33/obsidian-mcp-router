@@ -490,19 +490,51 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     for (const name of boundVaults(binding)) {
       const v = known.get(name);
       if (!v) continue;
-      const alive = await ping(v).catch(() => ({ online: false }));
-      if (alive?.online) continue;
-      // A REFUSED KEY IS NOT A CLOSED VAULT, and this is the one "offline" that
-      // must NOT be answered by launching Obsidian. `identity: 'rejected'` means
-      // a server DID answer on this vault's port and turned our key away —
-      // either something else holds the port, or the stored key is stale.
-      // Opening a window fixes neither: in the squatter case the new window
-      // cannot bind the port either, so the user would get a window, no vault,
-      // and no explanation. Say what happened instead. (Found by the Codex
-      // review of the identity probe: the tool description promised this
-      // exemption and the code did not honour it.)
-      if (alive?.identity === 'rejected') {
-        opened.push({ vault: name, launched: false, uri: null, reason: 'key-refused' });
+      // A ping that THROWS is not evidence of anything — `pingVault` catches
+      // its own errors, so a throw here is a defect, and a defect must not
+      // authorise a launch: it is reported as unverified, with the message.
+      const alive = await ping(v).catch((err) => ({
+        pingFailed: true,
+        error: `ping failed before returning a verdict: ${safeForMessage(err?.message ?? String(err), 200)}`,
+      }));
+      // THE DECISION IS MADE ON IDENTITY, NOT ON `online`. `online` alone let a
+      // listener that answers without checking keys — a dev server, anything
+      // but Obsidian on this port — pass for the open vault, and the vault
+      // stayed closed in silence (pen-test scenario A2, the morning's bug with
+      // a different squatter). Four verdicts, four answers, and only ONE of
+      // them is "open a window":
+      //   confirmed   → it is up and it says it is ours: nothing to do or say.
+      //   rejected    → a server answered and turned our key away — something
+      //                 else holds the port, or the stored key is stale. A
+      //                 window fixes neither: in the squatter case the new
+      //                 window cannot bind the port either, so the user would
+      //                 get a window, no vault and no explanation. Reported.
+      //   unverified  → something answered, and it could not be shown to be
+      //                 this vault: an older plugin, a keyless vault, a proxy,
+      //                 a 403 — or a squatter. Obsidian may well be open
+      //                 already, and a window cannot take a held port back, so
+      //                 it is REPORTED, not launched; the user, who can see
+      //                 their screen, decides.
+      //   unreachable → nothing connected: the one case a window changes.
+      // No verdict at all is not a verdict of absence — nor of presence: a
+      // ping that threw, or came back without a verdict (every producer sets
+      // one; `pingVault` always does), says NOTHING about the port. It is
+      // reported as exactly that — unknown, no open request sent — and not
+      // narrated as "something answered", which it did not establish.
+      if (alive?.pingFailed || typeof alive?.identity !== 'string') {
+        opened.push({ vault: name, launched: false, uri: null, reason: 'ping-failed', error: alive?.error ?? 'the ping returned no verdict' });
+        continue;
+      }
+      const identity = alive.identity;
+      if (identity === 'confirmed') continue;
+      if (identity === 'rejected') {
+        opened.push({ vault: name, launched: false, uri: null, reason: 'key-refused', error: alive?.error ?? null });
+        continue;
+      }
+      if (identity !== 'unreachable') {
+        // The ping's own diagnostic travels with the entry: it is what tells an
+        // older plugin from a Cloudflare gate from a stalled body.
+        opened.push({ vault: name, launched: false, uri: null, reason: 'identity-unverified', online: alive?.online === true, error: alive?.error ?? null });
         continue;
       }
       // The Obsidian-side label is the on-disk basename WITH its casing, not
@@ -539,14 +571,46 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         ? `This workspace is now bound to "${safeForMessage(primary, 80)}", with ${also.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} also bound and `
           + (binding.locked ? 'addressable by name once the lock is lifted (while it holds, no other vault answers).' : 'addressable by name.')
         : `This workspace is now bound to "${safeForMessage(primary, 80)}".`)
-      + (opened.length
-        ? ` Opening ${opened.filter((o) => o.launched).length} of ${opened.length} vault(s) that were not running — Obsidian may take a moment, and a vault answers only once it is open.`
-        : '')
+      + describeOpened(opened)
       + (refusalsDropped.length
         ? ` The earlier refusal of ${refusalsDropped.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} recorded for this workspace is dropped — binding a vault is adopting it.`
         : '')
       + ' The binding lives in your own router config, not in this project, so it does not travel with a clone.',
   };
+}
+
+/**
+ * The sentence(s) the `opened` list earns in the message: one per outcome,
+ * and NOTHING for a vault that was simply up. The earlier single sentence
+ * counted every entry as "not running", which became false the day an entry
+ * could mean "answered, but not provably yours" — a vault that may be wide
+ * open. Names are the registered spellings, sanitised like every other
+ * config-derived name in this file.
+ */
+function describeOpened(opened) {
+  const launched = opened.filter((o) => o.launched);
+  const refused = opened.filter((o) => o.reason === 'key-refused');
+  const unverified = opened.filter((o) => o.reason === 'identity-unverified');
+  const unknown = opened.filter((o) => o.reason === 'ping-failed');
+  const failed = opened.filter((o) => !o.launched && !refused.includes(o) && !unverified.includes(o) && !unknown.includes(o));
+  const names = (list) => list.map((o) => `"${safeForMessage(o.vault, 80)}"`).join(', ');
+  let s = '';
+  if (launched.length) {
+    s += ` Sent an open request for ${launched.length} vault(s) on whose port nothing answered within the budget — Obsidian may take a moment, and a vault answers only once it is open.`;
+  }
+  if (failed.length) {
+    s += ` ${names(failed)} could not be opened from here (see \`opened\`).`;
+  }
+  if (unknown.length) {
+    s += ` ${names(unknown)} could not be pinged at all (see \`opened[].error\`) — neither reachability nor identity is known, so no open request was sent; list_vaults is the next question.`;
+  }
+  if (refused.length) {
+    s += ` ${names(refused)} answered on its port but REFUSED the stored key — NOT opened: a window fixes neither a stale key nor another process holding the port (list_vaults → identity "rejected").`;
+  }
+  if (unverified.length) {
+    s += ` ${names(unverified)} answered but could not be shown to be the vault itself (list_vaults → identity "unverified") — NOT opened: its Obsidian may already be open, and if it is not, something else holds its port and a window cannot take it back.`;
+  }
+  return s;
 }
 
 /**
