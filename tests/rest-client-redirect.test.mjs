@@ -101,7 +101,7 @@ describe('redirect follower — same origin, not same hostname', () => {
     }
   });
 
-  test('same host, same PORT, another scheme (http → https on 8443) is still another origin: refused', async () => {
+  test('same host, same PORT, another scheme (http → https) is still another origin: refused', async () => {
     // Equal ports are not equal origins when the scheme changes (round-9
     // review): the only cross-scheme redirect allowed is the 80 → 443 upgrade.
     const front = await serve((req, res) => { res.writeHead(302, { location: `https://127.0.0.1:${req.socket.localPort}/` }); res.end(); });
