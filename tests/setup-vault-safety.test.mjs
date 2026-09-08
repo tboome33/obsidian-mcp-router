@@ -123,6 +123,9 @@ describe('samePath()', () => {
 // Integration: --sync-plugins refuses to target the reference vault
 // ---------------------------------------------------------------------------
 
+/** The installation these fixtures belong to (v0.94.0, lot 4). */
+const SAFETY_INSTALL_ID = '9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+
 describe('setup-vault.mjs --sync-plugins safety guards', () => {
   let workDir;
   let referenceVault;
@@ -159,8 +162,23 @@ describe('setup-vault.mjs --sync-plugins safety guards', () => {
     configPath = path.join(workDir, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({
       referenceVault,
+      installId: SAFETY_INSTALL_ID,
       portRegistry: { [targetVault]: 27130 },
       portStart: 27130,
+    }, null, 2));
+
+    // v0.94.0, lot 4 — the target belongs to this installation. Plugin
+    // synchronisation writes a vault's Local REST API `data.json`, so invariant
+    // I2 gates it like every other port write; stating the owner is what keeps
+    // these fixtures about the credential-leak guards they were written for
+    // rather than about ownership.
+    const idDir = path.join(targetVault, '.obsidian', 'obsidian-mcp-router');
+    fs.mkdirSync(idDir, { recursive: true });
+    fs.writeFileSync(path.join(idDir, 'identity.json'), JSON.stringify({
+      schemaVersion: 1,
+      vaultId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      owner: { installId: SAFETY_INSTALL_ID, hostname: 'FIXTURE-PC' },
+      createdAt: '2026-09-09T00:00:00.000Z',
     }, null, 2));
   });
 
@@ -245,6 +263,51 @@ describe('setup-vault.mjs --sync-plugins safety guards', () => {
     const data = JSON.parse(fs.readFileSync(path.join(tgtRestApi, 'data.json'), 'utf8'));
     assert.equal(data.apiKey, 'TARGET-OWN-KEY', 'target data.json must be preserved across --force re-clone');
     assert.equal(data.port, 27130);
+  });
+
+  test('a vault owned by ANOTHER installation is left completely untouched', () => {
+    // v0.94.0, lot 4. The refusal must be non-destructive, and this assertion
+    // is the one that matters: a first version of the guard checked ownership
+    // AFTER the `rm -rf` and the copy, so refusing left the vault holding the
+    // REFERENCE VAULT'S key and ports — the twin-vault failure, recreated by
+    // the very guard meant to prevent it. Both the code file and the
+    // configuration are compared, because "nothing happened" is the claim.
+    const tgtRestApi = path.join(targetVault, '.obsidian', 'plugins', 'obsidian-local-rest-api');
+    fs.rmSync(tgtRestApi, { recursive: true, force: true });
+    fs.mkdirSync(tgtRestApi, { recursive: true });
+    fs.writeFileSync(path.join(tgtRestApi, 'data.json'), JSON.stringify({ apiKey: 'TARGET-OWN-KEY', port: 27130 }));
+    fs.writeFileSync(path.join(tgtRestApi, 'main.js'), '// stale rest-api code');
+
+    // Hand the vault to somebody else.
+    fs.writeFileSync(path.join(targetVault, '.obsidian', 'obsidian-mcp-router', 'identity.json'), JSON.stringify({
+      schemaVersion: 1,
+      vaultId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      owner: { installId: '11111111-2222-4333-8444-555555555555', hostname: 'SONS-PC' },
+      createdAt: '2026-09-09T00:00:00.000Z',
+    }, null, 2));
+
+    try {
+      const result = runScript([targetVault, '--sync-plugins', '--force']);
+      assert.equal(result.status, 0, `stderr=${result.stderr}`);
+      assert.match((result.stdout || '') + (result.stderr || ''), /owned by another installation/i);
+
+      const data = JSON.parse(fs.readFileSync(path.join(tgtRestApi, 'data.json'), 'utf8'));
+      assert.equal(data.apiKey, 'TARGET-OWN-KEY', 'the reference vault\'s key reached a foreign vault');
+      assert.equal(data.port, 27130);
+      assert.equal(
+        fs.readFileSync(path.join(tgtRestApi, 'main.js'), 'utf8'),
+        '// stale rest-api code',
+        'the plugin folder was replaced despite the refusal',
+      );
+    } finally {
+      // Give the vault back, so the fixtures after this one are unaffected.
+      fs.writeFileSync(path.join(targetVault, '.obsidian', 'obsidian-mcp-router', 'identity.json'), JSON.stringify({
+        schemaVersion: 1,
+        vaultId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        owner: { installId: SAFETY_INSTALL_ID, hostname: 'FIXTURE-PC' },
+        createdAt: '2026-09-09T00:00:00.000Z',
+      }, null, 2));
+    }
   });
 
   test('REGRESSION (codex P1): --force refuses to copy credentialed plugin when target lacks data.json', () => {

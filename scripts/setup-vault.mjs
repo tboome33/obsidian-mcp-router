@@ -82,7 +82,10 @@ import {
 } from '../src/helpers/port-registry.mjs';
 import { DEFAULT_PORT_POLICY, planPortStartChange } from '../src/helpers/port-policy.mjs';
 import { probeLoopbackPort } from '../src/port-availability.mjs';
-import { planInstallationInitialization } from '../src/helpers/installation-identity.mjs';
+import { planInstallationInitialization, installationOwnerRef } from '../src/helpers/installation-identity.mjs';
+import { createVaultIdentity } from '../src/helpers/vault-identity.mjs';
+import { assertVaultPortOwnership, VaultOwnershipError } from '../src/helpers/vault-ownership.mjs';
+import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from '../src/vault-identity-store.mjs';
 import {
   CATALOG_BASENAME,
   JOURNAL_BASENAME,
@@ -1159,6 +1162,186 @@ function buildOnDiskPortMap(cfg, extraPaths = []) {
 }
 
 /**
+ * The single gate every write to a vault's Local REST API `data.json` passes.
+ *
+ * Reads the vault's identity FRESH and refuses unless this installation owns
+ * it. Placed in one function rather than repeated at each writer because a
+ * guard that reaches only its first site reads as closed while the other doors
+ * stay open — invariant I5, and the failure mode this repository has already
+ * lived through four times. `tests/vault-ownership.test.mjs` scans the source
+ * for writers that bypass it.
+ *
+ * @throws {VaultOwnershipError}
+ */
+async function assertMayWriteVaultPorts(vaultPath, operation) {
+  const cfg = loadConfig();
+  const { identity } = await readVaultIdentity(vaultPath);
+  assertVaultPortOwnership({ identity, installId: cfg.installId, operation });
+}
+
+/**
+ * May this re-clone touch that plugin at all?
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS ASKED **BEFORE** THE FOLDER IS WIPED
+ * ---------------------------------------------------------------------------
+ * A re-clone is `rm -rf` followed by a copy of the reference's plugin, with the
+ * target's own `data.json` read beforehand and written back afterwards. The
+ * first version of this guard sat on the write-back — and made the path
+ * strictly WORSE than no guard at all: the wipe had already happened, the
+ * reference vault's `data.json` had already landed, and refusing the restore
+ * left the vault holding THE TEMPLATE'S API KEY AND PORTS. That is precisely
+ * the "twin vault" failure this repository fixed once already, recreated by a
+ * guard meant to prevent it. Caught by an existing test, 2026-09-09.
+ *
+ * A refusal has to leave things untouched. So ownership is settled here, before
+ * anything is removed, and a refusal skips the plugin entirely.
+ *
+ * Only credentialed plugins are gated — the others carry user preferences, not
+ * the vault's ports and key, and blocking them would break plugin sync for a
+ * shared vault for no benefit. Invariant I2 names plugin synchronisation
+ * explicitly; this is where it lands.
+ *
+ * @returns {Promise<{ allowed: boolean, reason: string|null }>} Never throws.
+ */
+async function mayRecloneVaultPlugin(vaultPath, pluginName, dataJsonPath) {
+  if (!CREDENTIAL_LEAK_PLUGINS.has(String(pluginName).trim().toLowerCase())) {
+    return { allowed: true, reason: null };
+  }
+  // No configuration to protect: an inactive plugin folder holds no key and no
+  // ports. (The pre-existing first-time-copy refusal covers this case for its
+  // own reason — importing the reference's credentials — and still runs.)
+  if (!fs.existsSync(dataJsonPath)) return { allowed: true, reason: null };
+
+  try {
+    await assertMayWriteVaultPorts(vaultPath, `re-cloning ${pluginName} into this vault`);
+    return { allowed: true, reason: null };
+  } catch (err) {
+    if (err instanceof VaultOwnershipError) return { allowed: false, reason: err.message };
+    throw err;
+  }
+}
+
+/**
+ * Re-clone one plugin: check, wipe, copy, restore — as ONE operation.
+ *
+ * The check, the `rm -rf` and the write-back are welded together on purpose.
+ * When they were three statements at a call site, the guard drifted to the
+ * wrong one of them and the refusal path became destructive. A caller cannot
+ * now perform the wipe without having asked, because the wipe is not reachable
+ * from outside this function.
+ *
+ * @returns {Promise<{ done: boolean, reason: string|null }>} `done: false` with
+ *          a reason means NOTHING was touched — not the folder, not the file.
+ */
+async function recloneVaultPlugin(vaultPath, pluginName, srcPlugin, dstPlugin) {
+  const dataJsonPath = path.join(dstPlugin, 'data.json');
+  const verdict = await mayRecloneVaultPlugin(vaultPath, pluginName, dataJsonPath);
+  if (!verdict.allowed) return { done: false, reason: verdict.reason };
+
+  // The credentialed plugin's own data.json is NOT preserved here: the caller
+  // that owns this vault rewrites it immediately afterwards with the ports and
+  // key it just allocated. For every other plugin, data.json holds user
+  // preferences a re-clone must not reset.
+  let preserved = null;
+  if (!CREDENTIAL_LEAK_PLUGINS.has(String(pluginName).trim().toLowerCase()) && fs.existsSync(dataJsonPath)) {
+    try { preserved = fs.readFileSync(dataJsonPath); } catch {}
+  }
+
+  fs.rmSync(dstPlugin, { recursive: true, force: true });
+  copyDirRecursive(srcPlugin, dstPlugin);
+  if (preserved !== null) {
+    try { fs.writeFileSync(dataJsonPath, preserved); } catch {}
+  }
+  return { done: true, reason: null };
+}
+
+/**
+ * The `--sync-plugins` variant: the vault's OWN `data.json` is preserved across
+ * the re-clone, credentialed plugin included, because nothing here re-allocates
+ * ports afterwards. Same welding, same ordering.
+ *
+ * @returns {Promise<{ done: boolean, reason: string|null }>}
+ */
+async function recloneVaultPluginPreservingConfig(vaultPath, pluginName, srcPlugin, dstPlugin) {
+  const dataJsonPath = path.join(dstPlugin, 'data.json');
+  const verdict = await mayRecloneVaultPlugin(vaultPath, pluginName, dataJsonPath);
+  if (!verdict.allowed) return { done: false, reason: verdict.reason };
+
+  let preserved = null;
+  if (fs.existsSync(dataJsonPath)) preserved = fs.readFileSync(dataJsonPath);
+  fs.rmSync(dstPlugin, { recursive: true, force: true });
+  copyDirRecursive(srcPlugin, dstPlugin);
+  if (preserved !== null) fs.writeFileSync(dataJsonPath, preserved);
+  return { done: true, reason: null };
+}
+
+/**
+ * Make sure this vault has an identity, and that this installation may write
+ * its ports — the step `setup-vault <path>` runs before touching anything.
+ *
+ * THE CLAIM RULE, stated plainly because it is a judgement call inside the
+ * specification's latitude. Decision D4 forbids claiming the historic fleet
+ * IMPLICITLY: the migration of lot 5 stamps every vault with `owner: null` and
+ * claims nothing. But running `setup-vault <path>` is not implicit — it names
+ * one vault, by hand, on purpose. So:
+ *
+ *   - no identity at all      → created, owned by this installation;
+ *   - identity, owner UNKNOWN → claimed by this installation, and said out loud;
+ *   - identity, owner FOREIGN → refused. A TRANSFER needs its own action, and
+ *                               the vault's ports are shared with that machine;
+ *   - identity damaged        → refused, and NOT regenerated.
+ *
+ * @returns {Promise<{ vaultId: string, claimed: boolean, created: boolean }>}
+ */
+async function ensureVaultIdentityOwned(vaultPath, cfg, { quiet = false } = {}) {
+  const operation = 'setting up this vault';
+  const owner = installationOwnerRef(cfg);
+  if (!owner) {
+    fail('This installation has no identity of its own yet — cannot own a vault. This is a bug: report it.');
+  }
+
+  const current = await readVaultIdentity(vaultPath);
+
+  if (current.status === IDENTITY_STATUS.ABSENT) {
+    const identity = createVaultIdentity({ randomUUID: () => crypto.randomUUID(), owner });
+    await writeVaultIdentity(vaultPath, identity, { ifNew: true, operation });
+    if (!quiet) info(`This vault now has a durable identity (${identity.vaultId}), owned by this installation.`);
+    return { vaultId: identity.vaultId, claimed: false, created: true };
+  }
+
+  if (current.status !== IDENTITY_STATUS.OK) {
+    for (const issue of current.issues) warn(issue.message);
+    fail(
+      'Refusing to set up a vault whose identity file cannot be read or understood. Nothing was ' +
+      'changed, and the file was NOT regenerated — a fresh identity would silently detach this ' +
+      'vault from every installation that still references it.',
+    );
+  }
+
+  const identity = current.identity;
+  if (identity.owner === null) {
+    const claimed = { ...identity, owner };
+    await writeVaultIdentity(vaultPath, claimed, {
+      expectedRevision: current.revision,
+      operation: 'claiming this vault for this installation',
+    });
+    if (!quiet) {
+      info(
+        `This vault had no owner; this installation is now recorded as its owner. ` +
+        `No port was changed by the claim itself.`,
+      );
+    }
+    return { vaultId: identity.vaultId, claimed: true, created: false };
+  }
+
+  // Owned by someone. If that someone is not us, this throws — and it throws
+  // BEFORE any allocation, so a refusal costs nothing and changes nothing.
+  assertVaultPortOwnership({ identity, installId: cfg.installId, operation });
+  return { vaultId: identity.vaultId, claimed: false, created: false };
+}
+
+/**
  * Allocate the vault's PAIR of ports — HTTPS and plaintext — checking BOTH
  * spaces before handing either one out.
  *
@@ -1219,6 +1402,12 @@ function ensureInstallationIdentity(cfg, { quiet = false } = {}) {
   for (const field of ['installId', 'installHostname', 'portStart']) {
     if (Object.prototype.hasOwnProperty.call(nextConfig, field)) cfg[field] = nextConfig[field];
   }
+  // PERSISTED NOW, not at the end of the run. The identity is about to be
+  // stamped into vaults as their owner, and an owner that exists only in this
+  // process's memory would, if the run crashed in between, leave vaults naming
+  // an installation that never existed — an orphan nobody could ever match.
+  // Durable first, referenced second.
+  saveConfig(cfg);
   if (!quiet) {
     for (const change of changes) {
       if (change.field === 'portStart') {
@@ -1245,7 +1434,16 @@ function ensureInstallationIdentity(cfg, { quiet = false } = {}) {
  * port that had never been written — bookkeeping describing a file that does
  * not exist (pre-release review, 2026-08-30).
  */
-function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
+async function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
+  // OWNERSHIP, RE-READ HERE AND NOWHERE EARLIER. The caller may have checked
+  // minutes ago; between then and now the folder can have been synchronised
+  // from the other machine. The identity is therefore read again at the last
+  // possible moment, immediately before the bytes change — which narrows the
+  // window without pretending to close it: no lock exists across two machines
+  // sharing a Google Drive folder, and this guard is a rule the router applies
+  // to itself, not a permission system.
+  await assertMayWriteVaultPorts(vaultPath, 'rewriting this vault\'s Local REST API ports');
+
   const dataPath = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
   if (!fs.existsSync(dataPath)) {
     warn(`Local REST API data.json not found at ${dataPath} — plugin may regenerate it on first run.`);
@@ -1429,6 +1627,23 @@ async function upgradeInsecureServer(vaultPath, opts = {}) {
       info(`  (before: insecurePort=${data.insecurePort ?? 'unset'}, enableInsecureServer=${data.enableInsecureServer ?? 'unset'})`);
     }
     return result;
+  }
+
+  // THE SECOND WRITER, GUARDED TOO. A repair path is exactly the kind of site a
+  // fix reaches last: it does not look like "changing ports", it looks like
+  // "turning something on". It writes `insecurePort` into a foreign vault's
+  // configuration all the same, and invariant I2 names repairs explicitly.
+  // Read fresh, immediately before the write. (v0.94.0, lot 4.)
+  try {
+    await assertMayWriteVaultPorts(vaultPath, 'enabling this vault\'s plaintext HTTP server');
+  } catch (err) {
+    if (err instanceof VaultOwnershipError) {
+      result.status = 'not-owned';
+      result.error = err.message;
+      if (!quiet) warn(`${vaultPath} — ${err.message}`);
+      return result;
+    }
+    throw err;
   }
 
   data.insecurePort = desired.insecurePort;
@@ -3187,6 +3402,17 @@ async function setupVault(vaultPath, opts = {}) {
     );
   }
 
+  // BEFORE cloning anything, and before a single port is allocated: settle who
+  // owns this vault. A refusal here costs nothing — no plugin copied, no port
+  // reserved, no key minted — which is the only place a refusal is cheap.
+  // v0.94.0, lot 4.
+  try {
+    await ensureVaultIdentityOwned(abs, cfg, { quiet: opts.quiet === true });
+  } catch (err) {
+    if (err instanceof VaultOwnershipError) fail(err.message);
+    throw err;
+  }
+
   // BEFORE cloning anything: snapshot pre-existing REST API config in target
   // (so we can distinguish a fresh bootstrap from an adoption of an existing vault).
   let preExistingRestData = null;
@@ -3258,15 +3484,10 @@ async function setupVault(vaultPath, opts = {}) {
       // silently resets those prefs to defaults. The REST API's data.json is
       // exempt: it's intentionally (re)written by the port/apiKey adoption logic
       // a few lines below, so preserving it here would be pointless.
-      let preservedData = null;
-      const dataJsonPath = path.join(dstPlugin, 'data.json');
-      if (!CREDENTIAL_LEAK_PLUGINS.has(p) && fs.existsSync(dataJsonPath)) {
-        try { preservedData = fs.readFileSync(dataJsonPath); } catch {}
-      }
-      fs.rmSync(dstPlugin, { recursive: true, force: true });
-      copyDirRecursive(srcPlugin, dstPlugin);
-      if (preservedData) {
-        try { fs.writeFileSync(dataJsonPath, preservedData); } catch {}
+      const recloned = await recloneVaultPlugin(abs, p, srcPlugin, dstPlugin);
+      if (!recloned.done) {
+        warn(`Kept ${p} untouched — ${recloned.reason}`);
+        continue;
       }
     } else {
       copyDirRecursive(srcPlugin, dstPlugin);
@@ -3414,7 +3635,7 @@ async function setupVault(vaultPath, opts = {}) {
     }
   }
   // Always patch data.json so the values match (plugin clone may have overwritten with .template's port/key)
-  const patched = patchRestApiData(abs, port, apiKey, insecurePort);
+  const patched = await patchRestApiData(abs, port, apiKey, insecurePort);
   // Record only what actually reached the disk. When data.json was missing,
   // nothing was written, and claiming a plaintext port in the registry (or in
   // the returned metadata that drives --probe and the click-to-open hint)
@@ -3573,7 +3794,7 @@ async function setupVault(vaultPath, opts = {}) {
   };
 }
 
-function syncPluginsMode(vaultPath, opts = {}) {
+async function syncPluginsMode(vaultPath, opts = {}) {
   // When called from --sync-all (opts.throwOnError = true), errors throw
   // instead of process.exit so a single failing vault doesn't tear down
   // the whole loop. Direct CLI invocation keeps the legacy exit behavior
@@ -3689,6 +3910,12 @@ function syncPluginsMode(vaultPath, opts = {}) {
   // first" message. See CREDENTIAL_LEAK_PLUGINS doc-block at the top
   // of this file for the full reasoning.
   const deferredForSafety = [];
+  // Plugins left alone because this installation does not own the vault
+  // (v0.94.0, lot 4). A DIFFERENT list from `deferredForSafety`: that one is
+  // about not importing the reference's credentials into a vault that never had
+  // any, this one is about not touching a vault that belongs to another
+  // machine. Merging them would blur two refusals with different remedies.
+  const skippedNotOwned = [];
 
   for (const p of vettedPlugins) {
     const srcPlugin = path.join(refPluginsDir, p);
@@ -3734,12 +3961,12 @@ function syncPluginsMode(vaultPath, opts = {}) {
         continue;
       }
       // --force: re-clone but preserve local data.json (port + apiKey + user settings)
-      const dataJson = path.join(dstPlugin, 'data.json');
-      let preserved = null;
-      if (fs.existsSync(dataJson)) preserved = fs.readFileSync(dataJson);
-      fs.rmSync(dstPlugin, { recursive: true, force: true });
-      copyDirRecursive(srcPlugin, dstPlugin);
-      if (preserved) fs.writeFileSync(dataJson, preserved);
+      const recloned = await recloneVaultPluginPreservingConfig(vaultPath, p, srcPlugin, dstPlugin);
+      if (!recloned.done) {
+        if (!opts.quiet) warn(`Kept ${p} untouched — ${recloned.reason}`);
+        skippedNotOwned.push(p);
+        continue;
+      }
       refreshed.push(p);
     } else {
       copyDirRecursive(srcPlugin, dstPlugin);
@@ -5577,7 +5804,7 @@ if (args[0] === '--sync-from-github') {
     }
     try {
       console.log(c('cyan', `  → ${vaultPath}`));
-      syncPluginsMode(vaultPath, {
+      await syncPluginsMode(vaultPath, {
         force,
         throwOnError: true,
         sourceVault: skeleton,
@@ -5650,7 +5877,7 @@ if (args[0] === '--sync-all') {
       console.log(c('cyan', `  → ${vaultPath}`));
       // throwOnError: true so a single failing vault throws instead of
       // calling process.exit(1), keeping the loop alive for the rest.
-      syncPluginsMode(vaultPath, { force, quiet: false, throwOnError: true });
+      await syncPluginsMode(vaultPath, { force, quiet: false, throwOnError: true });
     } catch (err) {
       console.log(c('red', `    failed: ${err.message || err}`));
       failCount++;
@@ -6102,7 +6329,7 @@ if (args.includes('--dry-run')) {
 }
 
 if (args.includes('--sync-plugins')) {
-  syncPluginsMode(vaultArg, { force, quiet });
+  await syncPluginsMode(vaultArg, { force, quiet });
   process.exit(0);
 }
 

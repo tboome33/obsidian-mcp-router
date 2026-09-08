@@ -45,6 +45,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
   would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
   reservation — nothing holds the port between the check and the moment Obsidian binds it.
+- **A vault now carries a durable identity, and only its owner may rewrite its ports.**
+  `.obsidian/obsidian-mcp-router/identity.json` holds a UUID that survives a rename, a move and a
+  change of ports, plus the installation that owns it. It carries no API key, no absolute path, no
+  port and no authoritative name — a path would be wrong the moment the folder moved, which is the
+  event the file exists to survive, and a port would be a second source of truth replicated by
+  Drive. **UUIDs are compared; hostnames never are**: two machines can carry the same label and one
+  machine can change its own, so a different installation with the same hostname is refused and the
+  same installation with a different hostname is recognised. An absent, unknown or damaged owner all
+  mean no — "unknown owner" is a valid state that refuses, "damaged" is an error that is never
+  repaired automatically, and the two are never merged. Reading a foreign vault is untouched.
+  - The guard covers **every** writer of a Local REST API `data.json`, not the obvious one:
+    provisioning, `--upgrade-insecure-server` (a repair path, named explicitly by the invariant),
+    and both plugin re-clone paths. A source scan in the test suite asks the question the
+    behavioural tests cannot — *is there a writer that never calls the guard?* — and it found the
+    two re-clone sites that a fix stopping at the first funnel would have left open.
+  - **A first version of that guard made things worse, and the fix is the interesting part.** It
+    checked ownership on the write-*back*, after the plugin folder had already been wiped and
+    replaced by the reference vault's copy — so refusing left the vault holding *the template's API
+    key and ports*: the twin-vault failure, recreated by the guard meant to prevent it. The check,
+    the wipe and the restore are now welded into one function, so a caller cannot reach the
+    destructive half without having asked first.
 - **`/obsidian-router:force-new-port-start`** — draw a new allocation base for the vaults created
   from now on, and change nothing else. Two phases, using the repository's existing sealed-preview
   contract rather than a second one invented for the occasion: `--dry-run` prints the plan (previous

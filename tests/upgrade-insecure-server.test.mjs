@@ -25,7 +25,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SCRIPT_PATH = path.resolve(__dirname, '..', 'scripts', 'setup-vault.mjs');
 
-function makeVault(workDir, name, dataOverride = {}) {
+/** The installation these fixtures belong to. */
+const LOCAL_INSTALL_ID = '9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+const OTHER_INSTALL_ID = '11111111-2222-4333-8444-555555555555';
+
+/**
+ * Stamp a vault's identity file.
+ *
+ * v0.94.0, lot 4: `--upgrade-insecure-server` writes `insecurePort` into a
+ * vault's plugin configuration, so it is a port write like any other and
+ * invariant I2 gates it — a repair path is exactly the kind of site a guard
+ * reaches last. An unowned vault is now refused rather than repaired, which is
+ * why every fixture below states who owns it instead of leaving it implicit.
+ */
+function stampIdentity(vaultPath, { installId = LOCAL_INSTALL_ID, hostname = 'FIXTURE-PC' } = {}) {
+  const dir = path.join(vaultPath, '.obsidian', 'obsidian-mcp-router');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'identity.json'), JSON.stringify({
+    schemaVersion: 1,
+    vaultId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+    owner: installId === null ? null : { installId, hostname },
+    createdAt: '2026-09-09T00:00:00.000Z',
+  }, null, 2));
+}
+
+function makeVault(workDir, name, dataOverride = {}, identityOptions = {}) {
   const vaultPath = path.join(workDir, name);
   const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api');
   fs.mkdirSync(pluginDir, { recursive: true });
@@ -37,6 +61,7 @@ function makeVault(workDir, name, dataOverride = {}) {
     ...dataOverride,
   };
   fs.writeFileSync(path.join(pluginDir, 'data.json'), JSON.stringify(data, null, 2));
+  if (identityOptions.skip !== true) stampIdentity(vaultPath, identityOptions);
   return { vaultPath, dataPath: path.join(pluginDir, 'data.json'), initial: data };
 }
 
@@ -59,7 +84,7 @@ describe('--upgrade-insecure-server (single vault)', () => {
   beforeEach(() => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'upgrade-http-test-'));
     configPath = path.join(workDir, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: {}, portStart: 27130 }, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify({ installId: LOCAL_INSTALL_ID, portRegistry: {}, portStart: 27130 }, null, 2));
   });
 
   afterEach(() => {
@@ -151,6 +176,59 @@ describe('--upgrade-insecure-server (single vault)', () => {
     assert.equal(after.insecurePort, undefined, 'dry-run must not write');
   });
 
+  test('a vault owned by ANOTHER installation is refused, and its data.json is untouched', () => {
+    // v0.94.0, lot 4 / invariant I2. This vault is the shared-over-Drive case:
+    // its ports must stay identical on both machines or the click-to-open links
+    // written in its notes break on the other one. A "repair" here is damage.
+    const { vaultPath, dataPath, initial } = makeVault(workDir, 'foreign', {
+      port: 27200,
+    }, { installId: OTHER_INSTALL_ID, hostname: 'SONS-PC' });
+    const before = fs.readFileSync(dataPath, 'utf8');
+
+    const result = runScript(
+      ['--upgrade-insecure-server', vaultPath],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.match(result.stdout + result.stderr, /owned by another installation/i);
+    assert.equal(fs.readFileSync(dataPath, 'utf8'), before, 'a foreign vault was written to');
+    assert.equal(readData(dataPath).insecurePort, undefined);
+    assert.equal(readData(dataPath).apiKey, initial.apiKey);
+    // The refusal names the OWNER'S LABEL, never its installId: putting another
+    // machine's identifier into logs and transcripts buys nothing.
+    assert.match(result.stdout + result.stderr, /SONS-PC/);
+    assert.ok(!(result.stdout + result.stderr).includes(OTHER_INSTALL_ID), 'a foreign installId leaked');
+  });
+
+  test('a vault nobody has claimed is refused too — absent owner is not permission', () => {
+    const { vaultPath, dataPath } = makeVault(workDir, 'unclaimed', { port: 27200 }, { installId: null });
+    const before = fs.readFileSync(dataPath, 'utf8');
+
+    const result = runScript(
+      ['--upgrade-insecure-server', vaultPath],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.match(result.stdout + result.stderr, /no owner recorded/i);
+    assert.equal(fs.readFileSync(dataPath, 'utf8'), before);
+  });
+
+  test('a vault with NO identity file at all is refused, and none is invented', () => {
+    const { vaultPath, dataPath } = makeVault(workDir, 'identityless', { port: 27200 }, { skip: true });
+    const before = fs.readFileSync(dataPath, 'utf8');
+
+    const result = runScript(
+      ['--upgrade-insecure-server', vaultPath],
+      { OBSIDIAN_ROUTER_CONFIG: configPath },
+    );
+    assert.equal(fs.readFileSync(dataPath, 'utf8'), before);
+    // And a repair path must NOT be a back door that stamps an identity: only
+    // an explicit setup does that, so the operator sees the claim happen.
+    assert.equal(
+      fs.existsSync(path.join(vaultPath, '.obsidian', 'obsidian-mcp-router', 'identity.json')),
+      false,
+      'a repair path silently created an identity',
+    );
+  });
+
   test('no data.json: warns + non-fatal (exit 0)', () => {
     // Vault root exists but plugin dir doesn't.
     const vaultPath = path.join(workDir, 'no-plugin');
@@ -233,6 +311,7 @@ describe('--upgrade-insecure-server-all (batch)', () => {
     });
 
     fs.writeFileSync(configPath, JSON.stringify({
+      installId: LOCAL_INSTALL_ID,
       portRegistry: { [v1.vaultPath]: 27200, [v2.vaultPath]: 27201, [v3.vaultPath]: 27202 },
       portStart: 27200,
     }, null, 2));
@@ -262,6 +341,7 @@ describe('--upgrade-insecure-server-all (batch)', () => {
   test('--dry-run on batch: no writes, summary printed', () => {
     const v1 = makeVault(workDir, 'legacy', { port: 27200 });
     fs.writeFileSync(configPath, JSON.stringify({
+      installId: LOCAL_INSTALL_ID,
       portRegistry: { [v1.vaultPath]: 27200 }, portStart: 27200,
     }, null, 2));
     const mtimeBefore = fs.statSync(v1.dataPath).mtimeMs;
@@ -279,7 +359,7 @@ describe('--upgrade-insecure-server-all (batch)', () => {
   });
 
   test('empty portRegistry: fails with clear message', () => {
-    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: {}, portStart: 27200 }, null, 2));
+    fs.writeFileSync(configPath, JSON.stringify({ installId: LOCAL_INSTALL_ID, portRegistry: {}, portStart: 27200 }, null, 2));
 
     const result = runScript(
       ['--upgrade-insecure-server-all'],
@@ -297,6 +377,7 @@ describe('--upgrade-insecure-server-all (batch)', () => {
     fs.mkdirSync(path.join(ghostVault, '.obsidian'), { recursive: true });
 
     fs.writeFileSync(configPath, JSON.stringify({
+      installId: LOCAL_INSTALL_ID,
       portRegistry: { [v1.vaultPath]: 27200, [ghostVault]: 27201 },
       portStart: 27200,
     }, null, 2));
