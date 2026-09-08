@@ -40,7 +40,7 @@ Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki/` :
 
 - ❌ Répondre à *"comment fait-on X"* en pure inference sans vérifier `wiki/Refs/X-howto.md` qui pourrait avoir la procédure verbatim
 - ❌ Composer une recommandation architecturale sans lire `wiki/Decisions/` qui contient peut-être déjà cette décision et ses trade-offs
-- ❌ Démarrer une nouvelle session sur un projet sans relire `wiki-meta/hot.md` (déjà chargé par `hot-cache-load` hook si activé) ET `wiki/Sessions/` récentes
+- ❌ Démarrer une nouvelle session sur un projet sans relire `wiki-meta/hot.md` (déjà chargé par `hot-cache-load` hook si activé) ET les notes de session récentes dans `wiki-meta/Sessions/` — jamais `wiki/Sessions/`, qui n'est pas une aire du wiki
 - ❌ Skip la check parce que "ça prend du temps" — typiquement un `get_file` + un `search_smart` coûte ~3 secondes vs des minutes de rework si on rate du contexte existant
 
 ### Mécanisme technique

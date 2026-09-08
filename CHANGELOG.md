@@ -11,6 +11,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > the way v0.36.1's entry was filed under Docling for a month.
 
 
+## [0.93.1] — 2026-09-08 — the convention snippet that kept re-teaching the trap
+
+v0.92.0 stopped the `code` wiki mode from seeding a `Sessions` area, and the same day's fleet pass
+removed the `## Sessions` heading from 18 catalogues. Both treated a symptom. The instruction that
+actually sends an agent to write under `wiki/Sessions/` lived one layer up, in prose the router
+itself installs.
+
+### Fixed
+
+- **`skills/conventions/snippets/wiki-query-first.md` told agents to reread "`wiki/Sessions/`
+  récentes".** That snippet is what `/obsidian-router:conventions install wiki-query-first` pastes
+  into a vault's `CLAUDE.md`, so every installation re-injected the wrong folder — and the
+  `conventions` skill detects "already installed" by H2 heading alone, so a fixed snippet never
+  overwrites an installed copy. The line now names `wiki-meta/Sessions/` and says outright that
+  `wiki/Sessions/` is not an area of the wiki.
+- Measured on the fleet before the fix: **24 vault files** carry the old sentence byte-identically —
+  21 `Documentation/CLAUDE.md` (cloned from the living reference vault by `cloneRootDocs()`) and 3
+  vault-root `CLAUDE.md`. The living reference vault's own `Documentation/CLAUDE.md` additionally
+  carried a "Folder conventions" bullet declaring `wiki/Sessions/` as a content area — the repo's
+  skeleton had already lost that bullet; the living copy had not. Both lines were fixed in the
+  living vault in place; that vault is not part of this repository.
+
+### Known limit
+
+The 24 installed copies are NOT updated by this release. The `conventions` skill skips a vault
+whose `CLAUDE.md` already carries the H2, and `meta-sync-template` preserves an existing
+`Documentation/` unless forced — and a forced re-clone would overwrite per-vault additions (at
+least one vault's copy is longer than the reference's). Propagating the fix is a deliberate,
+per-vault edit, not a sync.
+
 ## [0.93.0] — 2026-09-08 — two checkers that reported success they had not established
 
 
