@@ -14,9 +14,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 ## [0.93.1] — 2026-09-08 — the convention snippet that kept re-teaching the trap
 
 v0.92.0 stopped the `code` wiki mode from seeding a `Sessions` area, and the same day's fleet pass
-removed the `## Sessions` heading from 18 catalogues. Both treated a symptom. The instruction that
-actually sends an agent to write under `wiki/Sessions/` lived one layer up, in prose the router
-itself installs.
+removed the `## Sessions` heading from 18 catalogues. One more copy of the obsolete convention
+lived one layer up, in prose the router itself installs — a READ instruction that kept naming
+`wiki/Sessions/` as the place where session notes are, which is how an agent learns where to put
+the next one. Whether this sentence or the "Folder conventions" bullet beside it (see below) was
+the one that actually produced a misfiled note is not established; both taught the wrong folder,
+and both are gone.
 
 ### Fixed
 
@@ -33,13 +36,22 @@ itself installs.
   skeleton had already lost that bullet; the living copy had not. Both lines were fixed in the
   living vault in place; that vault is not part of this repository.
 
+- **Two more contradictions in the same snippet, found by the release review and fixed in the
+  same commit.** Its "4 entry points" paragraph said the four canonical files live "sous `wiki/`"
+  while listing four `wiki-meta/` paths — the same class of defect, one paragraph down. And its
+  skip-condition "Workspace n'est PAS un vault (pas de `wiki-meta/catalog.md`)" described the
+  NORMAL state of a code workspace bound to a vault, so an agent reading it literally could skip
+  consulting the associated vault altogether. It now requires the workspace to be neither a vault
+  nor bound to one.
+
 ### Known limit
 
-The 24 installed copies are NOT updated by this release. The `conventions` skill skips a vault
-whose `CLAUDE.md` already carries the H2, and `meta-sync-template` preserves an existing
-`Documentation/` unless forced — and a forced re-clone would overwrite per-vault additions (at
-least one vault's copy is longer than the reference's). Propagating the fix is a deliberate,
-per-vault edit, not a sync.
+The 24 installed copies are not touched by the release itself. Neither the `conventions` skill
+(which skips a vault whose `CLAUDE.md` already carries the H2) nor `meta-sync-template` (which
+preserves an existing `Documentation/` unless forced) migrates an existing copy while keeping
+per-vault additions, and at least one vault's copy is longer than the reference's. Propagating
+the fix is therefore a per-vault line substitution, done outside the release; it was done by hand
+on 2026-09-08 for the session-folder lines, with a backup per file.
 
 ## [0.93.0] — 2026-09-08 — two checkers that reported success they had not established
 

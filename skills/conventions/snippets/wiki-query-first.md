@@ -15,7 +15,7 @@ Une question est "substantielle" si elle dépasse le suivi trivial (oui/non/ok/m
 
 ### Les 4 entry points canoniques du vault
 
-Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki/` :
+Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki-meta/` (jamais sous `wiki/`, qui ne contient que les pages de connaissance) :
 
 - **`wiki-meta/hot.md`** — cache de contexte récent, déjà chargé au session start via le hook `hot-cache-load` (en cwd-is-vault) ou via `hot-cache-load` workspace-bound (en associated mode, préfixé d'un marqueur indiquant la provenance).
 - **`wiki-meta/catalog.md`** — catalogue complet des pages organisées par dossier/projet. Le point d'entrée principal pour scanner ce qui existe.
@@ -33,7 +33,7 @@ Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki/` :
 
 - Prompt trivial (oui / non / merci / continue / single letter answer à une AskUserQuestion / typo fix)
 - Slash command (`/save`, `/wiki-query`, etc. — la skill gère elle-même son scope)
-- Workspace n'est PAS un vault (présence de `wiki-meta/catalog.md` absente)
+- Workspace n'est **ni** un vault (pas de `wiki-meta/catalog.md` local) **ni** associé à un vault (pas de liaison workspace-bound) — un workspace de code lié à un vault n'a PAS de catalogue local et doit quand même interroger son vault associé
 - L'user explicitement dit *"sans chercher dans le vault, réponds-moi directement à X"* ou équivalent
 
 ### Anti-patterns
