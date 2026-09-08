@@ -185,6 +185,129 @@ export function choosePortStart({
  * Wrapping ONCE, and never revisiting a candidate, is what makes "the space is
  * exhausted" a statement the caller can actually make.
  */
+/**
+ * Plan a change of allocation base — for FUTURE vaults only.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THIS COMMAND IS FOR, AND WHAT IT WOULD BE EASY TO MISREAD IT AS
+ * ---------------------------------------------------------------------------
+ * It moves the number that the NEXT vault's ports are searched from. It does
+ * not touch one existing port, does not open a vault, does not rewrite a
+ * `data.json`, does not mint a key, and does not change `installId`. The count
+ * of ports it modifies is reported as a literal `0` in the plan, because that
+ * is the single thing a reader most needs to be sure of before confirming, and
+ * "trust me" is not a way to say it.
+ *
+ * That restraint is decision D1: renumbering existing HTTP ports would break
+ * every click-to-open link already written — in the notes, between vaults, and
+ * above all in mail and transcripts, where nothing can reach them. A
+ * `--renumber` switch bolted onto this command would be that operation wearing
+ * this one's clothes, which is why the plan states the zero rather than
+ * omitting the subject.
+ *
+ * ---------------------------------------------------------------------------
+ * THE DRAW HAPPENS ONCE, IN THE PROPOSAL
+ * ---------------------------------------------------------------------------
+ * `nextPortStart` may be passed in, and the apply phase always passes it: the
+ * plan that gets applied has to be the plan that was shown. Redrawing at apply
+ * time would mean the user confirmed one number and got another — and it would
+ * also defeat the seal, since the re-derived plan would never match.
+ *
+ * `preconditions` fingerprints what the plan was computed against. A vault
+ * registered, unregistered or renumbered between the proposal and the apply
+ * changes the fingerprint, the seal stops matching, and the apply refuses
+ * rather than acting on a stale picture.
+ *
+ * @returns {{ previousPortStart, nextPortStart, band, exclusions, registeredVaultCount,
+ *             affectedVaultIds: string[], existingPortsChanged: 0, installIdPreserved: true,
+ *             candidatesExamined, candidatesFree, preconditions, issues }}
+ */
+export function planPortStartChange(cfg, {
+  policy = DEFAULT_PORT_POLICY,
+  reservedPorts = new Set(),
+  randomInt,
+  nextPortStart = null,
+  registeredPaths = [],
+} = {}) {
+  const previousPortStart = Number.isInteger(cfg?.portStart) ? cfg.portStart : null;
+  const issues = [];
+  const offset = policyOffset(policy);
+  const reserved = reservedPorts instanceof Set ? reservedPorts : new Set(reservedPorts || []);
+
+  let chosen = null;
+  let candidatesExamined = 0;
+  let candidatesFree = 0;
+
+  if (nextPortStart !== null && nextPortStart !== undefined) {
+    // The apply path. The number is NOT redrawn; it is re-validated, so a base
+    // that has become unusable since the proposal is refused rather than
+    // written.
+    const bases = allowedPairBases(policy);
+    candidatesExamined = bases.length;
+    candidatesFree = bases.filter((p) => !reserved.has(p) && !reserved.has(p + offset)).length;
+    if (!isAllowedNewServicePort(nextPortStart, policy) || !isAllowedNewServicePort(nextPortStart + offset, policy)) {
+      issues.push({
+        kind: 'base-outside-band',
+        severity: 'error',
+        message:
+          `${nextPortStart} is not a base this policy allows — either it or its partner ` +
+          `${nextPortStart + offset} falls outside the band or inside an exclusion.`,
+      });
+    } else if (reserved.has(nextPortStart) || reserved.has(nextPortStart + offset)) {
+      issues.push({
+        kind: 'base-now-taken',
+        severity: 'error',
+        message:
+          `${nextPortStart} is no longer free: it or its partner ${nextPortStart + offset} has been ` +
+          'claimed since the plan was proposed. Re-run the proposal.',
+      });
+    } else {
+      chosen = nextPortStart;
+    }
+  } else {
+    const draw = choosePortStart({ policy, reservedPorts: reserved, previousPortStart, randomInt });
+    candidatesExamined = draw.candidatesExamined;
+    candidatesFree = draw.candidatesFree;
+    if (draw.portStart === null) {
+      issues.push({
+        kind: 'port-space-exhausted',
+        severity: 'error',
+        message:
+          `No base is available: ${draw.candidatesExamined} candidate base(s) fit the policy and ` +
+          'none has both of its ports free. Nothing was changed.',
+      });
+    } else {
+      chosen = draw.portStart;
+    }
+  }
+
+  const paths = Array.isArray(registeredPaths) ? [...registeredPaths] : [];
+
+  return {
+    previousPortStart,
+    nextPortStart: chosen,
+    band: { min: policy?.min ?? null, max: policy?.max ?? null },
+    exclusions: Array.isArray(policy?.exclusions) ? policy.exclusions.map((r) => ({ from: r.from, to: r.to })) : [],
+    registeredVaultCount: paths.length,
+    // Named `affectedVaultIds` by the specification, and deliberately always
+    // EMPTY: no registered vault is affected by a change of base. The field is
+    // kept so that a future operation which does affect vaults cannot quietly
+    // reuse this plan shape without filling it in.
+    affectedVaultIds: [],
+    existingPortsChanged: 0,
+    installIdPreserved: true,
+    candidatesExamined,
+    candidatesFree,
+    preconditions: {
+      previousPortStart,
+      registeredVaultCount: paths.length,
+      // Sorted so the fingerprint does not depend on object key order.
+      registeredPaths: paths.slice().sort(),
+    },
+    issues,
+  };
+}
+
 export function orderedPairCandidates(portStart, policy = DEFAULT_PORT_POLICY) {
   const bases = allowedPairBases(policy);
   if (bases.length === 0) return [];

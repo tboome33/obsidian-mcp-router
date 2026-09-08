@@ -45,6 +45,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
   would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
   reservation — nothing holds the port between the check and the moment Obsidian binds it.
+- **`/obsidian-router:force-new-port-start`** — draw a new allocation base for the vaults created
+  from now on, and change nothing else. Two phases, using the repository's existing sealed-preview
+  contract rather than a second one invented for the occasion: `--dry-run` prints the plan (previous
+  base, new base, band, registered vault count, `installId: preserved`, and **`EXISTING ports
+  changed: 0`** in as many words) plus an `approvedPlanSha256`; the apply passes that seal back
+  together with the `--port-start` the proposal showed. The base is therefore never redrawn at apply
+  time — applying without `--port-start` is refused outright — and a vault registered, unregistered
+  or renumbered in between makes the re-derived plan differ, the seal mismatch, and the apply refuse
+  before touching anything. Verified on a 27-vault fixture shaped like the real fleet, six of its
+  pairs running backwards: every `data.json` hash identical before and after.
 - **`list_vaults` gains `portDiagnostics[]`** — what each vault's own configuration says about its
   ports versus what the router had recorded. Reading `data.json` needs no server, so a drift shows
   up for a CLOSED vault, which is exactly when it is most useful: it is the answer to a vault that

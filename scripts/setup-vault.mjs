@@ -80,7 +80,7 @@ import {
   detectPortCollisions,
   summarizePortCollisions,
 } from '../src/helpers/port-registry.mjs';
-import { DEFAULT_PORT_POLICY } from '../src/helpers/port-policy.mjs';
+import { DEFAULT_PORT_POLICY, planPortStartChange } from '../src/helpers/port-policy.mjs';
 import { probeLoopbackPort } from '../src/port-availability.mjs';
 import { planInstallationInitialization } from '../src/helpers/installation-identity.mjs';
 import {
@@ -4722,6 +4722,116 @@ if (args[0] === '--sync-port-registry') {
       console.log((f.severity === 'error' ? c('red', '  ✗ ') : c('yellow', '  ! ')) + f.message);
     }
   }
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// --force-new-port-start — move the base for FUTURE vaults, and only that
+// ---------------------------------------------------------------------------
+//
+// Two phases, using the repository's existing sealed-preview contract rather
+// than a second one invented for this command: `--dry-run` prints the plan and
+// its `approvedPlanSha256`; the apply passes that seal back together with the
+// `--port-start` the proposal showed. The base is therefore NEVER redrawn at
+// apply time — the plan that runs is the plan that was read — and any change to
+// the registry in between makes the re-derived plan differ, the seal mismatch,
+// and the apply refuse before touching anything.
+//
+// What it does not do is the point: no existing port moves, no vault is opened,
+// no `data.json` is rewritten, no key is minted, `installId` is untouched. The
+// plan says "existing ports changed: 0" in as many words, because that is the
+// fact a reader needs to be certain of before confirming (decision D1).
+if (args[0] === '--force-new-port-start') {
+  const dryRun = args.includes('--dry-run');
+  const cfg = loadConfig();
+  const onDisk = buildOnDiskPortMap(cfg);
+  const reservedPorts = new Set(buildPortIndex(cfg, { onDisk }).keys());
+  const registeredPaths = registeredVaultPaths(cfg);
+
+  const explicitIdx = args.indexOf('--port-start');
+  let requestedBase = null;
+  if (explicitIdx !== -1) {
+    const raw = args[explicitIdx + 1];
+    if (raw === undefined || raw.startsWith('-')) {
+      fail('--port-start requires a value (the base the --dry-run proposed).');
+    }
+    requestedBase = Number.parseInt(raw, 10);
+    if (!Number.isInteger(requestedBase)) {
+      fail(`--port-start expects an integer, got ${JSON.stringify(raw)}.`);
+    }
+  }
+
+  const approvedPlanSha256 = readApprovedPlanSeal(args);
+  if (!dryRun && requestedBase === null) {
+    fail(
+      'Refusing to apply without --port-start: the base to write is the one the proposal showed.\n   ' +
+      'Run `--force-new-port-start --dry-run` first, then pass back its --port-start and ' +
+      '--approved-plan-sha256.',
+    );
+  }
+
+  const plan = planPortStartChange(cfg, {
+    policy: DEFAULT_PORT_POLICY,
+    reservedPorts,
+    randomInt: (min, max) => crypto.randomInt(min, max),
+    nextPortStart: requestedBase,
+    registeredPaths,
+  });
+
+  for (const issue of plan.issues) warn(issue.message);
+  if (plan.nextPortStart === null) {
+    fail('No new allocation base could be proposed — nothing was changed.');
+  }
+
+  console.log('');
+  console.log(c('bold', 'Change of allocation base — for FUTURE vaults only'));
+  console.log(`  previous base            : ${plan.previousPortStart ?? '(none)'}`);
+  console.log(`  new base                 : ${plan.nextPortStart}`);
+  console.log(`  band                     : ${plan.band.min}-${plan.band.max}` +
+    (plan.exclusions.length ? `, excluding ${plan.exclusions.map((r) => `${r.from}-${r.to}`).join(', ')}` : ''));
+  console.log(`  registered vaults        : ${plan.registeredVaultCount}`);
+  console.log(`  EXISTING ports changed   : ${plan.existingPortsChanged}`);
+  console.log(`  installId                : preserved`);
+  console.log(`  candidate bases free     : ${plan.candidatesFree} of ${plan.candidatesExamined}`);
+  console.log('');
+
+  const op = 'setup-vault/force-new-port-start';
+  const identity = { configPath: CONFIG_PATH };
+  const sealedPlan = {
+    previousPortStart: plan.previousPortStart,
+    nextPortStart: plan.nextPortStart,
+    band: plan.band,
+    exclusions: plan.exclusions,
+    existingPortsChanged: plan.existingPortsChanged,
+    preconditions: plan.preconditions,
+  };
+
+  if (dryRun) {
+    // A --dry-run writes NOTHING — not the config, not a backup, not a state
+    // file. The seal is derived in memory and printed.
+    printPlanSeal(
+      computePlanSeal({ op, identity, plan: sealedPlan }),
+      `Apply with: --force-new-port-start --port-start ${plan.nextPortStart} --approved-plan-sha256 <seal>`,
+    );
+    process.exit(0);
+  }
+
+  if (approvedPlanSha256) {
+    verifyPlanSealOrFail({
+      op,
+      identity,
+      plan: sealedPlan,
+      provided: approvedPlanSha256,
+      previewHint: 'node scripts/setup-vault.mjs --force-new-port-start --dry-run',
+    });
+  }
+
+  cfg.portStart = plan.nextPortStart;
+  saveConfig(cfg);
+  ok(
+    `Allocation base is now ${plan.nextPortStart}. No existing vault was touched: ` +
+    `${plan.registeredVaultCount} registered vault(s) keep their ports, their keys and their links.`,
+  );
   process.exit(0);
 }
 
