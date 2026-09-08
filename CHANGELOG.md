@@ -45,6 +45,30 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
   would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
   reservation — nothing holds the port between the check and the moment Obsidian binds it.
+- **`setup-vault.mjs --migrate-vault-identities` — the registry is keyed by UUID, not by path.**
+  An explicit, sealed, two-phase operation, never a side effect of starting up: a migration that ran
+  at load would turn every launch into a write, on a folder two machines share through Drive. It
+  changes the shape of the router's own configuration and **nothing else** — the plan states
+  `data.json files modified: 0` as a literal, and the test compares 27 file hashes rather than
+  trusting the sentence. `portRegistry` is REMOVED at migration rather than kept alongside: a second,
+  independently-editable copy of the same facts, replicated by Drive, would drift. The path index
+  every caller relies on is derived from `vaultsById` on each read, so there is no stored second
+  index for anyone to edit.
+  - **A duplicate UUID blocks; it is never diagnosed.** Two directories carrying one identity can be
+    two spellings of one folder, a move with a stale entry, a synchronised replica, or a copy that
+    became independent. Only the first is decidable — normalising two spellings is arithmetic. The
+    rest call for opposite actions, and guessing "copy" (as an earlier draft did) regenerates the
+    identity, key and ports of what may be a replica, breaking the other machine. The migration
+    stops, names both paths, and waits.
+  - **The historic fleet migrates with `owner: null`.** Claiming 27 vaults as a side effect of a
+    migration would hand this installation the right to rewrite all their ports without anyone
+    saying so. Claiming is a separate, per-vault act.
+  - **Interruptible and resumable, because it cannot be atomic.** No transaction spans 27
+    Drive-replicated folders and a local file. A journal is written before anything is created, each
+    identity is created conditionally and recorded, everything is re-read before the configuration is
+    rewritten last — and a resume reuses the identities already created rather than minting a second
+    UUID for a folder that has one, which may already be on the other machine. Nothing is ever rolled
+    back blindly.
 - **A vault now carries a durable identity, and only its owner may rewrite its ports.**
   `.obsidian/obsidian-mcp-router/identity.json` holds a UUID that survives a rename, a move and a
   change of ports, plus the installation that owns it. It carries no API key, no absolute path, no

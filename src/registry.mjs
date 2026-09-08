@@ -37,6 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   normalizePortEntry,
+  portEntryOf,
   detectPortCollisions,
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
@@ -130,7 +131,7 @@ export async function loadRegistry({ configPath } = {}) {
   // `registeredVaultPaths`, and indexing the container with its OWN keys is
   // safe by construction.
   const portRegistry = Object.fromEntries(
-    registeredVaultPaths(config).map((vp) => [vp, config.portRegistry[vp]]),
+    registeredVaultPaths(config).map((vp) => [vp, portEntryOf(config, vp)]),
   );
 
   // Disk truth for the port-collision report below. Each vault's data.json is

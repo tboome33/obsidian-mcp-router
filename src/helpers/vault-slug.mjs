@@ -266,10 +266,93 @@ export function resolveVaultBySlug(cfg, slug) {
  * @returns {string[]}
  */
 export function registeredVaultPaths(cfg) {
+  const records = vaultRecordsOf(cfg);
+  if (records !== null) return records.map((r) => r.path);
   if (!cfg || typeof cfg !== 'object') return [];
   const registry = cfg.portRegistry;
   if (!registry || typeof registry !== 'object' || Array.isArray(registry)) return [];
   return Object.keys(registry);
+}
+
+/**
+ * The migrated registry's records, or `null` when this config has not been
+ * migrated.
+ *
+ * ---------------------------------------------------------------------------
+ * TWO SCHEMAS, ONE CANONICAL SOURCE
+ * ---------------------------------------------------------------------------
+ * A config at `schemaVersion: 2` keys its vaults by UUID in `vaultsById`; an
+ * older one keys them by absolute path in `portRegistry`. Both are READ — a
+ * router that could not read the old shape would strand anyone who had not
+ * migrated yet — but after a migration there is exactly one source: the
+ * migration REMOVES `portRegistry`, so no second, independently-editable copy
+ * of the same facts survives to drift from it (§6.3, decision D7).
+ *
+ * The path index every existing caller relies on is DERIVED from these records
+ * on each call, which is what makes "one source" true in practice rather than
+ * in a comment: there is no stored second index anybody could edit.
+ *
+ * Custom NAMES are not moved in here. They stay in `vaultNames`, keyed by path,
+ * exactly as before — the specification asks that local names survive the
+ * migration, and the surest way to keep a reference resolvable is not to move
+ * it.
+ *
+ * @returns {Array<{vaultId: string, path: string, ports: object, owner: object|null}>|null}
+ */
+export function vaultRecordsOf(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return null;
+  const byId = cfg.vaultsById;
+  if (!byId || typeof byId !== 'object' || Array.isArray(byId)) return null;
+
+  const records = [];
+  for (const vaultId of Object.keys(byId)) {
+    const record = byId[vaultId];
+    // Same boundary discipline as `vaultNames`: whatever JSON parsed is not
+    // necessarily the shape the reader wants, and a hand-edited entry must
+    // yield nothing rather than a vault whose path is `undefined`.
+    if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
+    if (typeof record.path !== 'string' || record.path.length === 0) continue;
+    records.push({
+      vaultId,
+      path: record.path,
+      ports: record.ports && typeof record.ports === 'object' && !Array.isArray(record.ports)
+        ? record.ports
+        : {},
+      owner: record.owner && typeof record.owner === 'object' && !Array.isArray(record.owner)
+        ? record.owner
+        : null,
+    });
+  }
+  return records;
+}
+
+/** True when this config has been migrated to the UUID-keyed schema. */
+export function isMigratedRegistry(cfg) {
+  return vaultRecordsOf(cfg) !== null;
+}
+
+/**
+ * Make sure the legacy path-keyed container exists and is an object, and hand
+ * it back for writing.
+ *
+ * Lives HERE rather than beside the writer that needs it, because this file is
+ * the one place allowed to touch `cfg.portRegistry` raw — the source scan in
+ * `tests/vault-slug.test.mjs` refuses that access everywhere else, and it is
+ * right to: a hand-edited `"portRegistry": "AB"` once manufactured vault paths
+ * named "0" and "1", and the fix for that reached its first site and stopped
+ * while ten other files kept reading the raw container. Adding an exemption to
+ * the scan for one more caller is how that hole comes back; moving the access
+ * to where the discipline already lives is not.
+ *
+ * @param {object} cfg mutated in place
+ * @returns {object} the container
+ */
+export function ensurePortRegistryContainer(cfg) {
+  const current = cfg.portRegistry;
+  if (!current || typeof current !== 'object' || Array.isArray(current)) {
+    cfg.portRegistry = {};
+  }
+  return cfg.portRegistry;
 }
 
 /**

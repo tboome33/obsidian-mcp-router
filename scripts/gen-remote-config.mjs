@@ -52,7 +52,7 @@ import {
   buildRemoteConfig, buildEnvLines, redactConfig, redactEnvLines,
   looksLikeApiKey, hostPassesTransportGuard,
 } from '../src/helpers/remote-config.mjs';
-import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
+import { normalizePortEntry, portEntryOf } from '../src/helpers/port-registry.mjs';
 import { normalizePathForCompare } from '../src/helpers/vault-path-identity.mjs';
 import { registeredVaultPaths, vaultSlug } from '../src/helpers/vault-slug.mjs';
 import { fileURLToPath } from 'node:url';
@@ -193,7 +193,7 @@ function readVaultSecretsFromDisk(vaultPath) {
 
 const fleet = [];
 for (const vaultPath of registeredVaultPaths(cfg)) {
-  const raw = cfg.portRegistry[vaultPath];
+  const raw = portEntryOf(cfg, vaultPath);
   const name = vaultSlug(cfg, vaultPath);
   // Seul le port HTTPS du registre est retenu. Il sert à SIGNALER un désaccord
   // avec le disque, et — sans `--with-click-to-open` seulement — de repli quand

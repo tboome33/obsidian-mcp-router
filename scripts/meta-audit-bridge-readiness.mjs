@@ -37,7 +37,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizePortEntry } from '../src/helpers/port-registry.mjs';
+import { normalizePortEntry, portEntryOf } from '../src/helpers/port-registry.mjs';
 import {
   configuredVaultName,
   disabledVaultEntries,
@@ -210,7 +210,7 @@ async function main() {
   // Through the accessor: the container is validated there, so a hand-edited
   // `"portRegistry": "AB"` yields no vaults instead of the paths "0" and
   // "1". Sixth key of the `vaultNames` class, swept in the final review.
-  let entries = registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]]);
+  let entries = registeredVaultPaths(cfg).map((vp) => [vp, portEntryOf(cfg, vp)]);
   // Same container defect as bridge-fleet-update.mjs: a bare string built a set
   // of characters instead of throwing, and a number threw. (v0.90.0)
   const disabled = new Set(disabledVaultEntries(cfg));

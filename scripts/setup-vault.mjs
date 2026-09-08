@@ -71,6 +71,8 @@ import { slug as slugifyForPath } from '../src/helpers/filters/slug.mjs';
 import {
   DEFAULT_INSECURE_OFFSET,
   normalizePortEntry,
+  portEntryOf,
+  setVaultPortEntry,
   allocatePortPair,
   allocateInsecurePortFor,
   allocateAvailablePortPair,
@@ -86,6 +88,13 @@ import { planInstallationInitialization, installationOwnerRef } from '../src/hel
 import { createVaultIdentity } from '../src/helpers/vault-identity.mjs';
 import { assertVaultPortOwnership, VaultOwnershipError } from '../src/helpers/vault-ownership.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from '../src/vault-identity-store.mjs';
+import { planRegistryMigration } from '../src/helpers/registry-migration.mjs';
+import {
+  observeVaults,
+  applyRegistryMigration,
+  configRevision,
+  MigrationRefusedError,
+} from '../src/registry-migration-store.mjs';
 import {
   CATALOG_BASENAME,
   JOURNAL_BASENAME,
@@ -996,7 +1005,7 @@ function printStatus() {
   // Through the accessor for the KEYS, then indexed with its own validated
   // keys — the same composition src/registry.mjs uses, and for the same
   // reason: `Object.entries` on a hand-edited string invents vaults.
-  const entries = registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]]);
+  const entries = registeredVaultPaths(cfg).map((vp) => [vp, portEntryOf(cfg, vp)]);
   const disabled = new Set(disabledVaultEntries(cfg));
   if (entries.length === 0) {
     console.log('Configured vaults: ' + c('gray', '(none yet)'));
@@ -1066,7 +1075,7 @@ function initReference(refPath) {
         // free to the allocator.
         const http = Number.isInteger(data.insecurePort) && data.insecurePort > 0
           ? data.insecurePort : null;
-        cfg.portRegistry[abs] = { https: data.port, http };
+        setVaultPortEntry(cfg, abs, { https: data.port, http });
         info(`Reserved ports ${data.port} (HTTPS) + ${http ?? 'unknown'} (plaintext) for the reference vault`);
       }
     } catch {}
@@ -3406,8 +3415,9 @@ async function setupVault(vaultPath, opts = {}) {
   // owns this vault. A refusal here costs nothing — no plugin copied, no port
   // reserved, no key minted — which is the only place a refusal is cheap.
   // v0.94.0, lot 4.
+  let vaultIdentityId = null;
   try {
-    await ensureVaultIdentityOwned(abs, cfg, { quiet: opts.quiet === true });
+    ({ vaultId: vaultIdentityId } = await ensureVaultIdentityOwned(abs, cfg, { quiet: opts.quiet === true }));
   } catch (err) {
     if (err instanceof VaultOwnershipError) fail(err.message);
     throw err;
@@ -3725,7 +3735,7 @@ async function setupVault(vaultPath, opts = {}) {
 
   // Persist port registry — BOTH ports. Recording only the HTTPS one is what
   // left the plaintext space invisible to the allocator.
-  cfg.portRegistry[abs] = { https: port, http: insecurePort };
+  setVaultPortEntry(cfg, abs, { https: port, http: insecurePort }, { vaultId: vaultIdentityId });
   saveConfig(cfg);
 
   // Optional workspace link (v0.12.7+) — when invoked with
@@ -5059,6 +5069,116 @@ if (args[0] === '--force-new-port-start') {
     `Allocation base is now ${plan.nextPortStart}. No existing vault was touched: ` +
     `${plan.registeredVaultCount} registered vault(s) keep their ports, their keys and their links.`,
   );
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// --migrate-vault-identities — key the registry by UUID instead of by path
+// ---------------------------------------------------------------------------
+//
+// An EXPLICIT operation. It stamps each registered vault with a durable UUID
+// (owner `null` — decision D4 forbids claiming the fleet implicitly) and
+// rewrites the router's own configuration to key vaults by that UUID.
+//
+// It changes NO port, NO key and NO `data.json`: the plan says so as a literal,
+// and the test suite compares 27 file hashes rather than trusting the sentence.
+//
+// A duplicate UUID BLOCKS. Two directories carrying one identity can be a
+// synchronised replica, a move with a stale entry, or a copy that became
+// independent — three situations calling for opposite actions, and only a
+// person can say which. The draft this replaced guessed "copy" and regenerated
+// identity, key and ports, which breaks the other machine when the guess is
+// wrong.
+if (args[0] === '--migrate-vault-identities') {
+  const dryRun = args.includes('--dry-run');
+  const cfg = loadConfig();
+  const paths = registeredVaultPaths(cfg);
+  const observations = await observeVaults(paths);
+
+  const op = 'setup-vault/migrate-vault-identities';
+  const identity = { configPath: CONFIG_PATH };
+
+  const plan = planRegistryMigration({
+    cfg,
+    observations,
+    installation: { installId: cfg.installId ?? null, hostname: cfg.installHostname ?? null },
+    uuidFactory: () => crypto.randomUUID(),
+  });
+
+  console.log('');
+  console.log(c('bold', 'Registry migration — vaults keyed by a durable UUID'));
+  console.log(`  registered vaults        : ${paths.length}`);
+  console.log(`  already carrying an ID   : ${plan.existingIdentities.length}`);
+  console.log(`  identities to create     : ${plan.identitiesToCreate.length}`);
+  console.log(`  owners recorded          : none (claiming is a separate, per-vault act)`);
+  console.log(`  data.json files modified : ${plan.dataJsonToModify}`);
+  console.log(`  schema                   : ${plan.fromSchema} → ${plan.toSchema}`);
+  if (plan.moves.length > 0) {
+    console.log(`  moved vaults detected    : ${plan.moves.length}`);
+    for (const m of plan.moves) console.log(`    ${m.from} → ${m.to}`);
+  }
+  if (plan.blockers.length > 0) {
+    console.log('');
+    warn(`${plan.blockers.length} thing(s) must be settled before this can run:`);
+    for (const b of plan.blockers) console.log(c('red', `  ✗ ${b.message}`));
+  }
+  console.log('');
+
+  // The seal covers what the plan WILL DO, not the UUIDs it proposes: a second
+  // dry-run mints different candidate UUIDs (they are random), and sealing them
+  // would make every preview unusable. What must not have moved between the two
+  // phases is the set of vaults and their ports — which is what `preconditions`
+  // carries, and what the apply re-derives and compares.
+  const sealedPlan = {
+    fromSchema: plan.fromSchema,
+    toSchema: plan.toSchema,
+    dataJsonToModify: plan.dataJsonToModify,
+    preconditions: plan.preconditions,
+    blockerKinds: plan.blockers.map((b) => b.kind).sort(),
+  };
+
+  if (dryRun) {
+    printPlanSeal(
+      computePlanSeal({ op, identity, plan: sealedPlan }),
+      'Apply with: --migrate-vault-identities --approved-plan-sha256 <seal>',
+    );
+    process.exit(plan.blockers.length > 0 ? 1 : 0);
+  }
+
+  if (plan.blockers.length > 0) {
+    fail('Refusing to migrate while the blockers above are unresolved. Nothing was changed.');
+  }
+
+  const approvedPlanSha256 = readApprovedPlanSeal(args);
+  if (approvedPlanSha256) {
+    verifyPlanSealOrFail({
+      op,
+      identity,
+      plan: sealedPlan,
+      provided: approvedPlanSha256,
+      previewHint: 'node scripts/setup-vault.mjs --migrate-vault-identities --dry-run',
+    });
+  }
+
+  try {
+    const report = await applyRegistryMigration(plan, {
+      configPath: CONFIG_PATH,
+      readConfig: () => loadConfig(),
+      writeConfig: (next) => saveConfig(next),
+      expectedConfigRevision: configRevision(cfg),
+    });
+    ok(
+      `Migrated ${report.migrated} vault(s) to UUID keys. ` +
+      `${report.dataJsonModified} data.json modified, 0 port moved, 0 key touched.`,
+    );
+    info(`Configuration backed up at ${report.backupPath}`);
+    info(`Journal: ${report.journalPath}`);
+  } catch (err) {
+    if (err instanceof MigrationRefusedError) {
+      fail(`${err.message}${err.blockers.length ? `\n   ${err.blockers.map((b) => b.message).join('\n   ')}` : ''}`);
+    }
+    throw err;
+  }
   process.exit(0);
 }
 

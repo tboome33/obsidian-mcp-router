@@ -54,7 +54,7 @@
 
 import { cmp } from './total-order.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
-import { registeredVaultPaths } from './vault-slug.mjs';
+import { registeredVaultPaths, vaultRecordsOf, ensurePortRegistryContainer } from './vault-slug.mjs';
 import {
   DEFAULT_PORT_POLICY,
   orderedPairCandidates,
@@ -95,6 +95,57 @@ export function normalizePortEntry(value) {
   return { https: null, http: null };
 }
 
+/**
+ * Record a vault's pair, in whichever schema this config actually uses.
+ *
+ * THE COUNTERPART TO `portEntryOf`, and the reason it exists is the shape of
+ * the bug it prevents: after a migration, `cfg.portRegistry[abs] = …` writes
+ * into a container nothing reads any more. The write appears to succeed, the
+ * vault's ports are silently not recorded, and the next allocation hands them
+ * to somebody else. Three call sites did exactly that assignment before this
+ * function existed; they all go through here now.
+ *
+ * A migrated config needs the vault's UUID. When the caller does not have one —
+ * a vault being registered before it has been stamped — the record is keyed by
+ * a placeholder derived from its path, which is exactly what the migration
+ * later replaces. Passing `vaultId` is always better.
+ *
+ * @param {object} cfg mutated in place
+ * @param {string} vaultPath
+ * @param {{https: number|null, http: number|null}} entry
+ * @param {{vaultId?: string|null, owner?: object|null}} [options]
+ */
+export function setVaultPortEntry(cfg, vaultPath, entry, { vaultId = null, owner = undefined } = {}) {
+  const normalized = normalizePortEntry(entry);
+  const records = vaultRecordsOf(cfg);
+
+  if (records === null) {
+    // The container check lives in `vault-slug.mjs`, the one file allowed to
+    // touch this key raw. See `ensurePortRegistryContainer` for why it is not
+    // inlined here.
+    ensurePortRegistryContainer(cfg)[vaultPath] = normalized;
+    return;
+  }
+
+  const wanted = normalizePathForCompare(vaultPath);
+  let key = vaultId;
+  if (!key) {
+    const existing = records.find(
+      (r) => r.path === vaultPath || normalizePathForCompare(r.path) === wanted,
+    );
+    key = existing ? existing.vaultId : `unstamped:${wanted}`;
+  }
+  const previous = cfg.vaultsById[key] && typeof cfg.vaultsById[key] === 'object' ? cfg.vaultsById[key] : {};
+  cfg.vaultsById[key] = {
+    ...previous,
+    path: vaultPath,
+    ports: normalized,
+    // `undefined` means "leave whatever ownership was recorded alone" — a port
+    // write is not a claim, and must never become one by accident.
+    owner: owner === undefined ? (previous.owner ?? null) : owner,
+  };
+}
+
 /** True when the value is already in the two-port object form. */
 export function isTwoPortEntry(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -110,6 +161,21 @@ export function isTwoPortEntry(value) {
  * declared ports vanish from every reservation.
  */
 export function portEntryOf(cfg, vaultPath) {
+  // A MIGRATED config answers from `vaultsById`, which is its only source for
+  // this. Reached first so that no caller can accidentally read a stale
+  // `portRegistry` left behind by a hand edit — the migration removes it, and
+  // anything that reappears there is ignored rather than trusted (v0.94.0).
+  const records = vaultRecordsOf(cfg);
+  if (records !== null) {
+    const wanted = normalizePathForCompare(vaultPath);
+    for (const record of records) {
+      if (record.path === vaultPath || normalizePathForCompare(record.path) === wanted) {
+        return normalizePortEntry(record.ports);
+      }
+    }
+    return normalizePortEntry(undefined);
+  }
+
   // The KEYS come from the accessor, so the container is validated once and a
   // hand-edited `"portRegistry": "AB"` yields no keys rather than "0" and "1".
   // The values are then read by those same validated keys, which is safe by
