@@ -68,13 +68,17 @@ because it only considers vaults present in `portRegistry` and the squatter was 
   `identity` field on every `list_vaults` row: `confirmed` (answered and accepted this vault's key),
   `rejected` (answered and REFUSED it), `unreachable`, `unverified` (answered, but identity could
   not be established — no key held, an older plugin, or a confirmation that did not come back).
-- **A refusal is CONFIRMED before it condemns.** The public route's word alone does not take a vault
-  offline: a second request is made to a path chosen because it cannot exist
-  (`/vault/.router-identity-probe.does-not-exist`), and only a genuine 401 there decides. Measured
-  against Local REST API 4.0.2 — authorisation is checked before existence, so the right key answers
-  404 in 50 bytes and a wrong key answers 401. Confirming identity must not become a reason to read
-  somebody's files, so the probe lists nothing. The confirming call is capped at 3 s; a timeout there
-  is not a refusal.
+- **A refusal is CONFIRMED before it condemns.** When the public route SAYS "not authenticated", its
+  word alone does not take a vault offline: a second request goes to
+  `/vault/router-identity-probe.does-not-exist` — a name chosen to be overwhelmingly unlikely to
+  exist, not one that cannot — and only a genuine 401 there decides. Measured against Local REST API
+  4.0.2: authorisation is checked before existence, so the right key answers 404 in 50 bytes and a
+  wrong key answers 401. The probe lists no directory and names no real note; if a vault does happen
+  to hold that file the answer is 200, which is the fail-safe direction (the probe then declines to
+  condemn). The confirming call is capped at 3 s; a timeout there is not a refusal.
+- **A 401 on the PUBLIC route needs no confirmation — it already IS one.** That path used to be
+  classified `unreachable`, which said nothing answered when something had, and sent
+  `confirm_workspace_binding` off to launch Obsidian on a vault whose credentials were the problem.
 - **`confirm_workspace_binding` no longer relaunches Obsidian on a refused key.** It is the one
   "offline" that opening a window cannot fix — in the squatter case the new window cannot bind the
   port either — so it records `{launched: false, reason: 'key-refused'}` and says so.
@@ -143,12 +147,23 @@ runs the REST tool's own code path (`buildProjections` then `planProjectionWrite
 generator's output; it is a shared-generator contract test, not a full REST integration test, and
 says so.
 
-Suite: **5614 pass, 0 fail** (3 skipped, all filesystem-conditional by design).
+Suite: **5615 pass, 0 fail** (3 skipped, all filesystem-conditional by design).
 
 #### Known limits, stated rather than implied
 
 - `identity: 'confirmed'` does not prove uniqueness (shared keys, above), and `rejected` does not
   prove a squatter (a stale key is indistinguishable). Both are said in the tool description.
+- **A positive `authenticated: true` is taken on trust; only refusals are confirmed.** The asymmetry
+  is deliberate — confirming every healthy vault would double the fleet's ping cost to re-prove the
+  common case — but it means a cached or proxy-generated body claiming acceptance yields `confirmed`
+  without the key having been evaluated for that request. `confirmed` is a report, not a permission,
+  and gates nothing.
+- **An index that already exists keeps its old recorded name.** Search-index reuse is decided by
+  `fingerprint`, so a vault indexed before this release carries the basename until something else
+  makes it rebuild. The new tests cover fresh indexes, not that migration.
+- The fleet figures in this entry (18/24 before, 23/24 after, and the 6-vault correlation) are
+  session measurements, re-verified independently at 24/24 with no counterexample; they are not
+  derivable from the diff.
 - The confirming request can be defeated by a gateway with a route-specific authentication policy;
   the probe path is chosen to make that as unlikely as the alternatives allow, not to rule it out.
 - `portCollisions` still only sees vaults in `portRegistry`.

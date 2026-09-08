@@ -109,8 +109,10 @@ function legacyIndexState(stored, fingerprint) {
  * @param {string} vaultPath Absolute vault root
  * @param {object} [opts]
  * @param {boolean} [opts.apply=false] Write; false = plan only.
- * @param {string}  [opts.vaultName] Recorded in the index. Defaults to the name
- *   the REGISTRY resolves this vault by, matching `build_search_index`.
+ * @param {string}  [opts.vaultName] Recorded in the index. The default is the
+ *   registry's PATH-DERIVED name (`defaultNameFromPath`) — which is what the
+ *   registry itself falls back to, but NOT a configured `vaultNames` override:
+ *   this helper reads no config. A caller that has one must pass it.
  * @param {boolean} [opts.preserveForeignIndexFile=true] Never overwrite a file
  *   at the index path that does not claim to be one of our indexes.
  * @returns {{

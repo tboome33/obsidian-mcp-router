@@ -142,6 +142,27 @@ describe('pingVault — identity, not just liveness', () => {
     assert.equal(r.identity, 'unverified');
   });
 
+  // A 401 on the PUBLIC route is a refusal, not an absence — and the difference
+  // is operational: `confirm_workspace_binding` exempts only `rejected`, so
+  // calling this `unreachable` sent it off to launch Obsidian on a vault whose
+  // credentials are the actual problem.
+  test('a gateway that 401s even the public route is REJECTED, not unreachable', async () => {
+    const gated = http.createServer((req, res) => {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Authorization required.', errorCode: 40101 }));
+    });
+    await new Promise((r) => gated.listen(0, '127.0.0.1', r));
+    try {
+      const { port } = gated.address();
+      const r = await pingVault(vaultAt('gated', `http://127.0.0.1:${port}`, 'KEY-A'));
+      assert.equal(r.online, false);
+      assert.equal(r.identity, 'rejected', 'something answered — "unreachable" would be a lie');
+      assert.match(r.error, /REFUSED this vault's API key/);
+    } finally {
+      gated.close();
+    }
+  });
+
   test('nothing listening is unreachable, and says so', async () => {
     const r = await pingVault(vaultAt('gone', 'http://127.0.0.1:1', 'KEY-A'));
     assert.equal(r.online, false);

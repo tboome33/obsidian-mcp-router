@@ -434,6 +434,14 @@ async function request(vault, method, urlPath, { headers = {}, body, json = true
  *     folder-and-all carries its source's key. Measured on this very fleet
  *     (2026-09-08): `C:\VAULTS\.template` and a copy of it on another drive
  *     share one apiKey. Two vaults with one key are indistinguishable here.
+ *   - A POSITIVE `authenticated: true` is TAKEN ON TRUST, and that asymmetry is
+ *     deliberate. A refusal is confirmed against an authenticated route before
+ *     it costs anyone anything; an acceptance is not, because confirming every
+ *     healthy vault would double the fleet's ping cost to re-prove the common
+ *     case. So a cached or proxy-generated body claiming acceptance yields
+ *     `confirmed` without the key ever having been evaluated for THIS request.
+ *     `confirmed` gates nothing — it is a report, not a permission — which is
+ *     what makes the trade acceptable; a caller must not read it as authority.
  *   - A refusal does NOT prove a squatter either: a STALE stored key gives the
  *     same answer. Both causes are named in the message rather than one being
  *     asserted.
@@ -562,6 +570,29 @@ export async function pingVault(vault) {
       info,
     };
   } catch (err) {
+    // A 401 ON THE PUBLIC ROUTE IS A REFUSAL, NOT AN ABSENCE. `GET /` is public
+    // on Local REST API itself, so this is the gateway case: something in front
+    // protects even that route, or the whole endpoint rejects the stored
+    // credentials. Either way a server ANSWERED and turned our key away, which
+    // is exactly `rejected` — and it needs no confirming round trip, because a
+    // 401 already IS the authenticated verdict the confirmation goes looking
+    // for. Classifying it `unreachable` was wrong twice over: it said nothing
+    // answered when something did, and `confirm_workspace_binding` exempts only
+    // `rejected`, so it went on to launch Obsidian on a vault whose credentials
+    // are the problem. Found by the fourth review round, reproduced against a
+    // server that 401s its root before it was believed.
+    if (err?.kind === 'unauthorized') {
+      return {
+        online: false,
+        identity: 'rejected',
+        latencyMs: Date.now() - start,
+        error:
+          `[${vault.name}] a server IS listening at ${vault.baseUrl} and REFUSED this vault's API key ` +
+          `on the public route itself. TWO causes look identical from here: the key stored for this ` +
+          `vault is stale, or something in front of it (a gateway, a proxy) is answering. Opening ` +
+          `Obsidian fixes neither. Original error: ${err.message}`,
+      };
+    }
     return {
       online: false,
       identity: 'unreachable',

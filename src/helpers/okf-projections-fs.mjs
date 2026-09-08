@@ -50,9 +50,10 @@ function walkWiki(vaultAbs) {
  * @param {object} [opts]
  * @param {boolean} [opts.apply=false] Write/delete; false = plan only.
  * @param {string} [opts.now] Injected ISO date (defaults to today).
- * @param {string} [opts.vaultName] Root-index heading. Defaults to the name the
- *   REGISTRY resolves this vault by — pass the configured slug explicitly when
- *   the config overrides it (`vaultSlug(cfg, vaultPath)`).
+ * @param {string} [opts.vaultName] Root-index heading. The default is the
+ *   registry's PATH-DERIVED name (`defaultNameFromPath`), NOT a configured
+ *   `vaultNames` override — this helper reads no config. A caller that can see
+ *   one must pass `vaultSlug(cfg, vaultPath)` itself, as the fleet CLI does.
  * @returns {{written: string[], deleted: string[], unchanged: number,
  *            conflicts: string[], pagesScanned: number, applied: boolean}}
  */

@@ -292,16 +292,17 @@ describe('okf-projections CLI', () => {
   // describe callback is a property of the test runner, not of this file. It
   // does on the Node this was written against (measured), but CI runs Node 20
   // AND 22 and the suite must not depend on the answer.
+  // A FAILED probe is NOT evidence of case sensitivity, and must not be cached
+  // as if it were: swallowing the error would silently pick the case-sensitive
+  // branch and skip the alias test on a machine where it should have run. Let
+  // it throw — a fixture that cannot measure the thing it gates on is a broken
+  // fixture, and should say so loudly.
   let caseInsensitiveFsCache;
   const caseInsensitiveFs = () => {
     if (caseInsensitiveFsCache === undefined) {
-      try {
-        const probe = path.join(tmpRoot, 'CaseProbeDir');
-        fs.mkdirSync(probe, { recursive: true });
-        caseInsensitiveFsCache = fs.existsSync(probe.toLowerCase());
-      } catch {
-        caseInsensitiveFsCache = false;
-      }
+      const probe = path.join(tmpRoot, 'CaseProbeDir');
+      fs.mkdirSync(probe, { recursive: true });
+      caseInsensitiveFsCache = fs.existsSync(probe.toLowerCase());
     }
     return caseInsensitiveFsCache;
   };

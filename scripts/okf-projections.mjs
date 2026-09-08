@@ -152,7 +152,7 @@ function registryKeyFor(cfg, abs) {
   try {
     canonicalTarget = fs.realpathSync.native(abs);
   } catch {
-    return null; // the path we were asked about is gone; nothing to match against
+    return null; // cannot canonicalise it (gone, or unreadable) — nothing to match against
   }
   const sameDirectory = keys.filter((key) => {
     try {
