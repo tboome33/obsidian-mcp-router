@@ -55,6 +55,12 @@
 import { cmp } from './total-order.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { registeredVaultPaths } from './vault-slug.mjs';
+import {
+  DEFAULT_PORT_POLICY,
+  orderedPairCandidates,
+  policyOffset,
+  isAllowedNewServicePort,
+} from './port-policy.mjs';
 
 /** The offset `patchRestApiData` applies when provisioning a NEW vault. */
 export const DEFAULT_INSECURE_OFFSET = 10;
@@ -576,4 +582,143 @@ export function summarizePortCollisions(findings) {
   if (errors) parts.push(`${errors} port collision${errors > 1 ? 's' : ''}`);
   if (warnings) parts.push(`${warnings} registry drift${warnings > 1 ? 's' : ''}`);
   return parts.join(' + ');
+}
+
+/**
+ * Allocate a pair that the POLICY allows and that the OPERATING SYSTEM says is
+ * actually free.
+ *
+ * The difference from `allocatePortPair` is the two things that function cannot
+ * know, and the reason a fleet drifts into silent collisions anyway:
+ *
+ *   1. The band. `allocatePortPair` walks upward from `portStart` and takes the
+ *      first pair absent from the registry, which can land inside the range the
+ *      kernel hands out for outgoing connections, or on top of the thousand the
+ *      historic fleet lives in. This one only ever considers bases the policy
+ *      allows, and CHECKS BOTH MEMBERS — a base near an edge whose partner falls
+ *      outside is rejected, which is what makes "the pair stays in the band" a
+ *      promise rather than a hope.
+ *
+ *   2. The rest of the machine. The registry only knows vaults the router
+ *      registered; an unregistered vault, a dev server or a tunnel is invisible
+ *      to it and perfectly capable of holding the port. `probePort` asks the OS.
+ *      An error or a timeout from that probe counts as TAKEN, never as free.
+ *
+ * A REGISTERED VAULT STILL GETS ITS OWN PAIR BACK, out-of-band or not. Invariant
+ * I6 for the pair and I1 for the plaintext half: 18 of the 27 production pairs
+ * do not respect the +10 gap and 6 run backwards, every plaintext port is
+ * written into click-to-open links in the user's notes, and nothing here is
+ * allowed to "repair" any of that. The policy governs CREATION only.
+ *
+ * `probePort` is injected rather than imported so this module keeps no network
+ * dependency — see `src/port-availability.mjs` for the real one.
+ *
+ * @param {object} cfg
+ * @param {string} vaultPath
+ * @param {object} [options]
+ * @param {Map|object} [options.onDisk]
+ * @param {object} [options.policy]
+ * @param {(port: number) => Promise<{available: boolean, reason: string|null}>} [options.probePort]
+ * @param {boolean} [options.forceFresh] Ignore an existing registry entry — the
+ *        independent-copy case, where reusing the source's pair is the bug.
+ * @returns {Promise<{ https: number, http: number, reused: boolean, probed: number, examined: number }>}
+ * @throws {Error} with a finite, explicit message when the allowed space is exhausted.
+ */
+export async function allocateAvailablePortPair(cfg, vaultPath, {
+  onDisk,
+  policy = DEFAULT_PORT_POLICY,
+  probePort = null,
+  forceFresh = false,
+} = {}) {
+  const declared = portEntryOf(cfg, vaultPath);
+  if (declared.https !== null && !forceFresh) {
+    const disk = diskLookup(onDisk)(vaultPath);
+    const diskHttp = disk && isPort(disk.insecurePort) ? disk.insecurePort : null;
+    return {
+      https: declared.https,
+      http: diskHttp ?? declared.http,
+      reused: true,
+      probed: 0,
+      examined: 0,
+    };
+  }
+
+  const offset = policyOffset(policy);
+  const reserved = reservedPortSet(cfg, { onDisk, exclude: vaultPath });
+  const start = isPort(cfg && cfg.portStart) ? cfg.portStart : null;
+  const candidates = orderedPairCandidates(start, policy);
+
+  let probed = 0;
+  let examined = 0;
+  for (const https of candidates) {
+    examined += 1;
+    const http = https + offset;
+    // Restated rather than trusted: `orderedPairCandidates` already filters on
+    // the policy, and this line is what keeps that true if the candidate source
+    // is ever swapped for a cheaper one.
+    if (!isAllowedNewServicePort(https, policy) || !isAllowedNewServicePort(http, policy)) continue;
+    if (reserved.has(https) || reserved.has(http)) continue;
+
+    if (typeof probePort === 'function') {
+      probed += 1;
+      const a = await probePort(https);
+      if (!a?.available) continue;
+      const b = await probePort(http);
+      if (!b?.available) continue;
+    }
+
+    return { https, http, reused: false, probed, examined };
+  }
+
+  throw new Error(
+    `No allocatable port pair: ${candidates.length} base(s) fit the policy ` +
+    `(${policy?.min ?? '?'}-${policy?.max ?? '?'}, minus its exclusions), and every one of them ` +
+    `is either already claimed by this installation or held by something on this machine. ` +
+    `Nothing was allocated outside the band. Free a port, or change the band deliberately.`,
+  );
+}
+
+/**
+ * The probed twin of `allocateInsecurePortFor`: a plaintext port for a vault
+ * that has a live HTTPS port and no plaintext one at all.
+ *
+ * SAME DEFECT CLASS, ONE LEVEL DOWN. `allocateAvailablePortPair` asks the OS
+ * before promising a port; this path did not, and it is reached by the
+ * `--upgrade-insecure-server` population and by adoption of a pre-v0.10.x
+ * vault. Fixing only the pair allocator would have left a second door open on
+ * the same corridor — invariant I5, and the reason this function exists rather
+ * than a comment saying the case is rare.
+ *
+ * IT STILL WALKS FROM `httpsPort + offset`, NOT FROM THE BAND. The vault's
+ * HTTPS port already exists and is not moving, so pairing its plaintext port
+ * with a number 8000 away would be gratuitous: the policy governs NEW PAIRS,
+ * and this is half of an old one. Nothing is renumbered here either — this only
+ * ever runs when there is no plaintext port yet, so no click-to-open link can
+ * exist to break.
+ *
+ * @returns {Promise<number>}
+ * @throws {Error} when the scan runs off the end of the port space.
+ */
+export async function allocateAvailableInsecurePortFor(cfg, vaultPath, httpsPort, {
+  onDisk,
+  insecureOffset = DEFAULT_INSECURE_OFFSET,
+  probePort = null,
+} = {}) {
+  if (!isPort(httpsPort)) {
+    throw new Error(`allocateAvailableInsecurePortFor needs a valid HTTPS port, got ${JSON.stringify(httpsPort)}`);
+  }
+  const reserved = reservedPortSet(cfg, { onDisk, exclude: vaultPath });
+  for (let p = httpsPort + insecureOffset; p <= MAX_PORT; p += 1) {
+    if (!isPort(p)) continue;
+    if (p === httpsPort || reserved.has(p)) continue;
+    if (typeof probePort === 'function') {
+      const probe = await probePort(p);
+      if (!probe?.available) continue;
+    }
+    return p;
+  }
+  throw new Error(
+    `No free plaintext port at or above ${httpsPort + insecureOffset} — ` +
+    `${reserved.size} port(s) are already claimed, and the rest are held by something on this machine.`,
+  );
 }

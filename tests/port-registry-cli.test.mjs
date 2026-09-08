@@ -26,13 +26,14 @@
  * to stop a release over it.
  */
 
-import { test, describe, before, after, beforeEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isAllowedNewServicePort } from '../src/helpers/port-policy.mjs';
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'setup-vault.mjs');
 
@@ -116,13 +117,22 @@ describe('setup-vault.mjs — port allocation across BOTH port spaces', () => {
     const rest = readRest(target);
     assert.notEqual(rest.port, 27200, 'must not take a port bound by another vault in plaintext');
     assert.notEqual(rest.insecurePort, 27200);
-    // 27200 is out (Beta plaintext), so is 27210 for the pair, so is 27190/27133/27123.
-    assert.equal(rest.port, 27201);
-    assert.equal(rest.insecurePort, 27211);
+    // Until v0.94.0 this asserted the exact pair 27201/27211 — the first free
+    // numbers above portStart. Decision D3 changed the RULE, not this test's
+    // subject: a new pair is now drawn from 20000-32000 minus the 27000-27999
+    // the historic fleet lives in, so 27201 is no longer allocatable at all.
+    // What the test protects is unchanged and is now asserted as a property
+    // rather than as a number, which is also what stops it going stale again.
+    assert.ok(isAllowedNewServicePort(rest.port), `${rest.port} is outside the allocation band`);
+    assert.ok(isAllowedNewServicePort(rest.insecurePort), `${rest.insecurePort} is outside the allocation band`);
+    for (const taken of [27200, 27210, 27190, 27133, 27123]) {
+      assert.notEqual(rest.port, taken);
+      assert.notEqual(rest.insecurePort, taken);
+    }
 
     // And both ports are now on record, so the next allocation sees them.
     const entry = readConfig().portRegistry[path.resolve(target)];
-    assert.deepEqual(entry, { https: 27201, http: 27211 });
+    assert.deepEqual(entry, { https: rest.port, http: rest.insecurePort });
   });
 
   test('both members of the pair are checked — a free HTTPS port with a taken partner is skipped', () => {
@@ -141,8 +151,12 @@ describe('setup-vault.mjs — port allocation across BOTH port spaces', () => {
     assert.equal(r.status, 0, r.stderr);
     const rest = readRest(target);
     assert.notEqual(rest.port, 27300, '27300 was free but its partner 27310 was not');
-    assert.equal(rest.port, 27301);
-    assert.equal(rest.insecurePort, 27311);
+    assert.notEqual(rest.insecurePort, 27310);
+    // Same substitution as above: the property, not the number. The pair-check
+    // this test exists for is asserted by `insecurePort !== 27310` — the
+    // partner that made the otherwise-free base unusable.
+    assert.ok(isAllowedNewServicePort(rest.port), `${rest.port} is outside the allocation band`);
+    assert.equal(rest.insecurePort, rest.port + 10);
   });
 
   test('the reference vault\'s OWN ports are reserved, even though it is not registered', () => {
@@ -206,11 +220,15 @@ describe('setup-vault.mjs — a copy of the reference vault gets RENUMBERED, nev
     assert.notEqual(rest.port, 27124, 'the copy must be renumbered off the template\'s HTTPS port');
     assert.notEqual(rest.insecurePort, 27134, 'and off its plaintext port');
     assert.notEqual(rest.apiKey, fakeKey('ref'), 'and must not inherit its API key');
-    assert.equal(rest.port, 27125, 'first pair free above portStart');
-    assert.equal(rest.insecurePort, 27135);
+    // v0.94.0 — the renumbering target is now drawn from the band (decision
+    // D3), so it is no longer "the first pair above portStart". The subject of
+    // the test is untouched: the copy must land somewhere that is neither the
+    // template's pair nor outside the band.
+    assert.ok(isAllowedNewServicePort(rest.port), `${rest.port} is outside the allocation band`);
+    assert.ok(isAllowedNewServicePort(rest.insecurePort), `${rest.insecurePort} is outside the allocation band`);
 
     const entry = JSON.parse(fs.readFileSync(cfgPath, 'utf8')).portRegistry[path.resolve(target)];
-    assert.deepEqual(entry, { https: 27125, http: 27135 });
+    assert.deepEqual(entry, { https: rest.port, http: rest.insecurePort });
 
     // The message has to say what happened, or the renumbering looks arbitrary.
     assert.match((r.stdout || '') + (r.stderr || ''), /Renumbering to a fresh port pair/);
@@ -498,5 +516,91 @@ describe('setup-vault.mjs --sync-port-registry / --check-ports', () => {
     assert.deepEqual(after.portRegistry[path.resolve(alpha)], { https: 27124, http: 27134 });
     assert.equal(fs.readdirSync(workDir).filter((f) => f.includes('.portRegistry-')).length, 1);
     fs.rmSync(workDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v0.94.0, lot 2 — the installation's own identity, end to end
+// ---------------------------------------------------------------------------
+
+describe('setup-vault.mjs — the installation draws its identity once', () => {
+  let workDir, ref, cfgPath;
+
+  beforeEach(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'install-identity-'));
+    ref = makeVault(workDir, '.template', {
+      apiKey: fakeKey('ref'),
+      port: 27123,
+      insecurePort: 27133,
+      crypto: { cert: 'STUB-CERT', privateKey: 'STUB-KEY' },
+    });
+    cfgPath = path.join(workDir, 'config.json');
+  });
+
+  afterEach(() => fs.rmSync(workDir, { recursive: true, force: true }));
+
+  const run = (args) => spawnSync(process.execPath, [SCRIPT, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, OBSIDIAN_ROUTER_CONFIG: cfgPath, OBSIDIAN_ROUTER_NO_AUTO_INSTALL_HOOKS: '1' },
+  });
+  const readConfig = () => JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+
+  test('a fresh installation gets a UUID and a base inside the band, and keeps them', () => {
+    fs.writeFileSync(cfgPath, JSON.stringify({ referenceVault: ref, portRegistry: {} }, null, 2));
+
+    const first = run([path.join(workDir, 'One')]);
+    assert.equal(first.status, 0, first.stderr);
+    const afterFirst = readConfig();
+    assert.match(afterFirst.installId, /^[0-9a-f-]{36}$/i, 'no durable identifier was written');
+    assert.ok(isAllowedNewServicePort(afterFirst.portStart), `base ${afterFirst.portStart} is outside the band`);
+    assert.ok(afterFirst.installHostname, 'a readable label should be recorded alongside');
+
+    // A SECOND provisioning must not redraw either. This is the assertion that
+    // stands between the fleet and a base that moves under it on every run.
+    const second = run([path.join(workDir, 'Two')]);
+    assert.equal(second.status, 0, second.stderr);
+    const afterSecond = readConfig();
+    assert.equal(afterSecond.installId, afterFirst.installId);
+    assert.equal(afterSecond.portStart, afterFirst.portStart);
+  });
+
+  test('a historic installation keeps 27181 and merely gains an identity', () => {
+    // Roland's real base, which sits INSIDE the excluded thousand. Invariant
+    // I7: initialization never recomputes an existing base, whatever the band
+    // decided afterwards would have chosen.
+    fs.writeFileSync(cfgPath, JSON.stringify({ referenceVault: ref, portStart: 27181, portRegistry: {} }, null, 2));
+
+    const r = run([path.join(workDir, 'Historic')]);
+    assert.equal(r.status, 0, r.stderr);
+    const cfg = readConfig();
+    assert.equal(cfg.portStart, 27181, 'the historic base was moved');
+    assert.match(cfg.installId, /^[0-9a-f-]{36}$/i);
+
+    // …and the vault it just provisioned is still allocated from the band, by
+    // walking forward from that out-of-band base and wrapping.
+    const entry = cfg.portRegistry[path.resolve(path.join(workDir, 'Historic'))];
+    assert.ok(isAllowedNewServicePort(entry.https), `${entry.https} is outside the band`);
+    assert.ok(isAllowedNewServicePort(entry.http), `${entry.http} is outside the band`);
+  });
+
+  test('no allocated port lands in the excluded thousand or an ephemeral range', () => {
+    fs.writeFileSync(cfgPath, JSON.stringify({ referenceVault: ref, portRegistry: {} }, null, 2));
+    for (const name of ['A', 'B', 'C']) {
+      const r = run([path.join(workDir, name)]);
+      assert.equal(r.status, 0, r.stderr);
+    }
+    const cfg = readConfig();
+    const entries = Object.values(cfg.portRegistry);
+    assert.equal(entries.length, 3);
+    for (const e of entries) {
+      for (const port of [e.https, e.http]) {
+        assert.ok(port < 27000 || port > 27999, `${port} is inside the excluded thousand`);
+        assert.ok(port < 32768, `${port} reaches an ephemeral range`);
+        assert.ok(port >= 20000, `${port} is below the band`);
+      }
+    }
+    // And no two vaults were given the same port, across BOTH spaces.
+    const all = entries.flatMap((e) => [e.https, e.http]);
+    assert.equal(new Set(all).size, all.length, 'two vaults were given the same port');
   });
 });

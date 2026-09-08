@@ -24,6 +24,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ### Added
 
+- **An installation now has a durable identity, and draws its allocation base once.** `installId`
+  is a UUID (a machine name is not an identity: two machines can share a label, and one machine can
+  change its own on a Tuesday), `installHostname` is a readable label recorded at attribution time
+  and never consulted by any decision, and `portStart` is drawn once from a cryptographic source —
+  never from a MAC address or an interface order. An existing base is KEPT, unconditionally:
+  Roland's `27181` predates the band below and stays where it is. A damaged `installId` or
+  `portStart` is reported and left alone rather than replaced — overwriting one would silently
+  orphan every vault out there that names this installation as its owner, and the orphaning would
+  look like a clean start-up.
+- **New pairs are drawn from a band, and the operating system is asked before either port is
+  promised.** 20000–32000 inclusive, minus 27000–27999 (where the whole historic fleet lives, and
+  where Local REST API's factory 27124/27123 sits), with BOTH members of a pair checked so a base
+  near an edge cannot produce a partner outside it, and no overflow: an exhausted band is a finite
+  explicit error, never a silent step outside. The band's ceiling keeps both ports below 32768,
+  where Linux begins handing out ephemeral ports. And the registry only ever knew about vaults the
+  router registered — an unregistered vault, a dev server or a tunnel is invisible to it and
+  perfectly able to hold the port, while Local REST API has no `EADDRINUSE` handler anywhere in its
+  `main.js`, so the loser of that race never binds and its vault looks *absent* rather than
+  misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
+  would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
+  reservation — nothing holds the port between the check and the moment Obsidian binds it.
 - **`list_vaults` gains `portDiagnostics[]`** — what each vault's own configuration says about its
   ports versus what the router had recorded. Reading `data.json` needs no server, so a drift shows
   up for a CLOSED vault, which is exactly when it is most useful: it is the answer to a vault that

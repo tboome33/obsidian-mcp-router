@@ -73,11 +73,16 @@ import {
   normalizePortEntry,
   allocatePortPair,
   allocateInsecurePortFor,
+  allocateAvailablePortPair,
+  allocateAvailableInsecurePortFor,
   buildPortIndex,
   migratePortRegistry,
   detectPortCollisions,
   summarizePortCollisions,
 } from '../src/helpers/port-registry.mjs';
+import { DEFAULT_PORT_POLICY } from '../src/helpers/port-policy.mjs';
+import { probeLoopbackPort } from '../src/port-availability.mjs';
+import { planInstallationInitialization } from '../src/helpers/installation-identity.mjs';
 import {
   CATALOG_BASENAME,
   JOURNAL_BASENAME,
@@ -1165,9 +1170,69 @@ function buildOnDiskPortMap(cfg, extraPaths = []) {
  * A vault already in the registry gets its existing pair back untouched —
  * re-running the bootstrap on a live vault must never move its ports.
  */
-function allocatePortsFor(cfg, vaultPath, { onDisk, forceFresh = false } = {}) {
+async function allocatePortsFor(cfg, vaultPath, { onDisk, forceFresh = false } = {}) {
   const diskMap = onDisk || buildOnDiskPortMap(cfg, [vaultPath]);
-  return allocatePortPair(cfg, vaultPath, { onDisk: diskMap, forceFresh });
+  // v0.94.0, lot 2 — two things the registry alone could not know. The BAND
+  // (decision D3: 20000-32000 minus the 27000-27999 the historic fleet lives
+  // in, both members checked, no overflow) and the MACHINE: an unregistered
+  // vault, a dev server or a tunnel is invisible to `portRegistry` and
+  // perfectly able to hold the port, and Local REST API has no `EADDRINUSE`
+  // handler anywhere in its `main.js` — the loser of that race never binds and
+  // the vault looks absent rather than misconfigured.
+  //
+  // A vault already registered still gets its own pair back, band or no band.
+  return allocateAvailablePortPair(cfg, vaultPath, {
+    onDisk: diskMap,
+    forceFresh,
+    policy: DEFAULT_PORT_POLICY,
+    probePort: (port) => probeLoopbackPort(port),
+  });
+}
+
+/**
+ * Give this installation an identity and an allocation base if it has none,
+ * and persist that ONCE.
+ *
+ * Deliberately narrow. An existing `installId` is kept whatever the hostname
+ * says today, an existing `portStart` is kept even though the band decided on
+ * 2026-09-09 would never have drawn Roland's 27181 (invariant I7), and a
+ * DAMAGED value of either is reported rather than replaced — overwriting a
+ * broken identifier would silently orphan every vault out there that names this
+ * installation as its owner, and the orphaning would look like a clean start.
+ *
+ * @returns {{ changed: boolean, changes: object[], issues: object[] }}
+ */
+function ensureInstallationIdentity(cfg, { quiet = false } = {}) {
+  const { nextConfig, changes, issues } = planInstallationInitialization(cfg, {
+    hostname: os.hostname(),
+    randomUUID: () => crypto.randomUUID(),
+    randomInt: (min, max) => crypto.randomInt(min, max),
+    policy: DEFAULT_PORT_POLICY,
+    reservedPorts: new Set(buildPortIndex(cfg, { onDisk: buildOnDiskPortMap(cfg) }).keys()),
+  });
+
+  for (const issue of issues) {
+    if (!quiet) warn(issue.message);
+  }
+  if (changes.length === 0) return { changed: false, changes, issues };
+
+  for (const field of ['installId', 'installHostname', 'portStart']) {
+    if (Object.prototype.hasOwnProperty.call(nextConfig, field)) cfg[field] = nextConfig[field];
+  }
+  if (!quiet) {
+    for (const change of changes) {
+      if (change.field === 'portStart') {
+        info(
+          `Allocation base for FUTURE vaults drawn once: ${change.to} ` +
+          `(${change.candidatesFree} of ${change.candidatesExamined} candidate bases were free). ` +
+          `No existing vault is affected.`,
+        );
+      } else if (change.field === 'installId') {
+        info('This installation now has a durable identifier (its machine name is not one).');
+      }
+    }
+  }
+  return { changed: true, changes, issues };
 }
 
 /**
@@ -1251,7 +1316,7 @@ function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
  *   - `cfg`          — optional pre-loaded config (used by batch mode to
  *                      detect insecurePort collisions across vaults)
  */
-function upgradeInsecureServer(vaultPath, opts = {}) {
+async function upgradeInsecureServer(vaultPath, opts = {}) {
   const { dryRun = false, quiet = false, cfg = null } = opts;
   const result = {
     vaultPath,
@@ -1331,8 +1396,9 @@ function upgradeInsecureServer(vaultPath, opts = {}) {
     // stop ON a reserved 65535 (pre-release review, 2026-08-30).
     if (registeredVaultPaths(cfg).length > 0) {
       try {
-        newInsecurePort = allocateInsecurePortFor(cfg, vaultPath, data.port, {
+        newInsecurePort = await allocateAvailableInsecurePortFor(cfg, vaultPath, data.port, {
           onDisk: buildOnDiskPortMap(cfg, [vaultPath]),
+          probePort: (p) => probeLoopbackPort(p),
         });
       } catch (err) {
         result.error = err.message;
@@ -3016,7 +3082,11 @@ async function probeVaultHealth(insecurePort, { timeoutMs = 15000, intervalMs = 
   return { ok: false, insecurePort, attempts };
 }
 
-function setupVault(vaultPath, opts = {}) {
+// ASYNC since v0.94.0 (lot 2). Allocating a port now asks the operating system
+// whether anything is already holding it, and a loopback bind check has no
+// synchronous form in Node. The change is contained: this function has two call
+// sites, both at the module's top level, where `await` is available.
+async function setupVault(vaultPath, opts = {}) {
   const cfg = loadConfig();
   // Reconcile the registry's shape BEFORE anything reads it to allocate. A
   // legacy HTTPS-only registry is at its most dangerous at exactly this
@@ -3024,6 +3094,13 @@ function setupVault(vaultPath, opts = {}) {
   // the fleet is invisible in it. No-op (no backup, no write) when the
   // registry is already two-port.
   migrateConfigPortRegistry(cfg);
+  // And give this installation an identity + an allocation base if it has
+  // none, BEFORE anything allocates from it. A historic installation keeps its
+  // base untouched (Roland's 27181, out of the new band and staying there);
+  // only a fresh one draws. Persisted with the rest of the config below —
+  // nothing here writes on its own, and nothing here runs on a read-only
+  // command. v0.94.0, lot 2.
+  ensureInstallationIdentity(cfg, { quiet: opts.quiet === true });
   const wizard = opts.wizard || {};
 
   // Resolve the effective source vault + plugin set from the wizard opts. The
@@ -3310,7 +3387,7 @@ function setupVault(vaultPath, opts = {}) {
     // supposed to be renumbered off (pre-release review, 2026-08-30).
     const allocationDisk = new Map(onDiskPorts);
     if (inheritedFromSource) allocationDisk.delete(abs);
-    const pair = allocatePortsFor(cfg, abs, {
+    const pair = await allocatePortsFor(cfg, abs, {
       onDisk: allocationDisk,
       forceFresh: inheritedFromSource,
     });
@@ -3325,7 +3402,13 @@ function setupVault(vaultPath, opts = {}) {
   // would be embarrassing to reintroduce it here. Nothing is renumbered: this
   // only runs when there is no plaintext port to preserve.
   if (insecurePort === null) {
-    insecurePort = allocateInsecurePortFor(cfg, abs, port, { onDisk: onDiskPorts });
+    // Probed too — same defect class as the pair allocator, one level down.
+    // A fix that reached only its first site would read as closed while this
+    // door stayed open (invariant I5).
+    insecurePort = await allocateAvailableInsecurePortFor(cfg, abs, port, {
+      onDisk: onDiskPorts,
+      probePort: (p) => probeLoopbackPort(p),
+    });
     if (insecurePort !== port + DEFAULT_INSECURE_OFFSET) {
       info(`Plaintext port ${port + DEFAULT_INSECURE_OFFSET} is taken — assigning ${insecurePort} instead.`);
     }
@@ -5577,7 +5660,7 @@ if (args[0] === '--discover-vaults') {
     try {
       // No --force, no --regenerate: trust the vault's existing port/apiKey
       // if data.json already has them (adoption mode); otherwise allocate fresh.
-      setupVault(v.path, { force: false, regenerate: false, linkWorkspace: null });
+      await setupVault(v.path, { force: false, regenerate: false, linkWorkspace: null });
       okCount++;
     } catch (err) {
       // setupVault calls `fail()` which does process.exit(1). We can't catch
@@ -5646,7 +5729,7 @@ if (args[0] === '--upgrade-insecure-server' || args[0] === '--upgrade-insecure-s
     }
     const abs = path.resolve(vaultArg);
     const cfg = loadConfig();
-    const res = upgradeInsecureServer(abs, { dryRun, cfg });
+    const res = await upgradeInsecureServer(abs, { dryRun, cfg });
     process.exit(res.status === 'failed' ? 1 : 0);
   }
 
@@ -5667,7 +5750,7 @@ if (args[0] === '--upgrade-insecure-server' || args[0] === '--upgrade-insecure-s
   const summary = { upgraded: 0, 'already-enabled': 0, 'no-data-json': 0, 'no-port': 0, failed: 0 };
   const failures = [];
   for (const vp of vaultPaths) {
-    const res = upgradeInsecureServer(vp, { dryRun, cfg, quiet: false });
+    const res = await upgradeInsecureServer(vp, { dryRun, cfg, quiet: false });
     summary[res.status] = (summary[res.status] || 0) + 1;
     if (res.status === 'failed') failures.push({ vaultPath: vp, error: res.error });
   }
@@ -5957,7 +6040,7 @@ if (wizardOpts.source === 'skeleton') {
   process.exit(0);
 }
 
-const provisionResult = setupVault(vaultArg, {
+const provisionResult = await setupVault(vaultArg, {
   force,
   regenerate,
   linkWorkspace: linkWorkspaceFlag,
