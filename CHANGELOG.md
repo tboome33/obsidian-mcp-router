@@ -10,6 +10,40 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Fixed
+
+- **The router read a vault's real HTTPS port off the disk, reported a drift about it, and went
+  on dialling the old one.** Two ports, two different rules: the plaintext port already preferred
+  `data.json` over the registry, while `baseUrl` was built from the registry alone. So moving
+  `recherches-etudes-sup` to HTTPS 27192 on 2026-09-08 needed BOTH the vault's `data.json` and the
+  router's `config.json` hand-edited — editing only the first left the router calling 27124, a
+  port that by then belonged to nobody, and the vault looked closed. `data.json` is what the
+  plugin actually binds; a registry that disagrees is stale bookkeeping. Both protocols now
+  resolve by the same rule, and the resolution is one pure helper
+  (`helpers/rest-endpoint-state.mjs`) rather than two expressions that could drift apart again.
+
+### Added
+
+- **`list_vaults` gains `portDiagnostics[]`** — what each vault's own configuration says about its
+  ports versus what the router had recorded. Reading `data.json` needs no server, so a drift shows
+  up for a CLOSED vault, which is exactly when it is most useful: it is the answer to a vault that
+  "went offline" without anyone closing it. Purely descriptive — the drift has already been acted
+  on, and refreshing the router's record stays a separate, explicit operation (nothing here writes).
+- **A vault descriptor now carries `httpEnabled`, as a third value rather than a derived one.**
+  `true` / `false` / `null`, where `null` means the disk could not be read. `enableInsecureServer:
+  false` with an `insecurePort` still recorded is the normal shape of a vault whose plaintext
+  server was turned off — the plugin keeps the number and stops binding it — so the presence of a
+  port number was never a claim that anything is listening. `null` is not `false`: a remembered
+  number may still be tried on a best-effort basis, but nothing may tell the user the link works.
+
+### Changed
+
+- **Four different facts about a `data.json` stopped being one.** The registry wrapped its read in
+  `.catch(() => null)`, which merged "never configured", "cannot be read here", "damaged" and
+  "carries a port that is not a port" into a single silence. They are now distinct diagnostics with
+  distinct severities, because they call for different actions — and a corrupt file is never
+  reported as an absent one.
+
 
 ## [0.93.2] — 2026-09-08 — the identity verdict, pen-tested: the clock that stopped at the headers
 

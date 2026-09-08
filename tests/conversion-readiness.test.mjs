@@ -1012,6 +1012,11 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       'lockSource',
       'lockedTo',
       'portCollisions',
+      // v0.94.0, lot 1 — what each vault's OWN configuration says about its
+      // ports versus what the router had recorded, plus the data.json files
+      // that could not be read. Added here deliberately: a drift is the answer
+      // to a vault that "went offline" with nobody having closed it.
+      'portDiagnostics',
       'vaults',
       'workspaceBinding',
       // Phase 5 of portee-ergonomie-refus-roadmap (decision refus-d-une-

@@ -53,6 +53,7 @@ import {
   alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
+import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
 import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint, workspaceBindingProposal } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
@@ -138,6 +139,14 @@ export async function loadRegistry({ configPath } = {}) {
   // nothing extra at startup.
   const onDiskPorts = new Map();
 
+  // What the user needs told about ports, gathered while the vaults are built:
+  // a file that could not be read, a port that is not a port, and above all a
+  // port that moved. Carried on the registry the way `portCollisions` is, so
+  // `list_vaults` can show it rather than leaving it to be rediscovered by
+  // hand. PURELY DESCRIPTIVE — nothing here allocates, repairs or writes
+  // (invariant I8, decision D6).
+  const portDiagnostics = [];
+
   for (const [vaultPath, value] of Object.entries(portRegistry)) {
     // The config's word on this vault's name, type-checked at the boundary —
     // a hand-edited `"vaultNames": { "<path>": 123 }` falls back to the path
@@ -153,8 +162,8 @@ export async function loadRegistry({ configPath } = {}) {
     // most fleets and is exactly the one that hands its factory ports to
     // copies. Only the ports are kept here; the apiKey is used below, and a
     // disabled vault still never enters `vaults[]`.
-    const restData = await readLocalRestData(vaultPath).catch(() => null);
-    if (restData) {
+    const restData = await readLocalRestData(vaultPath);
+    if (restData.status === 'ok') {
       onDiskPorts.set(vaultPath, { port: restData.port, insecurePort: restData.insecurePort });
     }
 
@@ -175,7 +184,34 @@ export async function loadRegistry({ configPath } = {}) {
     // Object]`, i.e. a vault that is unreachable for a reason nobody would
     // guess from the error.
     const entry = normalizePortEntry(value);
-    const port = entry.https;
+
+    // DISK FIRST, FOR BOTH PROTOCOLS. Until v0.94.0 this line read
+    // `entry.https` — the registry only — while the plaintext port two fields
+    // below already preferred the disk. The router could therefore read a
+    // vault's real HTTPS port, report a drift about it, and go on dialling the
+    // old one; moving `recherches-etudes-sup` to 27192 on 2026-09-08 needed
+    // BOTH files hand-edited for exactly that reason. `data.json` is what the
+    // plugin binds. See helpers/rest-endpoint-state.mjs for the three states a
+    // disk can be in and why an absent file and a corrupt one never merge.
+    const restState = resolveLocalRestState({
+      registryPorts: entry,
+      restData,
+      restDataStatus: restData.status,
+    });
+    const port = restState.effectivePorts.https;
+
+    for (const issue of restState.issues) {
+      portDiagnostics.push({ ...issue, path: vaultPath, name });
+    }
+    portDiagnostics.push(
+      ...describeEndpointDrift({
+        path: vaultPath,
+        name,
+        registeredPorts: entry,
+        effectivePorts: restState.effectivePorts,
+        sources: { https: restState.httpsSource, http: restState.httpSource },
+      }),
+    );
 
     vaults.push({
       name,
@@ -192,7 +228,15 @@ export async function loadRegistry({ configPath } = {}) {
       // remembered number. `click-to-open.mjs` re-reads data.json itself and
       // only reaches for this when that read fails, so a stale registry value
       // can never override a live one. v0.79.0, lot 2.
-      insecurePort: asPort(restData?.insecurePort) ?? entry.http ?? null,
+      insecurePort: restState.effectivePorts.http,
+      // WHETHER that port is being served, as a THIRD value: true / false /
+      // null. `enableInsecureServer: false` with a port still recorded is the
+      // normal shape of a vault whose plaintext server was turned off, so a
+      // number present is never a claim that anything is listening. `null` is
+      // "the disk could not be read", which is NOT `false`: click-to-open may
+      // still try its remembered number on a best-effort basis, but nothing may
+      // tell the user the link is known to work. v0.94.0, lot 1.
+      httpEnabled: restState.httpEnabled,
     });
   }
 
@@ -532,6 +576,12 @@ export async function loadRegistry({ configPath } = {}) {
     // an array, empty when the fleet is clean, so consumers never branch on
     // "field missing". Surfaced to the user through `list_vaults`.
     portCollisions,
+    // What each vault's own configuration says about its ports versus what the
+    // router remembered, plus the files that could not be read (v0.94.0, lot
+    // 1). Always an array. A drift here has already been ACTED ON — the router
+    // is dialling the disk's port — and is reported so the user can choose to
+    // refresh the local record, which is a separate, explicit operation.
+    portDiagnostics,
     resolveVault(name) {
       const target = name || this.defaultVault;
       if (!target) {
@@ -1128,7 +1178,18 @@ function parseEnvVaults(env = {}) {
  * three fields leave the function: the same file also holds the vault's TLS
  * private key, which must never travel further than this parse.
  *
- * @returns {{ apiKey: string|null, port: number|null, insecurePort: number|null }}
+ * NEVER THROWS, and never collapses its failures into one. The caller used to
+ * wrap this in `.catch(() => null)`, which made four different facts — no file,
+ * an unreadable file, a corrupt file, and a file whose ports are nonsense —
+ * indistinguishable, so the router could not tell "this vault was never set up"
+ * from "this vault's configuration was damaged". `status` is that distinction,
+ * and `rawPort` / `rawInsecurePort` carry the values BEFORE validation so a
+ * present-but-invalid port can be told apart from an absent one.
+ * See `helpers/rest-endpoint-state.mjs`, which turns this into a verdict.
+ *
+ * @returns {{ status: string, apiKey: string|null, port: number|null,
+ *             insecurePort: number|null, enableInsecureServer: boolean|null,
+ *             rawPort: unknown, rawInsecurePort: unknown }}
  */
 async function readLocalRestData(vaultPath) {
   // Same cross-platform consideration as defaultNameFromPath: vaultPath
@@ -1146,12 +1207,46 @@ async function readLocalRestData(vaultPath) {
     'obsidian-local-rest-api',
     'data.json',
   );
-  const raw = await fs.readFile(dataPath, 'utf8');
-  const data = JSON.parse(raw);
+  const empty = {
+    apiKey: null,
+    port: null,
+    insecurePort: null,
+    enableInsecureServer: null,
+    rawPort: undefined,
+    rawInsecurePort: undefined,
+  };
+
+  let raw;
+  try {
+    raw = await fs.readFile(dataPath, 'utf8');
+  } catch (err) {
+    // ENOENT is "never configured"; anything else is "configured, but this
+    // process cannot see it". Both fall back to the registry, and the user is
+    // told which one it was — the two call for different actions.
+    return { ...empty, status: err?.code === 'ENOENT' ? 'absent' : 'unreadable' };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ...empty, status: 'invalid' };
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { ...empty, status: 'invalid' };
+  }
+
   return {
+    status: 'ok',
     apiKey: data.apiKey || null,
     port: asPort(data.port),
     insecurePort: asPort(data.insecurePort),
+    // Strictly `=== true`: the plugin's own DEFAULT_SETTINGS is `false`, so an
+    // absent field means off. A port number is not an announcement that the
+    // server is on.
+    enableInsecureServer: data.enableInsecureServer === true,
+    rawPort: data.port,
+    rawInsecurePort: data.insecurePort,
   };
 }
 

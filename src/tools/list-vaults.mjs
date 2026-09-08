@@ -406,6 +406,15 @@ export async function listVaults(registry, sharedConfig = null) {
     // other explanation: two vaults on one port means the second one to start
     // never bound its socket. Always an array — empty when the fleet is clean.
     portCollisions: registry.portCollisions || [],
+    // What each vault's OWN configuration says about its ports, versus what
+    // the router had recorded (v0.94.0, lot 1). A `port-drift` entry here is
+    // the answer to a vault that "went offline" without anyone closing it: its
+    // plugin now binds a different number, and the router has already followed
+    // it to the new one. Reading `data.json` needs no server, so these appear
+    // for CLOSED vaults too — which is exactly when they are most useful.
+    // Refreshing the router's record is a separate explicit act; nothing here
+    // has written anything. Always an array.
+    portDiagnostics: registry.portDiagnostics || [],
     // Lock state — null when the router is in normal multi-vault mode,
     // a vault name when the router is restricted to a single vault for
     // the current session. See `lock_vault` / `unlock_vaults` tools.
