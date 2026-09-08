@@ -89,6 +89,7 @@ import { createVaultIdentity } from '../src/helpers/vault-identity.mjs';
 import { assertVaultPortOwnership, VaultOwnershipError } from '../src/helpers/vault-ownership.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from '../src/vault-identity-store.mjs';
 import { planRegistryMigration } from '../src/helpers/registry-migration.mjs';
+import { shortFingerprint, planOwnershipChange } from '../src/helpers/vault-lifecycle.mjs';
 import {
   observeVaults,
   applyRegistryMigration,
@@ -1168,6 +1169,18 @@ function buildOnDiskPortMap(cfg, extraPaths = []) {
     if (ports) map.set(p, ports);
   }
   return map;
+}
+
+/**
+ * A vault's API key, as a digest — the only form in which it may ever be
+ * compared, printed or logged.
+ *
+ * The key itself never leaves the read that produced it. Invariant I3 allows a
+ * truncated SHA-256 for exactly this purpose and forbids a key prefix, which is
+ * why this hashes rather than slices.
+ */
+function keyFingerprintOf(apiKey) {
+  return crypto.createHash('sha256').update(String(apiKey), 'utf8').digest('hex');
 }
 
 /**
@@ -3568,6 +3581,39 @@ async function setupVault(vaultPath, opts = {}) {
     sourceRestData.apiKey && sourceRestData.apiKey === preExistingRestData.apiKey,
   );
 
+  // AND THE SAME QUESTION ASKED OF EVERY OTHER VAULT, not only the reference.
+  // The check above closes one door: a copy of `.template`. A copy of any
+  // ORDINARY vault — the common case — kept a credential another vault was
+  // still using, and the fleet looked healthy while two vaults answered to one
+  // key. The identity probe cannot see through that: it checks whether a key is
+  // ACCEPTED, never whether it is unique.
+  //
+  // Reported, never repaired. A synchronised replica legitimately shares its
+  // source's key, and rotating it would lock the other machine out. Two fresh
+  // UUIDs would not resolve it either — they would make the registry look
+  // correct while the probe stayed ambiguous. (v0.94.0, lot 6.)
+  if (preExistingRestData?.apiKey && !inheritedFromSource) {
+    const mine = keyFingerprintOf(preExistingRestData.apiKey);
+    const twins = [];
+    for (const otherPath of registeredVaultPaths(cfg)) {
+      if (samePath(otherPath, abs)) continue;
+      const other = readRestApiData(otherPath);
+      if (!other?.apiKey) continue;
+      if (keyFingerprintOf(other.apiKey) === mine) twins.push(otherPath);
+    }
+    if (twins.length > 0) {
+      warn(
+        `This vault presents the same API key (fingerprint ${shortFingerprint(mine)}…) as ` +
+        `${twins.length} already-registered vault(s): ${twins.join(', ')}.`,
+      );
+      warn(
+        '  Normal for a synchronised replica, an anomaly for anything else. Nothing was rotated — ' +
+        'rotating a replica\'s key locks the other machine out, and giving them separate UUIDs would ' +
+        'make the registry look correct while the identity probe stayed ambiguous.',
+      );
+    }
+  }
+
   if (preExistingRestData && !inheritedFromSource) {
     // Check the adopted port against BOTH spaces of every other vault, not
     // just the HTTPS column — the old check compared against
@@ -5179,6 +5225,90 @@ if (args[0] === '--migrate-vault-identities') {
     }
     throw err;
   }
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// --vault-owner — claim, transfer or release a vault, and touch no port
+// ---------------------------------------------------------------------------
+//
+// A DEDICATED ACTION, because decision D4 says claiming is explicit and
+// per-vault, and because a transfer that happened as a side effect of something
+// else is how an installation ends up owning a vault nobody handed it.
+//
+// It writes ONE field of ONE file. No port moves, no key is minted, no vault is
+// opened. `--show` answers the question without writing anything at all.
+if (args[0] === '--vault-owner') {
+  const target = args[1] && !args[1].startsWith('-') ? path.resolve(args[1]) : null;
+  if (!target) fail('--vault-owner needs a vault path.\n   Usage: --vault-owner <path> [--claim | --release | --show]');
+  if (!fs.existsSync(target)) fail(`No such directory: ${target}`);
+
+  const cfg = loadConfig();
+  const current = await readVaultIdentity(target);
+
+  if (current.status === IDENTITY_STATUS.ABSENT) {
+    fail(
+      `${target} has no identity yet. Run the vault setup on it first, or migrate the registry — ` +
+      'this command changes an owner, it does not create identities.',
+    );
+  }
+  if (current.status !== IDENTITY_STATUS.OK) {
+    for (const issue of current.issues) warn(issue.message);
+    fail('Refusing: this vault\'s identity cannot be read or understood. It was NOT replaced.');
+  }
+
+  const owner = current.identity.owner;
+  const localOwner = installationOwnerRef(cfg);
+  const describeOwner = (o) => {
+    if (o === null || o === undefined) return 'nobody (unclaimed)';
+    if (localOwner && o.installId === localOwner.installId) return `this installation${o.hostname ? ` ("${o.hostname}")` : ''}`;
+    // Another machine's UUID is not printed: its label is enough to recognise
+    // it, and identifiers from other installations have no business in logs.
+    return `another installation${o.hostname ? ` (recorded as "${o.hostname}")` : ''}`;
+  };
+
+  if (args.includes('--show') || (!args.includes('--claim') && !args.includes('--release'))) {
+    console.log('');
+    console.log(c('bold', `Ownership of ${target}`));
+    console.log(`  vault UUID : ${current.identity.vaultId}`);
+    console.log(`  owner      : ${describeOwner(owner)}`);
+    console.log('');
+    info('--claim records this installation as the owner; --release records none. Neither moves a port.');
+    process.exit(0);
+  }
+
+  const releasing = args.includes('--release');
+  if (!releasing && !localOwner) {
+    fail('This installation has no identity of its own yet, so it cannot own anything. Run the vault setup once.');
+  }
+
+  const plan = planOwnershipChange({
+    identity: current.identity,
+    expectedOwner: owner,
+    nextOwner: releasing ? null : localOwner,
+    consent: { transferAcknowledged: args.includes('--acknowledge-transfer') },
+  });
+
+  if (plan.action === 'refuse') {
+    for (const b of plan.blockers) warn(b.message);
+    if (plan.blockers.some((b) => b.kind === 'transfer-not-acknowledged')) {
+      info(
+        `Current owner: ${describeOwner(owner)}. New owner: ${describeOwner(releasing ? null : localOwner)}. ` +
+        'Re-run with --acknowledge-transfer to proceed.',
+      );
+    }
+    process.exit(1);
+  }
+
+  await writeVaultIdentity(
+    target,
+    { ...current.identity, owner: releasing ? null : localOwner },
+    { expectedRevision: current.revision, operation: `${plan.action === 'claim' ? 'claiming' : 'transferring'} this vault` },
+  );
+  ok(
+    `${plan.action === 'claim' ? 'Claimed' : 'Transferred'}: ${describeOwner(releasing ? null : localOwner)} ` +
+    `now owns ${current.identity.vaultId}. ${plan.portsChanged} port changed, no key touched.`,
+  );
   process.exit(0);
 }
 

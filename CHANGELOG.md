@@ -45,6 +45,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
   would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
   reservation — nothing holds the port between the check and the moment Obsidian binds it.
+- **The twin-vault hole is closed: a shared API key is now noticed whoever it came from.** Until
+  now the router compared a vault's key against the REFERENCE vault only, so a copy of `.template`
+  was caught and a copy of any *ordinary* vault — the common case — silently kept a credential
+  another vault was still using. The identity probe cannot see through that: it checks whether a key
+  is *accepted*, never whether it is *unique*. Keys are now compared across every registered vault,
+  by truncated SHA-256, and a match is **reported, never repaired** — a synchronised replica
+  legitimately shares its source's key and rotating it would lock the other machine out, while
+  stamping the two with distinct UUIDs would make the registry look correct and leave the probe
+  ambiguous. Both facts are said out loud rather than one hiding the other.
+- **`setup-vault.mjs --vault-owner <path> [--show | --claim | --release]`** — claiming is explicit
+  and per-vault (decision D4), and a transfer needs `--acknowledge-transfer` with both parties named.
+  It writes one field of one file: `0 port changed, no key touched`, and it never opens a vault. A
+  foreign owner is described by its recorded label, never by its installation UUID — another
+  machine's identifier has no business in logs.
 - **`setup-vault.mjs --migrate-vault-identities` — the registry is keyed by UUID, not by path.**
   An explicit, sealed, two-phase operation, never a side effect of starting up: a migration that ran
   at load would turn every launch into a write, on a folder two machines share through Drive. It
