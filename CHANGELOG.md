@@ -44,15 +44,16 @@ caller that acts on the verdict was deciding on `online` alone.
   On loopback every vault is a port, so a listener on port A answering `302 → 127.0.0.1:B` had the
   router carry the bearer key to B and report B's answer under A's registry entry (pen-test
   scenario A5; the initiating listener already held the key, B newly received it). Redirects are
-  now same-ORIGIN: host and port, with ONE exception — the classical reverse-proxy upgrade, http on
+  now same-ORIGIN: scheme, host and port, with ONE exception — the classical reverse-proxy upgrade, http on
   the default port to https on the default port, same hostname. Not "any http→https": every local
   vault runs with `tlsInsecure`, so an upgrade to an arbitrary https port would have been the same
   attack over TLS (round-8 review). Two more holes in the follower closed on the way: a hop that
   fails AFTER a redirect answered keeps that redirect's status (an endpoint that said "302" is not
   absent), and a discarded redirect response has its body cancelled rather than abandoned, so a
   `302` followed by an endless body no longer keeps a connection and a buffer alive after the call
-  returned. Witnessed: the sink is never contacted, never sees the key, and the endless body does
-  not hold the call.
+  returned. Witnessed: the sink is never contacted, never sees the key, the endless body does not
+  hold the call, and the server side of the discarded 302 sees its connection close — a witness
+  that fails with the cancellation removed.
 - **`pingVault` called every non-401 error reaching its outer catch `unreachable`.** A 403, a 5xx, a 404 on the public
   route, a refused cross-host redirect — a 302 is an answer — all fell through the outer catch as
   "nothing answered". `confirm_workspace_binding` launches Obsidian on `unreachable` alone, so each

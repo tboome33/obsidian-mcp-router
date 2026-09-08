@@ -101,12 +101,28 @@ describe('redirect follower — same origin, not same hostname', () => {
     }
   });
 
-  test('a 302 followed by an endless body does not hold the call: the discarded response is cancelled', async () => {
+  test('same host, same PORT, another scheme (http → https on 8443) is still another origin: refused', async () => {
+    // Equal ports are not equal origins when the scheme changes (round-9
+    // review): the only cross-scheme redirect allowed is the 80 → 443 upgrade.
+    const front = await serve((req, res) => { res.writeHead(302, { location: `https://127.0.0.1:${req.socket.localPort}/` }); res.end(); });
+    try {
+      const r = await pingVault({ ...vaultAt(front.port), tlsInsecure: true });
+      assert.equal(front.seen.requests.length, 1);
+      assert.match(r.error, /cross-origin redirect/);
+      assert.equal(r.identity, 'unverified');
+    } finally {
+      await closeAll(front);
+    }
+  });
+
+  test('a 302 followed by an endless body does not hold the call, and the discarded response is CANCELLED — the server sees its connection close', async () => {
     let timer;
+    let redirectClosed;
     const s = await serve((req, res) => {
       if (req.url === '/') {
+        redirectClosed = new Promise((resolve) => res.on('close', resolve));
         res.writeHead(302, { location: '/index' });
-        timer = setInterval(() => { if (!res.writableEnded) res.write('x'); }, 5);
+        timer = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write('x'); }, 5);
         return;
       }
       ok(res, { status: 'OK', authenticated: true });
@@ -116,6 +132,14 @@ describe('redirect follower — same origin, not same hostname', () => {
       const r = await pingVault(vaultAt(s.port));
       assert.ok(Date.now() - t0 < 5000);
       assert.equal(r.identity, 'confirmed');
+      // The witness of the cancellation itself, BEFORE any cleanup of ours
+      // could close the socket: the server's side of the redirect response
+      // must have seen 'close' — which only the client's cancel produces.
+      const closedInTime = await Promise.race([
+        redirectClosed.then(() => true),
+        new Promise((resolve) => setTimeout(() => resolve(false), 2000)),
+      ]);
+      assert.equal(closedInTime, true, 'the discarded 302 stream was not cancelled — its connection stayed open');
     } finally {
       clearInterval(timer);
       await closeAll(s);

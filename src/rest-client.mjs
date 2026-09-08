@@ -337,30 +337,11 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
     // review, finding 2). Speaking TLS does not make B the vault.
     const here = new URL(currentUrl);
     const portOf = (u) => u.port || (u.protocol === 'https:' ? '443' : '80');
-    const upgrade =
-      here.protocol === 'http:' && target.protocol === 'https:' &&
-      portOf(here) === '80' && portOf(target) === '443';
-    if (target.hostname !== here.hostname || (portOf(target) !== portOf(here) && !upgrade)) {
-      await discard(res);
-      throw new RestApiError(
-        `[${vault.name}] refused cross-origin redirect from ${here.host} to ${target.host}`,
-        {
-          kind: 'unknown',
-          vaultName: vault.name,
-          urlPath,
-          status: res.status,
-          hint:
-            'Redirects to another host or port are blocked to keep the API key from being sent to an endpoint you did not authenticate against (the one exception is an http→https upgrade between the default ports on the same host). Configure your reverse proxy to keep redirects on the same origin.',
-        },
-      );
-    }
 
-    // Block HTTPS → HTTP downgrades on the same host. The redirect would
-    // re-send the bearer API key and any extraHeaders (incl. Cloudflare
-    // Access service tokens) in cleartext. http → https upgrades are fine
-    // and common, http → http stays unchanged. Only the downgrade is
-    // dangerous because it changes the security posture of the channel
-    // we already authenticated over.
+    // Block HTTPS → HTTP downgrades first, for their own message: the redirect
+    // would re-send the bearer API key and any extraHeaders (incl. Cloudflare
+    // Access service tokens) in cleartext. (The origin rule below would refuse
+    // them too, but "downgrade" is the word the operator needs.)
     if (here.protocol === 'https:' && target.protocol === 'http:') {
       await discard(res);
       throw new RestApiError(
@@ -372,6 +353,28 @@ async function fetchWithSafeRedirect(vault, urlPath, fetchOpts) {
           status: res.status,
           hint:
             'A redirect tried to downgrade the channel to cleartext HTTP, which would send your API key and other auth headers in the clear. Configure your reverse proxy to keep redirects on HTTPS.',
+        },
+      );
+    }
+
+    // SAME ORIGIN — scheme, host AND port (`URL.origin` normalises hostname
+    // case and default ports). Comparing host and port but not scheme let
+    // `http://host:8443 → https://host:8443` through as "same port" (round-9
+    // review): equal ports are not equal origins when the scheme changes.
+    const upgrade =
+      here.protocol === 'http:' && target.protocol === 'https:' &&
+      target.hostname === here.hostname && portOf(here) === '80' && portOf(target) === '443';
+    if (target.origin !== here.origin && !upgrade) {
+      await discard(res);
+      throw new RestApiError(
+        `[${vault.name}] refused cross-origin redirect from ${here.origin} to ${target.origin}`,
+        {
+          kind: 'unknown',
+          vaultName: vault.name,
+          urlPath,
+          status: res.status,
+          hint:
+            'Redirects to another scheme, host or port are blocked to keep the API key from being sent to an endpoint you did not authenticate against (the one exception is an http→https upgrade between the default ports on the same host). Configure your reverse proxy to keep redirects on the same origin.',
         },
       );
     }
