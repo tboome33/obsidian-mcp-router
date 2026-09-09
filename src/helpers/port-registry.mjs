@@ -458,7 +458,26 @@ export function migratePortRegistry(cfg, { onDisk } = {}) {
   // Through the accessor for the same reason as `portEntryOf` above: this
   // function REWRITES the registry, so enumerating a manufactured key list
   // would write vaults called "0" and "1" into the user's config.
-  const raw = Object.fromEntries(registeredVaultPaths(cfg).map((vp) => [vp, cfg.portRegistry[vp]]));
+  // TWO READS, AND BOTH ARE NEEDED.
+  //
+  // The NORMALIZED value comes from the accessor: indexing `cfg.portRegistry[vp]`
+  // was correct while the path-keyed container was the only schema, but on a
+  // MIGRATED config it reads `undefined` for every vault — the keys now come
+  // from `vaultsById` — and this function would have "reconciled" the whole
+  // fleet to nothing, then resurrected the dead container by writing it back.
+  //
+  // The RAW value is still read alongside it, because two documented properties
+  // of this function live in the bytes and not in the interpretation: an entry
+  // that resolves to nothing usable is preserved VERBATIM rather than replaced
+  // by nulls, and unknown fields on an entry survive the rewrite. Reading only
+  // the normalized form silently dropped both — a migration that erases what it
+  // could not interpret is not non-destructive, and the repository's own tests
+  // said so within the minute.
+  const legacy = vaultRecordsOf(cfg) === null;
+  const raw = Object.fromEntries(registeredVaultPaths(cfg).map((vp) => [
+    vp,
+    legacy ? cfg.portRegistry[vp] : portEntryOf(cfg, vp),
+  ]));
   const lookup = diskLookup(onDisk);
   const out = {};
   const entries = [];

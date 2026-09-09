@@ -45,6 +45,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   misconfigured. A probe error or timeout counts as taken, never as free. Said plainly, because it
   would be easy to oversell: a random base is **not** a reserved range, and the probe is **not** a
   reservation — nothing holds the port between the check and the moment Obsidian binds it.
+- **Each vault in `list_vaults` now says WHY it is in the state it is in, as `reachability`.** Eight
+  distinguishable situations, and the point of the field is to stop one sentence being given for most
+  of them: *"open this vault in Obsidian"* is the right advice for exactly one. A window cannot take
+  a port back from another process, cannot refresh a key a live server is refusing, and is not needed
+  at all to read a port that changed on disk — `data.json` needs no server, which is why a drift is
+  visible while Obsidian is shut. Three facts that kept being conflated are now named separately: a
+  port is *configured*, a server *answers*, an identity is *verified*. And no message blames
+  synchronisation for a drift: Drive is a plausible cause, and a plausible cause stated as a fact is
+  how someone stops looking for the real one.
 - **The twin-vault hole is closed: a shared API key is now noticed whoever it came from.** Until
   now the router compared a vault's key against the REFERENCE vault only, so a copy of `.template`
   was caught and a copy of any *ordinary* vault — the common case — silently kept a credential

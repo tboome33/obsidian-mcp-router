@@ -429,7 +429,13 @@ function migrateConfigPortRegistry(cfg, { quiet = false, dryRun = false } = {}) 
     return { changed: true, backup: null, entries };
   }
   const backup = backupConfigFile('portRegistry');
-  cfg.portRegistry = portRegistry;
+  // WRITTEN THROUGH THE SCHEMA-AWARE SETTER. `cfg.portRegistry = portRegistry`
+  // was correct while that container was the only schema; on a MIGRATED config
+  // it resurrects a container nothing reads, leaving two copies of the same
+  // facts — the exact second source the migration removed on purpose.
+  for (const [vaultPath, entry] of Object.entries(portRegistry)) {
+    setVaultPortEntry(cfg, vaultPath, entry);
+  }
   saveConfig(cfg);
   if (!quiet) {
     const migrated = entries.filter((e) => e.status === 'migrated' || e.status === 'completed');

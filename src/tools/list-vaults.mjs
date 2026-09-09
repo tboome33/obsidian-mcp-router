@@ -21,6 +21,29 @@ import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { sharingRequirement } from '../helpers/vault-sharing.mjs';
 import { HINT_STATUS } from '../helpers/workspace-bindings.mjs';
+import { classifyVaultReachability } from '../helpers/vault-reachability.mjs';
+import { portEntryOf } from '../helpers/port-registry.mjs';
+
+/**
+ * The HTTPS port the router will actually dial, read back off the baseUrl it
+ * composed. Cheaper and less forgeable than plumbing a second field down: the
+ * baseUrl IS what the client uses, so a drift between it and any parallel field
+ * would be invisible.
+ */
+function portFromBaseUrl(baseUrl) {
+  try {
+    const port = Number.parseInt(new URL(baseUrl).port, 10);
+    return Number.isInteger(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+/** What the router's own record says this vault's ports are. */
+function registeredPortsFor(registry, vaultPath) {
+  if (!vaultPath || !registry?.config) return { https: null, http: null };
+  return portEntryOf(registry.config, vaultPath);
+}
 
 /**
  * The complete vocabulary of `*Source.origin` — the ONE authoritative list.
@@ -133,6 +156,31 @@ export async function listVaults(registry, sharedConfig = null) {
         missingApiKey: v.missingApiKey || false,
         writesRequireIfMatch: sharing.required,
         sharingReason: sharing.reason,
+        // WHY it is in that state, and what — if anything — would help
+        // (v0.94.0, lot 7). `online` and `identity` say WHAT was observed;
+        // this says which of eight situations that adds up to, and it exists
+        // to stop one sentence being given for most of them: "open this vault
+        // in Obsidian" is right for exactly one. A window cannot take a port
+        // back from another process, cannot refresh a stale key, and is not
+        // needed at all to read a port that moved on disk.
+        reachability: classifyVaultReachability({
+          name: v.name,
+          endpointState: {
+            effectivePorts: { https: portFromBaseUrl(v.baseUrl), http: v.insecurePort ?? null },
+            registeredPorts: registeredPortsFor(registry, v.path),
+            httpsSource: 'disk',
+            httpEnabled: v.httpEnabled ?? null,
+            issues: (registry.portDiagnostics || []).filter(
+              (d) => d.path === v.path && d.kind !== 'port-drift' && d.kind !== 'port-unrecorded',
+            ),
+          },
+          probeResult: {
+            answered: ping.identity !== 'unreachable',
+            authenticated: ping.identity === 'rejected' ? false : (ping.identity === 'confirmed' ? true : null),
+            identity: ping.identity ?? 'unverified',
+          },
+          collisions: (registry.portCollisions || []).filter((f) => f.vaultPath === v.path),
+        }),
       };
     }),
   );

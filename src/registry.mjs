@@ -583,6 +583,12 @@ export async function loadRegistry({ configPath } = {}) {
     // is dialling the disk's port — and is reported so the user can choose to
     // refresh the local record, which is a separate, explicit operation.
     portDiagnostics,
+    // The parsed configuration, for consumers that must ask it a question the
+    // registry does not pre-answer — `list_vaults` reads each vault's RECORDED
+    // ports through the accessor to tell a drift from a match. Read-only by
+    // convention: everything that WRITES this file goes through `saveConfig`
+    // in the CLI, never through a handle taken from here.
+    config,
     resolveVault(name) {
       const target = name || this.defaultVault;
       if (!target) {
