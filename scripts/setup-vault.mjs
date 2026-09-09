@@ -5308,7 +5308,7 @@ if (args[0] === '--vault-owner') {
   }
 
   const owner = current.identity.owner;
-  const localOwner = installationOwnerRef(cfg);
+  let localOwner = installationOwnerRef(cfg);
   const describeOwner = (o) => {
     if (o === null || o === undefined) return 'nobody (unclaimed)';
     if (localOwner && o.installId === localOwner.installId) return `this installation${o.hostname ? ` ("${o.hostname}")` : ''}`;
@@ -5329,7 +5329,15 @@ if (args[0] === '--vault-owner') {
 
   const releasing = args.includes('--release');
   if (!releasing && !localOwner) {
-    fail('This installation has no identity of its own yet, so it cannot own anything. Run the vault setup once.');
+    // A mature, already-migrated fleet never runs setupVault() again — that is
+    // the ONLY other caller of ensureInstallationIdentity — so this
+    // installation can reach --claim having never drawn its own UUID. Bootstrap
+    // it here instead of refusing: an installation identity is a precondition
+    // for owning anything, not a separate administrative step a claim should
+    // have to be preceded by.
+    ensureInstallationIdentity(cfg);
+    localOwner = installationOwnerRef(cfg);
+    if (!localOwner) fail('Could not initialize this installation\'s identity.');
   }
 
   const plan = planOwnershipChange({

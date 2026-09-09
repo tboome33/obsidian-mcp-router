@@ -10,6 +10,27 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.94.2] — 2026-09-09 — an installation that had never claimed anything, and had no way to start
+
+`--vault-owner --claim` refused to work on a mature, already-migrated installation: it needed the
+installation's own `installId` before it could name it as an owner, but nothing in the fleet
+migration or the port-base rotation ever draws that identifier — only `setupVault()` does, and a
+fleet that already has all its vaults provisioned never calls it again. Every one of the 27
+production vaults migrated in v0.94.0 was left unclaimable until a brand-new vault happened to be
+set up first.
+
+### Fixed
+
+- `--vault-owner --claim` now bootstraps this installation's identity (`installId`,
+  `installHostname`, and — only if still unset — `portStart`) the first time it is needed, instead
+  of refusing outright. An existing `installId` or `portStart` is never touched (same guarantee
+  `ensureInstallationIdentity()` already gave `setupVault()`); `--release` and `--show` are
+  unaffected — only a claim on an installation with no identity yet triggers the bootstrap.
+- Added CLI-level test coverage for `--vault-owner` (`tests/vault-owner-cli.test.mjs`): the branch
+  had none before this — every existing test exercised the pure helpers underneath it
+  (`planOwnershipChange`, `classifyVaultOwnership`), never the actual command, which is how the gap
+  shipped in v0.94.0 unnoticed through six review rounds and a 22-probe pen test.
+
 ## [0.94.1] — 2026-09-09 — the filesystem that answered a question nobody asked
 
 v0.94.0's atomic identity-publish (`link()` from a staging file, refusing outright on any
