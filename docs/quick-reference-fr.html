@@ -283,7 +283,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>~/.claude/settings.json</td>
-    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 53 commandes + 49 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
+    <td>Les <strong>8 hooks opt-in</strong> (sur 11) vivent ici — les 3 plugin-actifs (<code>hot-cache-load</code> + <code>decisions-recall</code> + <code>workspace-briefing</code>) viennent de <code>hooks/hooks.json</code> DANS le plugin (<code>hooks.example.json</code> garde un placeholder <code>&lt;router-repo&gt;</code> car <code>${CLAUDE_PLUGIN_ROOT}</code> ne s'expanse que dans les fichiers du plugin). Le plugin lui-même s'active <strong>par workspace</strong> via <code>&lt;workspace&gt;/.claude/settings.json</code> — 54 commandes + 49 skills ≈ 10k tokens de contexte, à ne charger que là où tu utilises Obsidian.</td>
   </tr>
   <tr>
     <td>&lt;workspace&gt;/.env</td>
@@ -337,13 +337,14 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr><td class="cmd">pdf-to-markdown-docling</td><td class="desc">PDF → markdown haute fidélité (Docling, tableaux/mise en page, opt-in)</td><td class="trigger">« conversion haute fidélité » / "convert with docling"</td></tr>
 </table>
 
-<div class="cat-header">🔒 3 commandes d'état du router (lock + auto-enrichissement)</div>
+<div class="cat-header">🔒 4 commandes d'état du router (lock + auto-enrichissement + base de ports)</div>
 
 <table class="slash">
   <tr><th>Commande</th><th>Effet</th><th>Phrase déclencheuse (FR/EN)</th></tr>
   <tr><td class="cmd">lock</td><td class="desc">Restreint la session à un vault (volatile ou <code>--persist</code>)</td><td class="trigger">« verrouille sur X » / "I only want to work on X"</td></tr>
   <tr><td class="cmd">unlock</td><td class="desc">Lève le lock, restaure le routage multi-vault</td><td class="trigger">« déverrouille les vaults » / "unlock vaults"</td></tr>
   <tr><td class="cmd">auto-mode</td><td class="desc">Règle le mode d'auto-enrichissement (ClaudeAsk / Hybrid / FullAuto / off)</td><td class="trigger">« passe en mode Hybrid » / "switch to Hybrid mode"</td></tr>
+  <tr><td class="cmd">force-new-port-start</td><td class="desc">Tire une nouvelle base d'allocation pour les <strong>futurs</strong> vaults uniquement — plan scellé en deux phases, zéro port existant modifié</td><td class="trigger">« tire une nouvelle base de ports » / "draw a new port base"</td></tr>
 </table>
 
 <div class="cat-header">🔗 2 commandes de liaison de workspace (dans quel vault ce projet écrit)</div>

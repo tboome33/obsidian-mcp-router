@@ -180,15 +180,16 @@ The repo doubles as a **Claude Code plugin marketplace** that exposes **54 slash
 | `/obsidian-router:pdf-to-markdown` | Convert a local PDF to markdown via the bundled MarkItDown CLI (fast, plain-text extraction) | *"convert this PDF to markdown"*, *"markdown of X.pdf"* / *"convertis ce PDF en markdown"*, *"markdown de X.pdf"* |
 | `/obsidian-router:pdf-to-markdown-docling` | High-fidelity PDF → markdown via Docling (layout + table-structure recognition, ~10× slower — needs the opt-in Docling install) | *"convert this PDF with docling"*, *"high-fidelity conversion of X.pdf"* / *"convertis ce PDF avec docling"*, *"conversion haute fidélité de X.pdf"* |
 
-### 🔒 3 router-state commands (lock + auto-enrichment)
+### 🔒 4 router-state commands (lock + auto-enrichment + port base)
 
 | Command | Effect | Trigger phrasings |
 |---|---|---|
 | `/obsidian-router:lock` | Restrict the router to a single vault for the session (volatile or `--persist` to write to `.env`) | *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* / *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* |
 | `/obsidian-router:unlock` | Lift the lock and restore multi-vault routing (`--persist` to also clean `.env`) | *"unlock vaults"*, *"give me back access to all vaults"* / *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* |
 | `/obsidian-router:auto-mode` | Set the wiki auto-enrichment mode (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`); `--persist` writes to `.env`, except `FullAuto` — see below | *"switch to Hybrid mode"*, *"save everything automatically"* (→ FullAuto), *"stop auto-saving"* (→ off) / *"passe en mode Hybrid"*, *"sauve tout automatiquement"*, *"arrête de sauver auto"* |
+| `/obsidian-router:force-new-port-start` | Draw a new allocation base for **future** vaults only — sealed two-phase plan, zero existing ports touched, `installId` untouched | *"draw a new port base"*, *"my new vaults keep colliding with something"* / *"tire une nouvelle base de ports"*, *"les nouveaux vaults tombent sur des ports déjà pris"* |
 
-See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation) and the auto-enrichment callout below for the full designs and concrete use cases.
+See [Lock mode (single-vault isolation)](#lock-mode-single-vault-isolation), the auto-enrichment callout below, and [Vault identity and port ownership](#vault-identity-and-port-ownership) for the full designs and concrete use cases.
 
 ### 🔗 2 workspace-binding commands (which vault this project writes to)
 
@@ -719,7 +720,7 @@ By default, the router watches the config file and reloads automatically when it
 
 ### Building your own macros on top (advanced)
 
-The 53 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
+The 54 plugin commands above are domain-agnostic on purpose — they work for any vault. If you want **macros** that chain multiple tools or bake in your vault's conventions (daily notes, capture inbox, weekly rollups, etc.), build them as your own slash commands in `~/.claude/commands/<name>.md` — not as PRs on this repo. The router stays neutral; the macros are yours.
 
 See [`docs/building-commands.md`](./docs/building-commands.md) for the pattern and three illustrative starting-point examples.
 
@@ -1041,6 +1042,25 @@ Three rules the implementation keeps, and that you should keep too if you edit `
 - **An existing `insecurePort` is never renumbered.** Those numbers live in click-to-open links already written in your notes. When a conflict has to be resolved, the **HTTPS** port is the one that moves.
 - **`http` is never guessed as `https + 10`.** That offset is the convention applied to *newly provisioned* vaults, not a property of the fleet — 15 of the 27 vaults measured on 2026-08-30 escape it. When a vault's `data.json` can't be read, its `http` is recorded as `null`, meaning *unknown*, and `--sync-port-registry` fills it in later.
 - **Migration is non-destructive.** The legacy shape is still read, converting is idempotent, no key is dropped, no HTTPS port moves, and the pre-migration file is kept as `config.json.portRegistry-<timestamp>.bak`.
+
+### Vault identity and port ownership
+
+Since v0.94.0 every vault carries a durable UUID in `.obsidian/obsidian-mcp-router/identity.json` — it survives a rename, a move, and a change of ports. The file holds no API key, no absolute path and no port (those stay in `data.json`, the plugin's own source of truth; a copy here would be a second one, replicated by sync, free to drift). An installation carries a UUID too, drawn once from a cryptographic source and never recomputed once it exists. **Only a vault's owner may rewrite its ports** — UUIDs are compared, hostnames never are, because two machines can carry the same label and one machine can change its own.
+
+New pairs for **future** vaults are drawn from a band (20000–32000, minus 27000–27999 where the historic fleet and the plugin's factory port live), both members bind-tested against the machine before being handed out. That is not a reserved range — two installations drawing independently can still collide — just fewer collisions between independent creations, on top of the reservations the registry already tracks.
+
+| Command | What it does |
+|---|---|
+| `node scripts/setup-vault.mjs --migrate-vault-identities --dry-run` | Preview keying the registry by vault UUID instead of by path. Stamps every vault `owner: null` — claiming a vault is a separate, explicit act, never implicit over the whole fleet. Changes no port, no key, no `data.json` (the plan states the count as a literal: `0`). |
+| `node scripts/setup-vault.mjs --migrate-vault-identities --approved-plan-sha256 <seal>` | Apply the previewed plan. Journalled and safe to interrupt — a resume reuses identities already created rather than minting a second UUID for a folder that has one. A duplicate UUID **blocks** rather than being guessed at: a replica, a stale move, and an independent copy look identical from the registry and call for opposite actions. |
+| `node scripts/setup-vault.mjs --vault-owner "<path>" --show` | Show who owns a vault's ports, without changing anything. |
+| `node scripts/setup-vault.mjs --vault-owner "<path>" --claim` | Claim an **unowned** vault for this installation. Writes one field of one file — no port changes, no key is minted. |
+| `node scripts/setup-vault.mjs --vault-owner "<path>" --release --acknowledge-transfer` | Release a vault, or take it from another installation with the acknowledgement flag. Both the current and the new owner are shown before anything is written. |
+| `/obsidian-router:force-new-port-start` (or `--force-new-port-start` on the CLI) | Draw a new allocation base for **future** vaults only. Sealed two-phase plan — `--dry-run` prints it and its seal, the apply passes both back — so the base written is the base that was shown, never redrawn, and a registry that moved in between makes the apply refuse. |
+
+**What this deliberately does not do.** No existing port is ever renumbered by any of the above (that stays out of scope — the plaintext ports already in use are written into click-to-open links in mail and transcripts that nothing can rewrite). "Unknown owner" is a valid, refusing state, not an error — the whole historic fleet migrates into it, and claiming stays a per-vault decision for a person to make. A shared API key across two vaults is reported, never repaired automatically — a synchronised replica legitimately shares its source's key, and rotating it would lock the other machine out (`--check-ports` reports this fleet-wide now, with only a truncated fingerprint ever printed).
+
+Full design — the seven decisions behind it, the migration's journal-and-resume mechanics, and the six rounds of adversarial review plus a 22-probe penetration test that shaped the final guards: [`docs/vault-identity-and-ports.md`](./docs/vault-identity-and-ports.md).
 
 ## Tools exposed
 
@@ -1499,15 +1519,16 @@ Le repo est aussi un **marketplace de plugin Claude Code** qui expose **54 slash
 | `/obsidian-router:pdf-to-markdown` | Convertit un PDF local en markdown via le CLI MarkItDown embarqué (rapide, extraction texte brut) | *"convertis ce PDF en markdown"*, *"markdown de X.pdf"* / *"convert this PDF to markdown"*, *"markdown of X.pdf"* |
 | `/obsidian-router:pdf-to-markdown-docling` | PDF → markdown haute fidélité via Docling (mise en page + structure de tableaux, ~10× plus lent — nécessite l'install Docling opt-in) | *"convertis ce PDF avec docling"*, *"conversion haute fidélité de X.pdf"* / *"convert this PDF with docling"*, *"high-fidelity conversion of X.pdf"* |
 
-#### 🔒 3 commandes d'état du router (lock + auto-enrichissement)
+#### 🔒 4 commandes d'état du router (lock + auto-enrichissement + base de ports)
 
 | Commande | Effet | Phrases déclencheuses |
 |---|---|---|
 | `/obsidian-router:lock` | Restreint le router à un seul vault pour la session (volatile ou `--persist` pour écrire dans `.env`) | *"verrouille sur tradingview"*, *"je ne veux travailler que sur tradingview"*, *"verrouille sur tradingview de manière permanente"* / *"lock to tradingview"*, *"I only want to work on tradingview"*, *"isolate to tradingview permanently"* |
 | `/obsidian-router:unlock` | Lève le lock et restaure le routing multi-vault (`--persist` pour aussi nettoyer `.env`) | *"déverrouille les vaults"*, *"je veux pouvoir avoir accès à tous les vaults"* / *"unlock vaults"*, *"give me back access to all vaults"* |
 | `/obsidian-router:auto-mode` | Set le mode d'auto-enrichissement wiki (`ClaudeAsk` / `Hybrid` / `FullAuto` / `off`) ; `--persist` écrit dans `.env`, sauf `FullAuto` — voir plus bas | *"passe en mode Hybrid"*, *"sauve tout automatiquement"* (→ FullAuto), *"arrête de sauver auto"* (→ off) / *"switch to Hybrid mode"*, *"save everything automatically"*, *"stop auto-saving"* |
+| `/obsidian-router:force-new-port-start` | Tire une nouvelle base d'allocation pour les **futurs** vaults uniquement — plan scellé en deux phases, zéro port existant modifié, `installId` inchangé | *"tire une nouvelle base de ports"*, *"les nouveaux vaults tombent sur des ports déjà pris"* / *"draw a new port base"*, *"my new vaults keep colliding with something"* |
 
-Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault) et le callout auto-enrichissement plus bas pour les designs complets et cas d'usage concrets.
+Voir [Mode lock (isolation mono-vault)](#mode-lock-isolation-mono-vault), le callout auto-enrichissement plus bas, et [Identité de vault et propriété des ports](#identité-de-vault-et-propriété-des-ports) pour les designs complets et cas d'usage concrets.
 
 #### 🔗 2 commandes de liaison de workspace (dans quel vault ce projet écrit)
 
@@ -1960,7 +1981,7 @@ Par défaut, le router surveille le fichier de config et le recharge automatique
 
 ### Construire tes propres macros par-dessus (avancé)
 
-Les 53 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
+Les 54 commandes du plugin sont agnostiques du domaine. Si tu veux des **macros** qui enchaînent plusieurs outils ou intègrent les conventions de ton vault (daily notes, capture inbox, rollups hebdo…), construis-les séparément comme slash commands dans `~/.claude/commands/<name>.md` — pas en PR sur ce repo. Le routeur reste neutre, les macros restent à toi.
 
 Voir [`docs/building-commands.md`](./docs/building-commands.md) pour le pattern et trois exemples illustratifs.
 
@@ -2258,6 +2279,25 @@ Trois règles que l'implémentation respecte — et que vous devriez respecter a
 - **Un `insecurePort` existant n'est jamais renuméroté.** Ces numéros vivent dans les liens click-to-open déjà écrits dans vos notes. Quand un conflit doit être résolu, c'est le port **HTTPS** qui bouge.
 - **`http` n'est jamais deviné comme `https + 10`.** Cet offset est la convention appliquée aux vaults **nouvellement provisionnés**, pas une propriété du parc — 15 des 27 vaults mesurés le 2026-08-30 y échappent. Quand le `data.json` d'un vault n'est pas lisible, son `http` est enregistré à `null`, c'est-à-dire *inconnu*, et `--sync-port-registry` le complétera plus tard.
 - **La migration est non destructive.** L'ancienne forme est toujours lue, la conversion est idempotente, aucune clé n'est perdue, aucun port HTTPS ne bouge, et le fichier d'avant migration est conservé sous `config.json.portRegistry-<horodatage>.bak`.
+
+#### Identité de vault et propriété des ports
+
+Depuis la v0.94.0, chaque vault porte un UUID durable dans `.obsidian/obsidian-mcp-router/identity.json` — il survit à un renommage, un déplacement et un changement de ports. Le fichier ne contient ni clé API, ni chemin absolu, ni port (ceux-ci restent dans `data.json`, seule source de vérité du plugin ; une copie ici serait une seconde source, répliquée par la synchronisation, libre de dériver). Une installation porte aussi un UUID, tiré une seule fois depuis une source cryptographique et jamais recalculé une fois qu'il existe. **Seul le propriétaire d'un vault peut réécrire ses ports** — les UUID sont comparés, jamais les hostnames, car deux machines peuvent partager un nom et une machine peut changer le sien.
+
+Les nouvelles paires pour les **futurs** vaults sont tirées dans une bande (20000–32000, hors 27000–27999 où vit le parc historique et le port d'usine du plugin), les deux membres testés par bind réel sur la machine avant d'être attribués. Ce n'est pas une plage réservée — deux installations qui tirent indépendamment peuvent toujours entrer en collision — juste moins de collisions entre créations indépendantes, en plus des réservations que le registre suit déjà.
+
+| Commande | Effet |
+|---|---|
+| `node scripts/setup-vault.mjs --migrate-vault-identities --dry-run` | Prévisualise le réindexage du registre par UUID de vault plutôt que par chemin. Marque chaque vault `owner: null` — revendiquer un vault est un acte séparé et explicite, jamais implicite sur tout le parc. Ne change aucun port, aucune clé, aucun `data.json` (le plan énonce ce compte comme un littéral : `0`). |
+| `node scripts/setup-vault.mjs --migrate-vault-identities --approved-plan-sha256 <sceau>` | Applique le plan prévisualisé. Journalisé et interruption sans risque — une reprise réutilise les identités déjà créées plutôt que d'en frapper une seconde pour un dossier qui en a déjà une. Un UUID dupliqué **bloque** au lieu d'être deviné : une réplique, un déplacement avec entrée obsolète, et une copie indépendante se ressemblent depuis le registre et appellent des actions opposées. |
+| `node scripts/setup-vault.mjs --vault-owner "<chemin>" --show` | Montre qui possède les ports d'un vault, sans rien changer. |
+| `node scripts/setup-vault.mjs --vault-owner "<chemin>" --claim` | Revendique un vault **sans propriétaire** pour cette installation. Écrit un seul champ d'un seul fichier — aucun port ne change, aucune clé n'est créée. |
+| `node scripts/setup-vault.mjs --vault-owner "<chemin>" --release --acknowledge-transfer` | Libère un vault, ou le reprend à une autre installation avec le drapeau d'acquiescement. Le propriétaire actuel et le nouveau sont tous deux affichés avant toute écriture. |
+| `/obsidian-router:force-new-port-start` (ou `--force-new-port-start` en CLI) | Tire une nouvelle base d'allocation pour les **futurs** vaults uniquement. Plan scellé en deux phases — `--dry-run` l'affiche avec son sceau, l'application repasse les deux — donc la base écrite est celle qui a été montrée, jamais retirée, et un registre qui a bougé entre-temps fait refuser l'application. |
+
+**Ce que ceci ne fait délibérément pas.** Aucun port existant n'est jamais renuméroté par ce qui précède (hors périmètre assumé — les ports en clair déjà utilisés sont écrits dans des liens click-to-open, dans des mails et des transcripts que rien ne peut réécrire). « Propriétaire inconnu » est un état valide qui refuse, pas une erreur — tout le parc historique migre dans cet état, et revendiquer reste une décision par vault, prise par une personne. Une clé API partagée entre deux vaults est signalée, jamais réparée automatiquement — une réplique synchronisée partage légitimement la clé de sa source, et la faire tourner verrouillerait l'autre machine dehors (`--check-ports` le signale désormais sur tout le parc, avec seulement une empreinte tronquée jamais imprimée).
+
+Design complet — les sept décisions qui le fondent, la mécanique de journal et de reprise de la migration, et les six tours de revue adversariale plus un pen test de 22 sondes qui ont façonné les garde-fous finaux : [`docs/vault-identity-and-ports.md`](./docs/vault-identity-and-ports.md).
 
 ### Outils exposés
 
