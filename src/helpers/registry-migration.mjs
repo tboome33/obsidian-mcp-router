@@ -47,21 +47,48 @@ import { isValidUuid, sameUuid, canonicalUuid } from './vault-identity.mjs';
 export const TARGET_SCHEMA_VERSION = 2;
 
 /**
- * Where a record's unknown fields ride through the plan.
+ * THERE IS NO CARRIER ANY MORE, and its absence is the fix.
  *
- * A SYMBOL, deliberately. The first version used a property called `extra`,
- * which is an ordinary name a future version might genuinely use — and a record
- * that had one was read as a carrier, unwrapped, and lost the field. A symbol
- * cannot collide with any JSON key, survives object spread, and is invisible to
- * `JSON.stringify`, so it reaches the writer and never reaches the file.
+ * Two attempts failed here, and the second failed more interestingly than the
+ * first. A property called `extra` collided with an ordinary field name a
+ * future version might use. A `Symbol` could not collide — but it was invisible
+ * to `JSON.stringify`, which meant the plan's SEAL could not see it (two plans
+ * that hash identically could write different records) and a plan that survived
+ * a JSON round trip — the journal — lost it entirely, after which the writer,
+ * which had been rebuilt to read the carrier as authoritative, dropped the
+ * extensions altogether. A second source of truth that the integrity check
+ * cannot see is worse than the problem it was solving.
+ *
+ * So a plan record simply IS the record that will be written: its unknown
+ * fields sit in it as ordinary fields, they serialize, they hash, they survive a
+ * round trip, and nothing has to know which of them are "extra". The writers
+ * preserve the record rather than rebuilding it from three named fields, which
+ * is what makes that true. (Third adversarial round, finding 2.)
  */
-export const CARRIED_EXTRA = Symbol('obsidian-mcp-router/carried-extra');
 
-/** A record without its carrier — the JSON shape, and only that. */
-function stripCarrier(record) {
-  const out = { ...record };
-  delete out[CARRIED_EXTRA];
-  return out;
+/**
+ * Deep structural equality that ignores object key order.
+ *
+ * `JSON.stringify(a) === JSON.stringify(b)` was used first, and reported
+ * `{alpha:1,beta:2}` and `{beta:2,alpha:1}` as different — which turned a
+ * harmless difference in insertion order into an error-level conflict that
+ * BLOCKED a migration (third adversarial round, finding 4). Array order is
+ * still significant, because in an array it means something.
+ */
+function deepEqualIgnoringKeyOrder(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    return a.every((item, i) => deepEqualIgnoringKeyOrder(item, b[i]));
+  }
+  if (typeof a !== 'object') return a === b;
+  const keysA = Object.keys(a).sort();
+  const keysB = Object.keys(b).sort();
+  if (keysA.length !== keysB.length) return false;
+  if (keysA.some((k, i) => k !== keysB[i])) return false;
+  return keysA.every((k) => deepEqualIgnoringKeyOrder(a[k], b[k]));
 }
 
 /**
@@ -99,7 +126,7 @@ export function buildCanonicalVaultIndex(cfg) {
           && first.ports?.https === record.ports?.https
           && first.ports?.http === record.ports?.http
           && (first.owner?.installId ?? null) === (record.owner?.installId ?? null)
-          && JSON.stringify(first.extra ?? {}) === JSON.stringify(record.extra ?? {});
+          && deepEqualIgnoringKeyOrder(first.extra ?? {}, record.extra ?? {});
         issues.push({
           kind: agrees ? 'redundant-path-spelling' : 'duplicate-path',
           severity: agrees ? 'warning' : 'error',
@@ -330,21 +357,16 @@ export function planRegistryMigration({
       : ownershipSelections?.[obs.path];
     const owner = obs.owner ?? (selected === undefined ? null : selected);
 
-    // THE CARRIER IS A SYMBOL, not a field called `extra`.
-    //
-    // Carrying the unknown fields in a property named `extra` meant a record
-    // that legitimately HAD a field called `extra` — a perfectly ordinary name
-    // for a future extension — was read as a carrier and unwrapped, moving its
-    // contents up a level and deleting the field itself. Measured by the second
-    // adversarial round (finding 4). A symbol cannot collide with any JSON key,
-    // is copied by spread, and is ignored by `JSON.stringify`, so it travels
-    // through the plan and never reaches the file.
+    // THE PLAN RECORD IS THE RECORD THAT WILL BE WRITTEN. No carrier, no
+    // side-channel: the unknown fields sit here as ordinary fields, so they
+    // serialize, they are covered by the seal, and they survive the journal's
+    // JSON round trip. See the note at the top of this file for the two
+    // carriers that failed before this.
     vaultsById[vaultId] = {
       ...(entry?.extra ?? {}),
       path: obs.path,
       ports,
       owner: owner ?? null,
-      [CARRIED_EXTRA]: entry?.extra ?? {},
     };
   }
 
@@ -408,15 +430,10 @@ export function planRegistryMigration({
 export function applyPlanToConfig(cfg, plan) {
   const next = { ...cfg };
   next.schemaVersion = TARGET_SCHEMA_VERSION;
-  // The carrier is a symbol (see CARRIED_EXTRA), so `...record` already drops
-  // it from the JSON shape and a record that legitimately holds a field named
-  // `extra` keeps it, untouched, as data.
-  next.vaultsById = Object.fromEntries(
-    Object.entries(plan.vaultsById).map(([id, record]) => [
-      id,
-      { ...(record[CARRIED_EXTRA] ?? {}), ...stripCarrier(record) },
-    ]),
-  );
+  // Copied as-is. A plan record already IS the record to write — including its
+  // unknown fields — so there is nothing to unwrap and nothing that can be
+  // mistaken for a wrapper.
+  next.vaultsById = { ...plan.vaultsById };
   // The path-keyed container goes away: keeping it would leave a second,
   // independently-editable copy of the same facts, replicated by Drive, free to
   // drift. The path index every caller uses is derived from `vaultsById` on

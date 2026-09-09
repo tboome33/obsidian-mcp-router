@@ -196,39 +196,56 @@ export async function writeVaultIdentity(vaultPath, identity, {
     // elsewhere. An atomic REPLACE does not provide create-if-absent semantics.
     // The exclusive-create flag does: the kernel refuses the second opener.
     // (Adversarial review of this release, finding 5.)
-    // SERIALIZED BEFORE THE FILE EXISTS. The first version of this branch
-    // created the file and serialized afterwards, so a failure between the two
-    // — a full disk, a throw in the serializer — left an EMPTY file behind,
-    // which then made every later exclusive creation fail with EEXIST: a vault
-    // permanently stuck with a zero-byte identity nothing would replace.
-    // (Second adversarial round, finding 1.)
+    // WRITTEN ASIDE, THEN PUBLISHED BY `link()` — and the destination is never
+    // opened, never written and never removed by this branch.
+    //
+    // Two earlier versions failed here, each fixing the previous one's damage:
+    //
+    //   1. Check-then-write. Two writers both saw "absent" and both wrote; the
+    //      second silently replaced the first.
+    //   2. `open(file, 'wx')` then write. Exclusive, but the destination was
+    //      created BEFORE it held anything, so a failed write left an empty file
+    //      that made every later creation fail with EEXIST — and the cleanup
+    //      added for that could delete a file ANOTHER process had meanwhile put
+    //      at that path. Exclusive creation gives ownership of an inode, never
+    //      of a pathname.
+    //
+    // `link()` has exactly the semantics needed: it fails with EEXIST if the
+    // destination exists, and it publishes content that is already complete. The
+    // only file this branch ever deletes is its own uniquely-named temporary,
+    // which no other process can be holding. (Third adversarial round, finding 1.)
     const body = serializeVaultIdentity(identity);
     await fs.mkdir(dir, { recursive: true });
-    let handle = null;
+    const staging = `${file}.new-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
     try {
-      handle = await fs.open(file, 'wx');
-    } catch (err) {
-      if (err?.code === 'EEXIST') {
-        throw new IdentityPreconditionError(
-          `Refusing ${operation}: another writer created this vault's identity first. Nothing was ` +
-          'overwritten — re-read it and decide again.',
-          { kind: 'identity-exists' },
-        );
+      await fs.writeFile(staging, body, { encoding: 'utf8', flag: 'wx' });
+      try {
+        await fs.link(staging, file);
+      } catch (err) {
+        if (err?.code === 'EEXIST') {
+          throw new IdentityPreconditionError(
+            `Refusing ${operation}: another writer created this vault's identity first. Nothing was ` +
+            'overwritten — re-read it and decide again.',
+            { kind: 'identity-exists' },
+          );
+        }
+        // A filesystem without hard links (some network shares, FAT) refuses
+        // here. Reported rather than papered over with a non-atomic fallback:
+        // a fallback that can lose a race is the defect this branch exists to
+        // remove, and silently degrading to it would make the guarantee a lie
+        // on exactly the setups where races are most likely.
+        if (err?.code === 'EPERM' || err?.code === 'ENOSYS' || err?.code === 'EXDEV' || err?.code === 'EOPNOTSUPP') {
+          throw new Error(
+            `Cannot create this vault's identity atomically: the filesystem at ${dir} does not ` +
+            `support hard links (${err.code}). Nothing was written. Creating it non-atomically could ` +
+            'lose a race with another writer and silently replace an identity.',
+            { cause: err },
+          );
+        }
+        throw err;
       }
-      throw err;
-    }
-    try {
-      await handle.writeFile(body, 'utf8');
-    } catch (err) {
-      // WE own this file — the exclusive create just made it — so removing it
-      // destroys nothing anybody else put there, and leaving it would block the
-      // retry. This is the one place a cleanup is unambiguously safe.
-      await handle.close().catch(() => {});
-      handle = null;
-      await fs.rm(file, { force: true }).catch(() => {});
-      throw err;
     } finally {
-      if (handle) await handle.close();
+      await fs.rm(staging, { force: true }).catch(() => {});
     }
     return { revision: contentSha256(body), backupPath: null, created: true };
   } else if (current.status === IDENTITY_STATUS.ABSENT) {

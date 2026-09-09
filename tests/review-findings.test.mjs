@@ -522,6 +522,150 @@ describe('round 2, candidate — a case-variant UUID must update, not duplicate'
   });
 });
 
+// ---------------------------------------------------------------------------
+// Round 3 — the defects round 2's repairs introduced
+// ---------------------------------------------------------------------------
+
+describe('round 3, finding 1 — creation never touches the destination path', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('r3f1-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('an identity that appears while we are writing is NOT deleted', async () => {
+    // The previous repair opened the destination with `wx` and removed it if
+    // the write failed — but exclusive creation owns an inode, not a pathname,
+    // so a file another process had put there in between was the one deleted.
+    // Publication is now by `link()` from a staging file, so the destination is
+    // never opened, written or removed by this branch at all.
+    const file = identityPathFor(dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 1, vaultId: ID_B, owner: null, createdAt: 'someone else wrote this',
+    }, null, 2));
+
+    const mine = createVaultIdentity({ randomUUID: () => ID_A, owner: null });
+    await assert.rejects(() => writeVaultIdentity(dir, mine, { ifNew: true }));
+
+    assert.equal(fs.existsSync(file), true, 'another writer\'s identity was deleted');
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).vaultId, ID_B, 'it was overwritten');
+  });
+
+  test('no staging file is left behind, on success or on refusal', async () => {
+    const identity = createVaultIdentity({ randomUUID: () => ID_A, owner: null });
+    await writeVaultIdentity(dir, identity, { ifNew: true });
+    await assert.rejects(() => writeVaultIdentity(dir, identity, { ifNew: true }));
+
+    const leftovers = fs.readdirSync(path.dirname(identityPathFor(dir))).filter((f) => f.includes('.new-'));
+    assert.deepEqual(leftovers, [], `staging files left behind: ${leftovers.join(', ')}`);
+  });
+});
+
+describe('round 3, finding 2 — a plan record is JSON, all the way through', () => {
+  test('extensions survive a JSON round trip of the plan', () => {
+    // The Symbol carrier was invisible to `JSON.stringify`, so the plan's SEAL
+    // could not see it and the journal's round trip destroyed it — after which
+    // the writer, which had been taught to read the carrier as authoritative,
+    // dropped the extensions entirely. There is no carrier now.
+    const cfg = {
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: { [ID_A]: { path: 'C:\\A', ports: { https: 27150, http: 27160 }, owner: null, futureFlag: true } },
+    };
+    const plan = planRegistryMigration({
+      cfg,
+      observations: [{ path: 'C:\\A', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null }],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => crypto.randomUUID(),
+    });
+    const roundTripped = JSON.parse(JSON.stringify(plan));
+    const next = applyPlanToConfig(cfg, roundTripped);
+    assert.equal(next.vaultsById[ID_A].futureFlag, true, 'an extension did not survive the journal');
+  });
+
+  test('two plans that serialize identically write identical records', () => {
+    const build = () => planRegistryMigration({
+      cfg: {
+        schemaVersion: 2,
+        installId: LOCAL,
+        vaultsById: { [ID_A]: { path: 'C:\\A', ports: { https: 27150, http: 27160 }, owner: null, f: 1 } },
+      },
+      observations: [{ path: 'C:\\A', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null }],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => ID_B,
+      transactionId: 'fixed',
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+    });
+    const a = build();
+    const b = build();
+    assert.equal(JSON.stringify(a.vaultsById), JSON.stringify(b.vaultsById));
+    assert.deepEqual(
+      applyPlanToConfig({}, a).vaultsById,
+      applyPlanToConfig({}, b).vaultsById,
+      'identical serialized plans wrote different records',
+    );
+  });
+});
+
+describe('round 3, finding 3 — an exact path match wins over a folded one', () => {
+  test('the record whose path matches exactly is the one updated', () => {
+    const cfg = {
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: null, mark: 'first' },
+        [ID_A.toUpperCase()]: { path: 'C:\\vaults\\x', ports: { https: 27151, http: 27161 }, owner: null, mark: 'second' },
+      },
+    };
+    setVaultPortEntry(cfg, 'C:\\vaults\\x', { https: 21000, http: 21010 }, { vaultId: ID_A.toUpperCase() });
+    assert.deepEqual(
+      cfg.vaultsById[ID_A.toUpperCase()].ports,
+      { https: 21000, http: 21010 },
+      'the write landed on the wrong record, chosen by insertion order',
+    );
+    assert.equal(cfg.vaultsById[ID_A].mark, 'first', 'the other record was modified');
+  });
+
+  test('two folded records and no exact match is a refusal, not a coin toss', () => {
+    const cfg = {
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: {}, owner: null },
+        [ID_B]: { path: 'C:\\Vaults\\X', ports: {}, owner: null },
+      },
+    };
+    assert.throws(
+      () => setVaultPortEntry(cfg, 'C:\\vaults\\x', { https: 21000, http: 21010 }),
+      /none of them matches it exactly/,
+    );
+  });
+});
+
+describe('round 3, finding 4 — key order is not a conflict', () => {
+  test('extensions that differ only in insertion order still agree', () => {
+    const { issues } = buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: null, alpha: 1, beta: 2 },
+        [ID_B]: { path: 'C:\\vaults\\x', ports: { https: 27150, http: 27160 }, owner: null, beta: 2, alpha: 1 },
+      },
+    });
+    // The identities differ here, so this is still a conflict — what must NOT
+    // happen is the conflict being caused by key order. Use one identity:
+    const same = buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: null, alpha: 1, beta: 2 },
+        [ID_A.toUpperCase()]: { path: 'C:\\vaults\\x', ports: { https: 27150, http: 27160 }, owner: null, beta: 2, alpha: 1 },
+      },
+    });
+    assert.ok(
+      same.issues.some((i) => i.kind === 'redundant-path-spelling'),
+      'insertion order alone turned agreeing records into a blocking conflict',
+    );
+    assert.equal(same.issues.filter((i) => i.severity === 'error').length, 0);
+    assert.ok(issues.length > 0);
+  });
+});
+
 describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
   test('each forbidden field makes the identity invalid', () => {
     const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };

@@ -129,9 +129,22 @@ export function setVaultPortEntry(cfg, vaultPath, entry, { vaultId = null, owner
   }
 
   const wanted = normalizePathForCompare(vaultPath);
-  const existingForPath = records.find(
-    (r) => r.path === vaultPath || normalizePathForCompare(r.path) === wanted,
-  );
+  // EXACT MATCH FIRST, then the folded one — and if TWO records fold onto this
+  // directory, refuse rather than pick. `find` returned whichever came first in
+  // insertion order, so a caller naming an exact path could be redirected to a
+  // different record that merely normalised the same way (third adversarial
+  // round, finding 3). Choosing by insertion order is not a decision anybody
+  // asked for.
+  const foldedMatches = records.filter((r) => normalizePathForCompare(r.path) === wanted);
+  const existingForPath = foldedMatches.find((r) => r.path === vaultPath)
+    ?? (foldedMatches.length === 1 ? foldedMatches[0] : null);
+  if (!existingForPath && foldedMatches.length > 1) {
+    throw new Error(
+      `Refusing to record ${vaultPath}: ${foldedMatches.length} records already spell that directory ` +
+      `(${foldedMatches.map((r) => r.path).join(', ')}) and none of them matches it exactly. ` +
+      'Nothing was changed; remove the duplicate entry first.',
+    );
+  }
   let key = vaultId;
   if (!key) {
     key = existingForPath ? existingForPath.vaultId : `unstamped:${wanted}`;

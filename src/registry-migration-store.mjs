@@ -43,7 +43,7 @@ import path from 'node:path';
 import { writeFileAtomicSync } from './helpers/write-file-atomic.mjs';
 import { createVaultIdentity, sameUuid, canonicalUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from './vault-identity-store.mjs';
-import { applyPlanToConfig, CARRIED_EXTRA } from './helpers/registry-migration.mjs';
+import { applyPlanToConfig } from './helpers/registry-migration.mjs';
 import { registeredVaultPaths } from './helpers/vault-slug.mjs';
 import { portEntryOf } from './helpers/port-registry.mjs';
 
@@ -251,10 +251,13 @@ export async function applyRegistryMigration(plan, {
     }
     seenIds.set(key, record.path);
     vaultsById[observed.identity.vaultId] = {
-      // Anything the record already carried that this version does not know
-      // about survives — a newer router may have written it, and rebuilding
-      // the record from three named fields is how a nested extension is lost.
-      ...(record[CARRIED_EXTRA] ?? {}),
+      // THE PLANNED RECORD IS PRESERVED, not rebuilt from three named fields.
+      // Rebuilding is how a nested extension disappears — and no side-channel
+      // is needed to avoid it, because the record already holds everything it
+      // should be written with. The three fields below are the ones this step
+      // is entitled to update: the owner comes from what was just re-read on
+      // disk, not from the plan's assumption about it.
+      ...record,
       path: record.path,
       ports: record.ports,
       owner: observed.identity.owner ?? null,
