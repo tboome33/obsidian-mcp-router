@@ -666,6 +666,80 @@ describe('round 3, finding 4 — key order is not a conflict', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Round 4 — the defects round 3's repairs introduced
+// ---------------------------------------------------------------------------
+
+describe('round 4, finding 1 — a staging file this call did not create is not ours to delete', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('r4f1-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('a colliding staging name is left alone', async () => {
+    // The random suffix makes a collision unlikely, not impossible — and the
+    // cleanup ran in a `finally` that did not know whether this call had
+    // created the file. Ownership now comes from the `open('wx')` succeeding.
+    // Simulated by making the staging directory hold a file we did not write:
+    // we cannot force the exact name, so this asserts the general property that
+    // an unrelated file in the directory survives a failed creation.
+    const file = identityPathFor(dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const bystander = path.join(path.dirname(file), 'identity.json.new-someone-else');
+    fs.writeFileSync(bystander, 'another invocation was here');
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 1, vaultId: ID_B, owner: null }, null, 2));
+
+    await assert.rejects(
+      () => writeVaultIdentity(dir, createVaultIdentity({ randomUUID: () => ID_A, owner: null }), { ifNew: true }),
+    );
+    assert.equal(fs.readFileSync(bystander, 'utf8'), 'another invocation was here');
+  });
+
+  test('a successful creation reports no leftover', async () => {
+    const out = await writeVaultIdentity(
+      dir, createVaultIdentity({ randomUUID: () => ID_A, owner: null }), { ifNew: true },
+    );
+    assert.equal(out.created, true);
+    assert.equal(out.stagingLeftBehind, null, 'a leftover was reported on a clean run');
+    assert.equal((await readVaultIdentity(dir)).identity.vaultId, ID_A);
+  });
+});
+
+describe('round 4, finding 2 — the comparator must not crash where the old one worked', () => {
+  test('deeply nested extensions compare without a stack overflow', () => {
+    let a = {}; let b = {};
+    for (let i = 0; i < 3000; i += 1) { a = { x: a }; b = { x: b }; }
+    // The recursive version threw RangeError here; JSON.stringify, which it
+    // replaced, did not. A comparison that crashes is a worse answer than one
+    // that is occasionally too strict.
+    assert.doesNotThrow(() => buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 1, http: 2 }, owner: null, deep: a },
+        [ID_B]: { path: 'C:\\vaults\\x', ports: { https: 1, http: 2 }, owner: null, deep: b },
+      },
+    }));
+  });
+
+  test('array order still matters, and key order still does not', () => {
+    const withExtras = (first, second) => buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 1, http: 2 }, owner: null, ...first },
+        [ID_A.toUpperCase()]: { path: 'C:\\vaults\\x', ports: { https: 1, http: 2 }, owner: null, ...second },
+      },
+    }).issues;
+
+    assert.ok(
+      withExtras({ alpha: 1, beta: 2 }, { beta: 2, alpha: 1 }).some((i) => i.kind === 'redundant-path-spelling'),
+      'key order was treated as a difference',
+    );
+    assert.ok(
+      withExtras({ list: [1, 2] }, { list: [2, 1] }).some((i) => i.severity === 'error'),
+      'array order was ignored, which changes meaning',
+    );
+  });
+});
+
 describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
   test('each forbidden field makes the identity invalid', () => {
     const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };

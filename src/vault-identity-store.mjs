@@ -41,6 +41,7 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 import { contentSha256 } from './helpers/content-hash.mjs';
 import { writeFileAtomicSync } from './helpers/write-file-atomic.mjs';
@@ -216,9 +217,23 @@ export async function writeVaultIdentity(vaultPath, identity, {
     // which no other process can be holding. (Third adversarial round, finding 1.)
     const body = serializeVaultIdentity(identity);
     await fs.mkdir(dir, { recursive: true });
-    const staging = `${file}.new-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
+    const staging = `${file}.new-${process.pid}-${randomUUID()}`;
+    // OWNERSHIP IS ESTABLISHED BY THE OPEN, not assumed from the name. A random
+    // suffix makes a collision unlikely; it does not make one impossible, and
+    // the `finally` below would then have deleted a staging file belonging to
+    // another invocation — the same "a name is not an inode" mistake this
+    // whole branch was rewritten to stop making, one level down (fourth
+    // adversarial round, finding 1). `owned` is set only after `open` returns,
+    // so an EEXIST leaves it false and the cleanup does nothing.
+    let handle = null;
+    let owned = false;
+    let stagingLeftBehind = null;
     try {
-      await fs.writeFile(staging, body, { encoding: 'utf8', flag: 'wx' });
+      handle = await fs.open(staging, 'wx');
+      owned = true;
+      await handle.writeFile(body, 'utf8');
+      await handle.close();
+      handle = null;
       try {
         await fs.link(staging, file);
       } catch (err) {
@@ -245,9 +260,29 @@ export async function writeVaultIdentity(vaultPath, identity, {
         throw err;
       }
     } finally {
-      await fs.rm(staging, { force: true }).catch(() => {});
+      if (handle) await handle.close().catch(() => {});
+      if (owned) {
+        // REPORTED, not swallowed. `.catch(() => {})` presented a failed
+        // cleanup as a clean run, so a staging file could survive beside a
+        // published identity with nobody told (fourth adversarial round,
+        // finding 3). Publication succeeding and cleanup failing are two
+        // different facts and the caller gets both.
+        try {
+          await fs.rm(staging, { force: true });
+        } catch (err) {
+          stagingLeftBehind = `${staging} (${err?.code ?? 'unknown error'})`;
+        }
+      }
     }
-    return { revision: contentSha256(body), backupPath: null, created: true };
+    return {
+      revision: contentSha256(body),
+      backupPath: null,
+      created: true,
+      // Null in the ordinary case. Non-null means a temporary file survived
+      // next to the identity and can be removed by hand; the identity itself
+      // was published correctly.
+      stagingLeftBehind,
+    };
   } else if (current.status === IDENTITY_STATUS.ABSENT) {
     throw new IdentityPreconditionError(
       `Refusing ${operation}: the identity file expected at revision ${expectedRevision} is gone.`,

@@ -75,20 +75,40 @@ export const TARGET_SCHEMA_VERSION = 2;
  * BLOCKED a migration (third adversarial round, finding 4). Array order is
  * still significant, because in an array it means something.
  */
-function deepEqualIgnoringKeyOrder(a, b) {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (a === null || b === null) return a === b;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((item, i) => deepEqualIgnoringKeyOrder(item, b[i]));
+function deepEqualIgnoringKeyOrder(rootA, rootB) {
+  // ITERATIVE, with an explicit stack. The recursive version used several
+  // JavaScript frames per level of nesting and threw `RangeError` on deeply
+  // nested JSON where the `JSON.stringify` comparison it replaced simply
+  // worked — a comparison that can CRASH is a worse answer than one that is
+  // occasionally too strict (fourth adversarial round, finding 2). Nothing in a
+  // config record should be 3000 levels deep, but "should" is not a guarantee
+  // about a hand-editable file, and the fix costs nothing.
+  const work = [[rootA, rootB]];
+  while (work.length > 0) {
+    const [a, b] = work.pop();
+    if (a === b) continue;
+    if (typeof a !== typeof b) return false;
+    if (a === null || b === null) return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+      if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) work.push([a[i], b[i]]);
+      continue;
+    }
+    if (typeof a !== 'object') {
+      // `a === b` already handled equality; anything reaching here differs,
+      // except NaN, which is never equal to itself and is not representable in
+      // JSON anyway.
+      return false;
+    }
+    const keysA = Object.keys(a).sort();
+    const keysB = Object.keys(b).sort();
+    if (keysA.length !== keysB.length) return false;
+    for (let i = 0; i < keysA.length; i += 1) {
+      if (keysA[i] !== keysB[i]) return false;
+      work.push([a[keysA[i]], b[keysA[i]]]);
+    }
   }
-  if (typeof a !== 'object') return a === b;
-  const keysA = Object.keys(a).sort();
-  const keysB = Object.keys(b).sort();
-  if (keysA.length !== keysB.length) return false;
-  if (keysA.some((k, i) => k !== keysB[i])) return false;
-  return keysA.every((k) => deepEqualIgnoringKeyOrder(a[k], b[k]));
+  return true;
 }
 
 /**
