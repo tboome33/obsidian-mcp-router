@@ -43,7 +43,7 @@ import path from 'node:path';
 import { writeFileAtomicSync } from './helpers/write-file-atomic.mjs';
 import { createVaultIdentity, sameUuid, canonicalUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from './vault-identity-store.mjs';
-import { applyPlanToConfig } from './helpers/registry-migration.mjs';
+import { applyPlanToConfig, CARRIED_EXTRA } from './helpers/registry-migration.mjs';
 import { registeredVaultPaths } from './helpers/vault-slug.mjs';
 import { portEntryOf } from './helpers/port-registry.mjs';
 
@@ -254,7 +254,7 @@ export async function applyRegistryMigration(plan, {
       // Anything the record already carried that this version does not know
       // about survives — a newer router may have written it, and rebuilding
       // the record from three named fields is how a nested extension is lost.
-      ...(record.extra ?? {}),
+      ...(record[CARRIED_EXTRA] ?? {}),
       path: record.path,
       ports: record.ports,
       owner: observed.identity.owner ?? null,

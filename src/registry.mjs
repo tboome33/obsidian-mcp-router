@@ -56,7 +56,7 @@ import {
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
-import { sameUuid } from './helpers/vault-identity.mjs';
+import { sameUuid, isValidUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity } from './vault-identity-store.mjs';
 import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint, workspaceBindingProposal } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
@@ -192,7 +192,15 @@ export async function loadRegistry({ configPath } = {}) {
     // has no UUID to compare, so this is skipped there rather than guessed.
     // READ-ONLY, like everything else at load time — a mismatch removes the
     // vault from the served set and says why; it repairs nothing.
-    const expectedVaultId = migratedVaultIds.get(vaultPath) ?? null;
+    // A VALID UUID, not merely a non-empty key. `setVaultPortEntry` records a
+    // vault it cannot yet name under a placeholder like `unstamped:<path>`,
+    // which is perfectly truthy — and `sameUuid(realUuid, placeholder)` is
+    // always false, so this guard would have declared a mismatch and refused to
+    // serve a vault whose registry entry never held a UUID to mismatch against.
+    // The same invalid-identifier-comparison class as the `null === null` slip
+    // in `setVaultPortEntry` (second adversarial round, finding 2).
+    const recordedId = migratedVaultIds.get(vaultPath) ?? null;
+    const expectedVaultId = isValidUuid(recordedId) ? recordedId : null;
     if (expectedVaultId) {
       const observed = await readVaultIdentity(vaultPath).catch(() => null);
       if (observed && observed.status === 'ok' && !sameUuid(observed.identity.vaultId, expectedVaultId)) {
@@ -283,6 +291,13 @@ export async function loadRegistry({ configPath } = {}) {
       // still try its remembered number on a best-effort basis, but nothing may
       // tell the user the link is known to work. v0.94.0, lot 1.
       httpEnabled: restState.httpEnabled,
+      // WHERE each port came from, carried rather than re-derived downstream.
+      // `list_vaults` used to infer it — and inferred `'disk'` for every vault,
+      // remote registrations included, which is a claim about a local file that
+      // may not exist (adversarial rounds 1 and 2, finding 9). The resolver is
+      // the only thing that knows; it says so here.
+      httpsSource: restState.httpsSource,
+      httpSource: restState.httpSource,
     });
   }
 

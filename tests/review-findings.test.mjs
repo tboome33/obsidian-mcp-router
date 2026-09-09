@@ -376,6 +376,152 @@ describe('finding 11 — UUIDs compare case-insensitively, as RFC 4122 says', ()
   });
 });
 
+// ---------------------------------------------------------------------------
+// Round 2 — the defects the REPAIRS introduced
+// ---------------------------------------------------------------------------
+
+describe('round 2, finding 1 — a failed exclusive create must leave no file behind', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('r2f1-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('an identity that cannot be serialized never creates the file', async () => {
+    // The first version created the file and serialized afterwards, so a
+    // failure in between left an EMPTY file — which then made every later
+    // exclusive creation fail with EEXIST. A vault stuck forever with a
+    // zero-byte identity nothing would replace.
+    const circular = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };
+    circular.loop = circular; // JSON.stringify throws on this
+    await assert.rejects(() => writeVaultIdentity(dir, circular, { ifNew: true }));
+    assert.equal(fs.existsSync(identityPathFor(dir)), false, 'an empty identity file was left behind');
+  });
+
+  test('a successful create leaves a complete, re-readable file', async () => {
+    const identity = createVaultIdentity({ randomUUID: () => ID_A, owner: null });
+    await writeVaultIdentity(dir, identity, { ifNew: true });
+    const back = await readVaultIdentity(dir);
+    assert.equal(back.status, 'ok');
+    assert.equal(back.identity.vaultId, ID_A);
+  });
+});
+
+describe('round 2, finding 2 — an unstamped placeholder is not an expected UUID', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('r2f2-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('a vault recorded under a placeholder key is still served once it is stamped', async () => {
+    // `setVaultPortEntry` records a vault it cannot name yet under
+    // `unstamped:<path>`. That key is truthy, and `sameUuid(realUuid,
+    // placeholder)` is false — so the identity-mismatch guard would have
+    // refused to serve a vault whose record never held a UUID to mismatch.
+    const vault = makeVault(dir, 'Unstamped', { port: 27150, insecurePort: 27160 });
+    stampIdentity(vault, ID_A);
+    const cfgPath = path.join(dir, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: {
+        'unstamped:c:\\\\whatever': { path: vault, ports: { https: 27150, http: 27160 }, owner: null },
+      },
+    }, null, 2));
+
+    const registry = await loadRegistry({ configPath: cfgPath });
+    assert.ok(registry.vaults.some((v) => v.path === vault), 'a placeholder key was read as a mismatch');
+    assert.equal(registry.portDiagnostics.filter((d) => d.kind === 'identity-mismatch').length, 0);
+  });
+});
+
+describe('round 2, finding 3 — a disagreeing legacy alias must not pass as redundant', () => {
+  test('two spellings with DIFFERENT ports are an error, not a warning', () => {
+    const { issues } = buildCanonicalVaultIndex({
+      portRegistry: {
+        'C:\\VAULTS\\X': { https: 27150, http: 27160 },
+        'C:\\vaults\\x': { https: 21000, http: 21010 },
+      },
+    });
+    const issue = issues.find((i) => i.kind === 'duplicate-path');
+    assert.ok(issue, 'a disagreeing legacy alias slipped through as redundancy');
+    assert.equal(issue.severity, 'error');
+    assert.match(issue.message, /DISAGREE/);
+  });
+
+  test('two migrated records with different OWNERS do not read as agreeing', () => {
+    const { issues } = buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: { installId: LOCAL } },
+        [ID_B]: { path: 'C:\\vaults\\x', ports: { https: 27150, http: 27160 }, owner: { installId: OTHER } },
+      },
+    });
+    assert.ok(issues.some((i) => i.severity === 'error'));
+  });
+});
+
+describe('round 2, finding 4 — a record legitimately named `extra` must survive', () => {
+  test('a field called `extra` is data, not the carrier', () => {
+    const cfg = {
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: {
+        [ID_A]: {
+          path: 'C:\\A',
+          ports: { https: 27150, http: 27160 },
+          owner: null,
+          extra: { futureFlag: true },
+        },
+      },
+    };
+    const plan = planRegistryMigration({
+      cfg,
+      observations: [{ path: 'C:\\A', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null }],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => crypto.randomUUID(),
+    });
+    const next = applyPlanToConfig(cfg, plan);
+    assert.deepEqual(
+      next.vaultsById[ID_A].extra,
+      { futureFlag: true },
+      'a field named `extra` was unwrapped as if it were the carrier',
+    );
+    assert.equal(next.vaultsById[ID_A].futureFlag, undefined, 'its contents leaked up a level');
+  });
+
+  test('the carrier never reaches the written configuration', () => {
+    const cfg = {
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: { [ID_A]: { path: 'C:\\A', ports: { https: 27150, http: 27160 }, owner: null, newerField: 7 } },
+    };
+    const plan = planRegistryMigration({
+      cfg,
+      observations: [{ path: 'C:\\A', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null }],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => crypto.randomUUID(),
+    });
+    const written = JSON.parse(JSON.stringify(applyPlanToConfig(cfg, plan)));
+    assert.equal(written.vaultsById[ID_A].newerField, 7, 'a top-level extension was dropped');
+    assert.deepEqual(
+      Object.keys(written.vaultsById[ID_A]).sort(),
+      ['newerField', 'owner', 'path', 'ports'],
+      'the record gained a field it should not have',
+    );
+  });
+});
+
+describe('round 2, candidate — a case-variant UUID must update, not duplicate', () => {
+  test('the existing key wins for the same directory', () => {
+    const cfg = {
+      schemaVersion: 2,
+      vaultsById: { [ID_A]: { path: 'C:\\A', ports: { https: 27150, http: 27160 }, owner: null, keepMe: 1 } },
+    };
+    setVaultPortEntry(cfg, 'C:\\A', { https: 21000, http: 21010 }, { vaultId: ID_A.toUpperCase() });
+    assert.equal(Object.keys(cfg.vaultsById).length, 1, 'a second record was created for one directory');
+    assert.deepEqual(cfg.vaultsById[ID_A].ports, { https: 21000, http: 21010 });
+    assert.equal(cfg.vaultsById[ID_A].keepMe, 1, 'the preserved extension was lost');
+  });
+});
+
 describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
   test('each forbidden field makes the identity invalid', () => {
     const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };

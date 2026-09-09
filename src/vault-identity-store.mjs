@@ -196,14 +196,17 @@ export async function writeVaultIdentity(vaultPath, identity, {
     // elsewhere. An atomic REPLACE does not provide create-if-absent semantics.
     // The exclusive-create flag does: the kernel refuses the second opener.
     // (Adversarial review of this release, finding 5.)
+    // SERIALIZED BEFORE THE FILE EXISTS. The first version of this branch
+    // created the file and serialized afterwards, so a failure between the two
+    // — a full disk, a throw in the serializer — left an EMPTY file behind,
+    // which then made every later exclusive creation fail with EEXIST: a vault
+    // permanently stuck with a zero-byte identity nothing would replace.
+    // (Second adversarial round, finding 1.)
+    const body = serializeVaultIdentity(identity);
     await fs.mkdir(dir, { recursive: true });
+    let handle = null;
     try {
-      const handle = await fs.open(file, 'wx');
-      try {
-        await handle.writeFile(serializeVaultIdentity(identity), 'utf8');
-      } finally {
-        await handle.close();
-      }
+      handle = await fs.open(file, 'wx');
     } catch (err) {
       if (err?.code === 'EEXIST') {
         throw new IdentityPreconditionError(
@@ -214,7 +217,20 @@ export async function writeVaultIdentity(vaultPath, identity, {
       }
       throw err;
     }
-    return { revision: contentSha256(serializeVaultIdentity(identity)), backupPath: null, created: true };
+    try {
+      await handle.writeFile(body, 'utf8');
+    } catch (err) {
+      // WE own this file — the exclusive create just made it — so removing it
+      // destroys nothing anybody else put there, and leaving it would block the
+      // retry. This is the one place a cleanup is unambiguously safe.
+      await handle.close().catch(() => {});
+      handle = null;
+      await fs.rm(file, { force: true }).catch(() => {});
+      throw err;
+    } finally {
+      if (handle) await handle.close();
+    }
+    return { revision: contentSha256(body), backupPath: null, created: true };
   } else if (current.status === IDENTITY_STATUS.ABSENT) {
     throw new IdentityPreconditionError(
       `Refusing ${operation}: the identity file expected at revision ${expectedRevision} is gone.`,

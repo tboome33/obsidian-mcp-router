@@ -129,12 +129,20 @@ export function setVaultPortEntry(cfg, vaultPath, entry, { vaultId = null, owner
   }
 
   const wanted = normalizePathForCompare(vaultPath);
+  const existingForPath = records.find(
+    (r) => r.path === vaultPath || normalizePathForCompare(r.path) === wanted,
+  );
   let key = vaultId;
   if (!key) {
-    const existing = records.find(
-      (r) => r.path === vaultPath || normalizePathForCompare(r.path) === wanted,
-    );
-    key = existing ? existing.vaultId : `unstamped:${wanted}`;
+    key = existingForPath ? existingForPath.vaultId : `unstamped:${wanted}`;
+  } else if (existingForPath && sameUuid(existingForPath.vaultId, key)) {
+    // THE EXISTING KEY WINS when it is the same identity written differently.
+    // RFC 4122 hex is case-insensitive, so a caller passing `A1B2…` for a
+    // record stored under `a1b2…` would otherwise have created a SECOND record
+    // for one directory — leaving the first behind with its preserved
+    // extensions, and two entries where the schema allows one (second
+    // adversarial round, the candidate finding).
+    key = existingForPath.vaultId;
   }
 
   // THE UUID MUST NOT ALREADY BELONG TO A DIFFERENT DIRECTORY.

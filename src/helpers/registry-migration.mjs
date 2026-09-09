@@ -47,6 +47,24 @@ import { isValidUuid, sameUuid, canonicalUuid } from './vault-identity.mjs';
 export const TARGET_SCHEMA_VERSION = 2;
 
 /**
+ * Where a record's unknown fields ride through the plan.
+ *
+ * A SYMBOL, deliberately. The first version used a property called `extra`,
+ * which is an ordinary name a future version might genuinely use — and a record
+ * that had one was read as a carrier, unwrapped, and lost the field. A symbol
+ * cannot collide with any JSON key, survives object spread, and is invisible to
+ * `JSON.stringify`, so it reaches the writer and never reaches the file.
+ */
+export const CARRIED_EXTRA = Symbol('obsidian-mcp-router/carried-extra');
+
+/** A record without its carrier — the JSON shape, and only that. */
+function stripCarrier(record) {
+  const out = { ...record };
+  delete out[CARRIED_EXTRA];
+  return out;
+}
+
+/**
  * The registry as two indexes: by UUID and by normalised path.
  *
  * Works on both schemas, which is what lets the CLI show a coherent picture of
@@ -73,9 +91,15 @@ export function buildCanonicalVaultIndex(cfg) {
         // what the vault is; agreeing entries are redundancy, worth saying and
         // not worth stopping for.
         const first = byNormalizedPath.get(normalized);
+        // OWNER AND EXTENSIONS COUNT TOO. Comparing only the UUID and the two
+        // ports let two records with different owners — or different
+        // future-version fields — read as "agreeing", after which `continue`
+        // discarded the second one and its data with it.
         const agrees = sameUuid(first.vaultId, record.vaultId)
           && first.ports?.https === record.ports?.https
-          && first.ports?.http === record.ports?.http;
+          && first.ports?.http === record.ports?.http
+          && (first.owner?.installId ?? null) === (record.owner?.installId ?? null)
+          && JSON.stringify(first.extra ?? {}) === JSON.stringify(record.extra ?? {});
         issues.push({
           kind: agrees ? 'redundant-path-spelling' : 'duplicate-path',
           severity: agrees ? 'warning' : 'error',
@@ -107,10 +131,24 @@ export function buildCanonicalVaultIndex(cfg) {
   for (const vaultPath of registeredVaultPaths(cfg)) {
     const normalized = normalizePathForCompare(vaultPath);
     if (byNormalizedPath.has(normalized)) {
+      // COMPARED, not assumed. The first version of this branch downgraded
+      // EVERY repeated spelling to a warning without looking at the values, so
+      // two keys naming one directory with DIFFERENT ports slipped through as
+      // "redundant" and the second was silently discarded (second adversarial
+      // round, finding 3). Only agreement is redundancy; disagreement is a
+      // conflict, and nothing here chooses between the two.
+      const first = byNormalizedPath.get(normalized);
+      const mine = portEntryOf(cfg, vaultPath);
+      const agrees = first.ports?.https === mine.https && first.ports?.http === mine.http;
       issues.push({
-        kind: 'redundant-path-spelling',
-        severity: 'warning',
-        message: `Two registry keys spell the same directory: ${byNormalizedPath.get(normalized).path} and ${vaultPath}. One is redundant.`,
+        kind: agrees ? 'redundant-path-spelling' : 'duplicate-path',
+        severity: agrees ? 'warning' : 'error',
+        message: agrees
+          ? `Two registry keys spell the same directory: ${first.path} and ${vaultPath}. They agree ` +
+            'on ports, so one is simply redundant.'
+          : `Two registry keys spell the same directory and DISAGREE about its ports: ${first.path} ` +
+            `(${first.ports?.https ?? '?'}/${first.ports?.http ?? '?'}) and ${vaultPath} ` +
+            `(${mine.https ?? '?'}/${mine.http ?? '?'}). Nothing was chosen between them.`,
       });
       continue;
     }
@@ -292,14 +330,21 @@ export function planRegistryMigration({
       : ownershipSelections?.[obs.path];
     const owner = obs.owner ?? (selected === undefined ? null : selected);
 
+    // THE CARRIER IS A SYMBOL, not a field called `extra`.
+    //
+    // Carrying the unknown fields in a property named `extra` meant a record
+    // that legitimately HAD a field called `extra` — a perfectly ordinary name
+    // for a future extension — was read as a carrier and unwrapped, moving its
+    // contents up a level and deleting the field itself. Measured by the second
+    // adversarial round (finding 4). A symbol cannot collide with any JSON key,
+    // is copied by spread, and is ignored by `JSON.stringify`, so it travels
+    // through the plan and never reaches the file.
     vaultsById[vaultId] = {
-      // Carried, not rebuilt. See `vaultRecordsOf`: a record may hold fields a
-      // newer router wrote, and re-migrating must not quietly delete them.
       ...(entry?.extra ?? {}),
       path: obs.path,
       ports,
       owner: owner ?? null,
-      extra: entry?.extra ?? {},
+      [CARRIED_EXTRA]: entry?.extra ?? {},
     };
   }
 
@@ -363,14 +408,14 @@ export function planRegistryMigration({
 export function applyPlanToConfig(cfg, plan) {
   const next = { ...cfg };
   next.schemaVersion = TARGET_SCHEMA_VERSION;
-  // `extra` is how a record's unknown fields TRAVEL through the plan; it is not
-  // itself a field of the written record. Spreading it back and dropping the
-  // carrier is what preserves a nested extension without inventing a key for it.
+  // The carrier is a symbol (see CARRIED_EXTRA), so `...record` already drops
+  // it from the JSON shape and a record that legitimately holds a field named
+  // `extra` keeps it, untouched, as data.
   next.vaultsById = Object.fromEntries(
-    Object.entries(plan.vaultsById).map(([id, record]) => {
-      const { extra, ...rest } = record;
-      return [id, { ...(extra ?? {}), ...rest }];
-    }),
+    Object.entries(plan.vaultsById).map(([id, record]) => [
+      id,
+      { ...(record[CARRIED_EXTRA] ?? {}), ...stripCarrier(record) },
+    ]),
   );
   // The path-keyed container goes away: keeping it would leave a second,
   // independently-editable copy of the same facts, replicated by Drive, free to
