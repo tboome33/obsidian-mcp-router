@@ -284,7 +284,13 @@ export async function writeVaultIdentity(vaultPath, identity, {
           // and a failed cleanup travel together. The note is attached to the
           // propagating error instead, without replacing it (fifth adversarial
           // round, finding 2).
-          if (failure) failure.stagingLeftBehind = stagingLeftBehind;
+          // Guarded: assigning to a frozen error (or to a thrown non-object)
+          // throws in strict mode, which would REPLACE the original failure
+          // with a TypeError about bookkeeping. The note is a courtesy; the
+          // original error is the thing that matters.
+          try {
+            if (failure && typeof failure === 'object') failure.stagingLeftBehind = stagingLeftBehind;
+          } catch { /* the original error travels on unchanged */ }
         }
       }
     }

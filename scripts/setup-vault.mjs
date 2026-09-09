@@ -1090,7 +1090,11 @@ function initReference(refPath) {
       // this catch was written for: nothing to reserve, nothing to report.
       data = null;
     }
-    if (data?.port) {
+    // `Number.isInteger`, not truthiness. A hand-edited `"port": {…}` is truthy
+    // and would reach the message below, where interpolating it can throw a
+    // TypeError that the narrowed catch no longer swallows. Checking the type
+    // is cheaper than reasoning about which objects stringify safely.
+    if (Number.isInteger(data?.port) && data.port > 0) {
       // Reserve BOTH of the reference vault's ports. Reserving only the
       // HTTPS one is how the reference's plaintext port ended up looking
       // free to the allocator.
