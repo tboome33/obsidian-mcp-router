@@ -1620,24 +1620,23 @@ async function upgradeInsecureServer(vaultPath, opts = {}) {
     // hand-rolled loop it replaces could return `data.port + 10` unchecked
     // when no config was passed, run past 65535 (port 65530 → 65540), and
     // stop ON a reserved 65535 (pre-release review, 2026-08-30).
-    if (registeredVaultPaths(cfg).length > 0) {
-      try {
-        newInsecurePort = await allocateAvailableInsecurePortFor(cfg, vaultPath, data.port, {
-          onDisk: buildOnDiskPortMap(cfg, [vaultPath]),
-          probePort: (p) => probeLoopbackPort(p),
-        });
-      } catch (err) {
-        result.error = err.message;
-        if (!quiet) warn(`${vaultPath} — ${result.error}`);
-        return result;
-      }
-    } else {
-      newInsecurePort = data.port + DEFAULT_INSECURE_OFFSET;
-      if (newInsecurePort > 65535) {
-        result.error = `cannot derive a plaintext port from ${data.port} (+${DEFAULT_INSECURE_OFFSET} exceeds 65535)`;
-        if (!quiet) warn(`${vaultPath} — ${result.error}`);
-        return result;
-      }
+    //
+    // AND UNCONDITIONALLY, since v0.94.0. This was guarded by "only when some
+    // vault is registered", which left an empty registry falling back to the
+    // very `data.port + 10` the delegation exists to avoid — unchecked against
+    // the registry AND against the machine. An empty registry is not a reason
+    // to skip asking the OS: an unregistered vault or another process is
+    // exactly as able to hold that port. The allocator handles an empty
+    // reservation set fine; found by this release's own source scan.
+    try {
+      newInsecurePort = await allocateAvailableInsecurePortFor(cfg, vaultPath, data.port, {
+        onDisk: buildOnDiskPortMap(cfg, [vaultPath]),
+        probePort: (p) => probeLoopbackPort(p),
+      });
+    } catch (err) {
+      result.error = err.message;
+      if (!quiet) warn(`${vaultPath} — ${result.error}`);
+      return result;
     }
   }
 

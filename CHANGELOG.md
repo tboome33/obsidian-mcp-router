@@ -137,6 +137,12 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 
 ### Changed
 
+- **`--upgrade-insecure-server` no longer skips the checks when the registry happens to be empty.**
+  The delegation to the shared allocator was guarded by "only when some vault is registered", which
+  left an empty registry falling back to the very unchecked `data.port + 10` the delegation exists to
+  avoid — unchecked against the registry *and* against the machine. An empty registry is not a reason
+  to skip asking the OS: an unregistered vault or another process is exactly as able to hold that
+  port. Found by this release's own source scan, not by a test.
 - **Four different facts about a `data.json` stopped being one.** The registry wrapped its read in
   `.catch(() => null)`, which merged "never configured", "cannot be read here", "damaged" and
   "carries a port that is not a port" into a single silence. They are now distinct diagnostics with

@@ -997,7 +997,7 @@ The router reads the existing config maintained by [`scripts/setup-vault.mjs`](.
 }
 ```
 
-See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults, and [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) for the recipe to expose a vault over a Cloudflare Tunnel with optional Cloudflare Access auth (service tokens supported via the `extraHeaders` field).
+See [`examples/config.example.json`](./examples/config.example.json) for a complete example with comments, [`docs/vault-identity-and-ports.md`](./docs/vault-identity-and-ports.md) for how a vault's durable identity, its owner, and the band new ports are drawn from all fit together (and what the router deliberately does *not* promise about them), [`docs/remote-vaults.md`](./docs/remote-vaults.md) for the full guide on adding remote vaults, and [`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md) for the recipe to expose a vault over a Cloudflare Tunnel with optional Cloudflare Access auth (service tokens supported via the `extraHeaders` field).
 
 ### Running the router without the vaults' disks
 
