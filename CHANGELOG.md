@@ -10,6 +10,34 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.94.1] — 2026-09-09 — the filesystem that answered a question nobody asked
+
+v0.94.0's atomic identity-publish (`link()` from a staging file, refusing outright on any
+filesystem that would not honour it) was measured wrong on its first real production run: 11 of
+Roland's 27 vaults live on Google-Drive-mounted letters, whose virtual filesystem does not support
+hard links and refuses with a **non-standard error code** — `EISDIR`, not one of the four POSIX
+codes (`EPERM`/`ENOSYS`/`EXDEV`/`EOPNOTSUPP`) the write path enumerated. The CLI crashed uncaught
+on the third vault attempted. `config.json` was never touched (the code only writes it as the very
+last step, never reached) and the two identities already created were verified byte-identical on
+their `data.json` afterward — the safety held, only the coverage did not. Six adversarial review
+rounds and a 22-probe penetration test exercised this exact function and never found it, because
+none of them ran against an actual virtualised or networked mount.
+
+### Fixed
+
+- **A filesystem that refuses `link()` for any reason other than "it already exists" now falls
+  back instead of crashing.** `link()`'s result is no longer read by an error-code allowlist:
+  `EEXIST` means a real conflict and stays a clean refusal; anything else — a code nobody has
+  measured yet included — falls back to a direct exclusive create (`fs.open(file, 'wx')`) on the
+  destination itself. That fallback reopens the narrower race the previous design removed
+  (exclusive creation owns an inode, not a pathname, so something else replacing the file between
+  our open and our cleanup could have that replacement deleted) — accepted specifically because the
+  alternative on these filesystems is not "safer", it is "this vault can never get an identity at
+  all". The migration's own commit-time verification, which re-reads every identity before writing
+  the registry, is the backstop for that narrower window. Verified against the real 27-vault fleet
+  after the fix: **27/27 `data.json` bit-for-bit identical**, 27 distinct UUIDs, 27 `owner: null`,
+  a second dry-run showing nothing left to do.
+
 ## [0.94.0] — 2026-09-09 — a vault that knows what it is, and ports that come from somewhere
 
 A vault now carries a UUID that survives being renamed, moved or renumbered; an installation
