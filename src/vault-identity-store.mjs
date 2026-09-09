@@ -198,9 +198,9 @@ export async function writeVaultIdentity(vaultPath, identity, {
     // The exclusive-create flag does: the kernel refuses the second opener.
     // (Adversarial review of this release, finding 5.)
     // WRITTEN ASIDE, THEN PUBLISHED BY `link()` — and the destination is never
-    // opened, never written and never removed by this branch.
+    // opened, never written and never removed by this primary path.
     //
-    // Two earlier versions failed here, each fixing the previous one's damage:
+    // Three earlier versions failed here, each fixing the previous one's damage:
     //
     //   1. Check-then-write. Two writers both saw "absent" and both wrote; the
     //      second silently replaced the first.
@@ -210,11 +210,39 @@ export async function writeVaultIdentity(vaultPath, identity, {
     //      added for that could delete a file ANOTHER process had meanwhile put
     //      at that path. Exclusive creation gives ownership of an inode, never
     //      of a pathname.
+    //   3. `link()` from a staging file, refusing outright on any filesystem
+    //      that would not honour it — reported rather than papered over, on the
+    //      reasoning that a non-atomic fallback able to lose a race would make
+    //      the guarantee a lie on exactly the setups where races are likeliest.
+    //      MEASURED WRONG the day this shipped: 11 of 27 vaults in production
+    //      live on Google-Drive-mounted letters, whose virtual filesystem does
+    //      not support hard links at all and refuses `link()` with a NON-
+    //      STANDARD code (`EISDIR`, not one of the four POSIX codes a real
+    //      filesystem uses) — so those vaults could never be migrated, full
+    //      stop, and the CLI crashed uncaught rather than refusing cleanly.
     //
-    // `link()` has exactly the semantics needed: it fails with EEXIST if the
-    // destination exists, and it publishes content that is already complete. The
-    // only file this branch ever deletes is its own uniquely-named temporary,
-    // which no other process can be holding. (Third adversarial round, finding 1.)
+    // `link()` remains the PREFERRED path: it fails with EEXIST if the
+    // destination exists, it publishes content that is already complete, and
+    // the only file it ever deletes is its own uniquely-named temporary, which
+    // no other process can be holding. It is tried first, always. Only when it
+    // fails for a reason OTHER than "the destination already exists" — which on
+    // a real filesystem means corruption or a permissions problem, and on a
+    // virtualised or networked one can mean "hard links are not a thing here,
+    // reported however that driver feels like reporting it" — does this fall
+    // back to a direct exclusive create on the destination itself.
+    //
+    // THAT FALLBACK REOPENS THE NARROWER RACE VERSION 2 REMOVED: exclusive
+    // creation owns an inode, not a pathname, so if something ELSE (Drive's own
+    // sync engine resolving a conflict, a person, another tool — never another
+    // call into this function, which `link()`'s EEXIST already rules out)
+    // replaces the file between our `open('wx')` and our cleanup, our cleanup
+    // could delete that replacement. Accepted here, scoped ONLY to filesystems
+    // where hard-link publish is unavailable, because the alternative is not
+    // "safer" — it is "this vault can never get an identity at all". The
+    // narrow window is milliseconds, and the migration's own commit-time
+    // verification re-reads every identity and refuses on a mismatch before
+    // anything is written to the registry, which is the backstop for exactly
+    // this class of race. (Measured 2026-09-09, mid-production-migration.)
     const body = serializeVaultIdentity(identity);
     await fs.mkdir(dir, { recursive: true });
     const staging = `${file}.new-${process.pid}-${randomUUID()}`;
@@ -228,6 +256,7 @@ export async function writeVaultIdentity(vaultPath, identity, {
     let handle = null;
     let owned = false;
     let stagingLeftBehind = null;
+    let needsFallback = false;
     // The error on its way out, so the cleanup note below can be attached to it.
     let failure = null;
     try {
@@ -246,20 +275,14 @@ export async function writeVaultIdentity(vaultPath, identity, {
             { kind: 'identity-exists' },
           );
         }
-        // A filesystem without hard links (some network shares, FAT) refuses
-        // here. Reported rather than papered over with a non-atomic fallback:
-        // a fallback that can lose a race is the defect this branch exists to
-        // remove, and silently degrading to it would make the guarantee a lie
-        // on exactly the setups where races are most likely.
-        if (err?.code === 'EPERM' || err?.code === 'ENOSYS' || err?.code === 'EXDEV' || err?.code === 'EOPNOTSUPP') {
-          throw new Error(
-            `Cannot create this vault's identity atomically: the filesystem at ${dir} does not ` +
-            `support hard links (${err.code}). Nothing was written. Creating it non-atomically could ` +
-            'lose a race with another writer and silently replace an identity.',
-            { cause: err },
-          );
-        }
-        throw err;
+        // NOT ENUMERATED BY CODE ANY MORE. A virtualised or networked mount can
+        // fail this call however its own driver sees fit — Google Drive's
+        // measured answer is `EISDIR`, which is not a code any POSIX filesystem
+        // would give for "no hard links here". Anything other than "the
+        // destination genuinely already exists" is read as "this location
+        // cannot publish by hard link", and handled by the fallback below,
+        // OUTSIDE this try so the staging cleanup in `finally` still runs first.
+        needsFallback = true;
       }
     } catch (err) {
       // Held so the cleanup below can attach its note to the error that is
@@ -294,6 +317,41 @@ export async function writeVaultIdentity(vaultPath, identity, {
         }
       }
     }
+
+    if (needsFallback) {
+      // See the doc-block above: a direct exclusive create on the destination
+      // itself, tried only because the staging+link publish this filesystem
+      // does not support was already attempted and refused. `fs.open(file,
+      // 'wx')` gives the same "fails if it already exists" guarantee `link()`
+      // gave — the property that matters for `ifNew` — at the cost of the
+      // narrower cleanup race documented above.
+      let fallbackHandle = null;
+      let fallbackOwned = false;
+      try {
+        fallbackHandle = await fs.open(file, 'wx');
+        fallbackOwned = true;
+        await fallbackHandle.writeFile(body, 'utf8');
+      } catch (err) {
+        if (err?.code === 'EEXIST') {
+          throw new IdentityPreconditionError(
+            `Refusing ${operation}: another writer created this vault's identity first. Nothing was ` +
+            'overwritten — re-read it and decide again.',
+            { kind: 'identity-exists' },
+          );
+        }
+        if (fallbackOwned) {
+          // We created this name; a failed write leaves an incomplete file
+          // that must not masquerade as a valid identity. Best-effort — a
+          // failure here does not replace the write error.
+          await fs.rm(file, { force: true }).catch(() => {});
+        }
+        throw err;
+      } finally {
+        if (fallbackHandle) await fallbackHandle.close().catch(() => {});
+      }
+      return { revision: contentSha256(body), backupPath: null, created: true, stagingLeftBehind: null };
+    }
+
     return {
       revision: contentSha256(body),
       backupPath: null,
