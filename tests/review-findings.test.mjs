@@ -758,13 +758,18 @@ describe('round 5, finding 1 — --init-reference must not swallow a reservation
     );
     const start = source.indexOf('Reserve the reference vault\'s current port');
     assert.notEqual(start, -1, 'the reference reservation block was renamed — update this test');
-    const block = source.slice(start, start + 1800);
-    const setterAt = block.indexOf('setVaultPortEntry(cfg, abs');
+    // ANCHORED ON THE CODE, not on a byte distance. A first version sliced a
+    // fixed 1800 characters after the marker, and adding four lines of comment
+    // pushed the setter out of the window — the test then failed for a reason
+    // that had nothing to do with what it protects. A window that a comment can
+    // break is a window that will break.
+    const setterAt = source.indexOf('setVaultPortEntry(cfg, abs', start);
     assert.notEqual(setterAt, -1, 'the reservation no longer calls the setter');
 
-    // Everything between the setter call and the end of the block must not be
-    // inside a bare catch: the nearest enclosing `try {` must close before it.
-    const beforeSetter = block.slice(0, setterAt);
+    // Between the marker and the setter call, every `try {` must already have
+    // been closed by a `} catch` — otherwise the setter sits inside a catch
+    // that would swallow its refusal.
+    const beforeSetter = source.slice(start, setterAt);
     const opens = (beforeSetter.match(/\btry\s*\{/g) || []).length;
     const closes = (beforeSetter.match(/\}\s*catch/g) || []).length;
     assert.equal(opens, closes, 'the reservation is still inside a try/catch that would swallow its refusal');
