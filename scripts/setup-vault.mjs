@@ -1074,18 +1074,31 @@ function initReference(refPath) {
   // bootstrapped vaults don't collide with it.
   const restDataPath = path.join(abs, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
   if (fs.existsSync(restDataPath)) {
+    // THE CATCH IS NARROWED TO THE READ. It used to wrap the reservation too,
+    // which was harmless while the setter could not fail — and stopped being
+    // harmless the moment it could: a refusal (an identity already registered
+    // for another directory, an ambiguous path) was swallowed, the reservation
+    // silently did not happen, and `saveConfig` below persisted everything
+    // else. Setup would have continued without the very reservation that keeps
+    // a bootstrapped vault off the reference's ports. Found by the fifth
+    // adversarial round, once it finally had the callers in front of it.
+    let data = null;
     try {
-      const data = JSON.parse(fs.readFileSync(restDataPath, 'utf8'));
-      if (data.port) {
-        // Reserve BOTH of the reference vault's ports. Reserving only the
-        // HTTPS one is how the reference's plaintext port ended up looking
-        // free to the allocator.
-        const http = Number.isInteger(data.insecurePort) && data.insecurePort > 0
-          ? data.insecurePort : null;
-        setVaultPortEntry(cfg, abs, { https: data.port, http });
-        info(`Reserved ports ${data.port} (HTTPS) + ${http ?? 'unknown'} (plaintext) for the reference vault`);
-      }
-    } catch {}
+      data = JSON.parse(fs.readFileSync(restDataPath, 'utf8'));
+    } catch {
+      // An unreadable or malformed reference `data.json` is the ordinary case
+      // this catch was written for: nothing to reserve, nothing to report.
+      data = null;
+    }
+    if (data?.port) {
+      // Reserve BOTH of the reference vault's ports. Reserving only the
+      // HTTPS one is how the reference's plaintext port ended up looking
+      // free to the allocator.
+      const http = Number.isInteger(data.insecurePort) && data.insecurePort > 0
+        ? data.insecurePort : null;
+      setVaultPortEntry(cfg, abs, { https: data.port, http });
+      info(`Reserved ports ${data.port} (HTTPS) + ${http ?? 'unknown'} (plaintext) for the reference vault`);
+    }
   }
 
   saveConfig(cfg);

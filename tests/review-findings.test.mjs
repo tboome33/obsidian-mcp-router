@@ -740,6 +740,37 @@ describe('round 4, finding 2 — the comparator must not crash where the old one
   });
 });
 
+// ---------------------------------------------------------------------------
+// Round 5 — a caller that swallowed the new refusal
+// ---------------------------------------------------------------------------
+
+describe('round 5, finding 1 — --init-reference must not swallow a reservation refusal', () => {
+  test('the catch wraps only the read, so a refusal aborts instead of saving without it', () => {
+    // `setVaultPortEntry` could not fail when this `try` was written, so
+    // wrapping the reservation in it was harmless. The moment the setter gained
+    // its refusals, the same `catch {}` silently skipped the reservation that
+    // keeps bootstrapped vaults off the reference's ports — and `saveConfig`
+    // persisted everything else. A source check, because the defect is the
+    // SHAPE of the block, not a value it produces.
+    const source = fs.readFileSync(
+      path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..', 'scripts', 'setup-vault.mjs'),
+      'utf8',
+    );
+    const start = source.indexOf('Reserve the reference vault\'s current port');
+    assert.notEqual(start, -1, 'the reference reservation block was renamed — update this test');
+    const block = source.slice(start, start + 1800);
+    const setterAt = block.indexOf('setVaultPortEntry(cfg, abs');
+    assert.notEqual(setterAt, -1, 'the reservation no longer calls the setter');
+
+    // Everything between the setter call and the end of the block must not be
+    // inside a bare catch: the nearest enclosing `try {` must close before it.
+    const beforeSetter = block.slice(0, setterAt);
+    const opens = (beforeSetter.match(/\btry\s*\{/g) || []).length;
+    const closes = (beforeSetter.match(/\}\s*catch/g) || []).length;
+    assert.equal(opens, closes, 'the reservation is still inside a try/catch that would swallow its refusal');
+  });
+});
+
 describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
   test('each forbidden field makes the identity invalid', () => {
     const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };

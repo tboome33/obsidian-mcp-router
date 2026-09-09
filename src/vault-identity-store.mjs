@@ -228,6 +228,8 @@ export async function writeVaultIdentity(vaultPath, identity, {
     let handle = null;
     let owned = false;
     let stagingLeftBehind = null;
+    // The error on its way out, so the cleanup note below can be attached to it.
+    let failure = null;
     try {
       handle = await fs.open(staging, 'wx');
       owned = true;
@@ -259,6 +261,11 @@ export async function writeVaultIdentity(vaultPath, identity, {
         }
         throw err;
       }
+    } catch (err) {
+      // Held so the cleanup below can attach its note to the error that is
+      // actually going to reach the caller. Re-thrown unchanged.
+      failure = err;
+      throw err;
     } finally {
       if (handle) await handle.close().catch(() => {});
       if (owned) {
@@ -271,6 +278,13 @@ export async function writeVaultIdentity(vaultPath, identity, {
           await fs.rm(staging, { force: true });
         } catch (err) {
           stagingLeftBehind = `${staging} (${err?.code ?? 'unknown error'})`;
+          // AND ON THE ERROR PATH TOO. When the main operation throws, the
+          // return value below is never reached, so a leftover recorded only
+          // there was lost precisely when it was most likely — a failed write
+          // and a failed cleanup travel together. The note is attached to the
+          // propagating error instead, without replacing it (fifth adversarial
+          // round, finding 2).
+          if (failure) failure.stagingLeftBehind = stagingLeftBehind;
         }
       }
     }
