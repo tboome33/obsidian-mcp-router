@@ -303,6 +303,14 @@ export function planPortStartChange(cfg, {
       registeredVaultCount: paths.length,
       // Sorted so the fingerprint does not depend on object key order.
       registeredPaths: paths.slice().sort(),
+      // THE RESERVED PORTS TOO, not just the list of vaults. Without this the
+      // seal was blind to a vault whose PAIR changed between the proposal and
+      // the apply: the path list was identical, the seal matched, and the apply
+      // proceeded on a picture that was no longer true (adversarial review of
+      // this release, finding 6). Sorted for the same reason as the paths.
+      reservedPorts: [...(reservedPorts instanceof Set ? reservedPorts : new Set(reservedPorts || []))]
+        .filter((p) => Number.isInteger(p))
+        .sort((a, b) => a - b),
     },
     issues,
   };

@@ -47,6 +47,7 @@ import {
   defaultNameFromPath,
   disabledVaultEntries,
   registeredVaultPaths,
+  vaultRecordsOf,
   vaultSlug,
   vaultReachMode,
   openVaultEntries,
@@ -55,6 +56,8 @@ import {
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
+import { sameUuid } from './helpers/vault-identity.mjs';
+import { readVaultIdentity } from './vault-identity-store.mjs';
 import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint, workspaceBindingProposal } from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
@@ -148,6 +151,13 @@ export async function loadRegistry({ configPath } = {}) {
   // (invariant I8, decision D6).
   const portDiagnostics = [];
 
+  // path → the UUID this record is about, for a MIGRATED config only. A legacy
+  // config has nothing to compare, and inventing an expectation there would be
+  // a guess dressed as a check.
+  const migratedVaultIds = new Map(
+    (vaultRecordsOf(config) ?? []).map((r) => [r.path, r.vaultId]),
+  );
+
   for (const [vaultPath, value] of Object.entries(portRegistry)) {
     // The config's word on this vault's name, type-checked at the boundary —
     // a hand-edited `"vaultNames": { "<path>": 123 }` falls back to the path
@@ -166,6 +176,41 @@ export async function loadRegistry({ configPath } = {}) {
     const restData = await readLocalRestData(vaultPath);
     if (restData.status === 'ok') {
       onDiskPorts.set(vaultPath, { port: restData.port, insecurePort: restData.insecurePort });
+    }
+
+    // IS THE VAULT AT THAT PATH STILL THE VAULT THIS ENTRY IS ABOUT?
+    //
+    // The loader used to answer "whatever is at the registered path", and that
+    // is wrong the moment a path is REUSED: move vault A away, put unrelated
+    // vault B in its place, and the router served B's port and B's API KEY
+    // under A's registration and A's name. Authentication would then confirm B
+    // — with B's own key — while the caller believed it had selected A, and a
+    // write meant for A would land in B. Found by the adversarial review of
+    // this release (finding 1).
+    //
+    // Only checkable once the registry is keyed by identity: a legacy config
+    // has no UUID to compare, so this is skipped there rather than guessed.
+    // READ-ONLY, like everything else at load time — a mismatch removes the
+    // vault from the served set and says why; it repairs nothing.
+    const expectedVaultId = migratedVaultIds.get(vaultPath) ?? null;
+    if (expectedVaultId) {
+      const observed = await readVaultIdentity(vaultPath).catch(() => null);
+      if (observed && observed.status === 'ok' && !sameUuid(observed.identity.vaultId, expectedVaultId)) {
+        portDiagnostics.push({
+          kind: 'identity-mismatch',
+          severity: 'error',
+          path: vaultPath,
+          name,
+          message:
+            `The directory registered as "${name}" now holds a DIFFERENT vault than the one this ` +
+            'record is about — its identity does not match. It has not been served: doing so would ' +
+            'hand another vault\'s ports and credential to anything that asked for this name. ' +
+            'Nothing was changed; re-register the directory, or point the record at where the ' +
+            'original moved.',
+        });
+        skipped.push({ name, type: 'local', reason: 'identity mismatch at the registered path' });
+        continue;
+      }
     }
 
     // disabledVaults entries can be either the resolved vault NAME or the

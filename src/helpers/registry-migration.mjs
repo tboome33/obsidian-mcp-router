@@ -41,7 +41,7 @@
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { registeredVaultPaths, vaultRecordsOf } from './vault-slug.mjs';
 import { portEntryOf } from './port-registry.mjs';
-import { isValidUuid } from './vault-identity.mjs';
+import { isValidUuid, sameUuid, canonicalUuid } from './vault-identity.mjs';
 
 /** The schema this migration produces. */
 export const TARGET_SCHEMA_VERSION = 2;
@@ -64,24 +64,40 @@ export function buildCanonicalVaultIndex(cfg) {
     for (const record of records) {
       const normalized = normalizePathForCompare(record.path);
       if (byNormalizedPath.has(normalized)) {
+        // TWO SPELLINGS OF ONE DIRECTORY ARE NOT AUTOMATICALLY A CONFLICT.
+        // `classifyIdentityMatches` folds exactly this case as a harmless
+        // alias, and this index used to contradict it by emitting an
+        // error-level issue that the planner promoted to a blocker — so the
+        // advertised alias handling could never complete (adversarial review,
+        // finding 8). It is a conflict only when the two entries DISAGREE about
+        // what the vault is; agreeing entries are redundancy, worth saying and
+        // not worth stopping for.
+        const first = byNormalizedPath.get(normalized);
+        const agrees = sameUuid(first.vaultId, record.vaultId)
+          && first.ports?.https === record.ports?.https
+          && first.ports?.http === record.ports?.http;
         issues.push({
-          kind: 'duplicate-path',
-          severity: 'error',
-          message: `Two records point at the same directory: ${byNormalizedPath.get(normalized).path} and ${record.path}.`,
+          kind: agrees ? 'redundant-path-spelling' : 'duplicate-path',
+          severity: agrees ? 'warning' : 'error',
+          message: agrees
+            ? `Two spellings of one directory are registered (${first.path} and ${record.path}); ` +
+              'they agree on identity and ports, so one entry is simply redundant.'
+            : `Two records point at the same directory and DISAGREE about it: ${first.path} and ` +
+              `${record.path}. Nothing was chosen between them.`,
         });
         continue;
       }
-      const entry = { vaultId: record.vaultId, path: record.path, ports: record.ports, owner: record.owner };
+      const entry = { vaultId: record.vaultId, path: record.path, ports: record.ports, owner: record.owner, extra: record.extra ?? {} };
       byNormalizedPath.set(normalized, entry);
       if (isValidUuid(record.vaultId)) {
-        if (byId.has(record.vaultId)) {
+        if (byId.has(canonicalUuid(record.vaultId))) {
           issues.push({
             kind: 'duplicate-id',
             severity: 'error',
             message: `Two records carry the UUID ${record.vaultId}.`,
           });
         } else {
-          byId.set(record.vaultId, entry);
+          byId.set(canonicalUuid(record.vaultId), entry);
         }
       }
     }
@@ -92,9 +108,9 @@ export function buildCanonicalVaultIndex(cfg) {
     const normalized = normalizePathForCompare(vaultPath);
     if (byNormalizedPath.has(normalized)) {
       issues.push({
-        kind: 'duplicate-path',
-        severity: 'error',
-        message: `Two registry keys spell the same directory: ${byNormalizedPath.get(normalized).path} and ${vaultPath}.`,
+        kind: 'redundant-path-spelling',
+        severity: 'warning',
+        message: `Two registry keys spell the same directory: ${byNormalizedPath.get(normalized).path} and ${vaultPath}. One is redundant.`,
       });
       continue;
     }
@@ -150,15 +166,19 @@ export function classifyIdentityMatches(observations, existingRegistry = null) {
       unique.push({ ...obs, reason: 'no-identity-yet' });
       continue;
     }
-    if (!byId.has(obs.vaultId)) byId.set(obs.vaultId, []);
-    byId.get(obs.vaultId).push(obs);
+    // Grouped by the CANONICAL form: two case variants of one UUID are one
+    // identifier, and grouping the raw strings let a duplicate walk past
+    // detection entirely (adversarial review, finding 11).
+    const key = canonicalUuid(obs.vaultId);
+    if (!byId.has(key)) byId.set(key, []);
+    byId.get(key).push(obs);
   }
 
   for (const [vaultId, group] of byId) {
     if (group.length === 1) {
       const only = group[0];
       // A path that MOVED: the registry knows this UUID at a different place.
-      const known = existingRegistry?.byId?.get?.(vaultId) ?? null;
+      const known = existingRegistry?.byId?.get?.(canonicalUuid(vaultId)) ?? null;
       if (known && normalizePathForCompare(known.path) !== normalizePathForCompare(only.path)) {
         moves.push({ vaultId, from: known.path, to: only.path });
       } else {
@@ -272,7 +292,15 @@ export function planRegistryMigration({
       : ownershipSelections?.[obs.path];
     const owner = obs.owner ?? (selected === undefined ? null : selected);
 
-    vaultsById[vaultId] = { path: obs.path, ports, owner: owner ?? null };
+    vaultsById[vaultId] = {
+      // Carried, not rebuilt. See `vaultRecordsOf`: a record may hold fields a
+      // newer router wrote, and re-migrating must not quietly delete them.
+      ...(entry?.extra ?? {}),
+      path: obs.path,
+      ports,
+      owner: owner ?? null,
+      extra: entry?.extra ?? {},
+    };
   }
 
   const duplicateIds = new Set();
@@ -335,7 +363,15 @@ export function planRegistryMigration({
 export function applyPlanToConfig(cfg, plan) {
   const next = { ...cfg };
   next.schemaVersion = TARGET_SCHEMA_VERSION;
-  next.vaultsById = { ...plan.vaultsById };
+  // `extra` is how a record's unknown fields TRAVEL through the plan; it is not
+  // itself a field of the written record. Spreading it back and dropping the
+  // carrier is what preserves a nested extension without inventing a key for it.
+  next.vaultsById = Object.fromEntries(
+    Object.entries(plan.vaultsById).map(([id, record]) => {
+      const { extra, ...rest } = record;
+      return [id, { ...(extra ?? {}), ...rest }];
+    }),
+  );
   // The path-keyed container goes away: keeping it would leave a second,
   // independently-editable copy of the same facts, replicated by Drive, free to
   // drift. The path index every caller uses is derived from `vaultsById` on

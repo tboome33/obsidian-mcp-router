@@ -68,6 +68,29 @@ export function isValidUuid(value) {
   return typeof value === 'string' && UUID_RE.test(value);
 }
 
+/**
+ * The one form in which a UUID may be compared or used as a key.
+ *
+ * RFC 4122 hex is case-INSENSITIVE, and the validator above accepts both cases
+ * — so `A1B2…` and `a1b2…` are the same identifier written twice. Comparing
+ * them as raw strings made an owner read as FOREIGN against its own
+ * installation, and made two directories carrying one vault's UUID land in
+ * different groups, walking straight past duplicate detection. Both were found
+ * by the adversarial review of this release, 2026-09-09.
+ *
+ * Returns `null` for anything that is not a UUID, so a caller cannot
+ * accidentally compare two non-identifiers and find them equal.
+ */
+export function canonicalUuid(value) {
+  return isValidUuid(value) ? value.toLowerCase() : null;
+}
+
+/** True when two values are the same UUID, however each was spelled. */
+export function sameUuid(a, b) {
+  const left = canonicalUuid(a);
+  return left !== null && left === canonicalUuid(b);
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -152,6 +175,22 @@ export function validateVaultIdentity(value) {
     };
   }
 
+  const forbidden = forbiddenFieldsIn(value);
+  if (forbidden.length > 0) {
+    // REFUSED, not merely stripped. Stripping would make the file valid again
+    // and quietly rewrite what somebody put there — including, in the case that
+    // matters, a credential this format promises never to hold. Naming the
+    // fields lets a person decide.
+    issues.push({
+      kind: 'identity-forbidden-field',
+      severity: 'error',
+      message:
+        `This vault's identity file carries ${forbidden.join(', ')}, which this format excludes by ` +
+        'design (a credential, a port or a path here would be a second source of truth, replicated ' +
+        'by synchronisation). It has NOT been rewritten — remove the field deliberately.',
+    });
+  }
+
   if (issues.length > 0) return { valid: false, identity: null, issues };
 
   return {
@@ -172,15 +211,32 @@ export function validateVaultIdentity(value) {
 
 const KNOWN_FIELDS = new Set(['schemaVersion', 'vaultId', 'owner', 'createdAt']);
 
+/**
+ * Fields this format promises never to hold. Preserving an unknown field is
+ * right — a newer router may have written it — but "unknown" cannot be allowed
+ * to smuggle in the four things §6.2 excludes by name. Without this, a
+ * hand-edited or hostile identity carrying an `apiKey` was validated,
+ * preserved, and written back out by every ownership change, and the promise
+ * "this file contains no credential" was true only of files this router had
+ * generated itself (adversarial review of this release, finding 12).
+ */
+const FORBIDDEN_FIELDS = new Set(['apiKey', 'apikey', 'api_key', 'port', 'insecurePort', 'absolutePath', 'path']);
+
 function extraFields(value) {
   const extra = {};
   for (const key of Object.keys(value)) {
     if (KNOWN_FIELDS.has(key)) continue;
     // `__proto__` as a data key must never reach an object literal's prototype.
     if (key === '__proto__') continue;
+    if (FORBIDDEN_FIELDS.has(key)) continue;
     extra[key] = value[key];
   }
   return extra;
+}
+
+/** The forbidden fields this value carries, if any. */
+function forbiddenFieldsIn(value) {
+  return Object.keys(value).filter((key) => FORBIDDEN_FIELDS.has(key));
 }
 
 /**

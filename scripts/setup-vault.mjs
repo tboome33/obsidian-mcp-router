@@ -89,7 +89,7 @@ import { createVaultIdentity } from '../src/helpers/vault-identity.mjs';
 import { assertVaultPortOwnership, VaultOwnershipError } from '../src/helpers/vault-ownership.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from '../src/vault-identity-store.mjs';
 import { planRegistryMigration } from '../src/helpers/registry-migration.mjs';
-import { shortFingerprint, planOwnershipChange } from '../src/helpers/vault-lifecycle.mjs';
+import { shortFingerprint, planOwnershipChange, findSharedKeyGroups } from '../src/helpers/vault-lifecycle.mjs';
 import {
   observeVaults,
   applyRegistryMigration,
@@ -4973,22 +4973,50 @@ if (args[0] === '--check-ports') {
   const asJson = args.includes('--json');
   const cfg = loadConfigReadOnly();
   const findings = detectPortCollisions(cfg, { onDisk: buildOnDiskPortMap(cfg) });
+
+  // THE FLEET-WIDE CREDENTIAL CHECK LIVES HERE, and this is where it was
+  // missing. The setup path compares the vault it is working on against the
+  // others, which never notices two historic vaults that already share a key
+  // and that nobody is setting up today — so "compared across every registered
+  // vault" was true of one code path and not of the fleet (adversarial review
+  // of this release, finding 7). `--check-ports` is the fleet health question;
+  // it is the right place to ask it. Read-only, truncated digests, no rotation.
+  const sharedKeyGroups = findSharedKeyGroups(
+    registeredVaultPaths(cfg).map((vaultPath) => {
+      const data = readRestApiData(vaultPath);
+      return {
+        path: vaultPath,
+        name: vaultSlug(cfg, vaultPath),
+        keyFingerprint: data?.apiKey ? keyFingerprintOf(data.apiKey) : null,
+      };
+    }),
+  );
+
   if (asJson) {
     console.log(JSON.stringify({
       configPath: CONFIG_PATH,
       vaults: registeredVaultPaths(cfg).length,
       summary: summarizePortCollisions(findings),
       findings,
+      sharedKeyGroups,
     }, null, 2));
-  } else if (findings.length === 0) {
-    ok(`No port collisions across ${registeredVaultPaths(cfg).length} registered vault(s) — HTTPS and plaintext spaces both clean.`);
+  } else if (findings.length === 0 && sharedKeyGroups.length === 0) {
+    ok(`No port collisions across ${registeredVaultPaths(cfg).length} registered vault(s) — HTTPS and plaintext spaces both clean, and no two vaults share a credential.`);
   } else {
-    console.log(c('bold', c('red', `Port problems — ${summarizePortCollisions(findings)}:\n`)));
-    for (const f of findings) {
-      console.log((f.severity === 'error' ? c('red', '✗ ') : c('yellow', '! ')) + f.message + '\n');
+    if (findings.length > 0) {
+      console.log(c('bold', c('red', `Port problems — ${summarizePortCollisions(findings)}:\n`)));
+      for (const f of findings) {
+        console.log((f.severity === 'error' ? c('red', '✗ ') : c('yellow', '! ')) + f.message + '\n');
+      }
+      info('Repair the registry side with:  node scripts/setup-vault.mjs --sync-port-registry');
     }
-    info('Repair the registry side with:  node scripts/setup-vault.mjs --sync-port-registry');
+    for (const group of sharedKeyGroups) {
+      console.log(c('yellow', '! ') + group.message + '\n');
+    }
   }
+  // A shared credential does not fail the check: it is an anomaly to look at,
+  // not a broken fleet, and exiting non-zero on a legitimately synchronised
+  // replica would make this command useless on Roland's own machine.
   process.exit(findings.some((f) => f.severity === 'error') ? 1 : 0);
 }
 

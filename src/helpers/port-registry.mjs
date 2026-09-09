@@ -55,6 +55,7 @@
 import { cmp } from './total-order.mjs';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { registeredVaultPaths, vaultRecordsOf, ensurePortRegistryContainer } from './vault-slug.mjs';
+import { sameUuid } from './vault-identity.mjs';
 import {
   DEFAULT_PORT_POLICY,
   orderedPairCandidates,
@@ -134,6 +135,31 @@ export function setVaultPortEntry(cfg, vaultPath, entry, { vaultId = null, owner
       (r) => r.path === vaultPath || normalizePathForCompare(r.path) === wanted,
     );
     key = existing ? existing.vaultId : `unstamped:${wanted}`;
+  }
+
+  // THE UUID MUST NOT ALREADY BELONG TO A DIFFERENT DIRECTORY.
+  //
+  // Without this, copying a vault folder-and-all and running setup on the copy
+  // reassigns the original's record to the copy's path — the original vanishes
+  // from the registry, silently, and the "a duplicate UUID blocks" guarantee
+  // turns out to hold only inside the migration. Distinct ports and a distinct
+  // key on the copy are enough to slip past every other check
+  // (adversarial review of this release, finding 2).
+  // `sameUuid`, NOT two canonical forms compared with `===`: `canonicalUuid`
+  // answers `null` for anything that is not a UUID, and `null === null` is
+  // true — so comparing the canonical forms would have found two *unstamped*
+  // placeholder keys "equal" and refused a perfectly ordinary write. Caught
+  // while writing this guard, one minute after writing it.
+  const claimed = records.find(
+    (r) => sameUuid(r.vaultId, key) && normalizePathForCompare(r.path) !== wanted,
+  );
+  if (claimed) {
+    throw new Error(
+      `Refusing to record ${vaultPath} under ${key}: that identity is already registered for ` +
+      `${claimed.path}. Two directories carrying one UUID is a replica, a move or an independent ` +
+      'copy — three different answers, and none of them is "overwrite the other one". Nothing was ' +
+      'changed.',
+    );
   }
   const previous = cfg.vaultsById[key] && typeof cfg.vaultsById[key] === 'object' ? cfg.vaultsById[key] : {};
   cfg.vaultsById[key] = {

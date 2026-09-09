@@ -43,7 +43,7 @@
  * machine that does not own it.
  */
 
-import { isValidUuid } from './vault-identity.mjs';
+import { isValidUuid, sameUuid } from './vault-identity.mjs';
 
 /** Refusal reasons, as a closed set so callers can branch without string-matching. */
 export const OWNERSHIP_VERDICT = Object.freeze({
@@ -93,7 +93,10 @@ export function classifyVaultOwnership({ identity, installId } = {}) {
   if (!isValidUuid(owner.installId)) {
     return { verdict: OWNERSHIP_VERDICT.INVALID, allowed: false, ownerHostname: null };
   }
-  if (owner.installId === installId) {
+  // CANONICAL COMPARISON, never raw strings: RFC 4122 hex is case-insensitive
+  // and the validator accepts both cases, so an owner written in upper case
+  // read as FOREIGN against the very installation that wrote it.
+  if (sameUuid(owner.installId, installId)) {
     return { verdict: OWNERSHIP_VERDICT.OWNED, allowed: true, ownerHostname: owner.hostname ?? null };
   }
   return { verdict: OWNERSHIP_VERDICT.FOREIGN, allowed: false, ownerHostname: owner.hostname ?? null };

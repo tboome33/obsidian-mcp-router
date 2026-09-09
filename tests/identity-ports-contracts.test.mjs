@@ -206,16 +206,25 @@ describe('no new surface prints a credential', () => {
     // Invariant I3 at the shape level rather than at each call site: the
     // serializer decides what a written identity contains, so a field added by
     // accident somewhere else cannot reach the file.
-    const { serializeVaultIdentity, createVaultIdentity } = await import('../src/helpers/vault-identity.mjs');
+    const { serializeVaultIdentity, createVaultIdentity, validateVaultIdentity } = await import('../src/helpers/vault-identity.mjs');
     const identity = createVaultIdentity({
       randomUUID: () => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
       owner: { installId: '9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f', hostname: 'X' },
     });
-    const written = serializeVaultIdentity({ ...identity, apiKey: 'SECRET-VALUE' });
-    // An unknown field IS preserved (a newer router may have written it) — the
-    // guarantee is not "nothing else may exist", it is that nothing in the
-    // router ever puts a key there. So: assert the writer never adds one.
-    assert.ok(written.includes('SECRET-VALUE'), 'unknown fields are preserved by design');
+    // An identity carrying a forbidden field is REFUSED, not sanitised. Until
+    // the adversarial review of this release it was merely "unknown, therefore
+    // preserved", so a hand-edited or hostile file could hold a credential and
+    // every ownership change would faithfully copy it forward — making claim 10
+    // true only of files this router had generated itself.
+    const { valid, issues } = validateVaultIdentity({ ...identity, apiKey: 'SECRET-VALUE' });
+    assert.equal(valid, false, 'an identity carrying an apiKey was accepted');
+    assert.ok(issues.some((i) => i.kind === 'identity-forbidden-field'));
+    for (const field of ['port', 'insecurePort', 'absolutePath', 'path']) {
+      assert.equal(validateVaultIdentity({ ...identity, [field]: 'x' }).valid, false, field);
+    }
+    // A genuinely unknown field is still preserved: a newer router may have
+    // written it, and this version must not delete what it cannot interpret.
+    assert.equal(validateVaultIdentity({ ...identity, routingPolicy: { a: 1 } }).valid, true);
     assert.ok(!serializeVaultIdentity(identity).includes('apiKey'));
   });
 
@@ -234,10 +243,21 @@ describe('no new surface prints a credential', () => {
       'src/registry-migration-store.mjs',
       'src/vault-identity-store.mjs',
     ];
+    // ONE EXEMPTION, BY EXACT LINE. `vault-identity.mjs` names the field in a
+    // REFUSAL list — the set of keys an identity file may never carry, added
+    // after the adversarial review found that an `apiKey` smuggled into an
+    // identity was validated, preserved and written back out. Naming a field in
+    // order to reject it is the opposite of reading it, and exempting the file
+    // (or loosening the pattern) would put the whole scan back to a heuristic.
+    const ALLOWED = new Set([
+      "src/helpers/vault-identity.mjs|const FORBIDDEN_FIELDS = new Set(['apiKey', 'apikey', 'api_key', 'port', 'insecurePort', 'absolutePath', 'path']);",
+    ]);
     for (const rel of NEW_HELPERS) {
       const source = await fsp.readFile(path.join(REPO_ROOT, rel), 'utf8');
-      const code = source.split(/\r?\n/).filter((l) => !isCommentLine(l)).join('\n');
-      assert.ok(!/\bapiKey\b/.test(code), `${rel} reads or writes an apiKey`);
+      const offenders = source.split(/\r?\n/).filter(
+        (l) => !isCommentLine(l) && /\bapiKey\b/.test(l) && !ALLOWED.has(`${rel}|${l.trim()}`),
+      );
+      assert.deepEqual(offenders, [], `${rel} reads or writes an apiKey: ${offenders.join(' | ')}`);
     }
   });
 });

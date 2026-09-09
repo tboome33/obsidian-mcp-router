@@ -312,6 +312,13 @@ export function vaultRecordsOf(cfg) {
     // yield nothing rather than a vault whose path is `undefined`.
     if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
     if (typeof record.path !== 'string' || record.path.length === 0) continue;
+    // Anything this version does not know about is carried in `extra` rather
+    // than dropped. A newer router may have written it, and a rebuild from
+    // three named fields is how a nested extension disappears without anybody
+    // noticing — spreading the top-level configuration preserves top-level
+    // keys and says nothing about the inside of a record (adversarial review of
+    // this release, finding 10).
+    const { path: _p, ports: _ports, owner: _owner, ...extra } = record;
     records.push({
       vaultId,
       path: record.path,
@@ -321,6 +328,7 @@ export function vaultRecordsOf(cfg) {
       owner: record.owner && typeof record.owner === 'object' && !Array.isArray(record.owner)
         ? record.owner
         : null,
+      extra,
     });
   }
   return records;

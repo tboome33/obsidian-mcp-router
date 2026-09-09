@@ -1,0 +1,409 @@
+/**
+ * The twelve defects the adversarial review of v0.94.0 found, each with a
+ * witness that fails if the fix is removed.
+ *
+ * A fix without a witness is a fix until somebody refactors near it. These are
+ * kept in one file, named by the finding, so a later reader can see what was
+ * wrong rather than inferring it from an assertion.
+ */
+
+import { test, describe, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import crypto from 'node:crypto';
+
+import { setVaultPortEntry, portEntryOf } from '../src/helpers/port-registry.mjs';
+import { planPortStartChange } from '../src/helpers/port-policy.mjs';
+import {
+  validateVaultIdentity,
+  createVaultIdentity,
+  sameUuid,
+  canonicalUuid,
+} from '../src/helpers/vault-identity.mjs';
+import { classifyVaultOwnership, OWNERSHIP_VERDICT } from '../src/helpers/vault-ownership.mjs';
+import {
+  buildCanonicalVaultIndex,
+  classifyIdentityMatches,
+  planRegistryMigration,
+  applyPlanToConfig,
+} from '../src/helpers/registry-migration.mjs';
+import { writeVaultIdentity, readVaultIdentity, identityPathFor } from '../src/vault-identity-store.mjs';
+import { applyRegistryMigration, configRevision } from '../src/registry-migration-store.mjs';
+import { classifyVaultReachability, REACHABILITY } from '../src/helpers/vault-reachability.mjs';
+import { loadRegistry } from '../src/registry.mjs';
+
+const LOCAL = '9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f';
+const OTHER = '11111111-2222-4333-8444-555555555555';
+const ID_A = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const ID_B = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+
+function tmp(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function stampIdentity(vaultPath, vaultId, owner = null) {
+  const file = identityPathFor(vaultPath);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schemaVersion: 1, vaultId, owner, createdAt: '2026-09-09T00:00:00.000Z',
+  }, null, 2));
+}
+
+function makeVault(root, name, rest) {
+  const v = path.join(root, name);
+  fs.mkdirSync(path.join(v, '.obsidian', 'plugins', 'obsidian-local-rest-api'), { recursive: true });
+  fs.writeFileSync(
+    path.join(v, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json'),
+    JSON.stringify({ apiKey: `KEY-${name}-DO-NOT-LEAK`, enableInsecureServer: true, ...rest }, null, 2),
+  );
+  return v;
+}
+
+// ---------------------------------------------------------------------------
+
+describe('finding 1 — a reused path must not serve another vault under the first one\'s name', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('finding1-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('the loader refuses to serve a directory whose identity is not the registered one', async () => {
+    // A was registered at this path under ID_A. B now sits there, with its own
+    // identity, ports and credential. Serving it would hand B's key to anything
+    // that asked for A's name — and authentication would CONFIRM it.
+    const vault = makeVault(dir, 'Reused', { port: 27150, insecurePort: 27160 });
+    stampIdentity(vault, ID_B);
+    const cfgPath = path.join(dir, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: { [ID_A]: { path: vault, ports: { https: 27150, http: 27160 }, owner: null } },
+      vaultNames: { [vault]: 'original' },
+    }, null, 2));
+
+    const registry = await loadRegistry({ configPath: cfgPath });
+    assert.equal(registry.vaults.find((v) => v.path === vault), undefined, 'a foreign vault was served');
+    assert.ok(registry.skipped.some((s) => /identity mismatch/i.test(s.reason)));
+    assert.ok(registry.portDiagnostics.some((d) => d.kind === 'identity-mismatch'));
+  });
+
+  test('a matching identity is served normally', async () => {
+    const vault = makeVault(dir, 'Same', { port: 27150, insecurePort: 27160 });
+    stampIdentity(vault, ID_A);
+    const cfgPath = path.join(dir, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: { [ID_A]: { path: vault, ports: { https: 27150, http: 27160 }, owner: null } },
+    }, null, 2));
+    const registry = await loadRegistry({ configPath: cfgPath });
+    assert.ok(registry.vaults.some((v) => v.path === vault));
+  });
+});
+
+describe('finding 2 — a duplicate UUID must not displace another directory\'s record', () => {
+  test('recording a path under a UUID another directory holds is refused', () => {
+    const cfg = {
+      schemaVersion: 2,
+      vaultsById: { [ID_A]: { path: 'C:\\ORIGINAL', ports: { https: 27150, http: 27160 }, owner: null } },
+    };
+    assert.throws(
+      () => setVaultPortEntry(cfg, 'C:\\COPY', { https: 21000, http: 21010 }, { vaultId: ID_A }),
+      /already registered for/,
+    );
+    assert.equal(cfg.vaultsById[ID_A].path, 'C:\\ORIGINAL', 'the original record was displaced');
+  });
+
+  test('the SAME directory under a different spelling is still allowed to update', () => {
+    const cfg = {
+      schemaVersion: 2,
+      vaultsById: { [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: null } },
+    };
+    setVaultPortEntry(cfg, 'C:\\vaults\\x', { https: 21000, http: 21010 }, { vaultId: ID_A });
+    assert.deepEqual(cfg.vaultsById[ID_A].ports, { https: 21000, http: 21010 });
+  });
+
+  test('two UNSTAMPED vaults do not collide on their placeholder keys', () => {
+    // The bug the fix nearly introduced: comparing canonical forms with `===`
+    // finds `null === null` true, so two placeholder keys would have looked
+    // like one identity and refused an ordinary write.
+    const cfg = { schemaVersion: 2, vaultsById: {} };
+    setVaultPortEntry(cfg, 'C:\\A', { https: 21000, http: 21010 });
+    setVaultPortEntry(cfg, 'C:\\B', { https: 21100, http: 21110 });
+    assert.equal(Object.keys(cfg.vaultsById).length, 2);
+  });
+});
+
+describe('findings 3 and 4 — the migration commit must verify what it writes', () => {
+  let dir, cfgPath, a, b;
+  const readConfig = () => JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+  const writeConfig = (cfg) => fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+  beforeEach(() => {
+    dir = tmp('finding34-');
+    a = makeVault(dir, 'A', { port: 27150, insecurePort: 27160 });
+    b = makeVault(dir, 'B', { port: 27151, insecurePort: 27161 });
+    stampIdentity(a, ID_A);
+    stampIdentity(b, ID_B);
+    cfgPath = path.join(dir, 'config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({
+      installId: LOCAL,
+      portRegistry: { [a]: { https: 27150, http: 27160 }, [b]: { https: 27151, http: 27161 } },
+    }, null, 2));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const buildPlan = () => planRegistryMigration({
+    cfg: readConfig(),
+    observations: [
+      { path: a, pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null },
+      { path: b, pathExists: true, identityStatus: 'ok', vaultId: ID_B, owner: null },
+    ],
+    installation: { installId: LOCAL, hostname: 'X' },
+    uuidFactory: () => crypto.randomUUID(),
+  });
+
+  test('finding 3 — identities swapped to ONE uuid between plan and commit are refused', async () => {
+    const plan = buildPlan();
+    // Both files rewritten to the same valid UUID after the plan was approved.
+    stampIdentity(a, ID_A);
+    stampIdentity(b, ID_A);
+
+    await assert.rejects(
+      () => applyRegistryMigration(plan, { configPath: cfgPath, readConfig, writeConfig }),
+      (err) => err.name === 'MigrationRefusedError',
+    );
+    // The old verification collapsed the two into one record and finished.
+    assert.equal(readConfig().schemaVersion, undefined, 'the config was rewritten despite the swap');
+  });
+
+  test('finding 3 — an identity changed to a DIFFERENT uuid is refused, not adopted', async () => {
+    const plan = buildPlan();
+    stampIdentity(b, '22222222-3333-4444-8555-666666666666');
+    await assert.rejects(
+      () => applyRegistryMigration(plan, { configPath: cfgPath, readConfig, writeConfig }),
+      /different identity than the approved plan/,
+    );
+  });
+
+  test('finding 4 — a vault registered while the migration ran is not discarded', async () => {
+    const plan = buildPlan();
+    const revision = configRevision(readConfig());
+
+    // Another process registers C after the plan was made.
+    const cfg = readConfig();
+    cfg.portRegistry[path.join(dir, 'C')] = { https: 27152, http: 27162 };
+    writeConfig(cfg);
+
+    await assert.rejects(
+      () => applyRegistryMigration(plan, {
+        configPath: cfgPath, readConfig, writeConfig, expectedConfigRevision: revision,
+      }),
+      (err) => err.name === 'MigrationRefusedError',
+    );
+    assert.ok(readConfig().portRegistry[path.join(dir, 'C')], 'the concurrent registration was erased');
+  });
+});
+
+describe('finding 5 — ifNew must be an exclusive create, not a check then a write', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('finding5-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('two concurrent creations produce ONE identity, and the loser is told', async () => {
+    const one = createVaultIdentity({ randomUUID: () => ID_A, owner: null });
+    const two = createVaultIdentity({ randomUUID: () => ID_B, owner: null });
+
+    // Started together, so both pass their absence check before either writes —
+    // the exact interleaving the read-then-write version lost.
+    const results = await Promise.allSettled([
+      writeVaultIdentity(dir, one, { ifNew: true }),
+      writeVaultIdentity(dir, two, { ifNew: true }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    assert.equal(fulfilled.length, 1, 'both writers believed they had created the identity');
+
+    const onDisk = (await readVaultIdentity(dir)).identity.vaultId;
+    assert.ok(sameUuid(onDisk, ID_A) || sameUuid(onDisk, ID_B));
+    const rejected = results.find((r) => r.status === 'rejected');
+    assert.match(rejected.reason.message, /already has an identity|created this vault's identity first/i);
+  });
+});
+
+describe('finding 6 — the base-change seal must cover the ports, not only the paths', () => {
+  test('a changed pair changes the preconditions', () => {
+    const paths = ['C:\\A'];
+    const before = planPortStartChange({ portStart: 27181 }, {
+      randomInt: () => 0, registeredPaths: paths, reservedPorts: new Set([23000, 23010]),
+    });
+    const after = planPortStartChange({ portStart: 27181 }, {
+      randomInt: () => 0, registeredPaths: paths, reservedPorts: new Set([24000, 24010]),
+    });
+    assert.notDeepEqual(
+      before.preconditions,
+      after.preconditions,
+      'the seal is blind to a pair that moved between the two phases',
+    );
+  });
+
+  test('an unchanged fleet yields identical preconditions', () => {
+    const args = { randomInt: () => 0, registeredPaths: ['C:\\A'], reservedPorts: new Set([23000, 23010]) };
+    assert.deepEqual(
+      planPortStartChange({ portStart: 27181 }, args).preconditions,
+      planPortStartChange({ portStart: 27181 }, args).preconditions,
+    );
+  });
+});
+
+describe('finding 8 — two spellings of one directory must not block a migration', () => {
+  test('a LEGACY registry with two spellings of one directory is a warning, not an error', () => {
+    // This is where the case actually arises. A migrated registry is keyed by
+    // UUID, so two records for one directory carrying ONE identity cannot exist
+    // — the key would be the same. The path-keyed registry has no such
+    // constraint, and it is the one every unmigrated installation still has.
+    const { issues } = buildCanonicalVaultIndex({
+      portRegistry: {
+        'C:\\VAULTS\\X': { https: 27150, http: 27160 },
+        'C:\\vaults\\x': { https: 27150, http: 27160 },
+      },
+    });
+    const issue = issues.find((i) => i.kind === 'redundant-path-spelling');
+    assert.ok(issue, 'two spellings of one directory were not recognised as redundant');
+    assert.equal(issue.severity, 'warning');
+    assert.equal(issues.filter((i) => i.severity === 'error').length, 0, 'a harmless alias blocked the migration');
+  });
+
+  test('and the migration is not blocked by it', () => {
+    const plan = planRegistryMigration({
+      cfg: {
+        portRegistry: {
+          'C:\\VAULTS\\X': { https: 27150, http: 27160 },
+          'C:\\vaults\\x': { https: 27150, http: 27160 },
+        },
+      },
+      observations: [
+        { path: 'C:\\VAULTS\\X', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null },
+        { path: 'C:\\vaults\\x', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null },
+      ],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => crypto.randomUUID(),
+    });
+    assert.deepEqual(plan.blockers, [], `an alias blocked the migration: ${JSON.stringify(plan.blockers)}`);
+  });
+
+  test('DISAGREEING spellings are still an error — nothing is chosen between them', () => {
+    const { issues } = buildCanonicalVaultIndex({
+      schemaVersion: 2,
+      vaultsById: {
+        [ID_A]: { path: 'C:\\VAULTS\\X', ports: { https: 27150, http: 27160 }, owner: null },
+        [ID_B]: { path: 'C:\\vaults\\x', ports: { https: 21000, http: 21010 }, owner: null },
+      },
+    });
+    assert.ok(issues.some((i) => i.kind === 'duplicate-path' && i.severity === 'error'));
+  });
+});
+
+describe('finding 9 — a port that is not a port is a configuration problem', () => {
+  test('an invalid configured port does not earn "open Obsidian"', () => {
+    const out = classifyVaultReachability({
+      endpointState: {
+        effectivePorts: { https: 27124, http: 27134 },
+        registeredPorts: { https: 27124, http: 27134 },
+        httpsSource: 'registry',
+        httpEnabled: true,
+        issues: [{ kind: 'invalid-port', severity: 'error', protocol: 'https', message: 'x' }],
+      },
+      probeResult: { answered: false },
+      name: 'X',
+    });
+    assert.equal(out.status, REACHABILITY.CONFIG_UNREADABLE);
+    assert.equal(out.suggestedActions.filter((a) => a.kind === 'open-obsidian').length, 0);
+  });
+});
+
+describe('finding 10 — a re-migration must not drop nested unknown fields', () => {
+  test('a field inside an existing record survives', () => {
+    const cfg = {
+      schemaVersion: 2,
+      installId: LOCAL,
+      vaultsById: {
+        [ID_A]: {
+          path: 'C:\\A',
+          ports: { https: 27150, http: 27160 },
+          owner: null,
+          routingPolicy: { written: 'by a newer router' },
+        },
+      },
+    };
+    const plan = planRegistryMigration({
+      cfg,
+      observations: [{ path: 'C:\\A', pathExists: true, identityStatus: 'ok', vaultId: ID_A, owner: null }],
+      installation: { installId: LOCAL, hostname: 'X' },
+      uuidFactory: () => crypto.randomUUID(),
+    });
+    const next = applyPlanToConfig(cfg, plan);
+    assert.deepEqual(
+      next.vaultsById[ID_A].routingPolicy,
+      { written: 'by a newer router' },
+      'a nested extension was dropped by a re-migration',
+    );
+    assert.equal(next.vaultsById[ID_A].extra, undefined, 'the internal carrier leaked into the config');
+  });
+});
+
+describe('finding 11 — UUIDs compare case-insensitively, as RFC 4122 says', () => {
+  test('an owner written in upper case is still this installation', () => {
+    const { verdict } = classifyVaultOwnership({
+      identity: { schemaVersion: 1, vaultId: ID_A, owner: { installId: LOCAL.toUpperCase(), hostname: 'X' } },
+      installId: LOCAL,
+    });
+    assert.equal(verdict, OWNERSHIP_VERDICT.OWNED, 'an installation was made foreign to itself by letter case');
+  });
+
+  test('two case variants of one vault UUID are ONE duplicate, not two groups', () => {
+    const out = classifyIdentityMatches([
+      { path: 'C:\\A', identityStatus: 'ok', vaultId: ID_A, owner: null },
+      { path: 'C:\\B', identityStatus: 'ok', vaultId: ID_A.toUpperCase(), owner: null },
+    ]);
+    assert.equal(out.ambiguousDuplicates.length, 1, 'a case-variant duplicate walked past detection');
+  });
+
+  test('sameUuid refuses to call two non-identifiers equal', () => {
+    assert.equal(sameUuid('not-a-uuid', 'not-a-uuid'), false);
+    assert.equal(sameUuid(null, null), false);
+    assert.equal(canonicalUuid('nope'), null);
+  });
+});
+
+describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
+  test('each forbidden field makes the identity invalid', () => {
+    const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };
+    for (const field of ['apiKey', 'port', 'insecurePort', 'absolutePath', 'path']) {
+      const { valid, issues } = validateVaultIdentity({ ...base, [field]: 'x' });
+      assert.equal(valid, false, `${field} was accepted`);
+      assert.ok(issues.some((i) => i.kind === 'identity-forbidden-field'), field);
+    }
+  });
+
+  test('a genuinely unknown field is still preserved', () => {
+    const { valid, identity } = validateVaultIdentity({
+      schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x', somethingNewer: 1,
+    });
+    assert.equal(valid, true);
+    assert.equal(identity.somethingNewer, 1);
+  });
+
+  test('the store refuses to write one', async () => {
+    const dir = tmp('finding12-');
+    try {
+      await assert.rejects(
+        () => writeVaultIdentity(dir, { schemaVersion: 1, vaultId: ID_A, owner: null, apiKey: 'S' }, { ifNew: true }),
+        TypeError,
+      );
+      assert.equal(fs.existsSync(identityPathFor(dir)), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

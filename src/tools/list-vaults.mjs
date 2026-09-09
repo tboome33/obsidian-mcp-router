@@ -168,7 +168,13 @@ export async function listVaults(registry, sharedConfig = null) {
           endpointState: {
             effectivePorts: { https: portFromBaseUrl(v.baseUrl), http: v.insecurePort ?? null },
             registeredPorts: registeredPortsFor(registry, v.path),
-            httpsSource: 'disk',
+            // DERIVED, never asserted. This said `'disk'` for every vault,
+            // including registry fallbacks and REMOTE registrations that have
+            // no local `data.json` at all — an unsupported claim about local
+            // configuration, and one that could attach local-opening advice to
+            // a remote failure (adversarial review, finding 9). A vault is
+            // "disk-sourced" only when the loader actually read one.
+            httpsSource: v.type === 'local' && v.httpEnabled !== null ? 'disk' : 'registry',
             httpEnabled: v.httpEnabled ?? null,
             issues: (registry.portDiagnostics || []).filter(
               (d) => d.path === v.path && d.kind !== 'port-drift' && d.kind !== 'port-unrecorded',

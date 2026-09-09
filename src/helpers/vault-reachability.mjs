@@ -98,14 +98,23 @@ export function classifyVaultReachability({
     return { status: REACHABILITY.COLLISION, diagnostics, suggestedActions };
   }
 
-  if (identityStatus === 'invalid' || identityStatus === 'unreadable'
-    || (endpointState?.issues ?? []).some((i) => i.kind === 'rest-data-invalid' || i.kind === 'rest-data-unreadable')) {
+  // `invalid-port` belongs here too. It was omitted, so a `data.json` carrying
+  // `port: 70000` fell through to the unreachable branch and was answered with
+  // "open Obsidian" — which cannot repair a port the plugin will not bind
+  // either (adversarial review of this release, finding 9). A configuration
+  // that is present and wrong is a configuration problem, whatever the shape of
+  // the wrongness.
+  const unusableConfig = (endpointState?.issues ?? []).some(
+    (i) => i.kind === 'rest-data-invalid' || i.kind === 'rest-data-unreadable' || i.kind === 'invalid-port',
+  );
+  if (identityStatus === 'invalid' || identityStatus === 'unreadable' || unusableConfig) {
     diagnostics.push({
       kind: 'config-unreadable',
       severity: 'error',
       message:
-        `${name}'s local configuration could not be read or understood. Nothing about its ports can ` +
-        'be asserted, and nothing was written.',
+        `${name}'s local configuration could not be read or understood — a file that is missing or ` +
+        'damaged, or a port that is not a port. Nothing about its ports can be asserted, and ' +
+        'nothing was written. Opening a window does not repair a configuration file.',
     });
     return { status: REACHABILITY.CONFIG_UNREADABLE, diagnostics, suggestedActions };
   }

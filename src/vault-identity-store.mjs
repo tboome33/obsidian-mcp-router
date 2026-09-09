@@ -189,6 +189,32 @@ export async function writeVaultIdentity(vaultPath, identity, {
         { kind: 'identity-exists', actualRevision: current.revision },
       );
     }
+    // AND THE CHECK ABOVE IS NOT THE GUARANTEE. Read-then-write leaves a window
+    // in which two cooperating writers on THIS machine — two sessions, a CLI
+    // beside a server — both see "absent" and both write, the second replacing
+    // the first, after the first has already recorded the displaced UUID
+    // elsewhere. An atomic REPLACE does not provide create-if-absent semantics.
+    // The exclusive-create flag does: the kernel refuses the second opener.
+    // (Adversarial review of this release, finding 5.)
+    await fs.mkdir(dir, { recursive: true });
+    try {
+      const handle = await fs.open(file, 'wx');
+      try {
+        await handle.writeFile(serializeVaultIdentity(identity), 'utf8');
+      } finally {
+        await handle.close();
+      }
+    } catch (err) {
+      if (err?.code === 'EEXIST') {
+        throw new IdentityPreconditionError(
+          `Refusing ${operation}: another writer created this vault's identity first. Nothing was ` +
+          'overwritten — re-read it and decide again.',
+          { kind: 'identity-exists' },
+        );
+      }
+      throw err;
+    }
+    return { revision: contentSha256(serializeVaultIdentity(identity)), backupPath: null, created: true };
   } else if (current.status === IDENTITY_STATUS.ABSENT) {
     throw new IdentityPreconditionError(
       `Refusing ${operation}: the identity file expected at revision ${expectedRevision} is gone.`,
@@ -208,15 +234,17 @@ export async function writeVaultIdentity(vaultPath, identity, {
   // Back up whatever is there before replacing it, INCLUDING a file that failed
   // to parse: a damaged identity may still be the only trace of a UUID other
   // machines reference, and "it was broken anyway" is not a reason to destroy it.
+  // `ifNew` returned above, through the exclusive-create path. Everything from
+  // here is a conditional REPLACE.
   let backupPath = null;
-  if (!ifNew && current.status !== IDENTITY_STATUS.ABSENT) {
+  if (current.status !== IDENTITY_STATUS.ABSENT) {
     backupPath = await backUp(file, now);
   }
 
   await fs.mkdir(dir, { recursive: true });
   writeFileAtomicSync(file, serialized);
 
-  return { revision: contentSha256(serialized), backupPath, created: ifNew };
+  return { revision: contentSha256(serialized), backupPath, created: false };
 }
 
 /**

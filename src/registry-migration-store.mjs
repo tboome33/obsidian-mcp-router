@@ -41,7 +41,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 
 import { writeFileAtomicSync } from './helpers/write-file-atomic.mjs';
-import { createVaultIdentity } from './helpers/vault-identity.mjs';
+import { createVaultIdentity, sameUuid, canonicalUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity, writeVaultIdentity, IDENTITY_STATUS } from './vault-identity-store.mjs';
 import { applyPlanToConfig } from './helpers/registry-migration.mjs';
 import { registeredVaultPaths } from './helpers/vault-slug.mjs';
@@ -209,9 +209,19 @@ export async function applyRegistryMigration(plan, {
   }
 
   // Re-read everything the plan assumed, before the configuration is rewritten.
+  //
+  // THE COMPARISON HERE USED TO BE TAUTOLOGICAL. It read
+  // `created.get(path) ?? observed.identity.vaultId` and then compared the
+  // observed id against that — which, for every vault that already carried an
+  // identity, compared a value to itself. The PLANNED id was never used, so an
+  // identity file swapped between the plan and this point passed silently; and
+  // because the results were keyed by the observed id, two paths that had been
+  // made to carry ONE uuid collapsed into a single record with no refusal.
+  // Measured by the adversarial review at 1 of 2 records surviving (finding 3).
   const verified = [];
   const vaultsById = {};
-  for (const [vaultId, record] of Object.entries(plan.vaultsById)) {
+  const seenIds = new Map();
+  for (const [plannedId, record] of Object.entries(plan.vaultsById)) {
     const observed = await readVaultIdentity(record.path);
     if (observed.status !== IDENTITY_STATUS.OK) {
       throw new MigrationRefusedError(
@@ -220,15 +230,31 @@ export async function applyRegistryMigration(plan, {
         { kind: 'verification-failed' },
       );
     }
-    const effectiveId = created.get(record.path) ?? observed.identity.vaultId;
-    if (observed.identity.vaultId !== effectiveId) {
+    // The identity on disk must be the one the PLAN named — the id this run
+    // created for it, or the id it already carried when the plan was made.
+    const expectedId = created.get(record.path) ?? plannedId;
+    if (!sameUuid(observed.identity.vaultId, expectedId)) {
       throw new MigrationRefusedError(
-        `Refusing to finish: ${record.path} carries a different UUID than this run created. ` +
-        'The configuration was NOT rewritten.',
+        `Refusing to finish: ${record.path} now carries a different identity than the approved plan ` +
+        'named. Something rewrote it in between. The configuration was NOT rewritten.',
         { kind: 'verification-failed' },
       );
     }
+    const key = canonicalUuid(observed.identity.vaultId);
+    if (seenIds.has(key)) {
+      throw new MigrationRefusedError(
+        `Refusing to finish: ${record.path} and ${seenIds.get(key)} both carry the UUID ` +
+        `${observed.identity.vaultId}. Writing them would keep only one of the two. Nothing was ` +
+        'rewritten.',
+        { kind: 'duplicate-identity-at-commit' },
+      );
+    }
+    seenIds.set(key, record.path);
     vaultsById[observed.identity.vaultId] = {
+      // Anything the record already carried that this version does not know
+      // about survives — a newer router may have written it, and rebuilding
+      // the record from three named fields is how a nested extension is lost.
+      ...(record.extra ?? {}),
       path: record.path,
       ports: record.ports,
       owner: observed.identity.owner ?? null,
@@ -236,8 +262,25 @@ export async function applyRegistryMigration(plan, {
     verified.push({ path: record.path, vaultId: observed.identity.vaultId });
   }
 
-  // The configuration, atomically, last.
-  const next = applyPlanToConfig(readConfig(), { ...plan, vaultsById });
+  // The configuration, atomically, last — AND ONLY IF IT HAS NOT MOVED.
+  //
+  // The final read used to be taken as the base and then have its entire vault
+  // registry replaced by the plan's, so a vault registered by another process
+  // while identities were being created simply vanished, and a pair updated in
+  // the meantime reverted. That is not the accepted "no distributed lock"
+  // limitation: the change was VISIBLE in the read and discarded without
+  // comparison (finding 4). The revision is re-checked here, against the same
+  // fingerprint the plan was made with.
+  const atCommit = readConfig();
+  if (expectedConfigRevision !== null && configRevision(atCommit) !== expectedConfigRevision) {
+    throw new MigrationRefusedError(
+      'Refusing to finish: the router configuration changed while this migration was running — a ' +
+      'vault was registered, removed or renumbered. The identities created so far are recorded in ' +
+      `${journalFile} and will be reused; re-run the preview and resume.`,
+      { kind: 'config-drift-at-commit' },
+    );
+  }
+  const next = applyPlanToConfig(atCommit, { ...plan, vaultsById });
   writeConfig(next);
 
   journal.finished = true;
