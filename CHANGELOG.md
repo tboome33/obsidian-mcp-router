@@ -10,6 +10,20 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.94.0] — 2026-09-09 — a vault that knows what it is, and ports that come from somewhere
+
+A vault now carries a UUID that survives being renamed, moved or renumbered; an installation
+carries one too, and only a vault's owner may rewrite its ports. New pairs are drawn from a band
+and bind-tested against the machine rather than taken from wherever the counter happened to be.
+The registry is keyed by identity instead of by path, through an explicit, sealed, resumable
+migration that changes no port, no key and no data.json.
+
+Specified by Codex, decided by Roland (seven decisions before any code), then attacked: six
+adversarial review rounds — 12 findings, then 5, 4, 3, 2, 0 blockers, every round after the first
+finding its defects inside the previous round's repairs — followed by a 22-probe penetration test
+that broke two more things the review rounds had not.
+
+
 ### Fixed
 
 - **The router read a vault's real HTTPS port off the disk, reported a drift about it, and went
@@ -161,8 +175,6 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   "carries a port that is not a port" into a single silence. They are now distinct diagnostics with
   distinct severities, because they call for different actions — and a corrupt file is never
   reported as an absent one.
-
-
 ## [0.93.2] — 2026-09-08 — the identity verdict, pen-tested: the clock that stopped at the headers
 
 The identity verdict of v0.93.0 was penetration-tested the same evening — rogue listeners on
@@ -8468,3 +8480,4 @@ First of three graphify-borrowed Tier 1 patches (see [`ROADMAP.md`](./ROADMAP.md
 ---
 
 Full per-version implementation notes (architecture decisions, alternatives considered, deferred Phase 2/3 work, etc.) live in [ROADMAP.md](./ROADMAP.md).
+
