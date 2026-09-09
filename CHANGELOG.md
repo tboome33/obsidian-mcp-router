@@ -135,6 +135,19 @@ For per-version detail (architecture decisions, alternatives considered, deferre
   port number was never a claim that anything is listening. `null` is not `false`: a remembered
   number may still be tried on a best-effort basis, but nothing may tell the user the link works.
 
+### Security
+
+- **An identity written in a NEWER format could be overwritten.** `validateVaultIdentity` refuses a
+  future `schemaVersion`, so such a file reached the replace path as "invalid" *with a perfectly
+  matching revision* — and was overwritten, destroying whatever a newer router had recorded. The
+  documentation promised the opposite in as many words. Found by this release's penetration test
+  (probe A5), after six rounds of adversarial review had not.
+- **The fingerprint helper printed twelve characters of whatever string it was handed.** Its whole
+  purpose is to make a value safe to print, and it assumed the caller had already made it safe — so a
+  caller passing a raw API key by mistake would have published a prefix of it, which invariant I3
+  forbids by name. It now verifies it was given a SHA-256 digest and reports "unavailable" otherwise;
+  the shared-credential *fact* is still reported either way (probe F1).
+
 ### Changed
 
 - **`--upgrade-insecure-server` no longer skips the checks when the registry happens to be empty.**

@@ -308,6 +308,20 @@ export async function writeVaultIdentity(vaultPath, identity, {
       `Refusing ${operation}: the identity file expected at revision ${expectedRevision} is gone.`,
       { kind: 'identity-vanished', expectedRevision },
     );
+  } else if (current.issues?.some((i) => i.kind === 'identity-future-schema')) {
+    // A FORMAT FROM THE FUTURE IS NEVER REPLACED, revision match or not.
+    //
+    // `validateVaultIdentity` refuses such a file, so it arrives here as
+    // "invalid" with a perfectly matching revision — and the replace path
+    // happily overwrote it, destroying whatever a newer router had recorded.
+    // The documentation promised the opposite in as many words. Found by the
+    // penetration test of this release (probe A5), not by any review round.
+    throw new IdentityPreconditionError(
+      `Refusing ${operation}: this vault's identity was written in a newer format than this router ` +
+      'understands. Overwriting it would destroy what the newer version recorded. Nothing was ' +
+      'changed — update the router, or move the file aside deliberately.',
+      { kind: 'identity-future-schema', expectedRevision, actualRevision: current.revision },
+    );
   } else if (current.revision !== expectedRevision) {
     throw new IdentityPreconditionError(
       `Refusing ${operation}: this vault's identity file changed since it was read — another ` +

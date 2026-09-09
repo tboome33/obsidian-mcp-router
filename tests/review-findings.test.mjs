@@ -776,6 +776,61 @@ describe('round 5, finding 1 — --init-reference must not swallow a reservation
   });
 });
 
+// ---------------------------------------------------------------------------
+// Penetration test — the two probes that broke, kept as regressions
+// ---------------------------------------------------------------------------
+
+describe('pen test A5 — an identity from a NEWER format is never overwritten', () => {
+  let dir;
+  beforeEach(() => { dir = tmp('pen-a5-'); });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  test('a matching revision does not authorise replacing a future schema', async () => {
+    // The documentation promised this in as many words, and the code did the
+    // opposite: `validateVaultIdentity` refuses a future version, so the file
+    // arrives at the replace path as "invalid" WITH a perfectly matching
+    // revision — and was cheerfully overwritten, destroying whatever a newer
+    // router had recorded. Neither the design review nor five rounds of
+    // repair-review found it; the penetration test did, by trying it.
+    const file = identityPathFor(dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ schemaVersion: 99, vaultId: ID_A, owner: null }, null, 2));
+    const before = fs.readFileSync(file, 'utf8');
+
+    const read = await readVaultIdentity(dir);
+    assert.equal(read.status, 'invalid');
+    await assert.rejects(
+      () => writeVaultIdentity(dir, createVaultIdentity({ randomUUID: () => ID_B, owner: null }), {
+        expectedRevision: read.revision,
+      }),
+      (err) => err.kind === 'identity-future-schema',
+    );
+    assert.equal(fs.readFileSync(file, 'utf8'), before, 'a newer format was overwritten');
+  });
+});
+
+describe('pen test F1 — a fingerprint helper must verify it was given a fingerprint', () => {
+  test('a raw key handed in as a fingerprint is never partly printed', async () => {
+    // Invariant I3 forbids a key PREFIX by name. The helper sliced whatever
+    // string it received, so a caller passing a raw key by mistake published
+    // twelve characters of it. A function whose purpose is to make a value safe
+    // to print must not assume the caller already did that.
+    const { findSharedKeyGroups, shortFingerprint } = await import('../src/helpers/vault-lifecycle.mjs');
+    const KEY = 'SUPER-SECRET-KEY-0123456789';
+    const groups = findSharedKeyGroups([
+      { path: 'C:\\A', keyFingerprint: KEY },
+      { path: 'C:\\B', keyFingerprint: KEY },
+    ]);
+    assert.equal(groups.length, 1, 'the shared-credential fact must still be reported');
+    const text = JSON.stringify(groups);
+    assert.ok(!text.includes(KEY.slice(0, 8)), 'a prefix of the key reached the message');
+    assert.equal(shortFingerprint(KEY), null);
+    // A genuine digest still shortens.
+    const digest = crypto.createHash('sha256').update('x').digest('hex');
+    assert.equal(shortFingerprint(digest), digest.slice(0, 12));
+  });
+});
+
 describe('finding 12 — an identity may not carry a credential, a port or a path', () => {
   test('each forbidden field makes the identity invalid', () => {
     const base = { schemaVersion: 1, vaultId: ID_A, owner: null, createdAt: 'x' };

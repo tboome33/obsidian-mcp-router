@@ -42,9 +42,25 @@ import { isValidUuid } from './vault-identity.mjs';
 /** How much of a SHA-256 travels in a diagnostic. Invariant I3. */
 export const FINGERPRINT_LENGTH = 12;
 
-/** Truncate a full digest for display. Never a key, never a key prefix. */
+/**
+ * Truncate a full digest for display.
+ *
+ * IT VERIFIES THAT IT WAS GIVEN A DIGEST. The first version sliced whatever
+ * string it received, so a caller that passed a raw API key by mistake would
+ * have printed the first twelve characters of it — which invariant I3 forbids
+ * by name ("no key prefix"). The penetration test of this release fed it a key
+ * and watched twelve characters of the key come back (probe F1). A function
+ * whose whole purpose is to make a value safe to print must not depend on its
+ * caller having already made it safe.
+ *
+ * Anything that is not a 64-character lowercase hex SHA-256 yields `null`, and
+ * callers render that as "unavailable" rather than as a value.
+ */
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
 export function shortFingerprint(digest) {
-  return typeof digest === 'string' ? digest.slice(0, FINGERPRINT_LENGTH) : null;
+  if (typeof digest !== 'string' || !SHA256_HEX.test(digest)) return null;
+  return digest.slice(0, FINGERPRINT_LENGTH);
 }
 
 /**
@@ -70,11 +86,15 @@ export function findSharedKeyGroups(vaults) {
     if (distinct.size < 2) continue;
 
     const paths = [...distinct.values()].map((v) => v.path);
+    // `null` when what arrived was not a digest — the group is still reported
+    // (two vaults DO share a credential, which is the fact that matters), but
+    // nothing derived from the value is printed.
+    const shown = shortFingerprint(fingerprint) ?? 'unavailable';
     groups.push({
       fingerprint: shortFingerprint(fingerprint),
       paths,
       message:
-        `${paths.length} vaults present the same API key (fingerprint ${shortFingerprint(fingerprint)}…): ` +
+        `${paths.length} vaults present the same API key (fingerprint ${shown}…): ` +
         `${paths.join(', ')}. That is normal for a synchronised replica and an anomaly for anything ` +
         'else — a copy carries its source\'s credential. Nothing was rotated: rotating a replica\'s ' +
         'key locks the other machine out. Giving them separate UUIDs does not resolve it either.',
