@@ -375,6 +375,155 @@ describe('refreshProjectionsForVault', () => {
     assert.equal(r.sessions?.findings?.[0]?.rule, 'session-folder-collision');
   });
 
+  // ---------------------------------------------------------------------------
+  // Check O, the CATALOGUE half — the signpost, not the misplaced file.
+  //
+  // A `## Sessions` area in the catalogue is what SENT the agent to the wrong
+  // folder. It is reportable in vaults where the folder scan finds nothing at
+  // all, which is precisely the state that reads as clean today.
+  // ---------------------------------------------------------------------------
+
+  const CATALOG_WITH_AREA = '---\ntype: wiki-index\n---\n\n# Catalog\n\n## Sessions\n\n_(none yet)_\n';
+
+  test('Check O: a ## Sessions AREA is reported even when no file is misfiled', async () => {
+    const { deps } = makeVaultFs({
+      'wiki-meta/catalog.md': CATALOG_WITH_AREA,
+      'wiki/a/p.md': PAGE('P'),
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, null);
+    assert.equal(r.sessions.findings.length, 1, 'the folder scan alone would call this vault clean');
+    const [f] = r.sessions.findings;
+    assert.equal(f.rule, 'catalog-sessions-heading');
+    assert.equal(f.severity, 'warning');
+    assert.equal(f.area, 'Sessions');
+    assert.equal(f.line, 7);
+    assert.equal(f.file, 'wiki-meta/catalog.md', 'the finding names the file it was read from');
+  });
+
+  test('Check O: the catalogue is read under its LEGACY name when catalog.md is a 404', async () => {
+    const { deps } = makeVaultFs({
+      'wiki-meta/index.md': CATALOG_WITH_AREA,
+      'wiki/a/p.md': PAGE('P'),
+    });
+    const r = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.findings[0]?.rule, 'catalog-sessions-heading');
+    assert.equal(r.sessions.findings[0]?.file, 'wiki-meta/index.md');
+  });
+
+  test('Check O: a vault with no catalogue at all says nothing about headings', async () => {
+    // The wiki-meta/ LISTING is made to 404 properly (`kind: 'not_found'`) so
+    // this test isolates the catalogue read: without that, the harness's bare
+    // `new Error('404')` would trip the enumeration branch instead and the test
+    // would pass for a reason that has nothing to do with the catalogue.
+    const { deps } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
+    const listFilesIn = async (v, dir) => {
+      if (dir === 'wiki-meta') throw Object.assign(new Error('404'), { kind: 'not_found' });
+      return deps.listFilesIn(v, dir);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, listFilesIn }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.deepEqual(r.sessions.findings, []);
+    assert.equal(r.sessions.skipped, null, 'a 404 on both names is a fact about the vault, not a failure');
+  });
+
+  test('Check O: FAIL CLOSED — a catalogue read that ERRORS is skipped, and the folder verdict survives', async () => {
+    // The two halves answer different questions, so an unread catalogue must not
+    // erase a collision that WAS established. `skipped` says the heading half is
+    // unanswered; the findings say what the folder half found.
+    const { deps } = makeVaultFs({
+      'wiki-meta/catalog.md': CATALOG_WITH_AREA,
+      'wiki/Sessions/recap.md': PAGE('Recap'),
+      'wiki-meta/Sessions/x.md': '# S\n',
+    });
+    const getFileContent = async (v, p) => {
+      if (p === 'wiki-meta/catalog.md') throw new Error('500 upstream');
+      return deps.getFileContent(v, p);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, getFileContent }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, 'catalog-read-failed');
+    assert.equal(r.sessions.findings.length, 1, 'the collision was seen and must still be reported');
+    assert.equal(r.sessions.findings[0].rule, 'session-folder-collision');
+  });
+
+  test('Check O: a non-404 on catalog.md does NOT fall through to the legacy name', async () => {
+    // Same rule `shouldTryLegacyScaffold` states: only "not under this name"
+    // tries the next candidate. An unreachable vault must not be re-asked under
+    // the old name and reported clean because the old name happens to be absent.
+    const { deps } = makeVaultFs({
+      'wiki-meta/catalog.md': CATALOG_WITH_AREA,
+      'wiki-meta/index.md': '# Catalog\n',
+      'wiki/a/p.md': PAGE('P'),
+    });
+    const asked = [];
+    const getFileContent = async (v, p) => {
+      if (p === 'wiki-meta/catalog.md') throw new Error('timeout');
+      asked.push(p);
+      return deps.getFileContent(v, p);
+    };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, getFileContent }, { check: true, sessionScan: true, now: '2026-09-07' });
+    assert.equal(r.sessions.skipped, 'catalog-read-failed');
+    assert.ok(!asked.includes('wiki-meta/index.md'), 'the legacy name was asked after a non-404');
+  });
+
+  test('Check O: OFF by default — the catalogue is never READ for the automatic callers', async () => {
+    const { deps } = makeVaultFs({ 'wiki-meta/catalog.md': CATALOG_WITH_AREA, 'wiki/a/p.md': PAGE('P') });
+    const asked = [];
+    const getFileContent = async (v, p) => { asked.push(p); return deps.getFileContent(v, p); };
+    const r = await refreshProjectionsForVault(VAULT, { ...deps, getFileContent }, { check: true, now: '2026-09-07' });
+    assert.equal('sessions' in r, false);
+    assert.ok(!asked.includes('wiki-meta/catalog.md'), `the catalogue was read: ${asked.join(', ')}`);
+  });
+
+  // These two were ONE test with an "and" in its name, and the mutation harness
+  // said so: dropping the block in apply and leaking the finding into the seal
+  // produced the SAME red set, so nothing separated the two questions. Split, so
+  // each mutation has a witness only it can kill.
+  const HEADING_VAULT = {
+    'wiki-meta/catalog.md': CATALOG_WITH_AREA,
+    'wiki/a/p.md': PAGE('P'),
+  };
+
+  test('Check O: apply mode reports the heading too, not only check', async () => {
+    const { deps } = makeVaultFs({ ...HEADING_VAULT });
+    const checked = await refreshProjectionsForVault(VAULT, deps, { check: true, sessionScan: true, now: '2026-07-30' });
+    assert.equal(checked.sessions.findings.length, 1);
+    const applied = await refreshProjectionsForVault(VAULT, deps, {
+      approvedPlanSha256: checked.approvedPlanSha256, sessionScan: true, now: '2026-07-30',
+    });
+    assert.equal(applied.mode, 'apply');
+    assert.equal(applied.sessions?.findings?.[0]?.rule, 'catalog-sessions-heading');
+  });
+
+  test('Check O: a heading finding never enters the C3 seal', async () => {
+    // A catalogue WITH the area and one WITHOUT must seal identically: the
+    // finding changes no write, so a check taken on either must verify on the
+    // apply that follows.
+    const withArea = await refreshProjectionsForVault(VAULT, makeVaultFs({ ...HEADING_VAULT }).deps, { check: true, sessionScan: true, now: '2026-07-30' });
+    const without = await refreshProjectionsForVault(VAULT, makeVaultFs({ ...HEADING_VAULT, 'wiki-meta/catalog.md': '# Catalog\n' }).deps, { check: true, sessionScan: true, now: '2026-07-30' });
+    assert.equal(withArea.sessions.findings.length, 1, 'control: the area really is seen');
+    assert.equal(without.sessions.findings.length, 0, 'control: the clean catalogue really is clean');
+    // Assert the seals EXIST before comparing them: an implementation that
+    // stopped returning `approvedPlanSha256` would otherwise satisfy this test
+    // with `undefined === undefined`, a witness proving nothing. `typeof` is
+    // checked directly rather than through `String(seal)`, which review round 2
+    // pointed out would also accept a BigInt. (Rounds 1 and 2.)
+    for (const [label, seal] of [['withArea', withArea.approvedPlanSha256], ['without', without.approvedPlanSha256]]) {
+      assert.equal(typeof seal, 'string', `${label} must carry a plan seal`);
+      assert.match(seal, /^[0-9a-f]{64}$/, `${label}'s seal must be a sha256`);
+    }
+    assert.equal(withArea.approvedPlanSha256, without.approvedPlanSha256);
+
+    // ...and a CONTROL proving the seal is sensitive to the plan at all — the
+    // equality above is satisfied by any constant, so without this a seal hard-
+    // coded to 64 zeroes would pass the whole test. A vault with a different
+    // page set must seal differently.
+    const otherPlan = await refreshProjectionsForVault(VAULT, makeVaultFs({
+      ...HEADING_VAULT, 'wiki/a/q.md': PAGE('Q'),
+    }).deps, { check: true, sessionScan: true, now: '2026-07-30' });
+    assert.notEqual(otherPlan.approvedPlanSha256, withArea.approvedPlanSha256, 'the seal must track the plan');
+  });
+
   test('tool wrapper resolves the vault through the registry', async () => {
     const { deps } = makeVaultFs({ 'wiki/a/p.md': PAGE('P') });
     const registry = { resolveVault: (n) => ({ name: n ?? 'default-vault' }) };

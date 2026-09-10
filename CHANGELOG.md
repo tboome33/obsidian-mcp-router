@@ -10,6 +10,143 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Check O sees the signpost, not only the misplaced file — `catalog-sessions-heading`
+
+v0.92.0's Check O detects **folders**: content under both `wiki/Sessions/` and `wiki-meta/Sessions/`
+(error), or under `wiki/` alone (warning). The thing that CAUSED the incident is one step upstream
+and invisible to that rule — a `## Sessions` AREA heading in `wiki-meta/catalog.md`. It is the
+catalogue answering "where does a session note go?" with a folder that must not hold them, and it
+answers that way in vaults where nothing has been misfiled *yet*, so the folder scan reports them
+clean right up until the next agent obeys the catalogue. On 2026-09-07, **16 catalogues of the
+fleet** were in exactly that state, all `ok`.
+
+#### Added
+
+- **`detectCatalogOwnedHeadings(catalogContent)`** in `src/helpers/session-folder-collision.mjs` —
+  pure, text in, findings out: `{ rule: 'catalog-sessions-heading', severity: 'warning', area,
+  heading, line }`. `area` is the CANONICAL spelling, `heading` the raw text as written (the reader
+  has to find that string to remove it, and `## **Sessions**` is not searchable as "Sessions").
+  The owned-name comparison is `ownedAreaFor` — the same predicate the seed guard uses, so there is
+  one definition of "the owned name" and the markdown normalisation is inherited rather than
+  re-derived. A shared predicate means a shared blind spot, so what this function owns alone is the
+  *other* question — **is this line a heading at all?** — and that half is where its own witnesses
+  live. Non-string input returns `[]` and never throws.
+- **An AREA is a heading AT COLUMN 0**, and that position is part of the definition rather than an
+  approximation of it. Two adversarial rounds were spent discovering that a line-based scanner
+  cannot bluff container state: every construct that can nest a heading (list item, blockquote,
+  indented code) *indents* it, so requiring column 0 answers "is this a section of the catalogue?"
+  without tracking containers at all. Fences are recognised at column 0 for the same reason. What
+  the scanner still owns: a backtick fence whose info string contains a backtick opens nothing; a
+  closing fence may carry only spaces or tabs after it (`trim()` would eat a non-breaking space and
+  close a block CommonMark leaves open); the ATX separator is a space or a tab, so `##<NBSP>Sessions`
+  is not a heading; an HTML comment whose opener BEGINS a line hides what follows until `-->`.
+- **Stated limits**, because this is a heuristic and pretending otherwise is how the first version
+  broke: a fence indented 1-3 spaces is not tracked, so an example inside one can be reported; a
+  heading whose owned name is spelled with INTERIOR markup or entities (`Ses**sio**ns`,
+  `Ses&#115;ions`, `[Sessions](x)`) is not caught — `ownedAreaFor` peels wrapping markup only, and
+  widening it would change what the catalogue seeder rejects at provisioning time, a far larger blast
+  radius than a warning-level rule justifies. Both directions were chosen: over-reporting costs a
+  human one glance, under-reporting is the silence this rule exists to end.
+- **The fleet CLI** (`scripts/okf-projections.mjs`) reads the catalogue through
+  `scaffoldCandidates('catalog')` — never a second copy of the two names, so a vault still on the
+  pre-0.58.0 `index.md` is not silently exempt — and reports the finding with its file and line.
+  The fall-through rule is the one `shouldTryLegacyScaffold` states, applied to disk: only ENOENT
+  ("not under this name") tries the next candidate; any other error is about the VAULT, stops the
+  search, and is REPORTED. An unreadable catalogue means the vault is **never printed `ok`** and the
+  unread path is always printed — the same "I could not look is not there is nothing there" rule the
+  directory scan already had. It does not promise the status WORD `partial`: a vault that also has a
+  finding reads `sessions`, since the status word is the most actionable one and findings have
+  outranked an incomplete view since v0.92.0. Review round 1 was right that the broader claim was
+  false; the precedence is now written down next to the code that decides it.
+- **The MCP tool** (`refresh_okf_projections`) returns the finding in the same `sessions` block, so
+  the rule reaches a session driving the router with no shell — which is where the misfile happens.
+
+#### The three invariants of the v0.92.0 wiring, each still witnessed
+
+- `sessionScan` stays **false** by default: the debounced middleware and the first-contact repair
+  gain no REST call. The new catalogue READ is inside that gate, and has its own test asserting the
+  file is never requested — the pre-existing test only watched the directory listing.
+- **Nothing enters the C3 seal.** A catalogue with the area and one without seal identically, so a
+  `check: true` seal still verifies on the apply that follows.
+- The block is present in **check AND apply** mode.
+
+#### One `skipped` field, two meanings — stated rather than left as a trap
+
+`enumeration-failed` / `enumeration-truncated` mean the folder half could not be established:
+`findings` is empty and the honest report is "Check O could not run". The new
+`catalog-read-failed` is narrower — only the catalogue could not be read, so the heading question
+is open **while the folder findings that were established are still returned alongside it**. The
+skill's Check O reads `skipped` as "could not run", so leaving the difference implicit would have
+made a valid collision finding get dropped on an unrelated read failure. `skills/wiki-lint/SKILL.md`,
+`commands/okf-projections.md` and the tool description now say both meanings explicitly, and a test
+pins the folder verdict surviving an unread catalogue.
+
+#### Docs
+
+`skills/wiki-lint/SKILL.md` (Check O rule 4, the `skipped` paragraph, the warning list, and the
+auto-fix exception — which now names the finding that carries the file and line, and says plainly
+that this WARNING may be fixed even though the collision beside it is an ERROR that may not),
+`agents/wiki-lint.md`, `commands/okf-projections.md`, and the `TOOL_DEFINITION` description. The
+sentence in the "never propose a move" paragraph that used to ask the agent to check the catalogue
+BY HAND now defers to the rule — an agent reading this skill cold last time flagged a contradiction
+between two of its paragraphs, and adding a deterministic rule without retiring the manual
+instruction would have created a second one.
+
+#### Exit code, unchanged and now stated
+
+A warning does not fail a run: only `session-folder-collision` (error) exits 1. The contract comment
+at the top of the CLI is updated to name all three rules rather than two.
+
+#### What the two adversarial review rounds changed — and why the second one made the code SMALLER
+
+Round 1 attacked twelve numbered claims and **refuted three** with concrete inputs: a `## Sessions`
+inside an HTML comment was reported; `##<NBSP>Sessions` was read as a heading (`\s+` accepts a
+non-breaking space, ATX does not); a backtick fence whose info string contains a backtick was taken
+for an opener and hid the heading after it; an NBSP after a closing fence closed a block CommonMark
+leaves open; a fence opened on a list-marker line desynchronised the scanner in BOTH directions. It
+also caught a test that could pass as `undefined === undefined`, and a claim about the CLI's status
+word that was simply false.
+
+Round 2 was handed those repairs as the payload — and **found that two of them were worse than the
+defect**. Stripping a container prefix before looking for a fence turned a line of *literal code*
+(`- ```` inside an open block) into a closing fence, reported the code below it, and made the real
+closer open a new block. Searching the line for `<!--` anywhere let a backtick-quoted comment marker
+in prose swallow the rest of the file, and made a valid fence opener carrying `<!--` in its info
+string do the same. Eight counterexamples in total, each reproduced as a failing test before
+anything was touched.
+
+The fix was not a third layer of container tracking. **Both repairs were withdrawn** and the scanner
+was narrowed to what a line-based reader can actually hold: fences and headings at column 0, an HTML
+comment only when its opener begins the line, checked after the fence so a comment marker in an info
+string cannot hijack it. All eight counterexamples pass under the simpler rule, and the two
+container-shaped tests written for the withdrawn repair still pass — they were describing the right
+behaviour, just obtained the wrong way. Round 2's remaining hypothesis (interior markup and entities
+evading the shared normaliser) was assessed and **kept as a stated limit**: widening `ownedAreaFor`
+would change what the catalogue seeder rejects at provisioning time.
+
+#### Tests
+
+`tests/session-folder-collision.test.mjs` 33 → **69**, `tests/refresh-okf-projections.test.mjs`
+34 → **42**. Full suite **5948 tests, 0 failing** (3 skipped), `npm run gate` and `npm run validate`
+green — measured, not inferred.
+
+**Nineteen mutations, nineteen distinct witness sets**, each restored with `fsync` and verified by
+hash, with the baseline measured green BEFORE the run and again AFTER the last restore. Beyond the
+original rules, six of them mutate the round-1 repairs and three the round-2 ones: the comment
+opener matched anywhere in the line, the heading regex allowing indentation again, the fence opener
+allowing indentation again.
+
+Two findings from the harness itself, both fixed rather than explained away:
+
+- Two mutations first produced the **same** red set, because one test asserted both "apply reports
+  it" *and* "the seal is unchanged" — an `and` in a test name. The test was split rather than the
+  check weakened, and each mutation now has a witness only it kills.
+- A twentieth mutation — moving the comment check ahead of the fence check — stays **green**, and it
+  is reported as an **equivalent mutant** rather than counted or hidden. Once the comment opener must
+  BEGIN the line, a line cannot be both a fence opener and a comment opener, so the order between
+  those two branches provably cannot change a verdict. A green mutant is either a missing witness or
+  a mutant that changes nothing; saying which is the whole point of counting.
+
 ## [0.94.2] — 2026-09-09 — an installation that had never claimed anything, and had no way to start
 
 `--vault-owner --claim` refused to work on a mature, already-migrated installation: it needed the

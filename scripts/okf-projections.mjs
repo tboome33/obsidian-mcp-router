@@ -28,9 +28,18 @@
  * repeatable and adds unregistered vaults (the registry lists the SERVED
  * fleet, not the existing one — 3 known strays).
  *
+ * It also reads the vault's `wiki-meta/catalog.md` (or the pre-0.58.0
+ * `index.md`) and reports a `## Sessions` AREA heading still sitting in it. That
+ * heading is the upstream half of the same defect: it is the catalogue answering
+ * "where does a session note go?" with a folder that must not hold them, and it
+ * does so in vaults where the folder scan finds nothing at all — 16 catalogues
+ * of the fleet were in that state on 2026-09-07, all reported clean.
+ *
  * Exit codes: 0 OK · 1 bad usage, any vault reporting conflicts, or a
- * `session-folder-collision`. A `session-folder-stray` (content under `wiki/`
- * with nothing to reconcile against) is a warning and keeps the exit code at 0.
+ * `session-folder-collision`. The two WARNING rules — `session-folder-stray`
+ * (content under `wiki/` with nothing to reconcile against) and
+ * `catalog-sessions-heading` (a signpost, not misplaced content) — keep the exit
+ * code at 0. Only an ERROR fails a run.
  */
 
 import fs from 'node:fs';
@@ -42,8 +51,10 @@ import { generateProjectionsOnDisk } from '../src/helpers/okf-projections-fs.mjs
 import {
   WIKI_META_OWNED_AREAS,
   detectSessionFolderCollision,
+  detectCatalogOwnedHeadings,
 } from '../src/helpers/session-folder-collision.mjs';
 import { hasProjectionMarker, isProjectionPath } from '../src/helpers/okf-projections.mjs';
+import { scaffoldCandidates } from '../src/helpers/wiki-meta-scaffolds.mjs';
 
 const CONFIG_PATH = process.env.OBSIDIAN_ROUTER_CONFIG
   ? path.resolve(process.env.OBSIDIAN_ROUTER_CONFIG)
@@ -284,6 +295,42 @@ function collectOwnedAreaEntries(vaultAbs) {
   return { entries, unreadable };
 }
 
+/**
+ * The catalogue half of Check O: is a `wiki-meta/`-owned name still an AREA of
+ * this vault's catalogue?
+ *
+ * The candidate list is `scaffoldCandidates('catalog')`, never a second copy of
+ * the two names — a vault still on the pre-0.58.0 `index.md` must not be
+ * silently exempt from the rule.
+ *
+ * The fall-through rule is the one `shouldTryLegacyScaffold` states for the REST
+ * side, applied to disk: only ENOENT ("not under this name") tries the next
+ * candidate. Any other error is about the VAULT, not about which name the
+ * scaffold has, so it is REPORTED and the search stops — retrying under the old
+ * name cannot succeed, and swallowing it would print "no heading found" for a
+ * file nobody managed to read.
+ *
+ * @returns {{findings: Array<object>, unreadable: string[]}}
+ */
+function scanCatalogHeadings(vaultAbs) {
+  for (const rel of scaffoldCandidates('catalog')) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(vaultAbs, ...rel.split('/')), 'utf8');
+    } catch (err) {
+      if (err?.code === 'ENOENT') continue;
+      return { findings: [], unreadable: [`${rel} (${err?.code || err?.message})`] };
+    }
+    // `file` is the CLI's decoration, not the pure rule's: the rule answers a
+    // question about TEXT and must not learn about paths.
+    return {
+      findings: detectCatalogOwnedHeadings(text).map((f) => ({ ...f, file: rel })),
+      unreadable: [],
+    };
+  }
+  return { findings: [], unreadable: [] };
+}
+
 const args = parseArgs(process.argv);
 let anyConflict = false;
 const rows = [];
@@ -311,7 +358,12 @@ for (const vaultAbs of args.resolved) {
     // detector first would count a stale projection as evidence of a folder
     // that is already gone.
     const scan = collectOwnedAreaEntries(vaultAbs);
-    const { findings: sessionFindings } = detectSessionFolderCollision(scan.entries);
+    const catalog = scanCatalogHeadings(vaultAbs);
+    const sessionFindings = [
+      ...detectSessionFolderCollision(scan.entries).findings,
+      ...catalog.findings,
+    ];
+    const unreadable = [...scan.unreadable, ...catalog.unreadable];
     if (r.conflicts.length > 0) anyConflict = true;
     if (sessionFindings.some((f) => f.severity === 'error')) anyConflict = true;
     // An incomplete view is not a clean one. It does not fail the run — the
@@ -319,9 +371,16 @@ for (const vaultAbs of args.resolved) {
     // printed `ok`, because "no collision found" was not actually established.
     // `sessions`, not `drift`: that word already means "the OKF projections are
     // out of date" in `refresh_okf_projections --check` and wiki-lint.
+    //
+    // PRECEDENCE, and what it does and does not promise: the status word is the
+    // most actionable one, so a vault with BOTH a finding and an unreadable
+    // catalogue reads `sessions`, not `partial`. The invariant is narrower than
+    // "an incomplete view is always `partial`" — it is that such a vault is
+    // never `ok`, and that every unreadable path is printed underneath whatever
+    // the status word says.
     const status = r.conflicts.length ? 'conflicts'
       : sessionFindings.length ? 'sessions'
-        : scan.unreadable.length ? 'partial'
+        : unreadable.length ? 'partial'
           : 'ok';
     rows.push({
       vault: vaultAbs,
@@ -329,7 +388,7 @@ for (const vaultAbs of args.resolved) {
       ...r,
       ghostTidied,
       sessionFindings,
-      unreadable: scan.unreadable,
+      unreadable,
     });
   } catch (err) {
     anyConflict = true;
@@ -350,8 +409,17 @@ for (const r of rows) {
   );
   for (const c of r.conflicts) console.log(`      ⚠ conflict (unmarked file, untouched): ${c}`);
   for (const f of r.sessionFindings ?? []) {
-    console.log(`      ${f.severity === 'error' ? '✗' : '⚠'} ${f.rule}: ${f.detail}`);
-    for (const wf of f.wikiFiles) console.log(`          ${wf}`);
+    const icon = f.severity === 'error' ? '✗' : '⚠';
+    if (f.rule === 'catalog-sessions-heading') {
+      console.log(
+        `      ${icon} ${f.rule}: ${f.file} line ${f.line} — the area "${f.heading}" names what ` +
+          `wiki-meta/${f.area}/ already owns, so the catalogue sends the next session note under wiki/. ` +
+          'Remove the section and point the reader at wiki-meta/ instead.',
+      );
+      continue;
+    }
+    console.log(`      ${icon} ${f.rule}: ${f.detail}`);
+    for (const wf of f.wikiFiles ?? []) console.log(`          ${wf}`);
   }
   for (const u of r.unreadable ?? []) {
     console.log(`      ⚠ could not read ${u} — the Sessions scan of this vault is INCOMPLETE`);

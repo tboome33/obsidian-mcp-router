@@ -47,6 +47,7 @@ import {
   ownedAreaFor,
   partitionSeededAreas,
   detectSessionFolderCollision,
+  detectCatalogOwnedHeadings,
 } from '../src/helpers/session-folder-collision.mjs';
 import { WIKI_MODE_SECTIONS } from '../src/helpers/wiki-mode-sections.mjs';
 
@@ -299,6 +300,322 @@ describe('detectSessionFolderCollision', () => {
     for (const junk of [null, undefined, 'wiki/Sessions/a.md', {}]) {
       assert.deepEqual(detectSessionFolderCollision(junk).findings, []);
     }
+  });
+});
+
+/**
+ * The TITLE, not the folder — the half of the trap the folder detector cannot
+ * see.
+ *
+ * `detectSessionFolderCollision` answers "are there files in two places?". The
+ * thing that CAUSED the incident is upstream of that: a `## Sessions` area in
+ * `wiki-meta/catalog.md` tells the next agent that `wiki/Sessions/` is where a
+ * session note belongs, and it says so in a vault where no such folder exists
+ * yet — so the folder scan calls that vault clean right up until the moment an
+ * agent obeys the catalogue. 16 catalogues of the fleet were in exactly that
+ * state on 2026-09-07.
+ *
+ * The rule reuses `ownedAreaFor`, so it inherits the markdown normalisation the
+ * second review round put there — but a shared predicate means a shared blind
+ * spot, which is the one shape a pair of checks must never have. That is why
+ * the non-matches below are as load-bearing as the matches, and why the fenced
+ * block has its own case: a heading is a heading only where markdown says it is.
+ */
+describe('detectCatalogOwnedHeadings', () => {
+  test('a plain owned area heading is reported, with its 1-based line', () => {
+    const catalog = '# Catalog\n\n## People\n\n## Sessions\n\n_(none yet)_\n';
+    const findings = detectCatalogOwnedHeadings(catalog);
+    assert.equal(findings.length, 1);
+    assert.deepEqual(findings[0], {
+      rule: 'catalog-sessions-heading',
+      severity: 'warning',
+      area: 'Sessions',
+      heading: 'Sessions',
+      line: 5,
+    });
+  });
+
+  test('the spellings that RENDER as the owned name are caught too', () => {
+    for (const heading of ['## Sessions ##', '## **Sessions**', '##   sessions  ', '### Sessions']) {
+      const findings = detectCatalogOwnedHeadings(`# Catalog\n\n${heading}\n`);
+      assert.equal(findings.length, 1, `expected a finding for ${JSON.stringify(heading)}`);
+      assert.equal(findings[0].area, 'Sessions', 'the CANONICAL spelling, whatever the markup');
+      assert.equal(findings[0].line, 3);
+    }
+  });
+
+  test('the raw heading text is preserved so the reader can find it in the file', () => {
+    const [finding] = detectCatalogOwnedHeadings('# Catalog\n\n## **Sessions**\n');
+    assert.equal(finding.heading, '**Sessions**', 'what is literally on the line');
+    assert.equal(finding.area, 'Sessions', 'what it renders as');
+  });
+
+  test('a name that merely CONTAINS the owned word is not an owned area', () => {
+    for (const heading of ['## Sessions de travail', '## My Sessions', '## Session', '## Sessions Archive']) {
+      assert.deepEqual(
+        detectCatalogOwnedHeadings(`# Catalog\n\n${heading}\n`),
+        [],
+        `${JSON.stringify(heading)} is a legitimate area name`,
+      );
+    }
+  });
+
+  test('a level-1 title is not an area', () => {
+    assert.deepEqual(detectCatalogOwnedHeadings('# Sessions\n\nbody\n'), []);
+  });
+
+  test('a heading inside a fenced code block does not count', () => {
+    const catalog = [
+      '# Catalog',
+      '',
+      'Example of what NOT to write:',
+      '',
+      '```markdown',
+      '## Sessions',
+      '```',
+      '',
+      '## People',
+      '',
+    ].join('\n');
+    assert.deepEqual(detectCatalogOwnedHeadings(catalog), []);
+  });
+
+  test('a fence that closes lets a later real heading be seen again', () => {
+    const catalog = '# Catalog\n\n```\n## Sessions\n```\n\n## Sessions\n';
+    const findings = detectCatalogOwnedHeadings(catalog);
+    assert.equal(findings.length, 1, 'the fenced one is text, the one after it is a heading');
+    assert.equal(findings[0].line, 7);
+  });
+
+  test('a tilde fence hides a heading just like a backtick one', () => {
+    assert.deepEqual(detectCatalogOwnedHeadings('# Catalog\n\n~~~\n## Sessions\n~~~\n'), []);
+  });
+
+  test('a list line that merely mentions the markup is not a heading', () => {
+    const catalog = '# Catalog\n\n- never write `## Sessions` here\n- ## Sessions is not a heading either\n';
+    assert.deepEqual(detectCatalogOwnedHeadings(catalog), []);
+  });
+
+  test('an indented code block (4 spaces) is not a heading', () => {
+    assert.deepEqual(detectCatalogOwnedHeadings('# Catalog\n\n    ## Sessions\n'), []);
+  });
+
+  test('every owned area is covered by the rule, not just the one we know', () => {
+    assert.ok(WIKI_META_OWNED_AREAS.length >= 1, 'denominator: the sweep must have something to inspect');
+    for (const area of WIKI_META_OWNED_AREAS) {
+      const findings = detectCatalogOwnedHeadings(`# Catalog\n\n## ${area}\n`);
+      assert.equal(findings.length, 1, `no rule covers the owned area ${area}`);
+      assert.equal(findings[0].area, area);
+    }
+  });
+
+  test('several headings in one catalogue are all reported, in file order', () => {
+    const catalog = '# Catalog\n\n## Sessions\n\n## People\n\n## sessions\n';
+    const findings = detectCatalogOwnedHeadings(catalog);
+    assert.deepEqual(findings.map((f) => f.line), [3, 7]);
+  });
+
+  test('a non-string input yields no findings rather than throwing', () => {
+    for (const junk of [null, undefined, 42, {}, ['## Sessions']]) {
+      assert.deepEqual(detectCatalogOwnedHeadings(junk), []);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // The cases an adversarial review round produced. Every one of them is a place
+  // where "is this line a heading?" — the half this function owns alone, since
+  // the NAME half is delegated to `ownedAreaFor` — disagreed with how the file
+  // actually renders. A false positive matters as much as a false negative here:
+  // the finding tells a human to delete a section, so pointing at a line that
+  // renders as nothing trains them to ignore the rule.
+  // ---------------------------------------------------------------------------
+
+  test('a heading inside an HTML comment does not count', () => {
+    assert.deepEqual(
+      detectCatalogOwnedHeadings('# Catalog\n\n<!--\n## Sessions\n-->\n'),
+      [],
+      'commented-out markup renders as nothing — there is no section to remove',
+    );
+  });
+
+  test('a comment that closes lets a later real heading be seen again', () => {
+    const findings = detectCatalogOwnedHeadings('# Catalog\n\n<!--\n## Sessions\n-->\n\n## Sessions\n');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].line, 7);
+  });
+
+  test('a one-line HTML comment does not swallow the rest of the file', () => {
+    const findings = detectCatalogOwnedHeadings('# Catalog\n\n<!-- todo -->\n\n## Sessions\n');
+    assert.equal(findings.length, 1, 'the comment opened and closed on its own line');
+    assert.equal(findings[0].line, 5);
+  });
+
+  test('the ATX separator is a space or a tab — not any unicode whitespace', () => {
+    // `##<NBSP>Sessions` is NOT a heading: CommonMark requires a space or tab
+    // after the hashes. Built with fromCharCode so the byte is unambiguous in
+    // the source rather than an invisible character a future edit could eat.
+    // Each rejected character is built with fromCharCode so the byte is
+    // unambiguous in the source. A form feed and a vertical tab are `\s` but not
+    // ATX separators — without them, `[ \t\f\v]+` would pass this witness.
+    for (const code of [0x00a0, 0x000c, 0x000b, 0x2003]) {
+      const ws = String.fromCharCode(code);
+      assert.deepEqual(
+        detectCatalogOwnedHeadings(`# Catalog\n\n##${ws}Sessions\n`),
+        [],
+        `U+${code.toString(16).padStart(4, '0')} is not an ATX separator`,
+      );
+    }
+    assert.equal(detectCatalogOwnedHeadings('# Catalog\n\n##\tSessions\n').length, 1, 'a tab IS a separator');
+    assert.equal(detectCatalogOwnedHeadings('# Catalog\n\n## Sessions\n').length, 1, 'a space IS a separator');
+  });
+
+  test('a backtick fence whose info string contains a backtick is not a fence', () => {
+    // ```lang`oops does not open a code block, so the line after it is a real
+    // heading. Treating it as an opener hides one. Tested at three AND four
+    // backticks, so an implementation that special-cases the exact-three form
+    // does not survive.
+    for (const marker of ['```', '````']) {
+      const findings = detectCatalogOwnedHeadings(`# Catalog\n\n${marker}lang\`oops\n## Sessions\n`);
+      assert.equal(findings.length, 1, `the invalid ${marker.length}-backtick opener must not hide the heading`);
+      assert.equal(findings[0].line, 4);
+    }
+    // A TILDE fence has no such restriction: a backtick in its info is fine, so
+    // this one really does open a block and hide the heading.
+    assert.deepEqual(detectCatalogOwnedHeadings('# Catalog\n\n~~~lang`ok\n## Sessions\n'), []);
+  });
+
+  test('a closing fence may carry only spaces or tabs after it', () => {
+    // With an NBSP after the closing fence the block is STILL OPEN, so the
+    // line below is code, not a heading.
+    const nbsp = String.fromCharCode(0x00a0);
+    assert.deepEqual(
+      detectCatalogOwnedHeadings(`# Catalog\n\n\`\`\`\nexample\n\`\`\`${nbsp}\n## Sessions\n`),
+      [],
+    );
+    // ...and the mirror, so an implementation that demands `/^ *$/` and rejects
+    // a legitimate trailing TAB does not survive either.
+    const closed = detectCatalogOwnedHeadings('# Catalog\n\n```\nexample\n```\t\n## Sessions\n');
+    assert.equal(closed.length, 1, 'a trailing tab closes the block');
+    assert.equal(closed[0].line, 6);
+  });
+
+  test('a fence inside a list item does not desynchronise the scanner', () => {
+    // Both directions in one input: the indented fenced heading must NOT be
+    // reported, and the real top-level heading after the list MUST be.
+    const catalog = [
+      '# Catalog',
+      '',
+      '- example:',
+      '  ```markdown',
+      '  ## Sessions',
+      '  ```',
+      '',
+      '## Sessions',
+      '',
+    ].join('\n');
+    const findings = detectCatalogOwnedHeadings(catalog);
+    assert.equal(findings.length, 1, `expected only the real heading, got ${JSON.stringify(findings)}`);
+    assert.equal(findings[0].line, 8);
+  });
+
+  test('a fence opened ON the list-marker line does not desynchronise it either', () => {
+    // The harder shape: the opener shares its line with the bullet, so a
+    // scanner that only looks at column 0-3 misses it — then reports the fenced
+    // heading AND takes the real closer for an opener, hiding the heading that
+    // follows. One input, both failures.
+    const catalog = [
+      '# Catalog',
+      '',
+      '- ```markdown',
+      '  ## Sessions',
+      '  ```',
+      '',
+      '## Sessions',
+      '',
+    ].join('\n');
+    const findings = detectCatalogOwnedHeadings(catalog);
+    assert.equal(findings.length, 1, `expected only the real heading, got ${JSON.stringify(findings)}`);
+    assert.equal(findings[0].line, 7);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Adversarial review round 2 — the counterexamples that broke the round-1
+  // REPAIRS. Container-prefix stripping and substring comment detection each
+  // fixed their own case and created a worse one: a line of literal code became
+  // a closing fence, and a backtick-quoted `<!--` swallowed the rest of the
+  // file. Both repairs were withdrawn in favour of a scanner that only claims
+  // what it can hold: column 0, no container tracking at all.
+  // ---------------------------------------------------------------------------
+
+  test('a fence marker inside literal code does not close the block', () => {
+    // The bullet-looking line is CODE. Stripping its prefix turned it into a
+    // closer, which reported the line below and left the real closer opening a
+    // new block.
+    assert.deepEqual(
+      detectCatalogOwnedHeadings('```\n- ```\n## Sessions\n```\n'),
+      [],
+      'line 3 is inside a fenced block',
+    );
+  });
+
+  test('a fence inside a blockquote never opens the global state', () => {
+    const findings = detectCatalogOwnedHeadings('> ```\n> example\n\n## Sessions\n');
+    assert.equal(findings.length, 1, 'the quote ended; the top-level heading is real');
+    assert.equal(findings[0].line, 4);
+  });
+
+  test('a fence inside an ordered list never opens the global state', () => {
+    const findings = detectCatalogOwnedHeadings('10. ```\n    example\n    ```\n\n## Sessions\n');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].line, 5);
+  });
+
+  test('an indented-code line after a bullet does not open a fence', () => {
+    const findings = detectCatalogOwnedHeadings('-     ```\n\n## Sessions\n');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].line, 3);
+  });
+
+  test('a digit that cannot start a list does not manufacture a fence', () => {
+    const findings = detectCatalogOwnedHeadings('paragraph\n2. ```\n## Sessions\n');
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].line, 3);
+  });
+
+  test('a backtick-quoted comment opener does not swallow the rest of the file', () => {
+    const findings = detectCatalogOwnedHeadings('Use `<!--` literally.\n\n## Sessions\n');
+    assert.equal(findings.length, 1, 'the comment marker was inline code, not an HTML block');
+    assert.equal(findings[0].line, 3);
+  });
+
+  test('a fence whose info string contains a comment opener is still a fence', () => {
+    const findings = detectCatalogOwnedHeadings('```html <!--\nexample\n```\n\n## Sessions\n');
+    assert.equal(findings.length, 1, 'the fence opened and closed; line 5 is a real heading');
+    assert.equal(findings[0].line, 5);
+  });
+
+  test('a heading indented inside a list item is not a top-level AREA', () => {
+    assert.deepEqual(detectCatalogOwnedHeadings('- item\n  ## Sessions\n'), []);
+  });
+
+  test('a heading nested in a list item or a quote is not an AREA of the catalogue', () => {
+    // The rule is about the catalogue's top-level areas. A `##` inside a
+    // container renders as a heading, but it is not a section of the document
+    // the reader navigates by — and the seeded Wiki Core bullet legitimately
+    // mentions the markup in prose.
+    for (const line of ['- ## Sessions', '> ## Sessions', '  - ## Sessions']) {
+      assert.deepEqual(
+        detectCatalogOwnedHeadings(`# Catalog\n\n${line}\n`),
+        [],
+        `${JSON.stringify(line)} is not a catalogue area`,
+      );
+    }
+  });
+
+  test('CRLF line endings do not break the line numbering', () => {
+    const [finding] = detectCatalogOwnedHeadings('# Catalog\r\n\r\n## Sessions\r\n');
+    assert.equal(finding.line, 3);
+    assert.equal(finding.heading, 'Sessions', 'no stray carriage return in the reported text');
   });
 });
 
@@ -655,6 +972,157 @@ describe('no producer seeds an area a wiki-meta/ folder owns', () => {
       assert.match(absentOut, /^\s{2}ok\s/m, absentOut);
     } finally {
       for (const v of [blind, both, absent]) fs.rmSync(v, { recursive: true, force: true });
+    }
+  });
+
+  test('the fleet CLI reports a catalogue heading, and a warning does NOT fail the run', () => {
+    // The heading half of Check O, end to end. This vault has NO misfiled file —
+    // the folder detector calls it clean — and that is exactly the state 16
+    // catalogues of the fleet were in: a signpost pointing at a folder nobody
+    // has created yet. The exit code is the load-bearing assertion: the contract
+    // at the top of the CLI says only a collision (error) exits 1, and a rule
+    // that quietly started failing runs would break every caller of the fleet
+    // sweep.
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-heading-'));
+    try {
+      fs.mkdirSync(path.join(vault, 'wiki', 'Concepts'), { recursive: true });
+      fs.writeFileSync(path.join(vault, 'wiki', 'Concepts', 'a.md'), '---\ntype: concept\n---\n\n# A\n');
+      fs.mkdirSync(path.join(vault, 'wiki-meta'), { recursive: true });
+      fs.writeFileSync(
+        path.join(vault, 'wiki-meta', 'catalog.md'),
+        '---\ntype: wiki-index\n---\n\n# Catalog\n\n## Concepts\n\n## Sessions\n\n_(none yet)_\n',
+      );
+
+      const r = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'scripts', 'okf-projections.mjs'), '--vault', vault],
+        { encoding: 'utf8', cwd: REPO_ROOT },
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.match(out, /catalog-sessions-heading/, out);
+      assert.match(out, /line 9/, 'the finding names the line to edit');
+      assert.equal(r.status, 0, `a warning keeps the exit code at 0:\n${out}`);
+      assert.ok(!/^\s{2}ok\s/m.test(out), 'a vault with a finding is not summarised ok');
+    } finally {
+      fs.rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test('the fleet CLI reads the catalogue under its LEGACY name too', () => {
+    // A vault still on the pre-0.58.0 scaffold names must not be silently
+    // exempt from the rule. The candidate list is `scaffoldCandidates`, not a
+    // second copy of the two names kept here.
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-legacy-'));
+    try {
+      fs.mkdirSync(path.join(vault, 'wiki', 'Concepts'), { recursive: true });
+      fs.writeFileSync(path.join(vault, 'wiki', 'Concepts', 'a.md'), '---\ntype: concept\n---\n\n# A\n');
+      fs.mkdirSync(path.join(vault, 'wiki-meta'), { recursive: true });
+      fs.writeFileSync(path.join(vault, 'wiki-meta', 'index.md'), '# Catalog\n\n## Sessions\n');
+
+      const r = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'scripts', 'okf-projections.mjs'), '--vault', vault],
+        { encoding: 'utf8', cwd: REPO_ROOT },
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.match(out, /catalog-sessions-heading/, out);
+      assert.match(out, /wiki-meta\/index\.md/, 'the finding names the file it actually read');
+    } finally {
+      fs.rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test('a catalogue that cannot be READ is `partial`, never `ok`', () => {
+    // Same rule as the directory scan, applied to the new read: "I could not
+    // look" must never be printed as "there is nothing there". A DIRECTORY where
+    // the catalogue belongs makes readFileSync throw EISDIR — a genuine
+    // non-ENOENT failure that needs no ACLs, so it behaves the same on Windows.
+    //
+    // And the mirror: a vault with NO catalogue at all stays silent and `ok`.
+    const run = (vault) => {
+      const r = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'scripts', 'okf-projections.mjs'), '--vault', vault],
+        { encoding: 'utf8', cwd: REPO_ROOT },
+      );
+      return { out: `${r.stdout}${r.stderr}`, status: r.status };
+    };
+
+    const blind = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-cat-blind-'));
+    const none = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-cat-none-'));
+    try {
+      for (const v of [blind, none]) {
+        fs.mkdirSync(path.join(v, 'wiki', 'Concepts'), { recursive: true });
+        fs.writeFileSync(path.join(v, 'wiki', 'Concepts', 'a.md'), '---\ntype: concept\n---\n\n# A\n');
+        fs.mkdirSync(path.join(v, 'wiki-meta'), { recursive: true });
+      }
+      fs.mkdirSync(path.join(blind, 'wiki-meta', 'catalog.md'));
+
+      const blindRun = run(blind);
+      assert.match(blindRun.out, /could not read wiki-meta\/catalog\.md/, blindRun.out);
+      assert.match(blindRun.out, /partial/, 'an unread catalogue leaves the heading question open');
+      assert.ok(!/^\s{2}ok\s/m.test(blindRun.out), `still printed ok:\n${blindRun.out}`);
+      assert.equal(blindRun.status, 0, 'unreadable is not a conflict');
+
+      const noneRun = run(none);
+      assert.ok(!/could not read/.test(noneRun.out), `a missing catalogue is a fact, not a failure:\n${noneRun.out}`);
+      assert.match(noneRun.out, /^\s{2}ok\s/m, noneRun.out);
+    } finally {
+      for (const v of [blind, none]) fs.rmSync(v, { recursive: true, force: true });
+    }
+  });
+
+  test('an unreadable catalogue NEXT TO a finding still never prints ok', () => {
+    // The status word is the most actionable one — `sessions` outranks
+    // `partial`, exactly as it already did for the directory scan. The
+    // load-bearing invariant is narrower and is what this pins: a vault whose
+    // view was incomplete is NEVER summarised `ok`, and the incompleteness is
+    // printed whatever the status word says. (Adversarial review round 1 was
+    // right that "always `partial`" was the wrong claim.)
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-cat-mixed-'));
+    try {
+      fs.mkdirSync(path.join(vault, 'wiki', 'Sessions'), { recursive: true });
+      fs.writeFileSync(path.join(vault, 'wiki', 'Sessions', 'recap.md'), '---\ntype: session\n---\n\n# Recap\n');
+      fs.mkdirSync(path.join(vault, 'wiki-meta'), { recursive: true });
+      fs.mkdirSync(path.join(vault, 'wiki-meta', 'catalog.md'));
+
+      const r = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'scripts', 'okf-projections.mjs'), '--vault', vault],
+        { encoding: 'utf8', cwd: REPO_ROOT },
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.match(out, /session-folder-stray/, out);
+      assert.match(out, /could not read wiki-meta\/catalog\.md/, 'the incomplete view is still printed');
+      assert.ok(!/^\s{2}ok\s/m.test(out), `an incomplete scan must never read as ok:\n${out}`);
+    } finally {
+      fs.rmSync(vault, { recursive: true, force: true });
+    }
+  });
+
+  test('a collision and a heading in one vault: both reported, exit 1 from the collision', () => {
+    const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-mixed-'));
+    try {
+      fs.mkdirSync(path.join(vault, 'wiki', 'Sessions'), { recursive: true });
+      fs.mkdirSync(path.join(vault, 'wiki-meta', 'Sessions'), { recursive: true });
+      fs.writeFileSync(path.join(vault, 'wiki', 'Sessions', 'recap.md'), '---\ntype: session\n---\n\n# Recap\n');
+      fs.writeFileSync(
+        path.join(vault, 'wiki-meta', 'Sessions', '2026-09-07-0930-x.md'),
+        '---\ntype: session\n---\n\n# Session\n',
+      );
+      fs.writeFileSync(path.join(vault, 'wiki-meta', 'catalog.md'), '# Catalog\n\n## Sessions\n');
+
+      const r = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'scripts', 'okf-projections.mjs'), '--vault', vault],
+        { encoding: 'utf8', cwd: REPO_ROOT },
+      );
+      const out = `${r.stdout}${r.stderr}`;
+      assert.match(out, /session-folder-collision/, out);
+      assert.match(out, /catalog-sessions-heading/, 'the heading is reported alongside the collision');
+      assert.equal(r.status, 1, 'the ERROR still fails the run');
+    } finally {
+      fs.rmSync(vault, { recursive: true, force: true });
     }
   });
 
