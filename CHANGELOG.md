@@ -79,6 +79,39 @@ One page's **body** documents the old protocol in prose. It was annotated rather
 dated note now says the vocabulary changed and what to write instead, while the original paragraph
 stands. A delivery record is not edited to match a vocabulary invented a week later.
 
+#### What the review of the IMPLEMENTATION found — the design review was not enough
+
+The design was reviewed before any code, and that review shaped what was written. The code itself was
+then reviewed separately, and that second pass was the one that found **defects rather than
+opinions** — including two the test suite and eleven mutations had both missed.
+
+- **The alias lookup walked the prototype chain.** `LEGACY_PROMPT_STATUS_MAP[key]` with
+  `status: constructor` returned the `Object` **function**, so `normalizePromptStatus` violated its
+  own documented `string | null` contract and the linter emitted a finding whose `suggestion` was a
+  function — offered to a reader as the value to write into their frontmatter. Reproduced first try
+  from the reviewer's input. The lookup is now a `Map`, which has no chain to walk: the class is
+  gone, not guarded at one site.
+- **A malformed path took the whole lint down.** `String(path)` throws `TypeError` on an object with
+  a null `toString`, and an entry with no path at all produced a finding reading `path: undefined` —
+  a report row pointing at no file. The path is now validated before anything coerces it.
+- **Eight wrong implementations would have survived the tests**, each named with its exact
+  counterexample: `null`/blank status only witnessed through the normalizer and not the linter; only
+  `ready` exercised as a canonical value at linter level (so a linter recognising nothing else would
+  have reported `executed` as invalid and suggested it replace itself); substring instead of segment
+  matching for backup paths; `.obsidian-backup` and the backslash separator uncovered; an alias table
+  asserted as "at least two" rather than exactly two; a `type` coerced with `String()` accepting a
+  one-element list; `suggestion: undefined` satisfying an `=== undefined` assertion while putting the
+  forbidden key on the object; and a severity raised on the one branch no witness exercised. All
+  eight are now witnessed, and all eight were added to the harness as mutations.
+- **Three documentation defects**, each a sentence contradicting another. The convention snippet
+  said "a finished brief left at `ready`" — which reads as *finished writing*, exactly the state
+  `ready` is for, and would have taught a reader to close unexecuted work. The skill said the missing
+  rule fires on "no `status:` at all", omitting the null and blank cases the code also treats as
+  missing. And the capability declaration claimed Check P "calls NO tool at all", which is false for
+  the fix path it documents in the same paragraph — restated as detect-vs-apply.
+- Also removed: two claims of a version number (`v0.95.0`) that does not exist, on an unversioned
+  change.
+
 #### Migration and measurement
 
 Eight pages migrated (`done` ×7, `shipped` ×1 → `executed`), all in one vault, each write carrying
@@ -86,11 +119,19 @@ its `ifMatch`. Re-measured with the new checker against the real fleet afterward
 `ready` + 9 `executed`, 0 findings** — including the backup copy, which the exclusion rule correctly
 passes over.
 
-`tests/prompt-lint.test.mjs` — 24 tests, including a sweep pinning the convention snippet against the
-code so the vocabulary an author reads and the vocabulary the linter enforces cannot drift. Full
-suite **5972 tests, 0 failing** (3 skipped); `npm run gate` and `npm run validate` green — measured.
-**Eleven mutations, eleven distinct witness sets**, fsync'd restores verified by hash, baseline
-measured green before the run and after the last restore.
+`tests/prompt-lint.test.mjs` — **31 tests**, including a sweep pinning the convention snippet against
+the code, order included, so the vocabulary an author reads and the vocabulary the linter enforces
+cannot drift in content OR in sequence.
+
+**Twenty-two mutations, nineteen distinct witness sets**, fsync'd restores verified by hash, baseline
+measured green before the run and after the last restore. Eleven of the twenty-two exist only
+because the implementation review named them — they are the wrong implementations the first eleven
+did not catch. The shared witness sets are honest: two pairs attack the same rule from two
+directions (a substring backup match and a dropped backslash separator; a drifted snippet row and a
+reordered table).
+
+Full suite **6030 tests, 0 failing** (3 skipped); `npm run gate` and `npm run validate` green —
+measured, not inferred.
 
 ### Check O sees the signpost, not only the misplaced file — `catalog-sessions-heading`
 

@@ -16,7 +16,7 @@ Because a prompt is a work order, its `status` describes **the run, not the writ
 
 These two are the pair that costs something when confused. A brief left at `ready` while a session is executing it invites a **second session to run the same work order** — the most expensive mistake this vocabulary exists to prevent. Move it to `in-progress` when you start, and to `executed` when you deliver.
 
-Conversely, a finished brief left at `ready` reads as an open invitation forever. Closing it is not bookkeeping; it is what stops the next agent from redoing delivered work.
+Conversely, a prompt whose *execution* has finished but which is still marked `ready` reads as an open invitation forever. Closing it is not bookkeeping; it is what stops the next agent from redoing delivered work. Note the asymmetry, because it is easy to get backwards: a brief whose *writing* is finished belongs at `ready` — that is exactly what `ready` means — and must not be closed.
 
 ### Why an executed prompt is kept rather than deleted
 

@@ -280,7 +280,7 @@ const result = lintDecisions(pages, { today: '<YYYY-MM-DD>' });
 
 Auto-fix posture (step 4): `status-invalid` **with** a `suggestion` is the one decision finding worth offering to fix (a mechanical `set_frontmatter`). Never auto-fix `supersedes-target-not-superseded` silently — flipping the target's status is a semantic act the human should confirm, since it retires a decision.
 
-### 2d-bis. Check P: prompt lifecycle (v0.95.0+)
+### 2d-bis. Check P: prompt lifecycle
 
 Runs on every lint whenever the vault has pages typed `prompt`. A prompt page is a **work order** — a brief written to be pasted into a fresh session and executed once — so its `status` describes **the run, not the writing of the document**. The vocabulary an author reads is the `prompt-status` convention snippet, installed in the vault `CLAUDE.md`.
 
@@ -295,7 +295,7 @@ const findings = lintPrompts(pages);
 
 3. **The five states, in lifecycle order** : `draft` (still being written) → `ready` (pasteable as-is) → `in-progress` (a session is executing it) → `executed` (delivered; the page is an ARCHIVE, do not re-run) · `abandoned` (will not be run).
 4. **Severity mapping** — both rules are **WARNINGS**, and neither affects `ok` :
-   - `prompt-status-missing` — no `status:` at all. **Never suggest a value**: absence is not evidence of any state, and guessing "it was probably finished" invents an execution history.
+   - `prompt-status-missing` — the field is absent, `null`, or blank (empty or whitespace-only): all three mean "nothing is recorded here". **Never suggest a value**: absence is not evidence of any state, and guessing "it was probably finished" invents an execution history.
    - `prompt-status-invalid` — a value outside the five. Carries a `suggestion` only for a spelling whose meaning was established (`done` and `shipped` both meant `executed`). A word like `wip` gets a diagnostic and no suggestion: it plausibly means "a session is executing this", the opposite of the `draft` a naive reading would assume.
 5. **Why a warning and not an error.** Nothing consumes `status` to decide anything automatically — it is read by humans. But do not report it as cosmetic either: a delivered brief left at `ready` invites a second session to redo the work, which is the expensive mistake this check exists to prevent.
 

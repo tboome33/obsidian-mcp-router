@@ -57,6 +57,19 @@ export const LEGACY_PROMPT_STATUS_MAP = {
 };
 
 /**
+ * The alias lookup, as a Map — NOT `LEGACY_PROMPT_STATUS_MAP[key]`.
+ *
+ * A bracket lookup on a plain object walks the prototype chain, so
+ * `status: constructor` resolved to the `Object` FUNCTION and the linter emitted
+ * a finding whose `suggestion` was a function — a value the documented
+ * `string | null` contract does not admit, offered to a reader as a migration
+ * target. Measured, not theorised: an adversarial review named the input and it
+ * reproduced first try. A Map has no prototype chain to walk, so the class is
+ * gone rather than guarded at one site.
+ */
+const ALIASES = new Map(Object.entries(LEGACY_PROMPT_STATUS_MAP));
+
+/**
  * Path fragments that mark a frozen copy of a vault rather than the vault.
  * Findings inside one are unactionable — nobody edits a backup — so they would
  * return on every run forever. Excluded at inspection, not merely left unwritten.
@@ -65,10 +78,18 @@ const BACKUP_SEGMENTS = ['.okf-rename-backup', '.trash', '.obsidian-backup'];
 
 const CANONICAL = new Set(VALID_PROMPT_STATUSES);
 
-/** True when a vault-relative path sits inside a frozen copy. */
+/**
+ * True when a vault-relative path sits inside a frozen copy.
+ *
+ * Whole SEGMENTS only: a directory merely CONTAINING a marker — `.trash-notes/`
+ * — is a normal folder and its pages must still be linted.
+ *
+ * @param {string} path a real string; the caller validates that first, because
+ *   `String(value)` throws on an object with a null `toString`, and one
+ *   malformed entry must never abort the whole lint.
+ */
 function isBackupPath(path) {
-  const segments = String(path ?? '').split(/[/\\]+/);
-  return segments.some((s) => BACKUP_SEGMENTS.includes(s));
+  return path.split(/[/\\]+/).some((s) => BACKUP_SEGMENTS.includes(s));
 }
 
 /**
@@ -89,7 +110,7 @@ export function normalizePromptStatus(status) {
   const key = status.trim().toLowerCase();
   if (!key) return null;
   if (CANONICAL.has(key)) return key;
-  return LEGACY_PROMPT_STATUS_MAP[key] ?? null;
+  return ALIASES.get(key) ?? null;
 }
 
 /** True when this page's frontmatter says it is a prompt. */
@@ -124,6 +145,13 @@ export function lintPrompts(pages) {
   for (const entry of Array.isArray(pages) ? pages : []) {
     if (!entry || typeof entry !== 'object') continue;
     const { path, frontmatter } = entry;
+    // The path is validated BEFORE anything coerces it. An entry whose `path`
+    // is absent or not a string violates this module's input contract, and the
+    // two ways of tolerating it are both wrong: coercing throws on an object
+    // with a null `toString` and takes the entire lint down with it, while
+    // emitting the finding anyway produces `path: undefined` — a report row
+    // pointing at no file.
+    if (typeof path !== 'string') continue;
     if (!isPromptPage(frontmatter)) continue;
     if (isBackupPath(path)) continue;
 
