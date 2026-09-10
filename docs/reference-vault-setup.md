@@ -253,6 +253,54 @@ If the id and folder name diverge, rename the folder to match the id (the manife
 
 Check that `community-plugins.json` in the reference vault lists every plugin id you want enabled. The script copies this file verbatim. If a plugin is in the reference's `plugins/` folder but missing from `community-plugins.json`, it'll be cloned but not auto-enabled.
 
+### A vault was provisioned into two directories
+
+**Symptom.** After provisioning a vault whose path carries a non-ASCII character, two directories
+exist side by side — the one you asked for, and one whose name looks mis-typed:
+`La méthode LICARES` and `La mÃ©thode LICARES`. The run reported success with no warning. The real
+directory holds the configuration, the `wiki/` scaffold and `.env`; the twin holds everything that
+was *cloned as a tree* — the plugins, the themes, `Documentation/`, `.claude/`, the embedding cache.
+
+**Cause.** Node's `fs.cpSync` decoded its destination through the Windows ANSI code page, so the
+UTF-8 bytes of the accent were reinterpreted and re-encoded. Fixed in v0.94.3: every tree copy now
+goes through `src/helpers/copy-tree.mjs`, and provisioning refuses to report success when a twin
+directory exists. **A vault provisioned before v0.94.3 is not repaired by upgrading** — the
+directories are already on disk. Repair it once, by hand:
+
+1. **Close Obsidian** on both directories, and stop the router (or the session using it).
+2. **Move the twin's contents into the real vault.** The two sets do not overlap, so nothing is
+   overwritten; check afterwards that nothing is left behind but empty folders.
+3. **Rewrite the credential file.** The twin's
+   `.obsidian/plugins/obsidian-local-rest-api/data.json` is the *template's*, port, API key and
+   certificate included — do not keep it. Delete it and re-run the provisioner with `--force`,
+   which writes a fresh port, a fresh key and no `crypto` block. Local REST API mints a new
+   certificate on its next start.
+4. **Rebuild `community-plugins.json`.** It was written while the plugins were in the twin, so it
+   is `[]`. The `--force` re-run repopulates it from the plugins now present.
+5. **Check the plaintext port.** In `~/.claude/obsidian-mcp-router/config.json`, the vault's
+   `ports.http` may be `null` (nothing had been written for it to record). The `--force` re-run
+   fills it in; verify it matches `insecurePort` in the vault's `data.json`.
+6. **Delete the twin directory** once it holds nothing you have not moved.
+
+```bash
+node scripts/setup-vault.mjs "<real-vault-path>" --force
+```
+
+### A vault shares the reference vault's TLS certificate
+
+Until v0.94.3 the provisioner rewrote a cloned vault's port and API key but left the `crypto` block
+of `.obsidian/plugins/obsidian-local-rest-api/data.json` exactly as the reference vault had written
+it — so every vault cloned from one template served the same self-signed certificate and held the
+same RSA private key. New vaults are unaffected from v0.94.3 on; **existing vaults keep the block
+they were created with**, because rewriting a running vault's live certificate is the operator's
+call, not the provisioner's.
+
+To check whether a vault is affected, compare its `crypto` block with the reference vault's. To fix
+one, close Obsidian on it, delete the `crypto` key from that `data.json` (leave `port`,
+`insecurePort` and `apiKey` alone), and reopen the vault — the plugin regenerates the pair. The
+HTTPS port is loopback-only and the plaintext `/open` route carries no read or write capability, so
+this is worth doing calmly rather than urgently.
+
 ## See also
 
 - [`scripts/setup-vault.mjs`](../scripts/setup-vault.mjs) — the script itself, well-commented

@@ -140,7 +140,17 @@ export async function provisionVaultTool(registry, args = {}, _deps = {}) {
     port: result.port ?? null,
     insecurePort: result.insecurePort ?? null,
     openUri: result.openUri,
+    // `opened` is measured, not attempted: the engine dispatches the
+    // `obsidian://` URI AND checks that Obsidian's own registry knows this
+    // vault, because the protocol handler resolves the name against that
+    // registry and refuses a vault nobody has ever opened by hand. A newly
+    // provisioned vault is exactly that case, so `opened: true` used to be
+    // wrong on the most common call there is. `openInstruction` names the one
+    // manual gesture left; it is null when there is none.
     opened: result.opened,
+    ...(result.launched !== undefined ? { launched: result.launched } : {}),
+    ...(result.knownToObsidian !== undefined ? { knownToObsidian: result.knownToObsidian } : {}),
+    ...(result.openInstruction ? { openInstruction: result.openInstruction } : {}),
     probeResult: result.probe ?? null,
     ...(result.bridgeDownloaded !== undefined ? { bridgeDownloaded: result.bridgeDownloaded } : {}),
     ...(result.message ? { message: result.message } : {}),

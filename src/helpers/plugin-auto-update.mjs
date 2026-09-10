@@ -28,6 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { copyTreeSync } from './copy-tree.mjs';
 import { planCachePurge, applyCachePurge } from './plugin-cache-purge.mjs';
 import { subprocessOptions } from './subprocess-env.mjs';
 
@@ -145,8 +146,14 @@ export function tryAutoUpdate({
     }
     if (!alreadyPopulated) {
       fs.mkdirSync(newCacheDir, { recursive: true });
-      fs.cpSync(marketplaceDir, newCacheDir, {
-        recursive: true,
+      // NOT `fs.cpSync`: it decodes its destination through the Windows ANSI
+      // code page, and this destination is under the user's HOME. A Windows
+      // profile folder whose name carries an accent would have had the whole
+      // plugin cache written beside it, under a double-encoded twin name where
+      // nothing would ever look for it — with every call reporting success.
+      // Same defect, same day, different directory as the vault one; see
+      // src/helpers/copy-tree.mjs.
+      copyTreeSync(marketplaceDir, newCacheDir, {
         force: true,
         filter: (src) => {
           const base = path.basename(src);

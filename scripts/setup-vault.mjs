@@ -30,7 +30,7 @@ import path from 'node:path';
 import https from 'node:https';
 import { assertDotenvScalar } from '../src/helpers/dotenv-scalar.mjs';
 import { upsertDotenvVarSync, removeDotenvVarSync, readDotenvVarSync } from '../src/helpers/dotenv-writer.mjs';
-import { obsidianOpenUri, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
+import { obsidianOpenUri, launchObsidianVault, isVaultKnownToObsidian } from '../src/helpers/obsidian-launcher.mjs';
 import {
   updateConfigBindings,
   withBinding,
@@ -41,6 +41,12 @@ import {
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
 import { snapshotConfig, mergeConfigOntoDisk } from '../src/helpers/config-merge.mjs';
+import {
+  copyTreeSync,
+  scanEncodingTwins,
+  describeEncodingTwins,
+  classifyProvisioningTwins,
+} from '../src/helpers/copy-tree.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -180,10 +186,31 @@ const REQUIRED_PLUGINS = ['obsidian-local-rest-api', 'mcp-router-bridge'];
 //     reference's data.json. See codex P1 finding for the regression
 //     trail.
 //
-// Note: `setupVault()` (full bootstrap path, NOT --sync-plugins) is
-// safe for these plugins because it explicitly overwrites data.json
-// with a freshly-generated port + key via `patchRestApiData()`
-// immediately after the clone.
+// Note: `setupVault()` (full bootstrap path, NOT --sync-plugins) then
+// overwrites data.json with a freshly-generated port + key via
+// `patchRestApiData()` immediately after the clone.
+//
+// THAT NOTE USED TO SAY "is safe", AND IT WAS NOT TRUE. `patchRestApiData()`
+// rewrote `port`, `insecurePort` and `apiKey` — and left `crypto` exactly as
+// the source vault had written it. `crypto` is where Local REST API keeps the
+// self-signed certificate it serves AND the matching RSA PRIVATE KEY. Measured
+// on 2026-09-11 across this machine's fleet: 13 of the 16 vaults that have a
+// data.json carry a `crypto` block byte-identical to the template's, i.e. they
+// have been sharing one private key since the day they were cloned. Distinct
+// keys and distinct ports had made the leak invisible.
+//
+// Two things now stop it, deliberately not one. `clonePluginFolder()` does not
+// copy the credential file AT ALL, so the source's key and certificate never
+// reach the target's disk — not even for the few milliseconds a copy-then-strip
+// would have left them there, and not on the failure paths in between.
+// `patchRestApiData()` then CREATES the file with this vault's own port and
+// key, and — for the day a third copy path forgets the first rule — deletes any
+// `crypto` it finds on a vault that had no configuration of its own. Local REST
+// API mints a fresh certificate on its next start.
+//
+// A vault ALREADY carrying the template's block is not repaired by this: it is
+// a running vault's live certificate, and rewriting it is the operator's call.
+// See docs/reference-vault-setup.md.
 const CREDENTIAL_LEAK_PLUGINS = new Set(['obsidian-local-rest-api']);
 
 // Plugins the --sync-from-github vetting may EVER copy from a network
@@ -1112,8 +1139,98 @@ function initReference(refPath) {
   ).join(', '));
 }
 
-function copyDirRecursive(src, dst) {
-  fs.cpSync(src, dst, { recursive: true });
+// EVERY TREE COPY IN THIS FILE GOES THROUGH `copyTreeSync`, NOT `fs.cpSync`.
+// Measured 2026-09-11 on node v24.13.0 / win32: a recursive `fs.cpSync` decodes
+// its destination through the Windows ANSI code page, so a tree copied into
+// `…\La méthode LICARES\` silently lands in a second directory named
+// `…\La mÃ©thode LICARES\` — and a copy whose SOURCE carries an accent kills
+// the process outright (exit 0xC0000409, no error, no stderr). That is what
+// split one vault across two directories in 0.94.1. The full measurement, and
+// why `mkdirSync`/`copyFileSync` are safe where `cpSync` is not, is in
+// src/helpers/copy-tree.mjs; tests/copy-tree.test.mjs scans this whole tree so
+// a seventh call site cannot appear quietly.
+//
+// A one-line `copyDirRecursive()` wrapper used to sit here. It was deleted with
+// its last caller: a mutation run found it was reachable from nothing, so a
+// mutation THROUGH it proved nothing either — dead code that reads as covered.
+
+/**
+ * Copy a plugin folder — and for a CREDENTIALED plugin, do not copy its
+ * `data.json` at all.
+ *
+ * NOT "copy it then clean it up". The source's key, ports, certificate and
+ * private key are simply never written to the target's disk, so there is no
+ * window — however short — in which a run that dies mid-way leaves them there.
+ * Between the copy and `patchRestApiData()` the script allocates ports, takes a
+ * lock and can `fail()`; each of those exits used to leave the template's
+ * private key sitting in the new vault.
+ *
+ * The target is left with no `data.json` for that plugin, which is the correct
+ * state for a vault that has none of its own yet: `patchRestApiData()` CREATES
+ * it, with this vault's freshly allocated port and key.
+ */
+/** `fs.realpathSync(p)`, or `fallback` when it cannot be resolved. */
+function realpathOr(p, fallback = path.resolve(p)) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return fallback;
+  }
+}
+
+/** Platform-appropriate path equality (Windows and macOS fold case). */
+function samePathForPlatform(a, b) {
+  return process.platform === 'linux' ? a === b : a.toLowerCase() === b.toLowerCase();
+}
+
+/** True when `child` sits at or below `parent` — segment-wise, so `..cache` is inside. */
+function isInsidePath(child, parent) {
+  const rel = path.relative(parent, child);
+  if (rel === '' || path.isAbsolute(rel)) return false;
+  return !rel.split(/[\\/]/).includes('..');
+}
+
+export function clonePluginFolder(pluginName, srcPlugin, dstPlugin) {
+  const credentialed = CREDENTIAL_LEAK_PLUGINS.has(String(pluginName).trim().toLowerCase());
+  if (!credentialed) {
+    copyTreeSync(srcPlugin, dstPlugin);
+    return;
+  }
+  // THE EXCLUSION IS BY IDENTITY, NOT BY NAME — three review findings deep.
+  //
+  //  1. `path.resolve(from) !== path.resolve(skip)` was an exact, case-sensitive
+  //     comparison, so a source file named `DATA.JSON` sailed through and landed
+  //     in the target, where Windows resolves it as the credential file all the
+  //     same. Same trick, one level down, as the `Obsidian-Local-REST-API`
+  //     folder-name dodge this script already guards against.
+  //  2. Once the copy started FOLLOWING symlinks (which it must, so that a
+  //     symlinked plugin folder cannot hide its contents from this very
+  //     filter), a name-based rule became bypassable outright: a source holding
+  //     `credential-backup.json -> data.json` has a name the filter accepts and
+  //     bytes it must never write. Filtering the walked NAME kept the filter
+  //     being called and stopped it meaning anything.
+  //  3. The same door lets a link point OUTSIDE the plugin folder entirely, so
+  //     "clone this plugin" would copy in whatever it named.
+  //
+  // So: resolve each entry, refuse anything that leaves the source plugin
+  // folder, and refuse anything that IS the credential file however it is
+  // spelled or reached. `realpathSync` is what makes those two questions
+  // answerable; an entry it cannot resolve is refused rather than guessed at.
+  const pluginRoot = realpathOr(srcPlugin);
+  // Resolved when the file exists, lexical when it does not — either way, the
+  // path every candidate is compared against. `samePathForPlatform` is what
+  // makes `DATA.JSON` on Windows the same file as `data.json`, and keeps them
+  // two different files on Linux, where they are.
+  const credentialFile = realpathOr(path.join(srcPlugin, 'data.json'));
+  copyTreeSync(srcPlugin, dstPlugin, {
+    filter: (from) => {
+      const real = realpathOr(from, null);
+      if (real === null) return false;                    // unresolvable: do not copy it
+      if (samePathForPlatform(real, pluginRoot)) return true;  // the folder itself
+      if (!isInsidePath(real, pluginRoot)) return false;  // escapes the plugin
+      return !samePathForPlatform(real, credentialFile);
+    },
+  });
 }
 
 function generateApiKey() {
@@ -1294,7 +1411,7 @@ async function recloneVaultPlugin(vaultPath, pluginName, srcPlugin, dstPlugin) {
   }
 
   fs.rmSync(dstPlugin, { recursive: true, force: true });
-  copyDirRecursive(srcPlugin, dstPlugin);
+  clonePluginFolder(pluginName, srcPlugin, dstPlugin);
   if (preserved !== null) {
     try { fs.writeFileSync(dataJsonPath, preserved); } catch {}
   }
@@ -1316,7 +1433,7 @@ async function recloneVaultPluginPreservingConfig(vaultPath, pluginName, srcPlug
   let preserved = null;
   if (fs.existsSync(dataJsonPath)) preserved = fs.readFileSync(dataJsonPath);
   fs.rmSync(dstPlugin, { recursive: true, force: true });
-  copyDirRecursive(srcPlugin, dstPlugin);
+  clonePluginFolder(pluginName, srcPlugin, dstPlugin);
   if (preserved !== null) fs.writeFileSync(dataJsonPath, preserved);
   return { done: true, reason: null };
 }
@@ -1479,7 +1596,7 @@ function ensureInstallationIdentity(cfg, { quiet = false } = {}) {
  * port that had never been written — bookkeeping describing a file that does
  * not exist (pre-release review, 2026-08-30).
  */
-async function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
+async function patchRestApiData(vaultPath, port, apiKey, insecurePort = null, { keepCrypto = false } = {}) {
   // OWNERSHIP, RE-READ HERE AND NOWHERE EARLIER. The caller may have checked
   // minutes ago; between then and now the folder can have been synchronised
   // from the other machine. The identity is therefore read again at the last
@@ -1489,16 +1606,49 @@ async function patchRestApiData(vaultPath, port, apiKey, insecurePort = null) {
   // to itself, not a permission system.
   await assertMayWriteVaultPorts(vaultPath, 'rewriting this vault\'s Local REST API ports');
 
-  const dataPath = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
-  if (!fs.existsSync(dataPath)) {
-    warn(`Local REST API data.json not found at ${dataPath} — plugin may regenerate it on first run.`);
+  const pluginDir = path.join(vaultPath, '.obsidian', 'plugins', 'obsidian-local-rest-api');
+  const dataPath = path.join(pluginDir, 'data.json');
+  let data;
+  if (fs.existsSync(dataPath)) {
+    data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
+  } else if (fs.existsSync(pluginDir)) {
+    // THE PLUGIN IS INSTALLED AND HAS NO CONFIGURATION YET — which is the
+    // NORMAL state of a freshly cloned vault, now that `clonePluginFolder()`
+    // deliberately refuses to copy the source's credential file. So the file is
+    // created here, inside the funnel that has just asserted ownership, with
+    // this vault's own port and key.
+    //
+    // This is also what makes the plaintext port deterministic. Before, a vault
+    // whose data.json had not been copied got `written: false`, the registry
+    // recorded `ports.http: unknown`, and the click-to-open URL had no port to
+    // use — the state one production vault was left in on 2026-09-11. There is
+    // no longer a path where the plugin is present and the port is not written.
+    data = {};
+    ok(`Creating Local REST API data.json (the vault had none of its own)`);
+  } else {
+    // No plugin folder at all: there is nothing to configure, and creating one
+    // would invent a plugin the vault does not have.
+    warn(`Local REST API is not installed in ${vaultPath} — no data.json to write.`);
     warn('  No port was written; the registry will record the plaintext port as unknown.');
     return { written: false, insecurePort: null };
   }
-  const data = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
   data.apiKey = apiKey;
   data.port = port;
   data.bindingHost = '127.0.0.1';
+  // `crypto` holds the self-signed certificate Local REST API serves on the
+  // HTTPS port AND the RSA private key that goes with it. A clone that keeps
+  // the source's block shares a private key with every other vault cloned from
+  // the same template — measured on this fleet, 13 vaults deep, before it was
+  // noticed. Deleting the field makes the plugin mint a fresh pair on its next
+  // start; keeping the port and the key fresh was never enough on its own.
+  // (`clonePluginFolder()` already stripped it at the copy; this is the second
+  // fence, for the day a third copy path forgets to call it.)
+  //
+  // NOT dropped when the vault brought its OWN configuration: an adopted vault's
+  // certificate is its own, nobody else holds the key, and regenerating it would
+  // be churn this function has no business causing. `keepCrypto` therefore means
+  // "this data.json predates us", never "leave it alone by default".
+  if (!keepCrypto) delete data.crypto;
   // Convention: enable the unencrypted HTTP server on `port + 10`, bound to
   // loopback. Used by the bridge plugin's GET /open/<path> route to produce
   // click-to-open URLs that work even when an antivirus (Bitdefender, ESET,
@@ -2814,7 +2964,7 @@ function cloneRootDocs(referenceVault, targetVault, force, skipItems = []) {
     if (fs.existsSync(dst)) fs.rmSync(dst, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     if (fs.statSync(src).isDirectory()) {
-      fs.cpSync(src, dst, { recursive: true });
+      copyTreeSync(src, dst);
     } else {
       fs.copyFileSync(src, dst);
     }
@@ -2841,7 +2991,7 @@ function cloneSmartEnv(referenceVault, targetVault, force) {
     }
     if (fs.existsSync(dst)) fs.rmSync(dst, { recursive: true, force: true });
     if (fs.statSync(src).isDirectory()) {
-      fs.cpSync(src, dst, { recursive: true });
+      copyTreeSync(src, dst);
     } else {
       fs.copyFileSync(src, dst);
     }
@@ -3062,7 +3212,7 @@ async function bootstrapReference(targetPath, opts = {}) {
       fs.rmSync(dst, { recursive: true, force: true });
     }
     if (fs.statSync(src).isDirectory()) {
-      fs.cpSync(src, dst, { recursive: true });
+      copyTreeSync(src, dst);
     } else {
       fs.copyFileSync(src, dst);
     }
@@ -3180,7 +3330,7 @@ export function cloneThemes(sourceVault, targetVault, force) {
       fs.rmSync(dst, { recursive: true, force: true });
     }
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.cpSync(src, dst, { recursive: true });
+    copyTreeSync(src, dst);
     result.cloned.push(entry.name);
   }
   if (result.cloned.length > 0) ok(`Cloned theme(s): ${result.cloned.join(', ')}`);
@@ -3305,16 +3455,75 @@ function writeClaudeWorkspaceSettings(workspacePath) {
 // carries. Re-exported here because this file has been the import site since
 // v0.65.0 — one definition, and this is a view of it.
 export { obsidianOpenUri };
-function openObsidianVault(obsidianName) {
+/**
+ * --open: ask Obsidian to open the vault, and report what actually happened.
+ *
+ * The three states are kept apart on purpose, because they need three different
+ * things from the operator:
+ *   - the OS refused the URI          -> `launched: false`
+ *   - the URI was dispatched, but Obsidian does not know this vault
+ *     -> `launched: true, known: false`; Obsidian shows "Unable to find a
+ *        vault for the URL" and the operator must open the folder by hand ONCE
+ *   - dispatched AND known            -> the vault opens
+ *
+ * This used to collapse into an unconditional `opened = true`, so a brand-new
+ * vault — which by construction Obsidian has never heard of — was reported as
+ * opened while the user was looking at an error dialog, and the one remaining
+ * manual gesture appeared nowhere in the tool's output. Measured 2026-09-11.
+ *
+ * `known` is a necessary condition, not proof a window appeared: nothing here
+ * waits for Obsidian to start (see the launcher's own doc-block).
+ */
+function openObsidianVault(obsidianName, vaultPath) {
   // The launcher itself lives in src/helpers/obsidian-launcher.mjs since
   // v0.90.0 — one definition, shared with the MCP server, carrying the
   // Electron-fuse removal and the platform table. This wrapper keeps the
   // script's own reporting: best effort, never aborts a provisioning that
   // already succeeded, and always prints the URI so a human can finish by hand.
   const r = launchObsidianVault(obsidianName);
-  if (r.launched) ok(`Opened Obsidian on vault "${obsidianName}"`);
-  else warn(`Could not auto-open Obsidian (${r.reason}). Open manually: ${r.uri}`);
-  return r.uri;
+  const registry = vaultPath
+    ? isVaultKnownToObsidian(vaultPath)
+    : { known: false, registryPath: null, reason: 'no vault path given' };
+
+  // THE INSTRUCTION MUST MATCH THE FACT. The first version built one sentence —
+  // "Obsidian does not know this vault yet" — and printed it whenever `opened`
+  // came out false, including when the registry knew the vault perfectly well
+  // and it was the OS dispatch that had failed. Round 2. Three states, three
+  // sentences, and the unreadable-registry case says it does not know rather
+  // than predicting a refusal.
+  let instruction = null;
+  if (!r.launched) {
+    instruction = `Obsidian could not be launched (${r.reason}). Open the vault yourself: ${r.uri}`;
+    warn(`Could not auto-open Obsidian (${r.reason}). Open manually: ${r.uri}`);
+  } else if (registry.known) {
+    ok(`Opened Obsidian on vault "${obsidianName}"`);
+  } else if (registry.reason && /never been opened/i.test(registry.reason)) {
+    instruction =
+      `Obsidian does not know this vault yet, so ${r.uri} cannot resolve. ` +
+      `Open it once by hand: Obsidian -> File -> "Open folder as vault" -> ${vaultPath}. ` +
+      `The URI works from then on.`;
+    warn(`Asked Obsidian to open "${obsidianName}", but it will refuse: ${instruction}`);
+  } else {
+    // The registry could not be read. That is not evidence either way, and
+    // saying "it will refuse" would be a prediction, not a report.
+    instruction =
+      `The URI ${r.uri} was dispatched, but Obsidian's vault list could not be read ` +
+      `(${registry.reason}), so whether it resolves is unknown. If nothing opens, use ` +
+      `Obsidian -> File -> "Open folder as vault" -> ${vaultPath}.`;
+    warn(`Asked Obsidian to open "${obsidianName}"; could not confirm it knows this vault (${registry.reason}).`);
+  }
+
+  return {
+    uri: r.uri,
+    launched: r.launched,
+    knownToObsidian: registry.known,
+    // NOT a claim that a window appeared — nothing here waits for one. It is
+    // the conjunction of the two things that WERE checked: the OS accepted the
+    // URI, and Obsidian's own registry lists this vault so the URI can resolve.
+    // Both are necessary; neither, nor both, is sufficient.
+    opened: r.launched && registry.known,
+    instruction,
+  };
 }
 
 // --probe: poll the vault's unencrypted loopback REST port until it answers (or
@@ -3335,10 +3544,10 @@ async function probeVaultHealth(insecurePort, { timeoutMs = 15000, intervalMs = 
   });
   while (Date.now() < deadline) {
     attempts++;
-    if (await tryOnce()) return { ok: true, insecurePort, attempts };
+    if (await tryOnce()) return { ok: true, ran: true, insecurePort, attempts };
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  return { ok: false, insecurePort, attempts };
+  return { ok: false, ran: true, insecurePort, attempts };
 }
 
 // ASYNC since v0.94.0 (lot 2). Allocating a port now asks the operating system
@@ -3419,6 +3628,14 @@ async function setupVault(vaultPath, opts = {}) {
     }
   }
 
+  // BEFORE anything is copied: inventory the directories that ALREADY look like
+  // mis-encoded forms of this path. The end-of-provisioning guard compares
+  // against this list, so it can say "this run created a twin" instead of "a
+  // twin exists" — which is the difference between a real failure and aborting
+  // a healthy run over two directories the user made on purpose. Snapshot taken
+  // here, next to the target's own creation, so no copy has run yet.
+  const twinsBefore = scanEncodingTwins(abs);
+
   if (!fs.existsSync(abs)) {
     fs.mkdirSync(abs, { recursive: true });
     ok(`Created vault directory: ${abs}`);
@@ -3462,7 +3679,13 @@ async function setupVault(vaultPath, opts = {}) {
   // (so we can distinguish a fresh bootstrap from an adoption of an existing vault).
   let preExistingRestData = null;
   const preRestDataPath = path.join(abs, '.obsidian', 'plugins', 'obsidian-local-rest-api', 'data.json');
-  if (fs.existsSync(preRestDataPath) && !opts.regenerate) {
+  // Existence ALONE, recorded separately from `preExistingRestData` (which also
+  // demands a usable port + key, and ignores the file under `--regenerate`).
+  // The certificate question is "was this file here before us?", and answering
+  // it with the validity flag deleted certificates for unrelated reasons — see
+  // the `keepCrypto` call below.
+  const restDataPreDated = fs.existsSync(preRestDataPath);
+  if (restDataPreDated && !opts.regenerate) {
     try {
       const data = JSON.parse(fs.readFileSync(preRestDataPath, 'utf8'));
       if (data.port && data.apiKey && data.apiKey.length > 16) {
@@ -3535,7 +3758,7 @@ async function setupVault(vaultPath, opts = {}) {
         continue;
       }
     } else {
-      copyDirRecursive(srcPlugin, dstPlugin);
+      clonePluginFolder(p, srcPlugin, dstPlugin);
     }
     ok(`Cloned plugin: ${p}`);
   }
@@ -3713,7 +3936,21 @@ async function setupVault(vaultPath, opts = {}) {
     }
   }
   // Always patch data.json so the values match (plugin clone may have overwritten with .template's port/key)
-  const patched = await patchRestApiData(abs, port, apiKey, insecurePort);
+  // `keepCrypto` asks about PROVENANCE, not validity: did this data.json exist
+  // before this run touched the vault? If it did, its certificate is the
+  // vault's own affair — this run did not put it there and does not get to
+  // revoke it. If it did not, any `crypto` in the file was written by this run,
+  // and the only way it could have arrived is from the source template.
+  //
+  // The first version keyed off `preExistingRestData`, which is the stricter
+  // "had a VALID port and key". Review found two vaults it mistreats: one with
+  // its own certificate but a short key or no port, whose certificate would be
+  // deleted for an unrelated reason, and any vault run with `--regenerate`,
+  // which asks for a fresh key and was silently also rotating the certificate.
+  // Existence is the question actually being asked.
+  const patched = await patchRestApiData(abs, port, apiKey, insecurePort, {
+    keepCrypto: restDataPreDated,
+  });
   // Record only what actually reached the disk. When data.json was missing,
   // nothing was written, and claiming a plaintext port in the registry (or in
   // the returned metadata that drives --probe and the click-to-open hint)
@@ -3838,6 +4075,67 @@ async function setupVault(vaultPath, opts = {}) {
   if (wizard.claudeWorkspace) {
     if (opts.linkWorkspace) writeClaudeWorkspaceSettings(path.resolve(opts.linkWorkspace));
     else warn('--claude-workspace needs a workspace: pass --link-workspace <path> to target one.');
+  }
+
+  // THE LAST THING CHECKED, BEFORE ANY SUCCESS IS ANNOUNCED.
+  //
+  // Every call above can report success individually and still leave the vault
+  // in two places: that is exactly what `fs.cpSync` did in 0.94.1, and no
+  // per-call return value showed it. So the run finishes by asking the disk a
+  // question no individual step can answer — "is there now a second directory
+  // whose name is mine, mis-encoded?" — and refuses to call itself complete if
+  // there is. The check is written against the SYMPTOM, not against cpSync's
+  // mechanism, so it stays true whichever API introduces the mangling next.
+  //
+  // `fail()` here does not undo the provisioning; nothing could, halfway
+  // through. It stops the lie, names both directories, and points at the repair
+  // procedure — which is what the operator actually needs.
+  //
+  // IT ONLY FAILS ON A TWIN **THIS RUN CREATED**. A name match is evidence of a
+  // relationship between two names, not of damage: two directories called
+  // `café` and `cafÃ©` can perfectly well both belong to the user, and a
+  // provisioning that ran correctly beside them has done nothing wrong. Round-1
+  // review found the first version aborting exactly that case — after the
+  // config and workspace changes had already been written. So the candidates
+  // are inventoried BEFORE anything is copied (`twinsBefore`, captured next to
+  // the target-directory creation), and only what appeared since is a failure.
+  // A pre-existing one is still reported, as a warning: the operator should
+  // know, and it is not this run's doing.
+  const { created, preExisting } = classifyProvisioningTwins(
+    twinsBefore.twins.map((t) => t.path),
+    describeEncodingTwins(abs),
+    { beforeComplete: twinsBefore.complete },
+  );
+  for (const t of preExisting) {
+    if (t.provenance === 'unknown') {
+      warn(`A directory whose name is a mis-encoded form of ${t.of} is present: ${t.path}`);
+      warn('  Whether this run created it could not be determined (a parent directory was unreadable');
+      warn('  when the before-run inventory was taken), so it is reported rather than blamed.');
+    } else {
+      warn(`A directory whose name is a mis-encoded form of ${t.of} already existed before this run: ${t.path}`);
+      warn('  This run did not create it, and nothing here has been changed on account of it.');
+    }
+  }
+  if (created.length > 0) {
+    // The remedy differs by level, so the message does too. A twin OF THE VAULT
+    // is a split vault, and merging is right. A twin of an ANCESTOR is a whole
+    // parallel folder that may hold other vaults; telling the operator to merge
+    // it into this vault would point them at the wrong structural level.
+    const lines = created.map((t) => t.level === 'self'
+      ? `   twin of the vault:   ${t.path}\n` +
+        `      Part of the vault (usually the cloned plugins, themes and docs) went here.\n` +
+        `      Merge its contents into the target, delete it, then re-run with --force.\n`
+      : `   twin of a parent dir: ${t.path}\n` +
+        `      A mis-encoded copy of ${t.of}. Part of this vault was written UNDER it —\n` +
+        `      look for ${path.relative(t.of, abs) || '.'} inside it. Do not merge the whole\n` +
+        `      folder: it may hold other vaults too.\n`);
+    fail(
+      `Provisioning was split across two directories — the vault is INCOMPLETE.\n` +
+      `   target: ${abs}\n` +
+      lines.join('') +
+      `   These names are this path's, decoded through the wrong code page.\n` +
+      `   See docs/reference-vault-setup.md, "A vault was provisioned into two directories".`,
+    );
   }
 
   console.log('');
@@ -4047,7 +4345,7 @@ async function syncPluginsMode(vaultPath, opts = {}) {
       }
       refreshed.push(p);
     } else {
-      copyDirRecursive(srcPlugin, dstPlugin);
+      clonePluginFolder(p, srcPlugin, dstPlugin);
       newlySynced.push(p);
     }
   }
@@ -6721,11 +7019,31 @@ if (wizardOpts.gitInit && provisionResult && provisionResult.abs) {
 // until the user clicks "Trust author and enable plugins"). A red probe exits
 // non-zero so a scripted caller sees the failure.
 let opened = false;
+let openReport = null;
 if (wizardOpts.open && provisionResult && provisionResult.obsidianName) {
-  openObsidianVault(provisionResult.obsidianName);
-  opened = true;
+  openReport = openObsidianVault(provisionResult.obsidianName, provisionResult.abs);
+  opened = openReport.opened;
 }
 let probeVerdict = null;
+// --probe with no plaintext port to probe is not "no result": it is a result
+// with a reason. Reporting `probe: null` there made the caller guess between
+// "the probe was not asked for", "it ran and said nothing" and "there was
+// nothing to probe" — and in the 0.94.1 incident the true answer was the third,
+// which was precisely the symptom worth seeing.
+if (wizardOpts.probe && provisionResult && !provisionResult.insecurePort) {
+  probeVerdict = {
+    ok: false,
+    ran: false,
+    attempts: 0,
+    insecurePort: null,
+    // States the OBSERVED fact and stops there. An earlier wording asserted
+    // that data.json had been missing — one possible cause among several (the
+    // plugin may simply not be installed), and not something this branch has
+    // measured. The provisioning log above already carries the actual reason.
+    reason: 'no plaintext REST port is recorded for this vault, so there was nothing to probe',
+  };
+  warn(`Probe skipped — ${probeVerdict.reason}.`);
+}
 if (wizardOpts.probe && provisionResult && provisionResult.insecurePort) {
   const timeoutMs = wizardOpts.probeTimeout ? wizardOpts.probeTimeout * 1000 : 15000;
   info(`Probing REST health on http://127.0.0.1:${provisionResult.insecurePort}/ (timeout ${Math.round(timeoutMs / 1000)}s)…`);
@@ -6750,7 +7068,16 @@ if (args.includes('--json') && provisionResult) {
     ok: !probeVerdict || probeVerdict.ok,
     ...provisionResult,
     openUri: obsidianOpenUri(provisionResult.obsidianName),
+    // `opened` is now what was OBSERVED, not what was attempted: the URI was
+    // dispatched AND Obsidian knows this vault. The two halves are reported
+    // separately so a caller can say which one is missing, and `openInstruction`
+    // carries the one manual gesture a brand-new vault always needs.
     opened,
+    ...(openReport ? {
+      launched: openReport.launched,
+      knownToObsidian: openReport.knownToObsidian,
+      openInstruction: openReport.instruction,
+    } : {}),
     probe: probeVerdict,
   }));
 }

@@ -35,6 +35,90 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+/**
+ * Where Obsidian keeps the list of vaults it knows about.
+ *
+ * @param {{ platform?: string, env?: object }} [opts] test seams
+ * @returns {string|null} the path, or null on a platform we have no rule for.
+ */
+export function obsidianVaultRegistryPath({ platform = process.platform, env = process.env } = {}) {
+  if (platform === 'win32') {
+    const appData = env.APPDATA || (env.USERPROFILE && path.join(env.USERPROFILE, 'AppData', 'Roaming'));
+    return appData ? path.join(appData, 'obsidian', 'obsidian.json') : null;
+  }
+  const home = env.HOME || os.homedir();
+  if (!home) return null;
+  if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'obsidian', 'obsidian.json');
+  }
+  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'obsidian', 'obsidian.json');
+}
+
+/**
+ * Does Obsidian already know this vault?
+ *
+ * THE REASON THIS EXISTS. `obsidian://open?vault=NAME` does not open a folder;
+ * it looks NAME up in the registry above and opens what it finds. A vault the
+ * user has never opened by hand is not in there, so the protocol handler pops
+ * up "Unable to find a vault for the URL" and nothing happens — while the
+ * launcher, whose job ends when the OS accepts the URI, correctly reports that
+ * it dispatched. Measured 2026-09-11 on a freshly provisioned vault: the URI
+ * was dispatched, Obsidian refused it, and the provisioner reported
+ * `opened: true`.
+ *
+ * So a caller that wants to say "the vault is open" has to ask this too. It is
+ * a NECESSARY condition, not a sufficient one: knowing the vault is what makes
+ * the URI resolvable, and the caller still cannot see the window appear.
+ *
+ * Matching is on the PATH, not the name: `obsidian.json` is keyed by an opaque
+ * id and each entry carries its folder path, which is the unambiguous identity.
+ *
+ * @param {string} vaultPath absolute path of the vault folder.
+ * @param {{ platform?: string, env?: object, registryPath?: string }} [opts]
+ * @returns {{ known: boolean, registryPath: string|null, reason: string|null }}
+ *   `known: false` with a `reason` when the registry could not be read at all —
+ *   an unreadable registry is not evidence that the vault is absent, and the
+ *   caller is told which of the two it is looking at.
+ */
+export function isVaultKnownToObsidian(vaultPath, opts = {}) {
+  const registryPath = opts.registryPath || obsidianVaultRegistryPath(opts);
+  if (!registryPath) return { known: false, registryPath: null, reason: 'no known registry location for this platform' };
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  } catch (err) {
+    const why = err && err.code === 'ENOENT' ? 'Obsidian has never run on this machine' : String(err && err.message);
+    return { known: false, registryPath, reason: why };
+  }
+  const vaults = parsed && typeof parsed === 'object' ? parsed.vaults : null;
+  if (!vaults || typeof vaults !== 'object') {
+    return { known: false, registryPath, reason: 'the registry has no `vaults` map' };
+  }
+  const wanted = path.resolve(vaultPath);
+  // The CALLER's platform, not this process's. `opts.platform` is a test seam
+  // everywhere else in this module, and reading `process.platform` here made
+  // the comparison ignore it — so a test could not exercise the POSIX rule at
+  // all, and the seam quietly described something the code did not do.
+  const platform = opts.platform || process.platform;
+  for (const entry of Object.values(vaults)) {
+    if (!entry || typeof entry.path !== 'string') continue;
+    // Windows is case-insensitive. Linux is not. macOS is usually not either,
+    // but APFS can be formatted case-SENSITIVE, so folding there can match two
+    // genuinely different directories — it is the lenient choice on a platform
+    // where the strict one would be wrong more often (a vault the user opened
+    // as `/Users/x/Vaults/Notes` and we resolved as `/users/x/vaults/notes`).
+    const known = path.resolve(entry.path);
+    const same = platform === 'linux'
+      ? known === wanted
+      : known.toLowerCase() === wanted.toLowerCase();
+    if (same) return { known: true, registryPath, reason: null };
+  }
+  return { known: false, registryPath, reason: 'this vault has never been opened in Obsidian' };
+}
 
 /**
  * The `obsidian://` URI that opens a vault by its Obsidian-side label.

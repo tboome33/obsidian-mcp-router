@@ -32,7 +32,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { obsidianOpenUri, launcherEnv, launchPlan, launchObsidianVault } from '../src/helpers/obsidian-launcher.mjs';
+import os from 'node:os';
+import { obsidianOpenUri, launcherEnv, launchPlan, launchObsidianVault, obsidianVaultRegistryPath, isVaultKnownToObsidian } from '../src/helpers/obsidian-launcher.mjs';
 
 describe('obsidianOpenUri — the vault label, encoded', () => {
   test('spaces and accents survive as percent-encoding, not as breakage', () => {
@@ -181,5 +182,128 @@ describe('GUARD — the plan reaches the spawn', () => {
     assert.equal(bindings.length, 1, `exactly one binding of \`options\` in the launcher, found ${bindings.length}`);
     assert.doesNotMatch(body, /\boptions\s*(?:\.\w+|\[[^\]]+\])?\s*=[^=]/, 'no assignment to `options` or through it');
     assert.doesNotMatch(body, /\boptions\.env\b/, 'the environment is never touched after the plan built it');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Does Obsidian know this vault? — the half `opened: true` used to skip
+// ---------------------------------------------------------------------------
+
+describe('isVaultKnownToObsidian — the condition that makes the URI resolvable', () => {
+  /**
+   * A throwaway `obsidian.json` plus the options that point the reader at it.
+   * `registryPath` is passed explicitly so no test can read the developer's own
+   * registry, on any platform.
+   */
+  function withRegistry(content) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'obsidian-registry-'));
+    const registryPath = path.join(dir, 'obsidian.json');
+    if (content !== undefined) {
+      fs.writeFileSync(registryPath, typeof content === 'string' ? content : JSON.stringify(content));
+    }
+    return { dir, registryPath };
+  }
+
+  test('a vault listed in the registry is known', () => {
+    const vault = path.join(os.tmpdir(), 'known-vault');
+    const { dir, registryPath } = withRegistry({
+      vaults: { abc123: { path: vault, ts: 1 }, def456: { path: path.join(os.tmpdir(), 'other'), ts: 2 } },
+    });
+    try {
+      const r = isVaultKnownToObsidian(vault, { registryPath });
+      assert.equal(r.known, true);
+      assert.equal(r.reason, null);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a FRESHLY PROVISIONED vault is NOT known — the whole point', () => {
+    // Obsidian resolves `obsidian://open?vault=NAME` against this registry, so
+    // a vault the user has never opened by hand cannot be opened by URI. That
+    // is the state of every vault the provisioner has just created, which is
+    // why reporting `opened: true` there was wrong on the most common call
+    // there is.
+    const { dir, registryPath } = withRegistry({ vaults: { abc123: { path: path.join(os.tmpdir(), 'some-other-vault') } } });
+    try {
+      const r = isVaultKnownToObsidian(path.join(os.tmpdir(), 'brand-new-vault'), { registryPath });
+      assert.equal(r.known, false);
+      assert.match(r.reason, /never been opened/i);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('an accented vault path matches — it is compared as a path, not as bytes', () => {
+    const vault = path.join(os.tmpdir(), 'La m' + String.fromCharCode(0xe9) + 'thode');
+    const { dir, registryPath } = withRegistry({ vaults: { x: { path: vault } } });
+    try {
+      assert.equal(isVaultKnownToObsidian(vault, { registryPath }).known, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a missing registry says WHY, and does not claim the vault is absent', () => {
+    // "Obsidian has never run here" and "this vault is not registered" are two
+    // different facts, and the caller's message to the user differs.
+    const r = isVaultKnownToObsidian('/anywhere', { registryPath: path.join(os.tmpdir(), 'no-such-registry-' + Date.now(), 'obsidian.json') });
+    assert.equal(r.known, false);
+    assert.match(r.reason, /never run/i);
+  });
+
+  test('a malformed or shapeless registry is reported, not thrown', () => {
+    for (const content of ['{not json', JSON.stringify({}), JSON.stringify({ vaults: 'nope' })]) {
+      const { dir, registryPath } = withRegistry(content);
+      try {
+        const r = isVaultKnownToObsidian('/anywhere', { registryPath });
+        assert.equal(r.known, false);
+        assert.ok(typeof r.reason === 'string' && r.reason.length > 0, 'a reason must be given');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('an entry with no usable path is skipped, not crashed on', () => {
+    const vault = path.join(os.tmpdir(), 'ok-vault');
+    const { dir, registryPath } = withRegistry({ vaults: { a: null, b: { ts: 1 }, c: { path: 42 }, d: { path: vault } } });
+    try {
+      assert.equal(isVaultKnownToObsidian(vault, { registryPath }).known, true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('obsidianVaultRegistryPath — where each platform keeps that list', () => {
+  test('win32 uses APPDATA', () => {
+    const p = obsidianVaultRegistryPath({ platform: 'win32', env: { APPDATA: 'C:\A' } });
+    assert.equal(p, path.join('C:\A', 'obsidian', 'obsidian.json'));
+  });
+
+  test('win32 falls back to USERPROFILE when APPDATA is absent', () => {
+    const p = obsidianVaultRegistryPath({ platform: 'win32', env: { USERPROFILE: 'C:\U' } });
+    assert.equal(p, path.join('C:\U', 'AppData', 'Roaming', 'obsidian', 'obsidian.json'));
+  });
+
+  test('darwin uses Application Support', () => {
+    const p = obsidianVaultRegistryPath({ platform: 'darwin', env: { HOME: '/Users/x' } });
+    assert.equal(p, path.join('/Users/x', 'Library', 'Application Support', 'obsidian', 'obsidian.json'));
+  });
+
+  test('linux honours XDG_CONFIG_HOME, and defaults to ~/.config', () => {
+    assert.equal(
+      obsidianVaultRegistryPath({ platform: 'linux', env: { HOME: '/home/x', XDG_CONFIG_HOME: '/cfg' } }),
+      path.join('/cfg', 'obsidian', 'obsidian.json'),
+    );
+    assert.equal(
+      obsidianVaultRegistryPath({ platform: 'linux', env: { HOME: '/home/x' } }),
+      path.join('/home/x', '.config', 'obsidian', 'obsidian.json'),
+    );
+  });
+
+  test('win32 with neither variable set returns null rather than a bogus path', () => {
+    assert.equal(obsidianVaultRegistryPath({ platform: 'win32', env: {} }), null);
   });
 });

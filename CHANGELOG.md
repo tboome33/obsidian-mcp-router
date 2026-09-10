@@ -86,6 +86,99 @@ conventions. If it does, the picker is really a *removal* picker; if it ships no
 being an installation picker. Both are defensible, and it is a product decision, not a code one.
 It also depends on the template-vs-snippets drift, which is a separate lot.
 
+### A vault whose path carried an accent was provisioned into two directories
+
+Provisioning `C:\VAULTS\La méthode LICARES` on 0.94.1 created **two** directories: the one asked
+for, and `La mÃ©thode LICARES`. The provisioning was split between them — everything written through
+`fs` (the config JSON, `.env`, `.mcp.json`, the `wiki/` scaffold, `identity.json`) landed at the real
+path; everything **cloned as a tree** (the 11 plugins, the themes, `Documentation/`, `.claude/`, the
+embedding cache) landed in the twin. The run reported `ok: true`, no warnings, exit 0 — because every
+individual call had in fact succeeded.
+
+None of the 27 vaults already registered has an accent in its path. This vault was the first, so the
+defect had simply never been triggered; it is not a recent regression.
+
+#### The cause was not where the report expected it
+
+The bug report proposed a child-process boundary — a `spawn` with `shell: true`, a console code page,
+an external copy utility. That was a reasonable reading of the fault line, and it was **wrong**:
+there is no child process in that path. Measured on node v24.13.0 / win32, the boundary is
+`fs.cpSync` itself, which Node reimplemented on C++ `std::filesystem` in the 22.x line — and on
+Windows a `std::filesystem::path` built from a *narrow* string is interpreted in the active code
+page, not in UTF-8:
+
+| call | accented path |
+|---|---|
+| `fs.mkdirSync` / `writeFileSync` / `copyFileSync` | correct |
+| `fs.promises.cp` | correct |
+| `fs.cpSync(file, file)` | correct |
+| `fs.cpSync(dir, dir, { recursive: true })` | **destination corrupted** |
+| `fs.cpSync(dir, dir, { recursive: true, filter })` | correct — a `filter` forces Node's JS fallback |
+| `fs.cpSync` with the accent on the **source** | **process fast-fails**, exit `0xC0000409`, no error, no stderr |
+
+The last two rows are why the rule shipped here is *"no `fs.cpSync` in production code"* rather than
+*"no `fs.cpSync` without a filter"*: the same function is correct or corrupting depending on an option
+that has nothing to do with paths, and a future tidy-up deleting a filter would reintroduce the defect
+without touching anything that looks like a path. And the accented-**source** form is worse than a
+wrong path — it kills the process with nothing a `try/catch` can observe, so a vault under an accented
+folder would have failed with no message at all.
+
+#### What changed
+
+- **`src/helpers/copy-tree.mjs`** — a recursive copy built only out of calls measured to carry a path
+  intact (`readdirSync` + `mkdirSync` + `copyFileSync`), with `filter`, `force` and symlink handling.
+  All six production `fs.cpSync` call sites now use it: five in `scripts/setup-vault.mjs` and one in
+  `src/helpers/plugin-auto-update.mjs`, which copies into `~/.claude/plugins/cache` — a Windows
+  profile folder carrying an accent would have had the whole plugin cache written to a twin nobody
+  ever reads. A source scan in `tests/copy-tree.test.mjs` keeps a seventh site from arriving quietly.
+- **An end-of-provisioning guard.** Every step can succeed individually and still leave the vault in
+  two places, so the run now finishes by asking the disk a question no single step can answer: *is
+  there a directory whose name is mine, mis-encoded?* If there is, provisioning **fails loudly**,
+  names both paths and points at the merge procedure, instead of printing a success banner. The check
+  is written against the symptom, not against `fs.cpSync`, so it stays true whichever API mangles a
+  path next. It walks the ancestors too: `…\Café\notes` puts the twin two levels up, where a guard
+  looking only at siblings of `notes` would have called the run clean.
+
+#### The credential leak was real, and older than this bug
+
+Report item 2 — the twin's `data.json` carrying the template's ports and its `crypto` block — looked
+like a consequence of the split. It was not. `patchRestApiData()` rewrote `port`, `insecurePort` and
+`apiKey`, and left `crypto` — the self-signed certificate Local REST API serves **and its RSA private
+key** — exactly as the source vault wrote it. Measured across this machine's fleet: **13 of the 16
+vaults that have a `data.json` carry a `crypto` block byte-identical to the template's.** Distinct
+keys and distinct ports had made it invisible. It happens on pure-ASCII paths, and always has.
+
+Two fences now, deliberately not one. `clonePluginFolder()` does not copy a credentialed plugin's
+`data.json` **at all**, so the source's key and certificate never reach the target's disk — not even
+for the moment a copy-then-clean would leave them there, and not on the failure paths in between.
+`patchRestApiData()` then *creates* the file with this vault's own port and key, and deletes any
+`crypto` it finds on a vault that had no configuration of its own. A vault that arrived with a valid
+configuration of its own keeps its certificate: that key is nobody else's, and regenerating it would
+be churn. Existing vaults are **not** rewritten — see `docs/reference-vault-setup.md` for how to
+clear one by hand, and why it is worth doing calmly rather than urgently.
+
+#### The plaintext port is now deterministic
+
+`ports.http` stayed `null` in the registry because there was no `data.json` at the real path to write
+a port into — the file only ever existed because it had been copied from the template. Now that the
+provisioner refuses to copy it, it creates it instead, inside the funnel that has just asserted
+ownership. There is no longer a path where the plugin is installed and no port is written.
+
+#### `opened: true` was not a measurement
+
+`obsidian://open?vault=NAME` does not open a folder: it resolves NAME against Obsidian's own registry
+and opens what it finds. A vault the user has never opened by hand is not in that registry — which is
+every freshly provisioned vault — so Obsidian answers *"Unable to find a vault for the URL"* while the
+launcher, whose job ends when the OS accepts the URI, correctly reports that it dispatched. The
+provisioner turned that into `opened: true`, and the one manual gesture still required appeared
+nowhere in the tool's output.
+
+`opened` is now what was observed: the URI was dispatched **and** Obsidian knows this vault.
+`launched` and `knownToObsidian` are reported separately so a caller can say which half is missing,
+and `openInstruction` carries the "Open folder as vault" step when there is one. Likewise
+`probeResult: null` — asking for `--probe` when there is no plaintext port to probe now yields a
+verdict with a reason, instead of a `null` the caller has to interpret.
+
 ### A prompt page now has a lifecycle — Check P and the `prompt-status` convention
 
 A **prompt page** in these vaults is a work order: a self-contained brief written to be pasted into a
