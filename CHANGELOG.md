@@ -10,6 +10,82 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The conventions picker never read the vault, so unchecking a convention did nothing
+
+Creating a vault from the reference template on 0.94.1 (`La méthode LICARES`, 2026-09-11) offered the
+usual picker: eight conventions, four pre-checked. The user kept six and explicitly unchecked
+`bilingual` and `auto-enrichment`. Afterwards the vault's `Documentation/CLAUDE.md` contained **all
+eight** — because the template ships all eight, and nothing in the flow had ever read the file.
+
+Three defects, and only the second one hurts. Every positive choice was a no-op, reported file by
+file as a benign "already installed" and reading globally as "your configuration was applied". Both
+**negative** choices were violated in silence: unchecking, to a human, means "I do not want this",
+and `auto-enrichment` governs automatic saves into the vault. And the skill could not see either,
+because it only ever knew how to add what was missing — it never compared the state asked for
+against the state on disk.
+
+#### The cut that removes a convention was destroying files
+
+Removing `bilingual` by hand found the fourth defect. The documented rule — *from the H2 line through
+the line before the NEXT H2 heading* — stops at a `## ` that the snippet **displays inside a fenced
+markdown example**. Applied to that convention it left two thirds of the section in place, declared
+it removed, and severed the fence, leaving an unterminated code block that swallows the rest of the
+document at render time.
+
+That is the same defect class this repository already fixed for `catalog-sessions-heading` in
+v0.92.0, where a `## Sessions` inside a fence must not count as a heading. The scanner existed; the
+`conventions` skill was not using it. It now lives in `src/helpers/markdown-headings.mjs`, and both
+callers share it — a rule fixed at one site and left wrong at the other reads as closed while the
+second site keeps failing.
+
+#### What ships
+
+- `src/helpers/markdown-headings.mjs` — the fence- and comment-aware heading scanner, extracted from
+  `detectCatalogOwnedHeadings` (whose 69 tests stay green over the extraction) and shared.
+- `src/helpers/claude-md-conventions.mjs` — detection, section boundaries, removal, verification,
+  the canonical `CLAUDE.md` resolution, and `planConventionPicker`, which sorts a picker answer into
+  install / keep / **remove** / skip.
+- The picker now shows the true state — installed conventions pre-checked and labelled *déjà en
+  place* — and an unchecked-but-present convention becomes an explicit question ("je retire leurs
+  sections ?"), answered through `remove`'s preview-and-sidecar-backup guards. Unchecking is
+  genuinely ambiguous; the fix is to ask, never to guess in either direction. Silence was the bug; a
+  silent deletion would have been a worse one.
+- **Where the file is** is now resolved, not assumed: `CLAUDE.md`, then `wiki-meta/CLAUDE.md`, then
+  `Documentation/CLAUDE.md` — the shape this fleet actually has. A blind `get_file("CLAUDE.md")`
+  404s on a template-born vault, concludes "not installed", and writes a SECOND conventions file at
+  the root. Two candidates present returns `path: null` — the ambiguity is in the type, not in a
+  flag a caller can forget to read.
+
+#### Every refusal in it is a review finding
+
+Two adversarial rounds found twenty-five ways the first version ate the wrong bytes or reported work
+it had not done. The ones worth naming, because each is now a refusal rather than a cleverer guess:
+
+- an **H1** spelled like a convention was accepted as its heading, so its "section" ran to the end of
+  the document and `remove` deleted the file below the title. Identity now carries a LEVEL.
+- identity was matched loosely. `## Bilingual convention (FR + EN, FR primary) — mes ajouts` is the
+  user's own section; a prefix or substring match would have `remove` delete their writing.
+- boundaries were filtered like identities, so a cut ran straight through a heading the user had
+  indented — or written setext-style. Identity is narrow (column 0, level 2, exact); the boundary is
+  every heading the scanner sees, which is the safe direction for a deletion.
+- `## Alpha ##<NBSP>` normalised to `Alpha`. A closing sequence is now recognised on the raw capture,
+  before any trimming, and only after an ASCII space or tab.
+- the same convention appearing **twice** was half-removed and reported as done. It now refuses, and
+  the refusal carries every occurrence so the user's answer can come straight back in.
+- verification asked "is the target gone, and are the other conventions intact?" — which accepts the
+  deletion of everything that is not a convention. `verifyRemoval` now requires the result to be the
+  input minus exactly the located byte range, and keeps the catalogue comparison as a second,
+  independent question that catches a range located wrongly.
+- and one **widening was tried twice and reverted twice**: tracking indented fences. Each
+  intermediate step broke a witness from the v0.92.0 lot, because a scanner that opens a fence it
+  cannot close hides every heading below it. Fences stay at column 0, the limit is documented, and a
+  corpus scan over the whole snippet library fails if a heading ever hides inside one.
+
+**Still open, and Roland's call:** whether the reference template should keep shipping all eight
+conventions. If it does, the picker is really a *removal* picker; if it ships none, it goes back to
+being an installation picker. Both are defensible, and it is a product decision, not a code one.
+It also depends on the template-vs-snippets drift, which is a separate lot.
+
 ### A prompt page now has a lifecycle — Check P and the `prompt-status` convention
 
 A **prompt page** in these vaults is a work order: a self-contained brief written to be pasted into a

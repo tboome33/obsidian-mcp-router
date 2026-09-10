@@ -169,13 +169,28 @@ Idempotency rule: scan existing content for the exact strings `.env` and `.mcp.j
 
 ### 1A.5 — Conventions picker
 
-Pre-flight:
+**READ THE TARGET FIRST — the picker is not allowed to guess.** A vault provisioned from the reference template already carries every one of these conventions. Before composing the question, resolve the vault's conventions file and detect what is in it, exactly as the `conventions` skill's `pick` flow describes:
 
-> Le vault est provisionné et lié au workspace. Reste à choisir quelles **conventions** tu veux installer dans le `CLAUDE.md` du vault. Une convention, c'est une règle de comportement pour Claude — par exemple "toujours mettre à jour les roadmaps quand on ship du code" ou "vérifier dans le wiki avant de répondre". Elles sont matérialisées dans le `CLAUDE.md` du vault et lues à chaque session.
+```javascript
+import { resolveClaudeMd, detectConventions, planConventionPicker }
+  from '<plugin-root>/src/helpers/claude-md-conventions.mjs';
+```
+
+Measured on 0.94.1 (2026-09-11, vault `La méthode LICARES`): the picker was shown blind, the user kept six conventions and unchecked two — and all eight were already installed. Every positive choice was a no-op reported as a success, and both negative choices were violated in silence. One of them, `auto-enrichment`, governs automatic saves into the vault.
+
+Pre-flight (adapt the counts to what you actually detected):
+
+> Le vault est provisionné et lié au workspace. Reste à choisir quelles **conventions** doivent figurer dans le fichier de conventions du vault (`<le fichier que resolveClaudeMd a trouvé>`). Une convention, c'est une règle de comportement pour Claude — par exemple "toujours mettre à jour les roadmaps quand on ship du code" ou "vérifier dans le wiki avant de répondre". Elles sont lues au démarrage de chaque session sur ce vault.
 >
-> Je propose les 8 disponibles, avec un set "recommandé" déjà coché. Tu peux tout valider, décocher certaines, ou tout décocher si tu veux configurer plus tard via `/obsidian-router:conventions`.
+> ⚠️ Ce vault en porte déjà **N sur M** (le modèle de référence les livre). Elles sont **pré-cochées** ci-dessous. Décocher une convention déjà présente veut dire *retirer sa section de ce fichier* — je te le redemanderai avant d'y toucher.
 
-Use `AskUserQuestion` with `multiSelect: true` and these 8 options:
+`M` is the number of options you are about to display, counted from the collection you globbed — never the literal 8 below, which is what the library shipped when this page was written.
+
+**One initialization rule, and it is the state**: an option is pre-checked if and only if its detection came back `installed`, and its label is suffixed with `— déjà en place`. The `(recommandé)` markers below are ADVICE about the ones that are absent; they never pre-check or un-check anything. (Applying them as a default would silently un-check an installed convention nobody recommended — which is the removal question being asked by accident.)
+
+The options you display are also exactly the catalogue you pass to `planConventionPicker`: if the library has grown, show the new ones too rather than planning with a wider list than you displayed.
+
+Use `AskUserQuestion` with `multiSelect: true` and these options:
 
 - **roadmap-discipline** (recommandé) — création et maintenance disciplinée des roadmaps
 - **default-vault-health-check** (recommandé) — alerte si le vault par défaut n'est pas joignable au démarrage
@@ -188,9 +203,14 @@ Use `AskUserQuestion` with `multiSelect: true` and these 8 options:
 
 The 4 "recommandé" ones echo rules already active in the user's global `~/.claude/CLAUDE.md`, so materializing them locally is mostly free and helps when the user invokes Claude on the vault directly (e.g., from inside Obsidian Smart Composer). The 4 stylistic ones are project-flavored — decision should be the user's.
 
-**Install via the `conventions` skill, not by hand**. For each picked convention, invoke the `/obsidian-router:conventions` skill with `install <id>` (e.g. `/obsidian-router:conventions install roadmap-discipline`). The conventions skill handles: snippet resolution, idempotent H2-heading detection (skips if already installed), safe append to the vault's `CLAUDE.md`. Do NOT bypass it with a raw `mcp__obsidian-router__append_to_file` — that skips the idempotency guard and the consistency with `/obsidian-router:conventions list`/`remove` later.
+**Then plan the answer, don't act on it directly.** `planConventionPicker({ content, catalogue, selected })` sorts the displayed options into `install` / `keep` / `remove` / `skip`. Act on each bucket as the `conventions` skill's `pick` section specifies:
 
-Show progress: `✓ source-type installed`, `✓ wiki-query-first installed`, … If a convention reports "already installed", surface that to the user (it's a no-op, not an error).
+- `install` — invoke `/obsidian-router:conventions install <id>` per convention. **Install via the skill, not by hand**: it owns snippet resolution, fence-aware detection and the safe append. Do NOT bypass it with a raw `mcp__obsidian-router__append_to_file`.
+- `keep` — report "déjà en place". Never as "installée".
+- `remove` — **ask before anything is cut**, listing them by name and saying what disappears; on a yes, go through `/obsidian-router:conventions remove <id>` with its preview, sidecar backup and `verifyRemoval` check; on a no, say that **leurs sections restent dans ce fichier**. Say "je retire leur section de ce fichier", not "je les désactive": several of these also live in the user's global `~/.claude/CLAUDE.md`, where this changes nothing — and whether a rule is *active* depends on which files the next session loads, which nothing here observes.
+- `skip` — nothing, silently. This is the only bucket that may be silent.
+
+Print `plan.plan` before acting — it counts intentions. Show progress per convention, then close with a summary built from what actually HAPPENED: installed, already in place, removed, declined, failed. If nothing was installed because everything was already there, the first line must say so: *"0 installée, 6 déjà en place"* is the truth, *"6 conventions configurées"* is not.
 
 ### 1A.6 — Final reminders
 
@@ -290,7 +310,8 @@ Returns server-info JSON → golden. 401 → wrong API key. Timeout → URL unre
 - **Don't add a remote vault entry without a full set of `name`, `baseUrl`, `apiKey`** — refuse and ask for the missing fields.
 - **Don't pretend the setup-vault.mjs script exists if it doesn't** — fall back to the manual path with a clear explanation.
 - **Don't create the vault INSIDE the workspace** — that defeats the credential-protection goal. Default vault path is `C:\VAULTS\<basename>` (or `~/VAULTS/<basename>`), never `<cwd>/vault/`.
-- **Don't skip the conventions picker silently** — even if the user looks impatient, the picker is one AskUserQuestion call with a recommended default. It's the cheapest way to materialize the global rules locally.
+- **Don't skip the conventions picker silently** — even if the user looks impatient, the picker is one AskUserQuestion call. It's the cheapest way to materialize the global rules locally.
+- **Don't show the conventions picker before reading the vault's `CLAUDE.md`** — a blind picker asks the user to choose things that are already there, and turns their "no" into nothing at all. Detect first, pre-check what is installed, and treat an unchecked-but-present convention as a question, never as silence.
 
 ---
 
@@ -304,4 +325,4 @@ After everything is done, the following should be true. If any of them isn't, su
 - [ ] `<cwd>/.env` contains `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"`
 - [ ] `<cwd>/.gitignore` contains `.env` and `.mcp.json`
 - [ ] `~/.claude/obsidian-mcp-router/config.json` has `<vault-path>` in `portRegistry`
-- [ ] `<vault>/CLAUDE.md` contains the H2 headings of the conventions the user picked
+- [ ] the vault's conventions file (the one `resolveClaudeMd` picked — often `Documentation/CLAUDE.md`, not the root) contains the H2 headings of the conventions the user kept, and **none of the ones they asked to remove**

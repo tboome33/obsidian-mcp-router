@@ -166,6 +166,7 @@
       "tools": [
         "append_to_file",
         "get_file",
+        "list_files",
         "list_vaults",
         "write_file"
       ],
@@ -180,7 +181,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs and (for `add`) writes into — outside every vault and outside the workspace."
+        "reason": "No harness executes a skill. The local:fs atoms are real and easy to miss: the snippet library lives in the PLUGIN INSTALL directory, which the skill both globs and (for `add`) writes into — outside every vault and outside the workspace. Since v0.94.3 the skill also calls list_files, to find WHICH conventions file a vault has before touching it — the fleet keeps it at three different paths, and the previous blind `get_file(\"CLAUDE.md\")` turned a 404 into a second, competing conventions file at the vault root. That widens the read set only: nothing about the write side changed, and the detection and section-cutting logic it now shares with the attach wizard is a pure helper (src/helpers/claude-md-conventions.mjs) that calls nothing."
       }
     },
     "decision-consolidate": {

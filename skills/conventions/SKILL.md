@@ -30,6 +30,36 @@ Manage the named conventions that ship in vault-root `CLAUDE.md` files — insta
 
 Each convention snippet starts with a unique `## H2` heading. That heading is the **convention's stable identity** — used both to detect "is this convention installed in the target CLAUDE.md?" and to remove it cleanly. The snippet filename (`source-type.md`) is the **convention id** used in slash command arguments.
 
+**Never answer either question by hand.** Both live in `<plugin-root>/src/helpers/claude-md-conventions.mjs`, and both were wrong before v0.94.3 — measurably so:
+
+```javascript
+import {
+  resolveClaudeMd, detectConventions, findConventionSection,
+  isConventionInstalled, removeConvention, verifyRemoval, planConventionPicker,
+} from '<plugin-root>/src/helpers/claude-md-conventions.mjs';
+```
+
+Two rules the helper enforces and a hand-rolled check does not:
+
+1. **Fence-aware.** A `## ` line inside a fenced code block is an example, not a heading. The `bilingual` and `path-disambiguation` snippets both DISPLAY `## ` lines inside a ```` ```markdown ```` block. A `content.includes("## <heading>")` test reports a convention that is merely quoted as installed; a cut that stops at "the next `## `" stops inside the example, leaves two thirds of the section behind, and severs the fence — which swallows the rest of the document at render time. That happened on a real vault on 2026-09-11.
+2. **Exact identity, never resemblance.** `## Bilingual convention (FR + EN, FR primary) — mes ajouts` is the USER's section, not the convention. A prefix or substring match calls it installed, and `remove` then deletes their writing. Matching is exact after trimming and stripping ATX closing hashes (`## Foo ##` is `Foo`), at column 0, **and at the identity's own level**: a `# ` H1 spelled like a convention is a document title, and treating it as the convention makes its "section" run to the end of the file.
+
+A convention's section runs from its heading to the next heading **of the same level or higher** — its own `###` subsections belong to it, and an `#` H1 below ends it. Identity is narrow, the boundary is wide: a heading the user indented, or wrote setext-style (underlined with `===`), still stops the cut. A missed boundary deletes more than the convention.
+
+**The scanner has one documented blind spot**: fences are tracked at column 0 only, so a heading-looking line inside an INDENTED fenced block is read as a heading. Every attempt to widen that broke a witness from the v0.92.0 lot (a scanner that opens a fence it cannot close hides the rest of the file). A repository test scans the whole snippet library and fails if such a line ever appears there. If you meet one in a user's `CLAUDE.md`, say so and stop — do not cut.
+
+## Where the vault's conventions file lives
+
+There is no single path. The fleet audit that produced `CLAUDE_MD_CANDIDATES` found three, and they are searched in this order:
+
+1. `CLAUDE.md` — the standard Claude Code location
+2. `wiki-meta/CLAUDE.md`
+3. `Documentation/CLAUDE.md` — what the reference template ships
+
+**This matters more than it looks.** A vault provisioned from the template has `Documentation/CLAUDE.md` and NO root file. A naive `get_file("CLAUDE.md")` 404s, the skill concludes "not installed", and `install` appends a SECOND conventions file at the root — two sets of rules, one of which nobody reads.
+
+So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it.
+
 Mapping (initial library shipped with this skill):
 
 | Snippet file | Convention id | Identifying H2 heading |
@@ -65,8 +95,8 @@ If you can't find the snippets dir, fall back to reading `<router-clone>/templat
    - If user said *"on vault X"* → just that vault
    - If user said *"on all vaults"* → call `list_vaults`, filter to `online: true`
    - Default (no vault specified) → the current default vault from `list_vaults`
-4. For each (convention × vault) pair: read the vault's `CLAUDE.md`, check if the H2 heading is present (`includes()`), mark ✅ or ❌.
-5. Render as a markdown table.
+4. For each vault: resolve its conventions file (see above), read it, and call `detectConventions(content, catalogue)` with the globbed library. Mark ✅ or ❌ from `installed`. A vault with no conventions file at all is "nothing installed", not an error.
+5. Render as a markdown table, and name the file each column was read from — on a fleet where the path differs per vault, a status table that hides which file it read is a status table nobody can check.
 
 Example output:
 
@@ -90,22 +120,29 @@ For multi-vault status, render one row per vault with checkmark columns.
    - `on <vault>` → that specific vault
    - Default → the current default vault
 3. For each target vault:
-   - Read its `CLAUDE.md` via `get_file`
-   - Check if the snippet's H2 heading already appears in the content → if yes, SKIP and report "already installed"
-   - If no, `append_to_file` with the snippet content, prefixed by `\n` to ensure section separation
-4. Report a summary: `N installed, M skipped (already present), K failed`.
+   - Resolve its conventions file and read it via `get_file`
+   - `isConventionInstalled(content, heading)` → if true, SKIP and report "already in place"
+   - If false, `append_to_file` with the snippet content, prefixed by `\n` to ensure section separation
+4. Report a summary: `N installed, M already in place, K failed`.
+
+**Say "already in place", never "installed", for a skip.** Reported per file, "already installed" reads as a benign detail; reported as a total, it reads as "your configuration was applied". A run that installed nothing must say so in the first line — a user who picked six conventions and got six no-ops believes they configured a vault that was already configured for them.
 
 ### `remove <convention-id> [on <vault>] [--all]` — strip a convention
 
 1. Same snippet resolution as install.
 2. Same vault resolution.
 3. For each target vault:
-   - Read its `CLAUDE.md` via `get_file`.
-   - Find the snippet's H2 heading.
-   - If not present, SKIP and report "not installed".
-   - If present, find the section boundaries: from the H2 line through the line before the NEXT H2 heading (or EOF if it's the last section).
+   - Resolve its conventions file and read it via `get_file`.
+   - `findConventionSection(content, heading)` — if `found` is false, SKIP and report "not installed".
+   - The section it returns IS the boundary: heading line through the line before the next heading of the same level or higher (or EOF). Do NOT re-derive it by scanning for `## ` yourself; that rule is what destroyed a file on 2026-09-11.
+   - `removeConvention(content, heading)` — and **read its `reason`**. It refuses rather than guessing: `not-installed`, `duplicate-identity` (the heading appears more than once), `no-such-occurrence`. On a duplicate, show the user every occurrence with its line number (`lines`) and ask which is theirs; cutting the first copy blind would report success on a file where the convention is still installed. Their answer goes straight back in — `removeConvention(content, heading, { occurrence: 2 })` — and the verification below is then told `expectAbsent: false`, because a copy is meant to remain. A refusal you cannot answer would be a dead end.
    - **MANDATORY backup before write** (IMP-4 from `/review+` 2026-05-21) — see "Safety guards" below.
-   - `write_file` with the content minus that section.
+   - **Verify the proposed content BEFORE writing it**, with the helper, not by eye:
+     ```javascript
+     const { ok, problems } = verifyRemoval({ before, after, heading, catalogue });
+     ```
+     Its primary question is strict: is the result exactly `before` with the located byte range removed? Anything else — a trimmed seam, an edited preamble, a swallowed personal section — fails, including damage to text no catalogue knows about. It then asks a second, independent question: is every convention that was installed *before* still installed with byte-identical text? (That one catches a range located wrongly, since a severed fence hides everything below it.) If `ok` is false, ABORT and show `problems`. Do not invent your own check — counting fence lines for parity, the obvious invention, is not a balance test (a four-backtick block may legitimately contain a literal triple-backtick line).
+   - Then `write_file` with the verified content.
 4. Report summary, INCLUDING the path of every sidecar backup created (so the user can rollback by hand if needed).
 
 ### Safety guards on `remove` (mandatory, IMP-4)
@@ -125,6 +162,34 @@ For multi-vault status, render one row per vault with checkmark columns.
 
 Convenience alias for `install <convention-id> --all`. Same logic, with a clearer report grouping vaults by status (online + installed, online + just-installed, offline + skipped, online + failed).
 
+### `pick` — the state-aware picker (what `meta-attach-vault` delegates to)
+
+A picker that has not read the target is a picker that lies. Before showing anything:
+
+1. Resolve and read the vault's conventions file (empty string if there is none).
+2. `detectConventions(content, catalogue)` → the real state.
+3. Show every option with the installed ones **already checked** and labelled *"déjà en place"* / *"already in place"*. That single change removes the whole first defect: the user stops "choosing" things that are already there.
+4. Feed the answer to `planConventionPicker({ content, catalogue, selected })`, which sorts every convention into four buckets:
+
+| bucket | meaning | action |
+|---|---|---|
+| `install` | checked, absent | append the snippet |
+| `keep` | checked, present | nothing — report "already in place" |
+| `remove` | **unchecked, present** | **ask** (see below) |
+| `skip` | unchecked, absent | nothing, silently |
+
+5. Print `plan.plan` **before acting** — it counts intentions, and says so. Report `plan.unknown` if the answer named an id the library does not ship, and `plan.duplicates` if a convention appears twice in the file. The CLOSING summary of the run is built from what actually happened (installed / already in place / removed / **declined** / failed), never from the plan: a user who declined both removals must not be told "2 to remove".
+
+**The catalogue you plan with must be exactly the options you displayed.** If the library ships a ninth convention and the picker only showed eight, the ninth lands in `remove` — and the confirmation then says "you did not check these" about a checkbox the user never saw. One collection, displayed and planned.
+
+**The `remove` bucket is the whole point, and it is an INTENTION, not an action.** Unchecking is ambiguous — it can mean "do not install this" as easily as "delete what is there" — so resolve it by asking, never by guessing in either direction:
+
+> Ces conventions sont **déjà présentes** dans le fichier de conventions du vault (`Documentation/CLAUDE.md`) et tu ne les as pas cochées : `bilingual`, `auto-enrichment`. Je retire leurs sections de ce fichier ? (elles restent en place si tu dis non)
+
+On a yes, go through `remove` in full — verbatim preview, sidecar backup and `verifyRemoval` included. On a no, say that **their sections stay in this file**. What must never happen again is the third possibility: saying nothing, and leaving a rule the user believes they turned off governing the vault. `auto-enrichment` governs automatic saves.
+
+**Say what you are actually doing: removing a section from THIS file.** Several of these conventions also exist in the user's global `~/.claude/CLAUDE.md`; deleting the vault's local copy does not switch the global rule off, and a session already open will not see the change either (conventions are read at session start). Nothing here observes whether a rule is *in force* — only what a file contains. Promising "désactivée" when you delivered "retirée de ce fichier" is the same class of lie as reporting a skip as an install.
+
 ### Add a new convention to the library
 
 1. Create `<plugin-root>/skills/conventions/snippets/<new-id>.md` with the H2 heading as first line and the convention content below.
@@ -135,6 +200,9 @@ Convenience alias for `install <convention-id> --all`. Same logic, with a cleare
 
 - **Don't hardcode the list of conventions** — `Glob` the snippets dir every time so newly-added conventions appear automatically.
 - **Don't rely on full-file equality to detect "already installed"** — users may have edited the convention content in their vault's CLAUDE.md. Match on the H2 heading only.
+- **Don't detect with `includes()` and don't cut at "the next `## `"** — both ignore fenced blocks, and the snippets contain fenced `## ` examples. Use `claude-md-conventions.mjs` for both.
+- **Don't assume the conventions file is at the vault root** — resolve it. The template ships it under `Documentation/`, and guessing wrong creates a second one.
+- **Don't report a skip as an install, and don't let an unchecked-but-present convention pass in silence** — those are the two halves of the same lie, and the second one leaves a rule running that the user thinks they turned off.
 - **Don't auto-restart Claude or Obsidian** — the user does it. Tell them the convention takes effect at the next Claude session start (since CLAUDE.md is read at session start).
 - **Don't propagate to offline vaults** — they'll fail with `ECONNREFUSED`. List them explicitly in the report so the user knows to come back later.
 - **Don't strip whitespace at the section boundary on remove** — the snippet starts with `\n## H2`, the previous section probably ends with `\n\n`. Leaving the trailing newlines is fine; Obsidian renders the same.

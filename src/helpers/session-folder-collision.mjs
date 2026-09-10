@@ -41,6 +41,8 @@
  * keep in sync.
  */
 
+import { scanAtxHeadings } from './markdown-headings.mjs';
+
 /**
  * Area names under `wiki/` that `wiki-meta/` already owns.
  *
@@ -170,69 +172,20 @@ export function detectCatalogOwnedHeadings(catalogContent) {
   if (typeof catalogContent !== 'string') return [];
 
   const findings = [];
-  const lines = catalogContent.split(/\r?\n/);
-  let fenceChar = null;
-  let fenceLen = 0;
-  let inComment = false;
 
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
+  // The fence/comment state machine and the ATX shape live in
+  // `markdown-headings.mjs` since v0.94.3, shared with the `conventions`
+  // installer — which had the same question ("is this line a heading?") and the
+  // wrong answer, and destroyed a file with it. What stays HERE is the part
+  // that is specific to a catalogue: level 2+, AT COLUMN 0. The question is "is
+  // this an AREA of this catalogue?", and an area is a top-level section — so
+  // the position is part of the definition, not an approximation of it. Every
+  // construct that could nest a heading (list item, blockquote, indented code)
+  // indents it, and an indented heading is simply not an area.
+  for (const h of scanAtxHeadings(catalogContent)) {
+    if (h.level < 2 || h.indent !== 0) continue;
 
-    // INSIDE an open block, only its own terminator is looked for. Everything
-    // else on these lines is literal text, and a scanner that reads structure
-    // out of it desynchronises: a review round produced `- ```` inside a fenced
-    // block being taken for a closing fence, which then reported the code below
-    // it AND turned the real closer into a new opener.
-    if (fenceChar !== null) {
-      const closer = /^(`{3,}|~{3,})(.*)$/.exec(line);
-      // Only spaces or tabs may follow a closing fence — `trim()` would also eat
-      // a non-breaking space and close a block CommonMark leaves open.
-      if (closer && closer[1][0] === fenceChar && closer[1].length >= fenceLen && /^[ \t]*$/.test(closer[2])) {
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      continue;
-    }
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      continue;
-    }
-
-    // Fenced code blocks: a catalogue may legitimately SHOW the heading it tells
-    // you not to write, and flagging an example trains the reader to ignore the
-    // rule. A BACKTICK fence's info string may not contain a backtick — such a
-    // line opens nothing, and treating it as an opener hides the real heading
-    // after it.
-    const fence = /^(`{3,}|~{3,})(.*)$/.exec(line);
-    if (fence && !(fence[1][0] === '`' && fence[2].includes('`'))) {
-      fenceChar = fence[1][0];
-      fenceLen = fence[1].length;
-      continue;
-    }
-
-    // HTML comments hide their contents, so a commented-out `## Sessions`
-    // renders as nothing and must not send a human hunting for a section that
-    // is not there. The opener has to BEGIN the line — a backtick-quoted
-    // `<!--` in prose is inline code, and a substring search on it swallowed
-    // the rest of the file in review round 2. Checked after the fence, so a
-    // comment marker in a fence's info string cannot hijack it either.
-    if (/^<!--/.test(line) && !line.includes('-->')) {
-      inComment = true;
-      continue;
-    }
-
-    // ATX heading, level 2+, AT COLUMN 0. The question is "is this an AREA of
-    // this catalogue?", and an area is a top-level section — so the position is
-    // part of the definition, not an approximation of it. That is what lets this
-    // scanner stay line-based and honest: every construct that could nest a
-    // heading (list item, blockquote, indented code) indents it, and an indented
-    // heading is simply not an area. The separator after the hashes is a space
-    // or a TAB, never any unicode whitespace: `##<NBSP>Sessions` is not a
-    // heading at all.
-    const atx = /^#{2,6}[ \t]+(.*)$/.exec(line);
-    if (!atx) continue;
-
-    const heading = atx[1].trim();
+    const heading = h.text;
     const area = ownedAreaFor(heading);
     if (!area) continue;
 
@@ -247,7 +200,7 @@ export function detectCatalogOwnedHeadings(catalogContent) {
       // WRAPPING markup only, so interior markup and entities are out of scope
       // by design.
       heading,
-      line: i + 1,
+      line: h.line,
     });
   }
 
