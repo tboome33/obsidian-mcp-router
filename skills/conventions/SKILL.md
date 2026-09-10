@@ -45,6 +45,7 @@ Mapping (initial library shipped with this skill):
 | `claim-citations.md` | `claim-citations` | `## Claim-level citations — line-range markers (v0.15.0+, complements \`source-type\`)` |
 | `tribu-routing.md` | `tribu-routing` | `## Family-member auto-routing — identify the speaker, route saves to wiki/People/<member>/` |
 | `log-discipline.md` | `log-discipline` | `## Log discipline — index mince + détail dans wiki-meta/Sessions/` |
+| `prompt-status.md` | `prompt-status` | `## Prompt lifecycle — \`status\` frontmatter on \`type: prompt\` pages` |
 
 (Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
 

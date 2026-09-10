@@ -280,12 +280,35 @@ const result = lintDecisions(pages, { today: '<YYYY-MM-DD>' });
 
 Auto-fix posture (step 4): `status-invalid` **with** a `suggestion` is the one decision finding worth offering to fix (a mechanical `set_frontmatter`). Never auto-fix `supersedes-target-not-superseded` silently — flipping the target's status is a semantic act the human should confirm, since it retires a decision.
 
+### 2d-bis. Check P: prompt lifecycle (v0.95.0+)
+
+Runs on every lint whenever the vault has pages typed `prompt`. A prompt page is a **work order** — a brief written to be pasted into a fresh session and executed once — so its `status` describes **the run, not the writing of the document**. The vocabulary an author reads is the `prompt-status` convention snippet, installed in the vault `CLAUDE.md`.
+
+1. **Collect the pages** — the same inventory as Check N; pass `[{ path, frontmatter }]`. Non-prompt pages may be included and are skipped.
+2. **Run the checker** :
+
+```javascript
+import { lintPrompts } from 'src/helpers/prompt-lint.mjs';
+const findings = lintPrompts(pages);
+// → [{ rule, path, severity: 'warning', detail, suggestion? }]
+```
+
+3. **The five states, in lifecycle order** : `draft` (still being written) → `ready` (pasteable as-is) → `in-progress` (a session is executing it) → `executed` (delivered; the page is an ARCHIVE, do not re-run) · `abandoned` (will not be run).
+4. **Severity mapping** — both rules are **WARNINGS**, and neither affects `ok` :
+   - `prompt-status-missing` — no `status:` at all. **Never suggest a value**: absence is not evidence of any state, and guessing "it was probably finished" invents an execution history.
+   - `prompt-status-invalid` — a value outside the five. Carries a `suggestion` only for a spelling whose meaning was established (`done` and `shipped` both meant `executed`). A word like `wip` gets a diagnostic and no suggestion: it plausibly means "a session is executing this", the opposite of the `draft` a naive reading would assume.
+5. **Why a warning and not an error.** Nothing consumes `status` to decide anything automatically — it is read by humans. But do not report it as cosmetic either: a delivered brief left at `ready` invites a second session to redo the work, which is the expensive mistake this check exists to prevent.
+
+Scope: `type: prompt` only, matched case-insensitively; a page with no `type` is skipped rather than guessed at from its filename. Pages inside a frozen copy of the vault (`.okf-rename-backup/`, `.trash/`) are excluded — a finding nobody can act on would return on every run.
+
+Auto-fix posture (step 4): `prompt-status-invalid` **with** a `suggestion` may be offered as a mechanical `set_frontmatter`. Everything else here is a question for the author — and when you rewrite a status, check the page BODY too: one prompt in this family documents its own tracking protocol in prose, and migrating the frontmatter alone would leave the page contradicting itself.
+
 ### 3. Render the report
 
 Group findings by severity:
 
 - **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`), **Check O `session-folder-collision`**
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**, **Check P `prompt-status-missing`** / **`prompt-status-invalid`**
 - **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect), **Check J-bis** quasi-twin pairs (never above info — resemblance is not a defect, and the check proposes a reading, never a merge)
 
 For each finding:

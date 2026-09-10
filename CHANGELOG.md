@@ -10,6 +10,88 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A prompt page now has a lifecycle — Check P and the `prompt-status` convention
+
+A **prompt page** in these vaults is a work order: a self-contained brief written to be pasted into a
+fresh agent session and executed once. Nothing in this repo has ever created one — they are written
+by hand — so there was no authoring surface saying what `status:` should contain, and no check
+afterwards. A scan of **1135 markdown files under `wiki/` across the fleet** found **18 prompt
+pages carrying four different words** for the same state: `ready` ×9, `done` ×7, `shipped` ×1,
+`executed` ×1.
+
+#### The vocabulary was read off the pages, not inferred from the words
+
+The tempting shortcut was to declare the four words synonyms and rewrite them. That would have been
+the defect this repo keeps meeting — trusting a name instead of asking the thing itself — because
+`done` can mean *the document is finished* as easily as *the work was done*, and the two readings
+produce opposite migrations. So the pages were read. They answered plainly: one states its own
+tracking protocol in prose (*"passer `status:` à `in-progress` en commençant, à `done` en livrant"*),
+another opens with *"ARCHIVE — prompt de handoff exécuté … ne pas le relancer"*. The status describes
+the **run**, unanimously — and the reading turned up a fifth state the author had designed but never
+used, `in-progress`, which a naive migration would have folded into `draft`, its opposite.
+
+#### Added
+
+- **`skills/conventions/snippets/prompt-status.md`** — the convention an author reads, installed into
+  a vault's `CLAUDE.md` like `source-type`. Five states in lifecycle order: `draft` (still being
+  written) → `ready` (pasteable as-is) → `in-progress` (a session is executing it) → `executed`
+  (delivered; the page is an ARCHIVE, do not re-run), plus `abandoned` (will not be run). The pair
+  that costs something is `ready`/`in-progress`: a brief left at `ready` while a session runs it
+  invites a **second session to redo the same work order**.
+- **`src/helpers/prompt-lint.mjs`** — `lintPrompts(pages)` returning `prompt-status-missing` and
+  `prompt-status-invalid`, both WARNINGS, neither affecting `ok`. Severity follows how the metadata is
+  consumed, and today nothing consumes it automatically.
+- **Check P** in `skills/wiki-lint/SKILL.md` and the severity lists in the skill and
+  `agents/wiki-lint.md`. `contracts/skill-capabilities.json` records that Check P calls **no tool at
+  all**, named explicitly so a future audit can tell an evaluated check from a forgotten one.
+
+#### What the design review changed before a line was written
+
+The proposal was put to an adversarial review *as a design*, and came back with the vocabulary
+intact but three of its supports removed.
+
+- **The migration table was inventing certainty.** It mapped `wip` and `in-progress` to `draft` and
+  `todo` to `ready`. The reviewer pointed out that `wip` plausibly means "a session is executing
+  this" — and the vault then proved it, since `in-progress` is exactly that in the author's own
+  protocol. Only `done` and `shipped` survive, because only their meaning was established by reading.
+  An unknown value now earns a diagnostic and **no suggestion**.
+- **A missing status must never be given one.** Absence is not evidence of any state; suggesting
+  "probably finished" would manufacture an execution history.
+- **The stated reason for a separate module was wrong.** The claim was "one token, two meanings" by
+  analogy with the `Sessions` folder defect — but `type:` is an explicit discriminator, and
+  type-scoped valid sets are ordinary. The module stays separate for the duller correct reason: a
+  decision carries `supersedes`/`evidence`/`scope` and a "what we ruled out" section that its linter
+  also checks; a work order carries none of that.
+- Also closed on the reviewer's list: only a **scalar string** is accepted (`status: [ready]` is a
+  one-element YAML list that `String()` coercion would wave through), casing and padding are
+  normalised rather than reported, and pages inside a frozen copy of a vault
+  (`.okf-rename-backup/`, `.trash/`) are excluded **at inspection** — a finding nobody can act on
+  would otherwise return on every run.
+
+#### Deliberately not done
+
+`executed` and `abandoned` are NOT added to any exempt-status default. The accepted decision *"pages
+closes — annoter par défaut, cacher sur demande"* rejected exactly that move for `superseded`, as a
+scope leak: a contract governing one `type:` must not silently filter the whole corpus. This
+vocabulary annotates and hides nothing.
+
+One page's **body** documents the old protocol in prose. It was annotated rather than rewritten: a
+dated note now says the vocabulary changed and what to write instead, while the original paragraph
+stands. A delivery record is not edited to match a vocabulary invented a week later.
+
+#### Migration and measurement
+
+Eight pages migrated (`done` ×7, `shipped` ×1 → `executed`), all in one vault, each write carrying
+its `ifMatch`. Re-measured with the new checker against the real fleet afterwards: **18 prompts, 9
+`ready` + 9 `executed`, 0 findings** — including the backup copy, which the exclusion rule correctly
+passes over.
+
+`tests/prompt-lint.test.mjs` — 24 tests, including a sweep pinning the convention snippet against the
+code so the vocabulary an author reads and the vocabulary the linter enforces cannot drift. Full
+suite **5972 tests, 0 failing** (3 skipped); `npm run gate` and `npm run validate` green — measured.
+**Eleven mutations, eleven distinct witness sets**, fsync'd restores verified by hash, baseline
+measured green before the run and after the last restore.
+
 ### Check O sees the signpost, not only the misplaced file — `catalog-sessions-heading`
 
 v0.92.0's Check O detects **folders**: content under both `wiki/Sessions/` and `wiki-meta/Sessions/`
