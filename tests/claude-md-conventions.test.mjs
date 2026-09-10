@@ -56,8 +56,24 @@ const PICKER_IDS = [
   'auto-enrichment',
 ];
 
+/**
+ * A snippet's text with LF line endings, whatever the checkout did to it.
+ *
+ * MEASURED ON CI, not guessed: the Windows runners check these files out with
+ * CRLF (`core.autocrlf`), and three tests below reason about line CONTENT — the
+ * documented naive cut compares a line to `## <heading>`, and one assertion
+ * reads a line out of the fixture by index. A stray `\r` makes the naive cut
+ * match nothing, which silently turns the whole REPRODUCTION group into a
+ * vacuous pass, and made two assertions fail outright on 2026-09-11.
+ *
+ * The production scanner is CRLF-safe and has its own witnesses for that
+ * (`tests/markdown-headings.test.mjs` builds CRLF and lone-CR documents from
+ * literals, which no checkout can rewrite). What is normalised here is the
+ * FIXTURE, so that these tests measure the rule they are about rather than the
+ * line endings of the machine they run on.
+ */
 function snippetBody(id) {
-  return fs.readFileSync(path.join(SNIPPET_DIR, `${id}.md`), 'utf8');
+  return fs.readFileSync(path.join(SNIPPET_DIR, `${id}.md`), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function headingOf(id) {
@@ -245,6 +261,26 @@ describe('REPRODUCTION — what the documented rule did', () => {
     assert.ok(!after.includes('### Short pages (under ~500 words)'),
       'the whole section must be gone');
     assert.equal(fenceLines(after) % 2, 0, 'fences stay balanced');
+  });
+
+  test('the same cut on a CRLF document gives the same result, line endings apart', () => {
+    // The CI failure of 2026-09-11 in witness form. The Windows runners check
+    // the snippets out with CRLF, and the FIXTURE helper above normalises that
+    // away so these tests measure their own rule — which would hide a real CRLF
+    // defect in the production helpers if nothing checked it. This does: same
+    // document, CRLF endings, and the cut must land on the same bytes.
+    const heading = headingOf('bilingual');
+    const crlf = doc.replace(/\n/g, '\r\n');
+    assert.notEqual(crlf, doc, 'the CRLF fixture must really differ');
+
+    assert.equal(isConventionInstalled(crlf, heading), true);
+    const out = removeConvention(crlf, heading);
+    assert.equal(out.removed, true);
+    assert.equal(out.content, removeConvention(doc, heading).content.replace(/\n/g, '\r\n'));
+    assert.deepEqual(
+      verifyRemoval({ before: crlf, after: out.content, heading, catalogue: CATALOGUE }),
+      { ok: true, problems: [] },
+    );
   });
 
   test('the neighbouring conventions survive the cut, byte for byte', () => {
