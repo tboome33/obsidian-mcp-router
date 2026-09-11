@@ -378,14 +378,25 @@ export function normaliseTargetFile(file) {
  *
  * @returns {{findings: Array<object>, counts: object, baselineErrors: string[],
  *   ok: boolean}}
- *   EXACTLY ONE FINDING PER (target, convention) PAIR, whatever the verdict —
- *   an in-step pair included. A renderer can then count from the findings
- *   alone, and a JSON consumer sees every pair rather than inferring the
- *   silent ones from a total. The first version emitted nothing for a pair in
- *   step, and the very first run printed "0 identical" for a file whose
- *   convention it had just verified. Baseline entries that matched no examined
- *   pair are appended after the loop, and are the only findings without a
- *   `status`.
+ *   AT LEAST ONE FINDING PER (target, convention) PAIR, whatever the verdict —
+ *   an in-step pair included. No pair is ever silent: the first version emitted
+ *   nothing for a pair in step, and the very first run printed "0 identical"
+ *   for a file whose convention it had just verified.
+ *
+ *   A PAIR MAY CARRY TWO, and a reader who assumes otherwise miscounts. The
+ *   declaration verdicts are a SECOND question about the same pair — a section
+ *   that is installed but undeclared is reported AND still compared, which is
+ *   the point (the comparison is the half that says whether the undeclared
+ *   addition is even in step). So `findings.length` is not a pair count:
+ *   aggregate by `(file, convention)` before counting anything, as
+ *   `summariseTarget` does, or a single convention renders as two. An earlier
+ *   version of this paragraph claimed exactly one finding per pair; the test
+ *   named "an UNDECLARED convention that is present is an error, and is still
+ *   compared" asserts two, so the contract was false where the code was right.
+ *
+ *   Baseline entries that matched no examined pair, and declarations naming a
+ *   convention the library does not provide, are the only findings with no
+ *   `status` — they are about the inputs, not about a comparison.
  *
  *   `ok` is false when any finding is an error. Warnings never set it — a
  *   drift is a signpost, and this repository's own convention is that a

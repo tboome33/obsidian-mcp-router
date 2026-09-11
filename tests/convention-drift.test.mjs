@@ -393,7 +393,22 @@ describe('the baseline is a signed photograph, not an exemption', () => {
   });
 });
 
-describe('every pair produces exactly one finding', () => {
+describe('no pair is ever silent, and some carry two findings', () => {
+  test('a pair carrying a second diagnostic must not be counted twice', () => {
+    // The module's contract used to read "exactly one finding per pair", which
+    // this very suite refutes one describe below: an undeclared-but-present
+    // convention is reported AND still compared. `findings.length` is therefore
+    // not a pair count, and a consumer that treats it as one renders a single
+    // convention as two — which is what `summariseTarget` was fixed for.
+    const audit = auditConventionDrift({
+      snippets: [ALPHA],
+      targets: [{ file: 'a.md', content: ALPHA.text, governed: true, expects: [] }],
+    });
+    assert.equal(audit.findings.length, 2, 'two diagnostics');
+    const pairs = new Set(audit.findings.map((f) => `${f.file} ${f.convention}`));
+    assert.equal(pairs.size, 1, 'about one pair');
+  });
+
   test('including the pairs that are in step', () => {
     // The first version emitted nothing for a pair in step, and the very first
     // real run printed "0 identical" for a file whose convention it had just
