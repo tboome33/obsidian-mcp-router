@@ -17,10 +17,20 @@
  * reported `ok: true` with no warning, because each individual call had
  * succeeded.
  *
- * VERIFIED TO FAIL BEFORE THE FIX: run against the 0.94.1 code, "exactly one
+ * VERIFIED TO FAIL BEFORE THE FIX, on node v24.13.0 / win32: "exactly one
  * directory", "the plugins are IN the vault" and "community-plugins.json is not
- * empty" all go red on win32. The credential assertions below are a separate
- * question and fail on every platform — see the second describe block.
+ * empty" all went red against the 0.94.1 code.
+ *
+ * BUT THE TWIN ASSERTIONS ONLY BITE ON A RUNTIME THAT HAS THE DEFECT. Measured:
+ * `fs.cpSync` mangles on v24.13.0 and does NOT on v23.11.1, so reintroducing it
+ * leaves these tests GREEN on the second one. That is not a hole to patch here —
+ * an end-to-end test can only observe what its runtime does — it is why the
+ * regression guard for the class lives in tests/copy-tree.test.mjs as a SOURCE
+ * SCAN, which is runtime-independent. Read this file as the proof for the
+ * original incident, and that scan as the guard against its return.
+ *
+ * The credential assertions below are a separate question and hold on every
+ * platform and every runtime — see the third describe block.
  */
 
 import { test, describe, before, after } from 'node:test';

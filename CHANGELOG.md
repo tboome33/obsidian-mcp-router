@@ -123,6 +123,14 @@ without touching anything that looks like a path. And the accented-**source** fo
 wrong path — it kills the process with nothing a `try/catch` can observe, so a vault under an accented
 folder would have failed with no message at all.
 
+**The defect is version-specific**, which changes how the tests have to be written. Same machine, same
+fixture: `node v24.13.0` produces the twin, `node v23.11.1` does not. So no test asserts that the
+corruption happens — the probe fixture *reports* what the running runtime does and only checks the
+mangled shape when the runtime produced one. The guard that holds on every runtime is the **source
+scan**, which does not care whether a given call site corrupts today. Worth knowing for CI: the matrix
+is Node 20.19.0 and 22, neither of which is the version this was measured on, so the scan is the only
+one of the two guards CI exercises.
+
 #### What changed
 
 - **`src/helpers/copy-tree.mjs`** — a recursive copy built only out of calls measured to carry a path

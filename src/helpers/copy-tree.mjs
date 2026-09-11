@@ -37,6 +37,24 @@
  * crash-without-a-message on any user whose vault, whose profile directory, or
  * whose repository checkout carries an accent.
  *
+ * IT IS VERSION-SPECIFIC, AND THAT MATTERS FOR WHOEVER READS THE TESTS. Measured
+ * on the same machine, same fixture, same minute:
+ *
+ *     node v24.13.0  ->  two directories, the twin mis-encoded   (defect)
+ *     node v23.11.1  ->  one directory                           (no defect)
+ *
+ * So a test that asserts the corruption happens would be red on a runtime that
+ * does not have it, and a mutation that reintroduces `fs.cpSync` SURVIVES there
+ * — measured: the same two mutations that were killed on v24.13.0 survived on
+ * v23.11.1, which for ten confusing minutes looked like a regression in this
+ * module and was a change of `node` on PATH. Two consequences, both deliberate:
+ * `tests/fixtures/cp-sync-accent-probe.mjs` REPORTS what the running runtime
+ * does and only asserts the mangled shape when the runtime produced one; and the
+ * regression guard that actually holds everywhere is the SOURCE SCAN in
+ * tests/copy-tree.test.mjs, which does not care whether a given call site
+ * corrupts on the runtime of the day. CI runs Node 20.19.0 and 22 — neither is
+ * the version this was measured on, so the scan is the only guard CI exercises.
+ *
  * What it looked like in production (router 0.94.1): provisioning a vault at
  * `C:\VAULTS\La méthode LICARES` produced TWO directories. Everything written
  * through `fs` — the config JSON, `.env`, `.mcp.json`, the `wiki/` scaffold,

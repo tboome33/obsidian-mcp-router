@@ -186,23 +186,43 @@ describe('isEncodingTwin — the guard\'s name comparator', () => {
     assert.equal(isEncodingTwin(mangled, clean), true);
   });
 
-  test('the windows-1252 table really is windows-1252, not latin1 wearing its name', () => {
-    // Pins the measurement above. If this ever goes red because the platform
-    // gained a correct decoder, the table can be simplified — but never on the
-    // assumption that it has.
+  test('the module\'s table is windows-1252 whatever the platform decoder does', () => {
+    // WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT.
+    //
+    // The first version asserted that `new TextDecoder('windows-1252')` returns
+    // U+0080 for byte 0x80 — i.e. it required the PLATFORM to be wrong, which
+    // is how the trap was found (measured on node v24.13.0 win32: the label is
+    // accepted, `encoding` reads back as 'windows-1252', and the mapping is
+    // ISO-8859-1, differing from true latin1 at zero of 256 bytes). A test
+    // shaped like that goes red the day a runtime FIXES its decoder, for a
+    // reason that says nothing about this module — and this suite runs on
+    // ubuntu and windows, two runtimes that need not agree.
+    //
+    // So the platform's answer is REPORTED, not asserted, and the assertion is
+    // on the only thing this module controls: its own table maps the
+    // windows-1252 high range, and the comparator recognises a mangling that
+    // lives in it. Both hold whether or not the decoder is right.
     const viaDecoder = new TextDecoder('windows-1252');
-    const decoded = viaDecoder.decode(new Uint8Array([0x80, 0x92]));
-    assert.equal(viaDecoder.encoding, 'windows-1252', 'the label is accepted, which is what made this trap quiet');
-    assert.equal(
-      decoded,
-      String.fromCharCode(0x80) + String.fromCharCode(0x92),
-      'measured: this platform decodes windows-1252 as ISO-8859-1 — hence the written-out table',
-    );
-    // And the module's own table does the right thing where the decoder does not.
-    assert.equal(
-      isEncodingTwin('a' + String.fromCharCode(0xc3, 0xa9) + 'b', 'a' + E_ACUTE + 'b'),
-      true,
-    );
+    assert.equal(viaDecoder.encoding, 'windows-1252', 'the label is accepted — that is what made the trap quiet');
+    const platformIsSpecCompliant =
+      viaDecoder.decode(new Uint8Array([0x80])) === String.fromCharCode(0x20ac);
+
+    // The load-bearing claim: byte 0x82 is U+201A in windows-1252 and a control
+    // character in latin1, so a table that is secretly latin1 cannot match this.
+    const clean = 'prix-' + EURO;
+    const cp1252Mangled = 'prix-' + String.fromCharCode(0xe2, 0x201a, 0xac);
+    assert.notEqual(cp1252Mangled, Buffer.from(clean, 'utf8').toString('latin1'),
+      'the fixture must lie in the range where windows-1252 and latin1 differ');
+    assert.equal(isEncodingTwin(cp1252Mangled, clean), true,
+      'the module must know the windows-1252 high range, however this runtime decodes it');
+
+    // Informational, so a future reader knows which runtime they are on rather
+    // than having to re-derive it. Never a failure.
+    if (platformIsSpecCompliant) {
+      console.log('  note: this runtime decodes windows-1252 per spec (0x80 -> euro sign).');
+    } else {
+      console.log('  note: this runtime decodes windows-1252 as ISO-8859-1 — the trap this table exists for.');
+    }
   });
 
   test('double mangling — a name that crossed two broken boundaries', () => {
