@@ -212,8 +212,13 @@ Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, s
 - **bilingual** — toute page substantielle en FR + EN, FR d'abord
 - **heading-hierarchy** — structure de titres imposée, et contrat de frontmatter sur les pages de décision
 - **auto-enrichment** — Claude propose de sauvegarder les décisions et résultats au fil de la conversation (il demande toujours avant d'écrire), et marque une pause quand tu changes de sujet
+- **description-frontmatter** — *comment bien écrire* la phrase `description:` (le champ, lui, est requis de toute façon)
 
-The last line is deliberate and was corrected on 2026-09-11: *"règles d'enrichissement automatique (4 modes)"* warned the user of nothing. The convention grants no write permission — the mode defaults to `ClaudeAsk`, which always asks — but it DOES change the shape of every conversation, and that is what the description has to say.
+`description-frontmatter` n'est **pas** un choix de comportement comme les sept autres, et son étiquette doit le dire **avant** que l'utilisateur coche ou décoche, pas après. Ce qu'il installe, c'est le **guide de rédaction** : quoi dire, quelle longueur, comment citer la valeur. Le **champ lui-même est exigé indépendamment** — le lint du wiki signale chaque page sans `description` depuis la v0.59.2, la régénération des projections OKF les reporte, et les index publient la phrase telle quelle. Cette exigence-là part avec chaque vault scaffoldé, dans le gabarit, sans passer par ce menu.
+
+Donc : décocher cette case ne rend rien optionnel, et ne retire rien d'un vault qui la porte déjà — ça renonce seulement au guide. Dis-le dans ces termes. Mesuré le 2026-09-11 : **aucun des 16 vaults inspectés ayant un fichier de conventions ne contenait cette section**, alors que le lint s'appliquait à leurs pages.
+
+**The `auto-enrichment` line** above is deliberate and was corrected on 2026-09-11: *"règles d'enrichissement automatique (4 modes)"* warned the user of nothing. The convention grants no write permission — the mode defaults to `ClaudeAsk`, which always asks — but it DOES change the shape of every conversation, and that is what the description has to say.
 
 The first four are shipped by the reference template, so on a template-born vault they arrive detected. Any convention outside the recommended set is displayed unchecked: visible, so it exists for the user, without being proposed.
 

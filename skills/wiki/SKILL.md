@@ -81,13 +81,16 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    - The wiki navigation rules (read hot → index → drill, append log, refresh hot)
    - The "always use obsidian-router MCP" reminder
    - The list of available `/obsidian-router:wiki-*` workflows
-   - The `description` frontmatter rule
 
-   **It no longer embeds any installable library convention**, and that is deliberate — decision `conventions-livrees-par-le-modele` (2026-09-11). The template does not seed `auto-enrichment`, `heading-hierarchy` or `source-type`; the conventions picker offers them **pre-checked**, so the user refuses rather than discovers, and a vault whose owner accepts them ends up carrying them exactly as before. What the template DOES still carry — the navigation rules and the `description` rule — is not a library convention and stays.
+   **It no longer embeds any library convention**, and that is deliberate — decision `conventions-livrees-par-le-modele` (2026-09-11). The template does not seed `auto-enrichment`, `heading-hierarchy`, `source-type` or `description-frontmatter`; the conventions picker offers them **pre-checked**, so the user refuses rather than discovers, and a vault whose owner accepts them ends up carrying them exactly as before. What stays in the template is navigation: how to read the wiki, the MCP reminder, the workflow list.
 
    This page used to say the opposite, and told you to **add the auto-enrichment section yourself if it was missing** — which would have put the convention back one scaffolded vault at a time, silently undoing the decision.
 
-   If you cannot read the template file, inline by hand **everything the list above names** — the navigation rules, the MCP reminder, the workflow list and the `description` rule — and nothing else. "Navigation structure" is not the whole block: dropping the `description` rule because it was not mentioned is the failure this sentence exists to prevent. Do NOT add a convention section to make the block look complete: an absent convention here is the intended state, and installing one is `/obsidian-router:conventions install <id>`, which owns the detection and the safe append.
+   **The `description` requirement is NOT one of the optional ones.** The template states it unconditionally, in its "Required frontmatter — `description`" paragraph, so it reaches every scaffolded vault without anyone opting in. That split is deliberate: the FIELD is a data contract the code acts on (the lint reports pages missing it, the generated indexes publish the sentence), while the `description-frontmatter` convention adds only the authoring guide — what to say, how long, how to quote it. Of the 16 vaults with a conventions file inspected on 2026-09-11, **none contained that guide**, though the lint applied to their pages.
+
+   **After scaffolding, offer the conventions picker**: it is the only thing that installs the optional conventions.
+
+   If you cannot read the template file, inline by hand **everything the list above names** — the navigation rules, the MCP reminder, the workflow list — **and the `description` requirement paragraph**, which is part of the block and not a convention. Do NOT add a convention section to make the block look complete: an absent convention here is the intended state, and installing one is `/obsidian-router:conventions install <id>`, which owns the detection and the safe append.
 
    Use `mcp__obsidian-router__write_file` with `ifNew: true` if `CLAUDE.md` is absent. If it exists, use `append_to_file` BUT first check (via `get_file`) that the wiki block isn't already there — re-running scaffold should NOT duplicate the block.
 
