@@ -169,7 +169,7 @@ Idempotency rule: scan existing content for the exact strings `.env` and `.mcp.j
 
 ### 1A.5 — Conventions picker
 
-**READ THE TARGET FIRST — the picker is not allowed to guess.** A vault provisioned from the reference template already carries every one of these conventions. Before composing the question, resolve the vault's conventions file and detect what is in it, exactly as the `conventions` skill's `pick` flow describes:
+**READ THE TARGET FIRST — the picker is not allowed to guess.** A vault provisioned from the reference template already carries the four CORE conventions (decision [[conventions-livrees-par-le-modele]], 2026-09-11). Before composing the question, resolve the vault's conventions file and detect what is in it, exactly as the `conventions` skill's `pick` flow describes:
 
 ```javascript
 import { resolveClaudeMd, detectConventions, planConventionPicker }
@@ -182,26 +182,40 @@ Pre-flight (adapt the counts to what you actually detected):
 
 > Le vault est provisionné et lié au workspace. Reste à choisir quelles **conventions** doivent figurer dans le fichier de conventions du vault (`<le fichier que resolveClaudeMd a trouvé>`). Une convention, c'est une règle de comportement pour Claude — par exemple "toujours mettre à jour les roadmaps quand on ship du code" ou "vérifier dans le wiki avant de répondre". Elles sont lues au démarrage de chaque session sur ce vault.
 >
-> ⚠️ Ce vault en porte déjà **N sur M** (le modèle de référence les livre). Elles sont **pré-cochées** ci-dessous. Décocher une convention déjà présente veut dire *retirer sa section de ce fichier* — je te le redemanderai avant d'y toucher.
+> ⚠️ Ce vault en porte déjà **N sur M**. Les autres sont **proposées, déjà cochées** : tu décoches ce que tu ne veux pas. Décocher une convention **déjà présente** veut dire *retirer sa section de ce fichier* — je te le redemanderai avant d'y toucher.
 
-`M` is the number of options you are about to display, counted from the collection you globbed — never the literal 8 below, which is what the library shipped when this page was written.
+`M` is the number of options you are about to display, counted from the collection you globbed — never a literal number written on this page.
 
-**One initialization rule, and it is the state**: an option is pre-checked if and only if its detection came back `installed`, and its label is suffixed with `— déjà en place`. The `(recommandé)` markers below are ADVICE about the ones that are absent; they never pre-check or un-check anything. (Applying them as a default would silently un-check an installed convention nobody recommended — which is the removal question being asked by accident.)
+#### The initialization rule is ASYMMETRIC, and that is the whole point
 
-The options you display are also exactly the catalogue you pass to `planConventionPicker`: if the library has grown, show the new ones too rather than planning with a wider list than you displayed.
+| état détecté | pré-cochée ? | ce que le défaut propose |
+|---|---|---|
+| **présente** | **toujours** | ne rien toucher |
+| absente, recommandée | oui | l'installer — visible, refusable |
+| absente, non recommandée | non | rien |
 
-Use `AskUserQuestion` with `multiSelect: true` and these options:
+**A default may propose an installation. It may never propose a removal.** That is not a convenience, it is the guard: since v0.94.3, un-checking a PRESENT convention means removing it, so a default that un-checked an installed convention would be asking a deletion question nobody asked for. Applying the recommended list in the un-checking direction is exactly that bug — an adversarial round found it in the first version of the code.
 
-- **roadmap-discipline** (recommandé) — création et maintenance disciplinée des roadmaps
-- **default-vault-health-check** (recommandé) — alerte si le vault par défaut n'est pas joignable au démarrage
-- **wiki-query-first** (recommandé) — vérifier le wiki AVANT de répondre à une question substantielle
-- **path-disambiguation** (recommandé) — ne jamais confondre le path du workspace et le path du vault
-- **source-type** — frontmatter `source_type:` traceability sur les pages wiki
-- **bilingual** — convention bilingue (FR + EN, FR primaire)
-- **heading-hierarchy** — règles obligatoires de hiérarchie des headings
-- **auto-enrichment** — règles d'enrichissement automatique du wiki (4 modes)
+In the other direction there is no such danger: pre-checking an absent convention proposes an install the user can refuse in one click.
 
-The 4 "recommandé" ones echo rules already active in the user's global `~/.claude/CLAUDE.md`, so materializing them locally is mostly free and helps when the user invokes Claude on the vault directly (e.g., from inside Obsidian Smart Composer). The 4 stylistic ones are project-flavored — decision should be the user's.
+**Why the absent ones arrive checked** (decision [[conventions-livrees-par-le-modele]] §2): the reference template stopped shipping the stylistic conventions, and a feature nobody knows about is a feature nobody ever enables. The user must act to **refuse**, not to **discover**. If they validate without changing anything, they get the same result as before the decision — the difference is that it was shown to them.
+
+**Display the whole library, not a subset.** `Glob` the snippets directory and show every convention it holds; the collection you display IS the collection you pass to `planConventionPicker`. Planning with a wider list than you displayed puts a convention the user never saw into the `remove` bucket, and the confirmation then says "you did not check these" about a checkbox that never existed.
+
+Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, suffix a detected one with `— déjà en place`, and give each option a description that says what it DOES. The recommended set — the eight this page shipped with — and the wording that survived review:
+
+- **roadmap-discipline** — tenir les roadmaps à jour quand du code est livré
+- **default-vault-health-check** — prévenir si le vault par défaut n'est pas joignable, et ne jamais retomber sur le système de fichiers
+- **wiki-query-first** — consulter le wiki AVANT de répondre à une question de fond
+- **path-disambiguation** — ne jamais confondre le path du workspace et celui du vault
+- **source-type** — tracer d'où vient une page (`source_type:` en frontmatter)
+- **bilingual** — toute page substantielle en FR + EN, FR d'abord
+- **heading-hierarchy** — structure de titres imposée, et contrat de frontmatter sur les pages de décision
+- **auto-enrichment** — Claude propose de sauvegarder les décisions et résultats au fil de la conversation (il demande toujours avant d'écrire), et marque une pause quand tu changes de sujet
+
+The last line is deliberate and was corrected on 2026-09-11: *"règles d'enrichissement automatique (4 modes)"* warned the user of nothing. The convention grants no write permission — the mode defaults to `ClaudeAsk`, which always asks — but it DOES change the shape of every conversation, and that is what the description has to say.
+
+The first four are shipped by the reference template, so on a template-born vault they arrive detected. Any convention outside the recommended set is displayed unchecked: visible, so it exists for the user, without being proposed.
 
 **Then plan the answer, don't act on it directly.** `planConventionPicker({ content, catalogue, selected })` sorts the displayed options into `install` / `keep` / `remove` / `skip`. Act on each bucket as the `conventions` skill's `pick` section specifies:
 
@@ -211,6 +225,12 @@ The 4 "recommandé" ones echo rules already active in the user's global `~/.clau
 - `skip` — nothing, silently. This is the only bucket that may be silent.
 
 Print `plan.plan` before acting — it counts intentions. Show progress per convention, then close with a summary built from what actually HAPPENED: installed, already in place, removed, declined, failed. If nothing was installed because everything was already there, the first line must say so: *"0 installée, 6 déjà en place"* is the truth, *"6 conventions configurées"* is not.
+
+**If the picker was skipped, NAME what is missing.** Impatience, a non-interactive run, a user who says "plus tard" — the flow can reach the recap without the question ever being answered. The recap must then list the conventions that are not installed and the command that adds them:
+
+> Conventions non installées : `bilingual`, `heading-hierarchy`, `auto-enrichment` — `/obsidian-router:conventions install <id>` quand tu veux.
+
+A missing feature that is *named* is a choice deferred; a missing feature that is silent is a feature that will never exist for its owner. That is the failure mode the whole decision is built against (decision [[conventions-livrees-par-le-modele]] §4), and it is the one case the pre-checking cannot cover on its own.
 
 ### 1A.6 — Final reminders
 
