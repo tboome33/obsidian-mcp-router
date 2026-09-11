@@ -40,7 +40,6 @@ import {
   normaliseTargetFile,
   readDriftBaseline,
 } from '../src/helpers/convention-drift.mjs';
-import { findConventionSection } from '../src/helpers/claude-md-conventions.mjs';
 import {
   GOVERNED_TARGETS,
   DEFAULT_BASELINE,
@@ -835,29 +834,22 @@ describe('the repository as it actually is', () => {
     // checked at all, so this witness was quietly locking in the very hole the
     // next review round found.
     //
-    // The control is now built FROM the governed files: a temporary library
-    // whose snippets are the sections those files actually carry. Every
-    // declaration is satisfied, every pair is in step, nothing is accepted —
-    // so the control is green for a reason that has nothing to do with the
-    // baseline, and the exit code below can only come from the baseline.
+    // The control WAS built from the governed files: a temporary library whose
+    // snippets were the sections those files carried. That fixture is gone with
+    // its subject — the decision `conventions-livrees-par-le-modele` (2026-09-11)
+    // took the stylistic conventions out of everything that seeds a new vault,
+    // so no governed file carries one and the loop built an EMPTY library, whose
+    // run is not green. The isolation the fixture existed for is now a property
+    // of the repository itself: with nothing installed anywhere, there is no
+    // drift to report, so a run against the real library is green for a reason
+    // that has nothing to do with the baseline — which is exactly what the
+    // fixture was simulating. The witnesses below can therefore only be red
+    // because of the baseline, and the control asserts it before they run.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'baseline-'));
-    const snippets = path.join(dir, 'snippets');
-    fs.mkdirSync(snippets);
-    for (const { file: rel, expects } of GOVERNED_TARGETS) {
-      const content = fs.readFileSync(path.join(REPO, ...rel.split('/')), 'utf8');
-      for (const id of expects) {
-        const real = loadSnippetLibrary(path.join(REPO, ...DEFAULT_SNIPPETS_DIR.split('/')))
-          .snippets.find((s) => s.id === id);
-        const section = findConventionSection(content, real.heading);
-        assert.equal(section.found, true, `${rel} must carry ${id} for this fixture to be built`);
-        fs.writeFileSync(path.join(snippets, `${id}.md`), section.text);
-      }
-    }
     const run = (file) => {
       const r = spawnSync(
         process.execPath,
-        [path.join(REPO, 'scripts', 'conventions-drift.mjs'), '--check', '--json',
-          '--snippets', snippets, '--baseline', file],
+        [path.join(REPO, 'scripts', 'conventions-drift.mjs'), '--check', '--json', '--baseline', file],
         { encoding: 'utf8', cwd: REPO },
       );
       return { status: r.status, report: JSON.parse(r.stdout) };
@@ -909,20 +901,31 @@ describe('the repository as it actually is', () => {
     }
   });
 
-  test('the shipped skeleton carries the CURRENT heading-hierarchy', () => {
-    // The repair this lot shipped, pinned. The skeleton is what
-    // `--bootstrap-reference` clones into a brand-new reference vault, and its
-    // copy had frozen at roughly v0.8.x: 23 lines against the snippet's 61,
-    // missing the entire frontmatter contract for decision pages. Every vault
-    // born that way inherited the gap.
+  test('nothing that seeds a new vault carries a library convention any more', () => {
+    // This assertion REPLACES "the shipped skeleton carries the CURRENT
+    // heading-hierarchy", and the reversal is a decision, not a regression.
+    // That test pinned a repair: the skeleton's copy had frozen at roughly
+    // v0.8.x, 23 lines against 61, and was brought back in step. Hours later
+    // `conventions-livrees-par-le-modele` (2026-09-11) settled the question one
+    // level up — a vault is not born carrying the stylistic conventions at all,
+    // it is offered them by a picker that shows them pre-checked. A copy that
+    // must not exist cannot be required to be current.
+    //
+    // So the invariant moves from "this copy is up to date" to "there is no
+    // copy", asserted over EVERY governed file and EVERY snippet rather than
+    // the one pair the old test named — a convention creeping back into a
+    // second file would have walked straight past that one.
     const { snippets } = loadSnippetLibrary(path.join(REPO, ...DEFAULT_SNIPPETS_DIR.split('/')));
-    const snippet = snippets.find((s) => s.id === 'heading-hierarchy');
-    const skeleton = fs.readFileSync(
-      path.join(REPO, 'templates', 'reference-vault-skeleton', 'CLAUDE.md'), 'utf8',
-    );
-    const result = compareConvention(snippet, skeleton);
-    assert.equal(result.status, DRIFT_STATUS.IDENTICAL);
-    assert.match(skeleton, /## Alternatives considered/, 'the decision-page contract must be there');
+    assert.ok(snippets.length >= 12, `expected the shipped library, got ${snippets.length}`);
+    assert.ok(GOVERNED_TARGETS.length >= 2, 'the sweep must have files to look at');
+
+    for (const { file: rel } of GOVERNED_TARGETS) {
+      const content = fs.readFileSync(path.join(REPO, ...rel.split('/')), 'utf8');
+      const carried = snippets
+        .filter((s) => compareConvention(s, content).status !== DRIFT_STATUS.ABSENT)
+        .map((s) => s.id);
+      assert.deepEqual(carried, [], `${rel} still ships ${carried.join(', ')}`);
+    }
   });
 });
 

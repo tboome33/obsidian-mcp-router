@@ -20,13 +20,15 @@
     "fingerprints it prints, and update the entry — or delete the entry if you reconciled the two.",
     "A stale entry is reported as an error, never ignored."
   ],
-  "entries": [
-    {
-      "file": "templates/wiki/CLAUDE.md",
-      "convention": "auto-enrichment",
-      "snippetSha256": "8238eea597173bfbfa7aac7ed926e508b994a8b9f6f1f36c7b5557880aa1700a",
-      "targetSha256": "d2271ab8f881ea5fbc6e8b90d42619c9d2106cc0460a6031c33ca2bd9b275146",
-      "reason": "The two texts serve different readers and the SNIPPET is the stale side here, which is why this is recorded rather than propagated. templates/wiki/CLAUDE.md is the consigne scaffolded into a vault: it spells out each mode's full prompt template, and its binding paragraph was corrected to the workspaceBinding model (a bare OBSIDIAN_ROUTER_DEFAULT_VAULT line is a proposal the router reports and does not apply). The snippet is the condensed installable and still describes the binding model this router abandoned. Reconciling them is a content decision about what an installed convention should say, open as of 2026-09-11; until it is taken, both fingerprints are pinned so neither side can move unnoticed."
-    }
-  ]
+  "$resolved": [
+    "2026-09-11 — the one entry this file held is GONE because the divergence is gone, not because it was",
+    "waved through. It accepted auto-enrichment differing between its snippet and templates/wiki/CLAUDE.md,",
+    "and said the reconciliation was 'a content decision, open'. The decision was taken that day",
+    "(`conventions-livrees-par-le-modele`): the templates stop shipping the stylistic conventions, so that",
+    "target section no longer exists. Deleting the section alone would have destroyed the NEWER of the two",
+    "texts — the entry itself recorded that the snippet was the stale side — and left the picker installing",
+    "the binding model this router abandoned. So the corrected binding paragraph was ported INTO the snippet",
+    "first, and only then was the section removed. An empty list here is now the honest state."
+  ],
+  "entries": []
 }

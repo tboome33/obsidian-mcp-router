@@ -10,6 +10,39 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Nothing that seeds a new vault ships a convention any more — and the newer text was saved first
+
+The decision applied earlier covered the reference vault. Measuring found **three** sites, not one:
+the two templates this repository ships each carried one stylistic convention, and both now carry
+none. `templates/wiki/CLAUDE.md` (22 685 → 10 821 chars) loses `auto-enrichment`;
+`templates/reference-vault-skeleton/CLAUDE.md` (10 491 → 4 104) loses `heading-hierarchy`. Every cut
+is byte-exact, with one heading lost per file and fences left balanced — verified before writing.
+
+**One of the two had to be rescued before it could be removed.** The convention-drift baseline landed
+the same day recorded that `auto-enrichment` differs between its snippet and the template copy, that
+the **snippet is the stale side**, and that reconciling them was "a content decision, open". Deleting
+the section alone would therefore have destroyed the newer of the two texts and left the picker
+installing the binding model this router abandoned in v0.89.0. The difference was one paragraph — the
+activation condition, which reads `workspaceBinding` instead of inferring a binding from a `.env`
+variable. It was ported INTO the snippet first; the removal came second, and the baseline entry is
+now empty with the resolution written where the entry used to be.
+
+The drift check keeps both files **governed with an empty expectation** rather than dropping their
+rows: its exhaustiveness assertion is what fails the day a convention creeps back into one of them.
+Two of its tests changed accordingly, and neither was weakened — the one pinning "the skeleton
+carries the CURRENT heading-hierarchy" is replaced by the invariant one level up (*no* seeding file
+carries *any* library convention, swept over the whole table and the whole library rather than the
+single pair it named), and the one proving an unreadable baseline fails on its own had built its
+control out of the governed conventions, which no longer exist. Its isolation is now a property of
+the repository — with nothing installed anywhere, a run is green for reasons unrelated to the
+baseline — and that was checked by measurement before the test was rewritten to rely on it.
+
+**Still open, and deliberately not decided here:** `templates/wiki/CLAUDE.md` keeps two sections that
+are the same rules under different headings (*"Note structure — headings hierarchy (mandatory for
+every page)"*, *"Source provenance — `source_type` frontmatter…"*). No snippet identity matches them,
+so neither the drift check nor this cut can see them — and in substance a vault scaffolded from that
+file still receives two of the four stylistic conventions.
+
 ### The template ships four conventions, and a picker default may propose an install — never a removal
 
 v0.95.0 left one question open and named it as Roland's: should the reference template keep shipping
