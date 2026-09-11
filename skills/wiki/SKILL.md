@@ -81,9 +81,13 @@ If the user didn't say, ask in one short question. Don't enumerate all modes —
    - The wiki navigation rules (read hot → index → drill, append log, refresh hot)
    - The "always use obsidian-router MCP" reminder
    - The list of available `/obsidian-router:wiki-*` workflows
-   - The **auto-enrichment Phase 0 consigne** (3 triggers: validation pins, result digests, topic-switch checkpoints — `ClaudeAsk` mode, domain-agnostic)
+   - The `description` frontmatter rule
 
-   If you cannot read the template file, fall back to inlining the structure manually — but verify with `mcp__obsidian-router__get_file({ vault, path: "CLAUDE.md" })` afterward that the auto-enrichment section is present, and add it explicitly if missing.
+   **It no longer embeds any installable library convention**, and that is deliberate — decision `conventions-livrees-par-le-modele` (2026-09-11). The template does not seed `auto-enrichment`, `heading-hierarchy` or `source-type`; the conventions picker offers them **pre-checked**, so the user refuses rather than discovers, and a vault whose owner accepts them ends up carrying them exactly as before. What the template DOES still carry — the navigation rules and the `description` rule — is not a library convention and stays.
+
+   This page used to say the opposite, and told you to **add the auto-enrichment section yourself if it was missing** — which would have put the convention back one scaffolded vault at a time, silently undoing the decision.
+
+   If you cannot read the template file, inline by hand **everything the list above names** — the navigation rules, the MCP reminder, the workflow list and the `description` rule — and nothing else. "Navigation structure" is not the whole block: dropping the `description` rule because it was not mentioned is the failure this sentence exists to prevent. Do NOT add a convention section to make the block look complete: an absent convention here is the intended state, and installing one is `/obsidian-router:conventions install <id>`, which owns the detection and the safe append.
 
    Use `mcp__obsidian-router__write_file` with `ifNew: true` if `CLAUDE.md` is absent. If it exists, use `append_to_file` BUT first check (via `get_file`) that the wiki block isn't already there — re-running scaffold should NOT duplicate the block.
 

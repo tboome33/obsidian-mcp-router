@@ -29,45 +29,6 @@ The wiki pattern (Karpathy LLM-wiki) is documented in `wiki-meta/overview.md`.
 
 ---
 
-## Note structure — headings hierarchy (mandatory for every page)
-
-Every wiki page MUST use a proper heading hierarchy so the Outline plugin can navigate it. This is not optional — it's the only way the user can scan a note without scrolling.
-
-- **Exactly one `# H1`** at the top — matches the note's `title:` frontmatter (or a clean rephrasing of the filename). The H1 is the note's name. If the body needs to start with prose, put the `# H1` line ABOVE that prose anyway.
-- **`## H2`** — main sections (Context, Decision, See also, etc.). Use these to chunk the body.
-- **`### H3`** — sub-sections inside an `## H2`. Only when a section is long enough to need internal navigation.
-- **Never skip levels.** No `### H3` without a `## H2` above it. No `#### H4` without an `### H3`.
-- **Length rule.** Any note > 200 words MUST have at least 2 `## H2` sections. Outline navigation depends on this — a wall of text with only an H1 defeats the whole point.
-
-### Type-specific minimums
-
-When generating content of these types, use AT LEAST these `## H2` sections (add more if the content warrants):
-
-| Type | Required `## H2` sections |
-|---|---|
-| `session` | `## Prompt`, `## What happened`, `## Outcome`, optional `## See also` |
-| `answer` | `## Question`, `## Answer`, optional `## See also` |
-| `decision` / `adr` | `## Context`, `## Decision`, `## Consequences`, optional `## Alternatives considered` |
-| `technique` / `runbook` | `## Prerequisites`, `## Steps`, `## Gotchas`, optional `## See also` |
-| `idea` | `## The idea`, `## Why it matters`, `## Concrete first step` |
-| `fact` (standalone page > 100 words) | `## What`, `## Why it matters`, `## Source` |
-| `person` | `## Context`, `## Notes`, `## Interactions` |
-| `concept` | `## Definition`, `## Why it matters`, `## Related` |
-| `reference` / `url` ingestion | `## Summary`, `## Key takeaways`, `## Source` |
-| `project` | `## Goal`, `## Status`, `## Open questions`, optional `## Log` |
-
-### Anti-patterns to refuse
-
-- Don't dump a wall of paragraphs under a single `# H1`. If the content can't be split into 2 `## H2` sections, the note is probably either too short (file it as a one-liner in `wiki/facts.md` — facts.md is user content, NOT a scaffold) or the wrong granularity (split into 2 notes).
-- Don't start at `## H2` thinking the filename "serves as H1" — Outline still needs the explicit `# H1` for the top-level anchor.
-- Don't use **bold** as a faux-heading. Bold text doesn't appear in Outline.
-
-### How skills enforce this
-
-`save`, `wiki-ingest`, `wiki-query --persist`, and `autoresearch` are all expected to apply this structure when generating content. If a user's input is genuinely too thin to support 2 H2 sections, the skill should push back: *"This conversation is too brief for a standalone page — append as a line to `wiki/facts.md` instead?"* (facts.md is user content under `wiki/`, not a scaffold) — rather than producing a flat single-section note that defeats Outline.
-
----
-
 ## One-line summary — `description` frontmatter (mandatory for every page)
 
 Every page MUST carry a `description`: **one plain sentence** saying what the page is, in the vault's primary language. Not a topic label ("OKF"), not a restatement of the title — what a reader learns by opening it.
@@ -92,40 +53,6 @@ Why it is mandatory, and why it lives in frontmatter rather than in the body:
 ### How skills enforce this
 
 `save`, `wiki-ingest`, `wiki-query --persist` and `autoresearch` write `description` on every page they create. `wiki-lint` flags pages that lack one, and `refresh_okf_projections` reports them in `missingDescription`.
-
----
-
-## Source provenance — `source_type` frontmatter (mandatory for substantive pages)
-
-Every substantive page MUST declare where its content came from. Without this, a reader (you, me, future-Claude, or a wiki-query consumer) cannot tell whether an assertion is a verbatim citation, a reasonable inference from a source, or pure synthesis by Claude. That gap silently erodes trust in the whole wiki.
-
-Three values, vocabulary borrowed from graphify's `EXTRACTED / INFERRED / AMBIGUOUS` taxonomy (`validate.py:1-7`):
-
-| Value | Meaning | When to use |
-|---|---|---|
-| `extracted` | Verbatim or near-quote from a source (a user statement, an article, a pasted document). Maximum reliability — a reader can trust the wording came from outside. | `wiki-ingest` source pages; user-quoted statements; literal citations. |
-| `inferred` | Claude derived this by reading the source/conversation, but it isn't written verbatim. Medium reliability — it's a reasonable interpretation that someone else might have phrased differently. | Most `answer` notes; most `wiki-ingest` entity/concept pages spawned from a source; summaries. |
-| `claude_synthesized` | Pure synthesis by Claude with no direct textual basis. Low reliability for "what does the source say?" but full agency on "what does Claude think?". | `idea` notes proposed by Claude; framings/restatings; opinion pieces. |
-
-### Where to declare it
-
-- **Frontmatter level** (covers the whole page): `source_type: extracted | inferred | claude_synthesized`. Required on every page of type `source`, `answer`, `decision`, `decision-input`, `reference`, `reference-deep-dive`, `technique`, `idea`. Optional but encouraged on `session`, `concept`, `entity`.
-- **Inline callout** (covers a specific paragraph, overrides the page-level default): `> [!extracted]`, `> [!inferred]`, `> [!claude_synthesized]`. Use when a single page mixes provenance — common for `session` notes (user verbatim + your inferences + your synthesis) and for `wiki-ingest` entity pages.
-
-### Rule of thumb when in doubt
-
-Prefer the more conservative tag. `claude_synthesized` over `inferred`, `inferred` over `extracted`. False humility is cheap; false confidence corrodes the wiki.
-
-### How skills use it
-
-- `wiki-ingest` writes `source_type: extracted` on source pages (the body summarises the source faithfully) and `source_type: inferred` or `claude_synthesized` on spawned entity/concept pages depending on how directly the source supported them.
-- `save` writes the dominant `source_type` based on what's being saved (see skill for matrix).
-- `wiki-query` includes provenance in its citations: *"per [[my-note]] (extracted)"* vs *"per [[my-note]] (synthesized)"* — so readers know whether the answer is grounded or speculative.
-- `wiki-lint` (future) flags pages with high `claude_synthesized` ratio for human review.
-
-### Not yet — `confidence_score`
-
-graphify also assigns a discrete float (0.55 / 0.65 / 0.75 / 0.85 / 0.95) on top of the three-bucket tag. For a markdown wiki the three buckets carry most of the value; the float is deferred until a real use case proves it's worth the per-claim labelling cost.
 
 ---
 

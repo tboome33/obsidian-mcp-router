@@ -24,3 +24,9 @@ Prefer the more conservative tag. `claude_synthesized` over `inferred`, `inferre
 - **`wiki-ingest`** writes `source_type: extracted` on source pages and `source_type: inferred` or `claude_synthesized` on spawned entity/concept pages depending on how directly the source supported them.
 - **`save`** writes the dominant `source_type` based on what's being saved.
 - **`wiki-query`** includes provenance in its citations : *"per [[my-note]] (extracted)"* vs *"per [[my-note]] (synthesized)"*. Pre-v0.8.8 pages without the field render as `(unmarked)`.
+
+### Not yet — `confidence_score`
+
+graphify also assigns a discrete float (0.55 / 0.65 / 0.75 / 0.85 / 0.95) on top of the three-bucket tag. For a markdown wiki the three buckets carry most of the value; the float is deferred until a real use case proves it is worth the per-claim labelling cost.
+
+*(This paragraph moved here on 2026-09-11 from `templates/wiki/CLAUDE.md`, whose copy of this convention was removed when the templates stopped seeding conventions. It was the one thing that copy said and this one did not — a design question already answered, kept so it is not asked again.)*

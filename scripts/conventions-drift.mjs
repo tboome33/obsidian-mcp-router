@@ -84,9 +84,18 @@ const REPO = path.resolve(HERE, '..');
 // The decision `conventions-livrees-par-le-modele` (2026-09-11) took the four
 // stylistic conventions out of everything that seeds a new vault, and these two
 // files each carried one. Dropping their rows would leave the check governing
-// nothing AND silently allow a convention to come back here; keeping them with
-// an empty expectation is what makes the exhaustiveness assertion in
-// `tests/convention-drift.test.mjs` fail the day one reappears.
+// nothing; keeping them with an empty expectation is what makes the
+// exhaustiveness assertion in `tests/convention-drift.test.mjs` fail the day one
+// reappears.
+//
+// THE GUARANTEE IS NARROWER THAN IT SOUNDS, and review was right to press on it:
+// what cannot come back unnoticed is a RECOGNISED library convention — one whose
+// heading matches a snippet's identity. The same rule restored under a heading
+// no snippet identity matches reads as ABSENT, the assertion compares two empty
+// arrays, and it passes. That is not hypothetical here: this very file carried
+// `heading-hierarchy` and `source-type` under such headings until 2026-09-11,
+// which is why neither this check nor the first pass of the cut could see them.
+// A human read found them. Nothing automated would have.
 export const GOVERNED_TARGETS = Object.freeze([
   Object.freeze({ file: 'templates/wiki/CLAUDE.md', expects: Object.freeze([]) }),
   Object.freeze({ file: 'templates/reference-vault-skeleton/CLAUDE.md', expects: Object.freeze([]) }),

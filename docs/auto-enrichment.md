@@ -2,7 +2,7 @@
 
 > *🇬🇧 English — [🇫🇷 version française plus bas](#-version-française)*
 
-Phase 0 of the auto-enrichment system makes Claude proactively suggest wiki saves at three natural moments during a conversation: validation pins, result-obtained digests, and topic-switch checkpoints. The mechanics are documented in the consigne itself ([`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md), `## Auto-enrichment` section).
+Phase 0 of the auto-enrichment system makes Claude proactively suggest wiki saves at three natural moments during a conversation: validation pins, result-obtained digests, and topic-switch checkpoints. The mechanics are documented in the consigne itself ([`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md), `## Auto-enrichment` section).
 
 This file answers a different question: **where do you place the consigne so Claude actually applies it?** Five channels, one per Claude surface, all interoperable — plus, upstream of all of them, the binding that decides WHICH vault the session writes to.
 
@@ -32,11 +32,16 @@ Read `workspaceBinding`; never infer the binding from an environment variable.
 
 **When it applies**: Claude Code launched from a vault directory (e.g. `cd C:\VAULTS\TradingView && claude`).
 
-**How it works**: Claude Code auto-loads the `CLAUDE.md` at the workspace root. The vault's CLAUDE.md is dropped there by `setup-vault.mjs` (or the `wiki` skill on scaffold) and includes the auto-enrichment consigne.
+**How it works**: Claude Code auto-loads the `CLAUDE.md` at the workspace root. The vault's CLAUDE.md is dropped there by `setup-vault.mjs` (or the `wiki` skill on scaffold); the auto-enrichment consigne is a CONVENTION you add to it.
 
-**Setup**: nothing to do — every vault scaffolded with `/obsidian-router:wiki` after v0.8.1 gets it automatically. For existing vaults bootstrapped before v0.8.1, copy the `## Auto-enrichment` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) and paste it at the bottom of your vault's `CLAUDE.md`.
+**Setup** — this changed on 2026-09-11. The **seed template no longer embeds this convention**: decision `conventions-livrees-par-le-modele` took the stylistic conventions out of everything that seeds a new vault, precisely so that a rule which reshapes every conversation is one you accepted rather than one you inherited. It is not gone from your vault — it is *chosen*. Two supported routes:
 
-**Verification**: open `<vault>/CLAUDE.md` and look for the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section. If present, you're set. (Vaults scaffolded before v0.8.2 carry the older heading `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — same section, one mode; re-copying from the template gives you the four.)
+- **The picker**, when you create or attach a vault — it shows this convention **pre-checked**, so you refuse rather than discover it. Accept it and the vault ends up carrying it, exactly as before;
+- **`/obsidian-router:conventions install auto-enrichment`** at any time, which owns the detection and the safe append.
+
+You can also paste the [`auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) snippet into your vault's `CLAUDE.md` by hand. That reproduces the text, but not the command's detection: check first that the section is not already there, or you will end up with two copies of it.
+
+**Verification**: open `<vault>/CLAUDE.md` and look for the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section. If present, you're set. (Vaults scaffolded before v0.8.2 carry the older heading `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — same rule, one mode. To get the four, **replace** that old section with the current [`auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) snippet: `install` appends, it does not upgrade a section already there, so delete the old heading and its body first.)
 
 ## Channel 2 — Claude Project instructions (Claude Desktop / Claude.ai)
 
@@ -66,7 +71,7 @@ Activation:
 
 From the next conversation in this Project, Claude reads the rules from the vault's CLAUDE.md (loaded once on first wiki interaction) and applies the consigne. Saves go to `<VAULT_NAME>` automatically.
 
-**Variant — fully self-contained Project**: if you don't want Claude to read the rules from the vault every session (extra MCP call), copy the entire `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directly into the Project instructions. Trade-off: the Project instructions become heavier (~80 lines) but no runtime fetch.
+**Variant — fully self-contained Project**: if you don't want Claude to read the rules from the vault every session (extra MCP call), copy the entire `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) directly into the Project instructions. Trade-off: the Project instructions become heavier (~80 lines) but no runtime fetch.
 
 ## Channel 3 — Memory (Claude Desktop, identity-based routing)
 
@@ -124,7 +129,7 @@ Apply the consigne below ONLY when:
    section `## Auto-enrichment` — and apply them for the rest of the session.
    ```
 
-2. **Self-contained** (no runtime fetch): copy the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) into the repo's `CLAUDE.md`. Heavier (~80 lines), but nothing to fetch.
+2. **Self-contained** (no runtime fetch): copy the `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` section from [`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) into the repo's `CLAUDE.md`. Heavier (~80 lines), but nothing to fetch.
 
 **Tool prefix**: spell the call with the prefix your session actually shows — `mcp__obsidian-router__get_file` when the router is a plain MCP server entry, `mcp__plugin_obsidian-router_router__get_file` when it comes from the Claude Code plugin.
 
@@ -224,7 +229,7 @@ Phase 1 (v0.8.2) covers the operational core. Phase 2 will add:
 
 ## 🇫🇷 Version française
 
-La Phase 0 du système d'auto-enrichissement fait que Claude propose proactivement de sauver dans le wiki à trois moments naturels d'une conversation : pins de validation, digests post-résultat, et checkpoints au changement de sujet. La mécanique est documentée dans la consigne elle-même ([`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md), section `## Auto-enrichment`).
+La Phase 0 du système d'auto-enrichissement fait que Claude propose proactivement de sauver dans le wiki à trois moments naturels d'une conversation : pins de validation, digests post-résultat, et checkpoints au changement de sujet. La mécanique est documentée dans la consigne elle-même ([`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md), section `## Auto-enrichment`).
 
 Ce fichier répond à une autre question : **où placer la consigne pour que Claude l'applique réellement ?** Cinq canaux, un par surface Claude, tous interopérables — plus, en amont de tous, la liaison qui décide DANS QUEL vault la session écrit.
 
@@ -254,11 +259,16 @@ Lis `workspaceBinding` ; ne déduis jamais la liaison d'une variable d'environne
 
 **Quand ça s'applique** : Claude Code lancé depuis un dossier de vault (par exemple `cd C:\VAULTS\TradingView && claude`).
 
-**Comment ça marche** : Claude Code auto-charge le `CLAUDE.md` à la racine du workspace. Le `CLAUDE.md` du vault y est posé par `setup-vault.mjs` (ou par le skill `wiki` lors du scaffold) et contient la consigne d'auto-enrichissement.
+**Comment ça marche** : Claude Code auto-charge le `CLAUDE.md` à la racine du workspace. Le `CLAUDE.md` du vault y est posé par `setup-vault.mjs` (ou par le skill `wiki` lors du scaffold) ; la consigne d'auto-enrichissement est une CONVENTION que tu y ajoutes.
 
-**Setup** : rien à faire — chaque vault scaffold avec `/obsidian-router:wiki` après v0.8.1 l'a automatiquement. Pour les vaults existants bootstrappés avant v0.8.1, copie la section `## Auto-enrichment` depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) et colle-la en bas du `CLAUDE.md` de ton vault.
+**Setup** — ça a changé le 2026-09-11. Le **gabarit semeur n'embarque plus cette convention** : la décision `conventions-livrees-par-le-modele` a sorti les conventions de style de tout ce qui sème un nouveau vault, précisément pour qu'une règle qui change la forme de chaque conversation soit acceptée plutôt qu'héritée. Elle n'a pas disparu de ton vault — elle est *choisie*. Deux voies supportées :
 
-**Vérification** : ouvre `<vault>/CLAUDE.md` et cherche la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)`. Si présente, tu es bon. (Les vaults scaffoldés avant la v0.8.2 portent l'ancien titre `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — même section, un seul mode ; recopier depuis le template te donne les quatre.)
+- **Le picker**, à la création ou à la liaison d'un vault — il l'affiche **déjà cochée**, donc tu la refuses au lieu d'avoir à la découvrir. Si tu l'acceptes, le vault la porte, exactement comme avant ;
+- **`/obsidian-router:conventions install auto-enrichment`** à tout moment, qui gère la détection et l'ajout sûr.
+
+Tu peux aussi coller le snippet [`auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) à la main dans le `CLAUDE.md` de ton vault. Ça reproduit le texte, mais pas la détection de la commande : vérifie d'abord que la section n'y est pas déjà, sinon tu te retrouves avec deux exemplaires.
+
+**Vérification** : ouvre `<vault>/CLAUDE.md` et cherche la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)`. Si présente, tu es bon. (Les vaults scaffoldés avant la v0.8.2 portent l'ancien titre `## Auto-enrichment (Phase 0 — ClaudeAsk mode)` — même règle, un seul mode. Pour avoir les quatre, **remplace** cette vieille section par le snippet [`auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) : `install` ajoute, il ne met pas à jour une section déjà présente — supprime donc d'abord l'ancien titre et son corps.)
 
 ### Canal 2 — Instructions de Project Claude (Claude Desktop / Claude.ai)
 
@@ -288,7 +298,7 @@ Activation :
 
 À partir de la prochaine conversation dans ce Project, Claude lit les règles depuis le `CLAUDE.md` du vault (chargé une fois à la première interaction wiki) et applique la consigne. Les saves vont automatiquement dans `<NOM_VAULT>`.
 
-**Variante — Project fully self-contained** : si tu ne veux pas que Claude lise les règles depuis le vault à chaque session (appel MCP supplémentaire), copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` complète depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) directement dans les instructions du Project. Trade-off : les instructions du Project deviennent plus lourdes (~80 lignes) mais zéro fetch runtime.
+**Variante — Project fully self-contained** : si tu ne veux pas que Claude lise les règles depuis le vault à chaque session (appel MCP supplémentaire), copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` complète depuis [`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) directement dans les instructions du Project. Trade-off : les instructions du Project deviennent plus lourdes (~80 lignes) mais zéro fetch runtime.
 
 ### Canal 3 — Memory (Claude Desktop, routing par identité)
 
@@ -347,7 +357,7 @@ Applique la consigne ci-dessous SEULEMENT quand :
    reste de la session.
    ```
 
-2. **Self-contained** (zéro fetch runtime) : copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` depuis [`templates/wiki/CLAUDE.md`](../templates/wiki/CLAUDE.md) dans le `CLAUDE.md` du dépôt. Plus lourd (~80 lignes), mais rien à aller chercher.
+2. **Self-contained** (zéro fetch runtime) : copie la section `## Auto-enrichment (4 modes — ClaudeAsk / Hybrid / FullAuto / off)` depuis [`skills/conventions/snippets/auto-enrichment.md`](../skills/conventions/snippets/auto-enrichment.md) dans le `CLAUDE.md` du dépôt. Plus lourd (~80 lignes), mais rien à aller chercher.
 
 **Préfixe d'outil** : écris l'appel avec le préfixe que ta session affiche réellement — `mcp__obsidian-router__get_file` quand le router est une entrée de serveur MCP classique, `mcp__plugin_obsidian-router_router__get_file` quand il vient du plugin Claude Code.
 
