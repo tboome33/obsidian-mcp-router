@@ -10,6 +10,53 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The template ships four conventions, and a picker default may propose an install — never a removal
+
+v0.95.0 left one question open and named it as Roland's: should the reference template keep shipping
+all eight conventions? It was decided and applied on 2026-09-11 — decision page
+`conventions-livrees-par-le-modele` in the project vault.
+
+**The reference vault ships the four behavioural conventions** — `roadmap-discipline`,
+`default-vault-health-check`, `wiki-query-first`, `path-disambiguation` — and stops shipping the four
+stylistic ones. Its conventions file went from 39 087 to 25 536 characters, with the four survivors
+byte-identical and a byte-exact backup kept beside it. Seven checks ran *before* the write: only the
+four intended headings lost, fences balanced, bytes removed equal to the sum of the cut sections.
+
+One of those checks blocked the first attempt, and it is worth recording why: it counted `## ` lines
+directly, so it also counted the ones `bilingual` and `auto-enrichment` *display inside their fenced
+examples* — it reported −6 headings for a four-section cut. The check was naive, the cut was correct.
+It was rewritten on the fence-aware scanner this same lot had just shipped. The trap this release
+fixed reappeared inside the script verifying the fix.
+
+**The picker's initialisation rule is now asymmetric**, and that is what makes the above safe:
+
+| detected | pre-checked | the default proposes |
+|---|---|---|
+| present | always | nothing — never a cut |
+| absent, recommended | yes | installing it, refusable in one click |
+| absent, other | no | nothing |
+
+Un-checking a PRESENT convention has meant *remove it* since v0.94.3, so a default applied in the
+un-checking direction would ask a deletion question nobody asked for — an adversarial round found
+exactly that. In the install direction there is no such danger. That asymmetry is what lets the
+template stop shipping the stylistic conventions **without making them invisible**: the user acts to
+refuse, not to discover. If they accept everything, they get what they got before; the difference is
+that it was shown to them. When the picker is skipped entirely, the recap now NAMES what is not
+installed and the command that adds it.
+
+`auto-enrichment`'s description was rewritten. *"règles d'enrichissement automatique (4 modes)"*
+warned of nothing. The convention grants **no write permission** — the mode defaults to `ClaudeAsk`,
+which always asks, and `FullAuto` cannot be set by a workspace file at all since v0.89.0 — but it
+does change the shape of every conversation, and that is what a user has to be told. The opposite
+was argued while deciding this; the convention's own text refuted it, and the decision page records
+the retraction rather than hiding it.
+
+**Still open:** two repository templates each still carry one stylistic convention
+(`templates/wiki/CLAUDE.md` → `auto-enrichment`, `templates/reference-vault-skeleton/CLAUDE.md` →
+`heading-hierarchy`). They were deliberately not touched — the convention-drift lot declares both
+files with both conventions in its governance table, and editing them would break work in flight.
+Whether they fall under this decision is a scope question, not an oversight.
+
 ## [0.95.0] — 2026-09-11 — the copy that landed in a directory nobody had named
 
 Four independent findings, three of them from bug reports filed the same day by a workspace that
