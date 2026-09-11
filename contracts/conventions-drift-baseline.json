@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": [
+    "Divergences between a convention snippet and a copy of it that this repository ships, which a",
+    "human has looked at and accepted. Checked by `npm run conventions:drift` and by",
+    "tests/convention-drift.test.mjs, which both fail on any drift that is NOT listed here.",
+    "",
+    "AN ENTRY PINS BOTH SIDES. `snippetSha256` and `targetSha256` are sha256 over the section's",
+    "lines with line terminators and trailing blank lines normalised away — so a CRLF checkout",
+    "cannot move them, and editing EITHER text breaks the match and turns the check red. That is",
+    "the mechanism: an entry accepts two specific texts, never a convention's name. An exemption",
+    "keyed on the name alone would keep passing while the text underneath it rotted, which is the",
+    "failure this whole check exists to end.",
+    "",
+    "`reason` is mandatory and must say WHY the two are allowed to differ, in a sentence a reader",
+    "who was not there can act on. An accepted divergence with no stated reason is indistinguishable",
+    "from one nobody ever looked at.",
+    "",
+    "TO CHANGE ONE OF THESE TEXTS: make the edit, run `npm run conventions:drift`, read the new",
+    "fingerprints it prints, and update the entry — or delete the entry if you reconciled the two.",
+    "A stale entry is reported as an error, never ignored."
+  ],
+  "entries": [
+    {
+      "file": "templates/wiki/CLAUDE.md",
+      "convention": "auto-enrichment",
+      "snippetSha256": "8238eea597173bfbfa7aac7ed926e508b994a8b9f6f1f36c7b5557880aa1700a",
+      "targetSha256": "d2271ab8f881ea5fbc6e8b90d42619c9d2106cc0460a6031c33ca2bd9b275146",
+      "reason": "The two texts serve different readers and the SNIPPET is the stale side here, which is why this is recorded rather than propagated. templates/wiki/CLAUDE.md is the consigne scaffolded into a vault: it spells out each mode's full prompt template, and its binding paragraph was corrected to the workspaceBinding model (a bare OBSIDIAN_ROUTER_DEFAULT_VAULT line is a proposal the router reports and does not apply). The snippet is the condensed installable and still describes the binding model this router abandoned. Reconciling them is a content decision about what an installed convention should say, open as of 2026-09-11; until it is taken, both fingerprints are pinned so neither side can move unnoticed."
+    }
+  ]
+}

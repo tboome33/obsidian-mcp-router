@@ -11,7 +11,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 
 The skill has three modes :
 
-- **Default (structural)** — runs Checks A through H, plus N (decision-layer coherence) and O (two folders named "Sessions"). Cheap, scans page metadata + wikilinks + citations + two directory listings only. The right mode for routine health checks.
+- **Default (structural)** — runs Checks A through H, plus N (decision-layer coherence), O (two folders named "Sessions"), P (prompt lifecycle) and Q (conventions drift). Cheap, scans page metadata + wikilinks + citations + two directory listings + the vault `CLAUDE.md` only. The right mode for routine health checks.
 - **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L (plus Check J-bis, C11, which needs no digest — it reads the Smart Connections vector store and reports itself unavailable where there is none), which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
 - **`--okf <path>` (v0.33.0+)** — runs Check M ONLY : validates an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1) against the spec's three conformance rules. The path is either a bundle exported by `wiki-export --target okf` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned repo containing a third-party bundle. This mode doesn't lint the wiki itself.
 
@@ -303,12 +303,33 @@ Scope: `type: prompt` only, matched case-insensitively; a page with no `type` is
 
 Auto-fix posture (step 4): `prompt-status-invalid` **with** a `suggestion` may be offered as a mechanical `set_frontmatter`. Everything else here is a question for the author — and when you rewrite a status, check the page BODY too: one prompt in this family documents its own tracking protocol in prose, and migrating the frontmatter alone would leave the page contradicting itself.
 
+### 2d-ter. Check Q: conventions drift
+
+Does this vault's `CLAUDE.md` still say what the convention library says? A convention lives at two addresses — the snippet under `skills/conventions/snippets/` and the section of the same name in the vault's `CLAUDE.md`, which is what an agent actually reads at session start — and nothing compared them until 2026-09-11. The measurement that day, on the reference vault every other vault is cloned from: **five of its eight installed conventions had drifted**, including the one forbidding a filesystem fallback when a router call fails, and the whole frontmatter contract for `decision` pages.
+
+1. **Locate the conventions file** — `CLAUDE.md`, then `wiki-meta/CLAUDE.md`, then `Documentation/CLAUDE.md`. If the vault has **two**, read both and say so: only one of them is being read at session start, and the `conventions` skill refuses to act while both exist. Eleven of the fleet's twenty-eight vaults are in that state.
+2. **Run the checker** :
+
+```javascript
+import { auditConventionDrift } from 'src/helpers/convention-drift.mjs';
+const { findings } = auditConventionDrift({
+  snippets,                                    // [{ id, heading, text }] from the snippet library
+  targets: [{ file, content, governed: false }],  // a vault is OBSERVED, never governed
+});
+```
+
+  The same helper backs a repo-side checker that covers every vault in the router config in one read-only pass; a maintainer working in the router clone can reach for that instead of linting vault by vault.
+
+3. **Four states, and `absent` is not a weak `drift`** : `in-step` · `drift` (with the number of lines `diff` would mark) · `not-installed` (never installed — a choice, not rot) · `duplicate-identity` (the same convention twice in one file; there is no single section to compare). Conflating the first two turns every uninstalled convention into a repair task and buries the real ones.
+4. **Severity — WARNING, and it never affects `ok`.** A vault's `CLAUDE.md` belongs to its owner, who may have extended a section deliberately. The report says what diverges; it never says who is right. The measurement proves why: one convention differs because the *snippet* was anonymised for public distribution, another because the *consigne* is newer than the snippet.
+5. **Never offer `--all --fix`, and never propose a rewrite as the mechanical repair.** Applying a convention is a per-vault decision, taken through the `conventions` skill with its preview-and-sidecar-backup guards. The one thing to offer is the reading: *which* lines differ, so the user can judge which side is right.
+
 ### 3. Render the report
 
 Group findings by severity:
 
 - **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`), **Check O `session-folder-collision`**
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**, **Check P `prompt-status-missing`** / **`prompt-status-invalid`**
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**, **Check P `prompt-status-missing`** / **`prompt-status-invalid`**, **Check Q `convention-drift`** (a drifted or duplicated convention section — never above warning, because which side is right is the reader's call)
 - **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect), **Check J-bis** quasi-twin pairs (never above info — resemblance is not a defect, and the check proposes a reading, never a merge)
 
 For each finding:

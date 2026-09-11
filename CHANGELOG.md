@@ -57,6 +57,136 @@ the retraction rather than hiding it.
 files with both conventions in its governance table, and editing them would break work in flight.
 Whether they fall under this decision is a scope question, not an oversight.
 
+### The same rule, written twice, with nothing comparing the copies
+
+A convention lives at two addresses: the snippet under `skills/conventions/snippets/`, and the
+section of the same name inside a `CLAUDE.md` — which is the copy an agent actually reads at session
+start. Every vault provisioned from the reference template inherits that second copy verbatim.
+Nothing had ever compared them.
+
+Measured on 2026-09-11 against the reference vault, of the **eight** conventions installed there,
+**five had drifted**. Two of them are not cosmetic:
+
+- `default-vault-health-check` was missing its entire *"a router call failed MID-SESSION — remediate,
+  never fall back to the filesystem"* subsection. That rule was added on 2026-07-05 after a real
+  incident, and the vaults that most need it are the ones born since.
+- `heading-hierarchy` had frozen at roughly its v0.8.x state — 23 lines against the snippet's 61 —
+  missing the whole frontmatter contract for `decision` pages, including the `## Alternatives
+  considered` section that is the only part of a decision record that exists nowhere else.
+
+The other three are `bilingual` (4 lines: it still described the navigation scaffolds under their
+pre-rename names), `path-disambiguation` (2) and `wiki-query-first` (1).
+
+Re-measured the same evening, after the entry above cut the reference vault down to the four
+behavioural conventions: **three of those four still drift** — `default-vault-health-check` (12),
+`path-disambiguation` (2) and `wiki-query-first` (1). The security rule is still missing from the
+copy new vaults inherit. Deciding what to do about it is a per-vault call, which is why this lot
+ships a report and not a repair.
+
+#### No source of truth is declared, because the measurement refutes every candidate
+
+The obvious rule — *the snippets win, the vault section is a projection* — is contradicted twice, in
+opposite directions, by the very data that motivated the lot:
+
+- `path-disambiguation` differs because the **snippet** was deliberately anonymised for public
+  distribution. A blind snippet→vault sync would write a placeholder username into the user's own
+  reference vault.
+- `auto-enrichment` in `templates/wiki/CLAUDE.md` is 190 lines against the snippet's 113, and the
+  longer text is the **newer** one: it teaches the `workspaceBinding` model, while the snippet still
+  teaches the model this router abandoned. There the snippet is the stale side.
+
+So a drift is reported as a **fact**, never as a verdict, and a human records the judgement in a
+baseline. An entry there pins the sha256 of **both** texts plus a mandatory reason, so accepting a
+divergence accepts two specific texts — edit either side and the check goes red. That is the whole
+difference from an exemption keyed on a convention's *name*, which would keep passing while the text
+under it rotted; this repository has already been bitten by an exemption that let a real defect
+through at 211/211 green.
+
+#### What ships
+
+- **`src/helpers/convention-drift.mjs`** — pure. Four states, and `absent` is deliberately not a weak
+  `drift`: a convention never installed is a choice, one installed and no longer matching is rot, and
+  they call for opposite actions. Section boundaries come from the shared fence- and comment-aware
+  scanner extracted one commit ago, which is not optional here — both the `bilingual` and
+  `path-disambiguation` snippets contain fenced `## ` lines, and a line-based splitter cuts them in
+  half and then reports the halves as drift.
+- **`scripts/conventions-drift.mjs`** — `--check` audits the `CLAUDE.md` copies this repository
+  ships and exits 1 on an undeclared divergence; `--fleet` reports every vault in the router config
+  and always exits 0. **There is no `--fix` and no `--all`**, and a test asserts a fleet run leaves
+  every byte untouched. Applying a convention is a per-vault decision taken through the `conventions`
+  skill's preview-and-backup guards; the 27 vaults in production may carry hand-edited sections, which
+  is exactly what those guards exist for.
+- **`contracts/conventions-drift-baseline.json`** — one entry today, the `auto-enrichment` case above.
+- **CI** runs the check on every leg. Editing a snippet without propagating it now turns something
+  red. Every leg and not one because the comparison normalises line terminators so a CRLF checkout and
+  an LF one agree — a claim worth nothing unless both platforms run it, as the conventions fixture
+  that was red on Windows and vacuous everywhere else demonstrated one commit ago.
+- **`wiki-lint` Check Q** reports the same thing per vault, as a **warning** that never affects `ok`.
+
+#### The repair, and the two things it deliberately does not touch
+
+`templates/reference-vault-skeleton/CLAUDE.md` — what `--bootstrap-reference` clones into a brand-new
+reference vault — carried the *same* frozen `heading-hierarchy`. So the stale text was not only on one
+machine: the repository was shipping it. That copy is now the snippet's, verified by a test rather
+than by eye.
+
+Not touched, on purpose: the `auto-enrichment` divergence (recorded, because reconciling it is a
+content decision about what an installed convention should say), and the reference vault on the
+author's disk (a vault is its owner's).
+
+#### Two things found by running it
+
+- **Eleven of the twenty-eight vaults carry two `CLAUDE.md` files.** `resolveClaudeMd` refuses to
+  choose between two candidates — correctly, for an installer — and honouring that refusal in a
+  *report* meant the first fleet run examined 15 files and stayed silent about the majority of the
+  fleet. The report now reads every candidate and names the ambiguity, which is itself worth knowing:
+  only one of those files is read at session start, and the `conventions` skill refuses to act while
+  both exist.
+- **The reference vault is not in the port registry**, it is a separate config field. A fleet report
+  that walked the registry alone would have omitted the single file this lot is about.
+
+#### Thirteen findings from two adversarial rounds, and every one of them was a real defect
+
+Round one attacked the design with the claims stated as claims. It confirmed that no direction of
+truth is declared anywhere in the code, refuted the wording of two others — a rule reversed by one
+word costs **two** lines, not one, and "rot" assumes a direction the detector cannot establish — and
+found seven defects. Round two was told the payload WAS the repair, and found six more, including one
+that the repair had introduced.
+
+The two that would have made the gate decorative:
+
+- **Duplicating a heading walked straight past it.** A governed duplicate was a warning, `ok` stayed
+  true, and because the baseline entry had been looked up and consumed it raised no `baseline-stale`
+  and no `baseline-unmatched` either. Two copies of a heading was a way to replace an accepted section
+  with arbitrary text and keep CI green. Now an error on a governed file, still a warning on a vault.
+- **A convention could vanish silently.** Delete an installed section, or rename a snippet's heading
+  without touching the copy, and the pair became "never installed" — info, green. No comparison of two
+  texts can tell that from a deliberate uninstall, so the answer does not come from the texts: a
+  governed file now DECLARES what it carries, and an undeclared disappearance is an error.
+
+  Then round two found the same hole one level up, inside that repair: the declaration was only ever
+  evaluated inside the per-snippet loop, so **deleting a snippet** stopped its declaration from being
+  checked at all. And the witness written for the previous fix was *green only because of that hole* —
+  it is now built from the governed files' own sections, so its control passes for a reason that has
+  nothing to do with what it measures.
+
+The rest, each with the counterexample that named it: a malformed baseline read as an empty one
+(`{entires: []}` — a typo silently discharged every acceptance), and so did a missing or unparseable
+file, and so did a file containing literal `null`; a case-folded path compare that would omit the
+reference vault on a case-sensitive filesystem (now `samePath`, the existing realpath helper); a
+snippet preamble manufacturing drift against a verbatim copy of itself (the snippet side was the whole
+file, the target side a section); a partially unloadable library reporting on what did load and
+exiting 0; a permission error on a vault reading as "this vault has no `CLAUDE.md`"; an accepted
+divergence printing a lower bound of 0 as "0 lines"; and a diagnostic double-counting its own
+convention in the totals.
+
+`tests/convention-drift.test.mjs` — **87 tests**. 26 mutations, 0 survivors, 26 distinct witness sets,
+restores fsync'd and hash-verified, baseline green before and after. Two of those mutations exist
+because the harness itself was wrong twice: one anchor matched two sites, so two "independent"
+mutations were the same mutation; and a witness passed for the wrong reason, which is what sent the
+baseline-I/O check and the malformed-document check into two separately witnessed guards instead of
+one overlapping pair.
+
 ## [0.95.0] — 2026-09-11 — the copy that landed in a directory nobody had named
 
 Four independent findings, three of them from bug reports filed the same day by a workspace that

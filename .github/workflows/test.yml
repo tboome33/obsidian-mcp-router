@@ -70,6 +70,21 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run validate
 
+      # Conventions drift. `npm test` already fails on the same finding
+      # (tests/convention-drift.test.mjs runs this exact CLI against the live
+      # repo), and the dedicated step exists for the same reason the capability
+      # one does: so the failure names itself instead of hiding inside a
+      # 6000-test run, and prints which convention diverged and where.
+      #
+      # Every leg, not one. The comparison normalises line terminators
+      # precisely so a CRLF checkout and an LF one agree — and a claim like that
+      # is worth nothing unless both platforms actually run it. This repository
+      # shipped a conventions fixture that assumed LF one commit ago: red on
+      # Windows, vacuous everywhere else.
+      - name: Conventions drift — snippets vs the CLAUDE.md copies we ship
+        if: ${{ !cancelled() }}
+        run: npm run conventions:drift
+
       # C9 — the export gate. Runs on EVERY leg, and behind `!cancelled()`
       # rather than the default "previous step succeeded".
       #
