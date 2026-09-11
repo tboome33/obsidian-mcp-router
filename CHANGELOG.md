@@ -10,6 +10,15 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.95.0] — 2026-09-11 — the copy that landed in a directory nobody had named
+
+Four independent findings, three of them from bug reports filed the same day by a workspace that
+happened to be the first vault on this machine with an accent in its path. The thread they share is
+not a mechanism, it is a habit: each one was a thing the code **reported** as done that measurement
+said otherwise about — a provisioning split across two directories with `ok: true`, a settings picker
+whose unchecked boxes changed nothing, a template whose conventions had drifted from the snippets
+they were copied from, and a catalogue check that saw the misplaced file but not the signpost.
+
 ### The conventions picker never read the vault, so unchecking a convention did nothing
 
 Creating a vault from the reference template on 0.94.1 (`La méthode LICARES`, 2026-09-11) offered the
