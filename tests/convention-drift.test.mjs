@@ -916,6 +916,33 @@ describe('the repository as it actually is', () => {
     }
   });
 
+  test('the installable heading-hierarchy still REQUIRES the alternatives section', () => {
+    // A witness the previous test used to carry and that its replacement lost —
+    // caught by an adversarial round on commits that had shipped unreviewed.
+    //
+    // The old assertion lived on the SKELETON: "the shipped skeleton carries the
+    // CURRENT heading-hierarchy", which checked equality with the snippet AND
+    // that `## Alternatives considered` was in it. Replacing it with "no seeding
+    // file carries any convention" was right about the skeleton — that copy must
+    // not exist any more — but it silently dropped the second half, which was
+    // never about the skeleton at all. Mutation that separates them: delete the
+    // requirement from the snippet, leave its H2 identity intact. The
+    // replacement stays green (the templates are empty either way); this fails.
+    //
+    // Why it is worth a test of its own: `## Alternatives considered` is the one
+    // part of a decision that exists nowhere else — not in the code, which holds
+    // the path taken and never the paths refused. `decision-lint` enforces it on
+    // decision PAGES; nothing until now checked that the convention teaching it
+    // still says so.
+    const { snippets } = loadSnippetLibrary(path.join(REPO, ...DEFAULT_SNIPPETS_DIR.split('/')));
+    const snippet = snippets.find((s) => s.id === 'heading-hierarchy');
+    assert.ok(snippet, 'heading-hierarchy must still ship');
+    assert.match(snippet.text, /## Alternatives considered/,
+      'the decision-page contract must name the section');
+    assert.match(snippet.text, /required, not optional/,
+      'and must still say it is REQUIRED — naming it while calling it optional is the drift');
+  });
+
   test('nothing that seeds a new vault carries a library convention any more', () => {
     // This assertion REPLACES "the shipped skeleton carries the CURRENT
     // heading-hierarchy", and the reversal is a decision, not a regression.

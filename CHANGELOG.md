@@ -22,20 +22,29 @@ is byte-exact, with one heading lost per file and fences left balanced — verif
 the same day recorded that `auto-enrichment` differs between its snippet and the template copy, that
 the **snippet is the stale side**, and that reconciling them was "a content decision, open". Deleting
 the section alone would therefore have destroyed the newer of the two texts and left the picker
-installing the binding model this router abandoned in v0.89.0. The difference was one paragraph — the
-activation condition, which reads `workspaceBinding` instead of inferring a binding from a `.env`
-variable. It was ported INTO the snippet first; the removal came second, and the baseline entry is
-now empty with the resolution written where the entry used to be.
+installing the binding model this router abandoned in v0.89.0. What was **stale** was one paragraph —
+the activation condition, which reads `workspaceBinding` instead of inferring a binding from a `.env`
+variable — and that paragraph was ported INTO the snippet before the removal. The rest of the gap
+(191 lines against 114) was not a correction but a different presentation: the template spelled out
+each mode's full prompt wording, the snippet is the condensed installable. That longer presentation
+was **retired, not preserved**, and saying "the difference was one paragraph" overstated it. The
+baseline entry is now empty, with the resolution written where the entry used to be.
 
 The drift check keeps both files **governed with an empty expectation** rather than dropping their
 rows: its exhaustiveness assertion is what fails the day a convention creeps back into one of them.
-Two of its tests changed accordingly, and neither was weakened — the one pinning "the skeleton
+Two of its tests changed accordingly. The one pinning "the skeleton
 carries the CURRENT heading-hierarchy" is replaced by the invariant one level up (*no* seeding file
 carries *any* library convention, swept over the whole table and the whole library rather than the
 single pair it named), and the one proving an unreadable baseline fails on its own had built its
 control out of the governed conventions, which no longer exist. Its isolation is now a property of
 the repository — with nothing installed anywhere, a run is green for reasons unrelated to the
 baseline — and that was checked by measurement before the test was rewritten to rely on it.
+
+That first replacement **did drop a witness**, and a later review round caught it: the old test also
+asserted that `## Alternatives considered` was present and *required*. That half was never about the
+skeleton — it was about the installable convention — so it has been restored as a test of its own
+against the snippet. The mutation that separates the two: delete the requirement from the snippet
+and leave its heading intact; the sweep stays green, the restored witness fails.
 
 **Still open, and deliberately not decided here:** `templates/wiki/CLAUDE.md` keeps two sections that
 are the same rules under different headings (*"Note structure — headings hierarchy (mandatory for

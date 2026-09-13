@@ -220,7 +220,9 @@ Donc : décocher cette case ne rend rien optionnel, et ne retire rien d'un vault
 
 **The `auto-enrichment` line** above is deliberate and was corrected on 2026-09-11: *"règles d'enrichissement automatique (4 modes)"* warned the user of nothing. The convention grants no write permission — the mode defaults to `ClaudeAsk`, which always asks — but it DOES change the shape of every conversation, and that is what the description has to say.
 
-The first four are shipped by the reference template, so on a template-born vault they arrive detected. Any convention outside the recommended set is displayed unchecked: visible, so it exists for the user, without being proposed.
+The first four are shipped by the reference template, so on a template-born vault they arrive detected. Any **absent** convention outside the recommended set is displayed unchecked: visible, so it exists for the user, without being proposed.
+
+The word "absent" there is load-bearing, and review caught its absence. Written without it, that sentence contradicts the table one paragraph above: a convention the vault ALREADY carries but that nobody recommended would be displayed unchecked, and unchecking a present convention is what puts it in the `remove` bucket. The default would then propose exactly the deletion the asymmetric rule exists to forbid. **Detection wins over the recommended list, always**: present means pre-checked, whatever the list says.
 
 **Then plan the answer, don't act on it directly.** `planConventionPicker({ content, catalogue, selected })` sorts the displayed options into `install` / `keep` / `remove` / `skip`. Act on each bucket as the `conventions` skill's `pick` section specifies:
 
