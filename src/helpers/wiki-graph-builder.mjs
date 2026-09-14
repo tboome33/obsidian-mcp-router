@@ -296,6 +296,17 @@ function buildLayers(nodeIds, edges, nodesById, resolution) {
  * @param {string} [input.gitCommitHash='']
  * @returns {object} KnowledgeGraph (UA schema; `validateGraph` should pass)
  */
+/**
+ * The character that joins the parts of an edge key.
+ *
+ * Constructed rather than written as an escape or embedded as a raw byte:
+ * an escape typed through an editing tool in this project lands as the
+ * literal control character, and a literal control character in source is
+ * invisible to every reader and every test. It is chosen because no node id
+ * or edge type can contain it.
+ */
+const EDGE_KEY_SEP = String.fromCharCode(0);
+
 export function buildWikiGraph({
   vaultName,
   indexMd = '',
@@ -411,7 +422,18 @@ export function buildWikiGraph({
   }
   function addEdge(source, target, type, weight, extra = {}) {
     if (!source || !target || source === target) return;
-    const key = `${source} ${target} ${type}`;
+    // BUILT, NOT EMBEDDED — and the INTERPOLATION is deliberate too. The
+    // separator is a real NUL either way, so the key value is unchanged;
+    // a `[…].join(sep)` would NOT be, because join renders a nullish part
+    // as an empty string where `${…}` spells it "undefined". The guard
+    // above rejects a nullish source and target, and says nothing about
+    // `type`. A hygiene fix may not smuggle in a coercion change.
+    //
+    // As for the separator itself: a control byte typed into the source is
+    // invisible to a reader, makes `grep` call this file binary, and is
+    // silently mangled by anything that round-trips the text. Three of them
+    // reached a new helper in this repository on 2026-09-14 exactly that way.
+    const key = `${source}${EDGE_KEY_SEP}${target}${EDGE_KEY_SEP}${type}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
     edges.push({ source, target, type, direction: 'forward', weight, ...extra });

@@ -10,6 +10,220 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Source files no longer carry invisible control bytes, and CI refuses new ones
+
+Three unicode escapes typed through an editing tool landed in a new helper as **literal NUL
+bytes**. Nothing misbehaved — a raw NUL and `String.fromCharCode(0)` are the same character, and the
+module's tests, its 24 mutations and the whole suite were green, correctly. What was wrong is that
+three bytes of source were invisible to every reader and to every assertion. `grep` gave it away by
+refusing the file as "Binary file … matches" during an unrelated search.
+
+A sweep then found the same shape in **three more** files, one of them production code — the
+signature of a class defect, where fixing only the site that was noticed reads as closed.
+
+- **Each site was decided separately, not swept by a rule.** The two key separators became named
+  constants built with `String.fromCharCode`, keeping the template interpolation they had: a
+  `[…].join(sep)` would *not* have been equivalent, because `join` renders a nullish part as an empty
+  string where `${…}` spells it `"undefined"` — a hygiene fix may not smuggle in a coercion change.
+  The **hostile-input fixtures** — a registry key containing a NUL, an ANSI escape inside an env var
+  name, a control-character regex class — were *not* removed: the control character is what they
+  test. They are constructed and named now, which a reader can actually see.
+- **`tests/source-control-bytes.test.mjs` scans the working tree** — tracked files plus anything
+  added but not yet committed — for C0 bytes other than tab/LF/CR, plus DEL, which the first sweep
+  missed by asking only `b < 32`. **Unknown means scanned**: the only escape is an explicit list of
+  non-source extensions, so an extensionless `Dockerfile` or an unheard-of `.tsx` is read rather than
+  skipped, and each category that must stay scanned has its own fixture — the coverage arithmetic
+  cannot see a whole extension leave, since an excluded file disappears from both sides of it.
+- **A PATH IS BYTES, and decoding them as UTF-8 loses files.** A filename byte that is not valid
+  UTF-8 is legal on Linux and git prints it verbatim; decoded as UTF-8 it becomes U+FFFD, so a file
+  named with a raw `0xFF` and a file legitimately named with U+FFFD arrive as **the same string** and
+  the set that deduplicates the list merges them. One is then read and the other never is — not
+  eligible, not absent, not unreadable, not a link: the accounting balances and the scan reports clean
+  over a file it never opened. Enumeration now splits on the NUL byte and keeps a path only if
+  decoding and re-encoding returns the original bytes; anything else is reported in its own bucket,
+  asserted empty, because being unable to NAME a file is a failure to look exactly like being unable
+  to read one. That filename cannot be created on Windows at all, so the rule is a pure function
+  tested on the two byte sequences themselves.
+- **Being unable to look is never a clean result.** Read failures, paths git lists that the tree does
+  not hold, non-regular files and symlinks each land in their own bucket and are asserted empty; the
+  coverage figure counts files actually READ; a directory git cannot enumerate throws rather than
+  returning an empty list. The arithmetic that ties those buckets to the eligible count now has a
+  fixture that populates **all five at once**: it had only ever been asserted against this
+  repository, where four of them are empty and it says no more than "everything eligible was read".
+- **Which ignore rules count is decided, not inherited.** `--exclude-standard` bundles three sources
+  and two of them exist only on one machine — a global `core.excludesFile` and
+  `$GIT_DIR/info/exclude`. Either one removes an untracked offender from enumeration *entirely*:
+  never eligible, never read, the arithmetic still balanced, the coverage threshold still met,
+  nothing said. Both were measured doing it against a control run that reported the file. A review
+  round closed the config key and left the exclude file, which is why the bundle is gone: enumeration
+  honours `.gitignore` and nothing else. The two spellings were verified to list the same 646 paths
+  here. **The residual is named by a test rather than by a claim**: an UNTRACKED `.gitignore` is
+  honoured exactly like a committed one, so a contributor can still hide a new offender locally. That
+  is a smaller hole than the two that closed — the file sits in the tree where anyone in that checkout
+  can see it, and CI clones the commit, where it does not exist — but calling the remaining rules
+  "committed" would have been false, and the fixture that was supposed to prove it never committed
+  anything.
+- **No link is followed, anywhere along the path.** `lstat` on the leaf is not enough — it resolves
+  the ANCESTORS, so a directory replaced by a link carried the reader outside the repository while
+  the scan reported nothing. Every component under the root is probed, and the same rule guards an
+  exemption, which could otherwise be kept "valid" by a control byte in a file the repository does
+  not contain. **The bound is stated rather than overclaimed**: this detects a link that is there
+  when the walk runs, and a check followed by a read cannot exclude another process swapping a
+  component in between. A tree being rewritten underneath the suite is outside the guarantee, and
+  saying so is more honest than a second pathname check that would only look like a fix.
+- **A backslash is a separator on Windows and a filename character everywhere else.** There, an
+  exemption spelled that way matches nothing in the map — exempting no file while looking like it did
+  — and collapsed the whole path to a single component in the walk, so the `lstat` resolved the parent
+  and reported a file at the end of a directory link as an ordinary one; it is refused at the door. On
+  POSIX the same character is part of a legal filename that git prints and the scan can match, so
+  refusing it there would reject a file this check can genuinely exempt. The first version of the rule
+  did exactly that.
+- **An exemption is spelled exactly as git lists the path.** The scan looks entries up by exact
+  string, so `./f.mjs`, `sub//g.mjs` or a `..` that lands back inside can never match one — and they
+  were being accepted, creating an exemption that exempted nothing while nobody said a word. A leading
+  `./`, an empty component and a `..` component are refused now. **And the syntactic rules cannot
+  settle it either**: on a case-insensitive filesystem `F.mjs` passes every one of them, the probe and
+  the read both reach `f.mjs`, and the scan's lookup still misses. Each recorded key is therefore
+  checked against the paths git actually lists.
+- **A fixture that commits must not depend on the caller either.** Making the "committed .gitignore"
+  case actually commit introduced the first `git commit` in this file, and author and committer
+  metadata come from six environment variables an explicit `-c user.name` does not touch:
+  `GIT_AUTHOR_DATE=not-a-date` makes git refuse, so the fixture dies at setup with its name in the
+  failing list, having tested nothing. That is the precise shape three rounds of this review have been
+  removing, reintroduced by a repair.
+- **The fixture that checks case handling had been defeated by case handling.** It set a dozen
+  spellings of the same variables on `process.env` in turn — on Windows they are ONE variable, so its
+  saved values were already overwritten when it read them, and its teardown wrote a hostile value back
+  into the caller's real environment. `gitEnv` now takes the environment it filters as an argument,
+  and the test hands it a plain object, which asks the question once and means the same thing on both
+  platforms.
+- **The fixtures cannot reach the caller's repository.** `cwd` does not isolate git. An ambient
+  `GIT_INDEX_FILE` — which this project's own commit procedure exports routinely — redirects a
+  fixture's `git add` into that index; `GIT_CONFIG_COUNT` with a `core.hooksPath` pair makes it
+  **execute the caller's hook**; `GIT_TEMPLATE_DIR` seeds every fixture repository with them; the
+  `GIT_TRACE*` family writes wherever it likes — cleared by PREFIX, since `GIT_TRACE_REFS` was absent
+  from a hand-written list and is enough on its own to append to any absolute path while `git init`
+  still succeeds. All are cleared, with a scratch `HOME` and an empty template, and six tests set
+  hostile values deliberately and assert nothing outside moved.
+- **Keeping the caller's config FILES is not free either, and two keys had to be neutralised.**
+  `trace2.normalTarget`, `trace2.perfTarget` and `trace2.eventTarget` name an absolute path for git to
+  write to, so clearing the `GIT_TRACE*` environment closed only half of that hole: measured against a
+  control run, all three wrote outside the scratch space while the enumeration reported success — four
+  kilobytes of event trace for one `ls-files`. Measured too, because the obvious fix is the wrong one:
+  `-c trace2.x=` and `-c trace2.x=0` do **not** disable them, trace2 being configured before
+  command-line configuration is applied; the environment does, and `0` means off. And
+  `core.fsmonitor` names a *program git runs* to ask what changed, which `--others` is exactly the
+  walk that consults — from the caller's global config the enumeration **executed it**, status 0,
+  nothing said. That is the `core.hooksPath` finding through another key, against the one call that
+  touches a real repository. `core.pager` names a program too and was measured NOT running on a pipe,
+  so no flag was added for it: a defence no witness can reach is worse than none.
+- **And a third key, through a longer chain that was built link by link rather than argued.** With
+  `.gitignore` in the index as `skip-worktree` and gone from the worktree, the ignore rules are read
+  from the INDEXED BLOB; if that blob is missing — ordinary in a partial clone — and a promisor remote
+  is configured, git tries to FETCH it, and the fetch runs `core.sshCommand` from the caller's global
+  config. Measured against a control where the blob is present and nothing happens: **the program ran
+  and `ls-files` exited 0**. It is refused with the command-line `--no-lazy-fetch` rather than the
+  environment variable of the same meaning, and that distinction is the point: a git older than the
+  variable simply IGNORES it, so the protection would have vanished without a sound while every test
+  stayed green, whereas an unknown OPTION is refused outright (measured: exit 129). A first version of
+  this note also claimed the lapsed ignore rule is always safe — "more files scanned, never fewer".
+  That is false, and the counterexample is a nested negation: `!offender.mjs` under a parent
+  `sub/*.mjs` lapses into FEWER files. What actually keeps it fail-closed is that such an ignore file
+  is tracked and missing from the worktree, so the scan reports it absent.
+- **Two more channels the environment alone opened.** `GIT_EXEC_PATH` is prepended to the search path
+  git uses for its OWN subprocesses — measured, a `git` placed there is executed by a fixture's
+  commit, which still reports success, because a successful commit triggers auto-maintenance and that
+  spawns another git. And `GIT_SSH_COMMAND` outranks a config `core.sshCommand`, so a caller could
+  replace the transport a fixture configures for itself and have it measure somebody else's program.
+- **A variable is recognised by its uppercased name, not by the caller's spelling.** Windows resolves
+  environment variables case-insensitively, but the copy handed to the child is an ordinary
+  JavaScript object, so `delete env.GIT_INDEX_FILE` left a caller's `git_index_file` exactly where it
+  was. Measured rather than argued: with the lowercase spelling exported and the supposedly clean
+  environment handed to git, `git rev-parse --git-path index` answered with the victim's path. The
+  whole isolation, defeated by a spelling.
+- The scan of *this* repository keeps the caller's global and system configuration **files** on
+  purpose: a contributor whose checkout has different ownership relies on a global `safe.directory`
+  exception, and the first isolation hid it, so git refused the repository before the scan could
+  start. That need is about a config file, and it never justified the rest — an earlier version
+  cleared everything for *fixtures* and left the one call that touches a real repository inheriting
+  traces, templates and runtime configuration injection. Every hostile variable is cleared in both
+  modes now.
+- The exemption list is empty, and the rule that keeps it honest is tested on synthetic cases rather
+  than on the empty list: an entry must name a file that exists, stays inside the repository, is not
+  reached through a link, is one this check reads, and still carries such a byte.
+- **What it does not cover, stated in the file:** C1 controls, U+FEFF and the bidirectional overrides
+  are a different question; and it reads the working tree, which in CI *is* the commit, while locally
+  a byte staged behind a clean unstaged edit is caught by CI rather than at commit time.
+- **Thirty-five mutations, thirty-seven witnesses, each red for a reason carried by its OWN failure.**
+  Declared survivors and a control suite stay green *while the mutant is installed*, restoration is
+  hashed over bytes, and the end-to-end cases run the real scanner against throwaway git
+  repositories.
+- **The evidence mechanism itself needed two corrections, and the second is the one worth reading.**
+  A mutation once left git with a config count and no pairs, so the fixture died at `git init`, the
+  test name appeared in the failing list, and the "kill" was reported as a discovery about git's
+  precedence. It was an artefact of a broken fixture — with valid injected configuration an explicit
+  `-c` overrides those pairs exactly as documented. The repair was to make every mutation declare a
+  **reason** that must appear in the output. That repair searched the *whole run* for the fragment,
+  and the next round measured what that is worth: one mutation's declared reason was satisfied by the
+  **name of a passing test** while its witness had actually died on an unrelated first assertion. The
+  reason is now read from the witness's own diagnostic, parsed per test; a witness that is skipped or
+  missing is not a kill. Turning that on immediately showed **six** assertions going red without
+  explaining themselves — `assert.match` on a `null` return reports a type error about its own
+  argument and names no rule at all — and each was given a message that says what was being asked.
+  Then the parser that does the attributing was itself attacked, and it could **fabricate a witness**:
+  it closed a diagnostic on any line whose trim was `...` and accepted a test point at any indent, so
+  an error *message* containing an indented `not ok 77 - <a real witness name>` followed by
+  `error: links` produced a passing-looking kill for a test that never ran. Hardening it — exact
+  delimiters, body skipped wholesale, a plan required — held for exactly one round. The next input
+  broke it and was **reproduced, not argued**: node serialises a failing assertion's `actual` through
+  its own YAML writer, and an object KEY's newlines go out raw, so a test's own DATA emitted an
+  exactly-indented close delimiter followed by a complete forged test point with its own diagnostic.
+  So there is no parser any more. The verdicts come from `node:test`'s programmatic `run()` — a name
+  FIELD and an error FIELD, which no payload can write into — and the same attack was measured
+  producing no event at all. That path keeps its own witness, run before anything is mutated: the
+  forgery must fail *as itself*, and a genuine failure must arrive carrying its message.
+  Survivors are checked for uniqueness in the mutant run too, since `ok 1 - S` followed by
+  `not ok 2 - S` had counted as survival. Then the structured events turned out to need three
+  corrections of their own, each measured: an **empty-string directive** (`t.skip('')`) arrives as
+  `''`, so a truthiness check read a skipped survivor as passing and a failing TODO as a genuine kill;
+  a **display name is not an identity**, since an imported helper can register a test of the same name
+  and its own failures are not failures of the run that was asked for, so records are now tied to the
+  file that registered them; and **"no failures" is not "the control ran"** — a control suite that
+  only skips satisfies it, so a named control witness must be seen executing, every time. Tying
+  records to their registering file then **created** a defect of its own, caught the round after: a
+  failure contributed by an imported helper was discarded from the run's status, so a suite could be
+  called green with a failure in it. Source identity restricts which records answer to a NAME; every
+  failure still decides whether the run passed. And a survivor marked `todo` was still accepted as
+  holding, because the predicate added for exactly that was not used at the two call sites that
+  mattered. A failing
+  test name is not evidence that the rule was exercised; neither is a fragment found somewhere in the
+  output; neither is a line that merely looks like a test result; neither is a name without a file;
+  and no claim about a family of settings is evidence for each member of it — three trace2 overrides
+  shared one fixture, so two of them could have been deleted unnoticed.
+- **Two mutations were measuring something other than their name.** One claimed the accounting stopped
+  adding up when it did not; another claimed an exemption could point outside the repository, when
+  after the spelling rule arrived both of its inputs were refused for a *different* reason — so it
+  proved the diagnostic had changed, not that anything escaped. Both are relabelled, and containment
+  now has a mutation against the predicate that measures it alone. A fixture that configures a program
+  path also refuses to run where the temporary directory contains a space, rather than reporting
+  "nothing executed" when the shell simply split the path in two.
+- **A fixture proves its own instrument before it proves anything else.** Two of the newest
+  witnesses assert that a program did NOT run — and an absent program is also what an ambient
+  `GIT_NO_LAZY_FETCH` or `GIT_ALLOW_PROTOCOL` produces, either of which would let the witness pass
+  with its protection deleted. Both are cleared, the fixture sets them deliberately, and it now runs
+  the enumeration ONCE WITHOUT the protection and requires the program to execute before the
+  protected result is allowed to mean anything.
+- **A skipped test is not coverage.** A fixture that configures a program path used to skip itself
+  where the temporary directory contains a space — honest about the gap, but CI accepts a skip, so the
+  coverage simply vanished. The quoting question finally got a measurement with a valid control (an
+  unspaced path runs quoted or unquoted; a spaced path runs **only** quoted), so the path is quoted
+  always, written through `git config` so the file-level escaping is git's, and the skip is gone.
+- **The trust boundary is stated instead of overclaimed.** The evidence path protects against a
+  test's DATA — an assertion value that spells out a test result. It does not protect against a test
+  that deliberately writes framed messages to the runner's own transport, and saying so is the
+  honest end of a chain in which four successive versions of this mechanism each claimed more than
+  they held.
+
 ### The fleet report can be told which divergences must STAY — against both texts, never against a name
 
 `--fleet` reported 224 drifting (conventions file, convention) pairs across 37 files and had no way to

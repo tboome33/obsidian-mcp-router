@@ -86,6 +86,16 @@ function tmpWorkspace(content) {
   return dir;
 }
 
+// CONSTRUCTED, NOT EMBEDDED — and here it matters twice over: these are the
+// characters the code under test must survive, so writing them as raw bytes
+// in the source hid the fixture from every reader while making the file look
+// binary to `grep`. `CONTROL_CHARACTERS` is the same class the raw literal
+// spelled: U+0000..U+001F plus DEL.
+const ANSI_ESC = String.fromCharCode(0x1b);
+const CONTROL_CHARACTERS = new RegExp(
+  `[${String.fromCharCode(0)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
+);
+
 describe('parseDotenv — the one parser', () => {
   test('comments, blanks, export prefix, quotes, CRLF, an = inside the value', () => {
     const text = '# c\r\n\r\nexport A="x = y"\r\nB=\'q\'\r\nC=plain\r\nnoequals\r\n=novalue\r\nD=\r\nE="unterminated\r\n';
@@ -260,7 +270,9 @@ describe('applyWorkspaceDotenv — the loader', () => {
 
   test('the warning shows ignored names through a strict alphabet, clipped and capped — a hostile .env cannot drive a terminal through it', () => {
     const lines = ['OBSIDIAN_ROUTER_DEFAULT_VAULT=ok'];
-    lines.push('EVIL[2JKEY=1');                   // an ANSI "clear screen" sequence inside the name
+    // The ESC is the payload, so it is constructed and named rather than
+    // sitting in the source as a byte nobody can see.
+    lines.push(`EVIL${ANSI_ESC}[2JKEY=1`);             // an ANSI "clear screen" sequence inside the name
     lines.push(`${'L'.repeat(200)}=1`);                 // a 200-character name
     for (let i = 0; i < 30; i += 1) lines.push(`JUNK_${i}=1`); // more than the cap
     const dir = tmpWorkspace(`${lines.join('\n')}\n`);
@@ -269,7 +281,7 @@ describe('applyWorkspaceDotenv — the loader', () => {
     assert.equal(r.ignored.length, 32);
     assert.equal(warnings.length, 1);
     const w = warnings[0];
-    assert.doesNotMatch(w, /[ -]/, 'no control character reaches stderr');
+    assert.doesNotMatch(w, CONTROL_CHARACTERS, 'no control character reaches stderr');
     assert.match(w, /EVIL\?\?2JKEY/, 'control characters are replaced, not dropped silently');
     assert.doesNotMatch(w, /L{65}/, 'a name is clipped to 64 characters');
     assert.match(w, /32 key\(s\) ignored/);

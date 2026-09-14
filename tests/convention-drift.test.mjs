@@ -51,6 +51,13 @@ import {
   summariseTarget,
 } from '../scripts/conventions-drift.mjs';
 
+// Built, never embedded: a raw control byte in source is invisible to a
+// reader and to every assertion, and this repository has shipped three of
+// them by accident. `PAIR_SEP` joins a key; `HOSTILE_NUL` IS the thing under
+// test — a character no path can contain.
+const PAIR_SEP = String.fromCharCode(0);
+const HOSTILE_NUL = String.fromCharCode(0);
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /** A snippet as the audit consumes it. */
@@ -405,7 +412,7 @@ describe('no pair is ever silent, and some carry two findings', () => {
       targets: [{ file: 'a.md', content: ALPHA.text, governed: true, expects: [] }],
     });
     assert.equal(audit.findings.length, 2, 'two diagnostics');
-    const pairs = new Set(audit.findings.map((f) => `${f.file} ${f.convention}`));
+    const pairs = new Set(audit.findings.map((f) => `${f.file}${PAIR_SEP}${f.convention}`));
     assert.equal(pairs.size, 1, 'about one pair');
   });
 
@@ -1127,7 +1134,8 @@ describe('the fleet report never writes', () => {
     // comes from.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-bad-'));
     const configPath = path.join(root, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [`${root} broken`]: { port: 1 } } }));
+    // Same hostile key as above, and constructed for the same reason.
+    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [`${root}${HOSTILE_NUL}broken`]: { port: 1 } } }));
 
     const r = spawnSync(
       process.execPath,
@@ -1147,7 +1155,10 @@ describe('the fleet report never writes', () => {
     // single test cannot tell a reader which one it caught.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-bad-exit-'));
     const configPath = path.join(root, 'config.json');
-    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [`${root} broken`]: { port: 1 } } }));
+    // THE NUL IS WHAT THIS FIXTURE IS ABOUT — a registry key no filesystem
+    // can name — so it is CONSTRUCTED and said out loud, not embedded as a
+    // raw byte a reader cannot see.
+    fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [`${root}${HOSTILE_NUL}broken`]: { port: 1 } } }));
     const r = spawnSync(
       process.execPath,
       [path.join(REPO, 'scripts', 'conventions-drift.mjs'), '--fleet', '--config', configPath, '--json'],
