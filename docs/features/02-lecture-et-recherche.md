@@ -90,4 +90,16 @@ Tout ce qui permet d'**explorer et de lire** le contenu des vaults sans rien mod
 
 > « quel est le statut de la note X ? », « montre les méta de X » — ou `/obsidian-router:read-frontmatter`
 
-**À savoir.** Pour *modifier* le frontmatter, voir `set_frontmatter` / `merge_frontmatter` dans la [fiche 3](03-ecriture-et-edition.md).
+**Trois états, pas deux.** Un frontmatter vide et un frontmatter *illisible* rendaient tous deux `{}`, et rien ne permettait de les distinguer : « cette note ne déclare rien » et « je n'ai pas réussi à lire ce qu'elle déclare » sont pourtant des affirmations très différentes sur une page. Le retour porte donc `frontmatterStatus` :
+
+| valeur | ce que ça veut dire |
+|---|---|
+| `absent` | la note n'ouvre sur aucun bloc `---` — il n'y a rien à lire |
+| `ok` | le bloc a été lu (y compris un bloc volontairement vide) |
+| `invalid` | il y a bien un bloc, et le parseur YAML d'Obsidian n'en a tiré aucune propriété |
+
+Dans le cas `invalid`, un champ `parseError` nomme la cause probable et la voie de réparation. Obsidian affiche ces pages avec la bannière « Invalid properties ».
+
+**Réparer un bloc invalide se fait par réécriture complète**, avec `write_file` et son `ifMatch`. Ni `patch_file` ni `set_frontmatter` n'y arrivent : pour modifier une propriété, il faut d'abord parser le bloc — c'est exactement ce que le défaut empêche, et l'appel remonte une erreur de l'API Local REST plutôt qu'une réparation.
+
+**À savoir.** Pour *modifier* le frontmatter, voir `set_frontmatter` / `merge_frontmatter` dans la [fiche 3](03-ecriture-et-edition.md). À l'écriture, `write_file` et `write_bundle` signalent d'eux-mêmes un bloc qui paraît malformé (`frontmatterWarning`) — un avertissement, jamais un refus : la détection est heuristique, et bloquer une écriture légitime coûterait plus cher que de laisser passer un cas douteux.
