@@ -23,6 +23,7 @@
  */
 
 import { parseFrontmatter } from './llms-txt-exporter.mjs';
+import { detectFrontmatterDefects } from './frontmatter-validate.mjs';
 import { cmp } from './total-order.mjs';
 
 const FRONTMATTER_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
@@ -333,11 +334,27 @@ export function checkOkfConformance(files) {
       ));
       continue;
     }
-    const unbalancedLines = findUnbalancedBracketLines(blockMatch[1]);
-    if (unbalancedLines.length > 0) {
+    // Two heuristics feed ONE finding. `findUnbalancedBracketLines` has
+    // always covered brackets and quotes; it never covered the defect that
+    // actually bit a vault on 2026-09-14 — a bare `: ` inside an unquoted
+    // scalar, which YAML reads as a nested mapping and refuses. Measured that
+    // day, the checker rated the broken page HEALTHIER than an empty one: the
+    // page with no frontmatter at all got `frontmatter-missing` (ERROR) while
+    // the unparseable page got only `reference-impl-keys` (INFO), because the
+    // line-oriented `parseFrontmatter` below reads the broken block perfectly
+    // happily. The diagnosis was exactly inverted, which is why this check
+    // cannot rely on that parser to notice anything is wrong.
+    const unparseableLines = [
+      ...findUnbalancedBracketLines(blockMatch[1]).map((line) => ({
+        line,
+        reason: 'unbalanced brackets or an unterminated quote',
+      })),
+      ...detectFrontmatterDefects(file.content),
+    ];
+    if (unparseableLines.length > 0) {
       out.errors.push(finding(
         'frontmatter-not-parseable', file.path,
-        `frontmatter is not valid YAML despite matching the \`---\` fences — unbalanced brackets or an unterminated quote (conformance rule 1, §9): "${unbalancedLines[0].slice(0, 60)}"`,
+        `frontmatter is not valid YAML despite matching the \`---\` fences — ${unparseableLines[0].reason} (conformance rule 1, §9): "${unparseableLines[0].line.slice(0, 60)}"`,
       ));
     }
     const { frontmatter } = parseFrontmatter(file.content);

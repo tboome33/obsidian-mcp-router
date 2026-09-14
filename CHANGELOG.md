@@ -10,6 +10,53 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A frontmatter Obsidian refuses is no longer written, read and linted in silence
+
+A note written to `dedibox-hermes` carried `title: hermes-delivery — publication des livrables dans
+H: (as-built)`. The unquoted `: ` makes the block invalid YAML, Obsidian showed "Invalid properties",
+and **the router reported nothing at any of the four points it could have**. Reproduced end to end on
+a live vault before any code was read.
+
+**Why nothing caught it: the repository has no YAML parser at all.** Obsidian's is the only real one
+in the system. The eight in-repo frontmatter readers are line-oriented — they split on the first `:`
+and keep the rest of the line — so the broken block parses through them *cleanly*. Measured: for the
+line above, `llms-txt-exporter.parseFrontmatter` returns a result **byte-identical** to the one it
+returns for the correctly quoted twin. That is why the generated OKF `index.md` showed the right
+title while `get_frontmatter` returned `{}`: nine tools read through that parser, `refresh_okf_projections`
+among them.
+
+- **`get_frontmatter` now distinguishes three states**, not two. It answered `{}` both for a page with
+  no frontmatter and for one whose block does not parse — indistinguishable to the caller. It now adds
+  `frontmatterStatus: "absent" | "ok" | "invalid"` and, when invalid, a `parseError` naming the likely
+  cause and the repair. **This costs no extra round trip**: the REST layer already returns `content`
+  beside `frontmatter`, and a closed `---` fence is what separates the two cases — the distinction was
+  simply being discarded. Both return branches carry it, including the single-key one, where
+  `exists: false` alone asserted that a page did not declare a key it plainly declares.
+- **`write_file` and `write_bundle` warn** (`frontmatterWarning`) when a block looks malformed, without
+  ever refusing: with no YAML parser available the check can only be heuristic, and a false positive
+  blocking a legitimate write costs more than a miss. The check runs *after* the PUT by construction,
+  so it cannot become a gate.
+- **The OKF conformance check stops rating a broken page healthier than an empty one.** Measured before
+  the fix: a page with no frontmatter got `frontmatter-missing` (ERROR) while the unparseable page got
+  only `reference-impl-keys` (INFO) — the diagnosis exactly inverted. `frontmatter-not-parseable` now
+  covers the unquoted-colon class, not just unbalanced brackets.
+- **A YAML error in a 500 is no longer reported as retryable.** `patch_file` on such a page returns
+  HTTP 500 (`Nested mappings are not allowed in compact mappings at line 2, column 8`), classified
+  `transient` / `isRetryable: true` — advice that can never come true, since only the file changing
+  helps. It is now `validation`, recognised by a parser phrase **plus** the position suffix at the end
+  of the message; a phrase alone never counts, because the review kept producing transport errors and
+  filenames that contained one.
+- **The one vault writer that interpolated frontmatter raw now quotes.** `session-auto-journal`
+  survived only because Windows forbids `:` in a path segment; a POSIX cwd containing `: ` would break
+  the block. It quotes with **single** quotes, and the two readers that parse those journals learned to
+  un-escape `''` — a writer and a reader must agree on the escape, not just on the quote.
+- **Highlight text keeps its type.** `renderFrontmatterArray` emitted `42` and `null` bare, and Obsidian
+  read them back as a number and a typed null. (`yes`/`no`/`on`/`off` were measured *safe* — Obsidian
+  reads YAML 1.2 — and are quoted only defensively.)
+
+**Everywhere else the serialisers were already correct**, which narrowed the fix: `serializeOkfFrontmatter`
+and `serialiseDigest` were probed with 26 hostile values and quote every one.
+
 ### Nothing that seeds a new vault ships a convention any more — and the newer text was saved first
 
 The decision applied earlier covered the reference vault. Measuring found **three** sites, not one:

@@ -305,7 +305,32 @@ function yamlScalar(s) {
   // interpret as literal characters (so `"hi"` round-trips as `"hi"`
   // WITH the quotes, not without). Allowlisting a tame character class
   // is safer than denylisting hostile chars.
+  // The allowlist below is enough for VALIDITY but not for FIDELITY: it is
+  // all alphanumerics, so `42`, `null` and `true` sail through bare and YAML
+  // then TYPES them. Measured against Obsidian's own parser on 2026-09-14 —
+  // `text: 42` came back as the number 42 and `text: null` as a typed null,
+  // so the string a caller passed in is not the value that comes out. The
+  // same measurement cleared `yes`/`no`/`on`/`off`: Obsidian reads YAML 1.2,
+  // where those stay strings. They are quoted here anyway — the cost is one
+  // pair of quotes, and these highlights are meant to round-trip through
+  // obsidian-clipper and any other tool that may still read YAML 1.1.
+  // The numeric shapes below are wider than "digits" on purpose: YAML's core
+  // schema also resolves `.5`, `.inf` and `.NaN`, and an earlier version of
+  // this guard required a digit BEFORE the decimal point, so those three
+  // slipped through bare and still coerced (review round 1). The date rule is
+  // anchored at both ends for the opposite reason — a prefix match quoted
+  // `2026-09-14 release notes`, which is prose, not a date.
+  const wouldChangeType =
+    /^(true|false|null|~|yes|no|on|off)$/i.test(str) ||
+    // A digit is required on ONE side of the point, not on both: YAML floats
+    // permit `.5` AND `1.` AND `1.e3`, and requiring a digit after the point
+    // left those last two coercing (review round 3).
+    /^[+-]?(\d[\d_]*\.?[\d_]*|\.\d[\d_]*)([eE][+-]?\d+)?$/.test(str) ||
+    /^[+-]?\.(inf|nan)$/i.test(str) ||
+    /^[+-]?0(x[0-9a-fA-F_]+|b[01_]+|o?[0-7_]+)$/.test(str) ||
+    /^\d{4}-\d{1,2}-\d{1,2}$/.test(str);
   if (
+    !wouldChangeType &&
     /^[A-Za-z0-9_.\/\- ]+$/.test(str) &&
     !/^[\s\-?:]/.test(str) &&
     !/[\s]$/.test(str)

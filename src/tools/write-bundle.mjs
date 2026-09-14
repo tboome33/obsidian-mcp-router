@@ -26,6 +26,7 @@ import { buildClickToOpenUrl, resolveInsecurePort } from '../helpers/click-to-op
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { computePlanSeal, verifyPlanSeal, isPlanSeal, vaultIdentity, PlanDriftError } from '../helpers/plan-seal.mjs';
 import { classifyError } from '../error-classify.mjs';
+import { detectFrontmatterDefects } from '../helpers/frontmatter-validate.mjs';
 import {
   BundleError,
   BUNDLE_JOURNAL_DIR,
@@ -599,6 +600,22 @@ export async function writeBundleTool(registry, args = {}, _deps = {}) {
     // engines, so the read-back is the only post-image available and carries the
     // weaker `observed` grade (see the helper's ATTRIBUTION note).
     const derived = derivePostImage(step.op, step.args);
+    // Same non-blocking frontmatter guard write_file carries (2026-09-14).
+    // A bundle is exactly where this matters most: it writes several pages in
+    // one call, so a single malformed block would otherwise be buried under a
+    // successful-looking batch result. Sweeping the whole class, not just the
+    // first site — a fix that lands on one writer reads as closed while the
+    // others keep producing the defect.
+    if (step.op === 'write' && typeof step.args?.content === 'string') {
+      for (const d of detectFrontmatterDefects(step.args.content)) {
+        warnings.push(
+          `"${step.path}" (step ${step.index + 1}) was written, but its frontmatter looks malformed — `
+            + `\`${d.line}\` — ${d.reason}. Obsidian will likely show "Invalid properties"; `
+            + `repair it by rewriting the whole file, since patch_file cannot parse a broken block. `
+            + `This is a heuristic — if the YAML is valid, ignore it.`,
+        );
+      }
+    }
     try {
       const after = await probePath(deps.getFileContent, vault, step.path);
       if (derived) {

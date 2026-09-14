@@ -4,6 +4,7 @@ import { okfSafePathSuggestion } from '../helpers/okf-safe-rename.mjs';
 import { isProjectionPath } from '../helpers/okf-projections.mjs';
 import { contentSha256, isContentSha256 } from '../helpers/content-hash.mjs';
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
+import { detectFrontmatterDefects } from '../helpers/frontmatter-validate.mjs';
 export async function writeFileTool(registry, args = {}) {
   const { vault: name, content, ifNew = false, ifMatch } = args;
   // Containment BEFORE anything else touches the path: `..` survives
@@ -46,6 +47,16 @@ export async function writeFileTool(registry, args = {}) {
   // Non-blocking OKF-name guard (2026-07-29 decision): new notes are born
   // with ascii-kebab OKF-safe paths; the write succeeds either way.
   const okfSuggestion = okfSafePathSuggestion(filePath);
+  // Non-blocking frontmatter guard (2026-09-14). The router wrote a file
+  // Obsidian shows as "Invalid properties" and reported nothing but
+  // `bytesWritten` — and the natural repair path, patch_file with
+  // targetType:frontmatter, is blocked by the very defect it would fix (it
+  // has to parse the block to edit it), so only a full rewrite gets out.
+  // Warn rather than refuse: with no YAML parser in this repo the check can
+  // only be heuristic, and a false positive that blocks a legitimate write
+  // costs more than a miss. The write has already happened at this point,
+  // by construction — this cannot turn into a gate by accident.
+  const fmDefects = detectFrontmatterDefects(content);
   return ({
     vault: vault.name,
     path: filePath,
@@ -66,6 +77,14 @@ export async function writeFileTool(registry, args = {}) {
     // futile; say so instead of letting the next refresh silently undo it.
     ...(isProjectionPath(filePath) && {
       projectionWarning: `This path is a GENERATED OKF projection (root/per-directory index.md or wiki/log.md) — hand edits will be overwritten by the next refresh_okf_projections run. Edit the page frontmatter instead; the projections regenerate from it.`,
+    }),
+    ...(fmDefects.length && {
+      frontmatterWarning:
+        `The file was written, but its frontmatter block looks malformed and Obsidian will likely show "Invalid properties": `
+        + fmDefects.map((d) => `\`${d.line}\` — ${d.reason}`).join('; ')
+        + '. Quote the offending value and rewrite the file with write_file (+ ifMatch);'
+        + ' patch_file and set_frontmatter cannot repair a block that does not parse.'
+        + ' This is a heuristic — if the YAML is valid, ignore it.',
     }),
   });
 }

@@ -1,6 +1,7 @@
 import { getNote } from '../rest-client.mjs';
 import { canonicalVaultPath } from '../helpers/vault-path-guard.mjs';
 import { buildClickToOpenUrl } from '../helpers/click-to-open.mjs';
+import { classifyParsedFrontmatter } from '../helpers/frontmatter-validate.mjs';
 
 export async function getFrontmatterTool(registry, args = {}) {
   const { vault: name, path: filePath, key } = args;
@@ -12,6 +13,15 @@ export async function getFrontmatterTool(registry, args = {}) {
   const vault = registry.resolveVault(name);
   const note = await getNote(vault, safePath);
   const frontmatter = note.frontmatter ?? {};
+  // THREE STATES, NOT TWO. Until v0.96.0 this tool answered `{}` both for a
+  // page that legitimately has no frontmatter and for one whose block YAML
+  // could not parse — indistinguishable to the caller, so "nothing to read"
+  // and "unreadable" looked the same. Obsidian is the only real YAML parser
+  // in this system, and it has already spoken by the time we get here: what
+  // separates the two cases is whether the raw text carries a CLOSED `---`
+  // fence, and `getNote` returns `content` in the same response. So the
+  // distinction costs no extra round trip — it was simply being discarded.
+  const { frontmatterStatus, parseError } = classifyParsedFrontmatter(note.content, frontmatter);
   // THE RESPONSE ECHOES THE CANONICAL SPELLING, not the caller's.
   // Reading `safePath` while answering with `filePath` meant a request for
   // a redundant spelling read one file and named another: the REST layer got
@@ -31,6 +41,13 @@ export async function getFrontmatterTool(registry, args = {}) {
       key,
       value: frontmatter[key] ?? null,
       exists: Object.prototype.hasOwnProperty.call(frontmatter, key),
+      // The single-key branch needs the verdict MORE than the whole-object
+      // one, not less: `exists: false` on an unreadable block reads as "this
+      // page does not declare that key", which is a different — and wrong —
+      // statement about the page. Both branches carry it, deliberately; the
+      // comment below records what happened the last time only one was fixed.
+      frontmatterStatus,
+      ...(parseError && { parseError }),
       ...(clickToOpenUrl && { clickToOpenUrl }),
     });
   }
@@ -41,6 +58,8 @@ export async function getFrontmatterTool(registry, args = {}) {
     vault: vault.name,
     path: safePath,
     frontmatter,
+    frontmatterStatus,
+    ...(parseError && { parseError }),
     ...(clickToOpenUrl && { clickToOpenUrl }),
   };
 }

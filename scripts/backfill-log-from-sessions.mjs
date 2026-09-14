@@ -109,7 +109,12 @@ function parseFrontmatter(content) {
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     let value = line.slice(colon + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    // Mirrors session-reconcile.parseFrontmatter, INCLUDING its `''`
+    // un-escaping — the two are documented as mirrors, so a fix applied to
+    // one and not the other is how they stop being mirrors.
+    if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
+      value = value.slice(1, -1).replace(/''/g, "'");
+    } else if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
       value = value.slice(1, -1);
     }
     out[key] = value;

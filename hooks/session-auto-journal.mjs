@@ -234,15 +234,40 @@ function summarizeToolInput(toolName, input) {
 // Journal file creation
 // ---------------------------------------------------------------------------
 
+// Quote a frontmatter scalar unless it is unambiguously inert.
+//
+// THE ONLY UNGUARDED VAULT WRITER (found 2026-09-14, during the invalid-
+// frontmatter investigation). Every other place the router emits YAML runs a
+// quoting predicate; this one interpolated raw. It survived because Windows
+// forbids `:` inside a path segment, so `cwd:` could never produce the `: `
+// that YAML reads as a nested mapping — but a POSIX cwd such as
+// `/home/x/Project: Alpha` breaks the block outright, and the session journal
+// is the one file a user never inspects until they need it. Quoting costs
+// nothing and removes the platform dependency.
+// SINGLE quotes, not double, and that choice is load-bearing. These very
+// fields are read back by `session-reconcile.parseFrontmatter`, which strips
+// a surrounding quote pair but does NOT un-escape anything inside it. A
+// double-quoted Windows path would therefore be read back with
+// its backslashes DOUBLED — the exact defect `digest-generator` documents for
+// its own `for:` path field. In YAML single quotes a backslash is a literal
+// backslash and the only escape is `''`, so a Windows path round-trips
+// byte-for-byte. Newlines collapse to a space: a real newline is legal YAML
+// but would split the line under a line-oriented reader.
+function yamlScalar(value) {
+  const s = String(value ?? '').replace(/\r?\n/g, ' ');
+  if (/^[A-Za-z0-9_.\-]+$/.test(s) && !/^(true|false|null|~|yes|no|on|off)$/i.test(s)) return s;
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
 function buildOpeningContent(state) {
   const fm = [
     '---',
     'type: session',
-    `date: ${state.dateIso}`,
-    `session-id: ${state.sessionId}`,
-    `workspace: ${state.workspaceSlug}`,
-    `cwd: ${state.cwd}`,
-    `started-at: ${state.startedAt}`,
+    `date: ${yamlScalar(state.dateIso)}`,
+    `session-id: ${yamlScalar(state.sessionId)}`,
+    `workspace: ${yamlScalar(state.workspaceSlug)}`,
+    `cwd: ${yamlScalar(state.cwd)}`,
+    `started-at: ${yamlScalar(state.startedAt)}`,
     'status: open',
     '---',
     '',

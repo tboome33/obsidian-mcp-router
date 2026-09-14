@@ -121,7 +121,15 @@ export function parseFrontmatter(content) {
     if (colon < 0) continue;
     const key = line.slice(0, colon).trim();
     let value = line.slice(colon + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
+      // Un-escape while stripping. YAML's single-quoted style escapes a quote
+      // by DOUBLING it, and the writer (session-auto-journal's yamlScalar)
+      // emits that form — so stripping the outer pair without collapsing `''`
+      // hands back `O''Brien` for a path that reads `O'Brien`. Found by the
+      // adversarial review of the 2026-09-14 frontmatter fix: a writer and a
+      // reader must agree on the escape, not just on the quote.
+      value = value.slice(1, -1).replace(/''/g, "'");
+    } else if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
       value = value.slice(1, -1);
     }
     out[key] = value;
