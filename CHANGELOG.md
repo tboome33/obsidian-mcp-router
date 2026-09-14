@@ -10,6 +10,61 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The fleet report can be told which divergences must STAY — against both texts, never against a name
+
+`--fleet` reported 224 drifting (conventions file, convention) pairs across 37 files and had no way to
+say that some of them are **meant** to diverge. Three are: the `path-disambiguation` snippet was
+anonymised for distribution (`C:\Users\me\…`) while every vault holds the real path, `tribu-routing`
+writes `[list]` where one vault names its family, and one vault's `default-vault-health-check` carries
+a JSON example instantiated on itself. Propagating the library into those would overwrite a real value
+with a placeholder. Without a record, every reading of the report re-asked the same question.
+
+- **An exclusion pins BOTH fingerprints, never a convention's name.** `snippetSha256` and
+  `targetSha256` are taken over the normalised section, so editing either text makes the record stop
+  matching and the pair returns as `exclusion-stale` — "read this again", which is the entire point.
+  An exemption keyed on the name would go on excusing the pair while the text underneath it rotted;
+  this repository has already shipped that shape once and it let a real defect past at 211/211 green.
+- **An exclusion is a non-write boundary, not a certificate**, and the reasons say so out loud: three
+  of the four hand-written pairs are *also* behind the library, one of them missing an entire safety
+  subsection added after a real incident. The record forbids a blind replacement; it does not bless
+  the text, and it does not discharge the repair.
+- **It annotates the comparison, and nothing else about the pair.** One pair can produce two findings
+  — a section that is installed but undeclared is reported *and* still compared — and a record that
+  matched on identity alone overwrote the first one's diagnosis with the second one's excuse.
+- **It can quieten an observed warning — that is the feature — and it can never reach an error.**
+  An error-severity finding comes from the governed path, where a divergence is this project's fault
+  and CI must go red; a local unversioned file has no authority there, and the code refuses it on
+  every branch rather than relying on who happens to call it. That refusal is what makes a *missing*
+  record mean a noisier report instead of a silent pass, and therefore what makes the document safe
+  to keep out of version control. A *malformed* one still fails the run — the same line the exit code
+  already draws between "the fleet says X" and "this scan never happened". Absence is only ENOENT: a
+  directory, or a path whose parent is a file, is a broken location, not a missing record.
+- **The record lives beside the router config** (`conventions-fleet-exclusions.json`), not in
+  `contracts/`: it describes vaults on one machine and names them. `--exclusions <path>` overrides it.
+  The repo's own `conventions-drift-baseline.json` remains the equivalent for the `CLAUDE.md` copies
+  this project ships, and that one still fails CI.
+- A pair whose heading appears twice reports `exclusion-unverifiable` rather than passing: with no
+  single section, neither fingerprint can be checked, and that is precisely the state in which a
+  section could be swapped behind the record's back.
+- **An unmatched record gets one of three answers, per (vault, FILE)**: examined and not found,
+  selected but unreadable, or about a vault this run did not select. Per-*vault* coverage was wrong
+  on exactly the population this is about — eleven vaults carry two conventions files, and a readable
+  sibling was vouching for the one nobody could open, telling the record "not found here, drop it"
+  while the run's own error list said the file had never been read.
+- **A record that matched a pair but could not be checked says so** (`exclusion-unevaluated`). The
+  annotation is gated on an allowlist of comparison verdicts, and an allowlist goes stale: rename one
+  upstream and the pair would be neither annotated nor reported — two silences cancelling out.
+- Absence is `ENOENT` **and** an ancestor walk with no iteration budget, probing with `lstat` rather
+  than `stat`: a blocking file far above the path, a record path that is a dead link, and an ancestor
+  that is a dead link are all broken locations, not missing records. "I gave up" and "I looked
+  everywhere" must not share a return value, and a probe that failed for any other reason has
+  established nothing — it is reported rather than swallowed.
+- Four answers are kept apart where two used to be folded: a vault **inspected and found to hold no
+  conventions file** is examined (not "unreadable"), and a record naming a convention **the library no
+  longer provides** gets its own verdict and its own figure in the summary — "not found in this file"
+  is an answer nobody established, and a detail that said so while the count said otherwise left the
+  report contradicting itself.
+
 ### A frontmatter Obsidian refuses is no longer written, read and linted in silence
 
 A note written to `dedibox-hermes` carried `title: hermes-delivery — publication des livrables dans
