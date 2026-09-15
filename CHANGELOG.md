@@ -10,6 +10,29 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A vault this workspace never declared now says so first — even when its key is missing too
+
+`resolveVault()` asked two questions in the wrong order. It checked whether a vault had an API key
+on disk **before** checking whether this workspace was allowed to name it at all. So a vault that was
+both undeclared and keyless answered *"no API key on disk — open Obsidian, enable Local REST API,
+re-run setup-vault.mjs"* — sending you to repair the plumbing of a vault you had simply never bound
+to this project. The two guards have swapped places: **consent precedes availability.** "This
+workspace does not declare this vault" is now answered first; "this vault has no key" second, once
+consent is settled.
+
+- **Nothing changes without `vaultReach: "declared"`.** That switch is absent by default, and while
+  it is absent the reachability guard is a no-op — so on a default install the key message fires
+  exactly as before. A regression test pins that explicitly, so the reorder cannot leak.
+- **The key guard is not bypassed, only deferred.** A vault the workspace *does* declare, with no key
+  on disk, still gets the key message. A second test pins that too: the three witnesses together
+  (undeclared+keyless, declared+keyless, no-switch+keyless) are what stops the fix from degenerating
+  into "reachability always wins".
+- **Why it is worth a changelog entry at all.** This is the first piece of the accepted decision
+  *"a vault reached without being declared"*: the reachability refusal is about to carry a structured
+  **binding proposal** telling you whether the vault would become this workspace's primary or a
+  secondary, and how to accept it. With the old order that proposal would never have appeared for a
+  keyless vault — the very case where a first-time binding is most likely.
+
 ### Source files no longer carry invisible control bytes, and CI refuses new ones
 
 Three unicode escapes typed through an editing tool landed in a new helper as **literal NUL

@@ -659,12 +659,6 @@ export async function loadRegistry({ configPath } = {}) {
         const known = this.vaults.map((x) => x.name).join(', ') || '(none)';
         throw new Error(`Unknown vault "${target}". Known vaults: ${known}.`);
       }
-      if (v.missingApiKey) {
-        throw new Error(
-          `Vault "${target}" has no API key on disk. Open Obsidian on this vault, ` +
-            `enable Local REST API plugin, then re-run setup-vault.mjs.`,
-        );
-      }
       // Reachability (decision portee-et-mode-ecriture-des-vaults §1). A
       // no-op unless `vaultReach: "declared"` is configured — see
       // helpers/vault-reach.mjs. The SINGLE point of passage for this guard:
@@ -672,12 +666,30 @@ export async function loadRegistry({ configPath } = {}) {
       // through this method, so a check placed anywhere else would be the
       // exact "reaches only its first call site" defect class this repo has
       // already paid for four times (see the decision's own trap 1).
+      //
+      // IT COMES BEFORE THE API-KEY CHECK, and the order is load-bearing
+      // (decision proposition-de-liaison-a-l-acces §1, trap 1). "This
+      // workspace does not declare this vault" is a question of CONSENT;
+      // "this vault has no key on disk" is a question of AVAILABILITY, and
+      // the first precedes the second. With the old order, a vault that was
+      // both undeclared AND keyless answered with the key message, so the
+      // user was sent to re-run setup-vault.mjs for a vault they had simply
+      // never bound — and the binding proposal that the refusal is meant to
+      // carry never appeared at all. Declaring a vault does not promise it
+      // will answer afterwards; that is a different message, at a different
+      // moment.
       if (!isVaultReachable(v.name, this)) {
         throw new Error(
           `Vault "${v.name}" is registered but not reachable from this workspace `
           + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, '
           + 'nor is it in `openVaults`). Bind this workspace to it with confirm_workspace_binding, '
           + 'add it to `openVaults` in config.json, or address a vault this workspace already declares.',
+        );
+      }
+      if (v.missingApiKey) {
+        throw new Error(
+          `Vault "${target}" has no API key on disk. Open Obsidian on this vault, ` +
+            `enable Local REST API plugin, then re-run setup-vault.mjs.`,
         );
       }
       return v;

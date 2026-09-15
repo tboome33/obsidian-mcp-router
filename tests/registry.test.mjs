@@ -1864,6 +1864,51 @@ describe('resolveVault() — reachability', () => {
     assert.throws(() => reg.resolveVault(), /not reachable from this workspace/);
     assert.throws(() => reg.resolveVault('roland'), /not reachable from this workspace/);
   });
+
+  // -------------------------------------------------------------------------
+  // THE ORDER OF THE TWO GUARDS (decision proposition-de-liaison-a-l-acces §1,
+  // its trap 1 — Phase 1 of proposition-de-liaison-roadmap).
+  //
+  // Consent precedes availability: "this workspace does not declare this
+  // vault" must be answered BEFORE "this vault has no key on disk". With the
+  // old order, a vault that was both undeclared and keyless answered with the
+  // key message — sending the user to re-run setup-vault.mjs for a vault they
+  // had simply never bound, and suppressing the binding proposal the refusal
+  // is meant to carry.
+  //
+  // ► MUTATION EXPECTATIONS, declared per witness (one rule, one mutation):
+  //   Swap the two guards back to their old order and ONLY the first test
+  //   below goes red. The second and third MUST stay green — they are what
+  //   stops the "fix" from degenerating into "reachability always wins" or
+  //   into dropping the key guard altogether.
+  // -------------------------------------------------------------------------
+
+  test('undeclared AND keyless → the REACHABILITY refusal, never the key one', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    reg.vaults.find((v) => v.name === 'work').missingApiKey = true;
+    // Declared by nobody, and no key either: consent is the question to answer.
+    assert.throws(() => reg.resolveVault('work'), /not reachable from this workspace/);
+    assert.throws(() => reg.resolveVault('work'), (err) => {
+      assert.doesNotMatch(err.message, /has no API key on disk/,
+        'the key message shadowed the reachability one — the two guards are in the wrong order');
+      return true;
+    });
+  });
+
+  test('DECLARED and keyless → the key refusal still fires (the key guard is not bypassed)', async () => {
+    const reg = await makeRegistry({ vaultReach: 'declared' });
+    reg.workspaceBinding = { vault: 'work', also: [] };
+    reg.vaults.find((v) => v.name === 'work').missingApiKey = true;
+    // Consent is settled, so availability becomes the right thing to say.
+    assert.throws(() => reg.resolveVault('work'), /has no API key on disk/);
+  });
+
+  test('vaultReach absent + keyless → the key refusal, unchanged for a default install', async () => {
+    const reg = await makeRegistry();
+    reg.vaults.find((v) => v.name === 'work').missingApiKey = true;
+    // No reachability guard is active here, so the reorder must be invisible.
+    assert.throws(() => reg.resolveVault('work'), /has no API key on disk/);
+  });
 });
 
 // ---------------------------------------------------------------------------
