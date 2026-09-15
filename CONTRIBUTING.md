@@ -49,6 +49,16 @@ For doc-only commits (README, ROADMAP, comment-only edits, plugin manifest versi
 - Comments explain *why*, not *what*. The codebase already follows this — please match.
 - Async / await over `.then()`. No callbacks.
 - No new dependencies without a clear case in the PR description. The current footprint is `@modelcontextprotocol/sdk` + `undici` only.
+- **Never type a unicode escape for a control character — build it.** Write
+  `const SEP = String.fromCharCode(0);`, not `'\u0000'`. An escape typed through an
+  editing tool can land in the file as the literal byte, and a raw control byte is
+  invisible to every reader, makes `grep` classify the file as binary (so review and
+  search quietly lose it), and can be dropped or transformed by anything that
+  round-trips the text. This is not hypothetical: three of them reached a helper on
+  2026-09-14 with every test green, correctly, because a raw NUL and
+  `String.fromCharCode(0)` are the same character. The behaviour was right; three
+  bytes of source were unreviewable. `tests/source-control-bytes.test.mjs` now
+  refuses new ones.
 
 ## Testing
 
@@ -59,6 +69,31 @@ npm test
 Tests are pure Node (`node:test` + `node:assert`) — no external services, no fixtures-as-files, no test runner config. They pass on Linux + Windows in CI (see `.github/workflows/test.yml`).
 
 If you add Windows-specific path logic, please add a regression test that exercises both POSIX and Windows codepaths (use `process.platform` to gate, see existing `samePath` tests).
+
+### If `source-control-bytes` fails
+
+That suite enumerates the repository — tracked files plus anything added but not yet
+committed — and fails on any C0 control byte other than tab, LF and CR, plus DEL. When
+it names one of your files:
+
+1. **Build the character instead of escaping it** (see Code style above). If the control
+   character is what a fixture is *testing* — a hostile registry key, an ANSI escape in a
+   variable name — keep it, but construct it and say so in a comment. A reader can then
+   see what is under test, which a raw byte never allows.
+2. **Only if a raw byte is genuinely required**, add the file to `ALLOWED_FILES` with a
+   reason. The key must be spelled exactly as `git ls-files` prints the path — no leading
+   `./`, no empty or `..` component, forward slashes — because the scan looks entries up
+   by exact string, and a spelling git never produces exempts nothing while looking like
+   it does. The suite refuses a stale entry: an exemption over a file that is gone, clean
+   again, never read by this check, reached through a symlink, or absent from what git
+   lists is an error, not a pass.
+
+What it deliberately does **not** cover, so you know when a finding is out of its scope:
+C1 controls (U+0080–U+009F), U+FEFF and the bidirectional overrides (U+202A–U+202E) are a
+different question wanting their own check. It reads the working tree, which in CI *is*
+the commit; locally, a byte staged behind a clean unstaged edit is caught by CI rather
+than at commit time. And an untracked `.gitignore` can hide a new file from the local
+run — CI clones the commit, where it does not exist.
 
 ## Issue reports
 
