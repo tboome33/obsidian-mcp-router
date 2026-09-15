@@ -45,8 +45,29 @@ import {
 } from '../helpers/search-exclusions.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
 import { maskCodeAndComments } from '../helpers/markdown-mask.mjs';
+import { UNMETERED, createValidityContext } from '../helpers/validity-annotator.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
+
+// ---------------------------------------------------------------------------
+// Temporal validity — the quotas, named rather than implicit
+// ---------------------------------------------------------------------------
+/**
+ * THE CEILING `graphNeighbors[]` NEVER HAD.
+ *
+ * Primary pages are capped, semantic chunks are capped, but neighbours are not:
+ * every wikilink of every primary page is pushed into the array. That was free
+ * while a neighbour was a name and a link. Annotating one means READING it, so
+ * a single densely linked page would otherwise turn one context pack into
+ * hundreds of round trips. Beyond this ceiling the remaining neighbours keep
+ * their entry, carry `validityUnverified`, and the summary says `budgetExhausted`.
+ */
+export const NEIGHBOR_VALIDITY_READS = 50;
+
+/** The three collections, so the quota names cannot drift from their uses. */
+export const COLLECTION_PRIMARY = 'primaryPages';
+export const COLLECTION_CHUNKS = 'semanticChunks';
+export const COLLECTION_NEIGHBORS = 'graphNeighbors';
 
 export const TOOL_DEFINITION = {
   name: TOOL_NAME,
@@ -74,6 +95,15 @@ export const TOOL_DEFINITION = {
       includeNeighbors: {
         type: 'boolean',
         description: 'When true (default), expand wikilinks from primary pages into graphNeighbors[].',
+      },
+      asOf: {
+        type: 'string',
+        description:
+          'Reference day (YYYY-MM-DD) for the temporal-validity annotation on each entry. Omit to '
+          + 'use the current day in UTC. Resolved ONCE per call, so two entries of one response are '
+          + 'never classified on different days. An unreadable value fails the call rather than '
+          + 'silently falling back to today. This tool ANNOTATES only — it never filters or hides a '
+          + 'page because of its window.',
       },
       excludeFolders: {
         type: 'array',
@@ -416,6 +446,37 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   const primaryCap = Math.max(0, Math.min(50, Number.isFinite(maxPrimaryPages) ? maxPrimaryPages : 5));
   const chunkCap = Math.max(0, Math.min(50, Number.isFinite(maxSemanticChunks) ? maxSemanticChunks : 10));
 
+  // -------------------------------------------------------------------------
+  // 1bis. The annotation context — created BEFORE the first note is read
+  // -------------------------------------------------------------------------
+  // EVERY NOTE READ IN THIS CALL GOES THROUGH `ctx.read`. That is the only way
+  // to hold to one attempt per page: registering a read after making it cannot
+  // deduplicate the I/O that already left, and two concurrent reads of one path
+  // cannot be merged retrospectively. So the drill below asks the context for
+  // its pages, takes the BODY from what comes back, and the annotation takes
+  // the FRONTMATTER from the same single read.
+  //
+  // An unreadable `asOf` throws here and fails the call, which is the contract:
+  // never fall back to today (invariant 8).
+  const validity = createValidityContext({
+    vault,
+    readNote: deps.getNote,
+    asOf: args.asOf,
+    budget: {
+      // The primary pages are read for their body whatever happens, so
+      // annotating them costs no extra I/O and consumes no quota.
+      [COLLECTION_PRIMARY]: UNMETERED,
+      // The effective cap of the tool, so the chunks the caller asked for are
+      // exactly the chunks that can be annotated.
+      [COLLECTION_CHUNKS]: chunkCap,
+      // A NEW, NAMED CEILING. `graphNeighbors[]` has none today — every wikilink
+      // of every primary page is pushed into it — so annotating it without a
+      // quota would let one densely linked page turn a context pack into
+      // hundreds of reads.
+      [COLLECTION_NEIGHBORS]: NEIGHBOR_VALIDITY_READS,
+    },
+  });
+
   // Rank candidates by IDF (no idf prebuilt — defaultIdf is fine for our
   // corpus sizes; the relative ordering is what matters here).
   const scored = candidates.length > 0
@@ -503,9 +564,13 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
       let nonNotFoundError = null;
       for (const tryPath of candidatePaths) {
         try {
-          // Note: getNote returns parsed frontmatter — much cheaper to
-          // parse upstream than to re-derive YAML here.
-          note = await deps.getNote(vault, tryPath);
+          // THROUGH THE ONE READ DOOR. Same call, same error, same note — but
+          // the attempt is now recorded, so the annotation of a chunk or a
+          // neighbour naming this page costs nothing, and BOTH spellings of the
+          // heuristic are remembered rather than only the one that answered.
+          // `page` groups them: two probes for one dead link is one page nobody
+          // could verify, not two.
+          note = await validity.read(tryPath, { page: basePath });
           body = typeof note?.content === 'string' ? note.content : '';
           resolvedPath = tryPath;
           break;
@@ -841,6 +906,50 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
   }
 
   // -------------------------------------------------------------------------
+  // 4quater. Temporal validity — annotate, never filter
+  // -------------------------------------------------------------------------
+  // THE ORDER IS FIXED, and it is not cosmetic. The cache makes the debit
+  // order-dependent: whichever collection first touches a page pays for it out
+  // of ITS quota, and every later collection gets it free. Annotating chunks
+  // before neighbours on one run and after on another would spend different
+  // quotas for the same request. Primary pages come first because they are
+  // already read and cost nothing.
+  //
+  // Nothing here removes an entry. This tool annotates only: the filter is
+  // `search_smart`'s, by explicit parameter, and decision D6 keeps it out of
+  // the context pack entirely.
+  const readPrimaries = new Set(included);
+  await validity.annotate(primaryPages, {
+    collection: COLLECTION_PRIMARY,
+    // A PLACEHOLDER NAMES A GAP, NOT A PAGE. Handing its path over would send
+    // the annotator after a file the drill has already proved unreadable, under
+    // a spelling it never tried. An empty path marks the entry unverified —
+    // which is exactly true — and spends nothing.
+    pathOf: (page) => (readPrimaries.has(page) ? page.path : ''),
+  });
+
+  await validity.annotate(semanticChunks, {
+    collection: COLLECTION_CHUNKS,
+    // A chunk carries a real vault path when it carries one at all; a pathless
+    // chunk is marked unverified and counted as no page, because there is none.
+    pathOf: (chunk) => chunk.path,
+  });
+
+  await validity.annotate(graphNeighbors, {
+    collection: COLLECTION_NEIGHBORS,
+    // A wikilink names a PAGE, not a file, so it is resolved the way the drill
+    // resolves a catalogue entry: `wiki/<name>.md`, then `<name>.md`.
+    pathsOf: (neighbour) => [`wiki/${neighbour.path}`, neighbour.path],
+    pageOf: (neighbour) => neighbour.path,
+  });
+
+  // Counted on what the envelope actually carries. Every collection above is
+  // final by now — this tool has no filter and no cut left to apply.
+  const validitySummary = validity.finalize([
+    ...primaryPages, ...semanticChunks, ...graphNeighbors,
+  ]);
+
+  // -------------------------------------------------------------------------
   // 5. Compose the v1 envelope
   // -------------------------------------------------------------------------
   // sanitizeResponse strips ANSI/control chars from every string field in
@@ -855,6 +964,12 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
     semanticChunks,
     graphNeighbors,
     citations,
+    // ALWAYS PRESENT, even when nothing declared a window. Its absence would be
+    // ambiguous — "no page is dated" and "this build does not annotate" would
+    // look identical — and a consumer cannot tell those apart after the fact.
+    // Additive and optional under the v1 contract, which allows new fields and
+    // freezes the shape of the declared ones.
+    validitySummary,
     // ADDITIVE, and present only when there is something to say — the v1
     // contract makes every DECLARED field mandatory and allows new optional
     // ones. A `checkable: false` block is still worth emitting (it tells the

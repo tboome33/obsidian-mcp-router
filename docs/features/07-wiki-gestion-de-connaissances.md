@@ -15,6 +15,31 @@ Le savoir vit dans deux arborescences séparées :
 
 Cette séparation garantit que les fichiers de machinerie ne se mélangent jamais à vos notes.
 
+## Dater une connaissance : `valid_from` et `valid_through`
+
+**Le besoin.** Certaines pages décrivent une règle qui n'a pas toujours été vraie et ne le restera pas : un taux, un barème, une obligation réglementaire, une procédure interne. Sans marqueur, une page qui décrit une règle **abrogée** se lit exactement comme une règle en vigueur, et un agent l'applique.
+
+**Ce que ça fait.** Deux champs optionnels, au premier niveau du frontmatter, en date calendaire ISO :
+
+```yaml
+valid_from: 2026-01-01
+valid_through: 2026-12-31
+```
+
+**Les deux bornes sont incluses.** Une page dont `valid_through` est aujourd'hui s'applique encore aujourd'hui, et cesse demain. Un seul des deux champs suffit : `valid_from` seul décrit une règle entrée en vigueur et toujours active, `valid_through` seul une règle sans date de début connue.
+
+De là, le routeur dérive quatre états — en vigueur, pas encore, plus, illisible — et les répète partout où il présente une page à un agent : le rappel de décisions, le contrôle santé du wiki ([`/wiki-lint`](#wiki-lint--le-contrôle-santé), Check R) et le paquet de contexte ([fiche 08](08-graphe-de-connaissances.md)).
+
+**Trois choses que ces champs ne font pas.**
+
+- **Ils ne remplacent pas `status`.** Une décision `accepted` dont la fenêtre est close reste une décision acceptée : elle a simplement cessé de s'appliquer. Les deux axes sont orthogonaux et s'affichent ensemble.
+- **Ils ne remplacent pas `review_after`.** Celui-là veut dire « réexamine-moi », pas « je ne m'applique plus ». Une page peut porter les deux.
+- **Ils ne masquent rien.** Une page hors de sa fenêtre reste trouvable, remontée et lisible. Elle est **annotée**, jamais cachée — y compris quand sa fenêtre est illisible, cas où le routeur le signale au lieu de deviner.
+
+**Rien n'est deviné.** Aucune page existante n'est réécrite, aucun champ n'est ajouté d'office, et l'ingestion ne dérive jamais une période à partir d'une date de publication. Ces champs n'apparaissent que si quelqu'un les écrit, parce que la source énonce elle-même une période d'application.
+
+La convention installable `temporal-validity` décrit tout cela à un agent qui écrit dans le vault : `/obsidian-router:conventions install temporal-validity`.
+
 ## `/wiki` — scaffolder le wiki
 
 **Le besoin.** Partir d'un vault vide (ou d'un vault en vrac) et obtenir une structure que Claude saura entretenir seul par la suite.

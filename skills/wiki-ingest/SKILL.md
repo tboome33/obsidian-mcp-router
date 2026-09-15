@@ -156,6 +156,8 @@ source_type: extracted    # see "Source provenance" in vault CLAUDE.md
 ---
 ```
 
+**Temporal validity — only when the source says so.** If the source itself states a period of application (a regulation in force from a date, a rate valid until one, a tariff for a season), add `valid_from` / `valid_through` as ISO calendar date strings at the top level. **Never derive them** from `published`, from the ingestion date, or from your reading of the text: `published` is when the source was written, which is a different question from when what it says applies. No stated period means no field — the same discipline as `published` itself. Rules in the `temporal-validity` convention.
+
 **Anti-pattern**: do NOT fabricate or re-infer `title` / `author` / `published` / `lang` / `image` / `site` / `description` when the metadata block returned a non-null value. The whole point of the v0.13.2 pipeline is to make these deterministic. Use `slug(title, {maxLen:80})` from `src/helpers/filters/slug.mjs` to generate the filename — never improvise.
 
 **Asset preservation (Phase E, v0.14.x+)**: opt-in via `--save-assets` flag (NOT default — costs bandwidth + disk). When the user passes the flag for a URL source:

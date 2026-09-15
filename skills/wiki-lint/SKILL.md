@@ -11,7 +11,7 @@ Read-only diagnostic. Surfaces problems and suggests fixes; never mutates the wi
 
 The skill has three modes :
 
-- **Default (structural)** — runs Checks A through H, plus N (decision-layer coherence), O (two folders named "Sessions"), P (prompt lifecycle) and Q (conventions drift). Cheap, scans page metadata + wikilinks + citations + two directory listings + the vault `CLAUDE.md` only. The right mode for routine health checks.
+- **Default (structural)** — runs Checks A through H, plus N (decision-layer coherence), O (two folders named "Sessions"), P (prompt lifecycle), Q (conventions drift) and R (temporal validity). Cheap, scans page metadata + wikilinks + citations + two directory listings + the vault `CLAUDE.md` only. The right mode for routine health checks.
 - **`--deep` (v0.15.0+, roadmap item #7')** — also runs Checks I through L (plus Check J-bis, C11, which needs no digest — it reads the Smart Connections vector store and reports itself unavailable where there is none), which read the **digest sidecars** (`wiki-meta/digests/<full-vault-path>` — NESTED layout mirroring `wiki/`, review+ pass 3+ hardening) in bulk to detect cross-page redundancies, contradictions, and missing wikilinks. More expensive (reads N digests + N² comparisons in the worst case). Use after a long ingestion session or when you suspect the wiki has drifted. **Enumeration MUST recurse** — `list_files({directory:'wiki-meta/digests'})` returns immediate children only ; walk the tree to get every `.md` underneath.
 - **`--okf <path>` (v0.33.0+)** — runs Check M ONLY : validates an **OKF knowledge bundle** (Google's Open Knowledge Format v0.1) against the spec's three conformance rules. The path is either a bundle exported by `wiki-export --target okf` (`wiki-meta/exports/okf/<name>/` inside a vault) or any local directory / cloned repo containing a third-party bundle. This mode doesn't lint the wiki itself.
 
@@ -324,13 +324,38 @@ const { findings } = auditConventionDrift({
 4. **Severity — WARNING, and it never affects `ok`.** A vault's `CLAUDE.md` belongs to its owner, who may have extended a section deliberately. The report says what diverges; it never says who is right. The measurement proves why: one convention differs because the *snippet* was anonymised for public distribution, another because the *consigne* is newer than the snippet.
 5. **Never offer `--all --fix`, and never propose a rewrite as the mechanical repair.** Applying a convention is a per-vault decision, taken through the `conventions` skill with its preview-and-sidecar-backup guards. The one thing to offer is the reading: *which* lines differ, so the user can judge which side is right.
 
+### 2d-quater. Check R: temporal validity
+
+Does what a page says still apply? A page may declare a window with `valid_from` / `valid_through` (the `temporal-validity` convention snippet is what an author reads). This check never asks for one — nothing here can know that a page is regulatory — so a page without a window produces **no finding at all**. It exists for a window that WAS declared and cannot be trusted, or that no longer covers today.
+
+1. **Collect the pages** — the same inventory as Check N and Check P; pass `[{ path, frontmatter }]`. **Every type is checked**, not just decisions: the feature was built for `concept`, `fact` and `reference` pages as much as for rulings. **This check needs `frontmatter`, and it must come from a real YAML parse** — call `get_frontmatter` for it. Do **not** hand it the `{ path, content }` form Check N accepts: that path runs the repo's line-oriented parser, which FLATTENS a nested block, and both ways it then goes wrong are invisible afterwards. A key nested under a parent surfaces at the top level, so a page that declared nothing is reported as not-yet-in-force — a finding about a page nobody dated. And a bound holding a block collapses to an empty value, so a malformed window passes unreported. Neither is something the checker can detect once it has the flattened object; by then the shape is gone. This is a real difference from Checks N and P, whose fields are scalars that survive flattening.
+2. **Run the checker** :
+
+```javascript
+import { lintTemporalValidity } from './src/helpers/temporal-validity-lint.mjs';
+const findings = lintTemporalValidity(pages, { today: '<YYYY-MM-DD>' });
+// → [{ rule, path, severity, detail }]
+```
+
+  `today` is the reference day, resolved **once per pass** and defaulting to the UTC day — the same clock `review_after` has always used, so one lint pass reads with one vocabulary. Omitting it, or passing `null`, asks for the current day; any **other** unreadable value (`hier`, `01/01/2026`, an empty string, a number) is refused, and refused before the first page is touched.
+
+3. **Four rules, and the severities are not uniform** :
+   - `valid-window-inverted` — **ERROR**. `valid_from` is after `valid_through`: both dates read fine and the pair cannot be true, so the page misleads whichever bound the reader believes.
+   - `valid-window-unreadable` — **WARNING**. A bound that is not a calendar date (`01/01/2026`, `2026-02-30`, a number, a list). The detail names **every** bad bound; a report that mentions one and hides the other sends the author back twice.
+   - `valid-window-not-yet` — **INFO**. Declared, readable, starts later.
+   - `valid-window-expired` — **INFO**. Declared, readable, already ended.
+4. **Why the last two are information and not defects.** A repealed rule is a legitimate page: it explains the past, and it explains the rule that replaced it. Reporting it as a problem pushes an author to delete knowledge in order to silence a linter. Say the state, never ask for a fix.
+5. **Nothing here is auto-fixable.** A wrong date is corrected by reading the source; a linter that guesses one invents history — the same refusal Check P makes about an absent status. Neither INFO rule affects `ok`; the ERROR does.
+
+Scope: any page type, pages inside a frozen copy (`.okf-rename-backup/`, `.trash/`, `.obsidian-backup/`) excluded, and an entry whose `path` is missing or blank is skipped rather than reported as a finding pointing at no file. Fed a proper YAML parse as step 1 requires, a bound holding a block is an object, which is not a date, so it is reported as `valid-window-unreadable` — the case only disappears when the input came from the wrong parser.
+
 ### 3. Render the report
 
 Group findings by severity:
 
-- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`), **Check O `session-folder-collision`**
-- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**, **Check P `prompt-status-missing`** / **`prompt-status-invalid`**, **Check Q `convention-drift`** (a drifted or duplicated convention section — never above warning, because which side is right is the reader's call)
-- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect), **Check J-bis** quasi-twin pairs (never above info — resemblance is not a defect, and the check proposes a reading, never a merge)
+- **Errors** (broken state): dead wikilinks, stale index entries pointing to nonexistent files, **Check J `concept-overlap-strong`** (deep), **Check I `orphaned-digest`** (deep), **Check N** decision errors (`status-missing`, `status-invalid`, `supersedes-*`), **Check O `session-folder-collision`**, **Check R `valid-window-inverted`** (a window no day can satisfy)
+- **Warnings** (degraded state): orphans, missing index entries, frontmatter gaps, empty sections, Check H claim-range issues (cited-source-not-found, claim-range-zero-or-negative, claim-range-inverted, claim-range-overflow), **Check I `digest-stale`** (deep), **Check J `concept-overlap-moderate`** (deep), **Check K `contradiction-suspected`** (deep, conservative heuristic), **Check L `missing-wikilink`** (deep), **Check N** `superseded-without-successor` / `affects-target-missing` / `scope-missing` / `review-after-*`, **Check O `session-folder-stray`** and **`catalog-sessions-heading`**, **Check P `prompt-status-missing`** / **`prompt-status-invalid`**, **Check Q `convention-drift`** (a drifted or duplicated convention section — never above warning, because which side is right is the reader's call), **Check R `valid-window-unreadable`** (a bound that is not a calendar date)
+- **Info** (informational): log out-of-order entries, hot.md staleness, **Check N** `evidence-missing`, **Check A-ter** frontier pages (never above info — a thin crossroads is not a defect), **Check J-bis** quasi-twin pairs (never above info — resemblance is not a defect, and the check proposes a reading, never a merge), **Check R** `valid-window-not-yet` / `valid-window-expired` (never above info — a page describing a period now past is still knowledge)
 
 For each finding:
 - The path or wikilink involved

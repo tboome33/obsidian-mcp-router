@@ -82,6 +82,15 @@ source_type: <see below>   # see "Source provenance" in vault CLAUDE.md
 ---
 ```
 
+**Two more fields, optional and for any type — a page whose content is bounded in time** (a rate, a regulatory threshold, a contractual period). Add them ONLY when the material you are filing actually states the period; never infer one, exactly as you never invent a `published:` date.
+
+```yaml
+valid_from: 2026-01-01      # first day it applies, INCLUDED
+valid_through: 2026-12-31   # last day it applies, INCLUDED
+```
+
+ISO calendar dates as strings, at the top level, either one usable alone. They say when what the page asserts applies — not whether the page is still the live verdict (`status:`), and not when to re-examine it (`review_after:`). The full rules are in the `temporal-validity` convention; if the vault has not installed it, the fields still work and still mean the same thing.
+
 **`description` is mandatory** (see "One-line summary" in the vault `CLAUDE.md`). It is the line the OKF directory indexes publish — `* [Title](file.md) - description` — so a page without one shows up in the vault's own navigation as a bare filename. Nothing downstream will invent it for you: the at-rest projections report the gap rather than synthesizing a sentence, precisely so the omission stays visible and fixable here.
 
 Write what the page **concludes**, not what it is about, in one plain sentence with no markdown and no `[[wikilinks]]` (it is a YAML scalar rendered inline): *"Décision : BM25 plutôt qu'un scorer à embeddings pour le filtre de pertinence"* — not *"Note sur le choix du scorer"*.

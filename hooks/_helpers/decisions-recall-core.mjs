@@ -40,6 +40,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { cmp } from '../../src/helpers/total-order.mjs';
+import {
+  STATE_IN_FORCE,
+  classifyValidity,
+  windowFieldsFromFrontmatterText,
+} from '../../src/helpers/temporal-validity.mjs';
 
 /**
  * Frontmatter `type` values under decision discipline. Mirrors
@@ -105,8 +110,21 @@ export const LIMITS = {
   /** Wall-clock budget for the whole walk. */
   deadlineMs: 150,
   maxDecisions: 3,
-  /** Budget for the page-controlled middle of the block, framing excluded. */
+  /** Budget for the page-controlled middle of the block, framing excluded.
+   *  Measured on the entries WITHOUT their temporal annotations — see
+   *  `maxValidityChars`. */
   maxItemsChars: 2400,
+  /**
+   * A SEPARATE envelope for the 📅 lines, and the reason it is separate is a
+   * regression found in review. Counting them inside `maxItemsChars` made a
+   * decision carrying a window push another decision — possibly one carrying
+   * an expired `review_after` — out of the block entirely. A feature that
+   * adds an axis must not silently remove what the other axis used to say.
+   * Which decisions appear is therefore decided on the historic budget, and
+   * the annotations are added afterwards from their own; when this one runs
+   * out, the markers stop and the block says so.
+   */
+  maxValidityChars: 1200,
   maxTitleChars: 100,
   /** Every rendered field is capped, so ONE item can never blow the budget. */
   maxPathChars: 120,
@@ -364,6 +382,14 @@ export function collectDecisions(vaultPath, options = {}) {
         path: path.relative(vaultPath, path.join(dir, entry.name)).split(path.sep).join('/'),
         basename: entry.name.replace(/\.md$/i, ''),
         frontmatter,
+        // Read from the RAW head, not from `frontmatter` above. The reader in
+        // this file is line-oriented — as it must be, nothing here may depend
+        // on a parser installed by npm — and a line reader flattens, which for
+        // these two fields inverts the verdict rather than blurring it: a
+        // nested window would surface as a real one, and a bound holding a
+        // block would read as absent. `windowFieldsFromFrontmatterText` keeps
+        // the structure that decides which of those is true.
+        window: windowFieldsFromFrontmatterText(head),
       });
     }
   };
@@ -479,6 +505,40 @@ export function selectRelevant(decisions, prompt, options = {}) {
     const reviewValid = reviewAfter === '' || ISO_DATE_RE.test(reviewAfter);
     const expired = reviewValid && reviewAfter !== '' && reviewAfter < today;
 
+    // The OTHER time axis, and it is not the same question. `review_after`
+    // asks whether the ruling should be re-examined; a validity window asks
+    // whether what it says still applies. A decision can be past both, or
+    // past one and not the other, and the block below shows whichever are
+    // true — collapsing them would make a field say what its author did not.
+    //
+    // Same `today` as above, resolved once for the whole pass. Never allowed
+    // to throw: this runs on every prompt submission, and a recall layer that
+    // can take a turn down is worse than one that stays quiet.
+    const window = entry.window ?? { fields: {}, undetermined: [] };
+    let validity = null;
+    let windowState = null;
+    if (window.undetermined.length > 0) {
+      // The reader met a shape it will not interpret. That is NOT "no window"
+      // and NOT "a bad window" — it is a limit of the reader, and saying so is
+      // the only honest answer. Hiding it behind either of the other two is
+      // how a tool starts lying about a vault.
+      windowState = 'undetermined';
+    } else {
+      try {
+        validity = classifyValidity(window.fields, { asOf: today });
+      } catch {
+        // Belt and braces: this runs on EVERY prompt submission, and no page
+        // may take a turn down. An exception here is a defect of ours, so it
+        // is surfaced as undetermined rather than swallowed into silence.
+        validity = null;
+        windowState = 'undetermined';
+      }
+      // `in-force` earns no line. In PROSE the normal state must stay silent,
+      // or the marker that matters stops being read — the same reason an
+      // unexpired `review_after` says nothing.
+      if (validity && validity.state !== STATE_IN_FORCE) windowState = validity.state;
+    }
+
     // "Distinctive" = at least one hit that is NOT vault-wide vocabulary,
     // wherever it landed. Used below to drop the merely-ubiquitous matches
     // when better ones exist.
@@ -497,6 +557,9 @@ export function selectRelevant(decisions, prompt, options = {}) {
       reviewAfter: reviewAfter || null,
       reviewInvalid: !reviewValid,
       expired,
+      windowState,
+      windowFrom: validity ? validity.from : null,
+      windowThrough: validity ? validity.through : null,
       hits,
       // Strong hits weigh double so a title match outranks two tag matches.
       score: strongHits.length * 2 + weakHits.length,
@@ -597,6 +660,7 @@ export function formatRecallBlock(selected, context = {}) {
   const maxItemsChars = context.maxItemsChars ?? LIMITS.maxItemsChars;
   const maxTitleChars = context.maxTitleChars ?? LIMITS.maxTitleChars;
   const maxPathChars = context.maxPathChars ?? LIMITS.maxPathChars;
+  const maxValidityChars = context.maxValidityChars ?? LIMITS.maxValidityChars;
   // The prefix depends on how the router was registered — directly
   // (mcp__obsidian-router__*) or by the Claude Code plugin
   // (mcp__plugin_obsidian-router_router__*). Name the tool the common way
@@ -649,24 +713,75 @@ export function formatRecallBlock(selected, context = {}) {
       lines.push(`    ⏳ **review_after: ${truncate(item.reviewAfter, 40)} is unreadable** (expected YYYY-MM-DD) — its freshness`);
       lines.push('       cannot be established, so do NOT treat this one as a binding constraint.');
     }
-    rendered.push(lines.join('\n'));
+    // The temporal annotation is built SEPARATELY from the lines above, and
+    // kept separate all the way to the budget. A DISTINCT marker too,
+    // deliberately not the ⏳: "re-examine this ruling" and "the period it
+    // covered is over" are two different things to tell an agent, and one
+    // emoji for both would blur them back together on the exact page where
+    // the distinction was written down. A decision past both shows both.
+    const temporal = [];
+    if (item.windowState === 'no-longer-in-force') {
+      // "after", not "since": the bound is INCLUDED, so the decision still
+      // applied ON that day. Review caught the earlier wording contradicting
+      // the rule the whole feature rests on.
+      temporal.push(`    📅 **no longer in force after ${sanitize(item.windowThrough)}** — the period this`);
+      temporal.push('       decision covered has ended. Read it as context, not as a constraint that binds.');
+    } else if (item.windowState === 'not-yet-in-force') {
+      temporal.push(`    📅 **not in force before ${sanitize(item.windowFrom)}** — it is written and settled, and`);
+      temporal.push('       what it rules does not apply yet. Do not act on it as if it did.');
+    } else if (item.windowState === 'unreadable') {
+      temporal.push('    📅 **its validity window is unreadable** (expected `valid_from` / `valid_through` as');
+      temporal.push('       YYYY-MM-DD) — whether it still applies cannot be established here.');
+    } else if (item.windowState === 'undetermined') {
+      // Not "no window" and not "a bad window": this reader could not tell.
+      // Saying which, rather than picking one, is the whole point of keeping
+      // the third outcome.
+      temporal.push('    📅 **its validity window could not be read here** — the field is present in a');
+      temporal.push('       shape this reader does not interpret. Open the page to see what it declares.');
+    }
+    rendered.push({ base: lines.join('\n'), temporal: temporal.join('\n') });
   }
 
   // Fit WHOLE items only. Slicing mid-item would leave a backtick or a `**`
   // unclosed, and the footer that follows would render as code or emphasis —
   // the framing would be present in the text and broken on screen. Dropping
   // a whole entry is honest and says so.
+  //
+  // WHICH entries are kept is decided on the base text alone, exactly as it
+  // was before temporal validity existed. Counting the 📅 lines here would let
+  // one decision's window evict another decision's `review_after` from the
+  // block — a feature adding an axis must not silently remove what the other
+  // one used to say.
   const kept = [];
   let used = 0;
   for (const item of rendered) {
-    if (kept.length > 0 && used + item.length + 2 > maxItemsChars) break;
+    if (kept.length > 0 && used + item.base.length + 2 > maxItemsChars) break;
     kept.push(item);
-    used += item.length + 2;
+    used += item.base.length + 2;
   }
+
+  // The annotations then draw on their OWN envelope, in the order the entries
+  // are shown. When it runs out the markers stop, and that is said rather than
+  // left to look like "no window here".
+  let validityUsed = 0;
+  let markersDropped = 0;
+  const composed = kept.map((item) => {
+    if (!item.temporal) return item.base;
+    if (validityUsed + item.temporal.length + 1 > maxValidityChars) {
+      markersDropped += 1;
+      return item.base;
+    }
+    validityUsed += item.temporal.length + 1;
+    return `${item.base}\n${item.temporal}`;
+  });
+
   const omitted = rendered.length - kept.length;
-  let body = kept.join('\n\n');
+  let body = composed.join('\n\n');
   if (omitted > 0) {
     body += `\n\n  … ${omitted} more matching decision${omitted > 1 ? 's' : ''} not shown (block budget).`;
+  }
+  if (markersDropped > 0) {
+    body += `\n\n  … ${markersDropped} validity marker${markersDropped > 1 ? 's' : ''} not shown (annotation budget) — absence of a 📅 line above does NOT mean the window is open.`;
   }
   if (context.scanTruncated) {
     body += '\n\n  ⚠️ The vault scan was cut short (time budget) — this list may be incomplete.';

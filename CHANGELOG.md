@@ -545,6 +545,59 @@ mutations were the same mutation; and a witness passed for the wrong reason, whi
 baseline-I/O check and the malformed-document check into two separately witnessed guards instead of
 one overlapping pair.
 
+### A page can say when what it says applies — and nothing is ever hidden for saying it
+
+A page describing a rule that was repealed reads exactly like a rule in force, and an agent applies
+it. Two optional frontmatter fields, `valid_from` and `valid_through`, let a page declare the period
+it covers, as ISO calendar dates with **both bounds included**. One module derives four states from
+them at a reference day in UTC — in force, not yet, no longer, unreadable — and three surfaces repeat
+that answer without ever removing a page from a result.
+
+Nothing is guessed and nothing is migrated. No existing page is rewritten, no field is added by
+default, and `wiki-ingest` is forbidden from deriving a period from a publication date. These fields
+appear only where someone writes them, because the source states a period.
+
+- **`wiki-lint` gains Check R.** It never asks for a window; it reports one that is *declared* and
+  cannot be read — an impossible date, a bound that is not a string, a period ending before it starts
+  — and mentions, at info tier, a page outside its window. An expired page is a legitimate page, not a
+  defect. Nothing here is auto-fixable: a wrong date is corrected by reading the source.
+- **The decisions-recall hook marks two axes separately.** A decision past its `review_after` says
+  "re-evaluate this judgement"; one outside its window says "the period it covered is over". They are
+  different sentences, so they are different markers, and a decision carrying both shows both. A
+  decision in force adds no line at all — in a block of prose the normal state stays silent, or the
+  marker that matters stops being read. The markers also get their **own** character budget, because
+  they were competing with the entries and could evict a whole decision from the block.
+- **`get_wiki_context_pack` annotates every entry it returns**, with a new `asOf` parameter resolved
+  once per call, and a `validitySummary` that says what was actually read. An entry whose page could
+  not be read carries `validityUnverified` and stays in the envelope — silence never means "no
+  window". The envelope stays `v1`: strip the three additions and the response is byte-identical to
+  what a consumer saw before.
+
+**The window is read from raw frontmatter text in the hook, not from the parsed object, and that is
+the whole engineering story.** The hook runs before dependencies are installed, so it has no YAML
+parser, and the repository's line-oriented reader flattens nested blocks. Here that does not blur a
+verdict, it **inverts** one: a page declaring nothing would be announced as future, and a bound
+holding a block would be announced as in force, with confidence. A small YAML parser was written and
+review punctured it six times, so the approach changed rather than being patched: the reader now
+knows exactly **one** shape and has a third outcome beyond value and absent — `undetermined`, said in
+words to the reader. An honest refusal is the only claim a reader that size can support.
+
+What Obsidian's own parser returns was **measured before any of this was wired**, against expectations
+written and hashed first, because one reading could have sunk the batch: YAML resolves an unquoted ISO
+date to a timestamp, and had it arrived as anything but a plain string, every correctly authored page
+in the fleet would have read as unreadable. Seven fixtures, seven matches, through two doors and two
+Node versions. The probe pages each carried a control field, and the control was *seen failing*
+first — Obsidian serves frontmatter from a metadata cache, and an unindexed file answers with an empty
+object, which reads exactly like "the key is absent" and would have confirmed the rule under test all
+by itself.
+
+`temporal-validity.mjs`, `temporal-validity-lint.mjs`, `validity-annotator.mjs` and four test files —
+**234 tests**. A shared corpus of 23 complete Markdown documents is replayed through four different
+parsers, and the two places where those parsers disagree are written down rather than averaged away.
+Nine mutations across the helper and the tool, all caught, sources restored byte-identical; one of
+them survived at first, and the witness it was missing only became writable once a fixture used a
+label that canonicalisation rewrites.
+
 ## [0.95.0] — 2026-09-11 — the copy that landed in a directory nobody had named
 
 Four independent findings, three of them from bug reports filed the same day by a workspace that

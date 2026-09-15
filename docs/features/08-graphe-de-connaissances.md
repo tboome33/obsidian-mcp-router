@@ -86,3 +86,36 @@ Un graphe construit avant cette fonctionnalité ne porte aucune mesure de substa
 ```jsonc
 { "vault": "recherche", "query": "gestion du risque en swing trading" }
 ```
+
+### Validité temporelle — chaque entrée dit si elle s'applique encore
+
+Une page peut déclarer une période d'application avec `valid_from` et `valid_through` (voir la convention `temporal-validity`). Quand elle le fait, l'entrée correspondante porte un champ `validity` :
+
+```jsonc
+"validity": { "state": "no-longer-in-force", "from": null, "through": "2025-12-31", "asOf": "2026-09-12" }
+```
+
+Les quatre états sont `in-force`, `not-yet-in-force`, `no-longer-in-force` et `unreadable`. Ce dernier signale une fenêtre que la page déclare mais que personne ne peut lire — une date inexistante, une borne qui n'est pas une chaîne, une période qui se termine avant de commencer — et il porte alors un tableau `problems` qui nomme le défaut.
+
+**Trois règles qui ne changent pas.**
+
+- **Une page sans fenêtre ne porte rien.** Pas `validity: null`, pas un état vide : le champ est absent. Une page qui ne date pas son contenu ne fait aucune affirmation temporelle, et l'enveloppe ne lui en prête pas.
+- **Cet outil annote, il ne filtre jamais.** Une page échue est exactement aussi présente qu'une page en vigueur. Le filtrage par état est un paramètre de `search_smart`, jamais un comportement par défaut, et jamais ici.
+- **Ce qui n'a pas pu être vérifié le dit.** Une entrée dont la page n'a pas pu être lue porte `validityUnverified: true` au lieu de `validity`. Elle reste dans l'enveloppe. Un silence n'est jamais un « pas de fenêtre » déguisé.
+
+**Le paramètre `asOf`** fixe le jour de référence (`YYYY-MM-DD`). Omis, c'est le jour courant en UTC. Il est résolu **une seule fois par appel**, donc deux entrées d'une même réponse ne sont jamais classées à des jours différents. Une valeur illisible fait **échouer l'appel** plutôt que de retomber silencieusement sur aujourd'hui.
+
+**`validitySummary`, toujours présent au premier niveau**, dit ce que l'appel a réellement regardé :
+
+| Champ | Ce qu'il compte |
+|---|---|
+| `asOf` | le jour de référence retenu |
+| `annotatedEntries` | les entrées **retournées** qui portent une fenêtre |
+| `inspectedPages` | les pages distinctes lues avec succès |
+| `unverifiedPages` | les pages distinctes que l'appel n'a pas pu lire |
+| `budgetExhausted` | vrai si des entrées sont restées non vérifiées faute de budget de lecture |
+| `revisionCoherence` | toujours `not-verified` |
+
+Ce dernier champ mérite une phrase. La fenêtre décrit la page **telle qu'elle est lue au moment de la requête**, alors qu'un extrait peut venir d'une révision antérieure de la même page. Ces deux choses ne sont pas comparées, et le champ le dit plutôt que de laisser le lecteur le supposer.
+
+**Le coût en lectures.** L'annotation lit le frontmatter des pages concernées, une seule fois par page et par appel, y compris quand trois collections différentes citent la même page. Les pages principales sont déjà lues et ne coûtent rien de plus. Les chunks sont plafonnés par le `maxSemanticChunks` demandé. Les voisins de graphe reçoivent un plafond dédié de **50 lectures** (`NEIGHBOR_VALIDITY_READS`) : c'est la seule collection qui n'en avait aucun, puisque tous les wikilinks des pages principales y sont versés. Au-delà, les voisins restants gardent leur entrée, portent `validityUnverified` et `budgetExhausted` passe à vrai.

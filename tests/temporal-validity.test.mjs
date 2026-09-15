@@ -1,0 +1,685 @@
+/**
+ * Temporal validity — the pure helper, and the shared conformance corpus.
+ *
+ * WHAT THESE TESTS ARE FOR. `src/helpers/temporal-validity.mjs` is meant to be
+ * the ONE place that decides whether what a page says applies on a given day.
+ * Three consumers will import it (the lint check, the recall hook, the search
+ * annotator), and the discipline that keeps them honest is a mutation: break
+ * the bound comparison here, and a witness in EACH consumer must go red. This
+ * file owns the helper's own half of that — the table below is what the
+ * mutation has to break — and the corpus in `fixtures/temporal-validity-cases`
+ * is what the consumers will each replay through their own parser.
+ *
+ * TWO THINGS DELIBERATELY NOT ASSERTED HERE. First, that the three consumers
+ * agree: none exists yet, and a corpus run against a single caller proves only
+ * that the caller agrees with itself. Second, what Obsidian's own parser hands
+ * back for these fields — that is a MEASUREMENT on a live vault, prescribed as
+ * a stop-gate before the annotator phase, and no fixture can stand in for it.
+ */
+
+import { describe, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { blankStringsAndComments } from './_source-scan.mjs';
+
+import {
+  PROBLEM_INVERTED,
+  PROBLEM_NOT_A_CALENDAR_DATE,
+  PROBLEM_NOT_A_STRING,
+  PROBLEM_NOT_ISO,
+  STATE_IN_FORCE,
+  STATE_NOT_YET,
+  STATE_NO_LONGER,
+  STATE_UNREADABLE,
+  classifyValidity,
+  normalizeBound,
+  readWindow,
+  resolveAsOf,
+  windowFieldsFromFrontmatterText,
+} from '../src/helpers/temporal-validity.mjs';
+import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
+import { TEMPORAL_VALIDITY_CASES, DIVERGENT_CASE_IDS } from './fixtures/temporal-validity-cases.mjs';
+
+describe('normalizeBound — absent, readable, or unreadable, never a fourth thing', () => {
+  test('absence has several spellings and one meaning', () => {
+    const absent = [
+      ['undefined', undefined],
+      ['null', null],
+      ['empty string (the line parser\'s answer for a valueless key)', ''],
+      ['whitespace only', '   '],
+      ['the string "null" (the line parser\'s answer for a literal null)', 'null'],
+      ['the string "Null"', 'Null'],
+      ['the string "NULL"', 'NULL'],
+      ['the string "~"', '~'],
+    ];
+    for (const [label, value] of absent) {
+      assert.deepEqual(normalizeBound(value), { absent: true }, `${label} must read as absent`);
+    }
+  });
+
+  test('a four-letter word that is not YAML null is unreadable, not absent', () => {
+    // `nUlL` is a string in YAML, and a string that is not a date is a typo we
+    // must show. Exactly why the null spellings are matched, not lowercased.
+    assert.deepEqual(normalizeBound('nUlL'), { problem: PROBLEM_NOT_ISO });
+  });
+
+  test('a readable bound comes back trimmed and unchanged', () => {
+    assert.deepEqual(normalizeBound('2026-01-01'), { value: '2026-01-01' });
+    assert.deepEqual(normalizeBound('  2026-01-01  '), { value: '2026-01-01' });
+  });
+
+  test('anything that is not a string is refused rather than converted', () => {
+    const refused = [
+      ['a Date, midnight UTC — the conversion that would shift a bound by a day', new Date('2026-01-01')],
+      ['an Invalid Date, whose every accessor answers NaN', new Date('nonsense')],
+      ['a number', 2026],
+      ['a boolean', true],
+      ['a list', ['2026-01-01']],
+      ['an object', { from: '2026-01-01' }],
+    ];
+    for (const [label, value] of refused) {
+      assert.deepEqual(normalizeBound(value), { problem: PROBLEM_NOT_A_STRING }, label);
+    }
+  });
+
+  test('a string of the right shape must also be a day that exists', () => {
+    assert.deepEqual(normalizeBound('2026-02-30'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+    assert.deepEqual(normalizeBound('2026-13-01'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+    assert.deepEqual(normalizeBound('2026-00-10'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+    assert.deepEqual(normalizeBound('2026-01-00'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+    assert.deepEqual(normalizeBound('2026-01-32'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+  });
+
+  test('leap years are computed on the year written, not on a year Date.UTC invents', () => {
+    assert.deepEqual(normalizeBound('2024-02-29'), { value: '2024-02-29' }, '2024 is a leap year');
+    assert.deepEqual(normalizeBound('2026-02-29'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+    assert.deepEqual(normalizeBound('2000-02-29'), { value: '2000-02-29' }, 'divisible by 400');
+    assert.deepEqual(normalizeBound('1900-02-29'), { problem: PROBLEM_NOT_A_CALENDAR_DATE }, 'divisible by 100, not 400');
+    // Date.UTC maps a two-digit year onto the 1900s. `0026` and 1926 share the
+    // same February, so those two agree BY LUCK and discriminate nothing —
+    // review's point. Year 0000 is where the two calendars part: divisible by
+    // 400, so it HAS a 29 February, while the 1900 it would be mapped onto does
+    // not. This pair is the witness; the 0026 pair is only company.
+    assert.deepEqual(normalizeBound('0000-02-29'), { value: '0000-02-29' },
+      'year 0 is divisible by 400 — a check delegated to Date.UTC would map it to 1900 and refuse it');
+    assert.deepEqual(normalizeBound('0100-02-29'), { problem: PROBLEM_NOT_A_CALENDAR_DATE },
+      'and year 100 is not, which the same mapping would have got right for the wrong reason');
+    assert.deepEqual(normalizeBound('0026-02-28'), { value: '0026-02-28' });
+    assert.deepEqual(normalizeBound('0026-02-29'), { problem: PROBLEM_NOT_A_CALENDAR_DATE });
+  });
+
+  test('a malformed shape is reported as malformed, never as a wrong day', () => {
+    for (const value of ['01/01/2026', '2026-1-1', '26-01-01', '2026-01-01T10:00:00', 'soon', '20260101']) {
+      assert.deepEqual(normalizeBound(value), { problem: PROBLEM_NOT_ISO }, value);
+    }
+  });
+});
+
+describe('readWindow — a window exists, or the page said nothing', () => {
+  test('no fields at all is no window', () => {
+    assert.equal(readWindow({ type: 'concept' }), null);
+    assert.equal(readWindow({}), null);
+    assert.equal(readWindow(null), null);
+    assert.equal(readWindow(undefined), null);
+  });
+
+  test('a bound that normalises to absent is still no window', () => {
+    // The trap this closes: `{valid_from: null}` becoming a half-open window
+    // and classifying as in-force. The window is defined on the NORMALISED
+    // bounds, not on which keys happen to be present.
+    assert.equal(readWindow({ valid_from: null }), null);
+    assert.equal(readWindow({ valid_from: null, valid_through: null }), null);
+    assert.equal(readWindow({ valid_from: '', valid_through: '~' }), null);
+  });
+
+  test('a null bound next to a real one leaves the real one standing', () => {
+    assert.deepEqual(readWindow({ valid_from: null, valid_through: '2025-12-31' }), {
+      from: null,
+      through: '2025-12-31',
+      problems: [],
+    });
+  });
+
+  test('problems name the field that carried them', () => {
+    assert.deepEqual(readWindow({ valid_from: 'soon' }).problems, ['valid_from:not-iso']);
+    assert.deepEqual(readWindow({ valid_through: 2026 }).problems, ['valid_through:not-a-string']);
+    assert.deepEqual(readWindow({ valid_from: 'soon', valid_through: 'demain' }).problems, [
+      'valid_from:not-iso',
+      'valid_through:not-iso',
+    ], 'both are reported; naming one hides the other');
+  });
+
+  test('inversion belongs to the pair, so it carries no field prefix', () => {
+    const window = readWindow({ valid_from: '2026-12-31', valid_through: '2026-01-01' });
+    assert.deepEqual(window.problems, [PROBLEM_INVERTED]);
+    assert.equal(window.from, '2026-12-31', 'both bounds are kept — they are readable, just incoherent');
+    assert.equal(window.through, '2026-01-01');
+  });
+
+  test('equal bounds are a one-day window, not an inversion', () => {
+    assert.deepEqual(readWindow({ valid_from: '2026-06-15', valid_through: '2026-06-15' }).problems, []);
+  });
+
+  test('inversion is not claimed when a bound could not be read', () => {
+    // Nothing can be said about the order of a pair with one unreadable half.
+    const window = readWindow({ valid_from: 'soon', valid_through: '2026-01-01' });
+    assert.deepEqual(window.problems, ['valid_from:not-iso']);
+  });
+
+  test('an inherited property is not a declaration', () => {
+    const hostile = Object.create({ valid_from: '2026-01-01' });
+    assert.equal(readWindow(hostile), null, 'own properties only — vault JSON can carry a prototype');
+  });
+});
+
+describe('classifyValidity — the four states and the silence', () => {
+  const asOf = '2026-06-15';
+
+  test('no window means no state at all', () => {
+    assert.equal(classifyValidity({ type: 'fact' }, { asOf }), null);
+  });
+
+  test('a bad asOf is refused on EVERY page, window or not', () => {
+    // Found by review. Resolving the day after reading the window made the
+    // same mistyped argument throw on a page that declares one and pass
+    // silently on a page that does not — so whether a caller learned about
+    // their own typo depended on which page came first in the corpus.
+    assert.throws(() => classifyValidity({ valid_from: '2026-01-01' }, { asOf: 'garbage' }), /asOf/);
+    assert.throws(() => classifyValidity({ type: 'concept' }, { asOf: 'garbage' }), /asOf/,
+      'a page with no window must refuse the same argument, not return null');
+    assert.throws(() => classifyValidity({}, { asOf: '' }), /asOf is empty/);
+  });
+
+  test('each state has its witness', () => {
+    assert.equal(classifyValidity({ valid_from: '2027-01-01' }, { asOf }).state, STATE_NOT_YET);
+    assert.equal(classifyValidity({ valid_from: '2020-01-01' }, { asOf }).state, STATE_IN_FORCE);
+    assert.equal(classifyValidity({ valid_through: '2025-12-31' }, { asOf }).state, STATE_NO_LONGER);
+    assert.equal(classifyValidity({ valid_from: 'soon' }, { asOf }).state, STATE_UNREADABLE);
+  });
+
+  test('an absent bound leaves its side open', () => {
+    assert.equal(classifyValidity({ valid_from: '2020-01-01' }, { asOf: '2999-01-01' }).state, STATE_IN_FORCE);
+    assert.equal(classifyValidity({ valid_through: '2999-01-01' }, { asOf: '1900-01-01' }).state, STATE_IN_FORCE);
+  });
+
+  describe('the bounds are INCLUDED — the four witnesses a mutation must break', () => {
+    const window = { valid_from: '2026-01-01', valid_through: '2026-12-31' };
+
+    test('the last day is still in force', () => {
+      assert.equal(classifyValidity(window, { asOf: '2026-12-31' }).state, STATE_IN_FORCE);
+    });
+    test('the day after the last day is not', () => {
+      assert.equal(classifyValidity(window, { asOf: '2027-01-01' }).state, STATE_NO_LONGER);
+    });
+    test('the first day is already in force', () => {
+      assert.equal(classifyValidity(window, { asOf: '2026-01-01' }).state, STATE_IN_FORCE);
+    });
+    test('the day before the first day is not yet', () => {
+      assert.equal(classifyValidity(window, { asOf: '2025-12-31' }).state, STATE_NOT_YET);
+    });
+  });
+
+  test('unreadable outranks the dates, and says why', () => {
+    // A window that cannot be read must never be reported as in force, however
+    // the readable half happens to fall around the reference day.
+    const result = classifyValidity({ valid_from: '2020-01-01', valid_through: 'demain' }, { asOf });
+    assert.equal(result.state, STATE_UNREADABLE);
+    assert.deepEqual(result.problems, ['valid_through:not-iso']);
+  });
+
+  test('an inverted window is unreadable, not a state derived from its bounds', () => {
+    const result = classifyValidity({ valid_from: '2026-12-31', valid_through: '2026-01-01' }, { asOf });
+    assert.equal(result.state, STATE_UNREADABLE);
+    assert.deepEqual(result.problems, [PROBLEM_INVERTED]);
+  });
+
+  test('the reference day travels in the result', () => {
+    assert.equal(classifyValidity({ valid_from: '2020-01-01' }, { asOf }).asOf, asOf);
+  });
+
+  test('a clean window carries an empty problems list, not an absent one', () => {
+    assert.deepEqual(classifyValidity({ valid_from: '2020-01-01' }, { asOf }).problems, []);
+  });
+});
+
+describe('resolveAsOf — one day per operation, in UTC, and never a silent fallback', () => {
+  test('an explicit day is taken as given', () => {
+    assert.equal(resolveAsOf('2026-03-01'), '2026-03-01');
+    assert.equal(resolveAsOf('  2026-03-01 '), '2026-03-01');
+  });
+
+  test('absence means the UTC day of the instant, hand-computed', () => {
+    assert.equal(resolveAsOf(undefined, new Date('2026-01-01T23:30:00Z')), '2026-01-01');
+    assert.equal(resolveAsOf(null, new Date('2026-01-02T00:30:00Z')), '2026-01-02');
+  });
+
+  test('an unreadable asOf throws — a mistyped historical question is not answered with today', () => {
+    for (const bad of ['01/03/2026', 'yesterday', '2026-02-30', 2026, new Date()]) {
+      assert.throws(() => resolveAsOf(bad), /asOf/, JSON.stringify(String(bad)));
+    }
+  });
+
+  test('an explicitly EMPTY asOf throws too, rather than meaning today', () => {
+    // `asOf: ""` reaching a tool is a caller defect. Treating it as "today"
+    // would answer a question nobody asked and say nothing about it.
+    assert.throws(() => resolveAsOf(''), /asOf is empty/);
+    assert.throws(() => resolveAsOf('   '), /asOf is empty/);
+  });
+
+  test('an unusable clock is refused rather than producing a NaN day', () => {
+    assert.throws(() => resolveAsOf(undefined, new Date('nonsense')), /valid Date/);
+    assert.throws(() => resolveAsOf(undefined, '2026-01-01'), /valid Date/);
+  });
+
+  test('a clock outside the four-digit years is refused, not truncated', () => {
+    // Found by review: `toISOString` widens to `+010000-01-01T…`, so slicing
+    // ten characters returns `+010000-01` — a string of the wrong width that
+    // every downstream comparison would treat as a day.
+    assert.throws(() => resolveAsOf(undefined, new Date('+010000-01-01T00:00:00Z')), /not a YYYY-MM-DD day/);
+    assert.throws(() => resolveAsOf(undefined, new Date('-000001-01-01T00:00:00Z')), /not a YYYY-MM-DD day/);
+  });
+
+  /**
+   * The witness that makes "UTC, not the host's local day" OBSERVABLE.
+   *
+   * On a host running in UTC the two readings are identical, so no instant can
+   * tell them apart — which is exactly the case on the CI runners. The day is
+   * therefore computed in a CHILD PROCESS with TZ forced to a zone far from
+   * UTC, at an instant where the local day and the UTC day differ.
+   *
+   * MEASURED, not assumed: Node honours TZ here, but the bash `TZ=x node`
+   * prefix does NOT reach the process on this Windows host (`process.env.TZ`
+   * came back undefined). Passing an explicit `env` is what works, on every
+   * platform.
+   */
+  const tzCases = [
+    ['Pacific/Kiritimati', 'UTC+14', '2026-01-01T22:30:00Z', '2026-01-01', 2],
+    ['Pacific/Honolulu', 'UTC-10', '2026-01-02T02:30:00Z', '2026-01-02', 1],
+  ];
+  for (const [tz, label, instant, expectedUtcDay, expectedLocalDay] of tzCases) {
+    test(`in ${tz} (${label}) the day is UTC's, not the host's`, () => {
+      const code = `
+        import { resolveAsOf } from ${JSON.stringify(new URL('../src/helpers/temporal-validity.mjs', import.meta.url).href)};
+        const now = new Date(${JSON.stringify(instant)});
+        process.stdout.write(JSON.stringify({
+          resolved: resolveAsOf(undefined, now),
+          localDay: now.getDate(),
+          zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }));
+      `;
+      const run = spawnSync(process.execPath, ['--input-type=module', '-e', code], {
+        env: { ...process.env, TZ: tz },
+        encoding: 'utf8',
+      });
+      assert.equal(run.status, 0, run.stderr);
+      const out = JSON.parse(run.stdout);
+
+      // The denominator: if the child did not actually adopt the zone, the two
+      // readings coincide and this test would pass without measuring anything.
+      assert.equal(out.zone, tz, 'the child process must have adopted the forced timezone');
+      assert.equal(out.localDay, expectedLocalDay,
+        'the instant must be one where the local day and the UTC day differ');
+      assert.equal(out.resolved, expectedUtcDay);
+    });
+  }
+});
+
+describe('the shared conformance corpus, replayed through the router line parser', () => {
+  test('the corpus is not empty and every case is distinctly named', () => {
+    assert.ok(TEMPORAL_VALIDITY_CASES.length >= 20,
+      `the corpus must cover the contract, has ${TEMPORAL_VALIDITY_CASES.length} cases`);
+    const ids = TEMPORAL_VALIDITY_CASES.map((c) => c.id);
+    assert.equal(new Set(ids).size, ids.length);
+  });
+
+  test('every state, including the silence, is represented', () => {
+    const states = new Set(TEMPORAL_VALIDITY_CASES.map((c) => c.expect.state));
+    for (const state of [null, STATE_IN_FORCE, STATE_NOT_YET, STATE_NO_LONGER, STATE_UNREADABLE]) {
+      assert.ok(states.has(state), `the corpus must exercise ${state === null ? 'no-window' : state}`);
+    }
+  });
+
+  for (const testCase of TEMPORAL_VALIDITY_CASES) {
+    test(`case: ${testCase.id}`, () => {
+      const { frontmatter } = parseFrontmatter(testCase.markdown);
+      const result = classifyValidity(frontmatter, { asOf: testCase.asOf });
+
+      if (testCase.expect.state === null) {
+        assert.equal(result, null, testCase.note ?? 'expected no window');
+        return;
+      }
+
+      assert.notEqual(result, null, 'expected a window');
+      assert.equal(result.state, testCase.expect.state, testCase.note ?? testCase.id);
+      if ('from' in testCase.expect) assert.equal(result.from, testCase.expect.from);
+      if ('through' in testCase.expect) assert.equal(result.through, testCase.expect.through);
+      if ('problems' in testCase.expect) assert.deepEqual(result.problems, testCase.expect.problems);
+      assert.equal(result.asOf, testCase.asOf);
+    });
+  }
+
+  test('the DECLARED divergences are the two flattening traps, and no others', () => {
+    // Honest about what this asserts, after review pointed out the first
+    // version claimed more than it measured: `DIVERGENT_CASE_IDS` is derived
+    // from the fixture's own `expectYaml`, so this pins the set we DECLARED,
+    // not the set that genuinely diverges. Comparing the two parsers for real
+    // needs Obsidian's, which arrives with the annotator phase — the fixture
+    // exists precisely so that comparison has something to run against. What
+    // this does catch is the realistic mistake: adding a divergent case and
+    // forgetting to say so, or removing one silently.
+    assert.deepEqual(DIVERGENT_CASE_IDS, [
+      'object-as-a-bound-loses-its-error',
+      'nested-object-hides-the-window',
+    ]);
+  });
+
+  test('both divergences are real ON THIS SIDE — the line parser flattens, and it is measurable', () => {
+    // The YAML half of each pair is a declared expectation. The LINE PARSER
+    // half is measured right here, which is what makes the pair worth writing.
+    const nested = TEMPORAL_VALIDITY_CASES.find((c) => c.id === 'nested-object-hides-the-window');
+    const nestedFm = parseFrontmatter(nested.markdown).frontmatter;
+    assert.equal(nestedFm.valid_from, '2026-01-01',
+      'the nested key is LIFTED to the top level, so a window appears where YAML sees none');
+    assert.equal(classifyValidity(nestedFm, { asOf: nested.asOf }).state, nested.expect.state);
+
+    const objectBound = TEMPORAL_VALIDITY_CASES.find((c) => c.id === 'object-as-a-bound-loses-its-error');
+    const objectFm = parseFrontmatter(objectBound.markdown).frontmatter;
+    assert.equal(objectFm.valid_from, '',
+      'a bound holding a block becomes the EMPTY STRING, which normalises to absent');
+    assert.equal(classifyValidity(objectFm, { asOf: objectBound.asOf }).state, 'in-force');
+    // And the same page, as a spec parser would hand it over: an object bound
+    // is not a string, so the window is unreadable. Same helper, same page,
+    // opposite verdicts — the loss happens before the helper, and the
+    // annotator phase is where it has to be stopped.
+    assert.equal(
+      classifyValidity({ valid_from: { date: '2026-01-01' }, valid_through: '2026-12-31' }, { asOf: objectBound.asOf }).state,
+      'unreadable',
+    );
+  });
+});
+
+describe('windowFieldsFromFrontmatterText — three outcomes, and it says which', () => {
+  const BOM = String.fromCharCode(0xfeff);
+  const BACKSLASH = String.fromCharCode(92);
+
+  /**
+   * What the reader concluded, in one word:
+   *   'undetermined' — it met a shape it will not interpret
+   *   null           — the page declares no window, and it is sure
+   *   a state        — it read a window, classified at the reference day
+   */
+  function verdict(text) {
+    const { fields, undetermined } = windowFieldsFromFrontmatterText(text);
+    if (undetermined.length > 0) return 'undetermined';
+    const result = classifyValidity(fields, { asOf: '2026-06-15' });
+    return result === null ? null : result.state;
+  }
+
+  describe('the one shape it does read', () => {
+    test('a plain scalar on the key\'s own line', () => {
+      assert.equal(verdict('---\nvalid_from: 2026-01-01\nvalid_through: 2026-12-31\n---\nbody'), STATE_IN_FORCE);
+      assert.equal(verdict('---\nvalid_through: 2025-12-31\n---\nbody'), STATE_NO_LONGER);
+      assert.equal(verdict('---\nvalid_from: 2027-01-01\n---\nbody'), STATE_NOT_YET);
+    });
+
+    test('quoted, either style, with an optional trailing comment', () => {
+      assert.equal(verdict('---\nvalid_through: "2025-12-31"\n---\nbody'), STATE_NO_LONGER);
+      assert.equal(verdict("---\nvalid_through: '2025-12-31'\n---\nbody"), STATE_NO_LONGER);
+      assert.equal(verdict('---\nvalid_from: 2026-01-01 # entrée en vigueur\n---\nbody'), STATE_IN_FORCE);
+      assert.equal(verdict('---\nvalid_through: "2025-12-31" # fin de grille\n---\nbody'), STATE_NO_LONGER);
+    });
+
+    test('and a date the AUTHOR got wrong is still the author\'s mistake, not ours', () => {
+      // The distinction `undetermined` must never swallow: this shape IS read,
+      // and what it contains is not a date.
+      assert.equal(verdict('---\nvalid_from: 01/01/2026\n---\nbody'), STATE_UNREADABLE);
+      assert.equal(verdict('---\nvalid_from: 2026-02-30\n---\nbody'), STATE_UNREADABLE);
+      assert.equal(verdict('---\nvalid_from: 2026-01-01#x\n---\nbody'), STATE_UNREADABLE,
+        'a hash with no space before it is part of the value, as YAML says');
+    });
+  });
+
+  describe('what it is SURE declares nothing', () => {
+    test('no such key', () => {
+      assert.equal(verdict('---\ntype: fact\n---\nbody'), null);
+      assert.equal(verdict('# Just a page\n\nBody.\n'), null);
+    });
+
+    test('a key nested under a parent — the flattening trap, in the safe direction', () => {
+      assert.equal(verdict('---\nvalidity:\n  valid_from: 2027-01-01\n---\nbody'), null);
+    });
+
+    test('an empty key, with or without a comment', () => {
+      assert.equal(verdict('---\nvalid_from:\n---\nbody'), null);
+      assert.equal(verdict('---\nvalid_from: # à définir\n---\nbody'), null);
+      assert.equal(verdict('---\nvalid_from:\ntype: fact\n---\nbody'), null);
+    });
+
+    test('a field name in the BODY is not a declaration', () => {
+      assert.equal(verdict('---\ntype: fact\n---\n\nvalid_through: 2025-12-31 in the prose\n'), null);
+    });
+  });
+
+  describe('what it REFUSES to interpret — the six shapes review found, and their kin', () => {
+    // Each of these was a wrong verdict before the reader stopped guessing.
+    // Undetermined is not a lesser answer here: it is the only true one.
+    const refused = [
+      ['a bound holding a block', '---\nvalid_from:\n  date: 2026-01-01\n---\nbody'],
+      ['a bound holding an indented list', '---\nvalid_from:\n  - 2026-01-01\n---\nbody'],
+      ['a bound holding a list at the key\'s own column', '---\nvalid_from:\n- 2026-01-01\n---\nbody'],
+      ['a block scalar', '---\nvalid_from: |-\n  2027-01-01\n---\nbody'],
+      ['a folded continuation line', '---\nvalid_from: 2027-01-01\n  suffixe\n---\nbody'],
+      ['a quoted key', '---\n"valid_from": 2027-01-01\n---\nbody'],
+      ['an unterminated quote on the bound itself', '---\nvalid_from: "2026-01-01\n---\nbody'],
+      ['an escape inside a double-quoted scalar', `---\nvalid_from: "2027${BACKSLASH}u002D01-01"\n---\nbody`],
+      ['a repeated key', '---\nvalid_from: illisible\nvalid_from:\n---\nbody'],
+      ['a frontmatter that never closes', '---\nvalid_from: 2027-01-01'],
+    ];
+    for (const [label, text] of refused) {
+      test(label, () => {
+        assert.equal(verdict(text), 'undetermined');
+      });
+    }
+
+    test('and the field is absent from `fields`, so a caller cannot mistake it for a silent page', () => {
+      const { fields, undetermined } = windowFieldsFromFrontmatterText('---\nvalid_from: |-\n  2027-01-01\n---\nbody');
+      assert.deepEqual(undetermined, ['valid_from']);
+      assert.equal(Object.prototype.hasOwnProperty.call(fields, 'valid_from'), false);
+    });
+  });
+
+  describe('the envelope', () => {
+    test('a byte-order mark does not swallow the window', () => {
+      assert.equal(verdict(`${BOM}---\nvalid_through: 2025-12-31\n---\nbody`), STATE_NO_LONGER);
+    });
+
+    test('CRLF reads like LF', () => {
+      assert.equal(verdict('---\r\nvalid_through: 2025-12-31\r\n---\r\nbody'), STATE_NO_LONGER);
+    });
+
+    test('a key that merely STARTS with the fence characters is not the fence', () => {
+      // `---meta: x` closed the block in the first version, hiding every field
+      // under it.
+      assert.equal(verdict('---\ntype: decision\n---meta: x\nvalid_through: 2025-12-31\n---\nbody'), STATE_NO_LONGER);
+    });
+
+    test('an unterminated quote on ANOTHER key swallows the lines below it, as YAML does', () => {
+      // The line under an unterminated scalar is CONTENT, not a key. Reading it
+      // as a field asserted a window the document never declared.
+      assert.equal(verdict('---\nsummary: "inachevé\nvalid_from: 2027-01-01\n---\nbody'), null);
+    });
+
+    test('a key at column 0 after a nested block is still read', () => {
+      assert.equal(verdict('---\nvalidity:\n  x: 1\nvalid_through: 2025-12-31\n---\nbody'), STATE_NO_LONGER);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The source sweep — a PARTIAL guard, and honest about it
+// ---------------------------------------------------------------------------
+
+/**
+ * The rule it enforces is narrower and stronger than "nobody re-implements the
+ * comparison": **only the helper TOUCHES these two fields**. Any legitimate
+ * consumer gets the window through `classifyValidity` / `readWindow`; a file
+ * that reaches into `frontmatter.valid_through` itself is either duplicating
+ * the calendar rules or about to.
+ *
+ * "Touches", not "reads", after review: the detector also flags an assignment
+ * (`fm.valid_through = x`), and the choice is to keep that and widen the rule
+ * rather than narrow the detector. Nothing in `src/` writes these fields, and
+ * a module that started to would be minting windows — worth a look either way.
+ *
+ * It is a guard, not the proof. The proof is the mutation: break the helper's
+ * bound comparison and a witness inside EACH consumer goes red (see
+ * `tests/temporal-validity-lint.test.mjs`). This sweep catches the mistake
+ * before it gets that far, and it has a stated blind spot: a computed access
+ * (`fm[key]` where `key` was built at runtime) is invisible to any textual
+ * scan, and no amount of widening would change that.
+ */
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const SWEEP_DIRS = ['src', 'hooks', 'scripts'];
+/** The one module allowed to read the fields: it is what everyone else calls. */
+const FIELD_OWNER = 'src/helpers/temporal-validity.mjs';
+
+/**
+ * Ways a file can reach the raw fields.
+ *
+ * Dot access, constant-keyed access and destructuring all survive the
+ * string/comment blanking, so they are matched on the blanked text. The quoted
+ * bracket form cannot be: blanking erases the key. It is therefore matched on
+ * the RAW text and then filtered by POSITION — `blankStringsAndComments`
+ * preserves offsets, so if the `[` that opens the match was itself blanked, the
+ * whole expression was sitting inside a comment or a string and is prose, not
+ * code.
+ *
+ * Both halves of that were review findings: the first version missed
+ * `const { valid_through } = fm` entirely, and flagged a comment that merely
+ * quoted `fm['valid_through']` as if it were a read.
+ */
+function directFieldReads(source) {
+  const code = blankStringsAndComments(source);
+  const hits = [];
+  const inCode = [
+    [/\.\s*valid_(from|through)\b/g, 'property access'],
+    [/\[\s*VALID_(FROM|THROUGH)\s*\]/g, 'constant-keyed access'],
+    // `const { valid_through } = fm` — the closing brace followed by `=` is
+    // what separates a destructuring pattern from an object literal that
+    // merely mentions the key.
+    [/\{[^{}]*\bvalid_(from|through)\b[^{}]*\}\s*=/g, 'destructuring'],
+  ];
+  for (const [re, label] of inCode) {
+    for (const m of code.matchAll(re)) hits.push(`${label} ${m[0].trim()}`);
+  }
+  // Backtick included: a template literal is a perfectly ordinary way to write
+  // a constant key, and leaving it out was a hole review walked straight
+  // through.
+  for (const m of source.matchAll(/\[\s*(['"`])valid_(from|through)\1\s*\]/g)) {
+    // The opening bracket survives blanking when it is code; it becomes a
+    // space when the whole expression was quoted inside a comment or a string.
+    if (code[m.index] !== '[') continue;
+    hits.push(`quoted-key access ${m[0].trim()}`);
+  }
+  return hits;
+}
+
+function listSources(dir) {
+  const root = path.join(REPO_ROOT, dir);
+  if (!fs.existsSync(root)) return [];
+  return fs
+    .readdirSync(root, { recursive: true })
+    .map((f) => String(f).split(path.sep).join('/'))
+    // `.js` as well as `.mjs`: a consumer written as CommonJS would otherwise
+    // be invisible to the guard meant to find it.
+    .filter((f) => /\.(mjs|js)$/.test(f))
+    .map((f) => `${dir}/${f}`);
+}
+
+describe('only the helper reads valid_from / valid_through', () => {
+  test('the detector catches every shape it exists for, and none of the safe ones', () => {
+    // Validated by INJECTION, not by trusting it: a guard is worth exactly what
+    // its own witnesses are worth, and this one is easy to write in a way that
+    // finds nothing.
+    const offenders = [
+      ['dot access', 'const end = fm.valid_through;'],
+      ['dot access with spacing', 'if (page . valid_from) return;'],
+      ['quoted-key access', "const end = fm['valid_through'];"],
+      ['double-quoted key', 'const start = fm["valid_from"];'],
+      ['constant-keyed access', 'const end = fm[VALID_THROUGH];'],
+      ['the realistic re-implementation', 'if (fm.valid_through && fm.valid_through < today) expire();'],
+    ];
+    for (const [label, src] of offenders) {
+      assert.ok(directFieldReads(src).length > 0, `must flag: ${label}`);
+    }
+
+    // Every one of these was a hole or a false alarm found in review; each is
+    // the shape a real violator would actually write.
+    const foundInReview = [
+      ['destructuring, the realistic re-implementation', 'const { valid_through: end } = fm;\nif (end < today) expire();'],
+      ['destructuring with a default', 'const { valid_from = null } = fm;'],
+      ['a template-literal key', 'const end = fm[`valid_through`];'],
+      ['an assignment — minting a window outside the helper', 'fm.valid_through = suppliedDate;'],
+    ];
+    for (const [label, src] of foundInReview) {
+      assert.ok(directFieldReads(src).length > 0, `must flag: ${label}`);
+    }
+
+    const safe = [
+      ['a mention in a line comment', '// valid_from and valid_through live in the helper'],
+      ['a mention in a block comment', '/* fm.valid_through is off limits here */'],
+      ['a BRACKET access quoted inside a comment', "// never write fm['valid_through'] — call the helper"],
+      ['a bracket access quoted inside a string', 'const msg = "do not use fm[\'valid_through\']";'],
+      ['a field name inside a message', "detail = `valid_from:${code} is not a date`;"],
+      ['a field name in a plain string', "const label = 'valid_through';"],
+      ['an object literal that merely carries the key', "const page = { valid_from: '2026-01-01' };"],
+      ['calling the helper, which is the point', 'const v = classifyValidity(fm, { asOf: today });'],
+      ['an unrelated comparison', 'if (a.updated < today) stale();'],
+      ['an arrow function, whose > must not read as a comparison', 'const f = (x) => x.other;'],
+    ];
+    for (const [label, src] of safe) {
+      assert.deepEqual(directFieldReads(src), [], `must NOT flag: ${label}`);
+    }
+  });
+
+  test('no file outside the helper touches the fields directly', () => {
+    const perDir = {};
+    const inventory = [];
+    const offenders = [];
+    for (const dir of SWEEP_DIRS) {
+      const files = listSources(dir);
+      perDir[dir] = files.length;
+      for (const rel of files) {
+        inventory.push(rel);
+        if (rel === FIELD_OWNER) continue;
+        const source = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+        for (const hit of directFieldReads(source)) offenders.push(`${rel}: ${hit}`);
+      }
+    }
+    // The denominator, per directory rather than in total: review pointed out
+    // that `scanned >= 100` stays satisfied if a whole directory drops out of
+    // the sweep, which is exactly how a guard goes quiet without failing.
+    for (const dir of SWEEP_DIRS) {
+      assert.ok(perDir[dir] >= 1, `the sweep must actually enter ${dir}/, entered ${perDir[dir]} files`);
+    }
+    assert.ok(perDir.src >= 100, `expected the whole src tree, scanned ${perDir.src}`);
+    // And the consumers by name: a guard that silently stopped covering the one
+    // module most likely to duplicate the rules would still be green.
+    for (const expected of ['src/helpers/temporal-validity-lint.mjs', FIELD_OWNER]) {
+      assert.ok(inventory.includes(expected), `${expected} must be inside the sweep`);
+    }
+    assert.deepEqual(offenders, [],
+      'these files touch the raw fields instead of calling the helper — the calendar rules live in ONE place');
+  });
+
+  test('and the owner really does read them, so the exemption is not decorative', () => {
+    const source = fs.readFileSync(path.join(REPO_ROOT, FIELD_OWNER), 'utf8');
+    assert.ok(directFieldReads(source).length > 0,
+      `${FIELD_OWNER} is exempted from the sweep; if it stopped reading the fields, the exemption `
+      + 'would be hiding nothing and the sweep would be testing an empty rule');
+  });
+});
