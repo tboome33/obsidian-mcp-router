@@ -558,6 +558,27 @@ const TOOLS = [
           description:
             "Which search engine answers. 'auto' (default): semantic, degrading WHOLLY to the local BM25 index when Smart Connections cannot serve this vault (the response then carries tier + fallback). 'semantic': semantic only — error out instead of degrading. 'local': the deterministic BM25 index only (works on every vault, no plugin needed; requires build_search_index). Results always come from exactly ONE tier — BM25 and cosine scores are never blended.",
         },
+        asOf: {
+          type: 'string',
+          description:
+            'Reference day (YYYY-MM-DD) for the temporal-validity annotation carried by each hit. '
+            + 'Omit to use the current day in UTC. Resolved ONCE per call, so two hits of one '
+            + 'response are never classified on different days. An unreadable value fails the call '
+            + 'rather than silently falling back to today.',
+        },
+        validityStates: {
+          type: 'array',
+          items: { type: 'string', enum: ['in-force', 'not-yet-in-force', 'no-longer-in-force', 'unreadable'] },
+          description:
+            'States to KEEP. Omit — or pass [] , which means the same thing — to keep everything; '
+            + 'filtering is never the default. THREE KINDS OF HIT ARE NEVER REMOVED whatever you '
+            + 'pass: a page that declares no window (it takes no temporal position), a page whose '
+            + 'window is unreadable (a defect you should see, not one to hide), and a hit whose page '
+            + 'could not be read (absence of knowledge, not a verdict). Only a certain state — '
+            + 'in-force, not-yet-in-force, no-longer-in-force — can place a hit outside your list. '
+            + 'When you pass this, the response carries `validityFilter` with what was removed and '
+            + 'whether candidates remain unexamined. An unknown value fails the call.',
+        },
       },
       required: ['query'],
       additionalProperties: false,

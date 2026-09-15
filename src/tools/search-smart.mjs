@@ -33,7 +33,10 @@
  * forbids the fallback; `tier: 'local'` demands the deterministic tier outright.
  * See src/helpers/local-search.mjs for the full doctrine.
  */
-import { searchSmart, getFileContent } from '../rest-client.mjs';
+import { searchSmart, getFileContent, getNote } from '../rest-client.mjs';
+import { resolveAsOf } from '../helpers/temporal-validity.mjs';
+import { createValidityContext } from '../helpers/validity-annotator.mjs';
+import { applyValidityFilter, normalizeValidityStates } from '../helpers/validity-filter.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
@@ -55,6 +58,21 @@ import {
 /** Requested tier. `auto` = semantic, degrading to local when it cannot serve. */
 const TIER_MODES = new Set(['auto', 'semantic', 'local']);
 
+/** The one collection this tool annotates, and the quota it debits. */
+const COLLECTION_HITS = 'hits';
+
+/**
+ * WHAT `moreCandidates` CAN HONESTLY SAY, per tier.
+ *
+ * On the local tier the index tells us how many chunks were ELIGIBLE — scored
+ * and kept by every pre-existing exclusion — so "are there candidates I did not
+ * look at" has a real answer. On the semantic tier the engine says nothing
+ * about what it did not return, so the only honest answer is that we do not
+ * know. `'unknown'` is not a placeholder for a value we failed to compute; it
+ * is the measurement.
+ */
+const MORE_CANDIDATES_UNKNOWN = 'unknown';
+
 export async function searchSmartTool(registry, args = {}, _deps = {}) {
   const {
     vault: name,
@@ -64,11 +82,30 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
     limit = 10,
     includeArchives = false,
     tier: requestedTier = 'auto',
+    asOf,
+    validityStates,
   } = args;
 
   if (!query) {
     throw new Error('Missing required argument: query');
   }
+
+  // TEMPORAL VALIDITY — both arguments are judged on their OWN terms, before
+  // any dispatch. A filter naming a state that does not exist would hide a
+  // different set than the caller asked for while looking like it worked, and
+  // an unreadable `asOf` must fail rather than quietly become today.
+  //
+  // The day is resolved ONCE here rather than inside each context: a fan-out
+  // creates one context per vault, and resolving per vault could classify two
+  // vaults of one response on different days if the call straddled midnight
+  // (invariant 8).
+  const keepStates = normalizeValidityStates(validityStates);
+  const filtering = keepStates !== null;
+  // Presence in the response follows what the CALLER passed, not what it
+  // normalised to: asking with `[]` is still asking, and the report then says
+  // "you filtered on nothing" rather than vanishing.
+  const filterRequested = validityStates !== undefined && validityStates !== null;
+  const asOfDay = resolveAsOf(asOf);
   if (!TIER_MODES.has(requestedTier)) {
     throw new Error(
       `Invalid tier "${requestedTier}": expected 'auto' (semantic, falling back to the local BM25 index), ` +
@@ -96,7 +133,7 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   }
   const boundedLimit = clampLimit(limit);
 
-  const deps = { searchSmart: _deps.searchSmart || searchSmart };
+  const deps = { searchSmart: _deps.searchSmart || searchSmart, getNote: _deps.getNote || getNote };
   // The local tier reads the index through the same REST client; injectable so
   // tests drive both tiers without touching the network.
   const localDeps = { getFileContent: _deps.getFileContent || getFileContent };
@@ -117,9 +154,18 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   // Overfetch when ANY router-side cut may follow — archives, or the C4 folder
   // exclusion. Filtering a page that was already trimmed to `limit` hands back
   // fewer results than were asked for while matches sit just past the cut.
+  // A VALIDITY FILTER IS A THIRD REASON TO OVER-FETCH, and it had to become
+  // one. Without it, a call that excludes no folder and keeps archives would
+  // ask for exactly `limit`, and the temporal filter would then cut into a page
+  // that cannot be refilled — an empty answer with eligible hits sitting just
+  // past the window, which is the silent-empty failure this tier exists to
+  // avoid. The local tier had no over-fetch at all before this: its pre-existing
+  // exclusions are applied DURING ranking, where validity cannot be, because
+  // deciding it costs one read per page.
   const fetchLimit = overfetchLimit(boundedLimit, {
     excluding: exclusion.folders.length > 0,
     archives: !includeArchives,
+    validity: filtering,
   });
   const scFilter = fetchLimit === boundedLimit ? filter : { ...filter, limit: fetchLimit };
 
@@ -137,9 +183,13 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
       folderExcluded = excluded;
       if (excluded > 0) payload = { ...raw, results: kept };
     }
+    // THE ARCHIVE TRIM MUST NOT CUT TO `limit` WHILE A VALIDITY FILTER IS
+    // PENDING, or the over-fetch above is spent and then thrown away one step
+    // before the filter that needed it. When nothing is filtering, the limit
+    // passed here is the caller's, exactly as before.
     const { data, archivesExcluded } = filterArchiveResults(payload, {
       includeArchives,
-      limit: filter.limit,
+      limit: filtering ? fetchLimit : filter.limit,
     });
     // A1 — SAY WHEN A HIT COMES FROM A PAGE THAT HAS MOVED ON.
     //
@@ -182,7 +232,9 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   const searchLocal = async (vault) => {
     const local = await searchLocalIndex(vault, localDeps, {
       query,
-      limit: boundedLimit,
+      // Over-fetched only when something downstream will cut. Unfiltered, this
+      // is the caller's limit and the tier behaves exactly as it did.
+      limit: filtering ? fetchLimit : boundedLimit,
       folders,
       // The SAME effective exclusion as the semantic tier. A fallback that
       // surfaces what the tier it replaced was hiding would make the degrade
@@ -203,19 +255,97 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
   };
 
   /**
+   * Annotate the page a tier produced, apply the filter, cut to the limit.
+   *
+   * ANNOTATION IS UNCONDITIONAL, the filter is not. Every hit carries its
+   * window — or says it could not be established — whether or not the caller
+   * filters, because `validitySummary` is always present and a summary that
+   * appeared only under a filter would leave a reader unable to tell "no page
+   * is dated" from "this build does not annotate".
+   *
+   * The counts are computed HERE rather than inside the annotator, because they
+   * are about the search: what the ranking held, what this call looked at, what
+   * the filter removed, and what the cut removed. Only the tier knows the first.
+   */
+  const withValidity = async (vault, payload) => {
+    const results = Array.isArray(payload.results) ? payload.results : [];
+    // The quota is the number of DISTINCT pages among the candidates already
+    // fetched — no new ceiling, as the over-fetch is bounded already. It is
+    // stated rather than left unmetered so that reading more pages than there
+    // are candidates would be refused instead of quietly happening.
+    const distinctPages = new Set(
+      results.map((r) => (typeof r?.path === 'string' ? r.path.trim() : '')).filter(Boolean),
+    ).size;
+    const ctx = createValidityContext({
+      vault,
+      readNote: deps.getNote,
+      asOf: asOfDay,
+      budget: { [COLLECTION_HITS]: distinctPages },
+    });
+
+    await ctx.annotate(results, { collection: COLLECTION_HITS, pathOf: (hit) => hit?.path });
+
+    const { kept, excludedHits } = applyValidityFilter(results, keepStates);
+    // THE CUT BELONGS TO THE FILTER, and only to it. Applying it unconditionally
+    // looked harmless and violated invariant 6: `filterArchiveResults` returns
+    // EARLY when archives are kept, so its `limit` is never applied, and an
+    // unfiltered semantic call with `includeArchives: true` and a folder
+    // exclusion in force used to hand back the whole over-fetched page —
+    // measured at 14 hits for a `limit` of 2. Cutting it here would have been a
+    // silent behaviour change on a path this batch is not allowed to touch.
+    //
+    // That over-return is a real pre-existing defect, and it is NOT fixed here:
+    // it belongs to its own change, decided on its own terms.
+    const returned = filtering && kept.length > boundedLimit
+      ? kept.slice(0, boundedLimit)
+      : kept;
+    // Admissible, inspected, and removed only because the page was full. Named
+    // apart from `excludedHits` because a reader who sees a short page needs to
+    // know which of the two shortened it.
+    const cutByLimit = kept.length - returned.length;
+
+    // ELIGIBLE VS INSPECTED, and never `matched`. A chunk excluded by folder was
+    // never a candidate, so counting it would report unexamined candidates that
+    // do not exist. `eligible` is absent on the semantic tier, which is exactly
+    // why that tier answers `'unknown'`.
+    const moreCandidates = typeof payload.eligible === 'number'
+      ? payload.eligible > results.length
+      : MORE_CANDIDATES_UNKNOWN;
+
+    const summary = ctx.finalize(returned);
+
+    return {
+      ...payload,
+      results: returned,
+      validitySummary: summary,
+      ...(filterRequested
+        ? {
+          validityFilter: {
+            states: keepStates ? [...keepStates] : [],
+            excludedHits,
+            cutByLimit,
+            moreCandidates,
+          },
+        }
+        : {}),
+    };
+  };
+
+  /**
    * One vault, one tier. The ONLY place the fallback decision is made — and it
    * degrades exclusively on a capability gap (never on an empty answer, never
    * on auth/transport failure).
    */
   const searchOne = async (vault) => {
-    if (requestedTier === 'local') return searchLocal(vault);
-    if (requestedTier === 'semantic') return searchSemantic(vault);
+    if (requestedTier === 'local') return withValidity(vault, await searchLocal(vault));
+    if (requestedTier === 'semantic') return withValidity(vault, await searchSemantic(vault));
+    let semantic;
     try {
-      return await searchSemantic(vault);
+      semantic = await searchSemantic(vault);
     } catch (err) {
       if (!isSemanticTierUnusable(err)) throw err;
       const local = await searchLocal(vault);
-      return {
+      return withValidity(vault, {
         ...local,
         fallback: {
           from: TIER_SEMANTIC,
@@ -224,8 +354,17 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
           detail: err.message,
           note: 'Results come ENTIRELY from the local BM25 index — no semantic result is blended in. BM25 scores are not comparable to cosine scores.',
         },
-      };
+      });
     }
+    // OUTSIDE the catch. `withValidity` is very nearly throw-proof — a read
+    // that fails marks its entry and never propagates — so this placement is
+    // defence rather than a load-bearing guarantee, and it is written down as
+    // such instead of being claimed as a property no test can show. What it
+    // buys: should the annotation ever throw, the call fails as itself instead
+    // of being diagnosed as "the semantic tier cannot serve this vault" and
+    // answered from a different engine under a capability gap that never
+    // happened.
+    return withValidity(vault, semantic);
   };
 
   // Cross-vault fan-out

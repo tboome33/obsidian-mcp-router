@@ -205,18 +205,47 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     return promise;
   }
 
-  /** What `annotate` decided to do about one entry, before any I/O starts. */
-  function reserve(entry, collection, pathsOf, pageOf) {
+  /**
+   * What `annotate` decided to do about one entry, before any I/O starts.
+   *
+   * `granted` holds the pages already reserved EARLIER IN THIS SAME PASS, and
+   * it is not an optimisation. The reservation loop is synchronous, so nothing
+   * has been read yet and `pages` is still empty: without it, ten chunks of one
+   * page each debited the quota, nine of them were refused for lack of budget,
+   * and the response said nine entries could not be verified while the page had
+   * been read successfully. The quota is documented to buy a PAGE; this is what
+   * makes that true. Found by the phase 4b measurement on the real vault, where
+   * a narrow query returned thirty chunks from two pages.
+   */
+  function reserve(entry, collection, pathsOf, pageOf, granted) {
     const candidates = toCandidateList(pathsOf(entry));
     // AN ENTRY THAT NAMES NO PAGE CANNOT BE VERIFIED, and must not be counted
     // as a page either — there is no page. It is marked, and that is all.
     if (candidates.length === 0) return { entry, kind: 'no-path' };
 
+    // SEVERAL SPELLINGS WITHOUT A PAGE IDENTITY IS AMBIGUOUS, and guessing is
+    // what miscounts. Defaulting the identity to the FIRST candidate is right
+    // when there is only one; with several, two entries resolving to the same
+    // page but listing their spellings in a different order would be treated as
+    // two pages — read twice, counted twice, and each charged to the quota.
+    // Refused rather than guessed: it is a caller's bug, and a silent wrong
+    // count is exactly the kind of defect this module exists to avoid.
+    // (Raised by the phase 4b adversarial review; no shipped caller trips it,
+    // which is precisely why it would have gone unnoticed.)
+    if (!pageOf && candidates.length > 1) {
+      throw annotatorError(
+        `annotate() was given ${candidates.length} candidate spellings for one entry but no \`pageOf\`, `
+        + 'so which page they resolve to is ambiguous. Pass `pageOf` alongside `pathsOf`.',
+      );
+    }
     const pageKey = cacheKeyFor(pageOf ? pageOf(entry) : candidates[0]);
 
     // Already ATTEMPTED — by an earlier collection, or by the drill that read
-    // the body. Free, and never attempted again, whatever the outcome was.
-    if (pages.get(pageKey)?.attempted) return { entry, kind: 'read', candidates, pageKey };
+    // the body — or already RESERVED by an earlier entry of this same pass.
+    // Free, and never attempted again, whatever the outcome was.
+    if (pages.get(pageKey)?.attempted || granted.has(pageKey)) {
+      return { entry, kind: 'read', candidates, pageKey };
+    }
 
     const quota = quotaFor(collection);
     if (quota === UNMETERED) return { entry, kind: 'read', candidates, pageKey };
@@ -227,6 +256,7 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
       // spend different quotas. One debit per PAGE, however many spellings its
       // resolution has to try.
       quotas.set(collection, quota - 1);
+      granted.add(pageKey);
       return { entry, kind: 'read', candidates, pageKey };
     }
 
@@ -298,7 +328,10 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     quotaFor(collection);
 
     const resolveCandidates = pathsOf ?? pathOf;
-    const plan = entries.map((entry) => reserve(entry, collection, resolveCandidates, pageOf));
+    // Pages this pass has already paid for. Scoped to the pass: a later call
+    // consults `pages` instead, which by then records what really happened.
+    const granted = new Set();
+    const plan = entries.map((entry) => reserve(entry, collection, resolveCandidates, pageOf, granted));
 
     await Promise.all(plan.map(async (item) => {
       if (item.kind === 'no-path' || item.kind === 'over-budget') {

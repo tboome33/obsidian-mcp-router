@@ -158,13 +158,19 @@ export function partitionByFolders(results, folders, pathOf = hitPath) {
  * paging. When the result is short AND something was cut, the response says the
  * page is short and why — a short page that admits it beats a full-looking one.
  */
-export function overfetchLimit(limit, { excluding = false, archives = false } = {}) {
+export function overfetchLimit(limit, { excluding = false, archives = false, validity = false } = {}) {
   const base = Number.isFinite(limit) && limit > 0 ? limit : 10;
-  if (!excluding && !archives) return base;
-  if (!excluding) return base + ARCHIVE_MARGIN;
+  if (!excluding && !archives && !validity) return base;
+  if (!excluding && !validity) return base + ARCHIVE_MARGIN;
   // 2× covers a corpus where up to half of what comes back is excluded — the
   // fleet's measured worst case is 62% on one vault, hence the flat margin on
   // top rather than a bare multiple.
+  //
+  // `validity` joins this branch rather than getting a margin of its own. A
+  // temporal filter can remove an ARBITRARY share of a page — a corpus whose
+  // rules all expired last year removes 100% of it — so it belongs with the
+  // heavy cut, not with the archive filter's handful. It adds no new size: the
+  // three possible answers stay base, base+10 and 2×base+10.
   return Math.min(base * 2 + ARCHIVE_MARGIN, MAX_OVERFETCH);
 }
 

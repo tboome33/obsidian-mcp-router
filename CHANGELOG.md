@@ -621,6 +621,57 @@ Nine mutations across the helper and the tool, all caught, sources restored byte
 them survived at first, and the witness it was missing only became writable once a fixture used a
 label that canonicalisation rewrites.
 
+### `search_smart` can be asked to keep only what applies — and three kinds of hit are never removed
+
+`search_smart` gains two parameters. `asOf` fixes the reference day, resolved once per call, an
+unreadable value failing the call rather than becoming today. `validityStates` names the states to
+KEEP — and omitting it, or passing `[]`, mean the same thing, because an empty variable in a
+caller's script must not silently become "keep nothing".
+
+This is the first place in the batch where a page can be **removed** from an answer, so the rule
+worth stating is what survives. **Only a CERTAIN state can put a hit outside your list.** A page that
+declares no window takes no temporal position; a page whose window is unreadable carries a defect you
+should see, not one to hide; a hit whose page could not be read is an absence of knowledge, not a
+verdict. All three stay, whatever you pass, and each has its own witness — a single "non-certain hits
+survive" assertion would pass with two of the three branches gone.
+
+- **A short answer is not evidence that there was nothing more.** When you filter, the response
+  carries `validityFilter` with `excludedHits` (what the filter removed), `cutByLimit` (what the page
+  had no room for) and `moreCandidates` — separate numbers because a reader who sees two hits needs
+  to tell "there were only two" from "there were more and nobody looked". On the local tier
+  `moreCandidates` compares ELIGIBLE chunks against INSPECTED ones; a chunk excluded by folder was
+  never a candidate, so counting it would announce unexamined candidates that do not exist. On the
+  semantic tier the engine says nothing about what it withheld, so the answer is `'unknown'` — a
+  measurement, not a value we failed to compute.
+- **THE OVER-FETCH WAS NOT SHARED, and the roadmap assumed it was.** `overfetchLimit` only shaped the
+  request sent to the semantic bridge; the local tier did not over-fetch at all, because its
+  pre-existing exclusions apply DURING ranking, where validity cannot — deciding it costs one read
+  per page. So a validity filter became a third reason to over-fetch. Without it, a call excluding no
+  folder and keeping archives asked for exactly `limit`, and the filter cut into a page that cannot
+  be refilled: an empty answer with admissible hits sitting just past the window. No new size — the
+  three possible answers stay `limit`, `limit+10` and `2×limit+10`.
+- **A defect inherited from the annotator, surfaced by measuring a real vault.** The read quota was
+  charged per ENTRY instead of per PAGE. The reservation loop is synchronous, so nothing has been
+  read when it runs; without a record of what the pass just reserved, ten chunks of one page each
+  debited the quota, nine were refused for lack of budget and reported as unverified — while the page
+  had been read successfully and its window was known. A lie produced by the bookkeeping, not by any
+  failure, and invisible to a test that counted reads without checking every chunk was annotated.
+
+Adversarial review found two more, both repaired. The cut to `limit` was running even with no filter,
+which changed an UNFILTERED response from 14 hits to 2 on the semantic path — `filterArchiveResults`
+returns early when archives are kept, so its limit never runs and nothing used to cut the over-fetch.
+Measured against the pre-batch code, not deduced. The cut is now the filter's alone, and that
+pre-existing over-return is deliberately left alone: it is a decision of its own. Second, several
+candidate spellings without a page identity made that identity a guess, so two entries listing their
+spellings in a different order counted as two pages, read and charged twice. No shipped caller does
+it, which is exactly why it would have gone unnoticed; it is refused now rather than guessed.
+
+`validity-filter.mjs` plus two test files — **51 tests**, and **16 mutations, all caught**, each
+declaring which witnesses must go red AND the reason expected in that witness's own failure. Dated
+measurement on the router vault (4088 chunks, 188 pages, `limit: 10`): 6 page reads unfiltered, 9
+filtered, so the filter costs +3 reads on that query — bounded by the over-fetch, never by the size
+of the vault.
+
 ## [0.95.0] — 2026-09-11 — the copy that landed in a directory nobody had named
 
 Four independent findings, three of them from bug reports filed the same day by a workspace that

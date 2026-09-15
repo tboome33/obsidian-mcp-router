@@ -352,6 +352,62 @@ describe('the budget — a quota per collection, never implicit', () => {
     assert.equal(neighbours[1].validityUnverified, true);
   });
 
+  test('THE QUOTA BUYS A PAGE, not an entry — several entries on one page cost ONE', async () => {
+    // The defect the phase 4b measurement on the real vault surfaced. The
+    // reservation loop is synchronous: nothing has been read when it runs, so
+    // without a record of what THIS pass already reserved, ten chunks of one
+    // page each debited the quota. Nine were refused for lack of budget and
+    // reported as unverified — while the page had been read successfully and
+    // its window was known. A lie in the response, produced by the bookkeeping
+    // rather than by any failure.
+    const notes = { 'wiki/one.md': note({ valid_through: '2025-12-31' }) };
+    const { ctx, readNote } = contextWith(notes, { budget: { chunks: 1 } });
+    const entries = Array.from({ length: 10 }, () => ({ path: 'wiki/one.md' }));
+
+    await ctx.annotate(entries, { collection: 'chunks' });
+
+    assert.equal(readNote.calls.length, 1, 'one page, one read');
+    assert.equal(entries.filter((e) => e.validity).length, 10, 'and ALL TEN entries carry the window');
+    assert.equal(entries.filter((e) => e.validityUnverified).length, 0);
+
+    const summary = ctx.finalize(entries);
+    assert.equal(summary.inspectedPages, 1);
+    assert.equal(summary.unverifiedPages, 0);
+    assert.equal(summary.budgetExhausted, false, 'a quota of exactly one page was never exceeded');
+  });
+
+  test('and a quota of N pages serves N pages however many entries point at them', async () => {
+    const notes = {
+      'wiki/a.md': note({ valid_through: '2025-12-31' }),
+      'wiki/b.md': note({ valid_through: '2025-12-31' }),
+      'wiki/c.md': note({ valid_through: '2025-12-31' }),
+    };
+    const { ctx, readNote } = contextWith(notes, { budget: { chunks: 3 } });
+    const entries = ['a', 'a', 'b', 'b', 'c', 'c'].map((n) => ({ path: `wiki/${n}.md` }));
+
+    await ctx.annotate(entries, { collection: 'chunks' });
+
+    assert.deepEqual(readNote.calls, ['wiki/a.md', 'wiki/b.md', 'wiki/c.md']);
+    assert.equal(entries.filter((e) => e.validity).length, 6, 'six entries, three pages, all annotated');
+    assert.equal(ctx.finalize(entries).budgetExhausted, false);
+  });
+
+  test('the quota STILL runs out when the pages really are distinct', async () => {
+    // The mirror, so the repair above cannot be mistaken for "the budget stopped
+    // applying". Four distinct pages against a quota of two.
+    const notes = Object.fromEntries(
+      ['a', 'b', 'c', 'd'].map((n) => [`wiki/${n}.md`, note({ valid_through: '2025-12-31' })]),
+    );
+    const { ctx, readNote } = contextWith(notes, { budget: { chunks: 2 } });
+    const entries = ['a', 'b', 'c', 'd'].map((n) => ({ path: `wiki/${n}.md` }));
+
+    await ctx.annotate(entries, { collection: 'chunks' });
+
+    assert.equal(readNote.calls.length, 2);
+    assert.equal(entries.filter((e) => e.validityUnverified).length, 2);
+    assert.equal(ctx.finalize(entries).budgetExhausted, true);
+  });
+
   test('a page already read costs the NEXT collection nothing', async () => {
     // The primary pages are read for their body anyway; annotating a chunk that
     // names one of them must not spend the chunk quota.
@@ -431,6 +487,7 @@ describe('paths are cached, PAGES are counted', () => {
     await ctx.annotate(entries, {
       collection: 'neighbors',
       pathsOf: (e) => [`wiki/${e.path}`, e.path],
+      pageOf: (e) => e.path,
     });
 
     assert.deepEqual(readNote.calls, ['wiki/root.md', 'root.md']);
@@ -449,9 +506,39 @@ describe('paths are cached, PAGES are counted', () => {
     await ctx.annotate(entries, {
       collection: 'neighbors',
       pathsOf: (e) => [`wiki/${e.path}`, e.path],
+      pageOf: (e) => e.path,
     });
     assert.equal(ctx.remaining('neighbors'), 0);
     assert.equal(ctx.finalize(entries).inspectedPages, 2, 'both pages were reached');
+  });
+
+  test('SEVERAL spellings without a `pageOf` is refused, not guessed', async () => {
+    // Raised by the adversarial review. Defaulting the page identity to the
+    // first candidate is right for a single spelling; with several, two entries
+    // resolving to the same page but listing their spellings in a different
+    // order would count as two pages — read twice, charged twice, and reported
+    // as two. No shipped caller does this, which is exactly why a silent wrong
+    // count would have gone unnoticed.
+    const { ctx, readNote } = contextWith({ 'wiki/a.md': note({}) }, { budget: { chunks: 5 } });
+    await assert.rejects(
+      () => ctx.annotate([{ path: 'a.md' }], {
+        collection: 'chunks',
+        // No `pageOf` — that IS the case under test. A bulk edit briefly added
+        // one here and the test went green while proving nothing.
+        pathsOf: (e) => [`wiki/${e.path}`, e.path],
+      }),
+      /ambiguous.*Pass `pageOf`/s,
+    );
+    assert.equal(readNote.calls.length, 0, 'and it is refused BEFORE any I/O');
+  });
+
+  test('a SINGLE spelling still needs no `pageOf` — the identity is unambiguous', async () => {
+    // The mirror, so the guard cannot be mistaken for "pageOf is now mandatory".
+    const { ctx } = contextWith({ 'wiki/a.md': note({ valid_through: '2025-12-31' }) }, { budget: { chunks: 5 } });
+    const entries = [{ path: 'wiki/a.md' }];
+    await ctx.annotate(entries, { collection: 'chunks' });
+    assert.equal(entries[0].validity.state, 'no-longer-in-force');
+    ctx.finalize(entries);
   });
 
   test('when every spelling fails, the entry is marked once', async () => {
@@ -460,6 +547,7 @@ describe('paths are cached, PAGES are counted', () => {
     await ctx.annotate(entries, {
       collection: 'neighbors',
       pathsOf: (e) => [`wiki/${e.path}`, e.path],
+      pageOf: (e) => e.path,
     });
     assert.equal(readNote.calls.length, 2);
     assert.equal(entries[0].validityUnverified, true);

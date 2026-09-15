@@ -140,13 +140,24 @@ describe('search_smart — the freshness block', () => {
   });
 
   test('results, tier and scoreScale keep their shape — the addition is additive', async () => {
+    // STILL THE SAME GUARD, and it caught the next addition exactly as intended.
+    // The temporal-validity annotation (v0.96.0) puts `validity` or
+    // `validityUnverified` on every hit, so this assertion is now made against
+    // the hit with those keys removed: what the guard exists to protect is that
+    // the PRE-EXISTING shape is untouched, not that no field is ever added.
+    // `getNote` is injected so the annotation is offline and deterministic —
+    // without it the tool would reach for the real REST client.
     const out = await searchSmartTool(registryFor(LOCAL), { query: 'plugin REST' }, {
       searchSmart: async () => ({ results: [{ path: 'wiki/a.md', score: 0.9 }] }),
       getFileContent: async () => JSON.stringify(INDEX()),
+      getNote: async () => ({ content: '', frontmatter: {} }),
       fs: fsFor({ 'wiki/a.md': { indexed: {}, note: { mtimeMs: INDEXED_AT, size: 100 } } }),
     });
     assert.equal(out.scoreScale, 'cosine');
-    assert.deepEqual(out.results, [{ path: 'wiki/a.md', score: 0.9 }]);
+    const { validity, validityUnverified, ...hit } = out.results[0];
+    assert.deepEqual([hit], [{ path: 'wiki/a.md', score: 0.9 }]);
+    assert.equal(validity, undefined, 'an undated page declares nothing');
+    assert.equal(validityUnverified, undefined, 'and it WAS read, so nothing is unverified');
   });
 
   test('a bridge payload with no results array does not fabricate an assessment', async () => {

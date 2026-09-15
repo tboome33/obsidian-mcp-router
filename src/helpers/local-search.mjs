@@ -178,7 +178,7 @@ export async function searchLocalIndex(vault, deps, params = {}) {
     return true;
   };
 
-  const { hits: results, scored, tokens } = queryIndex({ index: stored, query, limit: want, keep });
+  const { hits: results, scored, rejected, tokens } = queryIndex({ index: stored, query, limit: want, keep });
 
   return {
     tier: TIER_LOCAL,
@@ -189,6 +189,17 @@ export async function searchLocalIndex(vault, deps, params = {}) {
     ...(archivesExcluded > 0 ? { archivesExcluded } : {}),
     ...(folderExcluded > 0 ? { folderExcluded } : {}),
     matched: scored,
+    // ELIGIBLE IS NOT MATCHED, and the difference is the whole point of
+    // reporting it. `matched` counts every chunk the query scored, BEFORE any
+    // exclusion; `eligible` counts those `keep` let through — after the folder
+    // restriction, the folder denial and the archive cut. Only the second can
+    // answer "are there candidates I did not look at", because a chunk excluded
+    // by folder was never a candidate.
+    //
+    // `queryIndex` keeps counting rejections past the cap, so this is a total
+    // over the whole ranking and not over the returned page. It costs nothing
+    // new to measure: the count was already there and simply was not carried up.
+    eligible: Math.max(0, scored - rejected),
     queryTokens: tokens,
     // A truncated index does NOT cover the whole vault, so this tier cannot
     // claim to be a COMPLETE fallback for it. Say so on every response — the
