@@ -160,6 +160,7 @@ import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import {
   alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
 } from './helpers/vault-reach.mjs';
+import { renderProposalLines } from './helpers/binding-proposal.mjs';
 // Phase 4 of portee-ergonomie-refus-roadmap (decision ergonomie-creation-
 // liaison-vaults, point 6): a vault SEVERAL workspaces declare requires an
 // optimistic-concurrency precondition on every write. See the module header
@@ -3340,6 +3341,28 @@ export async function startServer({ configPath, watch = true } = {}) {
       // transient WireGuard drop.
       lines.push(`Category: ${errorCategory}`);
       lines.push(`Retryable: ${isRetryable}`);
+      // THE BINDING PROPOSAL, RENDERED HERE AND NOWHERE ELSE.
+      //
+      // Decision `proposition-de-liaison-a-l-acces` §2, Phase 2 of its
+      // roadmap. `resolveVault()` attaches the object to the error; this is the
+      // ONE place it becomes an MCP result. Deliberately not inside the tools:
+      // a tool composes its own success reply, so a proposal rendered there
+      // would reach exactly the tools someone remembered — the defect class
+      // this repo has already paid for four times. A tool cannot forget what it
+      // never sees.
+      //
+      // It goes in the TEXT first and in `_meta` second, in that order of
+      // authority, because that is what this channel already guarantees: every
+      // MCP client reads the text, while result `_meta` is passthrough the spec
+      // lets a client drop. A proposal that lived only in `_meta` would be
+      // invisible to a client that drops it — which is to say, sometimes
+      // invisible, which is the worst of the three possibilities.
+      //
+      // `renderProposalLines` owns the sanitising, and owns the distinction
+      // between prose (capped) and an identifier meant to be copied into a call
+      // (never capped) — see helpers/sanitize.mjs for what mixing those cost.
+      const proposal = err.bindingProposal;
+      if (proposal) lines.push(...renderProposalLines(proposal));
       return {
         content: [
           {
@@ -3351,6 +3374,7 @@ export async function startServer({ configPath, watch = true } = {}) {
         _meta: {
           errorCategory,
           isRetryable,
+          ...(proposal ? { bindingProposal: proposal } : {}),
           // Normalized like the readable `Kind:` line above. Every `kind` in
           // the tree is fixed vocabulary today — and "today" is a fact about
           // the current call sites, not a property of the channel.

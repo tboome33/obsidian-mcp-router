@@ -46,6 +46,13 @@ export const KIND_TO_CATEGORY = {
   // plan no longer matches current state/vault. A retry with the SAME stale seal
   // can never succeed — the caller must re-run the preview. Non-retryable.
   plan_drift: { errorCategory: 'validation', isRetryable: false },
+  // The vaultReach refusal, now that it carries a binding proposal (decision
+  // proposition-de-liaison-a-l-acces). Same verdict the message-shape rule
+  // below already gave it — permission, not retryable: the vault exists and is
+  // configured, this workspace has simply never declared it, and repeating the
+  // call changes nothing. The kind is what makes that survive a rewording of
+  // the sentence; the message rule stays underneath as the safety net.
+  workspace_declaration_required: { errorCategory: 'permission', isRetryable: false },
   // fallback
   unknown: { errorCategory: 'unknown', isRetryable: false },
 };

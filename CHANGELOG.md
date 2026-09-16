@@ -10,6 +10,36 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The refusal now carries the call that fixes it, and the model has one token to copy
+
+Naming a vault this workspace does not declare was refused with a sentence. A model reading
+*"bind this workspace to it with confirm_workspace_binding"* composes
+`confirm_workspace_binding({ vault: X })` — which **replaces** the primary and drops every secondary
+that was not passed again. The refusal was correct and the advice it gave was destructive.
+
+It now carries a **binding proposal**: which vault, which role it would take (primary when this
+workspace has no binding yet, secondary when it already has one), what accepting actually grants,
+and the exact call to accept or to refuse. The model copies one identifier; it no longer recomposes
+a binding, so it can no longer drop half of one.
+
+- **The identifier is derived, not remembered.** It is a hash of the workspace, the vault, the
+  proposed role and a digest of the binding as it stands. No table of pending proposals, no expiry,
+  nothing to sweep at restart — and, because any change to the binding changes the identifier, a yes
+  that arrives after another session moved a tier or added a secondary will simply not match. That
+  is the `ifMatch` discipline this repo already uses for file writes, applied to the binding record.
+  Accepting is Phase 4; this release mints and transports the proposal.
+- **Rendered at one place, the dispatcher's error channel, and nowhere else.** A tool composes its
+  own success reply, so a proposal rendered inside the tools would reach exactly the tools someone
+  remembered. A tool cannot forget what it never sees.
+- **In the text first, in `_meta` second.** Every MCP client reads the text; result `_meta` is
+  passthrough the spec lets a client drop. A proposal that lived only in `_meta` would be invisible
+  to some clients and visible to others, which is the worst of the three options. The identifier goes
+  through the sanitiser that caps nothing, so the call it spells always names the whole vault.
+- **A vault you already refused is still not proposed again.** A tool call the *model* decided to
+  make is not "the user bringing it up again"; the way back remains `retract`.
+- **Nothing changes without `vaultReach: "declared"`.** Absent that switch there is no refusal to
+  carry anything.
+
 ### A vault this workspace never declared now says so first — even when its key is missing too
 
 `resolveVault()` asked two questions in the wrong order. It checked whether a vault had an API key

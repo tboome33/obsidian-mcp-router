@@ -55,6 +55,7 @@ import {
   alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
+import { buildBindingProposal, declarationRequiredError } from './helpers/binding-proposal.mjs';
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
 import { sameUuid, isValidUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity } from './vault-identity-store.mjs';
@@ -619,6 +620,12 @@ export async function loadRegistry({ configPath } = {}) {
     // `workspaceBinding` null means "no binding": vaultReach still determines
     // which vaults are addressable; the cascade picks among that reachable set.
     workspaceBinding,
+    // This workspace's canonical key — the same one `workspaceBindings` is
+    // indexed by. Carried so a binding proposal can be derived without any
+    // call site re-deriving it from `process.cwd()` (a second derivation is a
+    // second chance to disagree), and so a test can set it explicitly instead
+    // of having to run from a particular directory.
+    workspaceKey: canonicalWorkspaceKey(process.cwd()),
     bindingHint,
     // WHICH vaults this workspace REFUSED, from the user's own config — the
     // Map `readRefusals` returns (vault → date), read in the same locked pass
@@ -679,11 +686,32 @@ export async function loadRegistry({ configPath } = {}) {
       // will answer afterwards; that is a different message, at a different
       // moment.
       if (!isVaultReachable(v.name, this)) {
-        throw new Error(
-          `Vault "${v.name}" is registered but not reachable from this workspace `
+        const message = `Vault "${v.name}" is registered but not reachable from this workspace `
           + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, '
           + 'nor is it in `openVaults`). Bind this workspace to it with confirm_workspace_binding, '
-          + 'add it to `openVaults` in config.json, or address a vault this workspace already declares.',
+          + 'add it to `openVaults` in config.json, or address a vault this workspace already declares.';
+        // THE REFUSAL CARRIES A PROPOSAL — unless the user already said no.
+        // (Decision proposition-de-liaison-a-l-acces §2 and §3.)
+        //
+        // `openVaults` needs no check here: a vault listed there is REACHABLE,
+        // so this branch is not taken for it at all. The silence that does need
+        // asking for is the durable refusal — decision
+        // refus-d-une-proposition-de-liaison is explicit that a vault the user
+        // turned down is not put back in front of them, and a tool call the
+        // MODEL decided to make is not "the user bringing it up again". The way
+        // back is `retract`, and only that.
+        //
+        // The object is built here and rendered nowhere: turning it into an MCP
+        // result happens at the ONE conversion point, the CallTool catch block,
+        // so no tool can compose a reply that forgets it.
+        const refused = this.workspaceRefusals?.has?.(v.name) === true;
+        throw declarationRequiredError(
+          message,
+          refused ? null : buildBindingProposal({
+            vault: v.name,
+            binding: this.workspaceBinding,
+            workspaceKey: this.workspaceKey,
+          }),
         );
       }
       if (v.missingApiKey) {
