@@ -21,18 +21,34 @@ primary and drops every secondary not passed again, which is exactly the call th
 - **The identifier is the precondition.** It is derived from the STATE of the binding it was minted
   against, so it only resolves against that state. Another session adds a secondary, sets a tier or
   clears the binding, and the yes is refused with nothing written. State, not history: a binding that
-  changed and changed back is the same binding. Re-run the call that was refused and you get a fresh
-  proposal — the session is refreshed from the file first, so that advice is true rather than a loop.
+  changed and changed back is the same binding. **Reordering the secondaries is not a change either**
+  — the identifier sorts them, and so does the check that applies the yes, so the two halves cannot
+  disagree about what "the same binding" means.
+- **After a refusal, re-run the call and read what comes back.** It may hand you a new proposal, it
+  may now succeed because the other session bound that vault, or it may refuse without proposing
+  because the other session refused it. The session is refreshed from the file first, so the answer
+  is current; which answer it is depends on what the other session did.
 - **Resolved twice, and the lock decides.** A preflight reads the config file for an early, readable
   answer; the check that decides runs inside the write lock. The preflight may let a yes through on
-  an optimistic read, but it may never turn one away.
+  an optimistic read, but it may never turn one away **on a stale in-memory copy** — it still refuses
+  a vault already declared, a vault you refused, and an identifier this router never minted.
+- **Adopting a binding adopts all of it.** When the preflight loads a binding another session wrote,
+  this session's default vault and its lock guard follow that binding. A half-adopted session is
+  worse than a stale one: it reports one binding while routing unqualified calls by another, and can
+  report an isolation it is not enforcing.
 - **Three refusals.** A vault this workspace already declares (nothing to accept), a vault you
   REFUSED (deliberately not symmetric with naming it explicitly, which is you bringing it up again),
   and an identifier this router never minted.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
-  gated deployment where no acceptance verb exists at all, and `list_vaults` — an inventory, not an
-  offer, so a workspace with twenty undeclared vaults does not become twenty questions at once.
+  gated deployment where no acceptance verb exists at all, a local vault the config file no longer
+  lists (it cannot be bound, so offering it would hand you a yes that leads to a wall), and
+  `list_vaults` — an inventory, not an offer, so a workspace with twenty undeclared vaults does not
+  become twenty questions at once.
+- **The refusal is asked of the file, so a parallel session is heard.** A no you record in one
+  session stops the other session PROPOSING that vault, not merely writing it, and a no you take
+  back stops silencing it. Both directions matter when two routers share one configuration, which is
+  the ordinary case here.
 - **A first binding names the directory it would bind.** The Desktop chat starts in the application's
   own folder and belongs to no project, but that folder and an honest project with no binding yet are
   the same thing to the router: a directory with no registry entry. Rather than a heuristic that

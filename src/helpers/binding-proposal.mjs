@@ -126,6 +126,34 @@ export function bindingDigest(binding) {
 }
 
 /**
+ * Do two lists of secondaries name the SAME vaults — the question
+ * `bindingDigest` answers when it decides two bindings are one?
+ *
+ * IT LIVES HERE SO THERE IS ONE ANSWER, and there were two. The digest sorts
+ * its lists deliberately: reordering `also` changes nothing, and a yes must
+ * never be refused for a change that is not one (decision §2). The acceptance
+ * then re-derived the binding inside the write lock and compared the two lists
+ * POSITION BY POSITION, so a sibling session rewriting `also: ["a","b"]` as
+ * `["b","a"]` left the identifier resolving and the write refused. Each half
+ * was right on its own; assembled, they held two different definitions of the
+ * same words. (Codex, round four — the round that read the phases together
+ * instead of one diff at a time.)
+ *
+ * Multiplicity is preserved on purpose, like everywhere else in this module:
+ * `["a"]` and `["a","a"]` are NOT the same, exactly as the digest says.
+ *
+ * @param {string[]} a
+ * @param {string[]} b
+ * @returns {boolean}
+ */
+export function sameSecondarySet(a, b) {
+  const left = Array.isArray(a) ? a.map(String).slice().sort() : [];
+  const right = Array.isArray(b) ? b.map(String).slice().sort() : [];
+  if (left.length !== right.length) return false;
+  return left.every((n, i) => n === right[i]);
+}
+
+/**
  * The role the decision's rule assigns: primary when this workspace has no
  * binding at all, secondary when it already has one.
  *

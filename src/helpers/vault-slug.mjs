@@ -585,3 +585,32 @@ export function alsoWritableEntries(cfg) {
 export function alsoLockedEntries(cfg) {
   return stringArrayEntries(cfg, 'alsoLocked');
 }
+
+/**
+ * The vault names THE FILE knows — the set a workspace binding may name.
+ *
+ * ONE PREDICATE, TWO READERS, and the second reader is why this exists at all.
+ * `confirm_workspace_binding` refuses to bind a local vault the config file
+ * does not list: the live catalogue holds vaults that only the environment
+ * provides (`VAULT_*`), and a binding to one of those is a binding the next
+ * start-up would silently drop. That check was written inside the tool, which
+ * left the REFUSAL free to offer a proposal for exactly such a vault — a
+ * perfectly valid identifier whose acceptance the same tool then turns away.
+ * A proposal whose acceptance cannot be given is not a proposal; that is the
+ * same rule the gated deployment already obeys. (Codex, round four — the round
+ * that read the phases assembled instead of one diff at a time.)
+ *
+ * Remote vaults are listed by name and are not subject to the local check, so
+ * they belong to this set on the strength of `remoteVaults[].name` alone.
+ *
+ * @param {unknown} cfg the parsed router config
+ * @returns {Set<string>}
+ */
+export function bindableVaultNames(cfg) {
+  return new Set([
+    ...registeredVaultPaths(cfg).map((vp) => vaultSlug(cfg, vp)),
+    ...(Array.isArray(cfg?.remoteVaults) ? cfg.remoteVaults : [])
+      .map((r) => (typeof r?.name === 'string' ? r.name : null))
+      .filter(Boolean),
+  ]);
+}

@@ -73,14 +73,14 @@ import {
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
-import { registeredVaultPaths, vaultSlug } from '../helpers/vault-slug.mjs';
+import { bindableVaultNames } from '../helpers/vault-slug.mjs';
 import {
   isVaultReachable,
   isPromotionOfLockedSecondary,
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
-import { resolveProposalId, canOpenLocally } from '../helpers/binding-proposal.mjs';
+import { resolveProposalId, canOpenLocally, sameSecondarySet } from '../helpers/binding-proposal.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -307,6 +307,61 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     };
   }
 
+  /**
+   * ADOPT A BINDING INTO THIS SESSION — all of it, never two fields of it.
+   *
+   * Three callers: the acceptance preflight, the refusal inside the lock, and
+   * the sync after a successful write. The first two used to assign
+   * `workspaceBinding` and `workspaceRefusals` and stop there, which left the
+   * session holding one process's binding beside another's derived state —
+   * strictly worse than the stale-but-coherent copy it replaced. Concretely: B
+   * re-binds the workspace to "q", A's preflight loads that binding and then
+   * refuses the stale identifier, and A now routes every unqualified call to
+   * "p" while believing it is bound to "q". The `locked` field is the same
+   * shape one field over: the binding can say locked while `lockedVault` — the
+   * only field the lock guard reads — still says nothing, so the session
+   * REPORTS an isolation it does not enforce. (Codex, round four.)
+   *
+   * @param {object|null} binding
+   * @param {Map<string, unknown>} refusals
+   */
+  const adoptBinding = (binding, refusals) => {
+    registry.workspaceBinding = binding;
+    registry.workspaceRefusals = refusals;
+    if (binding?.vault) {
+      registry.defaultVault = binding.vault;
+      registry.defaultVaultSource = { origin: 'binding', variable: null };
+    }
+    // THE HINT IS RE-CLASSIFIED. It is computed once at start-up, so a hint
+    // the user had just adopted through this very call went on being reported
+    // as `unconfirmed` — and this tool's own description tells Claude to offer
+    // a confirmation whenever it sees that status, so the assistant would keep
+    // proposing what had already been accepted. Under `--no-watch` nothing
+    // ever corrected it. Measured through the real `list_vaults`, in one
+    // process, in the final review of 2026-09-03.
+    refreshRegistryBindingHint(registry);
+    // A LOCK THAT IS RECORDED IS A LOCK THAT IS IN FORCE. An early version
+    // stored `locked: true`, reported it back, and never touched
+    // `registry.lockedVault` — the only field the lock guard reads. So the
+    // tool said the workspace was locked, `list_vaults` agreed, and every
+    // other vault still answered. A restart did not help either: start-up
+    // derived the lock from the environment alone. Found by the Codex review,
+    // 2026-09-03; the start-up half is fixed in src/index.mjs.
+    if (binding?.locked && binding.vault) {
+      registry.lockedVault = binding.vault;
+      registry.lockSource = { origin: 'binding', variable: null };
+    } else if (registry.lockedVault) {
+      // The binding no longer imposes a lock — either because the workspace
+      // was re-bound elsewhere, or because it was re-confirmed with
+      // `locked: false` on the SAME vault (round 2 found that case left the
+      // live guard locked while the file and the response both said
+      // unlocked). A binding-imposed lock goes; a host-imposed one is
+      // re-derived, not merely kept, so that a host lock the binding had been
+      // shadowing comes back rather than being dropped with it.
+      releaseBindingLock(registry);
+    }
+  };
+
   // ACCEPT — a proposal id resolves to a vault AND to the binding it joins.
   //
   // The id is a hash of (workspace, vault, role, digest of the binding), so it
@@ -332,8 +387,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         'confirm_workspace_binding: this proposal no longer matches this workspace\'s binding. '
         + 'Either the binding changed since the proposal was made — another session added a '
         + 'secondary, set a tier, or cleared it — or the identifier is not one this router minted. '
-        + 'Nothing was changed. Re-run the call that was refused: it will hand you a fresh proposal '
-        + 'for the binding as it stands now.',
+        + 'Nothing was changed. Re-run the call that was refused and relay WHAT COMES BACK: it may '
+        + 'hand you a new proposal, or it may now succeed (another session bound this vault), or it '
+        + 'may refuse without proposing (another session refused this vault, or the binding needs '
+        + 'repairing). A fresh proposal is one of the answers, not the answer.',
       );
     }
     // A vault this workspace already declares never produced a proposal, and
@@ -397,8 +454,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // (Codex, rounds 2 and 3 — two halves of one loop.)
   const accepted = args.accept === undefined ? null : (() => {
     const fresh = readConfig();
-    registry.workspaceBinding = readBinding(fresh, cwd);
-    registry.workspaceRefusals = readRefusals(fresh, cwd);
+    adoptBinding(readBinding(fresh, cwd), readRefusals(fresh, cwd));
     return resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
   })();
 
@@ -469,11 +525,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
    * type-checks the config's word about a name.
    */
   const assertBindable = (cfg) => {
-    const fileNames = new Set([
-      ...registeredVaultPaths(cfg).map((vp) => vaultSlug(cfg, vp)),
-      ...(Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : [])
-        .map((r) => (typeof r?.name === 'string' ? r.name : null)).filter(Boolean),
-    ]);
+    // THE SET IS A SHARED PREDICATE NOW, not a local expression. The refusal
+    // that PROPOSES has to ask the same question before it offers an
+    // identifier, or it hands out a yes this function will turn away.
+    // (Codex, round four.)
+    const fileNames = bindableVaultNames(cfg);
     const unknown = requested.filter((n) => typeof n !== 'string' || !known.has(n)
       // A live vault that the file no longer lists — or that only the
       // environment provides (VAULT_*), which the next session may not have.
@@ -541,10 +597,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // proposal loop it was meant to break went straight past it. (Codex,
       // round 3.) Every path out of here now leaves this session holding what
       // the file says, so the next proposal is a new one.
-      const refreshLive = () => {
-        registry.workspaceBinding = previous;
-        registry.workspaceRefusals = readRefusals(cfg, cwd);
-      };
+      const refreshLive = () => adoptBinding(previous, readRefusals(cfg, cwd));
       let onDisk;
       try {
         // The FILE's refusals, not the live Map: another process may have
@@ -555,16 +608,21 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         refreshLive();
         throw err;
       }
+      // COMPARED BY THE SAME PREDICATE THE IDENTIFIER USES. `sameSecondarySet`
+      // lives beside `bindingDigest` precisely so this comparison cannot drift
+      // from the definition of "the same binding" the identifier is derived
+      // from — see its own header for the defect that made it necessary.
       if (onDisk.target !== accepted.target
         || onDisk.primary !== primary
-        || onDisk.also.length !== also.length
-        || onDisk.also.some((n, i) => n !== also[i])) {
+        || !sameSecondarySet(onDisk.also, also)) {
         refreshLive();
         throw new Error(
           'confirm_workspace_binding: this workspace\'s binding changed while the acceptance was '
           + 'being applied, so it was NOT applied and NO BINDING WAS WRITTEN. This session has been '
-          + 'refreshed to the binding as it now stands: re-run the call that was refused, and the '
-          + 'proposal it hands you will be a new one.',
+          + 'refreshed to the binding as it now stands: re-run the call that was refused and relay '
+          + 'what comes back. It may propose again, it may now succeed, or it may refuse without '
+          + 'proposing — the answer depends on what the other session did, so read it rather than '
+          + 'predicting it.',
         );
       }
     }
@@ -590,39 +648,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // Apply to the LIVE registry too, so the session that just confirmed does
   // not have to be restarted to see its own answer.
   const binding = readBinding(next, cwd);
-  registry.workspaceBinding = binding;
-  registry.workspaceRefusals = readRefusals(next, cwd);
-  registry.defaultVault = primary;
-  registry.defaultVaultSource = { origin: 'binding', variable: null };
-  // AND THE HINT IS RE-CLASSIFIED. It was computed once at start-up, so a hint
-  // the user had just adopted through this very call went on being reported as
-  // `unconfirmed` — and this tool's own description tells Claude to offer a
-  // confirmation whenever it sees that status, so the assistant would keep
-  // proposing what had already been accepted. Under `--no-watch` nothing ever
-  // corrected it. Measured through the real `list_vaults`, in one process, in
-  // the final review of 2026-09-03.
-  refreshRegistryBindingHint(registry);
-
-  // A LOCK THAT IS RECORDED IS A LOCK THAT IS IN FORCE. The first version
-  // stored `locked: true`, reported it back, and never touched
-  // `registry.lockedVault` — the only field the lock guard reads. So the tool
-  // said the workspace was locked, `list_vaults` agreed, and every other vault
-  // still answered. A restart did not help either: start-up derived the lock
-  // from the environment alone. Found by the Codex review, 2026-09-03; the
-  // start-up half is fixed in src/index.mjs.
-  if (binding.locked) {
-    registry.lockedVault = primary;
-    registry.lockSource = { origin: 'binding', variable: null };
-  } else if (registry.lockedVault) {
-    // The binding no longer imposes a lock — either because the workspace was
-    // re-bound elsewhere, or because it was re-confirmed with `locked: false`
-    // on the SAME vault (round 2 found that case left the live guard locked
-    // while the file and the response both said unlocked). A binding-imposed
-    // lock goes; a host-imposed one is re-derived, not merely kept, so that a
-    // host lock the binding had been shadowing comes back rather than being
-    // dropped with it.
-    releaseBindingLock(registry);
-  }
+  // THE SAME ADOPTER THE PREFLIGHT USES. Three call sites once wrote three
+  // subsets of this state; the widest of them is the only correct one, so it
+  // is now the only one. (Codex, round four.)
+  adoptBinding(binding, readRefusals(next, cwd));
 
   // Open what is not open. Best effort by design: a window that did not appear
   // must not undo a binding that was recorded.

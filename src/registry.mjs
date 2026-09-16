@@ -53,6 +53,7 @@ import {
   openVaultEntries,
   alsoWritableEntries,
   alsoLockedEntries,
+  bindableVaultNames,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
 import { buildBindingProposal, declarationRequiredError, canOpenLocally } from './helpers/binding-proposal.mjs';
@@ -110,6 +111,40 @@ export function resolveConfigPath({ configPath } = {}) {
 /** A valid TCP port, or null. Used for both ports, from all three sources. */
 function asPort(n) {
   return Number.isInteger(n) && n > 0 && n <= 65535 ? n : null;
+}
+
+/**
+ * This workspace's binding, refusals and config AS THE FILE HAS THEM NOW —
+ * never the copy parsed at start-up.
+ *
+ * Roland runs parallel sessions against one config, and `--no-watch` means a
+ * session's in-memory copy can be arbitrarily old. Two separate repairs have
+ * already been made for exactly that, one field at a time, and this is the
+ * shared reader they should have had from the start.
+ *
+ * No lock is taken: this is a read, and a torn read is impossible because
+ * every writer of this file writes it atomically through a rename. When the
+ * file cannot be read at all the caller's own copy is returned, so a missing
+ * or unreadable config degrades to the previous behaviour instead of throwing
+ * on a path whose job is to produce a good error message.
+ *
+ * @param {string} cfgPath
+ * @param {unknown} fallbackConfig the copy to use when the file cannot be read
+ * @param {string} cwd
+ */
+function freshWorkspaceState(cfgPath, fallbackConfig, cwd) {
+  let fresh = fallbackConfig;
+  let fromFile = false;
+  try {
+    fresh = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8'));
+    fromFile = true;
+  } catch { /* keep the copy we have */ }
+  return {
+    config: fresh,
+    fromFile,
+    binding: readBinding(fresh, cwd),
+    refusals: readRefusals(fresh, cwd),
+  };
 }
 
 export async function loadRegistry({ configPath } = {}) {
@@ -717,13 +752,55 @@ export async function loadRegistry({ configPath } = {}) {
         // the user had turned down, in the channel this lot declares
         // AUTHORITATIVE. Silence that is only structured is not silence.
         // (Codex, review of 7571f77.)
-        const refused = this.workspaceRefusals?.has?.(v.name) === true;
+        // THE CONSENT IS ASKED OF THE FILE, NOT OF THIS SESSION'S MEMORY, and
+        // that was a blocking defect. `accept` was taught to read the file in
+        // round three, and the PROPOSING path was left reading the in-memory
+        // Map — this repository's signature shape, a fix that reaches only its
+        // first site, for the fourth time. Concretely: A and B both run with
+        // `--no-watch`, B records a refusal for X, and A goes on OFFERING X,
+        // because its Map still predates the refusal. The write was safe (the
+        // yes is turned away at the lock) but the CONSENT was not: the user is
+        // asked again about a vault they already turned down, which is exactly
+        // what the decision's third silence forbids — and then walked into a
+        // wall. Reading the file repairs BOTH directions: a refusal recorded
+        // elsewhere is honoured here, and a refusal RETRACTED elsewhere stops
+        // silencing this session. (Codex, round four.)
+        //
+        // The live Map is the fallback for an unreadable config only. A
+        // refusal must never be forgotten because a file could not be parsed.
+        const live = freshWorkspaceState(this.configPath, this.config, process.cwd());
+        const refused = live.fromFile
+          ? live.refusals?.has?.(v.name) === true
+          : this.workspaceRefusals?.has?.(v.name) === true;
+        // A PROPOSAL WHOSE ACCEPTANCE CANNOT BE GIVEN IS NOT A PROPOSAL, and
+        // the gated deployment is not the only place that is true. Asked here,
+        // before the refusal branch, so that a refused vault on a gated
+        // deployment is not told to use `retract` — a verb that deployment
+        // refuses like every other. (Codex, round four; decision §3, the
+        // fourth case.)
+        //
+        // On a gated deployment EVERY verb of `confirm_workspace_binding` is
+        // refused: the workspace there is the server's own directory, shared
+        // by every caller, so one answer would stand for all of them. Handing
+        // the model an `accept` call that the server will turn away is worse
+        // than saying nothing — it spends a conversation turn to arrive at a
+        // wall. The refusal stays a refusal.
+        if (isGatedDeployment()) {
+          throw declarationRequiredError(
+            `${preamble} This is a shared deployment, where a workspace binding cannot be recorded `
+            + 'at all — the workspace here is the server\'s own directory, and one answer would '
+            + 'stand for every caller. Address a vault this deployment already declares, or ask the '
+            + 'operator to add it to `openVaults`.',
+            null,
+          );
+        }
         if (refused) {
           throw declarationRequiredError(
             `${preamble} You already REFUSED this vault for this workspace, so it is not being proposed `
             + 'again. If you want it after all, take the refusal back first with '
-            + 'confirm_workspace_binding({ retract: … }); otherwise address a vault this workspace '
-            + 'already declares.',
+            + 'confirm_workspace_binding({ retract: … }), or name it explicitly in a '
+            + 'confirm_workspace_binding call — binding a vault drops its refusal. Otherwise address '
+            + 'a vault this workspace already declares.',
             null,
           );
         }
@@ -734,21 +811,20 @@ export async function loadRegistry({ configPath } = {}) {
         // resolve. The full diagnostic is Phase 6 of the roadmap; until then
         // this refuses to guess, which is strictly better than guessing wrong.
         // (Codex, same review.)
-        // A PROPOSAL WHOSE ACCEPTANCE CANNOT BE GIVEN IS NOT A PROPOSAL.
-        //
-        // On a gated deployment (`OBSIDIAN_ROUTER_READONLY`, `ALLOWED_VAULTS`,
-        // `USER_ID`) EVERY verb of `confirm_workspace_binding` is refused — the
-        // workspace there is the server's own directory, shared by every
-        // caller, so one answer would stand for all of them. Handing the model
-        // an `accept` call that the server will turn away is worse than saying
-        // nothing: it spends a conversation turn to arrive at a wall. The
-        // refusal stays a refusal. (Decision §3, the fourth case.)
-        if (isGatedDeployment()) {
+        // A LOCAL VAULT THE CONFIG FILE DOES NOT LIST CANNOT BE BOUND, so it
+        // is not proposed either. The live catalogue is wider than the file —
+        // it holds vaults the environment alone provides (`VAULT_*`) — and
+        // `confirm_workspace_binding` refuses to bind those, because the next
+        // start-up would not find them. Offering an identifier for one is
+        // offering a yes that the same tool turns away. Same predicate on both
+        // sides now, `bindableVaultNames`, rather than two spellings of one
+        // question. (Codex, round four.)
+        if (v.type === 'local' && !bindableVaultNames(live.config).has(v.name)) {
           throw declarationRequiredError(
-            `${preamble} This is a shared deployment, where a workspace binding cannot be recorded `
-            + 'at all — the workspace here is the server\'s own directory, and one answer would '
-            + 'stand for every caller. Address a vault this deployment already declares, or ask the '
-            + 'operator to add it to `openVaults`.',
+            `${preamble} This vault is visible to this session only through the environment, not `
+            + 'through the router\'s config file, so it cannot be recorded in a workspace binding — '
+            + 'a binding naming it would not survive the next start-up. Register it first '
+            + '(setup-vault), then bind this workspace to it.',
             null,
           );
         }
@@ -829,9 +905,8 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
   // No lock is taken: this is a read, and a torn read is impossible because
   // every writer of this file writes it atomically through a rename.
   const fallback = () => {
-    let fresh = config;
-    try { fresh = JSON.parse(fsSync.readFileSync(cfgPath, 'utf8')); } catch { /* keep the copy we have */ }
-    return { imported: null, binding: readBinding(fresh, cwd), refusals: readRefusals(fresh, cwd) };
+    const { binding, refusals } = freshWorkspaceState(cfgPath, config, cwd);
+    return { imported: null, binding, refusals };
   };
   try {
     const key = canonicalWorkspaceKey(cwd);

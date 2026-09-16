@@ -75,17 +75,22 @@ Déverrouiller : *« déverrouille les vaults »* — `/obsidian-router:unlock` 
 
 L'objet est rendu **dans le texte d'abord**, puis dans `_meta` : tout client MCP lit le texte, alors que `_meta` est un passthrough que la spécification autorise un client à ignorer.
 
-**Dire oui.** `confirm_workspace_binding({ accept: "<proposalId>" })`. L'identifiant est dérivé de l'état de la liaison — workspace, vault, rôle, empreinte — donc il ne résout que contre la liaison pour laquelle il a été frappé. Si une autre session a ajouté un secondaire, changé un palier ou effacé la liaison entre-temps, le oui est refusé sans rien écrire, et l'appel refusé relancé vous rend une proposition neuve.
+**Dire oui.** `confirm_workspace_binding({ accept: "<proposalId>" })`. L'identifiant est dérivé de l'état de la liaison — workspace, vault, rôle, empreinte — donc il ne résout que contre la liaison pour laquelle il a été frappé. Si une autre session a ajouté un secondaire, changé un palier ou effacé la liaison entre-temps, le oui est refusé sans rien écrire. **Réordonner les secondaires n'est pas un changement** : l'empreinte les trie, et le contrôle qui applique le oui les trie aussi, pour que les deux moitiés ne puissent pas donner deux sens différents aux mêmes mots.
+
+Après un refus, relancez l'appel et **lisez ce qui revient**. Ce sera une proposition neuve, ou une réussite si l'autre session a déjà lié ce vault, ou un refus sans proposition si elle l'a refusé ou si la liaison est à réparer. La session est rafraîchie depuis le fichier d'abord, donc la réponse est à jour ; laquelle des trois, cela dépend de ce que l'autre session a fait.
 
 L'acceptation **ajoute**. Le vault devient principal si le workspace n'avait rien, sinon il entre dans `also` en lecture seule souple, et chaque secondaire existant garde son palier. C'est précisément ce que `{ vault: X }` ne fait pas.
 
 **Ce qui ne propose jamais rien**, et chacun pour sa raison :
 
 - un vault d'`openVaults`, joignable de partout par construction : l'appel passe, il n'y a rien à proposer ;
-- un vault que vous avez **refusé** : `retract` est le chemin de retour, et lui seul ;
+- un vault que vous avez **refusé** : le refus n'est plus reproposé. `retract` est le chemin de retour vers une proposition ; nommer le vault explicitement dans un `confirm_workspace_binding` marche aussi et lève le refus, parce que le nommer, c'est vous qui en reparlez ;
 - une liaison dont le principal n'existe pas sur cette machine : elle est à **réparer**, pas à étendre ;
+- un vault local que le fichier de configuration ne liste plus : il ne peut pas être inscrit dans une liaison, donc le proposer reviendrait à vous tendre un oui qui butera sur un mur ;
 - un déploiement partagé (`OBSIDIAN_ROUTER_READONLY`, `ALLOWED_VAULTS`, `USER_ID`), où aucun verbe d'acceptation n'existe : proposer serait envoyer contre un mur ;
 - `list_vaults`, qui est un **inventaire et non une offre** : une proposition naît d'un accès, sans quoi vingt vaults non déclarés deviendraient vingt questions d'un coup.
+
+**Et le refus se lit dans le fichier, pas dans la mémoire de la session.** Deux routers partagent ici une seule configuration : un non enregistré dans l'une arrête l'autre **avant** qu'elle propose, et un non repris cesse de la faire taire. Protéger l'écriture seule serait trop tard — la question aurait déjà été reposée.
 
 **Sans `vaultReach`, rien de tout cela ne change quoi que ce soit** : l'interrupteur est absent par défaut, il n'y a alors aucun refus d'atteignabilité, donc aucune proposition.
 
