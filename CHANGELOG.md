@@ -26,25 +26,33 @@ primary and drops every secondary not passed again, which is exactly the call th
   disagree about what "the same binding" means.
 - **After a refusal, re-run the call and read what comes back.** It may hand you a new proposal, it
   may now succeed because the other session bound that vault, or it may refuse without proposing
-  because the other session refused it. The session is refreshed from the file first, so the answer
-  is current; which answer it is depends on what the other session did.
+  because the other session refused it. The session refreshes from the file before answering, and
+  when that file cannot be read it falls back to the last state it SAW, never to an older one.
+  Which of the three answers you get depends on what the other session did.
 - **Resolved twice, and the lock decides.** A preflight reads the config file for an early, readable
   answer; the check that decides runs inside the write lock. The preflight may let a yes through on
   an optimistic read, but it may never turn one away **on a stale in-memory copy** — it still refuses
   a vault already declared, a vault you refused, and an identifier this router never minted.
-- **Adopting a binding adopts all of it.** When the preflight loads a binding another session wrote,
-  this session's default vault and its lock guard follow that binding. A half-adopted session is
-  worse than a stale one: it reports one binding while routing unqualified calls by another, and can
-  report an isolation it is not enforcing.
+- **Adopting a binding adopts everything that binding decides.** When the preflight loads a binding
+  another session wrote, this session's default vault and its lock guard follow it. A half-adopted
+  session is worse than a stale one: it reports one binding while routing unqualified calls by
+  another, and can report an isolation it is not enforcing. Three limits, each deliberate: a binding
+  naming a vault this session cannot resolve decides nothing; a binding that was CLEARED elsewhere
+  leaves the default where it is but stops claiming a binding chose it, because what replaces it is a
+  cascade question a refresh does not answer; and a lock you set yourself with `lock_vault` is never
+  lifted here, only a lock the binding imposed.
 - **Three refusals.** A vault this workspace already declares (nothing to accept), a vault you
   REFUSED (deliberately not symmetric with naming it explicitly, which is you bringing it up again),
   and an identifier this router never minted.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
-  gated deployment where no acceptance verb exists at all, a local vault the config file no longer
-  lists (it cannot be bound, so offering it would hand you a yes that leads to a wall), and
-  `list_vaults` — an inventory, not an offer, so a workspace with twenty undeclared vaults does not
-  become twenty questions at once.
+  gated deployment where no acceptance verb exists at all, a local vault the config file does not
+  list — never registered, or removed since this session started (it cannot be bound, so offering it
+  would hand you a yes that leads to a wall) — and `list_vaults`, an inventory rather than an offer,
+  so a workspace with twenty undeclared vaults does not become twenty questions at once. Known and
+  not closed here: a REMOTE vault removed from the file can still be proposed and bound, because the
+  binding tool exempts remotes from that check; widening it is its own change, carried as its own
+  item rather than half-done under cover of this one.
 - **The refusal is asked of the file, so a parallel session is heard.** A no you record in one
   session stops the other session PROPOSING that vault, not merely writing it, and a no you take
   back stops silencing it. Both directions matter when two routers share one configuration, which is

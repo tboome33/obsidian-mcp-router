@@ -23,8 +23,10 @@
  *   4. A PROPOSAL THE ACCEPTANCE WOULD REFUSE. A local vault the config file
  *      no longer lists cannot be bound, and was still being proposed.
  *
- * Everything below drives the real binary over MCP, except the last block,
- * which pins a predicate and its two readers.
+ * The first three blocks drive the real binary over MCP, two routers at a time
+ * where the defect needs two. The last two are pure: one pins two definitions
+ * of "the same binding" against each other, the other pins a predicate, its
+ * readers, and a scan of the shipped tree.
  */
 
 import { test, describe, after } from 'node:test';
@@ -226,6 +228,52 @@ describe('the consent is asked of the FILE, so a sibling session is heard', () =
     } finally { a.kill(); b.kill(); }
   });
 
+  test('a refusal once READ survives a later unreadable config — the fallback is the last state SEEN', async () => {
+    // ► MUTATION WITNESS: remove `this.workspaceRefusals = live.refusals` and
+    //   only this goes red.
+    //
+    // The round-4 repair consulted the file and threw the answer away, so the
+    // map it fell back to when a read failed was the one loaded at START-UP.
+    // A refusal this session had already seen and honoured could be forgotten
+    // by one corrupt read, and the vault offered again — under a comment
+    // promising a refusal is never forgotten over a parse error. The fallback
+    // must return the last state OBSERVED, not the oldest one held.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const a = startRouter({ configPath, cwd: dir });
+    const b = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(a, 'A');
+      await handshake(b, 'B');
+
+      const no = await b.call(2, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { refuse: 'sci' },
+      });
+      assert.notEqual(no.result?.isError, true, textOf(no));
+
+      // A READS the refusal from the file once.
+      const seen = await reach(a, 2, 'sci');
+      assert.equal(seen.result?._meta?.bindingProposal, undefined, textOf(seen));
+
+      // The config becomes unparseable. A's fresh read now fails on every call.
+      const good = fs.readFileSync(configPath, 'utf8');
+      fs.writeFileSync(configPath, `${good.slice(0, Math.floor(good.length / 2))}`, 'utf8');
+      try {
+        const again = await reach(a, 3, 'sci');
+        assert.equal(again.result?.isError, true, textOf(again));
+        assert.equal(
+          again.result?._meta?.bindingProposal,
+          undefined,
+          `an unreadable config resurrected a vault this session had already seen REFUSED:\n${textOf(again)}`,
+        );
+        assert.match(textOf(again), /already REFUSED/);
+      } finally {
+        fs.writeFileSync(configPath, good, 'utf8');
+      }
+    } finally { a.kill(); b.kill(); }
+  });
+
   test('a REFUSED vault on a GATED deployment is not told to use a verb that deployment forbids', async () => {
     // ► MUTATION WITNESS: put the gated branch back AFTER the refusal branch
     //   and only this goes red. The order is the whole content of the repair.
@@ -300,14 +348,116 @@ describe('adopting another session\'s binding adopts ALL of it', () => {
       );
     } finally { a.kill(); b.kill(); }
   });
+
+  test('a REFUSED acceptance does NOT lift a lock this session asked for itself', async () => {
+    // ► MUTATION WITNESS: change the release back to `else if
+    //   (registry.lockedVault)` — the mechanism copied without its guard — and
+    //   only this goes red.
+    //
+    // The defect this pins is the shape this repository keeps paying for: the
+    // `clear` path has tested `lockSource.origin === 'binding'` since an
+    // earlier round, precisely because a volatile `lock_vault` lock "is not
+    // this call's to lift". The round-4 adopter copied the release and left
+    // the test behind — and then ran it on a PREFLIGHT, so a call that goes on
+    // to FAIL was silently dropping an isolation the user had asked for.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const a = startRouter({ configPath, cwd: dir });
+    const b = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(a, 'A');
+      await handshake(b, 'B');
+
+      const refusal = await reach(a, 2, 'sci');
+      const proposal = refusal.result?._meta?.bindingProposal;
+      assert.ok(proposal, textOf(refusal));
+
+      // A locks itself, volatile — nothing to do with the binding.
+      const locked = await a.call(3, 'tools/call', {
+        name: 'lock_vault',
+        arguments: { vault: 'work' },
+      });
+      assert.notEqual(locked.result?.isError, true, textOf(locked));
+      const before = JSON.parse(textOf(await a.call(4, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      assert.equal(before.lockedTo, 'work', 'the fixture never locked');
+      assert.notEqual(before.lockSource?.origin, 'binding', 'the fixture locked by BINDING, not by lock_vault');
+
+      // B moves the binding, leaving it UNLOCKED. A's identifier dies with it.
+      const moved = await b.call(2, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'other', open: false },
+      });
+      assert.notEqual(moved.result?.isError, true, textOf(moved));
+
+      const yes = await a.call(5, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.equal(yes.result?.isError, true, `the dead identifier was applied:\n${textOf(yes)}`);
+
+      const after = JSON.parse(textOf(await a.call(6, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      assert.equal(
+        after.lockedTo,
+        'work',
+        'a FAILED acceptance lifted a lock this session had asked for with lock_vault',
+      );
+    } finally { a.kill(); b.kill(); }
+  });
+
+  test('a binding CLEARED elsewhere stops this session claiming a binding chose its default', async () => {
+    // ► MUTATION WITNESS: drop the `defaultVaultSource` branch for an
+    //   unresolvable binding and only this goes red.
+    //
+    // "Adopting a binding adopts all of it" was written for a binding that
+    // EXISTS. When the sibling session clears it, there is no binding to adopt
+    // — and the first version then left `defaultVault` untouched while still
+    // reporting that a binding had chosen it. What replaces the default is a
+    // cascade question the refresh deliberately does not answer; what it must
+    // not do is keep asserting a source that is gone.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const a = startRouter({ configPath, cwd: dir });
+    const b = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(a, 'A');
+      await handshake(b, 'B');
+
+      const refusal = await reach(a, 2, 'sci');
+      const proposal = refusal.result?._meta?.bindingProposal;
+      assert.ok(proposal, textOf(refusal));
+
+      const cleared = await b.call(2, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { clear: true },
+      });
+      assert.notEqual(cleared.result?.isError, true, textOf(cleared));
+
+      const yes = await a.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.equal(yes.result?.isError, true, textOf(yes));
+
+      const state = JSON.parse(textOf(await a.call(4, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      assert.equal(state.workspaceBinding, null, 'the cleared binding was not adopted');
+      assert.notEqual(
+        state.defaultVaultSource?.origin,
+        'binding',
+        'the session says a binding chose its default, and there is no binding',
+      );
+    } finally { a.kill(); b.kill(); }
+  });
 });
 
 describe('one definition of "the same binding", read by both halves', () => {
-  // The window this closes — between the acceptance preflight and the write
-  // lock — is microseconds wide and cannot be driven from outside the process.
-  // So what is pinned is the INVARIANT rather than the race: the comparison
-  // that decides whether to apply a yes must answer exactly what the digest
-  // that mints the identifier answers. Two mechanisms, one question.
+  // The window this closes sits between the acceptance preflight and the write
+  // lock. Driving it would need a synchronisation point inside the tool — a
+  // seam that does not exist today and that is not worth adding for one race —
+  // so what is pinned here is the INVARIANT rather than the interleaving: the
+  // comparison that decides whether to apply a yes must answer exactly what the
+  // digest that mints the identifier answers. Two mechanisms, one question. The
+  // last test of this block is what keeps the decision SITE asking it; the ones
+  // before it only keep the two definitions agreeing.
   const shuffles = [
     [['a', 'b'], ['b', 'a']],
     [['a', 'b', 'c'], ['c', 'a', 'b']],
@@ -345,6 +495,29 @@ describe('one definition of "the same binding", read by both halves', () => {
     assert.equal(sameSecondarySet(null, []), true);
     assert.equal(sameSecondarySet(undefined, ['a']), false);
     assert.equal(sameSecondarySet('ab', ['a', 'b']), false);
+  });
+
+  test('and the DECISION SITE calls it — the tests above guard the utility, not the repair', () => {
+    // ► THE WITNESS THAT WAS MISSING, and the review named it before it bit:
+    //   every assertion above calls `sameSecondarySet` and `bindingDigest`
+    //   DIRECTLY. Put the positional comparison back at the call site inside
+    //   the write lock and they all stay green — the helper would keep its
+    //   promise while the code that decides had stopped asking it. A mutation
+    //   aimed at the helper proves the helper; the repair lives at the site.
+    const src = fs.readFileSync(path.join(REPO, 'src/tools/workspace-binding.mjs'), 'utf8');
+    assert.match(
+      src,
+      /!sameSecondarySet\(\s*onDisk\.also\s*,\s*also\s*\)/,
+      'the in-lock check no longer asks the shared predicate',
+    );
+    // And the shape it replaced must not come back beside it: an index
+    // comparison over the two lists, whatever the callback's parameters are
+    // named.
+    assert.doesNotMatch(
+      src,
+      /onDisk\.also\.some\(/,
+      'the in-lock check compares the secondaries positionally again',
+    );
   });
 });
 
@@ -399,11 +572,13 @@ describe('bindableVaultNames — one predicate, two readers', () => {
       remoteVaults: [],
       vaultReach: 'declared',
       openVaults: [],
-      workspaceBindings: {
-        [canonicalWorkspaceKey(dir)]: {
-          vault: 'notes-elsewhere', also: [], locked: false, confirmedVia: 'test',
-        },
-      },
+      // NO BINDING ENTRY, AND THAT IS DELIBERATE. The first version wrote one
+      // under `canonicalWorkspaceKey(dir)`, which this process never adopts:
+      // `loadRegistry` reads `process.cwd()`, and passing `configPath` does not
+      // change it. The fixture's binding was inert, so the test claimed a
+      // situation it had not built. With no binding at all the workspace
+      // declares nothing, `vaultReach: "declared"` refuses the vault, and the
+      // branch under test is reached honestly. (Codex, round 5.)
     });
 
     fs.writeFileSync(configPath, JSON.stringify(withVault(true), null, 2), 'utf8');
@@ -418,22 +593,87 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     try { registry.resolveVault('notes'); } catch (e) { err = e; }
     assert.ok(err, 'the vault resolved instead of being refused');
     assert.equal(err.bindingProposal, undefined, 'a vault that cannot be bound was proposed');
-    assert.match(err.message, /through the environment, not/);
+    // THE MESSAGE MUST NAME WHAT IS KNOWN, NOT A CAUSE IT GUESSED. The first
+    // version of this assertion required the words "visible only through the
+    // environment" — false in this very fixture, where the file listed the
+    // vault and a sibling removed it. A test that demands a wrong explanation
+    // is how a wrong explanation survives a review. (Codex, round 5.)
+    assert.match(err.message, /not listed in the router's config file/);
+    assert.match(err.message, /removed since this session started/);
+    assert.doesNotMatch(err.message, /only through the environment/);
     assert.match(err.message, /setup-vault/);
   });
 
-  test('BOTH readers call it — neither spells the question out again', () => {
-    // The scan is the point. Asserting the behaviour at each site would pass
-    // the day someone re-writes the expression by hand at a third one.
-    const sites = ['src/registry.mjs', 'src/tools/workspace-binding.mjs'];
-    for (const rel of sites) {
+  test('the WHOLE shipped tree builds this set in exactly one place', () => {
+    // A SCAN WITH AN EXEMPTION IS UNTESTED CODE, and the first version had two:
+    // it looked at two named files only, and it excused `src/registry.mjs` from
+    // the hand-spelled check. It was also defeated by renaming one callback
+    // parameter, which is the classic way a name-keyed guard walks past the
+    // thing it was written for. (Codex, round 5.)
+    //
+    // So the question is asked of the tree, and asked by SHAPE rather than by
+    // spelling: anywhere a registered-path list is mapped through `vaultSlug`,
+    // that is this set being rebuilt by hand. `bindableVaultNames` itself is
+    // the one legitimate site, named exactly, with its reason.
+    const OWNER = 'src/helpers/vault-slug.mjs';
+    const roots = ['src', 'hooks', 'scripts', 'bin'];
+    const files = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (entry.isFile() && entry.name.endsWith('.mjs')) files.push(full);
+      }
+    };
+    for (const root of roots) {
+      const full = path.join(REPO, root);
+      if (fs.existsSync(full)) walk(full);
+    }
+    assert.ok(files.length > 50, `the walk found only ${files.length} files — it is not scanning`);
+
+    // THE PATTERN NAMES THE SET, NOT THE ENUMERATION, and getting that wrong
+    // the first time is the point worth keeping. A scan for "registered paths
+    // mapped through vaultSlug" flagged FOUR honest sites — a collision check
+    // at registration, the hooks' permitted-vault set, and two config
+    // generators — because enumerating vault names is an ordinary thing to do.
+    // A guard that shouts at every neighbour teaches people to silence it.
+    //
+    // What is unique to THIS question is the UNION: the local names and the
+    // remote names gathered into one set, which is the set a workspace binding
+    // may name. `[^]` rather than `.` so a construction wrapped over several
+    // lines is caught too.
+    const rebuildsByHand = /new Set\(\[[^]{0,400}?registeredVaultPaths\([^]{0,400}?remoteVaults[^]{0,200}?\]\)/;
+    const offenders = [];
+    for (const file of files) {
+      const rel = path.relative(REPO, file).split(path.sep).join('/');
+      if (rel === OWNER) continue;
+      const src = fs.readFileSync(file, 'utf8');
+      if (rebuildsByHand.test(src)) offenders.push(rel);
+    }
+    assert.deepEqual(offenders, [], `these rebuild the bindable-name set by hand: ${offenders.join(', ')}`);
+
+    // TWO POSITIVE CONTROLS, because a dead pattern reads exactly like a clean
+    // tree. First the owner: the one site that legitimately holds the shape.
+    assert.match(
+      fs.readFileSync(path.join(REPO, OWNER), 'utf8'),
+      rebuildsByHand,
+      'the scan pattern no longer matches even its own owner — it cannot catch anything',
+    );
+    // Then a probe built here, in the spelling an offender would most plausibly
+    // use: different callback parameter, different formatting, same question.
+    const probe = [
+      'const fileNames = new Set([',
+      '  ...registeredVaultPaths(config).map((entry) => vaultSlug(config, entry)),',
+      '  ...(Array.isArray(config.remoteVaults) ? config.remoteVaults : [])',
+      '    .map((r) => r?.name).filter(Boolean),',
+      ']);',
+    ].join('\n');
+    assert.match(probe, rebuildsByHand, 'the scan would walk past a hand-built copy of the set');
+
+    // Both readers ask for it by name.
+    for (const rel of ['src/registry.mjs', 'src/tools/workspace-binding.mjs']) {
       const src = fs.readFileSync(path.join(REPO, rel), 'utf8');
       assert.match(src, /bindableVaultNames\(/, `${rel} does not ask the shared predicate`);
-      // The hand-spelled shape this replaced, in either of its two halves.
-      const handSpelled = /registeredVaultPaths\([^)]*\)\s*\.map\(\s*\(?\s*vp\s*\)?\s*=>\s*vaultSlug/;
-      if (rel !== 'src/registry.mjs') {
-        assert.doesNotMatch(src, handSpelled, `${rel} still builds the set by hand`);
-      }
     }
   });
 });

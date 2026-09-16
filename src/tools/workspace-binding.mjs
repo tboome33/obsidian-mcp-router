@@ -328,9 +328,26 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   const adoptBinding = (binding, refusals) => {
     registry.workspaceBinding = binding;
     registry.workspaceRefusals = refusals;
-    if (binding?.vault) {
+    // A BINDING THIS SESSION CANNOT RESOLVE DECIDES NOTHING. The first version
+    // adopted `binding.vault` as the default and the lock on sight. Another
+    // process can register a vault AND bind the workspace to it between this
+    // session's start-up and now, so under `--no-watch` that name is one this
+    // catalogue has never heard of: the session came away routing unqualified
+    // calls at a vault it cannot resolve, and locked to it — a worse state
+    // than the stale one it replaced, and reached on a call that then FAILED.
+    // (Codex, round five.)
+    const resolvable = Boolean(binding?.vault)
+      && (registry.vaults || []).some((v) => v.name === binding.vault);
+    if (resolvable) {
       registry.defaultVault = binding.vault;
       registry.defaultVaultSource = { origin: 'binding', variable: null };
+    } else if (registry.defaultVaultSource?.origin === 'binding') {
+      // The binding that chose this default is gone, or names something this
+      // session cannot resolve. WHAT REPLACES IT is a cascade question, and
+      // re-running the cascade from a refresh — which may be followed by a
+      // refusal — is not this function's business. What IS its business is to
+      // stop saying a binding chose the default, because none does now.
+      registry.defaultVaultSource = { origin: 'unknown', variable: null };
     }
     // THE HINT IS RE-CLASSIFIED. It is computed once at start-up, so a hint
     // the user had just adopted through this very call went on being reported
@@ -347,10 +364,20 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // other vault still answered. A restart did not help either: start-up
     // derived the lock from the environment alone. Found by the Codex review,
     // 2026-09-03; the start-up half is fixed in src/index.mjs.
-    if (binding?.locked && binding.vault) {
+    if (resolvable && binding.locked) {
       registry.lockedVault = binding.vault;
       registry.lockSource = { origin: 'binding', variable: null };
-    } else if (registry.lockedVault) {
+    } else if (registry.lockSource?.origin === 'binding') {
+      // ONLY A BINDING-IMPOSED LOCK IS THIS FUNCTION'S TO LIFT — the test is
+      // the SOURCE, never the mere presence of a lock, and the `clear` path
+      // thirty lines up has said so since round 5 of an earlier lot. The
+      // first version of this helper tested `registry.lockedVault` alone,
+      // which is a mechanism copied without its discipline: a session that
+      // had called `lock_vault` and then sent a STALE acceptance had its lock
+      // silently dropped by the preflight, and the call it came from was then
+      // refused. An isolation the user asked for, undone by a call that
+      // failed. (Codex, round five.)
+      //
       // The binding no longer imposes a lock — either because the workspace
       // was re-bound elsewhere, or because it was re-confirmed with
       // `locked: false` on the SAME vault (round 2 found that case left the
@@ -387,7 +414,8 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         'confirm_workspace_binding: this proposal no longer matches this workspace\'s binding. '
         + 'Either the binding changed since the proposal was made — another session added a '
         + 'secondary, set a tier, or cleared it — or the identifier is not one this router minted. '
-        + 'Nothing was changed. Re-run the call that was refused and relay WHAT COMES BACK: it may '
+        + 'NO BINDING WAS WRITTEN (this session has been refreshed from the file, which is a change '
+        + 'to what it knows, not to what it holds). Re-run the call that was refused and relay WHAT COMES BACK: it may '
         + 'hand you a new proposal, or it may now succeed (another session bound this vault), or it '
         + 'may refuse without proposing (another session refused this vault, or the binding needs '
         + 'repairing). A fresh proposal is one of the answers, not the answer.',
@@ -398,7 +426,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     if (binding && (binding.vault === target || (binding.also || []).includes(target))) {
       throw new Error(
         `confirm_workspace_binding: this workspace already declares ${identifierForCall(target)}, `
-        + 'so there is nothing to accept. Nothing was changed.',
+        + 'so there is nothing to accept. No binding was written.',
       );
     }
     // A DURABLE REFUSAL OUTRANKS AN ACCEPT, and this is not symmetric with the
@@ -420,7 +448,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         `confirm_workspace_binding: ${identifierForCall(target)} was REFUSED for this workspace, so `
         + 'it is not proposed and an acceptance for it is not applied. Take the refusal back first '
         + `with confirm_workspace_binding({ retract: ${identifierForCall(target)} }), or bind it `
-        + 'explicitly by name. Nothing was changed.',
+        + 'explicitly by name. No binding was written.',
       );
     }
     return binding
@@ -589,14 +617,23 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // means — and the re-derived pair must equal what this transform is about
     // to write, or the write is not the one that was approved.
     if (accepted) {
-      // THE REFRESH WRAPS EVERY EXIT, not just one of them — and the first
-      // version of it was unreachable in exactly the case it was written for.
-      // It sat after `resolveAcceptance`, which THROWS when the identifier no
-      // longer matches, so the branch that refreshed ran only when the
-      // identifier still matched and something else disagreed. The stale-
-      // proposal loop it was meant to break went straight past it. (Codex,
-      // round 3.) Every path out of here now leaves this session holding what
-      // the file says, so the next proposal is a new one.
+      // THE REFRESH WRAPS BOTH REFUSALS OF THIS BLOCK — and the first version
+      // of it was unreachable in exactly the case it was written for. It sat
+      // after `resolveAcceptance`, which THROWS when the identifier no longer
+      // matches, so the branch that refreshed ran only when the identifier
+      // still matched and something else disagreed. The stale-proposal loop it
+      // was meant to break went straight past it. (Codex, round 3.)
+      //
+      // TWO CLAIMS THAT WERE TOO BROAD, and both are corrected here. It is not
+      // "every exit": `assertBindable` and the locked-secondary re-check throw
+      // BEFORE this block, and neither refreshes (the preflight has already
+      // read the file for them, which is what makes that acceptable). And what
+      // follows a refusal is not "a new proposal": re-running the refused call
+      // may propose again, may now SUCCEED because the sibling session bound
+      // that vault, or may refuse silently because it refused it — which is
+      // exactly the advice the messages themselves now give. (Codex, round 5,
+      // on a sentence a round-4 repair had left standing beside the messages
+      // it corrected.)
       const refreshLive = () => adoptBinding(previous, readRefusals(cfg, cwd));
       let onDisk;
       try {
@@ -608,10 +645,13 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         refreshLive();
         throw err;
       }
-      // COMPARED BY THE SAME PREDICATE THE IDENTIFIER USES. `sameSecondarySet`
-      // lives beside `bindingDigest` precisely so this comparison cannot drift
-      // from the definition of "the same binding" the identifier is derived
-      // from — see its own header for the defect that made it necessary.
+      // COMPARED BY A PREDICATE THAT AGREES WITH THE IDENTIFIER, and the
+      // accuracy matters: `bindingDigest` does not CALL `sameSecondarySet`, so
+      // putting them in one file buys proximity, not a shared implementation.
+      // What holds them together is a test that drives both over the same
+      // permutations and requires the same answer, plus the scan below that
+      // refuses a hand-spelled comparison at this call site. Saying they
+      // "cannot drift" was an overclaim. (Codex, round 5.)
       if (onDisk.target !== accepted.target
         || onDisk.primary !== primary
         || !sameSecondarySet(onDisk.also, also)) {

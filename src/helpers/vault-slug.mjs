@@ -590,18 +590,27 @@ export function alsoLockedEntries(cfg) {
  * The vault names THE FILE knows — the set a workspace binding may name.
  *
  * ONE PREDICATE, TWO READERS, and the second reader is why this exists at all.
- * `confirm_workspace_binding` refuses to bind a local vault the config file
- * does not list: the live catalogue holds vaults that only the environment
- * provides (`VAULT_*`), and a binding to one of those is a binding the next
- * start-up would silently drop. That check was written inside the tool, which
- * left the REFUSAL free to offer a proposal for exactly such a vault — a
- * perfectly valid identifier whose acceptance the same tool then turns away.
- * A proposal whose acceptance cannot be given is not a proposal; that is the
- * same rule the gated deployment already obeys. (Codex, round four — the round
- * that read the phases assembled instead of one diff at a time.)
+ * `confirm_workspace_binding` refuses to bind a LOCAL vault the config file
+ * does not list, because the file is what the next start-up reads. That check
+ * was written inside the tool, which left the REFUSAL free to offer a proposal
+ * for exactly such a vault — a perfectly valid identifier whose acceptance the
+ * same tool then turns away. A proposal whose acceptance cannot be given is not
+ * a proposal; that is the same rule the gated deployment already obeys.
+ * (Codex, round four — the round that read the phases assembled instead of one
+ * diff at a time.)
  *
- * Remote vaults are listed by name and are not subject to the local check, so
- * they belong to this set on the strength of `remoteVaults[].name` alone.
+ * TWO WAYS A LIVE VAULT IS ABSENT FROM THIS SET, and the caller must not claim
+ * one of them: a vault only the environment provides (`VAULT_*`), and — far
+ * more common — a vault the file DID list and a sibling session has removed
+ * since this process loaded it. The set answers "is it in the file NOW"; it
+ * says nothing about where the live entry came from. (Codex, round five.)
+ *
+ * Remote entries join this set on the strength of `remoteVaults[].name` alone.
+ * KNOWN LIMIT, deliberately not closed here: `assertBindable` exempts remote
+ * vaults from the file check altogether, so a remote the file no longer lists
+ * can still be proposed AND bound. Widening that exemption is a change to the
+ * binding tool's contract, not to this predicate, and it is carried as its own
+ * roadmap item rather than half-fixed under cover of this one.
  *
  * @param {unknown} cfg the parsed router config
  * @returns {Set<string>}

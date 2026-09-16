@@ -769,9 +769,26 @@ export async function loadRegistry({ configPath } = {}) {
         // The live Map is the fallback for an unreadable config only. A
         // refusal must never be forgotten because a file could not be parsed.
         const live = freshWorkspaceState(this.configPath, this.config, process.cwd());
-        const refused = live.fromFile
-          ? live.refusals?.has?.(v.name) === true
-          : this.workspaceRefusals?.has?.(v.name) === true;
+        // A SUCCESSFUL READ BECOMES THIS SESSION'S ANSWER, and that is what
+        // makes the fallback honest. The first version consulted the file and
+        // threw the answer away, so the map it fell back to when a later read
+        // failed was the one loaded at START-UP — not the last state actually
+        // observed. A refusal this very session had already seen and honoured
+        // could then be forgotten by a single unreadable read, and the vault
+        // proposed again. The comment beneath promised it could not.
+        //
+        // It also repairs a reader the first sweep missed:
+        // `refreshRegistryBindingHint` classifies from this same field, so
+        // until now the hint could answer "not refused" for a vault the
+        // access beside it had just refused as refused. (Codex, round five.)
+        //
+        // The BINDING is deliberately not adopted here. This is a read path
+        // that ends in a throw; adopting a binding drags in the default vault
+        // and the lock guard, which is the acceptance path's business and has
+        // its own rules. A stale binding costs at most one dead proposal id,
+        // and the acceptance refreshes and refuses it.
+        if (live.fromFile) this.workspaceRefusals = live.refusals;
+        const refused = this.workspaceRefusals?.has?.(v.name) === true;
         // A PROPOSAL WHOSE ACCEPTANCE CANNOT BE GIVEN IS NOT A PROPOSAL, and
         // the gated deployment is not the only place that is true. Asked here,
         // before the refusal branch, so that a refused vault on a gated
@@ -819,12 +836,21 @@ export async function loadRegistry({ configPath } = {}) {
         // offering a yes that the same tool turns away. Same predicate on both
         // sides now, `bindableVaultNames`, rather than two spellings of one
         // question. (Codex, round four.)
+        // THE TEST IS "THE FILE DOES NOT LIST IT", AND THE MESSAGE SAYS ONLY
+        // THAT. The first wording said the vault was "visible only through the
+        // environment" — a claim about PROVENANCE that this condition never
+        // establishes, and that was false in the commonest case of all: a vault
+        // the file listed at start-up and a sibling session has since removed.
+        // A diagnostic that names the wrong cause sends the reader to fix the
+        // wrong thing. (Codex, round five — and its own witness had asserted
+        // the false sentence, which is how a test locks a mistake in.)
         if (v.type === 'local' && !bindableVaultNames(live.config).has(v.name)) {
           throw declarationRequiredError(
-            `${preamble} This vault is visible to this session only through the environment, not `
-            + 'through the router\'s config file, so it cannot be recorded in a workspace binding — '
-            + 'a binding naming it would not survive the next start-up. Register it first '
-            + '(setup-vault), then bind this workspace to it.',
+            `${preamble} This vault is not listed in the router's config file — either it was never `
+            + 'registered there, or it has been removed since this session started — so it cannot be '
+            + 'recorded in a workspace binding: confirm_workspace_binding refuses a local vault the '
+            + 'file does not know. Register it (setup-vault) or restore it in the config, then bind '
+            + 'this workspace to it.',
             null,
           );
         }
