@@ -308,55 +308,76 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   }
 
   /**
-   * ADOPT A BINDING INTO THIS SESSION — all of it, never two fields of it.
+   * WHAT THIS SESSION KNOWS THE FILE SAYS — and nothing about where its calls
+   * go.
    *
-   * Three callers: the acceptance preflight, the refusal inside the lock, and
-   * the sync after a successful write. The first two used to assign
-   * `workspaceBinding` and `workspaceRefusals` and stop there, which left the
-   * session holding one process's binding beside another's derived state —
-   * strictly worse than the stale-but-coherent copy it replaced. Concretely: B
-   * re-binds the workspace to "q", A's preflight loads that binding and then
-   * refuses the stale identifier, and A now routes every unqualified call to
-   * "p" while believing it is bound to "q". The `locked` field is the same
-   * shape one field over: the binding can say locked while `lockedVault` — the
-   * only field the lock guard reads — still says nothing, so the session
-   * REPORTS an isolation it does not enforce. (Codex, round four.)
+   * THE SPLIT IS THE WHOLE POINT, and it took three rounds to find. Round 3
+   * made the acceptance preflight refresh the session from the file, so that
+   * "re-run the refused call" was true advice rather than a loop. Round 4 saw
+   * that refresh leave the session half-updated and widened it to the default
+   * vault and the lock guard. Rounds 5 and 6 then found, twice over, that
+   * widening it was the mistake: the preflight runs on a call that MAY REFUSE,
+   * and it was moving where unqualified calls go, and which vaults answer at
+   * all, on the way to writing nothing.
+   *
+   * Round 6's blocker is the sharpest form of it. `else if` on a lock release
+   * read "this binding imposes no lock", but it was also entered when the
+   * binding could not be APPLIED at all — so a binding naming a vault this
+   * session has never heard of, carrying `locked: true`, released the lock
+   * that was in force. "I cannot apply this lock" became "I must drop the
+   * previous one", on a call that then failed.
+   *
+   * So there are two adoptions, and only one of them is safe on a path that
+   * can still refuse:
+   *
+   *   KNOWLEDGE (here)  the binding and the refusals as the file has them,
+   *                     plus the hint, which is a statement ABOUT the binding.
+   *                     Nothing here decides where a call goes.
+   *   ROUTING (below)   the default vault and the lock guard. Only after a
+   *                     write has succeeded, which is exactly when the old
+   *                     code did it, before round 4 widened the refresh.
+   *
+   * This is also what the refusal messages already promise in as many words:
+   * the session has been refreshed "from the file, which is a change to what
+   * it knows, not to what it holds". The code now says the same thing.
    *
    * @param {object|null} binding
    * @param {Map<string, unknown>} refusals
    */
-  const adoptBinding = (binding, refusals) => {
+  const adoptKnowledge = (binding, refusals) => {
     registry.workspaceBinding = binding;
     registry.workspaceRefusals = refusals;
-    // A BINDING THIS SESSION CANNOT RESOLVE DECIDES NOTHING. The first version
-    // adopted `binding.vault` as the default and the lock on sight. Another
-    // process can register a vault AND bind the workspace to it between this
-    // session's start-up and now, so under `--no-watch` that name is one this
-    // catalogue has never heard of: the session came away routing unqualified
-    // calls at a vault it cannot resolve, and locked to it — a worse state
-    // than the stale one it replaced, and reached on a call that then FAILED.
-    // (Codex, round five.)
-    const resolvable = Boolean(binding?.vault)
-      && (registry.vaults || []).some((v) => v.name === binding.vault);
-    if (resolvable) {
-      registry.defaultVault = binding.vault;
-      registry.defaultVaultSource = { origin: 'binding', variable: null };
-    } else if (registry.defaultVaultSource?.origin === 'binding') {
-      // The binding that chose this default is gone, or names something this
-      // session cannot resolve. WHAT REPLACES IT is a cascade question, and
-      // re-running the cascade from a refresh — which may be followed by a
-      // refusal — is not this function's business. What IS its business is to
-      // stop saying a binding chose the default, because none does now.
-      registry.defaultVaultSource = { origin: 'unknown', variable: null };
-    }
     // THE HINT IS RE-CLASSIFIED. It is computed once at start-up, so a hint
     // the user had just adopted through this very call went on being reported
     // as `unconfirmed` — and this tool's own description tells Claude to offer
     // a confirmation whenever it sees that status, so the assistant would keep
     // proposing what had already been accepted. Under `--no-watch` nothing
     // ever corrected it. Measured through the real `list_vaults`, in one
-    // process, in the final review of 2026-09-03.
+    // process, in the final review of 2026-09-03. It belongs to KNOWLEDGE: a
+    // hint is a claim about the binding, not a route.
     refreshRegistryBindingHint(registry);
+  };
+
+  /**
+   * WHERE THIS SESSION'S CALLS GO — the default vault and the lock guard.
+   *
+   * ONLY AFTER A SUCCESSFUL WRITE. See `adoptKnowledge` above for why: on any
+   * path that can still refuse, moving these is changing the session on the
+   * way to changing nothing, and both of the last two review rounds found a
+   * separate blocker inside that one mistake.
+   *
+   * @param {object|null} binding the binding that was just written
+   */
+  const adoptRouting = (binding) => {
+    // THE BINDING HERE IS THE ONE JUST WRITTEN, and everything the earlier
+    // versions of this function guarded against belonged to the paths that do
+    // NOT write. `assertBindable` has already refused any name the live
+    // registry cannot resolve, so the primary resolves; `clear` has its own
+    // release and its own cascade re-run, thirty lines up. Branches for a null
+    // or unresolvable binding would be dead code here, and dead code reads as
+    // coverage — the lesson phase 6 of this lot was rewritten around.
+    registry.defaultVault = binding.vault;
+    registry.defaultVaultSource = { origin: 'binding', variable: null };
     // A LOCK THAT IS RECORDED IS A LOCK THAT IS IN FORCE. An early version
     // stored `locked: true`, reported it back, and never touched
     // `registry.lockedVault` — the only field the lock guard reads. So the
@@ -364,27 +385,25 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // other vault still answered. A restart did not help either: start-up
     // derived the lock from the environment alone. Found by the Codex review,
     // 2026-09-03; the start-up half is fixed in src/index.mjs.
-    if (resolvable && binding.locked) {
+    if (binding.locked) {
       registry.lockedVault = binding.vault;
       registry.lockSource = { origin: 'binding', variable: null };
     } else if (registry.lockSource?.origin === 'binding') {
       // ONLY A BINDING-IMPOSED LOCK IS THIS FUNCTION'S TO LIFT — the test is
       // the SOURCE, never the mere presence of a lock, and the `clear` path
-      // thirty lines up has said so since round 5 of an earlier lot. The
-      // first version of this helper tested `registry.lockedVault` alone,
-      // which is a mechanism copied without its discipline: a session that
-      // had called `lock_vault` and then sent a STALE acceptance had its lock
-      // silently dropped by the preflight, and the call it came from was then
-      // refused. An isolation the user asked for, undone by a call that
-      // failed. (Codex, round five.)
+      // has said so since an earlier lot's fifth round. Testing
+      // `registry.lockedVault` alone is a mechanism copied without its
+      // discipline, and it cost a blocker: a session that had called
+      // `lock_vault` had its own isolation dropped by a binding change it
+      // never asked for. (Codex, round five.)
       //
       // The binding no longer imposes a lock — either because the workspace
       // was re-bound elsewhere, or because it was re-confirmed with
-      // `locked: false` on the SAME vault (round 2 found that case left the
-      // live guard locked while the file and the response both said
-      // unlocked). A binding-imposed lock goes; a host-imposed one is
-      // re-derived, not merely kept, so that a host lock the binding had been
-      // shadowing comes back rather than being dropped with it.
+      // `locked: false` on the SAME vault (round 2 of an earlier lot found
+      // that case left the live guard locked while the file and the response
+      // both said unlocked). A binding-imposed lock goes; a host-imposed one
+      // is re-derived, not merely kept, so that a host lock the binding had
+      // been shadowing comes back rather than being dropped with it.
       releaseBindingLock(registry);
     }
   };
@@ -482,7 +501,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // (Codex, rounds 2 and 3 — two halves of one loop.)
   const accepted = args.accept === undefined ? null : (() => {
     const fresh = readConfig();
-    adoptBinding(readBinding(fresh, cwd), readRefusals(fresh, cwd));
+    // KNOWLEDGE ONLY. This runs before anything is decided and the call may
+    // still refuse; moving the default vault or the lock here is changing the
+    // session on the way to changing nothing. (Codex, rounds five and six.)
+    adoptKnowledge(readBinding(fresh, cwd), readRefusals(fresh, cwd));
     return resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
   })();
 
@@ -634,7 +656,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // exactly the advice the messages themselves now give. (Codex, round 5,
       // on a sentence a round-4 repair had left standing beside the messages
       // it corrected.)
-      const refreshLive = () => adoptBinding(previous, readRefusals(cfg, cwd));
+      // KNOWLEDGE ONLY, for the same reason: every exit from this block is a
+      // REFUSAL, and a refusal must leave the session routing as it did.
+      const refreshLive = () => adoptKnowledge(previous, readRefusals(cfg, cwd));
       let onDisk;
       try {
         // The FILE's refusals, not the live Map: another process may have
@@ -691,7 +715,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // THE SAME ADOPTER THE PREFLIGHT USES. Three call sites once wrote three
   // subsets of this state; the widest of them is the only correct one, so it
   // is now the only one. (Codex, round four.)
-  adoptBinding(binding, readRefusals(next, cwd));
+  // THE WRITE SUCCEEDED, so both halves apply: what the session knows, and
+  // where its calls now go.
+  adoptKnowledge(binding, readRefusals(next, cwd));
+  adoptRouting(binding);
 
   // Open what is not open. Best effort by design: a window that did not appear
   // must not undo a binding that was recorded.

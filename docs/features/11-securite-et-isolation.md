@@ -79,6 +79,8 @@ L'objet est rendu **dans le texte d'abord**, puis dans `_meta` : tout client MCP
 
 Après un refus, relancez l'appel et **lisez ce qui revient**. Ce sera une proposition neuve, ou une réussite si l'autre session a déjà lié ce vault, ou un refus sans proposition si elle l'a refusé ou si la liaison est à réparer. La session se rafraîchit depuis le fichier avant de répondre — sauf si ce fichier est illisible à cet instant, auquel cas elle s'en tient au dernier état qu'elle a **vu**, jamais à un état plus ancien. Laquelle des trois réponses, cela dépend de ce que l'autre session a fait.
 
+**Un appel refusé change ce que la session SAIT, jamais où elle ROUTE.** En relisant le fichier, elle apprend la liaison et les refus qui s'y trouvent — c'est ce qui rend l'avis ci-dessus exact plutôt que circulaire. Elle ne déplace pas le vault par défaut et ne touche pas au verrou : cela n'arrive que quand une liaison est réellement écrite. Et un verrou ne se lève que par qui l'a posé : un `lock_vault` de cette session survit à un changement de liaison, tandis qu'un `lock_vault --persist`, inscrit **sur** la liaison, la suit — c'est le sens même de l'avoir persisté.
+
 L'acceptation **ajoute**. Le vault devient principal si le workspace n'avait rien, sinon il entre dans `also` en lecture seule souple, et chaque secondaire existant garde son palier. C'est précisément ce que `{ vault: X }` ne fait pas.
 
 **Ce qui ne propose jamais rien**, et chacun pour sa raison :
@@ -86,7 +88,7 @@ L'acceptation **ajoute**. Le vault devient principal si le workspace n'avait rie
 - un vault d'`openVaults`, joignable de partout par construction : l'appel passe, il n'y a rien à proposer ;
 - un vault que vous avez **refusé** : le refus n'est plus reproposé. `retract` est le chemin de retour vers une proposition ; nommer le vault explicitement dans un `confirm_workspace_binding` marche aussi et lève le refus, parce que le nommer, c'est vous qui en reparlez ;
 - une liaison dont le principal n'existe pas sur cette machine : elle est à **réparer**, pas à étendre ;
-- un vault local que le fichier de configuration ne liste plus : il ne peut pas être inscrit dans une liaison, donc le proposer reviendrait à vous tendre un oui qui butera sur un mur ;
+- un vault local que le fichier de configuration ne liste pas — jamais enregistré, ou retiré depuis le démarrage de cette session : il ne peut pas être inscrit dans une liaison, donc le proposer reviendrait à vous tendre un oui qui butera sur un mur ;
 - un déploiement partagé — `OBSIDIAN_ROUTER_READONLY` à une valeur vraie, ou `OBSIDIAN_ROUTER_ALLOWED_VAULTS`, ou `OBSIDIAN_ROUTER_USER_ID` renseignés — où aucun verbe d'acceptation n'existe : proposer serait envoyer contre un mur ;
 - `list_vaults`, qui est un **inventaire et non une offre** : une proposition naît d'un accès, sans quoi vingt vaults non déclarés deviendraient vingt questions d'un coup.
 

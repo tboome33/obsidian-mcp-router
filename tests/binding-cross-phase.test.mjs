@@ -300,10 +300,20 @@ describe('the consent is asked of the FILE, so a sibling session is heard', () =
 });
 
 describe('adopting another session\'s binding adopts ALL of it', () => {
-  test('a REFUSED acceptance leaves the default vault and the lock agreeing with the binding it loaded', async () => {
-    // ► MUTATION WITNESS: make `adoptBinding` assign only `workspaceBinding`
-    //   and `workspaceRefusals`, as the two refresh sites used to, and this
-    //   goes red on the default vault. Nothing else in the suite moves.
+  test('a REFUSED acceptance changes what the session KNOWS and not where it ROUTES', async () => {
+    // ► MUTATION WITNESS: call `adoptRouting` from the preflight, as round 4
+    //   did, and this goes red on the default vault.
+    //
+    // THIS TEST ASSERTED THE OPPOSITE UNTIL ROUND 6, and that is the point
+    // worth keeping. Round 4 found the session half-refreshed and concluded
+    // the refresh should be WIDER — default vault and lock included. Rounds 5
+    // and 6 each found a blocker inside that conclusion, because the preflight
+    // runs on a call that may refuse: it was moving where unqualified calls go
+    // and which vaults answer at all, on the way to writing nothing. The
+    // correct split is narrower, not wider — knowledge follows the file on any
+    // path, routing waits for a successful write — and this witness now pins
+    // that. A test can be green, mutation-killed and still wrong about what it
+    // wants; only a later round says so.
     const vault = await startFakeVault();
     const { dir, configPath } = writeConfig(vault.port);
     const a = startRouter({ configPath, cwd: dir });
@@ -330,21 +340,23 @@ describe('adopting another session\'s binding adopts ALL of it', () => {
       });
       assert.equal(yes.result?.isError, true, `the dead identifier was applied:\n${textOf(yes)}`);
 
-      // THE POINT: A has loaded B's binding. Everything A derives from a
-      // binding must now come from THAT binding — not half from it and half
-      // from the one A started with.
+      // KNOWLEDGE followed the file: A now reports B's binding, so the advice
+      // "re-run the refused call and read what comes back" is true.
       const listed = await a.call(4, 'tools/call', { name: 'list_vaults', arguments: {} });
       const state = JSON.parse(textOf(listed));
       assert.equal(state.workspaceBinding?.vault, 'other', 'the binding was not adopted at all');
+      assert.equal(state.workspaceBinding?.locked, true, 'the binding was adopted without its lock flag');
+
+      // ROUTING did not move, because nothing was written.
       assert.equal(
         state.defaultVault,
-        'other',
-        'the session reports one binding and routes unqualified calls to another',
+        'work',
+        'a call that wrote nothing moved where unqualified calls go',
       );
       assert.equal(
         state.lockedTo,
-        'other',
-        'the session REPORTS a lock it does not enforce — lockedTo is the only field the guard reads',
+        null,
+        'a call that wrote nothing imposed an isolation the user never asked for',
       );
     } finally { a.kill(); b.kill(); }
   });
@@ -404,16 +416,56 @@ describe('adopting another session\'s binding adopts ALL of it', () => {
     } finally { a.kill(); b.kill(); }
   });
 
-  test('a binding CLEARED elsewhere stops this session claiming a binding chose its default', async () => {
-    // ► MUTATION WITNESS: drop the `defaultVaultSource` branch for an
-    //   unresolvable binding and only this goes red.
+  test('ROUTING is adopted from exactly one place, and that place is after the write', () => {
+    // ► THE INVARIANT THE WHOLE SPLIT RESTS ON, so it is pinned by a scan
+    //   rather than left to discipline. Rounds 5 and 6 each found a blocker
+    //   that existed only because routing state moved on a path that could
+    //   still refuse; round 6's was a lock released for a binding the session
+    //   could not even apply. Both become unreachable once `adoptRouting` has
+    //   a single caller and that caller runs after a successful write — which
+    //   is a structural fix, not a guarded branch, and structural fixes need a
+    //   witness that the structure holds.
+    const src = fs.readFileSync(path.join(REPO, 'src/tools/workspace-binding.mjs'), 'utf8');
+    const lines = src.split('\n').map((line, i) => [i + 1, line]);
+    const code = lines.filter(([, line]) => !/^\s*(\*|\/\/)/.test(line));
+    const defs = code.filter(([, line]) => /const adoptRouting\s*=/.test(line));
+    const uses = code.filter(([, line]) => /(?<![\w.])adoptRouting\s*\(/.test(line)
+      && !/const adoptRouting\s*=/.test(line));
+    assert.equal(defs.length, 1, `expected one definition, found ${defs.length}`);
+    assert.equal(
+      uses.length,
+      1,
+      `routing is adopted from ${uses.length} places: lines ${uses.map(([n]) => n).join(', ')}`,
+    );
+
+    // And that one call sits AFTER the write, which here means after the
+    // config transform returned — the line that produces `next`.
+    const writeLine = src.split('\n').findIndex((line) => /const next = updateConfigBindings\(/.test(line)) + 1;
+    assert.ok(writeLine > 0, 'the write site moved; this scan no longer knows where it is');
+    assert.ok(
+      uses[0][0] > writeLine,
+      `routing is adopted at line ${uses[0][0]}, before the write at line ${writeLine}`,
+    );
+
+    // POSITIVE CONTROL: the pattern finds the calls it is meant to find, and
+    // would find a second one. A scan whose regex is dead reads exactly like a
+    // structure that holds.
+    assert.match('    adoptRouting(previous);', /(?<![\w.])adoptRouting\s*\(/);
+    assert.doesNotMatch('    thing.adoptRouting(previous);', /(?<![\w.])adoptRouting\s*\(/);
+  });
+
+  test('a binding CLEARED elsewhere is KNOWN at once, and leaves the repair path armed', async () => {
+    // ► MUTATION WITNESS: make the preflight skip `adoptKnowledge` and this
+    //   goes red on the adopted binding.
     //
-    // "Adopting a binding adopts all of it" was written for a binding that
-    // EXISTS. When the sibling session clears it, there is no binding to adopt
-    // — and the first version then left `defaultVault` untouched while still
-    // reporting that a binding had chosen it. What replaces the default is a
-    // cascade question the refresh deliberately does not answer; what it must
-    // not do is keep asserting a source that is gone.
+    // ROUND 5 MADE THIS BRANCH SET `defaultVaultSource` TO "unknown", AND THAT
+    // WAS WRONG TWICE OVER. It erased a provenance the router actually knew,
+    // while the session went on routing by that very default — "I cannot say"
+    // is not more honest than a wrong answer when you are still acting on the
+    // answer. Worse, it DISARMED the next repair: `clear` re-runs the cascade
+    // only when the source still reads "binding", so relabelling it meant a
+    // later `clear` walked past the stale default it exists to fix. A refusing
+    // call does not repair routing; it must leave the repair possible.
     const vault = await startFakeVault();
     const { dir, configPath } = writeConfig(vault.port);
     const a = startRouter({ configPath, cwd: dir });
@@ -440,11 +492,35 @@ describe('adopting another session\'s binding adopts ALL of it', () => {
 
       const state = JSON.parse(textOf(await a.call(4, 'tools/call', { name: 'list_vaults', arguments: {} })));
       assert.equal(state.workspaceBinding, null, 'the cleared binding was not adopted');
-      assert.notEqual(
+      // Routing is untouched by a call that wrote nothing...
+      assert.equal(state.defaultVault, 'work', 'a refused acceptance moved the default vault');
+      // ...and the source still reads "binding", which is what keeps `clear`
+      // able to re-run the cascade. Asserting this is asserting that the
+      // repair path is still armed; `unknown` here would disarm it silently.
+      assert.equal(
         state.defaultVaultSource?.origin,
         'binding',
-        'the session says a binding chose its default, and there is no binding',
+        'the source was relabelled, so a later clear will walk past this stale default',
       );
+
+      // AND THE REPAIR REALLY WORKS. Measuring it beats asserting the label:
+      // `clear` is the call that repairs routing, and after it the default is
+      // whatever the cascade says — here nothing at all, because clearing the
+      // binding leaves `vaultReach: "declared"` with an empty `openVaults`.
+      const cleanup = await a.call(5, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { clear: true },
+      });
+      assert.notEqual(cleanup.result?.isError, true, textOf(cleanup));
+      const after = JSON.parse(textOf(await a.call(6, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      if (after.defaultVault === undefined || after.defaultVault === null) {
+        assert.equal(after.defaultVaultSource?.origin, 'unset', 'no default, but a source that claims one');
+      } else {
+        assert.ok(
+          (after.vaults || []).some((v) => v.name === after.defaultVault),
+          `after the repair the default "${after.defaultVault}" is not one this session can resolve`,
+        );
+      }
     } finally { a.kill(); b.kill(); }
   });
 });
