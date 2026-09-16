@@ -321,7 +321,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // early and readable answer, and once inside the lock against the FILE, which
   // is the call that DECIDES. A preflight alone would be exactly the race the
   // id exists to close.
-  const resolveAcceptance = (binding) => {
+  const resolveAcceptance = (binding, refusals) => {
     const target = resolveProposalId(args.accept, {
       workspaceKey: key,
       binding,
@@ -346,10 +346,19 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     }
     // A DURABLE REFUSAL OUTRANKS AN ACCEPT, and this is not symmetric with the
     // `vault` path on purpose. Naming a vault explicitly IS the user bringing
-    // it up again, and that drops the refusal. An `accept` answers a proposal —
-    // and a refused vault is never proposed, so an id for one can only have
-    // been derived rather than received.
-    if (registry.workspaceRefusals?.has?.(target)) {
+    // it up again, and that drops the refusal. An `accept` answers a proposal,
+    // and a refused vault is never proposed.
+    //
+    // THE REFUSALS ARE PASSED IN, never read from the live registry here, and
+    // that was a real hole: reading `registry.workspaceRefusals` even inside
+    // the lock meant a refusal ANOTHER PROCESS had just recorded was invisible.
+    // The sequence is concrete — A is handed a proposal for `sci`; B refuses
+    // `sci` without touching the binding, so the digest does not move and the
+    // id still resolves; A accepts, and the stale in-memory Map says nothing.
+    // The earlier comment here also claimed an id for a refused vault could
+    // only have been fabricated, which is simply false: it can have been
+    // RECEIVED, before the refusal. (Codex, round 2 — its blocking finding.)
+    if (refusals?.has?.(target)) {
       throw new Error(
         `confirm_workspace_binding: ${identifierForCall(target)} was REFUSED for this workspace, so `
         + 'it is not proposed and an acceptance for it is not applied. Take the refusal back first '
@@ -361,7 +370,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       ? { target, primary: binding.vault, also: [...(binding.also || []), target] }
       : { target, primary: target, also: [] };
   };
-  const accepted = args.accept === undefined ? null : resolveAcceptance(registry.workspaceBinding);
+  const accepted = args.accept === undefined
+    ? null
+    : resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
 
   const primary = accepted ? accepted.primary : args.vault;
   if (typeof primary !== 'string' || primary.trim() === '') {
@@ -494,15 +505,28 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // means — and the re-derived pair must equal what this transform is about
     // to write, or the write is not the one that was approved.
     if (accepted) {
-      const onDisk = resolveAcceptance(previous);
+      // The FILE's refusals, not the live Map: another process may have
+      // recorded one since this session started, and under `--no-watch` the
+      // copy in memory never learns.
+      const onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd));
       if (onDisk.target !== accepted.target
         || onDisk.primary !== primary
         || onDisk.also.length !== also.length
         || onDisk.also.some((n, i) => n !== also[i])) {
+        // THE LIVE COPY IS REFRESHED BEFORE THE REFUSAL, or the advice in the
+        // message is a loop. Under `--no-watch` this session's registry still
+        // holds the binding it started with, so "re-run the call that was
+        // refused to get a fresh proposal" would mint the SAME dead identifier
+        // from the SAME stale binding, and the next acceptance would fail
+        // identically, forever. (Codex, round 2.) Read from the config inside
+        // the lock, which is the freshest thing there is.
+        registry.workspaceBinding = previous;
+        registry.workspaceRefusals = readRefusals(cfg, cwd);
         throw new Error(
           'confirm_workspace_binding: this workspace\'s binding changed while the acceptance was '
-          + 'being applied, so it was NOT applied. Nothing was changed. Re-run the call that was '
-          + 'refused to get a fresh proposal.',
+          + 'being applied, so it was NOT applied. Nothing was changed. This session has been '
+          + 'refreshed to the binding as it now stands: re-run the call that was refused, and the '
+          + 'proposal it hands you will be a new one.',
         );
       }
     }

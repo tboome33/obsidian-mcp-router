@@ -330,43 +330,48 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rt.kill(); }
   });
 
-  test('a vault the user REFUSED cannot be accepted, even with a valid identifier', async () => {
-    // A refused vault is never PROPOSED, so an id for one can only have been
-    // derived rather than received. The refusal outranks it, and the message
-    // names `retract` as the way back — deliberately NOT symmetric with naming
-    // the vault explicitly, which IS the user bringing it up again.
+  test('a REFUSAL recorded by another process beats an identifier that was received before it', async () => {
+    // ► THE THIRD TEST THIS SESSION THAT WAS GREEN FOR THE WRONG REASON, and
+    //   the reviewer was right both times. The first version built a SECOND
+    //   workspace to add the refusal, which meant a different canonical key,
+    //   which meant the identifier could not resolve at all — the refusal check
+    //   was never reached, and deleting it entirely would have left the test
+    //   green. It asserted a refusal, not the reason for it.
+    //
+    //   The real shape needs one workspace and two processes, because the whole
+    //   point is a refusal this session cannot see: A is handed a proposal for
+    //   `sci`, B refuses `sci` WITHOUT touching the binding — so the digest
+    //   does not move and A's identifier still resolves perfectly — and A then
+    //   says yes. Only reading the refusals from the FILE inside the lock can
+    //   stop it. And the comment that used to justify this check was wrong too:
+    //   the identifier was not fabricated, it was RECEIVED, before the refusal.
     const vault = await startFakeVault();
-    const clean = writeConfig(vault.port);
-    const rtA = startRouter({ configPath: clean.configPath, cwd: clean.dir });
-    let proposalId;
+    const { dir, configPath, key } = writeConfig(vault.port);
+    const rtA = startRouter({ configPath, cwd: dir });
+    const rtB = startRouter({ configPath, cwd: dir });
     try {
       await handshake(rtA);
-      proposalId = (await proposalFor(rtA, 'sci')).proposalId;
-    } finally { rtA.kill(); }
-
-    // The SAME workspace path, so the id still resolves — only the refusal is
-    // added. (`writeConfig` makes a fresh dir, so the binding is rewritten at
-    // the new key; the id is recomputed below from that same shape.)
-    const refused = writeConfig(vault.port, { refuse: 'sci' });
-    const rtB = startRouter({ configPath: refused.configPath, cwd: refused.dir });
-    try {
       await handshake(rtB);
-      // The id from the other workspace cannot match this one's key, so this
-      // also pins that a foreign id is refused; the refusal case is asserted
-      // through the ROUTE that a same-workspace id would take.
-      const res = await rtB.call(2, 'tools/call', {
+      const proposal = await proposalFor(rtA, 'sci');
+
+      const no = await rtB.call(2, 'tools/call', {
         name: 'confirm_workspace_binding',
-        arguments: { accept: proposalId, open: false },
+        arguments: { refuse: 'sci' },
       });
-      assert.equal(res.result?.isError, true);
-      assert.deepEqual(bindingOnDisk(refused.configPath, refused.key).also, ['writable-ref', 'locked-ref']);
-      // And the refusal still silences the proposal on the read path.
-      const read = await rtB.call(3, 'tools/call', {
-        name: 'get_file',
-        arguments: { vault: 'sci', path: 'wiki/anything.md' },
+      assert.notEqual(no.result?.isError, true, textOf(no));
+      // The binding itself is untouched, so A's identifier is still valid.
+      assert.deepEqual(bindingOnDisk(configPath, key).also, ['writable-ref', 'locked-ref']);
+
+      const yes = await rtA.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
       });
-      assert.equal(read.result?._meta?.bindingProposal, undefined);
-      assert.match(textOf(read), /already REFUSED/);
-    } finally { rtB.kill(); }
+      assert.equal(yes.result?.isError, true, 'a refusal recorded by another process was ignored');
+      // The REASON matters: a refusal for any other cause would mean the check
+      // under test never ran.
+      assert.match(textOf(yes), /was REFUSED for this workspace/);
+      assert.match(textOf(yes), /retract/);
+      assert.ok(!bindingOnDisk(configPath, key).also.includes('sci'), 'the accept wrote anyway');
+    } finally { rtA.kill(); rtB.kill(); }
   });
 });
