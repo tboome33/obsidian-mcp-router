@@ -80,6 +80,7 @@ import {
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
+import { resolveProposalId } from '../helpers/binding-proposal.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -181,7 +182,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // other arguments write a binding. One call, one act — a call that both
   // bound and refused would be writing two answers to one question, and
   // whichever this function happened to apply first would win in silence.
-  const verbs = ['refuse', 'retract'].filter((k) => args[k] !== undefined);
+  // `accept` joins them: answering a proposal is one act, and the answer is a
+  // single token the model copies. Combining it with `vault` or `also` would be
+  // the caller composing a binding again, which is the whole thing the proposal
+  // exists to stop.
+  const verbs = ['refuse', 'retract', 'accept'].filter((k) => args[k] !== undefined);
   if (verbs.length) {
     const others = ['vault', 'also', 'locked', 'clear'].filter((k) => args[k] !== undefined);
     if (verbs.length > 1 || others.length) {
@@ -192,10 +197,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       );
     }
     // The gated refusal is at the top of this function now, for every verb.
-    const ctx = { registry, cwd, key, configPath, io, upsertDotenv };
-    return verbs[0] === 'refuse'
-      ? refuseProposal(ctx, refusalName(args.refuse, 'refuse'))
-      : retractRefusal(ctx, refusalName(args.retract, 'retract'));
+    // `accept` does NOT return here: it resolves to a binding and then flows
+    // through the same write path as an ordinary confirmation, so that every
+    // invariant that path has earned — the lock tri-state, the tier carry-over,
+    // the promotion re-check inside the lock, the live-registry apply, the hint
+    // refresh, the open verdicts — applies to it without being written twice.
+    if (verbs[0] !== 'accept') {
+      const ctx = { registry, cwd, key, configPath, io, upsertDotenv };
+      return verbs[0] === 'refuse'
+        ? refuseProposal(ctx, refusalName(args.refuse, 'refuse'))
+        : retractRefusal(ctx, refusalName(args.retract, 'retract'));
+    }
   }
 
   if (args.clear === true) {
@@ -295,7 +307,63 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     };
   }
 
-  const primary = args.vault;
+  // ACCEPT — a proposal id resolves to a vault AND to the binding it joins.
+  //
+  // The id is a hash of (workspace, vault, role, digest of the binding), so it
+  // only resolves against the binding it was minted for. That is the whole
+  // concurrency guarantee: if another session added a secondary, set a tier or
+  // cleared the binding since the proposal was handed out, no vault's id
+  // matches any more and the yes is refused rather than applied to a world that
+  // no longer exists.
+  //
+  // Called TWICE, deliberately, and this file already works that way for the
+  // locked-secondary promotion: once here against the LIVE binding, for an
+  // early and readable answer, and once inside the lock against the FILE, which
+  // is the call that DECIDES. A preflight alone would be exactly the race the
+  // id exists to close.
+  const resolveAcceptance = (binding) => {
+    const target = resolveProposalId(args.accept, {
+      workspaceKey: key,
+      binding,
+      vaultNames: registry.vaults.map((v) => v.name),
+    });
+    if (!target) {
+      throw new Error(
+        'confirm_workspace_binding: this proposal no longer matches this workspace\'s binding. '
+        + 'Either the binding changed since the proposal was made — another session added a '
+        + 'secondary, set a tier, or cleared it — or the identifier is not one this router minted. '
+        + 'Nothing was changed. Re-run the call that was refused: it will hand you a fresh proposal '
+        + 'for the binding as it stands now.',
+      );
+    }
+    // A vault this workspace already declares never produced a proposal, and
+    // accepting one for it would be answering a question nobody asked.
+    if (binding && (binding.vault === target || (binding.also || []).includes(target))) {
+      throw new Error(
+        `confirm_workspace_binding: this workspace already declares ${identifierForCall(target)}, `
+        + 'so there is nothing to accept. Nothing was changed.',
+      );
+    }
+    // A DURABLE REFUSAL OUTRANKS AN ACCEPT, and this is not symmetric with the
+    // `vault` path on purpose. Naming a vault explicitly IS the user bringing
+    // it up again, and that drops the refusal. An `accept` answers a proposal —
+    // and a refused vault is never proposed, so an id for one can only have
+    // been derived rather than received.
+    if (registry.workspaceRefusals?.has?.(target)) {
+      throw new Error(
+        `confirm_workspace_binding: ${identifierForCall(target)} was REFUSED for this workspace, so `
+        + 'it is not proposed and an acceptance for it is not applied. Take the refusal back first '
+        + `with confirm_workspace_binding({ retract: ${identifierForCall(target)} }), or bind it `
+        + 'explicitly by name. Nothing was changed.',
+      );
+    }
+    return binding
+      ? { target, primary: binding.vault, also: [...(binding.also || []), target] }
+      : { target, primary: target, also: [] };
+  };
+  const accepted = args.accept === undefined ? null : resolveAcceptance(registry.workspaceBinding);
+
+  const primary = accepted ? accepted.primary : args.vault;
   if (typeof primary !== 'string' || primary.trim() === '') {
     throw new Error(
       'confirm_workspace_binding: `vault` is required (the vault this workspace should be bound to). '
@@ -333,7 +401,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // helper decides what a vault is CALLED, and only one of them should own
   // the second question.
   const known = new Map(registry.vaults.map((v) => [v.name, v]));
-  const requested = [primary, ...(Array.isArray(args.also) ? args.also : [])];
+  const requested = accepted
+    ? [accepted.primary, ...accepted.also]
+    : [primary, ...(Array.isArray(args.also) ? args.also : [])];
   const also = requested.slice(1).filter((n) => n !== primary);
 
   /**
@@ -415,6 +485,26 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // safe. (Codex, round on fd9e1cd.)
     if (isPromotionOfLockedSecondaryOnDisk(primary, previous, cfg)) {
       throw lockedSecondaryPromotionError(promotionRefusal(primary));
+    }
+    // THE ACCEPTANCE IS RE-RESOLVED AGAINST THE FILE, and this is the call that
+    // decides. The preflight above answered from the live registry; between it
+    // and this lock a sibling session may have changed the binding, and under
+    // `--no-watch` the live copy never learns. Re-resolving here throws if no
+    // vault's id matches any more — which is precisely what "the binding moved"
+    // means — and the re-derived pair must equal what this transform is about
+    // to write, or the write is not the one that was approved.
+    if (accepted) {
+      const onDisk = resolveAcceptance(previous);
+      if (onDisk.target !== accepted.target
+        || onDisk.primary !== primary
+        || onDisk.also.length !== also.length
+        || onDisk.also.some((n, i) => n !== also[i])) {
+        throw new Error(
+          'confirm_workspace_binding: this workspace\'s binding changed while the acceptance was '
+          + 'being applied, so it was NOT applied. Nothing was changed. Re-run the call that was '
+          + 'refused to get a fresh proposal.',
+        );
+      }
     }
     const locked = typeof args.locked === 'boolean'
       ? args.locked
