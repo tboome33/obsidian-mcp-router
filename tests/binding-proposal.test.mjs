@@ -69,13 +69,24 @@ describe('bindingDigest — what must move the digest, and what must not', () =>
     assert.notEqual(bindingDigest({ ...BINDING, also: ['alpha', 'alpha', 'beta'] }), bindingDigest(BINDING));
   });
 
-  test('moving a TIER moves it — this is the case the whole lot exists to catch', () => {
-    // ► MUTATION WITNESS: drop `al`/`aw` from the canonical shape and only this
-    //   test goes red. Without it, another session could promote a secondary to
-    //   writable between the proposal and the yes, and the yes would still
-    //   apply against a binding it never described.
-    assert.notEqual(bindingDigest({ ...BINDING, alsoLocked: [], alsoWritable: ['alpha', 'beta'] }), bindingDigest(BINDING));
-    assert.notEqual(bindingDigest({ ...BINDING, alsoLocked: ['alpha'], alsoWritable: ['beta'] }), bindingDigest(BINDING));
+  // ONE TIER AT A TIME, and that matters. The first version moved `alsoLocked`
+  // and `alsoWritable` together in every assertion, so dropping EITHER one from
+  // the hashed shape left the test green — it only ever proved that at least
+  // one of the two counted. (Codex, review of 7571f77.)
+  test('moving alsoLocked ALONE moves it', () => {
+    // ► MUTATION WITNESS: drop `al` from the canonical shape and only this
+    //   test goes red.
+    assert.notEqual(bindingDigest({ ...BINDING, alsoLocked: ['alpha'] }), bindingDigest(BINDING));
+    assert.notEqual(bindingDigest({ ...BINDING, alsoLocked: [] }), bindingDigest(BINDING));
+  });
+
+  test('moving alsoWritable ALONE moves it', () => {
+    // ► MUTATION WITNESS: drop `aw` from the canonical shape and only this
+    //   test goes red. Without both witnesses, another session could promote a
+    //   secondary to writable between the proposal and the yes, and the yes
+    //   would still apply against a binding it never described.
+    assert.notEqual(bindingDigest({ ...BINDING, alsoWritable: ['beta'] }), bindingDigest(BINDING));
+    assert.notEqual(bindingDigest({ ...BINDING, alsoWritable: [] }), bindingDigest(BINDING));
   });
 
   test('flipping `locked` moves it', () => {
@@ -128,12 +139,43 @@ describe('proposalIdFor — derived, never remembered', () => {
   });
 
   test('the framing is unambiguous — a boundary shifted between parts is a different id', () => {
-    // Joined by a separator instead of length-framed, these two tuples would
-    // hash identically and two different proposals would share an id.
+    // Plain concatenation would make these two tuples hash identically.
     assert.notEqual(
       proposalIdFor({ workspaceKey: '/w', vault: 'ab', role: 'c', digest: 'd' }),
       proposalIdFor({ workspaceKey: '/w', vault: 'a', role: 'bc', digest: 'd' }),
     );
+  });
+
+  test('...and it survives a value that CONTAINS the separator a naive framing would use', () => {
+    // The case above is passed by `join('|')` too, because no part contains a
+    // pipe. A vault name may contain anything a filesystem allows. (Codex.)
+    // The NUL is BUILT, never typed. A unicode escape for it, written through
+    // an editing tool, lands in the file as a real control byte — the defect
+    // v0.95.0 closed and `tests/source-control-bytes.test.mjs` now refuses.
+    // This very comment contained one on its first draft, and the scanner
+    // caught it: the sentence explaining the trap had fallen into it.
+    for (const sep of ['|', ':', ',', String.fromCharCode(0), '"', '\\']) {
+      assert.notEqual(
+        proposalIdFor({ workspaceKey: '/w', vault: `a${sep}b`, role: 'r', digest: 'd' }),
+        proposalIdFor({ workspaceKey: '/w', vault: 'a', role: `b${sep}r`, digest: 'd' }),
+        `a name containing ${JSON.stringify(sep)} collided with a shifted boundary`,
+      );
+    }
+  });
+
+  test('two LONE SURROGATES do not collide — the framing must be lossless, not just unambiguous', () => {
+    // ► The defect Codex found in the first version. Length-prefixing framed
+    //   these identically (same length), and hashing as UTF-8 folded each lone
+    //   surrogate into the SAME replacement character — so two different vault
+    //   names minted the same proposal id, with no cryptography involved.
+    const a = String.fromCharCode(0xD800);
+    const b = String.fromCharCode(0xD801);
+    assert.notEqual(a, b);
+    assert.notEqual(
+      proposalIdFor({ workspaceKey: '/w', vault: a, role: 'r', digest: 'd' }),
+      proposalIdFor({ workspaceKey: '/w', vault: b, role: 'r', digest: 'd' }),
+    );
+    assert.notEqual(bindingDigest({ vault: a, also: [] }), bindingDigest({ vault: b, also: [] }));
   });
 });
 

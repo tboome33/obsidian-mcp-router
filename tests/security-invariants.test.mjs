@@ -3203,6 +3203,17 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // point — the number that decides is a property of the regex, not of what
     // the machine happened to be doing.
     //
+    // WHAT THIS DOES NOT CLAIM. The yardstick is the most expensive linear case
+    // AMONG THE SHAPES THIS TREE CONTAINS, not among all possible ones: a
+    // legitimately linear pattern with a large constant — a bounded lookahead
+    // such as `\[(?=[\s\S]{0,4096}X)`, or a dozen capture groups per
+    // character — could exceed the multiple while being O(n). None exists in
+    // this tree (the measured maximum is 2.2x), and if one is added the guard
+    // reports the multiple it measured, which is what a human needs to judge
+    // it. A false positive that names its own number is a conversation; a
+    // flake is not. And this remains a cost test at a fixed size, not a proof
+    // of asymptotic complexity — it never was.
+    //
     // MEASURED ON THIS TREE, 2026-09-16, and this is why the line sits where it
     // does. Idle: the worst of the 68 regexes in `src`/`scripts`/`hooks`/`bin`
     // costs 1.0–1.6x the yardstick. Under 32 saturating processes on 32 cores:
@@ -3225,8 +3236,12 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     //     time, so the smallest reading is the one least polluted by it.
     //   - THE DENOMINATOR IS CLAMPED at NOISE_FLOOR_MS. Two sub-millisecond
     //     readings have a meaningless ratio: 0.05 ms against 0.002 ms is 25x
-    //     while both are free. Clamping acquits that, and it makes a quadratic
-    //     with a small constant convict sooner rather than later.
+    //     while both are free. Clamping acquits that. It is a RAISED BAR, not a
+    //     lowered one — an earlier comment here claimed the opposite, and Codex
+    //     was right to call it: a bigger denominator can only DELAY a
+    //     conviction. The cost is that a quadratic whose yardstick is under
+    //     0.3 ms must reach 3.6 ms before it is caught; at these bomb sizes the
+    //     cheapest quadratic measured here is 20 ms, so the bar is paid for.
     //   - AN ABSOLUTE CEILING STAYS, for the catastrophic case only, so a regex
     //     that is already hopeless is reported without being compared. Measuring
     //     twice unconditionally was tried once and was worse than the flake: a
@@ -3241,23 +3256,39 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // live quadratic is deliberately NOT asserted — that depends on the machine,
     // and pinning it was itself a source of flake.
     const SAMPLES = 3;
-    const CONTROL_MULTIPLE = Number(process.env.REDOS_GUARD_K || 12);
+    // NOT configurable by an env var. It was, while the line was being
+    // calibrated, and that is a contradiction: the fixed-number fixtures below
+    // encode this exact value, so `REDOS_GUARD_K=20` would have made the guard
+    // fail on its own control rather than on the tree. (Codex.)
+    const CONTROL_MULTIPLE = 12;
     const CATASTROPHIC_MS = 50;   // ~7x the worst reading a linear regex has ever produced here
     const NOISE_FLOOR_MS = 0.3;   // below this a reading is scheduler grain, not cost
     const timeOnce = (re, bomb) => ms(() => { re.lastIndex = 0; let n = 0; while (re.exec(bomb) && n++ < 1e5); });
     const sample = (re, bomb) => {
+      // THE CEILING IS CHECKED AFTER EVERY PASS, not only the first. Checking
+      // it once let readings of 40, 80, 80 ms run all three passes: the first
+      // cleared the ceiling and the loop never looked again. (Codex.) Now any
+      // pass that goes over stops the sampling where it is — a regex that has
+      // proved expensive is never given another full run for the sake of a
+      // tidier average, and the minimum kept is the honest one so far.
       let best = timeOnce(re, bomb);
-      // Catastrophic: confirm once, then stop. Never a third pass, never the
-      // bigger bomb.
-      if (best > CATASTROPHIC_MS) return Math.min(best, timeOnce(re, bomb));
-      for (let i = 1; i < SAMPLES; i += 1) best = Math.min(best, timeOnce(re, bomb));
+      for (let i = 1; i < SAMPLES && best <= CATASTROPHIC_MS; i += 1) {
+        best = Math.min(best, timeOnce(re, bomb));
+      }
       return best;
     };
     // The yardstick: a bare character class. It cannot backtrack, so it is
     // linear by construction, and because it matches at EVERY position of every
     // bomb shape it is the most expensive linear case there is. A fresh object
     // each time, so no `lastIndex` or JIT state carries between measurements.
-    const CONTROL = () => new RegExp('[\\[\\]]', 'g');
+    // IT MATCHES EVERY CHARACTER OF EVERY BOMB, and that had to be fixed:
+    // `[\[\]]` matches neither `!` nor `^`, so on the embed bomb it fired on 2
+    // characters in 3 and on the citation bomb on 1 in 2. A candidate that
+    // really does match everywhere then performed up to 2x the yardstick's
+    // `exec` calls for honest reasons, and the multiple depended on which bomb
+    // shape it was compared on. The bombs are built from `[`, `]`, `!` and `^`
+    // alone, so this class covers all four. (Codex.)
+    const CONTROL = () => new RegExp('[![^\\]\\[]', 'g');
     let worstSeen = 0;
     let worstWhere = '';
     // THE DECISION, SEPARATED FROM THE MEASUREMENT.
@@ -3274,10 +3305,17 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     //
     /** @returns {string|null} why it is bad, or null when it is linear enough. */
     const verdictFor = (t, control, shape, len) => {
-      if (t > CATASTROPHIC_MS) {
+      const times = t / Math.max(control, NOISE_FLOOR_MS);
+      // THE CATASTROPHIC BRANCH IS RELATIVE TOO, and that was a real hole: a
+      // bare `t > CATASTROPHIC_MS` convicts a candidate that cost exactly what
+      // the yardstick cost, if the machine made both of them slow. Codex put it
+      // as `verdictFor(51, 51, …)`, and it was right — a residual absolute
+      // threshold is still an absolute threshold. Requiring BOTH keeps the
+      // branch's purpose (say "hopeless" rather than "12x" when a regex is
+      // beyond comparison) without letting load alone convict anything.
+      if (t > CATASTROPHIC_MS && times > CONTROL_MULTIPLE) {
         return `took ${t.toFixed(1)} ms on the ${shape} bomb (${len} chars)`;
       }
-      const times = t / Math.max(control, NOISE_FLOOR_MS);
       if (times > CONTROL_MULTIPLE) {
         return `took ${t.toFixed(2)} ms on the ${shape} bomb where a provably linear regex `
           + `took ${control.toFixed(2)} ms on the same bomb at the same moment (${times.toFixed(1)}x)`;
@@ -3394,15 +3432,13 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // difference between "nothing was found" and "the instrument still works".
     //
     // The NEGATIVE control is the exact pattern that made this guard flaky in
-    // the first place: a bare class that matches at every position, so it is
-    // both provably linear and the most expensive linear case there is.
+    // the first place: `/[\\[\]]/`, a bare class that cannot backtrack.
     //
-    // The POSITIVE controls are the embed family this guard already measured as
-    // quadratic (1.3 / 5.0 / 20.0 / 79.8 ms at 4 / 8 / 16 / 32 KiB). It is run
-    // TWICE, at two scales, because `judge` has two ways to convict and a
-    // control that only ever exercises one leaves the other unproven: at the
-    // standard sizes it trips the absolute ceiling, and at a quarter of them it
-    // stays cheap enough that only the GROWTH RATIO can catch it.
+    // The POSITIVE control is the embed family this guard already measured as
+    // quadratic (1.3 / 5.0 / 20.0 / 79.8 ms at 4 / 8 / 16 / 32 KiB). ONE scale,
+    // and WHICH branch convicts it is not asserted — see `verdictFor`. The two
+    // branches are proved on fixed numbers instead, because pinning a branch to
+    // a live measurement was itself load-dependent.
     // Frozen BEFORE the controls run, or the deliberately quadratic ones below
     // would set it and the number would describe the fixture, not the tree.
     const worstTree = worstSeen;
@@ -3445,8 +3481,16 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     );
     assert.ok(
       branchAbsolute && /^took 80\.0 ms/.test(branchAbsolute),
-      'BRANCH DEAD: a catastrophic reading was not stopped before the comparison.\n'
-      + `  That path is what keeps an exponential regex from being run twice — got: ${branchAbsolute}`,
+      'BRANCH DEAD: a reading past the catastrophic ceiling, AND far above the yardstick, was not\n'
+      + '  reported as hopeless rather than as a multiple. (This asserts the WORDING of the verdict.\n'
+      + '  How few passes such a regex gets is `sample`\'s job, not this one\'s.)\n'
+      + `  Got: ${branchAbsolute}`,
+    );
+    assert.equal(
+      verdictFor(51, 51, 'fixture', 16384), null,
+      'TOO STRICT: a candidate that cost exactly what the yardstick cost was convicted because both\n'
+      + '  were slow. A residual absolute threshold is still an absolute threshold, and load alone\n'
+      + '  must never convict anything.',
     );
     assert.equal(
       branchAcquits, null,

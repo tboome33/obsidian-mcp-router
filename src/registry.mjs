@@ -686,10 +686,9 @@ export async function loadRegistry({ configPath } = {}) {
       // will answer afterwards; that is a different message, at a different
       // moment.
       if (!isVaultReachable(v.name, this)) {
-        const message = `Vault "${v.name}" is registered but not reachable from this workspace `
+        const preamble = `Vault "${v.name}" is registered but not reachable from this workspace `
           + '(vaultReach: "declared" is active, and this workspace\'s binding does not name it, '
-          + 'nor is it in `openVaults`). Bind this workspace to it with confirm_workspace_binding, '
-          + 'add it to `openVaults` in config.json, or address a vault this workspace already declares.';
+          + 'nor is it in `openVaults`).';
         // THE REFUSAL CARRIES A PROPOSAL — unless the user already said no.
         // (Decision proposition-de-liaison-a-l-acces §2 and §3.)
         //
@@ -704,13 +703,54 @@ export async function loadRegistry({ configPath } = {}) {
         // The object is built here and rendered nowhere: turning it into an MCP
         // result happens at the ONE conversion point, the CallTool catch block,
         // so no tool can compose a reply that forgets it.
+        // AND THE SENTENCE CHANGES WITH IT, not only the object.
+        //
+        // The first version dropped `bindingProposal` for a refused vault and
+        // left the prose saying "bind this workspace to it with
+        // confirm_workspace_binding" — an invitation to re-propose exactly what
+        // the user had turned down, in the channel this lot declares
+        // AUTHORITATIVE. Silence that is only structured is not silence.
+        // (Codex, review of 7571f77.)
         const refused = this.workspaceRefusals?.has?.(v.name) === true;
+        if (refused) {
+          throw declarationRequiredError(
+            `${preamble} You already REFUSED this vault for this workspace, so it is not being proposed `
+            + 'again. If you want it after all, take the refusal back first with '
+            + 'confirm_workspace_binding({ retract: … }); otherwise address a vault this workspace '
+            + 'already declares.',
+            null,
+          );
+        }
+        // A BINDING WHOSE PRIMARY THIS MACHINE DOES NOT HAVE IS ONE TO REPAIR,
+        // NOT ONE TO EXTEND. `proposedRoleFor` answers "secondary" for it and
+        // the prose would read "the primary stays <a vault that does not
+        // exist>" — an offer to add a secondary to a binding that cannot
+        // resolve. The full diagnostic is Phase 6 of the roadmap; until then
+        // this refuses to guess, which is strictly better than guessing wrong.
+        // (Codex, same review.)
+        const primary = this.workspaceBinding?.vault;
+        const brokenPrimary = typeof primary === 'string' && primary !== ''
+          && !this.vaults.some((x) => x.name === primary);
+        if (brokenPrimary) {
+          throw declarationRequiredError(
+            `${preamble} This workspace's binding names "${primary}" as its primary, and this machine `
+            + 'has no such vault, so the binding needs repairing before anything can be added to it. '
+            + 'Re-confirm it with confirm_workspace_binding, naming a registered primary and the '
+            + 'secondaries you want to keep.',
+            null,
+          );
+        }
         throw declarationRequiredError(
-          message,
-          refused ? null : buildBindingProposal({
+          `${preamble} Bind this workspace to it with confirm_workspace_binding, add it to `
+          + '`openVaults` in config.json, or address a vault this workspace already declares.',
+          buildBindingProposal({
             vault: v.name,
             binding: this.workspaceBinding,
             workspaceKey: this.workspaceKey,
+            // A REMOTE vault has no local folder, and the opener skips anything
+            // without one — so promising a window for it would be a promise the
+            // accept path cannot keep. (Codex, same review.)
+            willOpen: Boolean(v.path),
           }),
         );
       }

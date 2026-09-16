@@ -68,7 +68,7 @@ async function startFakeVault() {
  * healthy, and declared by nobody. `vaultReach: "declared"` with an empty
  * `openVaults` is the configuration Roland actually runs.
  */
-function writeConfig(port, { refuseSci = false } = {}) {
+function writeConfig(port, { refuseSci = false, primary = 'work' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'binding-proposal-e2e-'));
   tmpDirs.push(dir);
   const configPath = path.join(dir, 'config.json');
@@ -76,7 +76,7 @@ function writeConfig(port, { refuseSci = false } = {}) {
   const remote = (name) => ({ name, baseUrl, apiKey: API_KEY, timeoutMs: 5000 });
   const key = canonicalWorkspaceKey(dir);
   const binding = {
-    vault: 'work',
+    vault: primary,
     also: ['writable-ref', 'locked-ref'],
     locked: false,
     alsoWritable: ['writable-ref'],
@@ -196,6 +196,36 @@ describe('E2E: a refusal reaches the client CARRYING its proposal', () => {
       assert.equal(res.result?._meta?.errorCategory, 'permission');
       assert.equal(res.result?._meta?.isRetryable, false);
       assert.equal(res.result?._meta?.kind, 'workspace_declaration_required');
+
+      // AND IT DOES NOT PROMISE A WINDOW IT CANNOT OPEN. Every vault here is a
+      // REMOTE entry, so it has no local folder and the opener skips it — a
+      // proposal saying "accepting also opens the vault in Obsidian" would be
+      // announcing something the accept path cannot do. (Codex.)
+      assert.equal(meta.willOpen, false, 'a remote vault was promised an Obsidian window');
+      assert.ok(!/also opens the vault in Obsidian/.test(text), text);
+    } finally { rt.kill(); }
+  });
+
+  test('a binding whose PRIMARY this machine does not have is one to repair, and gets no proposal', async () => {
+    // `proposedRoleFor` answers "secondary" for such a binding, so the prose
+    // would have read "the primary stays <a vault that does not exist>" — an
+    // offer to extend a binding that cannot resolve. (Codex.) The full
+    // diagnostic is Phase 6; refusing to guess is what ships until then.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, { primary: 'gone-from-this-machine' });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', {
+        name: 'get_file',
+        arguments: { vault: 'sci', path: 'wiki/anything.md' },
+      });
+      assert.equal(res.result?.isError, true);
+      const text = textOf(res);
+      assert.ok(!text.includes('BindingProposal:'), `a broken binding was offered an extension:\n${text}`);
+      assert.equal(res.result?._meta?.bindingProposal, undefined);
+      assert.match(text, /needs repairing/);
+      assert.match(text, /gone-from-this-machine/);
     } finally { rt.kill(); }
   });
 
@@ -246,6 +276,16 @@ describe('E2E: a refusal reaches the client CARRYING its proposal', () => {
       assert.ok(!text.includes('BindingProposal:'), 'a refused vault was proposed again in the text');
       assert.ok(!text.includes('confirm_workspace_binding({ accept:'), 'a refused vault was handed an accept call');
       assert.equal(res.result?._meta?.bindingProposal, undefined, 'a refused vault was proposed again in _meta');
+      // AND THE PROSE MUST FALL SILENT TOO. Dropping the object while the text
+      // still said "bind this workspace to it with confirm_workspace_binding"
+      // left the invitation standing in the channel this lot calls
+      // authoritative — the object was silent and the guard was not. (Codex.)
+      assert.ok(
+        !/[Bb]ind this workspace to it/.test(text),
+        `the text still invites the binding of a refused vault:\n${text}`,
+      );
+      assert.match(text, /already REFUSED/);
+      assert.match(text, /retract/);
     } finally { rt.kill(); }
   });
 
@@ -260,6 +300,13 @@ describe('E2E: a refusal reaches the client CARRYING its proposal', () => {
         arguments: { vault: 'work', path: 'wiki/anything.md' },
       });
       const text = textOf(res);
+      // THE CALL MUST HAVE SUCCEEDED, not merely avoided two phrases. Asserting
+      // the absence of fragments passes just as well on a validation error, an
+      // auth failure, or a JSON-RPC reply with no result at all — a green for
+      // the wrong reason. So: no error flag, and the fake vault's own content
+      // came back. (Codex.)
+      assert.notEqual(res.result?.isError, true, `the call failed instead of succeeding:\n${text}`);
+      assert.match(text, /# hello/, `the vault's content did not come back:\n${text.slice(0, 300)}`);
       assert.ok(!text.includes('not reachable from this workspace'), text.slice(0, 300));
       assert.ok(!text.includes('BindingProposal:'));
     } finally { rt.kill(); }

@@ -72,17 +72,25 @@ const PROPOSAL_ID_HEX = 32;
  * filesystem allows, so any printable separator can appear inside a part and
  * make two different tuples hash identically. A control character would frame
  * it, but typing one into source is exactly the invisible-bytes defect this
- * repository closed in v0.95.0 and now scans for. Length-prefixing each part
- * is unambiguous, all-printable, and needs no escaping.
+ * repository closed in v0.95.0 and now scans for.
+ *
+ * LENGTH-PREFIXING WAS THE FIRST ANSWER AND IT WAS NOT LOSSLESS. Codex found
+ * the hole: `String.fromCharCode(0xD800)` and `String.fromCharCode(0xD801)` are
+ * different strings of the SAME length, and `createHash().update(s, 'utf8')`
+ * turns each lone surrogate into the same replacement character. Same frame,
+ * same bytes, same id for two different tuples — a collision that needs no
+ * cryptography, only a vault named with an unpaired surrogate.
+ *
+ * `JSON.stringify` of the array answers both halves at once. It is unambiguous
+ * (every part is quoted and every quote inside it escaped), and since ES2019 it
+ * is well-formed: a lone surrogate comes back as its `\udXXX` escape rather
+ * than being folded into U+FFFD, so the two strings above frame differently.
  *
  * @param {string[]} parts
  * @returns {string}
  */
 function frame(parts) {
-  return parts.map((p) => {
-    const s = String(p);
-    return `${s.length}:${s}`;
-  }).join('');
+  return JSON.stringify(parts.map(String));
 }
 
 const sha256Hex = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
@@ -185,6 +193,35 @@ export function buildBindingProposal({ vault, binding = null, workspaceKey = nul
     accept: { tool: 'confirm_workspace_binding', args: { accept: proposalId } },
     refuse: { tool: 'confirm_workspace_binding', args: { refuse: String(vault) } },
   };
+}
+
+/**
+ * Which vault, if any, a proposal id names — given the binding as it is RIGHT
+ * NOW.
+ *
+ * The id is a hash, so it cannot be read back. It does not need to be: the role
+ * and the digest depend only on the binding, so for a given binding there is
+ * exactly ONE id per vault, and finding the vault is a scan of the registry's
+ * names. A handful of hashes, and no table of pending proposals anywhere.
+ *
+ * A null answer is not "unknown vault". It means no vault's id matches the
+ * binding as it stands, which is the same thing as "the binding moved since
+ * this proposal was minted" — another session added a secondary, set a tier,
+ * or cleared the binding. That is precisely the case the yes must not be
+ * applied to, and the caller turns it into a refusal rather than a guess.
+ *
+ * @param {string} proposalId
+ * @param {{ workspaceKey?: string|null, binding?: object|null, vaultNames: string[] }} ctx
+ * @returns {string|null} the vault name, or null when nothing matches
+ */
+export function resolveProposalId(proposalId, { workspaceKey = null, binding = null, vaultNames = [] }) {
+  if (typeof proposalId !== 'string' || proposalId === '') return null;
+  const digest = bindingDigest(binding);
+  const role = proposedRoleFor(binding);
+  for (const name of vaultNames) {
+    if (proposalIdFor({ workspaceKey, vault: name, role, digest }) === proposalId) return name;
+  }
+  return null;
 }
 
 /**
