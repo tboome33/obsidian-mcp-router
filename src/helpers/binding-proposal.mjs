@@ -272,8 +272,22 @@ export function renderProposalLines(proposal) {
   const lines = [
     `BindingProposal: this workspace does not declare vault ${safeForMessage(proposal.vault, 120)}.`,
     `Proposed role: ${role} (${where}).`,
-    `Accepting grants: ${safeForMessage(proposal.grants, 400)}`,
   ];
+  // A FIRST BINDING NAMES THE DIRECTORY IT WOULD BIND. The decision asks for
+  // "never a proposal targeting a workspace that does not exist or was
+  // inferred", and the Desktop chat is the case it has in mind: that server
+  // starts in the application's own folder and belongs to no project, yet it is
+  // not distinguishable from an honest project that simply has no binding yet —
+  // both are "a directory with no entry in the registry". Rather than invent a
+  // heuristic that would guess wrong in both directions, the workspace is
+  // NAMED, in the channel that is authoritative, and only when the proposal
+  // would create a binding where there was none. A reader who sees an
+  // application folder there declines; nothing was inferred on their behalf.
+  if (role === 'primary' && proposal.workspace) {
+    lines.push(`It would bind THIS directory: ${safeForMessage(proposal.workspace, 200)}`);
+    lines.push('If that is not a project of yours — an application folder, a temp directory — say no.');
+  }
+  lines.push(`Accepting grants: ${safeForMessage(proposal.grants, 400)}`);
   if (proposal.willOpen === true) {
     lines.push('Accepting also opens the vault in Obsidian if nothing answers on its port.');
   }

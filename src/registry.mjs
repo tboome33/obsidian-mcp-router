@@ -59,7 +59,13 @@ import { buildBindingProposal, declarationRequiredError, canOpenLocally } from '
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
 import { sameUuid, isValidUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity } from './vault-identity-store.mjs';
-import { envKeyOrigin, envKeySourceFile, dotenvRefusalHint, workspaceBindingProposal } from './helpers/workspace-dotenv.mjs';
+import {
+  envKeyOrigin,
+  envKeySourceFile,
+  dotenvRefusalHint,
+  workspaceBindingProposal,
+  isGatedDeployment,
+} from './helpers/workspace-dotenv.mjs';
 import { safeForMessage } from './helpers/sanitize.mjs';
 import {
   readBinding,
@@ -728,6 +734,24 @@ export async function loadRegistry({ configPath } = {}) {
         // resolve. The full diagnostic is Phase 6 of the roadmap; until then
         // this refuses to guess, which is strictly better than guessing wrong.
         // (Codex, same review.)
+        // A PROPOSAL WHOSE ACCEPTANCE CANNOT BE GIVEN IS NOT A PROPOSAL.
+        //
+        // On a gated deployment (`OBSIDIAN_ROUTER_READONLY`, `ALLOWED_VAULTS`,
+        // `USER_ID`) EVERY verb of `confirm_workspace_binding` is refused — the
+        // workspace there is the server's own directory, shared by every
+        // caller, so one answer would stand for all of them. Handing the model
+        // an `accept` call that the server will turn away is worse than saying
+        // nothing: it spends a conversation turn to arrive at a wall. The
+        // refusal stays a refusal. (Decision §3, the fourth case.)
+        if (isGatedDeployment()) {
+          throw declarationRequiredError(
+            `${preamble} This is a shared deployment, where a workspace binding cannot be recorded `
+            + 'at all — the workspace here is the server\'s own directory, and one answer would '
+            + 'stand for every caller. Address a vault this deployment already declares, or ask the '
+            + 'operator to add it to `openVaults`.',
+            null,
+          );
+        }
         const primary = this.workspaceBinding?.vault;
         const brokenPrimary = typeof primary === 'string' && primary !== ''
           && !this.vaults.some((x) => x.name === primary);
