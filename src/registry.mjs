@@ -55,7 +55,7 @@ import {
   alsoLockedEntries,
 } from './helpers/vault-slug.mjs';
 import { isVaultReachable } from './helpers/vault-reach.mjs';
-import { buildBindingProposal, declarationRequiredError } from './helpers/binding-proposal.mjs';
+import { buildBindingProposal, declarationRequiredError, canOpenLocally } from './helpers/binding-proposal.mjs';
 import { resolveLocalRestState, describeEndpointDrift } from './helpers/rest-endpoint-state.mjs';
 import { sameUuid, isValidUuid } from './helpers/vault-identity.mjs';
 import { readVaultIdentity } from './vault-identity-store.mjs';
@@ -750,7 +750,7 @@ export async function loadRegistry({ configPath } = {}) {
             // A REMOTE vault has no local folder, and the opener skips anything
             // without one — so promising a window for it would be a promise the
             // accept path cannot keep. (Codex, same review.)
-            willOpen: Boolean(v.path),
+            willOpen: canOpenLocally(v),
           }),
         );
       }

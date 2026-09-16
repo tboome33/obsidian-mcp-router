@@ -275,6 +275,85 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rtA.kill(); rtB.kill(); }
   });
 
+  test('a preflight may not REJECT on a stale copy — a retraction by another process is honoured', async () => {
+    // ► The mirror image of the refusal test, and a blocking defect on its own:
+    //   a preflight is allowed to be optimistic because the lock decides, but
+    //   it is NOT allowed to turn a valid yes away. B retracts a refusal and
+    //   hands A a perfectly valid proposal; A's in-memory Map still says
+    //   "refused" and threw before ever reaching the lock. Under `--no-watch`
+    //   nothing corrected it, so A could never say yes. (Codex, round 3.)
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { refuse: 'sci' });
+    const rtA = startRouter({ configPath, cwd: dir });
+    const rtB = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rtA);
+      await handshake(rtB);
+      // A starts life believing `sci` is refused — and it is, for now.
+      const refusedRead = await rtA.call(2, 'tools/call', {
+        name: 'get_file',
+        arguments: { vault: 'sci', path: 'wiki/anything.md' },
+      });
+      assert.match(textOf(refusedRead), /already REFUSED/);
+
+      // B takes the refusal back and gets the proposal A can no longer mint.
+      const back = await rtB.call(2, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { retract: 'sci' },
+      });
+      assert.notEqual(back.result?.isError, true, textOf(back));
+      const proposal = await proposalFor(rtB, 'sci', 3);
+
+      // A says yes to it. A's memory still holds the refusal; the file does not.
+      const yes = await rtA.call(4, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.notEqual(yes.result?.isError, true, `a stale refusal vetoed a valid yes:\n${textOf(yes)}`);
+      assert.deepEqual(bindingOnDisk(configPath, key).also, ['writable-ref', 'locked-ref', 'sci']);
+    } finally { rtA.kill(); rtB.kill(); }
+  });
+
+  test('after a refused yes, the SAME session mints a DIFFERENT proposal — the loop is broken', async () => {
+    // ► The witness the previous round was missing: it proved the refusal, not
+    //   the recovery. Without the refresh, this session keeps the binding it
+    //   started with, so "re-run the call that was refused" hands back the SAME
+    //   dead identifier and the next yes fails identically, forever.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const rtA = startRouter({ configPath, cwd: dir });
+    const rtB = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rtA);
+      await handshake(rtB);
+      const stale = await proposalFor(rtA, 'sci');
+
+      const moved = await rtB.call(2, 'tools/call', {
+        name: 'set_secondary_vault_mode',
+        arguments: { vault: 'locked-ref', mode: 'writable' },
+      });
+      assert.notEqual(moved.result?.isError, true, textOf(moved));
+
+      const refused = await rtA.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: stale.proposalId, open: false },
+      });
+      assert.equal(refused.result?.isError, true);
+
+      // NOW the advice in that message must actually work.
+      const fresh = await proposalFor(rtA, 'sci', 4);
+      assert.notEqual(
+        fresh.proposalId, stale.proposalId,
+        'the "fresh" proposal carried the same dead identifier — the recovery advice is a loop',
+      );
+      const yes = await rtA.call(5, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: fresh.proposalId, open: false },
+      });
+      assert.notEqual(yes.result?.isError, true, textOf(yes));
+    } finally { rtA.kill(); rtB.kill(); }
+  });
+
   test('with NO binding at all, the proposal is for a PRIMARY and the add creates one', async () => {
     const vault = await startFakeVault();
     const { dir, configPath, key } = writeConfig(vault.port, { binding: null });

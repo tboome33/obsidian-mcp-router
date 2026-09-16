@@ -196,6 +196,27 @@ export function buildBindingProposal({ vault, binding = null, workspaceKey = nul
 }
 
 /**
+ * Can a window be opened for this vault at all?
+ *
+ * ONE DEFINITION, TWO READERS, and that is the whole point of it being here.
+ * The proposal announces `willOpen`, and `confirm_workspace_binding`'s opener
+ * decides whether to launch — and those were two separate copies of
+ * `Boolean(vault.path)` in two files. Two copies of a predicate is how a
+ * promise and a behaviour drift apart: the day one of them learns about a new
+ * kind of vault, the proposal starts announcing a window nobody opens, or the
+ * opener starts opening one nobody was told about.
+ *
+ * A remote vault has no local folder, so there is nothing for the Obsidian URI
+ * handler to point at.
+ *
+ * @param {{path?: string}|null|undefined} vault a registry entry
+ * @returns {boolean}
+ */
+export function canOpenLocally(vault) {
+  return Boolean(vault && typeof vault.path === 'string' && vault.path !== '');
+}
+
+/**
  * Which vault, if any, a proposal id names — given the binding as it is RIGHT
  * NOW.
  *

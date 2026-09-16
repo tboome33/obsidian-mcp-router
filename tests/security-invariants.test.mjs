@@ -3265,36 +3265,56 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // fail on its own control rather than on the tree. (Codex.)
     const CONTROL_MULTIPLE = 12;
     const CATASTROPHIC_MS = 50;   // ~7x the worst reading a linear regex has ever produced here
+    // The sampling abort, which is NOT the verdict's ceiling: it exists only
+    // to keep a pathological regex from being run again and again. 250 ms is
+    // far above anything honest measured here and far below the seconds a
+    // genuinely exponential pattern takes on these bombs.
+    const ABORT_MS = 250;
     const NOISE_FLOOR_MS = 0.3;   // below this a reading is scheduler grain, not cost
     const timeOnce = (re, bomb) => ms(() => { re.lastIndex = 0; let n = 0; while (re.exec(bomb) && n++ < 1e5); });
     const sample = (re, bomb, measure = timeOnce) => {
-      // THE CEILING IS READ ON THE LAST PASS, NOT ON THE MINIMUM — and the
-      // first repair of this got it wrong, which is worth leaving written down.
-      // Codex's case was readings of 40, 80, 80 ms running all three passes.
-      // Gating the loop on `best <= CATASTROPHIC_MS` did not fix it: `best` is
-      // the MINIMUM, it stays at 40, and the loop runs three times exactly as
-      // before. A repair that changes the line without changing the behaviour
-      // is worse than none, because it reads as closed.
+      // TWO THRESHOLDS, BECAUSE THEY ANSWER TWO DIFFERENT QUESTIONS — and
+      // conflating them produced two wrong repairs in a row, both worth leaving
+      // written down.
       //
-      // The rule, stated as two facts rather than one condition: a reading over
-      // the ceiling gets exactly ONE more pass — enough to tell a load spike
-      // from a real cost, never enough to run an exponential regex a third time
-      // (that version was tried, and it hung the suite for minutes). Everything
-      // that stays under the ceiling gets the full SAMPLES, and the minimum
-      // decides, because interference only ever ADDS time.
+      // Attempt 1 gated the loop on `best <= CATASTROPHIC_MS`. `best` is the
+      // MINIMUM: on readings of 40, 80, 80 it stays at 40 and all three passes
+      // run exactly as before. The line changed, the behaviour did not, and it
+      // read as closed.
       //
-      // `measure` is a seam, and it is the reason D3 survived its first repair:
+      // Attempt 2 gated it on the LAST reading instead. That stopped 40, 80, 80
+      // at two passes — and broke 40, 80, 1, where the useful reading is the
+      // third: the sampler kept 40, and a yardstick stuck at 40 acquits a
+      // candidate measured 400 ms at 10x, under the multiple, despite being
+      // far past the ceiling. A repair that creates a false acquittal is worse
+      // than the waste it was fixing. (Codex, round 3.)
+      //
+      // The two questions, separated:
+      //
+      //   CATASTROPHIC_MS is about the VERDICT. It says "this is hopeless" and
+      //   it has nothing to do with how often anything is run.
+      //
+      //   ABORT_MS is about protecting the SUITE from a pathological regex. The
+      //   founding incident is an exponential one that ran four times and hung
+      //   the suite for minutes; that is what must never happen again. A reading
+      //   of 80 ms costs 80 ms to repeat, which is a price worth paying for a
+      //   minimum that is not interference — so the sampling runs in full.
+      //
+      // So: anything under ABORT_MS gets the full SAMPLES and the minimum
+      // decides, because interference only ever ADDS time. Anything past it
+      // gets exactly ONE confirming pass — enough to tell a spike from a cost,
+      // never enough to run an exponential regex a third time.
+      //
+      // `measure` is a seam, and it is the reason the first attempt survived:
       // the fixed-number fixtures proved what `verdictFor` DECIDES and nothing
-      // at all about how many passes `sample` takes, so a change that touched
-      // the line without changing the behaviour read as closed. With scripted
-      // readings the pass count is a fact a test can state. (Codex, round 2.)
+      // about how many passes `sample` takes. With scripted readings the pass
+      // count is a fact a test can state. (Codex, round 2.)
       let best = measure(re, bomb);
-      let last = best;
+      if (best > ABORT_MS) return Math.min(best, measure(re, bomb));
       for (let i = 1; i < SAMPLES; i += 1) {
-        const alreadyOver = last > CATASTROPHIC_MS;
-        last = measure(re, bomb);
-        best = Math.min(best, last);
-        if (alreadyOver || last > CATASTROPHIC_MS) break;
+        const reading = measure(re, bomb);
+        best = Math.min(best, reading);
+        if (reading > ABORT_MS) break;
       }
       return best;
     };
@@ -3497,8 +3517,12 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
       const best = sample(null, null, measure);
       return { best, calls };
     };
-    const sampleFast = scripted([0.3, 0.3, 0.3]);
+    // DISTINCT readings on the cheap case, deliberately: three identical ones
+    // cannot show that a minimum is computed at all, and a mutation keeping
+    // only the first reading would have satisfied them. (Codex, round 3.)
+    const sampleFast = scripted([0.9, 0.3, 0.6]);
     const sampleD3 = scripted([40, 80, 80]);
+    const sampleLateMin = scripted([40, 80, 1]);
     const sampleSpike = scripted([60, 1, 1]);
     const sampleHopeless = scripted([500, 500, 500]);
     if (process.env.REDOS_GUARD_COUNT) {
@@ -3537,31 +3561,41 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     assert.equal(
       verdictFor(51, 50, 'fixture', 16384), null,
       'TOO STRICT, and this is the case that separates the rule from a special case: 51 against 50 is\n'
-      + '  1.02x, nowhere near the multiple, and both are past the catastrophic ceiling. An\n'
+      + '  1.02x, nowhere near the multiple, and the candidate is past the catastrophic ceiling\n'
+      + '  while the yardstick sits exactly ON it (the comparison is strict). An\n'
       + '  implementation that merely special-cased EQUAL readings would pass the 51/51 control above\n'
       + '  and still convict here. (Codex, round 2.)',
     );
     assert.deepEqual(
       { best: sampleFast.best, calls: sampleFast.calls }, { best: 0.3, calls: 3 },
-      'a regex that stays cheap must get the FULL sampling, and the minimum must decide.',
+      'a regex that stays cheap must get the FULL sampling, and the MINIMUM of the three — not the\n'
+      + '  first, not the last — must decide. The readings are deliberately DISTINCT: three identical\n'
+      + '  ones cannot show that a minimum is computed at all. (Codex, round 3.)',
     );
     assert.deepEqual(
-      { best: sampleD3.best, calls: sampleD3.calls }, { best: 40, calls: 2 },
-      'READINGS 40, 80, 80 MUST STOP AT TWO PASSES. This is the case whose first repair did not\n'
-      + '  repair: gating the loop on the MINIMUM leaves it at 40, under the ceiling, so all three\n'
-      + '  passes ran exactly as before and the change read as closed.',
+      { best: sampleD3.best, calls: sampleD3.calls }, { best: 40, calls: 3 },
+      'READINGS UNDER THE ABORT THRESHOLD GET THE FULL SAMPLING, even when one of them is past the\n'
+      + '  VERDICT ceiling. 80 ms costs 80 ms to repeat, which is a price worth paying for a minimum\n'
+      + '  that is not interference — the two thresholds answer two different questions.',
     );
     assert.deepEqual(
-      { best: sampleSpike.best, calls: sampleSpike.calls }, { best: 1, calls: 2 },
+      { best: sampleLateMin.best, calls: sampleLateMin.calls }, { best: 1, calls: 3 },
+      'THE USEFUL READING CAN BE THE THIRD. Stopping on the second (80 ms) kept 40, and a yardstick\n'
+      + '  stuck at 40 acquits a candidate measured 400 ms at 10x — under the multiple, despite being\n'
+      + '  far past the ceiling. A repair that creates a false acquittal is worse than the waste it\n'
+      + '  was fixing. (Codex, round 3 — its blocking finding.)',
+    );
+    assert.deepEqual(
+      { best: sampleSpike.best, calls: sampleSpike.calls }, { best: 1, calls: 3 },
       'A YARDSTICK WHOSE FIRST PASS WAS HIT BY A SPIKE MUST NOT KEEP IT. Readings 60, 1, 1 kept 60\n'
       + '  when a slow first pass ended the sampling outright, and a 60 ms denominator acquits a\n'
-      + '  600 ms catastrophic candidate at 10x. One confirming pass is what separates a spike from\n'
-      + '  a cost. (Codex, round 2 — its blocking finding.)',
+      + '  600 ms catastrophic candidate at 10x. (Codex, round 2 — its blocking finding.)',
     );
     assert.deepEqual(
       { best: sampleHopeless.best, calls: sampleHopeless.calls }, { best: 500, calls: 2 },
-      'A HOPELESS REGEX GETS EXACTLY ONE CONFIRMING PASS — never zero (a single spike would convict\n'
-      + '  alone), never three (that version hung the suite for minutes on a planted exponential).',
+      'A PATHOLOGICAL REGEX GETS EXACTLY ONE CONFIRMING PASS — never zero (a single spike would\n'
+      + '  convict alone), never three (that version hung the suite for minutes on a planted\n'
+      + '  exponential). This is the ONLY thing the abort threshold exists for.',
     );
     assert.equal(
       branchAcquits, null,

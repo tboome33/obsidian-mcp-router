@@ -80,7 +80,7 @@ import {
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
-import { resolveProposalId } from '../helpers/binding-proposal.mjs';
+import { resolveProposalId, canOpenLocally } from '../helpers/binding-proposal.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -370,9 +370,37 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       ? { target, primary: binding.vault, also: [...(binding.also || []), target] }
       : { target, primary: target, also: [] };
   };
-  const accepted = args.accept === undefined
-    ? null
-    : resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
+  // THE PREFLIGHT READS THE FILE, NOT THIS SESSION'S MEMORY, and that was a
+  // blocking defect on its own. A preflight is allowed to be optimistic — the
+  // lock decides — but it is NOT allowed to REJECT on a stale copy, and this
+  // one did, in two ways. A retracts a refusal in one session and hands the
+  // other a perfectly valid proposal: the second session's in-memory Map still
+  // says "refused", and it throws before ever reaching the lock. Same with the
+  // binding: a proposal minted against the file's current state does not
+  // resolve against a stale copy, so the yes is turned away with "this no
+  // longer matches" when it matches perfectly. Under `--no-watch` nothing ever
+  // corrects either, so the user can never say yes. (Codex, round 3.)
+  //
+  // The vault NAMES still come from the live registry: that is deliberate and
+  // unchanged, because the live catalogue is what this session can actually
+  // resolve — it holds remote and `VAULT_*` vaults the config file does not
+  // list — and `assertBindable` below already refuses anything the file does
+  // not also know.
+  // AND IT REFRESHES THIS SESSION WHILE IT IS THERE. Whatever the preflight
+  // then decides, the session now holds what the file says — which is what
+  // makes the advice in a refusal true. Otherwise "re-run the call that was
+  // refused and you will get a fresh proposal" is a lie: the next proposal is
+  // minted from `registry.workspaceBinding`, and under `--no-watch` that is
+  // still the binding this session started with, so the SAME dead identifier
+  // comes back and the next yes fails identically, forever. The refresh inside
+  // the lock does not cover this, because the preflight now rejects first.
+  // (Codex, rounds 2 and 3 — two halves of one loop.)
+  const accepted = args.accept === undefined ? null : (() => {
+    const fresh = readConfig();
+    registry.workspaceBinding = readBinding(fresh, cwd);
+    registry.workspaceRefusals = readRefusals(fresh, cwd);
+    return resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
+  })();
 
   const primary = accepted ? accepted.primary : args.vault;
   if (typeof primary !== 'string' || primary.trim() === '') {
@@ -505,26 +533,36 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // means — and the re-derived pair must equal what this transform is about
     // to write, or the write is not the one that was approved.
     if (accepted) {
-      // The FILE's refusals, not the live Map: another process may have
-      // recorded one since this session started, and under `--no-watch` the
-      // copy in memory never learns.
-      const onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd));
+      // THE REFRESH WRAPS EVERY EXIT, not just one of them — and the first
+      // version of it was unreachable in exactly the case it was written for.
+      // It sat after `resolveAcceptance`, which THROWS when the identifier no
+      // longer matches, so the branch that refreshed ran only when the
+      // identifier still matched and something else disagreed. The stale-
+      // proposal loop it was meant to break went straight past it. (Codex,
+      // round 3.) Every path out of here now leaves this session holding what
+      // the file says, so the next proposal is a new one.
+      const refreshLive = () => {
+        registry.workspaceBinding = previous;
+        registry.workspaceRefusals = readRefusals(cfg, cwd);
+      };
+      let onDisk;
+      try {
+        // The FILE's refusals, not the live Map: another process may have
+        // recorded one since this session started, and under `--no-watch` the
+        // copy in memory never learns.
+        onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd));
+      } catch (err) {
+        refreshLive();
+        throw err;
+      }
       if (onDisk.target !== accepted.target
         || onDisk.primary !== primary
         || onDisk.also.length !== also.length
         || onDisk.also.some((n, i) => n !== also[i])) {
-        // THE LIVE COPY IS REFRESHED BEFORE THE REFUSAL, or the advice in the
-        // message is a loop. Under `--no-watch` this session's registry still
-        // holds the binding it started with, so "re-run the call that was
-        // refused to get a fresh proposal" would mint the SAME dead identifier
-        // from the SAME stale binding, and the next acceptance would fail
-        // identically, forever. (Codex, round 2.) Read from the config inside
-        // the lock, which is the freshest thing there is.
-        registry.workspaceBinding = previous;
-        registry.workspaceRefusals = readRefusals(cfg, cwd);
+        refreshLive();
         throw new Error(
           'confirm_workspace_binding: this workspace\'s binding changed while the acceptance was '
-          + 'being applied, so it was NOT applied. Nothing was changed. This session has been '
+          + 'being applied, so it was NOT applied and NO BINDING WAS WRITTEN. This session has been '
           + 'refreshed to the binding as it now stands: re-run the call that was refused, and the '
           + 'proposal it hands you will be a new one.',
         );
@@ -654,7 +692,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // The Obsidian-side label is the on-disk basename WITH its casing, not
       // the router's lowercased slug — the URI handler matches what Obsidian
       // registered. Remote vaults have no local path and nothing to open.
-      const label = v.path ? pathBasename(v.path) : null;
+      // The SAME predicate the proposal's `willOpen` is built from — see
+      // helpers/binding-proposal.mjs for why it is not spelled twice.
+      const label = canOpenLocally(v) ? pathBasename(v.path) : null;
       if (!label) continue;
       const r = launch(label);
       opened.push({ vault: name, launched: r.launched, uri: r.uri, reason: r.reason });
