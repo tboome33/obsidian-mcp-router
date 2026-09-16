@@ -3067,14 +3067,20 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // rounds ago. At 16 KB the quadratic curve is unmistakable (20 ms), while
     // a linear regex is still microseconds, so the two classes cannot be
     // confused.
+    // The size is capped by the match counter in `timeOnce`: the bare-bracket
+    // bomb matches at EVERY position, so 16 KiB already means 16384 `exec`
+    // calls. At 128 KiB the 1e5 ceiling would clip the loop, the bomb would
+    // stop costing what its length says, and the guard would go quiet while
+    // staying green. `bombsAt` is a function because the controls below need
+    // the same shapes at other sizes.
     const KB = 16 * 1024;
-    const BOMBS = [
-      ['bare-bracket', '['.repeat(KB)],
-      ['embed', '![['.repeat(Math.ceil(KB / 3))],
-      ['citation', '^['.repeat(Math.ceil(KB / 2))],
-      ['open-pair', '[['.repeat(Math.ceil(KB / 2))],
+    const bombsAt = (n) => [
+      ['bare-bracket', '['.repeat(n)],
+      ['embed', '![['.repeat(Math.ceil(n / 3))],
+      ['citation', '^['.repeat(Math.ceil(n / 2))],
+      ['open-pair', '[['.repeat(Math.ceil(n / 2))],
     ];
-    const BUDGET_MS = 5; // a linear regex does this in microseconds
+    const BOMBS = bombsAt(KB);
     const LITERAL = /\/((?:[^/\\\n[]|\\.|\[(?:[^\]\\]|\\.)*\])+)\/([gimsuy]*)/g;
     // SCOPE — the third time this guard was too narrow for its own headline.
     // It selected regexes mentioning `\[\[` or `\^\[`, i.e. WIKILINKS, while
@@ -3168,36 +3174,130 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     const rawInterpolations = [];
     let fromLiterals = 0;
     let fromNewRegExp = 0;
-    // A SECOND MEASUREMENT, BUT ONLY WHEN THE FIRST LOOKS SLOW.
+    // ROUND 19 — THE STOPWATCH READING HAD TO GO, AND THE RETRY WAS NOT ENOUGH.
     //
-    // A single timed run made this guard flaky on CI: `/[\[\]()]/` in
-    // `helpers/filters/image.mjs` is a bare character class, provably linear
-    // with no backtracking possible, and it was reported as quadratic after
-    // taking 6.7 ms on a GitHub runner — against 0.24 ms on the dev machine.
-    // The budget silently assumes a regex that matches FEW times; that one
-    // matches 16384 times on the open-pair bomb, so the loop really does do
-    // 16k `exec` calls, and JIT warm-up on a noisy shared runner is enough to
-    // cross 5 ms. A 28× environment spread cannot separate linear from
-    // quadratic at a 5 ms line on one cold sample.
+    // The history first, because it is the argument. A single timed run made
+    // this guard flaky on CI: `/[\[\]()]/` in `helpers/filters/image.mjs` is a
+    // bare character class, provably linear with no backtracking possible, and
+    // it was reported as quadratic after taking 6.7 ms on a GitHub runner —
+    // against 0.24 ms on the dev machine. A second measurement was added, taken
+    // only when the first looked slow, with the MINIMUM of the two deciding.
     //
-    // So a regex that clears the budget first time is done — the common case
-    // costs exactly what it did before. Only a regex that looks slow is
-    // measured again, and the MINIMUM of the two decides: runner noise
-    // disappears on the retry, while a genuinely quadratic regex is slow on
-    // every run (20 ms+ at this bomb size, per the note above) and still
-    // fails. The budget itself stays at 5 ms.
+    // That was not enough, and the reason is worth stating because it defeats
+    // ANY absolute budget. The budget silently assumes a regex that matches
+    // FEW times. `/[\\[\]]/` in `helpers/click-to-open.mjs` matches at EVERY
+    // position of the bare-bracket bomb, so the loop performs 16384 `exec`
+    // calls — its HONEST cost already sits within noise of the 5 ms line. The
+    // flake was never noise on top of ~0 ms; it was noise on top of the budget
+    // itself. Measured 2026-09-16: red on one full-suite run, green on the next,
+    // byte-identical tree, 40.8 ms for the whole test in isolation. No number
+    // between "linear that matches everywhere" and "quadratic" exists that a
+    // loaded machine cannot cross.
     //
-    // Measuring twice UNCONDITIONALLY was the first attempt and it was worse
-    // than the flake: a planted catastrophic regex then ran four times and
-    // hung the suite for minutes instead of failing. A guard must fail fast on
-    // the thing it is guarding against.
+    // SO THE VERDICT IS A COMPARISON, NOT A READING. Each candidate is timed on
+    // a bomb, and a YARDSTICK is timed on the same bomb immediately before it:
+    // a bare character class, which cannot backtrack, and which matches at
+    // every position, so it is both provably linear and the most expensive
+    // linear case there is. The verdict is how many times the yardstick the
+    // candidate costs. Load inflates both terms together, which is the whole
+    // point — the number that decides is a property of the regex, not of what
+    // the machine happened to be doing.
+    //
+    // MEASURED ON THIS TREE, 2026-09-16, and this is why the line sits where it
+    // does. Idle: the worst of the 68 regexes in `src`/`scripts`/`hooks`/`bin`
+    // costs 1.0–1.6x the yardstick. Under 32 saturating processes on 32 cores:
+    // 1.6–2.2x. A known-quadratic regex on the same bombs: 40–67x. The two
+    // populations are two orders of magnitude apart, so CONTROL_MULTIPLE sits
+    // at 12 — about 5x above anything honest that has ever been measured here,
+    // and about 3x below the cheapest quadratic. The old 5 ms line had no such
+    // gap to sit in: the honest worst case was already touching it.
+    //
+    // A growth ratio across two bomb sizes was tried first and rejected on
+    // measurement, not taste. Linear grows ~2x per doubling and quadratic ~4x,
+    // so the whole discrimination lives in a factor of two — and under load a
+    // sub-millisecond pair (0.41 ms then 1.56 ms, both honest) scored 3.1 and
+    // convicted `helpers/click-to-open.mjs`. A 2x margin cannot survive what a
+    // 50x margin shrugs off.
+    //
+    // Three details keep it honest:
+    //
+    //   - MINIMUM OF SEVERAL PASSES, never a mean. Interference only ever ADDS
+    //     time, so the smallest reading is the one least polluted by it.
+    //   - THE DENOMINATOR IS CLAMPED at NOISE_FLOOR_MS. Two sub-millisecond
+    //     readings have a meaningless ratio: 0.05 ms against 0.002 ms is 25x
+    //     while both are free. Clamping acquits that, and it makes a quadratic
+    //     with a small constant convict sooner rather than later.
+    //   - AN ABSOLUTE CEILING STAYS, for the catastrophic case only, so a regex
+    //     that is already hopeless is reported without being compared. Measuring
+    //     twice unconditionally was tried once and was worse than the flake: a
+    //     planted catastrophic regex ran four times and hung the suite for
+    //     minutes. It gets exactly ONE confirming pass — slow is slow every
+    //     time, a load spike is not — and that is its only repetition.
+    //
+    // The instrument is proved twice over, after the walk: a live pair (a known
+    // linear regex that must be acquitted, a known quadratic one that must be
+    // convicted) shows it still MEASURES, and four fixed-number cases through
+    // `verdictFor` show it still DECIDES. Which of the two branches convicts the
+    // live quadratic is deliberately NOT asserted — that depends on the machine,
+    // and pinning it was itself a source of flake.
+    const SAMPLES = 3;
+    const CONTROL_MULTIPLE = Number(process.env.REDOS_GUARD_K || 12);
+    const CATASTROPHIC_MS = 50;   // ~7x the worst reading a linear regex has ever produced here
+    const NOISE_FLOOR_MS = 0.3;   // below this a reading is scheduler grain, not cost
     const timeOnce = (re, bomb) => ms(() => { re.lastIndex = 0; let n = 0; while (re.exec(bomb) && n++ < 1e5); });
+    const sample = (re, bomb) => {
+      let best = timeOnce(re, bomb);
+      // Catastrophic: confirm once, then stop. Never a third pass, never the
+      // bigger bomb.
+      if (best > CATASTROPHIC_MS) return Math.min(best, timeOnce(re, bomb));
+      for (let i = 1; i < SAMPLES; i += 1) best = Math.min(best, timeOnce(re, bomb));
+      return best;
+    };
+    // The yardstick: a bare character class. It cannot backtrack, so it is
+    // linear by construction, and because it matches at EVERY position of every
+    // bomb shape it is the most expensive linear case there is. A fresh object
+    // each time, so no `lastIndex` or JIT state carries between measurements.
+    const CONTROL = () => new RegExp('[\\[\\]]', 'g');
+    let worstSeen = 0;
+    let worstWhere = '';
+    // THE DECISION, SEPARATED FROM THE MEASUREMENT.
+    //
+    // Pure: two numbers in, a verdict out. The split is not tidiness, it is
+    // what makes the guard's own coverage provable. Asserting "the quadratic
+    // control was convicted BY THE MULTIPLE BRANCH" against a live stopwatch
+    // looked right and was itself load-dependent: under saturation the very
+    // same regex crossed the catastrophic ceiling instead (measured 62.7 ms on
+    // the half bomb), the other branch convicted it, and the assertion failed
+    // while the guard was working perfectly. Which branch fires is a property
+    // of the machine that day; that BOTH branches work is a property of this
+    // function, and it is checked below with fixed numbers and no clock.
+    //
+    /** @returns {string|null} why it is bad, or null when it is linear enough. */
+    const verdictFor = (t, control, shape, len) => {
+      if (t > CATASTROPHIC_MS) {
+        return `took ${t.toFixed(1)} ms on the ${shape} bomb (${len} chars)`;
+      }
+      const times = t / Math.max(control, NOISE_FLOOR_MS);
+      if (times > CONTROL_MULTIPLE) {
+        return `took ${t.toFixed(2)} ms on the ${shape} bomb where a provably linear regex `
+          + `took ${control.toFixed(2)} ms on the same bomb at the same moment (${times.toFixed(1)}x)`;
+      }
+      return null;
+    };
+    const judge = (re, shape, bomb) => {
+      // The control FIRST and the candidate immediately after, on the same
+      // bomb, so the two readings share whatever the machine was doing.
+      const control = sample(CONTROL(), bomb);
+      const t = sample(re, bomb);
+      const times = t / Math.max(control, NOISE_FLOOR_MS);
+      if (times > worstSeen) { worstSeen = times; worstWhere = shape; }
+      return verdictFor(t, control, shape, bomb.length);
+    };
     const timeIt = (re, where, shown) => {
       for (const [shape, bomb] of BOMBS) {
-        let took = timeOnce(re, bomb);
-        if (took > BUDGET_MS) took = Math.min(took, timeOnce(re, bomb));
-        if (took > BUDGET_MS) {
-          slow.push(`${where} took ${took.toFixed(1)} ms on the ${shape} bomb — /${shown}/`);
+        const why = judge(re, shape, bomb);
+        if (why) {
+          slow.push(`${where} ${why} — /${shown}/`);
           break; // one report per regex is enough
         }
       }
@@ -3280,6 +3380,84 @@ describe('GUARD: bracket parsing stays linear on a bracket bomb', () => {
     // clear is not a tripwire. TWO floors, not one: a single combined floor of
     // 60 would still be cleared with the `new RegExp` extractor entirely dead,
     // because it contributes only 4 of the 64.
+    // THE INSTRUMENT, PROVED IN THIS PROCESS AT THIS MOMENT.
+    //
+    // A green `slow` list means one of two things and they are not the same:
+    // the tree is clean, or the discriminator has stopped discriminating. This
+    // file's own history is three rounds of the second kind — a selector too
+    // narrow, a bomb shape that could not reach the expensive branch, a sample
+    // too small — each one green for the wrong reason until a human found it.
+    //
+    // So the guard measures two regexes whose class is not in question, on the
+    // same machine, under the same load, through the same `judge`, and states
+    // what each must return. They cost one extra pass each and they are the
+    // difference between "nothing was found" and "the instrument still works".
+    //
+    // The NEGATIVE control is the exact pattern that made this guard flaky in
+    // the first place: a bare class that matches at every position, so it is
+    // both provably linear and the most expensive linear case there is.
+    //
+    // The POSITIVE controls are the embed family this guard already measured as
+    // quadratic (1.3 / 5.0 / 20.0 / 79.8 ms at 4 / 8 / 16 / 32 KiB). It is run
+    // TWICE, at two scales, because `judge` has two ways to convict and a
+    // control that only ever exercises one leaves the other unproven: at the
+    // standard sizes it trips the absolute ceiling, and at a quarter of them it
+    // stays cheap enough that only the GROWTH RATIO can catch it.
+    // Frozen BEFORE the controls run, or the deliberately quadratic ones below
+    // would set it and the number would describe the fixture, not the tree.
+    const worstTree = worstSeen;
+    const worstTreeWhere = worstWhere;
+    const QUADRATIC = () => new RegExp('!\\[\\[([^\\]]+)\\]\\]', 'g');
+    const controlLinear = judge(new RegExp('[\\\\\\[\\]]', 'g'), 'bare-bracket', BOMBS[0][1]);
+    const controlQuadratic = judge(QUADRATIC(), 'embed', BOMBS[1][1]);
+    // AND THE TWO BRANCHES, ON FIXED NUMBERS, WITH NO CLOCK AT ALL.
+    //
+    // `controlQuadratic` proves the instrument still MEASURES; these prove it
+    // still DECIDES, and they cannot flake because nothing is timed. The four
+    // cases are the four things the verdict must get right: a quadratic caught
+    // for being many times the yardstick, a catastrophic one caught before the
+    // comparison is even reached, an honest linear regex acquitted at ~1x, and
+    // two sub-millisecond readings acquitted rather than convicted for a ratio
+    // that is pure scheduler grain (0.05 / 0.002 is 25x raw, and meaningless).
+    const branchMultiple = verdictFor(5.0, 0.11, 'fixture', 8193);
+    const branchAbsolute = verdictFor(80.0, 0.50, 'fixture', 32769);
+    const branchAcquits = verdictFor(0.41, 0.40, 'fixture', 16384);
+    const branchClamps = verdictFor(0.05, 0.002, 'fixture', 16384);
+    if (process.env.REDOS_GUARD_COUNT) {
+      console.log(`[redos-guard] pire candidat du dépôt : ${worstTree.toFixed(1)}x le contrôle (bombe ${worstTreeWhere})`);
+      console.log(`[redos-guard] contrôles mesurés : linéaire=${controlLinear} · quadratique=${controlQuadratic}`);
+    }
+    assert.equal(
+      controlLinear, null,
+      'NEGATIVE CONTROL FAILED: a bare character class, which cannot backtrack, was convicted.\n'
+      + `  The discriminator is too strict and every verdict below is suspect — ${controlLinear}`,
+    );
+    assert.ok(
+      controlQuadratic,
+      'POSITIVE CONTROL FAILED: a known-quadratic regex was NOT convicted on the standard bomb.\n'
+      + '  The guard is blind, and an empty `slow` list below proves nothing.\n'
+      + '  (Which branch convicted it is deliberately not asserted — that depends on the machine.\n'
+      + '   Both branches are proved on fixed numbers just below.)',
+    );
+    assert.ok(
+      branchMultiple && /x\)$/.test(branchMultiple),
+      `BRANCH DEAD: a reading many times the linear yardstick was not convicted — got: ${branchMultiple}`,
+    );
+    assert.ok(
+      branchAbsolute && /^took 80\.0 ms/.test(branchAbsolute),
+      'BRANCH DEAD: a catastrophic reading was not stopped before the comparison.\n'
+      + `  That path is what keeps an exponential regex from being run twice — got: ${branchAbsolute}`,
+    );
+    assert.equal(
+      branchAcquits, null,
+      `TOO STRICT: an honest linear reading (~1x the yardstick) was convicted — got: ${branchAcquits}`,
+    );
+    assert.equal(
+      branchClamps, null,
+      'TOO STRICT: two sub-millisecond readings were convicted on a ratio that is scheduler grain.\n'
+      + `  The noise-floor clamp is gone, and this guard becomes flaky again — got: ${branchClamps}`,
+    );
+
     if (process.env.REDOS_GUARD_COUNT) {
       console.log(`[redos-guard] regex examinées : ${fromLiterals} littérales + ${fromNewRegExp} new RegExp`);
     }
