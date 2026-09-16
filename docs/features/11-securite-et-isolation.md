@@ -59,6 +59,38 @@ Déverrouiller : *« déverrouille les vaults »* — `/obsidian-router:unlock` 
 
 **À savoir.** Opt-in : non défini = aucun changement en local. L'ancien nom `OBSIDIAN_ROUTER_REQUIRE_WIREGUARD` fonctionne encore comme alias déprécié.
 
+## Un vault atteint sans être déclaré — le refus propose, vous tranchez
+
+**Le besoin.** Avec `vaultReach: "declared"`, un vault n'est joignable que depuis un workspace qui le déclare, en principal ou en secondaire. Le refus existait déjà ; ce qu'il ne savait pas faire, c'était dire **quoi faire ensuite** sous une forme que l'assistant ne puisse pas déformer. Une phrase du genre « rattachez ce workspace au vault » se traduit naturellement en `confirm_workspace_binding({ vault: X })` — un appel qui **remplace** le principal et perd tous les secondaires.
+
+**Ce que ça fait.** Le refus porte désormais un objet, `bindingProposal` :
+
+| Champ | Ce qu'il dit |
+|---|---|
+| `proposedRole` | `primary` si ce workspace n'a aucune liaison, `secondary` s'il en a déjà une |
+| `currentPrimary` | le principal en vigueur, quand il y en a un |
+| `grants` | ce que le oui accorde, en toutes lettres |
+| `willOpen` | si accepter ouvrira le vault dans Obsidian |
+| `accept` / `refuse` | l'appel exact, prêt à recopier |
+
+L'objet est rendu **dans le texte d'abord**, puis dans `_meta` : tout client MCP lit le texte, alors que `_meta` est un passthrough que la spécification autorise un client à ignorer.
+
+**Dire oui.** `confirm_workspace_binding({ accept: "<proposalId>" })`. L'identifiant est dérivé de l'état de la liaison — workspace, vault, rôle, empreinte — donc il ne résout que contre la liaison pour laquelle il a été frappé. Si une autre session a ajouté un secondaire, changé un palier ou effacé la liaison entre-temps, le oui est refusé sans rien écrire, et l'appel refusé relancé vous rend une proposition neuve.
+
+L'acceptation **ajoute**. Le vault devient principal si le workspace n'avait rien, sinon il entre dans `also` en lecture seule souple, et chaque secondaire existant garde son palier. C'est précisément ce que `{ vault: X }` ne fait pas.
+
+**Ce qui ne propose jamais rien**, et chacun pour sa raison :
+
+- un vault d'`openVaults`, joignable de partout par construction : l'appel passe, il n'y a rien à proposer ;
+- un vault que vous avez **refusé** : `retract` est le chemin de retour, et lui seul ;
+- une liaison dont le principal n'existe pas sur cette machine : elle est à **réparer**, pas à étendre ;
+- un déploiement partagé (`OBSIDIAN_ROUTER_READONLY`, `ALLOWED_VAULTS`, `USER_ID`), où aucun verbe d'acceptation n'existe : proposer serait envoyer contre un mur ;
+- `list_vaults`, qui est un **inventaire et non une offre** : une proposition naît d'un accès, sans quoi vingt vaults non déclarés deviendraient vingt questions d'un coup.
+
+**Sans `vaultReach`, rien de tout cela ne change quoi que ce soit** : l'interrupteur est absent par défaut, il n'y a alors aucun refus d'atteignabilité, donc aucune proposition.
+
+**Une limite dite plutôt que masquée.** Le chat Desktop démarre dans le dossier de l'application et n'appartient à aucun projet — mais ce dossier et un projet honnête encore non lié sont, pour le routeur, la même chose : un répertoire sans entrée au registre. Plutôt qu'une heuristique qui se tromperait dans les deux sens, une proposition qui créerait une **première** liaison **nomme le répertoire** qu'elle lierait et invite à refuser si ce n'est pas un projet.
+
 ## Les garde-fous anti-accident, en travers de toutes les features
 
 Une série de protections plus petites, décrites dans leurs fiches respectives mais rassemblées ici parce qu'elles forment une politique cohérente :

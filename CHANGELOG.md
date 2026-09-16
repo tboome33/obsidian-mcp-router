@@ -10,6 +10,38 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Saying yes to a binding proposal ADDS to the binding, and never replaces it
+
+`confirm_workspace_binding({ accept: "<proposalId>" })` answers the proposal the refusal handed you.
+The vault becomes this workspace's **primary** when the workspace had no binding, and is **added as a
+read-only secondary** when it had one. Every existing secondary and every write tier survives, and
+the newcomer joins no tier. That is the whole reason the verb exists: `{ vault: X }` replaces the
+primary and drops every secondary not passed again, which is exactly the call the old prose invited.
+
+- **The identifier is the precondition.** It is derived from the STATE of the binding it was minted
+  against, so it only resolves against that state. Another session adds a secondary, sets a tier or
+  clears the binding, and the yes is refused with nothing written. State, not history: a binding that
+  changed and changed back is the same binding. Re-run the call that was refused and you get a fresh
+  proposal — the session is refreshed from the file first, so that advice is true rather than a loop.
+- **Resolved twice, and the lock decides.** A preflight reads the config file for an early, readable
+  answer; the check that decides runs inside the write lock. The preflight may let a yes through on
+  an optimistic read, but it may never turn one away.
+- **Three refusals.** A vault this workspace already declares (nothing to accept), a vault you
+  REFUSED (deliberately not symmetric with naming it explicitly, which is you bringing it up again),
+  and an identifier this router never minted.
+- **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
+  refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
+  gated deployment where no acceptance verb exists at all, and `list_vaults` — an inventory, not an
+  offer, so a workspace with twenty undeclared vaults does not become twenty questions at once.
+- **A first binding names the directory it would bind.** The Desktop chat starts in the application's
+  own folder and belongs to no project, but that folder and an honest project with no binding yet are
+  the same thing to the router: a directory with no registry entry. Rather than a heuristic that
+  would guess wrong both ways, nothing is inferred — the directory is named and you are told to
+  decline if it is not a project.
+
+Still nothing changes without `vaultReach: "declared"`: absent that switch there is no reachability
+refusal, so there is nothing to carry a proposal.
+
 ### The refusal now carries the call that fixes it, and the model has one token to copy
 
 Naming a vault this workspace does not declare was refused with a sentence. A model reading
