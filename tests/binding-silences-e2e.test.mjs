@@ -30,7 +30,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
+import { canonicalWorkspaceKey, normalizeBinding } from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
@@ -243,6 +243,75 @@ describe('the silences — what must NOT produce a proposal', () => {
       const text = textOf(res);
       assert.equal(res.result?._meta?.bindingProposal?.proposedRole, 'secondary');
       assert.ok(!text.includes('It would bind THIS directory:'), text);
+    } finally { rt.kill(); }
+  });
+});
+
+describe('the duplicate incoherence is ABSORBED, not diagnosed — and this is the tripwire', () => {
+  // Phase 6 of the roadmap asked for a diagnostic when a vault sits in a
+  // binding TWICE — as primary and as a secondary, or twice in `also`. The
+  // measurement says that state cannot reach the proposal code: every binding
+  // becomes one through `normalizeBinding`, whose `seen` set STARTS with the
+  // primary, so the duplicate is gone before anyone can be confused by it.
+  //
+  // Absorbing is the right answer here, and not a dodge. A duplicate has ONE
+  // unambiguous meaning — that vault is a secondary — so repairing it silently
+  // at the single boundary where a config becomes a binding costs nothing,
+  // while refusing the call would turn an obvious typo into a wall. Contrast
+  // the primary that is ABSENT from the registry, which has no unambiguous
+  // repair and IS diagnosed (see binding-proposal-e2e).
+  //
+  // ► SO THIS IS A TRIPWIRE, not a behaviour test. The day `normalizeBinding`
+  //   stops deduplicating, the state becomes reachable, `bindingDigest` starts
+  //   seeing it (it deliberately does NOT deduplicate), and the proposal code
+  //   needs the diagnostic phase 6 described. These assertions are what will
+  //   say so.
+  const shapes = [
+    ['the primary also listed as a secondary', { vault: 'work', also: ['work', 'sci'] }],
+    ['a duplicate inside also', { vault: 'work', also: ['sci', 'sci'] }],
+    ['both at once, repeatedly', { vault: 'work', also: ['work', 'sci', 'sci', 'work'] }],
+  ];
+  for (const [name, raw] of shapes) {
+    test(`${name} is cleaned to a coherent binding`, () => {
+      const n = normalizeBinding(raw);
+      assert.deepEqual(n.also, ['sci'], `got ${JSON.stringify(n.also)}`);
+      assert.ok(!n.also.includes(n.vault), 'the primary survived inside also');
+      assert.equal(new Set(n.also).size, n.also.length, 'a duplicate survived');
+    });
+  }
+
+  test('a write tier naming something that is not a secondary is dropped, and a name in BOTH tiers is LOCKED', () => {
+    // The hard tier wins a conflict, exactly as it does for the global lists —
+    // the safe direction, and the one the decision names.
+    assert.deepEqual(normalizeBinding({ vault: 'work', also: ['sci'], alsoLocked: ['ghost'] }).alsoLocked, []);
+    const both = normalizeBinding({ vault: 'work', also: ['sci'], alsoLocked: ['sci'], alsoWritable: ['sci'] });
+    assert.deepEqual(both.alsoLocked, ['sci']);
+    assert.deepEqual(both.alsoWritable, []);
+  });
+
+  test('so a proposal built from an incoherent config is still coherent, end to end', async () => {
+    // The consequence that matters: the prose can never read "the primary stays
+    // work" while `work` is also listed as a secondary of itself.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, {
+      binding: {
+        vault: 'work',
+        also: ['work', 'other', 'other'],
+        locked: false,
+        confirmedAt: '2026-09-16',
+        confirmedVia: 'test',
+      },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await read(rt, 2, 'sci');
+      assert.equal(res.result?.isError, true);
+      const proposal = res.result?._meta?.bindingProposal;
+      assert.ok(proposal, textOf(res));
+      assert.equal(proposal.proposedRole, 'secondary');
+      assert.equal(proposal.currentPrimary, 'work');
+      assert.match(textOf(res), /the primary stays work/);
     } finally { rt.kill(); }
   });
 });
