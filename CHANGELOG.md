@@ -44,6 +44,10 @@ primary and drops every secondary not passed again, which is exactly the call th
   Only the refusals are taken from the file on sight: nothing routes by them, and a no recorded
   elsewhere must be honoured at once. The same rule now holds in `set_secondary_vault_mode` and in
   `unlock_vaults --persist`, both of which have a real no-op and both of which used to re-route.
+  Where a session does adopt a binding, it adopts the binding and the default vault **together**, and
+  only when it can resolve that binding's primary. Taking one without the other is what produces the
+  state this rule exists to avoid: a default vault the binding in force no longer declares, so every
+  unqualified call fails.
 - **Re-running a refused call really does hand back something new.** The proposal is minted from the
   config file rather than from this session's copy, so an identifier that died because a parallel
   session moved the binding is replaced rather than reissued. That is done by reading, not by

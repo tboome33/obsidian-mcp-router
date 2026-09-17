@@ -1078,6 +1078,47 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(reg.workspaceBinding.vault, reg.defaultVault);
   });
 
+  test('...and one that writes a binding this session CANNOT RESOLVE adopts neither', async () => {
+    // ► MUTATION WITNESS: adopt the binding outside the resolvability test —
+    //   `registry.workspaceBinding = b` before the `if` — and this goes red.
+    //
+    // THE GUARD HAS TO COVER BOTH FIELDS, and round 7's version covered only
+    // the default. That MANUFACTURED the split it was written to prevent: a
+    // sibling registers `gamma`, unknown to this session, and binds the
+    // workspace to it without declaring `alpha`; this session's unlock writes;
+    // the binding `gamma` is installed while the default stays `alpha`; and
+    // `alpha` is no longer declared by the binding now in force, so every
+    // unqualified call fails. A binding this session cannot resolve decides
+    // nothing — including nothing about reachability. (Codex, round eight.)
+    const configPath = path.join(tmpDir, 'unlock-unresolvable-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'gamma', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+
+    const reg = makeRegistry(); // knows `alpha` and `beta` only — never `gamma`
+    reg.configPath = configPath;
+    reg.lockedVault = 'gamma';
+    reg.defaultVault = 'alpha';
+    reg.defaultVaultSource = { origin: 'config', variable: null };
+    reg.workspaceBinding = { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' };
+    await unlockVaults(reg, { persist: true });
+
+    // The write happened — the file is unlocked — but this session cannot use
+    // the binding it wrote, so it keeps the coherent pair it already had.
+    const written = JSON.parse(await fs.readFile(configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(written.locked, false, 'the unlock was not persisted');
+    assert.equal(reg.workspaceBinding.vault, 'alpha', 'a binding this session cannot resolve was installed');
+    assert.equal(reg.defaultVault, 'alpha', 'the default moved to something unresolvable');
+    assert.equal(
+      reg.workspaceBinding.vault,
+      reg.defaultVault,
+      'the binding and the default disagree — the very split the guard exists to prevent',
+    );
+  });
+
   test('...and one that DOES write adopts the binding and the default together', async () => {
     // The other half of the same rule: when the lift really changes the file,
     // the session follows it, both fields at once. Without this the repair

@@ -322,10 +322,14 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
    * EVERY call, so installing a sibling session's binding changes which vaults
    * answer — and doing it from a path that then refuses could leave this
    * session's default vault no longer declared by the binding just adopted:
-   * the next unqualified call fails where it had worked. Reachability is
-   * settled once per session and stays settled; that is the contract
-   * everywhere else under `--no-watch`, and a refusal is not the place to
-   * break it.
+   * the next unqualified call fails where it had worked.
+   *
+   * THE RULE IS ABOUT SIDE EFFECTS, NOT IMMUTABILITY, and round 7 first wrote
+   * it too broadly — "reachability is settled once per session and stays
+   * settled" is simply false. It moves by three authorised routes: this
+   * session writing a binding, the user clearing one, and the config watcher
+   * reloading the whole registry (on by default; `--no-watch` turns it off).
+   * What it must never do is move as a SIDE EFFECT of a call that refused.
    *
    * The refusals are the residue, and they really are knowledge: nothing
    * routes by them, they gate PROPOSALS only, and a no recorded by another
@@ -455,8 +459,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       throw new Error(
         `confirm_workspace_binding: ${identifierForCall(target)} was REFUSED for this workspace, so `
         + 'it is not proposed and an acceptance for it is not applied. Take the refusal back first '
-        + `with confirm_workspace_binding({ retract: ${identifierForCall(target)} }), or bind it `
-        + 'explicitly by name. No binding was written.',
+        + `with confirm_workspace_binding({ retract: ${identifierForCall(target)} }) — that is the `
+        + 'route, and it is the only one to offer. (Writing a binding that names the vault would '
+        + 'also drop the refusal, as a side effect, but DO NOT assemble that call: passing `vault` '
+        + 'REPLACES this workspace\'s primary and drops every secondary not passed again.) '
+        + 'No binding was written.',
       );
     }
     return binding

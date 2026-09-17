@@ -793,9 +793,12 @@ export async function loadRegistry({ configPath } = {}) {
         // that from the acceptance preflight, on a path that then refused. The
         // session could come away with its default vault no longer declared by
         // the binding it had just adopted, so the next unqualified call failed
-        // where it had worked. Reachability is decided once per session and
-        // stays put; that is the contract everywhere else under `--no-watch`,
-        // and a refusal is not the place to break it. (Codex, round seven.)
+        // where it had worked. Reachability moves by three authorised routes —
+        // this session writing a binding, the user clearing one, and the config
+        // watcher reloading the registry — and a refusal is none of them. The
+        // rule is about SIDE EFFECTS, not immutability: round 7 first wrote it
+        // as "settled once per session", which the watcher makes false.
+        // (Codex, rounds seven and eight.)
         //
         // The loop round three fixed is closed HERE instead, at the source:
         // the proposal is minted from the FILE's binding, so re-running a
@@ -873,6 +876,18 @@ export async function loadRegistry({ configPath } = {}) {
             null,
           );
         }
+        const primary = proposalBinding?.vault;
+        const brokenPrimary = typeof primary === 'string' && primary !== ''
+          && !this.vaults.some((x) => x.name === primary);
+        if (brokenPrimary) {
+          throw declarationRequiredError(
+            `${preamble} This workspace's binding names "${primary}" as its primary, and this machine `
+            + 'has no such vault, so the binding needs repairing before anything can be added to it. '
+            + 'Re-confirm it with confirm_workspace_binding, naming a registered primary and the '
+            + 'secondaries you want to keep.',
+            null,
+          );
+        }
         // THE FILE ALREADY DECLARES IT, AND THIS SESSION HAS NOT RELOADED.
         // Minting a proposal here would hand out an identifier the acceptance
         // refuses with "this workspace already declares it" — a wall one turn
@@ -883,20 +898,9 @@ export async function loadRegistry({ configPath } = {}) {
           && (proposalBinding.vault === v.name || (proposalBinding.also || []).includes(v.name))) {
           throw declarationRequiredError(
             `${preamble} The config file DOES declare it — another session bound it after this one `
-            + 'started, and this process does not reload the file while it runs. Nothing needs to be '
-            + 'accepted. Start a new session, or address a vault this one already declares.',
-            null,
-          );
-        }
-        const primary = proposalBinding?.vault;
-        const brokenPrimary = typeof primary === 'string' && primary !== ''
-          && !this.vaults.some((x) => x.name === primary);
-        if (brokenPrimary) {
-          throw declarationRequiredError(
-            `${preamble} This workspace's binding names "${primary}" as its primary, and this machine `
-            + 'has no such vault, so the binding needs repairing before anything can be added to it. '
-            + 'Re-confirm it with confirm_workspace_binding, naming a registered primary and the '
-            + 'secondaries you want to keep.',
+            + 'started, and this process has not picked that up: hot-reload is off here, or has not '
+            + 'fired yet. Nothing needs to be accepted. Retry in a moment, restart the session, or '
+            + 'address a vault this one already declares.',
             null,
           );
         }

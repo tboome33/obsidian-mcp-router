@@ -469,14 +469,33 @@ describe('a call that writes nothing leaves this session alone', () => {
         name: 'confirm_workspace_binding',
         arguments: { vault: 'other', also: ['sci'], open: false },
       });
-      assert.notEqual(moved.result?.isError, true, textOf(moved));
+      // ASSERTED ON THE RESULT, NOT ON THE ABSENCE OF A FLAG. `notEqual(...,
+      // true)` is satisfied by a JSON-RPC error, which has no `result` at all
+      // — so a fixture that silently failed to set the scene would leave this
+      // test green for the wrong reason, which is the ninth time that shape
+      // has come up in this lot. (Codex, round eight.)
+      assert.ok(moved.result, `B's re-bind returned no result: ${JSON.stringify(moved.error)}`);
+      assert.notEqual(moved.result.isError, true, textOf(moved));
+
+      // AND THE SCENE IS MEASURED, not assumed. The whole test rests on the
+      // file naming `other` as primary and `sci` as a SOFT secondary; if
+      // either were false the no-op below would prove nothing.
+      const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+        .workspaceBindings?.[canonicalWorkspaceKey(dir)];
+      assert.equal(onDisk?.vault, 'other', `the fixture did not re-bind: ${JSON.stringify(onDisk)}`);
+      assert.ok((onDisk?.also || []).includes('sci'), 'sci is not a secondary, so the call below is not a no-op');
+      assert.ok(!(onDisk?.alsoLocked || []).includes('sci'), 'sci is locked, so asking for soft WOULD write');
+      assert.ok(!(onDisk?.alsoWritable || []).includes('sci'), 'sci is writable, so asking for soft WOULD write');
+      const bytesBefore = fs.readFileSync(configPath, 'utf8');
 
       // A asks for the tier `sci` ALREADY has: nothing is written.
       const noop = await a.call(2, 'tools/call', {
         name: 'set_secondary_vault_mode',
         arguments: { vault: 'sci', mode: 'soft' },
       });
-      assert.notEqual(noop.result?.isError, true, textOf(noop));
+      assert.ok(noop.result, `the no-op returned no result: ${JSON.stringify(noop.error)}`);
+      assert.notEqual(noop.result.isError, true, textOf(noop));
+      assert.equal(fs.readFileSync(configPath, 'utf8'), bytesBefore, 'the "no-op" rewrote the config');
 
       const state = JSON.parse(textOf(await a.call(3, 'tools/call', { name: 'list_vaults', arguments: {} })));
       assert.equal(
@@ -755,6 +774,60 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.match(err.message, /removed since this session started/);
     assert.doesNotMatch(err.message, /only through the environment/);
     assert.match(err.message, /setup-vault/);
+  });
+
+  test('a BROKEN binding is diagnosed as broken, even when it declares the vault asked for', async () => {
+    // ► MUTATION WITNESS: move the "the config file DOES declare it" branch
+    //   back above the broken-primary branch and only this goes red. It
+    //   SURVIVED the first mutation run of round eight — the ordering repair
+    //   had no witness, which is the state that reads as covered and is not.
+    //
+    // Two refusals can both apply, and the order decides which one the reader
+    // acts on. The file says `{ vault: "absent", also: ["sci"] }` with `absent`
+    // registered nowhere. Ask for `sci` and both are true: the file declares
+    // it, AND the binding is unusable. "Start a new session" is the wrong
+    // advice — restarting does not conjure the missing primary — so the repair
+    // diagnostic has to win. (Codex, round eight.)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-broken-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (also) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('sci'), remote('work')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: {
+        [canonicalWorkspaceKey(process.cwd())]: {
+          vault: 'absent', also, locked: false, confirmedVia: 'test',
+        },
+      },
+    }, null, 2);
+
+    // THE TWO STATES HAVE TO DIFFER, or there is no refusal to order. This
+    // session loads a binding that does NOT declare `sci`; a sibling then adds
+    // it to the file. So `sci` is unreachable HERE (the refusal fires) while
+    // the FILE declares it (the new branch would fire) and the primary is
+    // broken in both (the repair branch must win).
+    fs.writeFileSync(configPath, config([]), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const registry = await loadRegistry({ configPath });
+    assert.ok(!registry.vaults.some((v) => v.name === 'absent'), 'the fixture registered the broken primary');
+    assert.ok(registry.vaults.some((v) => v.name === 'sci'), 'the fixture never registered sci');
+    fs.writeFileSync(configPath, config(['sci']), 'utf8');
+
+    let err = null;
+    try { registry.resolveVault('sci'); } catch (e) { err = e; }
+    assert.ok(err, 'sci resolved instead of being refused');
+    assert.equal(err.bindingProposal, undefined, 'a binding that needs repairing was extended instead');
+    assert.match(err.message, /needs repairing/);
+    assert.doesNotMatch(
+      err.message,
+      /Start a new session|Retry in a moment/,
+      'the reader was sent to restart, which cannot restore a primary this machine does not have',
+    );
   });
 
   test('the WHOLE shipped tree builds this set in exactly one place', () => {

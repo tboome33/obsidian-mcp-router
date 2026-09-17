@@ -528,12 +528,20 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // learned in the same round: a sibling can register a vault AND bind to it
     // while this session runs, and under `--no-watch` that name is one this
     // catalogue has never heard of.
-    if (wrote) {
+    // THE PAIR MOVES TOGETHER OR NOT AT ALL, and the first version of this
+    // guard protected the wrong half. It adopted the binding unconditionally
+    // and gated only the default, which MANUFACTURED the split it was written
+    // to prevent: a sibling registers `beta`, unknown to this session, and
+    // binds the workspace to it without declaring `alpha`; this session's
+    // unlock writes; the binding `beta` is installed while the default stays
+    // `alpha`; and `alpha` is no longer declared by the binding this session
+    // now holds, so every unqualified call fails. The resolvability test has
+    // to gate BOTH — a binding this session cannot resolve decides nothing,
+    // including nothing about reachability. (Codex, round eight.)
+    if (wrote && b?.vault && (registry.vaults || []).some((v) => v.name === b.vault)) {
       registry.workspaceBinding = b;
-      if (b?.vault && (registry.vaults || []).some((v) => v.name === b.vault)) {
-        registry.defaultVault = b.vault;
-        registry.defaultVaultSource = { origin: 'binding', variable: null };
-      }
+      registry.defaultVault = b.vault;
+      registry.defaultVaultSource = { origin: 'binding', variable: null };
     }
     // The hint is a statement ABOUT the binding, so it is re-read whenever the
     // binding changes.
