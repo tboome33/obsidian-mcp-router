@@ -508,6 +508,43 @@ describe('a call that writes nothing leaves this session alone', () => {
         'work',
         'a no-op installed another session\'s binding, changing which vaults answer',
       );
+
+      // The answer names what THIS session applies. Here the two agree — the
+      // session also holds `sci` as a soft secondary — so there is nothing to
+      // warn about, and the warning must NOT fire.
+      const said = JSON.parse(textOf(noop));
+      assert.equal(said.modeInForceHere, 'soft', 'the answer does not say what this session applies');
+      assert.doesNotMatch(textOf(noop), /did not adopt that binding/, 'warned about a difference that is not there');
+
+      // ► AND WHEN THEY DISAGREE, IT SAYS SO. Keeping the session still is
+      //   right; reporting the FILE's mode as though it were in force here is
+      //   not. The sibling now LOCKS `sci` in the file. A asks for `locked`:
+      //   the file already says so, nothing is written, nothing is adopted —
+      //   and this session still applies `soft`. Silence there is the same lie
+      //   the write path had, one door over. (Codex, round nine, the
+      //   report-versus-state pass.)
+      const locked = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      locked.workspaceBindings[canonicalWorkspaceKey(dir)].alsoLocked = ['sci'];
+      fs.writeFileSync(configPath, JSON.stringify(locked, null, 2), 'utf8');
+
+      const second = await a.call(4, 'tools/call', {
+        name: 'set_secondary_vault_mode',
+        arguments: { vault: 'sci', mode: 'locked' },
+      });
+      assert.ok(second.result, JSON.stringify(second.error));
+      assert.notEqual(second.result.isError, true, textOf(second));
+      const secondSaid = JSON.parse(textOf(second));
+      assert.equal(secondSaid.mode, 'locked', 'the fixture did not ask for locked');
+      assert.equal(
+        secondSaid.modeInForceHere,
+        'soft',
+        'the answer claims this session applies a restriction it does not hold',
+      );
+      assert.match(
+        textOf(second),
+        /did not adopt that binding/,
+        'a no-op reported a restriction as in force without saying this session had not adopted it',
+      );
     } finally { a.kill(); b.kill(); }
   });
 
@@ -776,6 +813,89 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.match(err.message, /setup-vault/);
   });
 
+  test('a RESTRICTION this session records is a restriction this session APPLIES', async () => {
+    // ► MUTATION WITNESS: gate the adoption on the primary being resolvable,
+    //   as round 8 did, and this goes red.
+    //
+    // THE WORST SHAPE THIS LOT PRODUCED, and it survived a round because it
+    // looked like caution. Round 8 refused to adopt a binding whose primary
+    // this session cannot resolve. For the tool that records a secondary's
+    // WRITE TIER, that means: the user asks to lock `sci` read-only, the tier
+    // is written to the file, the tool confirms it — and this session keeps an
+    // older binding in which `sci` is still WRITABLE. A restriction asked for,
+    // confirmed, and not in force. Security is not a place for a guard that
+    // fails open. (Codex, round nine, both passes converging.)
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, {
+      binding: {
+        vault: 'work',
+        also: ['sci'],
+        alsoWritable: ['sci'],
+        locked: false,
+        confirmedAt: '2026-09-17',
+        confirmedVia: 'test',
+      },
+    });
+    const a = startRouter({ configPath, cwd: dir });
+    const b = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(a, 'A');
+      await handshake(b, 'B');
+
+      // A can write to `sci` today: it is a writable secondary.
+      const before = await a.call(2, 'tools/call', { name: 'list_vaults', arguments: {} });
+      assert.ok(before.result, JSON.stringify(before.error));
+      assert.ok(
+        (JSON.parse(textOf(before)).workspaceBinding?.alsoWritable || []).includes('sci'),
+        'the fixture did not start with sci writable',
+      );
+
+      // A SIBLING REGISTERS A NEW VAULT AND BINDS TO IT. Written to the file
+      // directly, because that is what the other process does and because the
+      // point is precisely a vault A's catalogue has never heard of: A loaded
+      // its vault list at start-up and, with hot-reload off, never revisits
+      // it. Re-binding to a vault A already knew would leave the guard under
+      // test unexercised — the first version of this witness did exactly that
+      // and survived its mutation.
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.remoteVaults.push({
+        name: 'later', baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY, timeoutMs: 5000,
+      });
+      cfg.workspaceBindings[canonicalWorkspaceKey(dir)] = {
+        vault: 'later',
+        also: ['sci'],
+        alsoWritable: ['sci'],
+        locked: false,
+        confirmedAt: '2026-09-17',
+        confirmedVia: 'test',
+      };
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+      // A now LOCKS `sci` read-only. This writes.
+      const locked = await a.call(3, 'tools/call', {
+        name: 'set_secondary_vault_mode',
+        arguments: { vault: 'sci', mode: 'locked' },
+      });
+      assert.ok(locked.result, JSON.stringify(locked.error));
+      assert.notEqual(locked.result.isError, true, textOf(locked));
+
+      const onDisk = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+        .workspaceBindings?.[canonicalWorkspaceKey(dir)];
+      assert.ok((onDisk?.alsoLocked || []).includes('sci'), 'the tier was not written to the file');
+
+      // ► THE POINT: A's own session must hold that restriction too.
+      const after = JSON.parse(textOf(await a.call(4, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      assert.ok(
+        (after.workspaceBinding?.alsoLocked || []).includes('sci'),
+        'the restriction was written and confirmed but this session did not apply it',
+      );
+      assert.ok(
+        !(after.workspaceBinding?.alsoWritable || []).includes('sci'),
+        'this session still holds sci as WRITABLE after locking it read-only',
+      );
+    } finally { a.kill(); b.kill(); }
+  });
+
   test('a BROKEN binding is diagnosed as broken, even when it declares the vault asked for', async () => {
     // ► MUTATION WITNESS: move the "the config file DOES declare it" branch
     //   back above the broken-primary branch and only this goes red. It
@@ -823,10 +943,35 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.ok(err, 'sci resolved instead of being refused');
     assert.equal(err.bindingProposal, undefined, 'a binding that needs repairing was extended instead');
     assert.match(err.message, /needs repairing/);
+    assert.match(err.message, /neither this session nor the config file/);
     assert.doesNotMatch(
       err.message,
       /Start a new session|Retry in a moment/,
       'the reader was sent to restart, which cannot restore a primary this machine does not have',
+    );
+
+    // ► THE OTHER HALF, and the mutation that proves it: a primary missing
+    //   from THIS SESSION's catalogue but present in the FILE is not a broken
+    //   binding at all. A sibling registered it after this session loaded its
+    //   vault list. Telling that reader to re-confirm the binding sends them
+    //   to rewrite a configuration that was right. Force `fileHasIt` to false
+    //   and this half goes red. (Codex, round nine.)
+    const withLater = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    withLater.remoteVaults.push({
+      name: 'absent', baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY,
+    });
+    fs.writeFileSync(configPath, JSON.stringify(withLater, null, 2), 'utf8');
+
+    let stale = null;
+    try { registry.resolveVault('sci'); } catch (e) { stale = e; }
+    assert.ok(stale, 'sci resolved instead of being refused');
+    assert.equal(stale.bindingProposal, undefined, 'a binding that only needs a reload was extended');
+    assert.match(stale.message, /the config file does have it/);
+    assert.match(stale.message, /Nothing needs repairing/);
+    assert.doesNotMatch(
+      stale.message,
+      /needs repairing before anything/,
+      'a config that was right was reported as broken',
     );
   });
 

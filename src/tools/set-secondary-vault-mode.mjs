@@ -60,6 +60,9 @@ import {
   refreshRegistryBindingHint,
 } from '../helpers/workspace-bindings.mjs';
 import { isGatedDeployment, gatedDeploymentRefusal } from '../helpers/workspace-dotenv.mjs';
+import { _internals as registryInternals } from '../registry.mjs';
+
+const { resolveDefaultVaultWithSource } = registryInternals;
 
 export const TOOL_NAME = 'set_secondary_vault_mode';
 
@@ -228,27 +231,32 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   // on its way through, and the live copy must say what the file says
   // (Codex, round on b59eb00 — found one writer over, in lock.mjs).
   registry.workspaceRefusals = readRefusals(next, cwd);
-  // THE BINDING AND THE DEFAULT MOVE TOGETHER, only if this call WROTE, and
-  // only to a vault this session can resolve. Three conditions, one gate —
-  // and the gate covers both fields, which is the part round eight had to
-  // repair one file over: splitting them is what CREATES the contradiction
-  // rather than preventing it.
+  // A CALL THAT WRITES NOTHING MUST NOT RE-ROUTE — asking for the mode a
+  // secondary already has returns the config untouched, and this block used to
+  // move `defaultVault` to whatever primary the FILE held, silently re-routing
+  // a session whose sibling had re-bound the workspace.
   //
-  //   - A CALL THAT WRITES NOTHING MUST NOT RE-ROUTE. Asking for the mode a
-  //     secondary already has returns the config untouched, and this block
-  //     still moved `defaultVault` to whatever primary the FILE held — so a
-  //     no-op silently re-routed a session whose sibling had re-bound the
-  //     workspace.
-  //   - AN UNRESOLVABLE PRIMARY DECIDES NOTHING, including nothing about
-  //     reachability. A sibling can register a vault AND bind to it between
-  //     this session's start-up and now; under `--no-watch` that name is
-  //     unknown here. Installing such a binding while leaving the old default
-  //     leaves the default undeclared by the binding in force, and every
-  //     unqualified call fails.
-  if (wrote && binding?.vault && (registry.vaults || []).some((v) => v.name === binding.vault)) {
+  // BUT A WRITE IS ALWAYS ADOPTED, and round eight got that backwards here.
+  // It refused to adopt when the FILE's primary was unknown to this session —
+  // and this tool's whole job is recording a RESTRICTION. Locking `sci`
+  // read-only then wrote the tier, reported it in force, and left this session
+  // on an older binding where `sci` was still writable. A restriction the user
+  // asked for, confirmed to them, and not applied. The primary's resolvability
+  // has nothing to say about a secondary's tier.
+  //
+  // What it does decide is the DEFAULT, and the real cascade answers that:
+  // the binding's primary when it resolves, whatever is reachable otherwise.
+  // One answer to one question, no second implementation. (Codex, round nine.)
+  if (wrote) {
     registry.workspaceBinding = binding;
-    registry.defaultVault = binding.vault;
-    registry.defaultVaultSource = { origin: 'binding', variable: null };
+    const again = resolveDefaultVaultWithSource({
+      vaults: registry.vaults || [],
+      configuredDefault: registry.configuredDefault,
+      binding,
+      reach: registry,
+    });
+    registry.defaultVault = again.name;
+    registry.defaultVaultSource = { origin: again.origin, variable: again.variable };
   }
   refreshRegistryBindingHint(registry);
 
@@ -261,11 +269,30 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   if (globallyLocked && mode !== 'locked') overriddenBy = 'alsoLocked';
   else if (globallyWritable && mode === 'soft') overriddenBy = 'alsoWritable';
 
+  // A NO-OP REPORTS THE FILE, AND THIS SESSION MAY HOLD SOMETHING ELSE. When
+  // nothing was written, nothing was adopted — deliberately, so that a call
+  // changing nothing cannot re-route a session. But the answer is then
+  // describing the FILE while `list_vaults` will describe the session, and the
+  // reader has no way to tell. Silence there is the same lie the write path
+  // had: a tier reported as in force that this process does not apply. Said
+  // out loud instead. (Codex, round nine, the report-versus-state pass.)
+  const sessionTier = (b) => {
+    if (!b) return null;
+    if ((b.alsoLocked || []).includes(vault)) return 'locked';
+    if ((b.alsoWritable || []).includes(vault)) return 'writable';
+    return (b.also || []).includes(vault) ? 'soft' : null;
+  };
+  const inForceHere = sessionTier(registry.workspaceBinding);
+  const sessionDiffers = !wrote && inForceHere !== mode;
+
   return {
     workspace: key,
     vault,
     mode,
     previousMode,
+    // What THIS session applies right now, which is what a write to `vault`
+    // will actually meet. Equal to `mode` whenever this call wrote.
+    modeInForceHere: inForceHere,
     effectiveMode: overriddenBy === 'alsoLocked' ? 'locked' : overriddenBy === 'alsoWritable' ? 'writable' : mode,
     overriddenBy,
     message:
@@ -273,6 +300,13 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
       + (previousMode === mode ? ' (unchanged).' : ` (was: ${previousMode}).`)
       + (overriddenBy
         ? ` NOTE: config.json's global \`${overriddenBy}\` list also names this vault and takes precedence — the mode in force is "${overriddenBy === 'alsoLocked' ? 'locked' : 'writable'}" until that list is edited by hand.`
+        : '')
+      + (sessionDiffers
+        ? ' NOTE: nothing was written, because the config file already held this mode — so THIS session '
+          + `did not adopt that binding, and what it applies to "${shown}" right now is `
+          + `${inForceHere === null ? 'no secondary tier at all (the binding this session holds does not declare it)' : `"${inForceHere}"`}`
+          + '. Another session changed the binding after this one started. Restart the session, or '
+          + 'retry once hot-reload has caught up, before relying on the recorded mode here.'
         : '')
       + ' Recorded in your own router config, for this workspace only.',
   };

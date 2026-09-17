@@ -880,11 +880,25 @@ export async function loadRegistry({ configPath } = {}) {
         const brokenPrimary = typeof primary === 'string' && primary !== ''
           && !this.vaults.some((x) => x.name === primary);
         if (brokenPrimary) {
+          // TWO REASONS A PRIMARY IS MISSING FROM THIS CATALOGUE, and only one
+          // of them is a broken binding. The predicate above tests THIS
+          // SESSION's vault list, which a sibling can have outgrown: register
+          // a vault and bind to it while this process runs, and the primary is
+          // perfectly real and simply unknown here. Telling that reader "this
+          // machine has no such vault, re-confirm the binding" sends them to
+          // rewrite a configuration that was right. The file knows which case
+          // it is, and `bindableVaultNames` already asks it. (Codex, round 9.)
+          const fileHasIt = bindableVaultNames(live.config).has(primary);
           throw declarationRequiredError(
-            `${preamble} This workspace's binding names "${primary}" as its primary, and this machine `
-            + 'has no such vault, so the binding needs repairing before anything can be added to it. '
-            + 'Re-confirm it with confirm_workspace_binding, naming a registered primary and the '
-            + 'secondaries you want to keep.',
+            fileHasIt
+              ? `${preamble} This workspace's binding names "${primary}" as its primary, and the config `
+                + 'file does have it — this session loaded its vault list before that vault existed, and '
+                + 'has not picked it up: hot-reload is off here, or has not fired yet. Nothing needs '
+                + 'repairing. Retry in a moment, or restart the session.'
+              : `${preamble} This workspace's binding names "${primary}" as its primary, and neither this `
+                + 'session nor the config file has such a vault, so the binding needs repairing before '
+                + 'anything can be added to it. Re-confirm it with confirm_workspace_binding, naming a '
+                + 'registered primary and the secondaries you want to keep.',
             null,
           );
         }

@@ -30,6 +30,7 @@ import os from 'node:os';
 import { upsertDotenvVar, removeDotenvVar } from '../helpers/dotenv-writer.mjs';
 import { assertDotenvScalar } from '../helpers/dotenv-scalar.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
+import { _internals as registryInternals } from '../registry.mjs';
 import {
   updateConfigBindings,
   withBinding,
@@ -49,6 +50,8 @@ import {
  * The refusal both the preflight (live registry) and the in-lock check (the
  * file) speak — ONE sentence, so the two cannot drift apart.
  */
+const { resolveDefaultVaultWithSource } = registryInternals;
+
 const promotionRefusal = (vault) =>
   `lock_vault: "${vault}" is an alsoLocked SECONDARY of this workspace, and persist:true would `
   + 'record it as the workspace\'s PRIMARY — lifting that hard read-only tier from the conversation. '
@@ -528,20 +531,38 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // learned in the same round: a sibling can register a vault AND bind to it
     // while this session runs, and under `--no-watch` that name is one this
     // catalogue has never heard of.
-    // THE PAIR MOVES TOGETHER OR NOT AT ALL, and the first version of this
-    // guard protected the wrong half. It adopted the binding unconditionally
-    // and gated only the default, which MANUFACTURED the split it was written
-    // to prevent: a sibling registers `beta`, unknown to this session, and
-    // binds the workspace to it without declaring `alpha`; this session's
-    // unlock writes; the binding `beta` is installed while the default stays
-    // `alpha`; and `alpha` is no longer declared by the binding this session
-    // now holds, so every unqualified call fails. The resolvability test has
-    // to gate BOTH — a binding this session cannot resolve decides nothing,
-    // including nothing about reachability. (Codex, round eight.)
-    if (wrote && b?.vault && (registry.vaults || []).some((v) => v.name === b.vault)) {
+    // A WRITE IS ADOPTED, AND THE CASCADE KEEPS THE PAIR COHERENT. Two rounds
+    // got this wrong in opposite directions, which is worth spelling out
+    // because the second correction looked like the safe one.
+    //
+    //   Round 7 gated the DEFAULT on "can this session resolve the primary"
+    //   and adopted the binding anyway: the default ended up undeclared by
+    //   the binding in force, and every unqualified call failed.
+    //
+    //   Round 8 gated BOTH on it. That produced something worse and quieter:
+    //   a write this session REFUSED TO APPLY. Record `sci` as a locked
+    //   secondary while a sibling's primary is unknown here, and the tier is
+    //   written, reported as in force, and NOT applied — this session keeps an
+    //   older binding in which `sci` may still be writable. A restriction the
+    //   user asked for, confirmed to them, and silently not applied.
+    //
+    // The write is the user's instruction and the file is the truth, so it is
+    // always adopted. What the primary's resolvability decides is the DEFAULT,
+    // and that question already has one answer in this repository: the real
+    // cascade. It returns the binding's primary when that resolves, and falls
+    // through to whatever is reachable — or to nothing — when it does not.
+    // Coherent either way, with no second implementation of "which vault is
+    // the default". (Codex, round nine, both passes.)
+    if (wrote) {
       registry.workspaceBinding = b;
-      registry.defaultVault = b.vault;
-      registry.defaultVaultSource = { origin: 'binding', variable: null };
+      const again = resolveDefaultVaultWithSource({
+        vaults: registry.vaults || [],
+        configuredDefault: registry.configuredDefault,
+        binding: b,
+        reach: registry,
+      });
+      registry.defaultVault = again.name;
+      registry.defaultVaultSource = { origin: again.origin, variable: again.variable };
     }
     // The hint is a statement ABOUT the binding, so it is re-read whenever the
     // binding changes.

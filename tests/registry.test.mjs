@@ -1078,18 +1078,23 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(reg.workspaceBinding.vault, reg.defaultVault);
   });
 
-  test('...and one that writes a binding this session CANNOT RESOLVE adopts neither', async () => {
-    // ► MUTATION WITNESS: adopt the binding outside the resolvability test —
-    //   `registry.workspaceBinding = b` before the `if` — and this goes red.
+  test('...and one that writes a binding whose primary is UNKNOWN here adopts it, with a coherent default', async () => {
+    // ► MUTATION WITNESS: gate the adoption on the primary being resolvable,
+    //   as round 8 did, and this goes red — the write is not applied.
     //
-    // THE GUARD HAS TO COVER BOTH FIELDS, and round 7's version covered only
-    // the default. That MANUFACTURED the split it was written to prevent: a
-    // sibling registers `gamma`, unknown to this session, and binds the
-    // workspace to it without declaring `alpha`; this session's unlock writes;
-    // the binding `gamma` is installed while the default stays `alpha`; and
-    // `alpha` is no longer declared by the binding now in force, so every
-    // unqualified call fails. A binding this session cannot resolve decides
-    // nothing — including nothing about reachability. (Codex, round eight.)
+    // THIS TEST ASSERTED "ADOPTS NEITHER" UNTIL ROUND 9, and the correction
+    // matters more than the assertion. Round 7 gated the DEFAULT on "can this
+    // session resolve the primary" and adopted the binding anyway: the default
+    // ended up undeclared by the binding in force. Round 8 gated BOTH — and
+    // produced something worse and quieter, a write this session REFUSED TO
+    // APPLY. For the sibling tool that records a secondary's write TIER, that
+    // means a restriction the user asked for, confirmed to them, and silently
+    // not in force.
+    //
+    // A write is the user's instruction and the file is the truth, so it is
+    // adopted. The primary's resolvability decides only the DEFAULT, and the
+    // real cascade answers that — the binding's primary when it resolves,
+    // whatever is reachable otherwise. Coherent either way. (Codex, round 9.)
     const configPath = path.join(tmpDir, 'unlock-unresolvable-config.json');
     const key = canonicalWorkspaceKey(process.cwd());
     await fs.writeFile(configPath, JSON.stringify({
@@ -1106,17 +1111,30 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     reg.workspaceBinding = { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' };
     await unlockVaults(reg, { persist: true });
 
-    // The write happened — the file is unlocked — but this session cannot use
-    // the binding it wrote, so it keeps the coherent pair it already had.
+    // The write happened, and this session applies it.
     const written = JSON.parse(await fs.readFile(configPath, 'utf8')).workspaceBindings[key];
     assert.equal(written.locked, false, 'the unlock was not persisted');
-    assert.equal(reg.workspaceBinding.vault, 'alpha', 'a binding this session cannot resolve was installed');
-    assert.equal(reg.defaultVault, 'alpha', 'the default moved to something unresolvable');
-    assert.equal(
-      reg.workspaceBinding.vault,
-      reg.defaultVault,
-      'the binding and the default disagree — the very split the guard exists to prevent',
-    );
+    assert.equal(reg.workspaceBinding.vault, 'gamma', 'the write this session made was not applied to it');
+    assert.equal(reg.workspaceBinding.locked, false, 'the session kept a lock the file no longer holds');
+
+    // And the default is coherent with it: `gamma` does not resolve here, so
+    // the cascade answers instead of the binding. What it must never be is the
+    // old `alpha` presented as a binding-chosen default while the binding in
+    // force is `gamma` — the state round 7 produced.
+    assert.notEqual(reg.defaultVault, 'gamma', 'the default names a vault this session cannot resolve');
+    if (reg.defaultVault === undefined || reg.defaultVault === null) {
+      assert.equal(reg.defaultVaultSource.origin, 'unset', 'no default, but a source that claims one');
+    } else {
+      assert.ok(
+        reg.vaults.some((v) => v.name === reg.defaultVault),
+        `the default "${reg.defaultVault}" is not one this session can resolve`,
+      );
+      assert.notEqual(
+        reg.defaultVaultSource.origin,
+        'binding',
+        'the default is credited to a binding whose primary this session does not have',
+      );
+    }
   });
 
   test('...and one that DOES write adopts the binding and the default together', async () => {

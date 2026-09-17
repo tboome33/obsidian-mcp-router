@@ -86,10 +86,15 @@ primary and drops every secondary not passed again, which is exactly the call th
   Only the refusals are taken from the file on sight: nothing routes by them, and a no recorded
   elsewhere must be honoured at once. The same rule now holds in `set_secondary_vault_mode` and in
   `unlock_vaults --persist`, both of which have a real no-op and both of which used to re-route.
-  Where a session does adopt a binding, it adopts the binding and the default vault **together**, and
-  only when it can resolve that binding's primary. Taking one without the other is what produces the
-  state this rule exists to avoid: a default vault the binding in force no longer declares, so every
-  unqualified call fails.
+  A call that DOES write is adopted in full, always — refusing to apply your own write is worse than
+  any staleness, and for `set_secondary_vault_mode` it would mean a read-only restriction you asked
+  for, confirmed back to you, and not in force in your own session. Where the binding's primary is
+  one this session cannot resolve, the default vault falls to the ordinary cascade rather than to
+  that name, so the two never disagree.
+- **When nothing is written, the answer says what THIS session applies.** Asking for the tier a
+  secondary already has changes nothing, by design. The reply then describes the config file, while
+  the session may still hold an older binding — so it now carries `modeInForceHere` and says plainly
+  that it did not adopt, instead of reporting a restriction as though it were enforced here.
 - **Re-running a refused call really does hand back something new.** The proposal is minted from the
   config file rather than from this session's copy, so an identifier that died because a parallel
   session moved the binding is replaced rather than reissued. That is done by reading, not by
