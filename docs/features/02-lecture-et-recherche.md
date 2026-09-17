@@ -80,6 +80,67 @@ Tout ce qui permet d'**explorer et de lire** le contenu des vaults sans rien mod
 
 **À savoir.** Deux plugins requis dans le vault cible : **obsidian-mcp-router-bridge** (qui expose la route `/search/smart` sur Local REST API) et **Smart Connections** (le backend d'embeddings). Sans eux, l'outil explique ce qui manque. Réflexe utile : recherche littérale → `search` ; recherche par sens → `search_smart`.
 
+### Validité temporelle — ne garder que ce qui s'applique
+
+**Le besoin.** Certaines pages ne disent vrai que pendant une période : un tarif 2026, une procédure valable jusqu'à une migration, une règle qui n'entre en vigueur qu'au mois prochain. Une page peut le déclarer dans son frontmatter avec `valid_from` et `valid_through` (bornes **incluses**, voir [Dater une connaissance](07-wiki-gestion-de-connaissances.md#dater-une-connaissance--valid_from-et-valid_through) en fiche 07). `search_smart` sait alors dire de chaque résultat où il en est — et, si on le lui demande, ne rendre que ce qui s'applique.
+
+**Deux paramètres, tous deux facultatifs.**
+
+| paramètre | à quoi ça sert |
+|---|---|
+| `asOf` | le **jour de référence**, en `YYYY-MM-DD`. Par défaut, aujourd'hui en UTC. Résolu **une seule fois** pour tout l'appel, de sorte que deux résultats de la même réponse ne sont jamais classés sur deux jours différents. Une valeur illisible fait échouer l'appel plutôt que de le faire retomber en silence sur aujourd'hui. |
+| `validityStates` | la **liste des états à garder**, parmi `in-force`, `not-yet-in-force`, `no-longer-in-force`, `unreadable`. Omis — ou liste vide, qui veut dire la même chose — rien n'est filtré : chaque résultat est simplement annoté. |
+
+```jsonc
+{
+  "vault": "tradingview",
+  "query": "règles de break-even",
+  "validityStates": ["in-force"],
+  "asOf": "2026-12-31"
+}
+```
+
+**Trois sortes de résultat ne sont JAMAIS écartées**, même quand on demande `["in-force"]` :
+
+| le résultat… | pourquoi il reste |
+|---|---|
+| ne déclare **aucune** fenêtre | une page qui ne dit rien sur sa durée ne prétend pas être périmée. Le silence n'est pas une date, et l'immense majorité des pages d'un vault sont dans ce cas. |
+| déclare une fenêtre **illisible** (`unreadable`) | « je n'ai pas su lire cette borne » n'est pas « cette borne est dépassée ». Écarter sur un doute reviendrait à cacher une page à cause d'une faute de frappe. |
+| n'a **pas pu être lu** (`validityUnverified`) | la page était hors budget, injoignable, ou son chemin n'a pas résolu. On ne sait pas, donc on ne retire pas. |
+
+Autrement dit, le filtre ne retire que ce qu'il a **vraiment lu** et dont l'état est **certain** — et cet état ne fait pas partie de la liste demandée. C'est la règle de fond de toute la fonctionnalité : **aucune page n'est cachée par défaut**, et la seule façon d'en écarter une est de le demander explicitement.
+
+**Ce que la réponse ajoute.** Deux blocs, jamais l'un sans l'autre quand le filtre est demandé :
+
+```jsonc
+"validitySummary": {
+  "asOf": "2026-09-15",        // le jour retenu, une fois pour tout l'appel
+  "annotatedEntries": 5,        // combien de résultats RENDUS portent une fenêtre
+  "inspectedPages": 12,         // pages réellement lues pour établir ces fenêtres
+  "unverifiedPages": 0,         // pages connues mais non établies (budget, lecture)
+  "budgetExhausted": false,     // le plafond de lectures a-t-il été atteint
+  "revisionCoherence": "not-verified"
+},
+"validityFilter": {
+  "states": ["in-force"],
+  "excludedHits": 20,           // écartés par le FILTRE
+  "cutByLimit": 0,              // admissibles, mais coupés par `limit`
+  "moreCandidates": "unknown"   // reste-t-il des candidats non examinés ?
+}
+```
+
+`excludedHits` et `cutByLimit` sont nommés séparément exprès : une page courte a deux causes possibles, et le lecteur a besoin de savoir laquelle.
+
+`moreCandidates` répond à une question d'existence, pas à un décompte. Sur le tier local il vaut `true` ou `false`, parce que l'index sait combien de chunks étaient éligibles. Sur le tier **sémantique** il vaut `"unknown"` : Smart Connections ne dit pas combien de candidats il avait, donc prétendre « il n'y a rien d'autre » serait une affirmation que rien ne soutient. En fan-out (`vault: "*"`), un vault injoignable rend la réponse globale `"unknown"` — **sauf si un autre vault établit déjà qu'il reste des candidats**, auquel cas la réponse est `true` : une question d'existence est tranchée par la première réponse positive, et un corpus que personne n'a lu ne peut pas défaire une certitude, seulement empêcher d'en former une négative.
+
+**`revisionCoherence` vaut toujours `not-verified`**, et c'est une information, pas un défaut : la fenêtre décrit la page telle qu'elle était **au moment de la requête**, pas la révision d'où l'extrait a été tiré. C'est écrit dans chaque réponse plutôt que laissé à deviner.
+
+**Le tier sémantique adresse des blocs, pas des fichiers.** Smart Connections renvoie des chemins de la forme `Page.md#Titre#Sous-titre#{1}` : ce n'est pas un fichier, et le demander tel quel à Obsidian donne un 404. Le router en extrait donc la page avant de lire la fenêtre — sinon la moitié des résultats sémantiques auraient été rapportés « non vérifiables » alors que leur page déclare parfaitement sa validité. Une conséquence visible : vingt extraits d'un même document comptent pour **une** page dans `inspectedPages`, et coûtent **une** lecture.
+
+**Quand le chemin est ambigu, le router ne devine pas.** Un `#` est légal dans un nom de fichier et `.md` est légal dans un titre de section, donc une chaîne comme `a.md#b.md` désigne soit un fichier portant ce nom, soit la section `b.md` de la page `a.md` — et rien dans la chaîne ne permet de trancher. Dans ce cas le router **ne lit rien** : le résultat est marqué `validityUnverified`, donc annoté d'aucune fenêtre et **jamais écarté par le filtre**. On perd l'annotation, jamais le résultat. C'est un choix délibéré : une fenêtre attribuée à la mauvaise page pourrait faire disparaître un résultat pour une date qui ne le concerne pas, ce qui est exactement ce que ce lot interdit. Le cas ne se produit que sur le tier sémantique — un chemin du tier local sort d'un index construit sur de vrais noms de fichiers, il est donc exact et lu tel quel.
+
+**`search` ne porte pas ces champs.** La recherche plein texte rend des occurrences littérales, pas des pages, et ne lit aucun frontmatter ; lui greffer une validité aurait signifié lire une note par occurrence. Pour une recherche datée, passer par `search_smart`.
+
 ## `get_frontmatter` — lire les métadonnées d'une note
 
 **Le besoin.** Consulter le statut, les tags ou n'importe quelle propriété d'une note sans charger tout son contenu.

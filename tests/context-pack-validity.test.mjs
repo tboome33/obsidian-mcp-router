@@ -450,3 +450,88 @@ describe('the dependence on the helper is OBSERVABLE from the tool', () => {
     assert.equal(await stateOf({ valid_from: '2099-01-01', valid_through: '2020-01-01' }), 'unreadable');
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('a semantic chunk names a BLOCK, and its window is its page\'s', () => {
+  // Roadmap phase 4c.3, swept back onto the 4a site. Smart Connections
+  // addresses a chunk as `Page.md#Heading#{1}`, which is not a file: handed to
+  // `getNote` it is a 404, so every chunk of the pack came back
+  // `validityUnverified` on a real vault. Measured on TradingView, 2026-09-15.
+  const PAGE = 'wiki/modules.md';
+  const BLOCK = `${PAGE}#Modules — comment l'indicateur fonctionne#L'idée en une phrase#{1}`;
+
+  const packWith = (chunks, notes) => getWikiContextPack(
+    makeRegistry(),
+    { query: QUERY, asOf: TODAY },
+    makeDeps({ catalogue: catalogueOf(['tariff']), notes, chunks }),
+  );
+
+  test('the chunk carries its page window instead of being unverifiable', async () => {
+    const deps = makeDeps({
+      catalogue: catalogueOf(['tariff']),
+      notes: {
+        'wiki/tariff.md': note({}),
+        [PAGE]: note({ valid_through: '2025-12-31' }),
+      },
+      chunks: [{ path: BLOCK, text: 'un extrait', score: 0.9 }],
+    });
+    const pack = await getWikiContextPack(makeRegistry(), { query: QUERY, asOf: TODAY }, deps);
+    const chunk = pack.semanticChunks[0];
+    assert.equal(chunk.path, BLOCK, 'the chunk keeps its own anchored path');
+    assert.equal(chunk.validity?.state, 'no-longer-in-force');
+    assert.equal(chunk.validityUnverified, undefined);
+    assert.equal(deps.countFor(PAGE), 1, 'one read, of the page');
+    assert.equal(deps.countFor(BLOCK), 0, 'and no probe at the block key');
+  });
+
+  test('several chunks of one page are read once and counted once', async () => {
+    const deps = makeDeps({
+      catalogue: catalogueOf(['tariff']),
+      notes: { 'wiki/tariff.md': note({}), [PAGE]: note({ valid_from: '2026-01-01' }) },
+      chunks: Array.from({ length: 6 }, (_, i) => ({
+        path: `${PAGE}#Section ${i}#{${i}}`, text: `extrait ${i}`, score: 1 - i / 100,
+      })),
+    });
+    const pack = await getWikiContextPack(makeRegistry(), { query: QUERY, asOf: TODAY }, deps);
+    assert.equal(deps.countFor(PAGE), 1);
+    assert.equal(pack.semanticChunks.length, 6);
+    assert.equal(pack.semanticChunks.every((c) => c.validity?.state === 'in-force'), true);
+  });
+
+  test('the PAGE IDENTITY is what the quota buys — not the block key', async () => {
+    // Round 3 asked whether a wrong `pageOf` alone was observable here. It is,
+    // through the quota: six blocks of one page are ONE page, so a quota of one
+    // covers them. If the identity were the block key they would be six pages,
+    // five would be refused for budget, and the pack would report five chunks
+    // unverified while the page had been read. That is exactly the defect the
+    // phase-4b measurement found on the real vault, in its other form.
+    const deps = makeDeps({
+      catalogue: catalogueOf(['tariff']),
+      notes: { 'wiki/tariff.md': note({}), [PAGE]: note({ valid_from: '2026-01-01' }) },
+      chunks: Array.from({ length: 6 }, (_, i) => ({
+        path: `${PAGE}#Section ${i}#{${i}}`, text: `extrait ${i}`, score: 1 - i / 100,
+      })),
+    });
+    const pack = await getWikiContextPack(
+      makeRegistry(), { query: QUERY, asOf: TODAY, chunkLimit: 6 }, deps,
+    );
+    assert.equal(pack.semanticChunks.length, 6);
+    assert.equal(
+      pack.semanticChunks.filter((c) => c.validityUnverified).length, 0,
+      'no chunk was refused for a budget the page had already paid',
+    );
+    assert.equal(pack.validitySummary.budgetExhausted, false);
+    assert.equal(pack.validitySummary.inspectedPages, 2, 'the catalogue page and the chunk page');
+  });
+
+  test('a pathless chunk is still marked, and still names no page', async () => {
+    // The branch the repair must not have eaten: no candidates at all is not
+    // the same as a candidate that failed.
+    const pack = await packWith(
+      [{ path: '', text: 'un extrait sans chemin', score: 0.9 }],
+      { 'wiki/tariff.md': note({}) },
+    );
+    assert.equal(pack.semanticChunks[0].validityUnverified, true);
+    assert.equal(pack.semanticChunks[0].validity, undefined);
+  });
+});

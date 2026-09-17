@@ -451,10 +451,15 @@ describe('paths are cached, PAGES are counted', () => {
     const notes = { 'root.md': note({ valid_through: '2025-12-31' }) };
     const { ctx, readNote } = contextWith(notes);
 
+    // `resolution` names the spellings this loop will try. A caller that tries
+    // several and says so is ONE resolution of one page; a caller that reads a
+    // second spelling under the same identity WITHOUT saying so is two callers
+    // disagreeing, and that is what the guard is there to catch (round 5).
+    const resolution = ['wiki/root.md', 'root.md'];
     let resolved = null;
-    for (const tryPath of ['wiki/root.md', 'root.md']) {
+    for (const tryPath of resolution) {
       try {
-        resolved = await ctx.read(tryPath, { page: 'root.md' });
+        resolved = await ctx.read(tryPath, { page: 'root.md', resolution });
         break;
       } catch { /* fall through to the next spelling, as the drill does */ }
     }
@@ -468,8 +473,9 @@ describe('paths are cached, PAGES are counted', () => {
 
   test('a dead link tried twice is ONE unverified page, not two', async () => {
     const { ctx, readNote } = contextWith({});
-    for (const tryPath of ['wiki/ghost.md', 'ghost.md']) {
-      await ctx.read(tryPath, { page: 'ghost.md' }).catch(() => {});
+    const resolution = ['wiki/ghost.md', 'ghost.md'];
+    for (const tryPath of resolution) {
+      await ctx.read(tryPath, { page: 'ghost.md', resolution }).catch(() => {});
     }
     assert.equal(readNote.calls.length, 2, 'both spellings were tried');
     const summary = ctx.finalize([]);
@@ -799,5 +805,356 @@ describe('the dependence on the helper is OBSERVABLE from here', () => {
 
   test('an inverted window is unreadable, never a future one', async () => {
     assert.equal(await stateFor({ valid_from: '2027-01-01', valid_through: '2025-12-31' }), 'unreadable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('what a read is allowed to conclude — the three holes of 2026-09-16', () => {
+  // All three were found by the adversarial review, and all three share a
+  // shape: a fact established at one moment survived into a moment where it was
+  // no longer true.
+
+  test('a transport failure stops the resolution instead of trying another page', async () => {
+    // `wiki/x.md` answers 503; `x.md` exists and is expired. Falling through
+    // used to attribute the SECOND file's window to an entry that names the
+    // first — and, under a filter, get it excluded on a date from elsewhere.
+    const readNote = readerOver(
+      { 'x.md': note({ valid_through: '2020-01-01' }) },
+      { fail: new Map([['wiki/x.md', Object.assign(new Error('Service Unavailable'), { status: 503 })]]) },
+    );
+    const { ctx } = contextWith({}, { readNote });
+    const entries = [{ path: 'x' }];
+    await ctx.annotate(entries, {
+      collection: 'neighbors',
+      pathsOf: () => ['wiki/x.md', 'x.md'],
+      pageOf: () => 'x.md',
+    });
+    ctx.finalize(entries);
+    assert.equal(entries[0].validityUnverified, true, 'unverified — nobody could look');
+    assert.equal(entries[0].validity, undefined, "and no window from the other file");
+    assert.deepEqual(readNote.calls, ['wiki/x.md'], 'the second spelling was never tried');
+  });
+
+  test('a 404 DOES license the next spelling — the rule is narrow, not a blanket stop', async () => {
+    // The control for the witness above. Without it, "stops on error" and
+    // "stops on every error" look the same, and the two-spelling resolution the
+    // catalogue depends on would be silently dead.
+    const readNote = readerOver({ 'x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote });
+    const entries = [{ path: 'x' }];
+    await ctx.annotate(entries, {
+      collection: 'neighbors',
+      pathsOf: () => ['wiki/x.md', 'x.md'],
+      pageOf: () => 'x.md',
+    });
+    ctx.finalize(entries);
+    assert.deepEqual(readNote.calls, ['wiki/x.md', 'x.md']);
+    assert.equal(entries[0].validity?.state, 'in-force');
+  });
+
+  test('a successful read ERASES a window the entry arrived with', async () => {
+    // Invariant 1. `classifyValidity` returns null for a page that declares
+    // nothing, and the early return left whatever was already on the entry —
+    // so a `validity` key this router never wrote decided the filter.
+    const { ctx } = contextWith({ 'wiki/w.md': note({ title: 'no window here' }) });
+    const entries = [{
+      path: 'wiki/w.md',
+      validity: { state: 'no-longer-in-force', from: null, through: '2020-01-01', asOf: TODAY },
+    }];
+    await ctx.annotate(entries, { collection: 'chunks' });
+    ctx.finalize(entries);
+    assert.equal(entries[0].validity, undefined, 'the stale window is gone');
+    assert.equal(entries[0].validityUnverified, undefined, 'and nothing was marked either');
+  });
+
+  test('a page already READ is never charged to a quota again, under any spelling', async () => {
+    // Round 6. The quota buys an I/O, and `pages` is keyed by the identity a
+    // caller declares — so two callers naming one file differently (the drill
+    // reads the page `x.md`, a collection names the file `wiki/x.md`) made the
+    // second one spend a quota it did not need. With none left it then REFUSED
+    // an entry whose page had already been read, and the summary reported the
+    // same file as one page inspected AND one page unverified.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_through: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote, budget: { primary: UNMETERED, chunks: 0 } });
+    await ctx.read('wiki/x.md', { page: 'x.md' });
+
+    const chunk = { path: 'wiki/x.md' };
+    await ctx.annotate([chunk], { collection: 'chunks' });
+
+    assert.equal(chunk.validityUnverified, undefined, 'the chunk found the read, not a closed budget');
+    assert.equal(chunk.validity?.state, 'no-longer-in-force');
+    const summary = ctx.finalize([chunk]);
+    assert.equal(readNote.countFor('wiki/x.md'), 1, 'one read');
+    assert.equal(summary.inspectedPages, 1, 'one page');
+    assert.equal(summary.unverifiedPages, 0, 'and not ALSO an unverified one');
+    assert.equal(summary.budgetExhausted, false);
+  });
+
+  test('ONE cached candidate does not make a whole resolution free', async () => {
+    // Round 7. The exemption asked `some`, so a resolution whose SECOND
+    // spelling happened to be cached was waved through entirely — and its
+    // FIRST spelling, a file nobody had touched, was then read for free while
+    // the quota said zero. A resolution costs nothing only when nothing in it
+    // can reach the reader.
+    const readNote = readerOver({
+      'wiki/root.md': note({ valid_from: '2020-01-01' }),
+      'root.md': note({ valid_from: '2020-01-01' }),
+    });
+    const { ctx } = contextWith({}, { readNote, budget: { chunks: 0 } });
+    await ctx.read('root.md', { page: 'seed' });
+
+    const entry = { path: 'root' };
+    await ctx.annotate([entry], {
+      collection: 'chunks',
+      pageOf: () => 'root',
+      pathsOf: () => ['wiki/root.md', 'root.md'],
+    });
+
+    assert.equal(readNote.countFor('wiki/root.md'), 0, 'the unread spelling stayed unread');
+    assert.equal(entry.validityUnverified, true, 'and the entry was refused, as a zero budget means');
+    assert.equal(ctx.finalize([entry]).budgetExhausted, true);
+  });
+
+  test('and a resolution ENTIRELY cached really is free', async () => {
+    // The control: narrowing `some` to `every` must not have closed the door
+    // the exemption exists to open.
+    const readNote = readerOver({ 'wiki/root.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote, budget: { chunks: 0 } });
+    await ctx.read('wiki/root.md', { page: 'seed' });
+
+    const entry = { path: 'root' };
+    await ctx.annotate([entry], {
+      collection: 'chunks',
+      pageOf: () => 'root',
+      pathsOf: () => ['wiki/root.md'],
+    });
+    assert.equal(entry.validity?.state, 'in-force');
+    assert.equal(readNote.countFor('wiki/root.md'), 1, 'served from the cache');
+  });
+
+  test('two entries of ONE pass naming one file share the reservation', async () => {
+    // Round 7. The reservation loop is synchronous, so the attempt cache is
+    // still empty while it runs and `pageKey` alone could not see that the read
+    // had already been paid for: with a quota of one, the second entry was
+    // refused for a budget its own read never spent. The resolution is what was
+    // reserved, so entries that share one are reserved together.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote, budget: { chunks: 1 } });
+    const entries = [
+      { path: 'wiki/x.md', id: 'x' },
+      { path: 'wiki/x.md', id: 'wiki/x.md' },
+    ];
+    await ctx.annotate(entries, { collection: 'chunks', pageOf: (e) => e.id });
+
+    assert.equal(readNote.countFor('wiki/x.md'), 1, 'one read, as invariant 10 says');
+    assert.equal(entries[0].validity?.state, 'in-force');
+    assert.equal(entries[1].validityUnverified, undefined, 'the second entry was not refused');
+    assert.equal(entries[1].validity?.state, 'in-force');
+    assert.equal(ctx.finalize(entries).budgetExhausted, false);
+  });
+
+  test('a stale refusal is reconciled when a shared read answers under an alias', async () => {
+    // Round 7. One FILE under two identities — the mirror of the limit this
+    // module accepts, and not covered by it. An identity refused for budget
+    // kept `inspected: false` although the very read it was waiting for then
+    // succeeded under another name, so the summary reported one file as one
+    // page inspected AND one page unverified.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote, budget: { chunks: 0 } });
+    const entry = { path: 'wiki/x.md' };
+
+    await ctx.annotate([entry], { collection: 'chunks' });
+    assert.equal(entry.validityUnverified, true, 'refused for budget, as it should be');
+
+    await ctx.read('wiki/x.md', { page: 'x' });
+    await ctx.annotate([entry], { collection: 'chunks' });
+
+    assert.equal(entry.validity?.state, 'in-force', 'the entry ends up verified');
+    assert.equal(entry.validityUnverified, undefined);
+    const summary = ctx.finalize([entry]);
+    assert.equal(readNote.countFor('wiki/x.md'), 1, 'one read');
+    assert.equal(summary.unverifiedPages, 0, 'and no page is left claiming nobody looked');
+  });
+
+  test('but a page nobody has touched still costs its quota', async () => {
+    // The control: the exemption above is about I/O already in flight, not a
+    // general amnesty. Without it, a budget of zero would stop meaning zero.
+    const readNote = readerOver({ 'wiki/y.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote, budget: { chunks: 0 } });
+    const entry = { path: 'wiki/y.md' };
+    await ctx.annotate([entry], { collection: 'chunks' });
+    assert.equal(entry.validityUnverified, true);
+    assert.equal(readNote.calls.length, 0, 'and no read was spent');
+    assert.equal(ctx.finalize([entry]).budgetExhausted, true);
+  });
+
+  test('THE PAGE COUNTS ARE COUNTS OF DECLARED IDENTITIES — the stated limit', async () => {
+    // Written down rather than policed. A guard that refused two identities for
+    // one file was added in round 2 and removed in round 6: no shipped caller
+    // ever produced the miscount, and the guard itself broke legitimate
+    // composition twice — after a drill resolved a page through two spellings,
+    // annotating that page by the spelling that had ANSWERED was refused.
+    //
+    // So this is the behaviour, asserted so nobody has to rediscover it: two
+    // different files given one identity are one page, and a later success
+    // overwrites an earlier failure.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote });
+    const chunk = { path: 'x.md' };
+    await ctx.annotate([chunk], { collection: 'chunks' });
+    assert.equal(chunk.validityUnverified, true, 'that entry really could not be read');
+
+    const neighbour = { path: 'x' };
+    await ctx.annotate([neighbour], {
+      collection: 'neighbors',
+      pathsOf: () => ['wiki/x.md', 'x.md'],
+      pageOf: () => 'x.md',
+    });
+    assert.equal(neighbour.validity?.state, 'in-force', 'and this one really was read');
+
+    const summary = ctx.finalize([chunk, neighbour]);
+    assert.equal(summary.inspectedPages, 1, 'ONE identity, so one page');
+    assert.equal(summary.unverifiedPages, 0, 'the success is what the identity ends up saying');
+    // The entry itself never lies, which is what makes the limit affordable:
+    // the reader of a hit always sees whether ITS window was established.
+    assert.equal(chunk.validityUnverified, true);
+  });
+
+  test('and two spellings the READER treats as one are one resolution, not a conflict', async () => {
+    // The guard must speak the reader's language. `read` normalises with
+    // `cacheKeyFor`, so `./wiki/a.md` and `wiki/a.md` are one read of one file;
+    // the first version of this guard compared the raw strings and threw on a
+    // caller that had done nothing wrong — a repair inventing its own failure.
+    const readNote = readerOver({ 'wiki/a.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote });
+    await ctx.annotate([{ path: './wiki/a.md' }], { collection: 'primary' });
+    await ctx.annotate([{ path: 'wiki/a.md' }], { collection: 'chunks' });
+    const summary = ctx.finalize([]);
+    assert.equal(readNote.countFor('wiki/a.md'), 1, 'one read');
+    assert.equal(summary.inspectedPages, 1, 'one page');
+  });
+
+  test('duplicate spellings that collapse to one key are ONE resolution', async () => {
+    // Round 3, BLOQUANT. The signature normalised its candidates but kept their
+    // duplicates, so `['x.md']` and `['x.md', './x.md']` compared unequal —
+    // two lists that can only ever read one file, and a legitimate third-party
+    // call made to fail by a guard that was supposed to protect counting.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote });
+    await ctx.annotate([{ path: 'wiki/x.md' }], { collection: 'primary' });
+    await ctx.annotate([{}], {
+      collection: 'chunks',
+      pageOf: () => 'wiki/x.md',
+      pathsOf: () => ['wiki/x.md', './wiki/x.md'],
+    });
+    const summary = ctx.finalize([]);
+    assert.equal(readNote.countFor('wiki/x.md'), 1);
+    assert.equal(summary.inspectedPages, 1);
+  });
+
+  test('the page key normaliser is IDEMPOTENT, as a property and not as a list', async () => {
+    // Twice now a hand-picked input showed the property was false — `././x.md`
+    // in round 3, `./ x.md` in round 4, where stripping the prefix EXPOSES a
+    // space the next trim removes. Each repair closed its own input. So the
+    // property itself is the test: the identity a caller declares must survive
+    // being normalised twice, because `reserve` and `read` each normalise once.
+    const shapes = [
+      'x.md', ' x.md ', './x.md', '././x.md', './././x.md', './ x.md', ' ./ ./x.md',
+      'wiki//x.md', './wiki///a//b.md', './/x.md', './', '.', '', '   ',
+      'wiki/x.md#a', './wiki/note#2.md', './.x.md', '..//x.md',
+    ];
+    for (const raw of shapes) {
+      // Probed through the PUBLIC surface, and in THIS order: the budget is
+      // exhausted FIRST, so the page is recorded by `reserve` under the
+      // identity it normalised once, and only then read — which records it
+      // again under whatever a second normalisation produces. The other order
+      // no longer sees anything, because a spelling already in flight is exempt
+      // from the quota; measuring that was what showed this witness had to be
+      // turned around to keep proving its property.
+      // A reader that answers WHATEVER path it is given. Restating the
+      // normaliser in the fixture is how this test broke itself once: the
+      // fixture kept an older spelling of the rule, so the assertion failed on
+      // correct code. The property is about sharing, not about the key.
+      const calls = [];
+      const readNote = async (_vault, p) => { calls.push(p); return note({}); };
+      readNote.calls = calls;
+      const { ctx } = contextWith({}, { readNote, budget: { chunks: 0, primary: UNMETERED } });
+      const a = { path: raw };
+      const b = { path: raw };
+      await ctx.annotate([a], { collection: 'chunks' });
+      await ctx.annotate([b], { collection: 'primary' });
+      const summary = ctx.finalize([a, b]);
+      assert.ok(
+        summary.inspectedPages + summary.unverifiedPages <= 1,
+        `${JSON.stringify(raw)}: counted as ${summary.inspectedPages} inspected + ${summary.unverifiedPages} unverified`,
+      );
+      // A path that names NO page at all — `''`, `'.'`, `'./'` — is marked and
+      // counted as no page, which is right and is not what this property is
+      // about. The sharing assertion applies to the ones that name something.
+      if (calls.length > 0) {
+        assert.equal(
+          b.validityUnverified, undefined,
+          `${JSON.stringify(raw)}: the second collection did not find the page the first recorded`,
+        );
+      }
+    }
+  });
+
+  test('a page named with a REPEATED `./` is one page, not two', async () => {
+    // Round 3, MAJEUR. `reserve` normalises the identity and `read` normalises
+    // it again, so the normaliser has to be idempotent. Stripping one `./` at a
+    // time was not: `././x.md` became `./x.md`, then `x.md`, and the page the
+    // first collection had read was not found by the second — which refused the
+    // entry for budget and reported the same page as BOTH inspected and
+    // unverified. The second collection has NO quota on purpose: that is what
+    // turns the mismatch into a visible wrong count.
+    const readNote = readerOver({ 'wiki/x.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, {
+      readNote,
+      budget: { primary: 1, chunks: 0, neighbors: UNMETERED },
+    });
+    const a = { path: '././wiki/x.md' };
+    const b = { path: '././wiki/x.md' };
+    await ctx.annotate([a], { collection: 'primary' });
+    await ctx.annotate([b], { collection: 'chunks' });
+    const summary = ctx.finalize([a, b]);
+    assert.equal(b.validityUnverified, undefined, 'the second entry found the page already read');
+    assert.equal(b.validity?.state, 'in-force');
+    assert.equal(summary.inspectedPages, 1, 'one page');
+    assert.equal(summary.unverifiedPages, 0, 'and it is not ALSO unverified');
+    assert.equal(summary.budgetExhausted, false, 'no budget was needed for a page already read');
+  });
+
+  test('and the SAME resolution, reached twice, is free — the guard is about disagreement', async () => {
+    // The control. A page touched by two collections through the same spellings
+    // is one page, read once, charged once. Refusing that would break the
+    // sharing the context pack depends on.
+    const readNote = readerOver({ 'wiki/a.md': note({ valid_from: '2020-01-01' }) });
+    const { ctx } = contextWith({}, { readNote });
+    await ctx.annotate([{ path: 'wiki/a.md' }], { collection: 'primary' });
+    await ctx.annotate([{ path: 'wiki/a.md' }], { collection: 'chunks' });
+    const summary = ctx.finalize([]);
+    assert.equal(readNote.countFor('wiki/a.md'), 1, 'one read');
+    assert.equal(summary.inspectedPages, 1, 'one page');
+  });
+
+  test('a page refused by one budget, then read by another, stops being unverified', async () => {
+    // Two collections, the first with no quota at all. The entry was marked
+    // unverified there; the second collection had quota and read the page —
+    // and the mark stayed, on top of the new window. The filter reads the mark
+    // FIRST, so an expired page that HAD been read was kept as if nobody had
+    // looked at it.
+    const { ctx } = contextWith(
+      { 'wiki/w.md': note({ valid_through: '2020-01-01' }) },
+      { budget: { chunks: 0, neighbors: UNMETERED } },
+    );
+    const entry = { path: 'wiki/w.md' };
+
+    await ctx.annotate([entry], { collection: 'chunks' });
+    assert.equal(entry.validityUnverified, true, 'refused for budget, as it should be');
+
+    await ctx.annotate([entry], { collection: 'neighbors' });
+    assert.equal(entry.validityUnverified, undefined, 'the mark did not survive the read');
+    assert.equal(entry.validity?.state, 'no-longer-in-force', 'and the real window is there');
   });
 });

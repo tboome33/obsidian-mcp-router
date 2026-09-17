@@ -28,13 +28,15 @@ valid_through: 2026-12-31
 
 **Les deux bornes sont incluses.** Une page dont `valid_through` est aujourd'hui s'applique encore aujourd'hui, et cesse demain. Un seul des deux champs suffit : `valid_from` seul décrit une règle entrée en vigueur et toujours active, `valid_through` seul une règle sans date de début connue.
 
-De là, le routeur dérive quatre états — en vigueur, pas encore, plus, illisible — et les répète partout où il présente une page à un agent : le rappel de décisions, le contrôle santé du wiki ([`/wiki-lint`](#wiki-lint--le-contrôle-santé), Check R) et le paquet de contexte ([fiche 08](08-graphe-de-connaissances.md)).
+De là, le routeur dérive quatre états — en vigueur, pas encore, plus, illisible — et les répète partout où il présente une page à un agent : le rappel de décisions, le contrôle santé du wiki ([`/wiki-lint`](#wiki-lint--le-contrôle-santé), Check R), le paquet de contexte ([fiche 08](08-graphe-de-connaissances.md)) et la recherche sémantique ([fiche 02](02-lecture-et-recherche.md#validité-temporelle--ne-garder-que-ce-qui-sapplique)).
+
+`search_smart` est le **seul** de ces points de lecture qui sache aussi *filtrer* : il accepte `validityStates` et ne rend alors que les états demandés. C'est une exception délibérée et elle reste dans le cadre posé ci-dessous — le filtre se demande explicitement, et même demandé il n'écarte jamais une page sans fenêtre, une fenêtre illisible ou une page qu'il n'a pas pu lire.
 
 **Trois choses que ces champs ne font pas.**
 
 - **Ils ne remplacent pas `status`.** Une décision `accepted` dont la fenêtre est close reste une décision acceptée : elle a simplement cessé de s'appliquer. Les deux axes sont orthogonaux et s'affichent ensemble.
 - **Ils ne remplacent pas `review_after`.** Celui-là veut dire « réexamine-moi », pas « je ne m'applique plus ». Une page peut porter les deux.
-- **Ils ne masquent rien.** Une page hors de sa fenêtre reste trouvable, remontée et lisible. Elle est **annotée**, jamais cachée — y compris quand sa fenêtre est illisible, cas où le routeur le signale au lieu de deviner.
+- **Ils ne masquent rien d'eux-mêmes.** Une page hors de sa fenêtre reste trouvable, remontée et lisible : elle est **annotée**, pas cachée — y compris quand sa fenêtre est illisible, cas où le routeur le signale au lieu de deviner. Aucun outil ne retire quoi que ce soit par défaut ; le seul retrait possible est celui qu'un appelant demande nommément à `search_smart`, et il ne porte jamais sur une page sans fenêtre ni sur une fenêtre dont l'état est incertain.
 
 **Rien n'est deviné.** Aucune page existante n'est réécrite, aucun champ n'est ajouté d'office, et l'ingestion ne dérive jamais une période à partir d'une date de publication. Ces champs n'apparaissent que si quelqu'un les écrit, parce que la source énonce elle-même une période d'application.
 

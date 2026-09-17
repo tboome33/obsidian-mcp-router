@@ -487,3 +487,165 @@ describe('the semantic tier says it does not know', () => {
     assert.equal(out.validityFilter.excludedHits, 4);
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('a semantic hit names a BLOCK, and the window belongs to its page', () => {
+  // Roadmap phase 4c.3. These shapes are not invented — they are what the
+  // TradingView vault's `/search/smart` returned on 2026-09-15, the one vault
+  // of the fleet whose semantic tier answers. Before this wiring, ten of the
+  // twenty pages annotated on that call came back unreadable for this reason
+  // alone, and every one of them was reported `validityUnverified`: nothing was
+  // hidden, but the filter was inert on half the tier.
+  const BLOCK = "wiki/p9.md#Modules — comment l'indicateur fonctionne#L'idée en une phrase#{1}";
+  const HEADING = "wiki/p9.md#Modules — comment l'indicateur fonctionne";
+  const PAGE = 'wiki/p9.md';
+
+  const semanticDeps = (hits, frontmatter = {}, missing = []) => {
+    const deps = depsFor({ pages: [onePage(1)], frontmatter, missing });
+    deps.searchSmart = async () => ({ results: hits });
+    return deps;
+  };
+  const semantic = (args, deps) => searchSmartTool(
+    registry, { query: QUERY, tier: 'semantic', asOf: TODAY, ...args }, deps,
+  );
+
+  test('the window is read from the PAGE, not asked of the block key', async () => {
+    const deps = semanticDeps([{ path: BLOCK, score: 0.9 }], { [PAGE]: IN_FORCE });
+    const out = await semantic({}, deps);
+    assert.equal(out.results[0].validity?.state, 'in-force', 'the block inherited its page window');
+    assert.equal(out.results[0].validityUnverified, undefined, 'and nothing was left unverified');
+    assert.deepEqual(deps.reads, [PAGE], 'exactly one read, of the page');
+  });
+
+  test('and the hit keeps its own block path — the repair annotates, it does not rewrite', async () => {
+    // The path is what a reader opens and what click-to-open builds on. Lifting
+    // the page into the result would have silently dropped the anchor that says
+    // WHICH part of the document matched.
+    const deps = semanticDeps([{ path: BLOCK, score: 0.9 }], { [PAGE]: IN_FORCE });
+    const out = await semantic({}, deps);
+    assert.equal(out.results[0].path, BLOCK);
+  });
+
+  test('a block hit can be FILTERED OUT on its page window', async () => {
+    // The consequence that matters: before the wiring, an expired page reached
+    // through a block key survived a `['in-force']` filter, because an entry
+    // whose window could not be read is never excluded (invariant 2). The
+    // safety rule was doing the work of a defect.
+    const deps = semanticDeps([{ path: BLOCK, score: 0.9 }], { [PAGE]: EXPIRED });
+    const out = await semantic({ validityStates: ['in-force'] }, deps);
+    assert.deepEqual(out.results, []);
+    assert.equal(out.validityFilter.excludedHits, 1);
+  });
+
+  test('twenty blocks of ONE page cost ONE read and count as ONE page', async () => {
+    // Invariant 10, on the shape that used to defeat it: every block key is a
+    // distinct string, so nothing deduplicated and the summary counted twenty
+    // pages for a document the vault holds once.
+    const hits = Array.from({ length: 20 }, (_, i) => ({
+      path: `${PAGE}#Section ${i}#{${i}}`, score: 1 - i / 100,
+    }));
+    const deps = semanticDeps(hits, { [PAGE]: IN_FORCE });
+    const out = await semantic({ limit: 20 }, deps);
+    assert.equal(deps.readCountFor(PAGE), 1, 'one read');
+    assert.deepEqual(deps.reads, [PAGE], 'and no probe at any block key');
+    assert.equal(out.validitySummary.inspectedPages, 1, 'one page');
+    assert.equal(out.validitySummary.annotatedEntries, 20, 'twenty entries carry the window');
+  });
+
+  test('a page reached BOTH directly and through a block is still one page', async () => {
+    const deps = semanticDeps(
+      [{ path: PAGE, score: 0.9 }, { path: HEADING, score: 0.8 }, { path: BLOCK, score: 0.7 }],
+      { [PAGE]: IN_FORCE },
+    );
+    const out = await semantic({}, deps);
+    assert.equal(deps.readCountFor(PAGE), 1);
+    assert.equal(out.validitySummary.inspectedPages, 1);
+    assert.equal(out.results.every((r) => r.validity?.state === 'in-force'), true);
+  });
+
+  test('an UNDECIDABLE path is read as no page at all, rather than as a guess', async () => {
+    // `wiki/a.md#b.md` is either the file `a.md#b.md` or the heading `b.md`
+    // inside `a.md`, and the string cannot say which. The first version of this
+    // wiring probed the literal spelling first and took whichever answered —
+    // which, when BOTH exist with different windows, is the wrong one half the
+    // time. The adversarial review of 2026-09-16 built that case; here it is,
+    // and nothing is read.
+    const raw = 'wiki/a.md#b.md';
+    const deps = semanticDeps(
+      [{ path: raw, score: 0.9 }],
+      { [raw]: IN_FORCE, 'wiki/a.md': EXPIRED },
+    );
+    const out = await semantic({}, deps);
+    assert.deepEqual(deps.reads, [], 'no spelling was guessed at');
+    assert.equal(out.results[0].validityUnverified, true);
+    assert.equal(out.results[0].validity, undefined, 'and no window was invented');
+  });
+
+  test('and an undecidable path is NEVER excluded — the doubt costs the annotation only', async () => {
+    // The whole reason refusing is affordable: an entry we could not resolve
+    // stays in the answer. Invariant 2 does the work the guess was doing, and
+    // does it honestly.
+    const raw = 'wiki/a.md#b.md';
+    const deps = semanticDeps([{ path: raw, score: 0.9 }], { 'wiki/a.md': EXPIRED });
+    const out = await semantic({ validityStates: ['in-force'] }, deps);
+    assert.equal(out.results.length, 1, 'the hit survived a filter it could have been cut by');
+    assert.equal(out.validityFilter.excludedHits, 0);
+  });
+
+  test('THE LOCAL TIER KEEPS ITS EXACT PATH — the doubt belongs to blocks only', async () => {
+    // Round 2 caught this as a regression the repair introduced: `withValidity`
+    // is shared by both tiers, so the semantic resolver was refusing a LOCAL
+    // hit whose filename really contains `#`. A local path came out of an index
+    // the router built from real filenames — there is nothing to recover and
+    // nothing to be uncertain about, and refusing it cost the filter a page it
+    // used to handle correctly.
+    const weird = { path: 'wiki/a.md#b.md', content: '# A\n\n' + BODY + '\n' };
+    const deps = depsFor({ pages: [weird], frontmatter: { 'wiki/a.md#b.md': EXPIRED } });
+    const out = await local({ validityStates: ['in-force'] }, deps);
+    assert.deepEqual(deps.reads, ['wiki/a.md#b.md'], 'read under its exact name');
+    assert.deepEqual(out.results, [], 'and its window applied');
+    assert.equal(out.validityFilter.excludedHits, 1);
+  });
+
+  test('and the SEMANTIC tier still refuses the same string, because there it is a block key', async () => {
+    // The two halves of the same witness: one string, two tiers, two correct
+    // and opposite answers. Asserting only the local half would leave the
+    // distinction unproved.
+    const deps = semanticDeps([{ path: 'wiki/a.md#b.md', score: 0.9 }], { 'wiki/a.md#b.md': EXPIRED });
+    const out = await semantic({ validityStates: ['in-force'] }, deps);
+    assert.deepEqual(deps.reads, [], 'nothing was read on a guess');
+    assert.equal(out.results.length, 1, 'and the hit was kept');
+  });
+
+  test('a page nobody can read is unverified and kept, whatever the failure was', async () => {
+    // NOT A WITNESS FOR THE FALL-THROUGH RULE, and it must not be read as one.
+    // `readFirst` refusing to try another spelling after a transport error is a
+    // real rule with a real consumer — the context pack's neighbours, which
+    // resolve `wiki/x.md` then `x.md` — but `search_smart` hands over at most
+    // ONE spelling, so nothing here can see that rule work or fail. A first
+    // version of this test claimed otherwise and stayed green with the rule
+    // deleted; the mutation run caught it. The rule's witness lives in
+    // `validity-annotator.test.mjs`, where two spellings actually exist.
+    const deps = depsFor({ pages: [onePage(1)], frontmatter: { 'wiki/p1.md': EXPIRED } });
+    deps.searchSmart = async () => ({ results: [{ path: 'wiki/p1.md', score: 0.9 }] });
+    deps.getNote = async () => {
+      throw Object.assign(new Error('Service Unavailable'), { status: 503 });
+    };
+    const out = await semantic({ validityStates: ['in-force'] }, deps);
+    assert.equal(out.results[0].validityUnverified, true, 'unverified, never annotated');
+    assert.equal(out.results.length, 1, 'and kept, because nobody could look');
+    assert.equal(out.validityFilter.excludedHits, 0);
+  });
+
+  test('a page nobody can read is still UNVERIFIED, never excluded', async () => {
+    // The repair must not cost the safety rule it exposed: an unreadable page
+    // reached through a block key stays in the answer under a `['in-force']`
+    // filter, because "I could not look" is not "it expired".
+    const deps = semanticDeps([{ path: BLOCK, score: 0.9 }], {}, [PAGE]);
+    const out = await semantic({ validityStates: ['in-force'] }, deps);
+    assert.equal(out.results.length, 1, 'the hit survived');
+    assert.equal(out.results[0].validityUnverified, true);
+    assert.equal(out.validityFilter.excludedHits, 0);
+    assert.equal(out.validitySummary.unverifiedPages, 1, 'counted as ONE page, not two probes');
+  });
+});

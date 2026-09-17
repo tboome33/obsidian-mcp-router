@@ -46,6 +46,7 @@ import {
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
 import { maskCodeAndComments } from '../helpers/markdown-mask.mjs';
 import { UNMETERED, createValidityContext } from '../helpers/validity-annotator.mjs';
+import { candidatesFor, hitPagePath } from '../helpers/hit-page-path.mjs';
 
 export const TOOL_NAME = 'get_wiki_context_pack';
 
@@ -928,11 +929,27 @@ export async function getWikiContextPack(registry, args = {}, _deps = {}) {
     pathOf: (page) => (readPrimaries.has(page) ? page.path : ''),
   });
 
+  const chunkPageOf = (chunk) => hitPagePath(chunk.path);
   await validity.annotate(semanticChunks, {
     collection: COLLECTION_CHUNKS,
-    // A chunk carries a real vault path when it carries one at all; a pathless
-    // chunk is marked unverified and counted as no page, because there is none.
-    pathOf: (chunk) => chunk.path,
+    // A CHUNK NAMES A BLOCK, NOT A FILE. Smart Connections addresses the block
+    // as `Page.md#Heading#{1}`, which is a 404 at `getNote` — so the raw path
+    // alone left the window unread and the entry marked unverified on a page
+    // that declares one. ONE unambiguous spelling is read, and none at all when
+    // the string can be read two ways: a `#` is legal in a filename and `.md`
+    // is legal in a heading, so `a.md#b.md` names either a file or a section
+    // and nothing here can tell which. A pathless chunk likewise yields no
+    // candidate, is marked unverified, and is counted as no page — there is
+    // none. Both silences leave the chunk in the pack.
+    // DERIVED, not written twice. `search_smart` carried the same rule in two
+    // independent expressions and a mutation showed that only one of them was
+    // observable: the reads went through `pathsOf`, so a wrong `pageOf` — and
+    // therefore a wrong page identity, and wrong counting — left every witness
+    // green. The fix there was to stop saying it twice; this site was left
+    // behind, and a class defect that reaches only its first site reads as
+    // closed while it is not.
+    pathsOf: (chunk) => candidatesFor(chunkPageOf(chunk)),
+    pageOf: chunkPageOf,
   });
 
   await validity.annotate(graphNeighbors, {

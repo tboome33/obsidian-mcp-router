@@ -307,7 +307,47 @@ export const WINDOW_UNDETERMINED = 'undetermined';
 
 /** Block scalar indicators. Their content lives on the following lines, which
  *  this reader does not follow. */
-const BLOCK_SCALAR_RE = /^[|>][+-]?\d*\s*$/;
+/**
+ * A block scalar header, in the shapes YAML actually allows.
+ *
+ * `|` and `>`, an optional chomping indicator and explicit indent in either
+ * order, optional anchor or tag properties BEFORE the indicator, and an
+ * optional trailing comment. The narrow version — indicator and digits only —
+ * failed to recognise `| # exemple` and `&example |`, so the lines below the
+ * header were read as structure instead of as text: a `?` written inside a
+ * documentation block was taken for an explicit key and the page's real,
+ * perfectly readable bound was thrown away with it.
+ * (Adversarial review, round 4, 2026-09-16.)
+ */
+const BLOCK_SCALAR_RE = /^(?:[&!][^\s]*\s+)*[|>](?:[+-]?\d+|\d+[+-]?|[+-])?\s*(?:#.*)?$/;
+
+/**
+ * THE ONE SHAPE THIS READER READS: a key at column zero, then `:`.
+ *
+ * Two spellings, because YAML has two. The quoted form keeps its delimiter and
+ * allows the OTHER quote inside it — `"l'exemple":` is an ordinary key, and a
+ * character class that banned both quotes made it invisible, which in turn made
+ * its block scalar untracked and the text inside it read as structure.
+ *
+ * The plain form is deliberately generous about the key's characters — Unicode,
+ * spaces, dots, anything but a colon — because recognising a line AS a key is a
+ * structural question, separate from whether this reader interprets that key.
+ * Tying the two together meant `métadonnées:` did not register as a parent.
+ * What it refuses are the YAML INDICATORS that open something else entirely:
+ * `?` an explicit key, `-` a sequence entry, `{[` a flow collection, `&*!` node
+ * properties, `|>` a block scalar with no key at all, `#` a comment.
+ */
+const DOUBLE_QUOTED_ROOT_KEY_RE = /^(")((?:\\.|[^"\\\r\n])*)"[ \t]*:([ \t].*|)$/;
+/** In single quotes, `''` is the escape for an apostrophe — not a terminator. */
+const SINGLE_QUOTED_ROOT_KEY_RE = /^(')((?:''|[^'\r\n])*)'(?!')[ \t]*:([ \t].*|)$/;
+/**
+ * `:` IS ONLY A SEPARATOR WHEN SOMETHING FOLLOWS IT. `valid_from:2020-01-01` is
+ * a plain SCALAR in YAML — one string, no mapping, no key — and reading it as a
+ * declaration invented a window on a page that declares none. So the separator
+ * is `:` followed by a space, a tab, or the end of the line, and a colon that
+ * is not one belongs to the key.
+ */
+const PLAIN_ROOT_KEY_RE = /^(?![\s#])(?![-?:](?:\s|$))(?![{}[\]&*!|>'"])(.+?)[ \t]*:([ \t].*|)$/;
 
 /**
  * Does this value open a quote it does not close on the same line? Such a
@@ -330,8 +370,22 @@ function opensUnclosedQuote(value) {
  *
  * @returns {{value: string}|{undetermined: true}}
  */
+/**
+ * Strip the characters YAML calls white space, and only those.
+ *
+ * `String.prototype.trim()` removes a non-breaking space, a zero-width space
+ * and a dozen more that YAML treats as ordinary content — so round 6 narrowed
+ * the COMMENT separator to `[ \t]#` and the `trim()` right next to it went on
+ * eating the very character that made the value unreadable: `valid_from: <NBSP>#citation`
+ * came back as an empty value, and the page was reported as declaring nothing.
+ * Half a repair is how a defect survives its own fix. (Round 7, 2026-09-16.)
+ */
+function yamlTrim(text) {
+  return String(text).replace(/^[ \t]+/, '').replace(/[ \t]+$/, '');
+}
+
 function plainScalar(raw) {
-  const value = raw.trim();
+  const value = yamlTrim(raw);
   if (value === '') return { value: '' };
   // A comment in value position: the key carries nothing.
   if (value[0] === '#') return { value: '' };
@@ -354,7 +408,15 @@ function plainScalar(raw) {
 
   // Unquoted: a YAML comment starts at ` #`; a `#` with no space before it is
   // part of the value.
-  const comment = value.search(/\s#/);
+  //
+  // `[ \t]`, NOT `\s`. YAML's white space is the ASCII space and the tab, and
+  // nothing else — JavaScript's `\s` also matches a non-breaking space, a
+  // no-width space and a dozen other characters that YAML treats as ordinary
+  // content. So `valid_through: 2025-12-31<NBSP>#citation` was cut at the NBSP
+  // and reported as the certain date `2025-12-31`, when the real value is a
+  // string that is not a date at all: a bound nobody can read, announced as an
+  // expiry. (Adversarial review, round 6, 2026-09-16.)
+  const comment = value.search(/[ \t]#/);
   return { value: (comment >= 0 ? value.slice(0, comment) : value).trim() };
 }
 
@@ -368,6 +430,29 @@ function plainScalar(raw) {
  *   field named there is absent from `fields`: the caller must not treat it as
  *   a page that said nothing.
  */
+/**
+ * The next line that carries meaning, skipping blanks and whole-line comments.
+ *
+ * A comment is not a value and does not end one: `valid_from:` followed by
+ * `# note` and then an indented list still has a block for a value. Stopping at
+ * the comment reported the key as a genuinely empty one — the block vanished,
+ * and a window nobody could read became a page that had said nothing, which is
+ * exactly the confusion invariant 2 exists to forbid.
+ *
+ * @returns {string|null} the line, or null when nothing significant follows
+ */
+function nextSignificantLine(lines, from) {
+  for (let j = from; j < lines.length; j += 1) {
+    // `yamlTrim`, not `trim()`: a line holding a single non-breaking space is
+    // CONTENT, and skipping it as blank let the reader look past a continuation
+    // and accept a truncated date as whole.
+    const trimmed = yamlTrim(lines[j]);
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    return lines[j];
+  }
+  return null;
+}
+
 export function windowFieldsFromFrontmatterText(text) {
   // A byte-order mark before the opening fence would make the anchored match
   // fail, and the window would vanish while every OTHER field of the same file
@@ -378,8 +463,16 @@ export function windowFieldsFromFrontmatterText(text) {
   if (!match) {
     // No frontmatter at all and an UNTERMINATED one are different things. If
     // the text never opens a fence, the page simply has none. If it opens one
-    // and never closes it, anything could be in there.
-    if (/^---\r?\n/.test(source) && /^(valid_from|valid_through)\s*:/m.test(source)) {
+    // and never closes it, anything could be in there — INCLUDING a bound
+    // spelled in a way this reader does not decode.
+    //
+    // The second condition used to be a text search for `valid_from:`, which is
+    // the predicate round 4 retired from the main scan and forgot here: a
+    // quoted, escaped or flow-written bound inside an unterminated block was
+    // answered with "no window, and I am sure". An opening with no closing is
+    // unreadable whatever the keys look like, so nothing is asked of the text.
+    // (Round 7, 2026-09-16.)
+    if (/^---\r?\n/.test(source)) {
       return { fields: {}, undetermined: [VALID_FROM, VALID_THROUGH] };
     }
     return { fields: {}, undetermined: [] };
@@ -389,6 +482,47 @@ export function windowFieldsFromFrontmatterText(text) {
   const fields = {};
   const undetermined = new Set();
   const seen = new Set();
+
+  // TWO YAML SHAPES THIS READER DOES NOT SEE AT ALL, and silence about them was
+  // worse than refusing them. An explicit key (`? valid_from` / `: value`) and a
+  // document-level flow mapping (`{"valid_from": …}`) are both valid YAML, both
+  // carry a bound, and neither matches the `key: value` scan below — so the
+  // reader answered "no window, and I am sure", which is the one answer it must
+  // never give about a page that does declare one. A document that mixes them
+  // with a plain key is worse still: the plain one was read and the other
+  // ignored, so a duplicate went unreported. (Adversarial review, round 2.)
+  //
+  // They are DETECTED, never decoded: the whole point of this reader is that it
+  // does not implement YAML.
+  //
+  // THE DETECTION LIVES IN THE MAIN LOOP, and that is the whole repair of round
+  // 3. A separate pre-scan had its own idea of what a line is: it flagged a `?`
+  // written inside a block scalar — losing a perfectly readable bound two lines
+  // further down — and it missed an INDENTED flow node, or one behind an anchor
+  // (`&window {…}`), because it only looked at column zero. Two passes with two
+  // definitions of YAML content will always disagree somewhere. The loop below
+  // already tracks block scalars and unclosed quotes; the detection rides along
+  // with it and sees exactly what it sees.
+  //
+  // AND IT ASKS NOTHING ABOUT THE TEXT. Round 3's version only refused when the
+  // block literally contained `valid_from` or `valid_through`, which was wrong
+  // in both directions: a JSON-escaped key (`"valid_from"`) declares a
+  // bound without spelling it, so the window vanished; and a page whose TITLE
+  // happened to be the string `valid_from` was refused although it declares
+  // nothing. A shape this reader cannot decode means it cannot conclude —
+  // full stop. That is the module's own doctrine, and it retires an entire
+  // class of text-matching defects. (Round 4, 2026-09-16.)
+  let unsupportedShape = false;
+  // Whether a root-level key has been read yet, which is what tells a ROOT flow
+  // node from a value belonging to the key above it. `metadata:` followed by an
+  // indented `{owner: Alice}` is a child, and refusing the document over it lost
+  // a bound declared plainly at the root two lines down.
+  let sawRootKey = false;
+  /**
+   * Whether the last root key is still waiting for its value — the only state
+   * in which a sequence entry at column zero belongs to it.
+   */
+  let awaitingSequence = false;
 
   // Lines consumed by a multi-line scalar are NOT keys. Tracking that is the
   // difference between reading a document and reading the characters in it.
@@ -409,17 +543,78 @@ export function windowFieldsFromFrontmatterText(text) {
       skipIndentedUntilDedent = false;
     }
 
-    // A quoted KEY is a key this reader will not decode. Detect it before the
-    // plain-key test, so `"valid_from": …` is refused rather than ignored.
-    const quotedKey = /^(['"])(valid_from|valid_through)\1\s*:/.exec(line);
-    if (quotedKey) {
-      undetermined.add(quotedKey[2]);
+    // Reached only on a line the loop considers CONTENT — not inside a quoted
+    // scalar, not inside a block scalar.
+    const trimmedLine = line.trim();
+    // Neither structure nor content: nothing here changes what follows.
+    if (trimmedLine === '' || trimmedLine.startsWith('#')) continue;
+
+    // AN INDENTED LINE BELONGS TO THE KEY ABOVE IT — when there is one. A
+    // document whose very first content is indented is an indented ROOT node,
+    // and every key in it is invisible to a column-zero scan: the reader used to
+    // answer "no window, and I am sure" about `  valid_from: …`.
+    if (/^\s/.test(line)) {
+      if (!sawRootKey) unsupportedShape = true;
       continue;
     }
 
-    const keyLine = /^([A-Za-z_][\w-]*)\s*:(.*)$/.exec(line);
-    if (!keyLine) continue;
-    const [, key, rest] = keyLine;
+    // From here the line is at column zero, so it is either a root key this
+    // reader recognises or a shape it does not read.
+    const quotedKey = DOUBLE_QUOTED_ROOT_KEY_RE.exec(line) ?? SINGLE_QUOTED_ROOT_KEY_RE.exec(line);
+    const plainKey = quotedKey ? null : PLAIN_ROOT_KEY_RE.exec(line);
+    // A SEQUENCE ENTRY AT COLUMN ZERO IS STILL THE VALUE OF THE KEY ABOVE IT —
+    // WHEN THAT KEY IS STILL WAITING FOR ONE. YAML lets a block sequence sit at
+    // its parent's indentation, so `tags:` followed by `- documentation` is an
+    // ordinary mapping, and refusing the document over it threw away a bound
+    // declared two lines below.
+    //
+    // But `sawRootKey` alone said "some key came before", which is not the same
+    // claim: after `valid_through: 2025-12-31`, a `- documentation` line cannot
+    // be a second value for a key that already has one. That document mixes a
+    // mapping entry and a sequence entry at one level — a shape this reader
+    // does not read — and it was answered with a certain expiry. So the sequence
+    // is a child only while the last root key is still EMPTY. (Round 7.)
+    if (!quotedKey && !plainKey && awaitingSequence && /^-(\s|$)/.test(line)) continue;
+    if (!quotedKey && !plainKey) {
+      // `? explicit`, `{flow}`, `[flow]`, `&anchor {…}`, a root sequence, a line
+      // with no `:` at all. Enumerating those one at a time is what rounds 2
+      // through 5 kept doing, and each round found another. The contract is
+      // stated the other way round now: this reader reads a flat block mapping
+      // whose keys sit at column zero, and ANYTHING else at root means it did
+      // not read the document.
+      unsupportedShape = true;
+      continue;
+    }
+    // A key at column zero — whatever its spelling, including Unicode and
+    // spaces. Recognising it STRUCTURALLY is separate from interpreting it:
+    // tying `sawRootKey` to the ASCII subset meant `métadonnées:` did not count
+    // as a parent, and its indented child was mistaken for a root node.
+    sawRootKey = true;
+    // A key whose value is EMPTY on its own line may take a block sequence at
+    // column zero; one that already carries a value may not.
+    // The two patterns do not have the same shape: a quoted key spends a group
+    // on its delimiter, so its value is group 3 and a plain key's is group 2.
+    awaitingSequence = yamlTrim(quotedKey ? quotedKey[3] : plainKey[2]) === '';
+
+    if (quotedKey) {
+      const [, quote, keyText, quotedRest] = quotedKey;
+      // A DOUBLE-QUOTED KEY MAY BE ESCAPED, and `"valid_from"` names
+      // `valid_from` without spelling it. This reader does not decode escapes,
+      // so it cannot say which key that is — and classing it among foreign
+      // properties made a declared bound disappear.
+      if (quote === '"' && keyText.includes(String.fromCharCode(92))) {
+        unsupportedShape = true;
+        continue;
+      }
+      if (keyText === VALID_FROM || keyText === VALID_THROUGH) undetermined.add(keyText);
+      // Quoted or not, a key still opens whatever its value opens.
+      const rest = quotedRest.trim();
+      if (BLOCK_SCALAR_RE.test(rest)) skipIndentedUntilDedent = true;
+      else if (opensUnclosedQuote(rest)) insideUnclosedQuote = rest[0];
+      continue;
+    }
+
+    const [, key, rest] = plainKey;
 
     const scalar = plainScalar(rest);
     const rawRest = rest.trim();
@@ -440,9 +635,12 @@ export function windowFieldsFromFrontmatterText(text) {
 
     if (scalar.value !== '') {
       // A value on the line, with an indented line under it, is a folded
-      // continuation: the real value is longer than what we read.
-      const next = lines[i + 1];
-      if (next !== undefined && /^\s+\S/.test(next)) { undetermined.add(key); continue; }
+      // continuation: the real value is longer than what we read. Blank lines
+      // and comments do not end that continuation, and looking only at the
+      // very next line let either of them hide it — the date was then accepted
+      // whole while the real value went on below. (Review, 2026-09-16.)
+      const next = nextSignificantLine(lines, i + 1);
+      if (next !== null && /^\s+\S/.test(next)) { undetermined.add(key); continue; }
       fields[key] = scalar.value;
       continue;
     }
@@ -450,13 +648,19 @@ export function windowFieldsFromFrontmatterText(text) {
     // Nothing on the line. Either the key is null, or its value is the block
     // below — and a block is not a date, but saying WHICH kind of non-date it
     // is would be decoding again. Undetermined covers both honestly.
-    let j = i + 1;
-    while (j < lines.length && lines[j].trim() === '') j += 1;
-    const next = j < lines.length ? lines[j] : null;
+    const next = nextSignificantLine(lines, i + 1);
     const belongsToKey = next !== null && (/^\s+\S/.test(next) || /^\s*-(\s|$)/.test(next));
     if (belongsToKey) undetermined.add(key);
     // else: a genuinely empty key. Absent, and certain about it — nothing to
     // record, since an absent field is an absent property.
+  }
+
+  // A ROOT SHAPE THE LOOP COULD NOT READ MEANS THE DOCUMENT WAS NOT READ.
+  // Whatever the plain-key scan believes it found is discarded, because a
+  // document that declares a bound twice — once plainly, once in a shape we
+  // skipped — would otherwise hand back the half we happened to understand.
+  if (unsupportedShape) {
+    return { fields: {}, undetermined: [VALID_FROM, VALID_THROUGH] };
   }
 
   for (const key of undetermined) delete fields[key];

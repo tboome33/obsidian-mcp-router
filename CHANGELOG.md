@@ -10,6 +10,48 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### `search_smart` can be asked to keep only what still applies
+
+Two optional parameters, and neither changes anything unless you pass it. `asOf` fixes the reference
+day (`YYYY-MM-DD`, today in UTC by default) once for the whole call, so two results of one response
+are never judged on two different days; an unreadable `asOf` fails the call instead of quietly
+falling back to today. `validityStates` names the states to keep, among `in-force`,
+`not-yet-in-force`, `no-longer-in-force` and `unreadable`.
+
+**Three kinds of result are never removed, even under `["in-force"]`**: a page that declares no
+window (silence is not a date), a page whose window could not be read (a typo is not an expiry), and
+a page nobody could read at all. The filter removes only what it really read and whose state is
+certain — which is how *no page is hidden by default* survives the first feature in this batch that
+can remove one.
+
+The response says what it did: `validitySummary` carries the day, the pages inspected and the pages
+left unverified; `validityFilter` separates `excludedHits` (the filter) from `cutByLimit` (the page
+was full), because a short answer has two possible causes and the reader needs to know which.
+`moreCandidates` answers "is there an eligible chunk nobody looked at?" — `true`/`false` on the
+local tier, and `"unknown"` on the semantic tier, which does not say what it withheld. Across a
+fan-out, an unreachable vault makes the fleet answer `"unknown"` rather than `false`, unless another
+vault has already established that candidates remain.
+
+### A semantic hit names a block, and its window belongs to its page
+
+Smart Connections addresses a chunk as `Page.md#Heading#{1}`, which is not a file: asked for it,
+Obsidian answers 404. Measured on a real vault, half the annotated hits of a filtered call came back
+"unverifiable" for that reason alone — nothing was hidden, but the filter was inert on them. The
+router now reads the window from the page the block belongs to, so twenty extracts of one document
+cost one read and count as one page.
+
+When the path can be read two ways — `#` is legal in a filename and `.md` is legal in a heading — the
+router **does not guess**: the hit is marked unverified, which is exactly true, and it is never
+excluded. A local hit keeps its exact path, because an index built from real filenames leaves nothing
+to guess.
+
+### `get_wiki_context_pack` reads chunk windows correctly too
+
+The same block-path defect was present since the pack started annotating windows. Fixed at both
+sites, and the reader of raw frontmatter now refuses the shapes it does not decode instead of
+reporting them as pages that declare nothing — an unreadable bound and an absent one are different
+claims, and only one of them is safe to act on.
+
 ### Saying yes to a binding proposal ADDS to the binding, and never replaces it
 
 `confirm_workspace_binding({ accept: "<proposalId>" })` answers the proposal the refusal handed you.

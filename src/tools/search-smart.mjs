@@ -37,6 +37,8 @@ import { searchSmart, getFileContent, getNote } from '../rest-client.mjs';
 import { resolveAsOf } from '../helpers/temporal-validity.mjs';
 import { createValidityContext } from '../helpers/validity-annotator.mjs';
 import { applyValidityFilter, normalizeValidityStates } from '../helpers/validity-filter.mjs';
+import { mergeFanoutValidity } from '../helpers/validity-fanout.mjs';
+import { candidatesFor, hitPagePath } from '../helpers/hit-page-path.mjs';
 import { collectClickToOpenLinks } from '../helpers/click-to-open-walker.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
 import { filterArchiveResults } from '../helpers/archive-filter.mjs';
@@ -269,13 +271,42 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
    */
   const withValidity = async (vault, payload) => {
     const results = Array.isArray(payload.results) ? payload.results : [];
+
+    // WHICH TIER ANSWERED DECIDES HOW A PATH IS READ, and the two are not the
+    // same kind of string.
+    //
+    // A SEMANTIC HIT NAMES A BLOCK, NOT A FILE: `Page.md#Heading#{1}` is a 404
+    // at `getNote`, so the page it belongs to has to be recovered — and when
+    // the string can be read two ways, no page is claimed at all rather than
+    // one guessed (see `hit-page-path.mjs`).
+    //
+    // A LOCAL HIT NAMES A FILE, EXACTLY. Its path came out of an index the
+    // router built from real filenames, so there is nothing to recover and
+    // nothing to be uncertain about. Running the semantic resolver over it was
+    // a regression this review caught: a file genuinely named `a.md#b.md` is
+    // unambiguous when the index names it, and refusing to read it cost the
+    // filter a page it used to handle correctly.
+    // ONE EXPRESSION OF THE RULE, and `pathsOf` is derived from it rather than
+    // written a second time. Two independent spellings of one rule is how a
+    // wrong `pageOf` became invisible: the reads went through `pathsOf`, which
+    // was still right, so every witness stayed green while the page identity —
+    // and therefore the counting — was wrong. The mutation run caught that the
+    // duplicate could not be killed; the answer is not a new witness, it is to
+    // stop saying the same thing twice.
+    const isLocal = payload.tier === TIER_LOCAL;
+    const pageOf = isLocal
+      ? (hit) => (typeof hit?.path === 'string' ? hit.path.trim() : '')
+      : (hit) => hitPagePath(hit?.path);
+    const pathsOf = (hit) => candidatesFor(pageOf(hit));
+
     // The quota is the number of DISTINCT pages among the candidates already
     // fetched — no new ceiling, as the over-fetch is bounded already. It is
     // stated rather than left unmetered so that reading more pages than there
-    // are candidates would be refused instead of quietly happening.
-    const distinctPages = new Set(
-      results.map((r) => (typeof r?.path === 'string' ? r.path.trim() : '')).filter(Boolean),
-    ).size;
+    // are candidates would be refused instead of quietly happening. COUNTED AS
+    // PAGES, which on the semantic tier is not the same number as the hits:
+    // twenty chunks of one document are one page, and counting the raw keys
+    // granted a quota for reads that can never happen.
+    const distinctPages = new Set(results.map((r) => pageOf(r)).filter(Boolean)).size;
     const ctx = createValidityContext({
       vault,
       readNote: deps.getNote,
@@ -283,7 +314,7 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
       budget: { [COLLECTION_HITS]: distinctPages },
     });
 
-    await ctx.annotate(results, { collection: COLLECTION_HITS, pathOf: (hit) => hit?.path });
+    await ctx.annotate(results, { collection: COLLECTION_HITS, pathsOf, pageOf });
 
     const { kept, excludedHits } = applyValidityFilter(results, keepStates);
     // THE CUT BELONGS TO THE FILTER, and only to it. Applying it unconditionally
@@ -385,15 +416,26 @@ export async function searchSmartTool(registry, args = {}, _deps = {}) {
       candidates.map(async (v) => ({ vault: v.name, ...(await searchOne(v)) })),
     );
 
+    const perVault = settled.map((r, i) =>
+      r.status === 'fulfilled'
+        ? r.value
+        : { vault: candidates[i]?.name ?? '?', error: r.reason.message },
+    );
+
     return ({
       query,
       filter,
       requestedTier,
-      perVault: settled.map((r, i) =>
-        r.status === 'fulfilled'
-          ? r.value
-          : { vault: candidates[i]?.name ?? '?', error: r.reason.message },
-      ),
+      perVault,
+      // The top level speaks for the whole fan-out, and says how much of it
+      // answered. `asOf` is the one day resolved at the head of this call, so
+      // two vaults are never classified on different days even if the call
+      // straddles midnight.
+      ...mergeFanoutValidity(perVault, {
+        asOf: asOfDay,
+        filterRequested,
+        states: keepStates ? [...keepStates] : [],
+      }),
     });
   }
 

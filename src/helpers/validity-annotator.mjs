@@ -36,6 +36,7 @@ import {
   classifyValidity,
   resolveAsOf,
 } from './temporal-validity.mjs';
+import { isMissingReadError } from './missing-read-guard.mjs';
 
 /**
  * The window describes the page as it was read AT QUERY TIME, not the revision
@@ -89,7 +90,27 @@ function toCandidateList(value) {
  * in the injected reader.
  */
 function cacheKeyFor(path) {
-  return String(path).trim().replace(/^\.\//, '').replace(/\/{2,}/g, '/');
+  // IDEMPOTENT BY CONSTRUCTION, because it has to be idempotent and because
+  // getting there case by case failed twice.
+  //
+  // `reserve` normalises the page identity once and `read` normalises it again,
+  // so a normaliser that still moves on the second pass gives the two steps
+  // different keys: a page read by one collection is not found by the next,
+  // which refuses the entry for lack of budget and reports the same page as
+  // BOTH inspected and unverified. Round 3 found it with `././x.md` (one `./`
+  // stripped per pass) and round 4 found it again with `./ x.md`, where
+  // stripping the prefix EXPOSES a space that only the next `trim()` removes.
+  // Each fix closed its own input and left the property false.
+  //
+  // So the rules are applied until they stop changing anything. Every rule only
+  // ever removes characters, so the loop shortens the string or stops — and
+  // `f(f(x)) === f(x)` holds for every input, not for the ones we thought of.
+  let key = String(path);
+  for (;;) {
+    const next = key.trim().replace(/^(?:\.\/)+/, '').replace(/\/{2,}/g, '/');
+    if (next === key) return next;
+    key = next;
+  }
 }
 
 /**
@@ -148,6 +169,41 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     return quotas.get(collection);
   }
 
+  /**
+   * WHAT THE PAGE COUNTS ARE COUNTS OF, stated because a guard that tried to
+   * enforce more than this cost more than it was worth.
+   *
+   * `inspectedPages` and `unverifiedPages` count the page IDENTITIES a caller
+   * declared, not files on disk. A caller that hands two different files the
+   * same `pageOf` gets them counted as one page — and, because a later success
+   * overwrites an earlier failure, counted as inspected.
+   *
+   * THAT LIMIT USED TO BE A GUARD, AND THE GUARD WAS WORSE. Round 2 of the
+   * adversarial review raised the miscount; rounds 3 to 6 then found four
+   * defects in the guard itself, two of them breaking legitimate composition
+   * outright: after a drill resolved a page through two spellings, annotating
+   * that same page by the spelling that had ANSWERED was refused. No shipped
+   * caller ever produced the miscount, and every shipped caller was at risk
+   * from the guard. So the rule is written down instead of policed — the
+   * honest trade, and a reversal of the round-2 decision rather than another
+   * layer on top of it.
+   */
+
+    /**
+   * A resolution's fingerprint: its normalised spellings, deduplicated, in
+   * order. Kept apart from page identities in the same `granted` set by a
+   * prefix no `cacheKeyFor` output can produce, so a reservation made for one
+   * resolution cannot be mistaken for one made for a page called the same.
+   */
+  function signatureOf(keys) {
+    // `resolution:` as a prefix, and a path can start with those characters —
+    // so the JSON array that follows is what makes the two namespaces distinct:
+    // a page identity is a bare string, a resolution is `resolution:[...]`.
+    // Writing a control character here as a separator was tried twice and the
+    // repo's source guard rejected it twice, correctly.
+    return `resolution:${JSON.stringify([...new Set(keys)])}`;
+  }
+
   /** Remember what became of a page, letting a later success overwrite a failure. */
   function recordPage(pageKey, { inspected, attempted }) {
     const previous = pages.get(pageKey);
@@ -180,7 +236,29 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     // error object to every later caller, so `isMissingReadError` keeps telling
     // a dead wikilink from an unreachable vault, and the placeholder and the
     // `page-read-failed` warning keep meaning what they meant.
-    if (existing) return existing.promise;
+    // A PAGE IS RECORDED UNDER THE IDENTITY THAT FIRST NAMED IT, and a cache
+    // hit adds nothing. Recording the second identity too was tried and made
+    // one file count as two pages in the shipped flow, where the drill names a
+    // page `tariff` and the primary collection names the same file
+    // `wiki/tariff.md`. The miscount round 6 raised is real, but its cause is
+    // in the RESERVATION below — a page already read must not be charged to a
+    // quota again — and that is where it is fixed.
+    if (existing) {
+      // A STALE REFUSAL IS RECONCILED, and only a stale refusal. If this
+      // identity was recorded as NOT verified — a budget refusal, or a probe
+      // that failed — and the shared read then answered, the page really was
+      // inspected and saying otherwise reports one file as both. Recording
+      // unconditionally was tried in round 6 and counted one file as two pages
+      // in the shipped flow, so nothing is added here: an identity nobody has
+      // recorded stays unrecorded. (Round 7, 2026-09-16.)
+      if (pages.get(pageKey)?.inspected === false) {
+        existing.promise.then(
+          () => recordPage(pageKey, { inspected: true, attempted: true }),
+          () => {},
+        );
+      }
+      return existing.promise;
+    }
 
     const promise = Promise.resolve()
       .then(() => readNote(vault, key))
@@ -243,7 +321,25 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     // Already ATTEMPTED — by an earlier collection, or by the drill that read
     // the body — or already RESERVED by an earlier entry of this same pass.
     // Free, and never attempted again, whatever the outcome was.
-    if (pages.get(pageKey)?.attempted || granted.has(pageKey)) {
+    //
+    // ASKED OF THE PATHS AS WELL AS OF THE IDENTITY. `pages` is keyed by the
+    // identity a caller declares, and two callers legitimately name one file
+    // differently: the drill reads it as the page `tariff`, the primary
+    // collection as the file `wiki/tariff.md`. Looking only at the identity,
+    // the second one saw nothing attempted, spent a quota it did not need, and
+    // — with no quota left — refused an entry whose page had ALREADY been read,
+    // reporting the same file as one page inspected and one page unverified.
+    // The quota buys an I/O, so a resolution that needs none costs nothing.
+    // (Adversarial review, round 6, 2026-09-16.)
+    //
+    // EVERY spelling, not any: `some` exempted a whole resolution because ONE
+    // of its candidates was cached, and then let the others be read for free —
+    // including the one that actually answered. A resolution is free only when
+    // nothing in it can reach the reader. (Round 7.)
+    const keys = candidates.map(cacheKeyFor);
+    const noNewRead = keys.every((k) => attempts.has(k)) || granted.has(signatureOf(keys));
+    if (pages.get(pageKey)?.attempted || granted.has(pageKey) || noNewRead) {
+      granted.add(signatureOf(keys));
       return { entry, kind: 'read', candidates, pageKey };
     }
 
@@ -257,6 +353,12 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
       // resolution has to try.
       quotas.set(collection, quota - 1);
       granted.add(pageKey);
+      // AND BY ITS RESOLUTION, because two entries of the same pass can name
+      // one file under different identities — the reservation loop is
+      // synchronous, so the attempt cache is still empty and `pageKey` alone
+      // could not see that the read had already been paid for. The second entry
+      // was then refused for a budget its own read had not spent. (Round 7.)
+      granted.add(signatureOf(candidates.map(cacheKeyFor)));
       return { entry, kind: 'read', candidates, pageKey };
     }
 
@@ -267,7 +369,17 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
     return { entry, kind: 'over-budget', pageKey };
   }
 
-  /** Try each spelling in turn; the first that answers wins. */
+  /**
+   * Try each spelling in turn; the first that answers wins.
+   *
+   * ONLY "THAT FILE IS NOT THERE" LICENSES TRYING ANOTHER SPELLING. Falling
+   * through on ANY error meant a 503 on `wiki/x.md` was answered by reading
+   * `x.md` — a different file, whose window was then attributed to the entry
+   * and could get it excluded. A transport failure says nothing about which
+   * page the entry names, so it stops the resolution and leaves the entry
+   * unverified, which is what "I could not look" is supposed to produce.
+   * (Adversarial review, 2026-09-16.)
+   */
   async function readFirst(candidates, pageKey) {
     let lastError = null;
     for (const candidate of candidates) {
@@ -275,6 +387,7 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
         return await read(candidate, { page: pageKey });
       } catch (error) {
         lastError = error;
+        if (!isMissingReadError(error)) throw error;
       }
     }
     throw lastError;
@@ -286,6 +399,17 @@ export function createValidityContext({ vault, readNote, asOf, budget, now } = {
   }
 
   function applyWindow(entry, frontmatter) {
+    // A SUCCESSFUL READ REPLACES WHATEVER WAS THERE, and the early return below
+    // made that untrue in two ways. An entry arriving with a `validity` key —
+    // from a payload this router does not compose — kept it when the page it
+    // really names declares nothing, so invariant 1 was broken by a field
+    // nobody wrote here. And an entry refused by one collection's budget, then
+    // read by another that still had quota, kept `validityUnverified` alongside
+    // its new window: the filter reads the flag first, so a page that HAD been
+    // read and HAD expired was kept as if nobody had looked.
+    // (Adversarial review, 2026-09-16.)
+    delete entry[VALIDITY_KEY];
+    delete entry[UNVERIFIED_KEY];
     const result = classifyValidity(frontmatter, { asOf: day });
     // No window declared: the page makes no temporal claim, so the entry says
     // nothing at all. Invariant 1 — silence here is the correct answer, and it

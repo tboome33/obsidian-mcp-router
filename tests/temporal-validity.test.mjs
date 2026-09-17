@@ -490,6 +490,376 @@ describe('windowFieldsFromFrontmatterText — three outcomes, and it says which'
       assert.deepEqual(undetermined, ['valid_from']);
       assert.equal(Object.prototype.hasOwnProperty.call(fields, 'valid_from'), false);
     });
+
+    // A COMMENT IS NOT A VALUE, AND DOES NOT END ONE. The reader looked at the
+    // very next line and stopped there, so anything standing between a key and
+    // its real value hid that value — and a window nobody can read became a
+    // page that had said nothing, which is the exact confusion invariant 2
+    // forbids. Found by the adversarial review of 2026-09-16.
+    const interposed = [
+      ['a comment between a key and its block', '---\nvalid_from:\n# commentaire\n  - 2026-01-01\n---\nbody'],
+      ['a comment between a key and its indented value', '---\nvalid_from:\n# commentaire\n  2026-01-01\n---\nbody'],
+      ['a blank line between a key and its block', '---\nvalid_from:\n\n  - 2026-01-01\n---\nbody'],
+      ['a comment AND a blank line', '---\nvalid_from:\n\n# commentaire\n\n  - 2026-01-01\n---\nbody'],
+      // An INDENTED comment reaches the same verdict without the skip rule,
+      // because an indented `#` is indistinguishable from an indented value to
+      // the continuation test. Kept as a behaviour case, declared in the
+      // mutation harness as one that cannot witness the skip — a green test
+      // that cannot see the rule it sits next to is worse than no test, unless
+      // it says so.
+      ['an indented comment', '---\nvalid_from:\n  # commentaire\n  - 2026-01-01\n---\nbody'],
+      ['a blank line before a folded continuation', '---\nvalid_from: 2026-01-01\n\n  suite\n---\nbody'],
+      ['a comment before a folded continuation', '---\nvalid_from: 2026-01-01\n# commentaire\n  suite\n---\nbody'],
+    ];
+    for (const [label, text] of interposed) {
+      test(label, () => {
+        assert.equal(verdict(text), 'undetermined');
+      });
+    }
+
+    // YAML SHAPES THE SCAN CANNOT SEE. Both are valid YAML carrying a bound,
+    // and both used to yield `{fields: {}, undetermined: []}` — "no window, and
+    // I am sure", about a page that declares one. Found by the round-2 review.
+    const invisible = [
+      ['an explicit key', '---\n? valid_from\n: pas-une-date\n---\nbody'],
+      ['an explicit key carrying a real date', '---\n? valid_from\n: 2020-01-01\n---\nbody'],
+      ['a document-level flow mapping', '---\n{"valid_from": "pas-une-date"}\n---\nbody'],
+      ['a flow mapping with a real date', '---\n{valid_from: 2020-01-01}\n---\nbody'],
+      ['a plain key AND an explicit one — the duplicate that went unreported',
+        '---\nvalid_from: 2020-01-01\n? valid_from\n: pas-une-date\n---\nbody'],
+    ];
+    for (const [label, text] of invisible) {
+      test(label, () => {
+        assert.equal(verdict(text), 'undetermined');
+      });
+    }
+
+    // ROUND 3: the first version of this guard was a SEPARATE pre-scan, with its
+    // own idea of what a line is. It missed every shape that was not at column
+    // zero, and it flagged text that was plainly inside a scalar. The detection
+    // now rides in the main loop, which already knows where scalars begin and
+    // end, so both directions are fixed by the same move.
+    const escaped = [
+      ['an INDENTED flow mapping', '---\n  {valid_from: pas-une-date}\n---\nbody'],
+      ['a flow mapping behind an anchor', '---\n&window {valid_from: pas-une-date}\n---\nbody'],
+      ['a flow sequence', '---\n  [valid_from, pas-une-date]\n---\nbody'],
+      ['an indented explicit key', '---\n  ? valid_from\n  : pas-une-date\n---\nbody'],
+    ];
+    for (const [label, text] of escaped) {
+      test(label, () => {
+        assert.equal(verdict(text), 'undetermined');
+      });
+    }
+
+    test('but a `?` inside a BLOCK SCALAR is text, and the real bound survives', () => {
+      // The other direction, and it cost a readable bound: the pre-scan saw the
+      // `?` in the title's block and refused the whole document, losing a plain
+      // `valid_through` two lines down.
+      assert.equal(
+        verdict('---\ntitle: |\n  ? valid_from est expliqué ici\nvalid_through: 2025-12-31\n---\nbody'),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('and a page with only that block, and no bound, still declares nothing', () => {
+      assert.equal(verdict('---\ntitle: |\n  ? valid_from est expliqué ici\n---\nbody'), null);
+    });
+
+    test('a flow mapping inside a block scalar is text too', () => {
+      assert.equal(
+        verdict('---\nexemple: |\n  {valid_from: 2020-01-01}\nvalid_through: 2025-12-31\n---\nbody'),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('and the refusal names BOTH fields, because neither was understood', () => {
+      const { fields, undetermined } = windowFieldsFromFrontmatterText(
+        '---\nvalid_from: 2020-01-01\n? valid_through\n: pas-une-date\n---\nbody',
+      );
+      assert.deepEqual(undetermined, ['valid_from', 'valid_through']);
+      assert.deepEqual(fields, {}, 'the plain key is not kept either — the document was not read');
+    });
+
+    // ROUND 4 RETIRED THE TEXT TEST. Round 3 only refused these shapes when the
+    // block literally contained `valid_from` or `valid_through`, and that was
+    // wrong in BOTH directions: a JSON-escaped key declares a bound without
+    // spelling it, and a page whose title happens to BE that string declares
+    // nothing. A root shape this reader cannot decode means it cannot conclude,
+    // whatever the characters say — which retires the whole class.
+    test('a JSON-escaped key declares a bound without spelling it', () => {
+      const escapedKey = `{"valid_${String.fromCharCode(92)}u0066rom": "pas-une-date"}`;
+      assert.equal(JSON.parse(escapedKey).valid_from, 'pas-une-date', 'the fixture really is that key');
+      assert.equal(verdict(`---\n${escapedKey}\n---\nbody`), 'undetermined');
+    });
+
+    test('and a root shape we cannot read is refused even with no bound in sight', () => {
+      // The cost of dropping the text test, stated rather than hidden: a root
+      // flow mapping or explicit key is now always undetermined. It is the
+      // honest answer — we did not read the document — and Obsidian writes
+      // block style, so no page of the fleet is in this shape.
+      assert.equal(verdict('---\n{"autre": "valeur"}\n---\nbody'), 'undetermined');
+      assert.equal(verdict('---\n? autre_cle\n: valeur\ntype: decision\n---\nbody'), 'undetermined');
+    });
+
+    test('`:` is only a separator when something follows it', () => {
+      // Round 6. `valid_from:2020-01-01` is a plain SCALAR in YAML — one
+      // string, no mapping, no key — and reading it as a declaration invented a
+      // window on a page that declares none. Invariant 1.
+      assert.equal(verdict('---\nvalid_from:2020-01-01\n---\nbody'), 'undetermined');
+    });
+
+    test('and a colon that is NOT a separator belongs to the key', () => {
+      // `valid_from:prefix: valeur` is a mapping whose key is
+      // `valid_from:prefix` — a foreign property. The page declares no bound,
+      // and saying so is correct: the refusal above must not spill onto keys
+      // that merely start with the same letters.
+      assert.equal(verdict('---\nvalid_from:prefix: valeur\ntitle: X\n---\nbody'), null);
+    });
+
+    test('a NON-BREAKING space does not open a comment', () => {
+      // Round 6. YAML's white space is the ASCII space and the tab; JavaScript's
+      // `\s` also matches U+00A0 and a dozen others. The value was cut at the
+      // NBSP and announced as the certain date `2025-12-31`, when the real
+      // value is a string that is not a date — an unreadable bound reported as
+      // an expiry. Invariant 2.
+      const nbsp = String.fromCharCode(160);
+      assert.equal(
+        verdict(`---\nvalid_through: 2025-12-31${nbsp}#citation\n---\nbody`),
+        STATE_UNREADABLE,
+      );
+    });
+
+    test('but an ordinary space still does', () => {
+      // The control: cutting at ` #` is the rule, and narrowing the character
+      // class must not have removed it.
+      assert.equal(verdict('---\nvalid_through: 2025-12-31 # note\n---\nbody'), STATE_NO_LONGER);
+      assert.equal(verdict('---\nvalid_through: 2025-12-31\t# note\n---\nbody'), STATE_NO_LONGER);
+      // And a `#` with nothing before it is part of the value, as it always was.
+      assert.equal(verdict('---\nvalid_through: 2025-12-31#note\n---\nbody'), STATE_UNREADABLE);
+    });
+
+    test('a doubled apostrophe is an escape, not the end of the key', () => {
+      // Round 6. `'l''exemple':` is one ordinary key. Treating the second quote
+      // as a terminator made the line unrecognisable, so the document was
+      // refused and a perfectly readable bound below it went with it.
+      const sq = String.fromCharCode(39);
+      assert.equal(
+        verdict(`---\n${sq}l${sq}${sq}exemple${sq}: documentation\nvalid_through: 2025-12-31\n---\nbody`),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('a sequence at column zero is still the value of the key above it', () => {
+      // Round 6. YAML lets a block sequence sit at its parent's indentation, so
+      // `tags:` followed by `- documentation` is an ordinary mapping. The
+      // positive contract refused it as a foreign root node and threw away the
+      // bound two lines down.
+      assert.equal(
+        verdict('---\ntags:\n- documentation\n- autre\nvalid_through: 2025-12-31\n---\nbody'),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('a NON-BREAKING space is not trimmed away either', () => {
+      // Round 7, and it is the other half of round 6's repair. Narrowing the
+      // COMMENT separator to `[ \t]#` while `trim()` right beside it went on
+      // eating U+00A0 meant `valid_from: <NBSP>#citation` came back as an EMPTY
+      // value — the page reported as declaring nothing, about a bound nobody
+      // can read. Half a repair is how a defect survives its own fix.
+      const nbsp = String.fromCharCode(160);
+      assert.equal(
+        verdict(`---\nvalid_from: ${nbsp}#citation\nvalid_through: 2025-12-31\n---\nbody`),
+        STATE_UNREADABLE,
+      );
+      // And a continuation made of one non-breaking space is CONTENT, so the
+      // date above it is not whole.
+      assert.equal(
+        verdict(`---\nvalid_through: 2025-12-31\n  ${nbsp}#citation\ntitle: x\n---\nbody`),
+        'undetermined',
+      );
+    });
+
+    test('a sequence after a key that ALREADY has a value is not its value', () => {
+      // Round 7. `sawRootKey` said "some key came before", which is not the
+      // same claim as "the key above is still waiting": after
+      // `valid_through: 2025-12-31`, a `- documentation` line cannot be a second
+      // value for it. That document mixes a mapping entry and a sequence entry
+      // at one level, and it was answered with a certain expiry.
+      assert.equal(
+        verdict('---\nvalid_through: 2025-12-31\n- documentation\n---\nbody'),
+        'undetermined',
+      );
+    });
+
+    test('an UNTERMINATED block is unreadable whatever its keys look like', () => {
+      // Round 7. This branch kept the text predicate that round 4 retired from
+      // the main scan: a bound written with a quoted, escaped or flow key
+      // inside a block that never closes was answered with "no window, and I am
+      // sure". An opening with no closing is unreadable, full stop.
+      const dq = String.fromCharCode(34);
+      assert.equal(verdict('---\nvalid_from: 2020-01-01'), 'undetermined');
+      assert.equal(verdict(`---\n${dq}valid_from${dq}: 2020-01-01`), 'undetermined');
+      assert.equal(verdict('---\n{valid_from: 2020-01-01}'), 'undetermined');
+      assert.equal(verdict('---\ntitle: X\n'), 'undetermined', 'even with no bound in sight');
+    });
+
+    test('but text that never opens a fence simply has no frontmatter', () => {
+      // The control, and the line the repair must not cross: widening the
+      // unterminated case to every document would mark every plain note
+      // unreadable.
+      assert.equal(verdict('du texte sans frontmatter\n'), null);
+      assert.equal(verdict(''), null);
+    });
+
+    test('a ROOT SEQUENCE is refused, not mistaken for a key named `- valid_from`', () => {
+      // The indicator exclusions in the plain-key pattern earn their keep here:
+      // without them `- valid_from: 2020-01-01` matches as a key literally
+      // called `- valid_from`, which is not a bound, so the page would be
+      // reported as declaring nothing while it declares one.
+      assert.equal(verdict('---\n- valid_from: 2020-01-01\n---\nbody'), 'undetermined');
+      assert.equal(verdict('---\n- a\n- b\n---\nbody'), 'undetermined');
+    });
+
+    test('an indented ROOT mapping is refused, not read as a page without a window', () => {
+      // Round 5. A column-zero scan sees NOTHING in an indented document, and
+      // answered "no window, and I am sure" about a page whose first line is
+      // `  valid_from: …`. There is no parent here — an indented document is
+      // still the document.
+      assert.equal(verdict('---\n  valid_from: pas-une-date\n---\nbody'), 'undetermined');
+      assert.equal(verdict('---\n  valid_from: 2020-01-01\n  title: X\n---\nbody'), 'undetermined');
+    });
+
+    test('an escaped key in BLOCK style is refused, not skipped as a foreign one', () => {
+      // The flow-mapping repair of round 4 closed one representation of this;
+      // the same key written as an ordinary block property escaped it, and the
+      // reader handed back the OTHER bound as if the page were fully read.
+      const bs = String.fromCharCode(92);
+      const dq = String.fromCharCode(34);
+      const escaped = `${dq}valid_${bs}u0066rom${dq}`;
+      const { fields, undetermined } = windowFieldsFromFrontmatterText(
+        `---\n${escaped}: pas-une-date\nvalid_through: 2025-12-31\n---\nbody`,
+      );
+      assert.deepEqual(undetermined, ['valid_from', 'valid_through']);
+      assert.deepEqual(fields, {}, 'the readable bound is not handed back either');
+    });
+
+    test('a quoted key containing the other quote is an ordinary key', () => {
+      // `"l'exemple":` is a perfectly normal key. A character class that banned
+      // both quote characters made it invisible — so its block scalar went
+      // untracked, the text inside was read as structure, and the page's real
+      // bound was thrown away.
+      const dq = String.fromCharCode(34);
+      const sq = String.fromCharCode(39);
+      assert.equal(
+        verdict(`---\n${dq}l${sq}exemple${dq}: | # doc\n  ? ceci est du texte\nvalid_through: 2025-12-31\n---\nbody`),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('a Unicode parent key still makes its child a child', () => {
+      // Recognising a line AS a key is structural; interpreting the key is not.
+      // Tying the two together meant `métadonnées:` did not register as a
+      // parent, so its indented child looked like a root node and the document
+      // was refused over a property that declares nothing.
+      for (const parent of ['métadonnées', 'my metadata', 'a.b', 'Clé-Composée']) {
+        assert.equal(
+          verdict(`---\n${parent}:\n  {owner: Alice}\nvalid_through: 2025-12-31\n---\nbody`),
+          STATE_NO_LONGER,
+          parent,
+        );
+      }
+    });
+
+    test('a flow mapping belonging to ANOTHER key is not a root shape', () => {
+      // Round 4, MINEUR. `^\s*` caught a child value, and the document was
+      // refused over a property that cannot carry a root bound — losing a
+      // window declared plainly two lines below it.
+      assert.equal(
+        verdict('---\nmetadata:\n  {owner: Alice}\nvalid_through: 2025-12-31\n---\nbody'),
+        STATE_NO_LONGER,
+      );
+      // And the same content written inline, which always worked.
+      assert.equal(
+        verdict('---\nmetadata: {owner: Alice}\nvalid_through: 2025-12-31\n---\nbody'),
+        STATE_NO_LONGER,
+      );
+    });
+
+    // ROUND 4: a block scalar header is more than `|`. Where that RECOGNITION
+    // decides something is narrower than it looks, and finding it took a
+    // measurement rather than an assumption: with an indented body under it,
+    // the folded-continuation rule already refuses the field whether or not the
+    // header was recognised. The difference shows on a header with NO body —
+    // there the unrecognised form is read as a plain scalar, so the reader
+    // hands back `valid_from: "|"` and the answer becomes `unreadable`, the
+    // classifier's verdict on a value it was given, instead of `undetermined`,
+    // this reader saying it refused the shape. The contract promises the
+    // second, and the two are different claims about the page.
+    const blockHeaders = [
+      ['a comment after the indicator', '| # exemple'],
+      ['an anchor before the indicator', '&example |'],
+      ['a tag before the indicator', '!!str |'],
+      ['a folded scalar with a comment', '> # exemple'],
+      ['a chomping indicator', '|-'],
+      ['an explicit indent', '|2'],
+    ];
+    for (const [label, header] of blockHeaders) {
+      test(`${label} is a block scalar, so the bound is REFUSED, not read`, () => {
+        const { fields, undetermined } = windowFieldsFromFrontmatterText(
+          `---\nvalid_from: ${header}\ntype: decision\n---\nbody`,
+        );
+        assert.deepEqual(undetermined, ['valid_from']);
+        assert.deepEqual(fields, {}, 'and no fragment of the header was read as a date');
+      });
+    }
+
+    test('and with a BODY under it, the continuation rule refuses it too', () => {
+      // Stated so the narrowness above is not mistaken for a gap: the two rules
+      // overlap on the common shape, which is why the witnesses had to use the
+      // uncommon one to see either.
+      for (const header of ['| # exemple', '|', '&example |']) {
+        assert.equal(
+          verdict(`---\nvalid_from: ${header}\n  2020-01-01\n---\nbody`),
+          'undetermined',
+          header,
+        );
+      }
+    });
+
+    test('a QUOTED key opens whatever its value opens', () => {
+      // `'title': "…` starts a scalar that runs over the lines below it, so a
+      // `valid_from:` written inside is TEXT. Not tracking quoted keys meant
+      // the reader picked it up as a real field and reported a window the page
+      // does not declare — the same trap the plain-key path was fixed for.
+      const dq = String.fromCharCode(34);
+      const sq = String.fromCharCode(39);
+      assert.equal(
+        verdict(`---\n${sq}title${sq}: ${dq}commence ici\nvalid_from: 2020-01-01\n${dq}\n---\nbody`),
+        null,
+      );
+    });
+
+    test('but a `?` inside a block opened by a QUOTED key is still text', () => {
+      const sq = String.fromCharCode(39);
+      assert.equal(
+        verdict(`---\n${sq}title${sq}: |\n  ? valid_from est expliqué ici\nvalid_through: 2025-12-31\n---\nbody`),
+        STATE_NO_LONGER,
+      );
+    });
+
+    test('a `?` that is part of a VALUE is not an explicit key', () => {
+      // `? ` at the start of a line is the indicator; a question mark inside a
+      // scalar is a character. Confusing them would refuse ordinary pages.
+      assert.equal(verdict('---\ntitre: pourquoi ?\nvalid_through: 2025-12-31\n---\nbody'), STATE_NO_LONGER);
+    });
+
+    test('but a comment after a GENUINELY empty key leaves it absent, not undetermined', () => {
+      // The control. Skipping comments must not turn every empty key into a
+      // doubt: `valid_from:` with nothing under it really does declare nothing,
+      // and saying otherwise would mark half the vault unreadable.
+      assert.equal(verdict('---\nvalid_from:\n# commentaire\ntype: decision\n---\nbody'), null);
+      assert.equal(verdict('---\nvalid_from:\n\ntype: decision\n---\nbody'), null);
+    });
   });
 
   describe('the envelope', () => {
