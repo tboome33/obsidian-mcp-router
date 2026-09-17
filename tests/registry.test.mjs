@@ -1040,15 +1040,21 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(after.workspaceBindings, undefined);
   });
 
-  test('unlockVaults --persist adopts the binding on disk, DEFAULT included, not only the lock flag', async () => {
-    // The lift path writes nothing when the binding is already unlocked, and
-    // the first version of that branch refreshed `workspaceBinding` and the
-    // hint but NOT `defaultVault`. So a session that started on `alpha`, whose
-    // workspace had since been re-bound to `beta` by another process, came out
-    // of `unlock_vaults --persist` reporting `beta` as its binding while still
-    // routing every unqualified call to `alpha` — a registry contradicting
-    // itself, and writes landing in the vault the user had moved away from.
-    // (Codex, round 5.)
+  test('unlockVaults --persist that writes NOTHING moves neither the binding nor the default', async () => {
+    // THIS TEST ASSERTED THE OPPOSITE, and the history is worth more than the
+    // assertion. An earlier round found the no-write lift path refreshing
+    // `workspaceBinding` but NOT `defaultVault`: a session started on `alpha`,
+    // re-bound to `beta` by a sibling, came out reporting `beta` while routing
+    // every unqualified call to `alpha`. A registry contradicting itself. The
+    // fix then was to adopt BOTH.
+    //
+    // The binding lot's seventh round showed the pair should not move at all.
+    // `registry.workspaceBinding` is what `isVaultReachable` consults on every
+    // call, so adopting a sibling's binding changes which vaults answer — and
+    // doing it from a call that wrote nothing is a re-route the user never
+    // asked for. Lifting a lock is not re-binding. Moving NEITHER keeps the
+    // two halves consistent, which was the real complaint, and leaves a no-op
+    // a no-op.
     const configPath = path.join(tmpDir, 'unlock-adopt-config.json');
     const key = canonicalWorkspaceKey(process.cwd());
     await fs.writeFile(configPath, JSON.stringify({
@@ -1062,10 +1068,37 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     reg.lockedVault = 'alpha';
     reg.defaultVault = 'alpha';
     reg.defaultVaultSource = { origin: 'config', variable: null };
+    reg.workspaceBinding = { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' };
     await unlockVaults(reg, { persist: true });
 
-    assert.equal(reg.workspaceBinding.vault, 'beta', 'the live binding is what the file says');
-    assert.equal(reg.defaultVault, 'beta', 'and so is the vault unqualified calls resolve to');
+    assert.equal(reg.workspaceBinding.vault, 'alpha', 'a call that wrote nothing installed another binding');
+    assert.equal(reg.defaultVault, 'alpha', 'a call that wrote nothing re-routed unqualified calls');
+    assert.deepEqual(reg.defaultVaultSource, { origin: 'config', variable: null });
+    // The two halves agree, which is what the earlier round actually wanted.
+    assert.equal(reg.workspaceBinding.vault, reg.defaultVault);
+  });
+
+  test('...and one that DOES write adopts the binding and the default together', async () => {
+    // The other half of the same rule: when the lift really changes the file,
+    // the session follows it, both fields at once. Without this the repair
+    // above would read as "never adopt", which is not what it says.
+    const configPath = path.join(tmpDir, 'unlock-adopt-write-config.json');
+    const key = canonicalWorkspaceKey(process.cwd());
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      workspaceBindings: { [key]: { vault: 'beta', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+
+    const reg = makeRegistry();
+    reg.configPath = configPath;
+    reg.lockedVault = 'beta';
+    reg.defaultVault = 'alpha';
+    reg.defaultVaultSource = { origin: 'config', variable: null };
+    await unlockVaults(reg, { persist: true });
+
+    assert.equal(reg.workspaceBinding.vault, 'beta', 'the write was not adopted');
+    assert.equal(reg.defaultVault, 'beta', 'the default did not follow the binding it just wrote');
     assert.deepEqual(reg.defaultVaultSource, { origin: 'binding', variable: null });
   });
 

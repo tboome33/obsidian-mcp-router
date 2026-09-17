@@ -505,22 +505,35 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // after a persistent unlock — indefinitely under `--no-watch`. Codex
     // round 2, 2026-09-03. The registry object is the same one the server
     // holds, so this is the in-session half of the write.
-    registry.workspaceBinding = b;
-    // AND THE REFUSALS WITH IT. `withBinding` drops a refusal of the vault
-    // being locked (binding is adopting); the first version of Phase 5 left
-    // this copy stale, so `list_vaults` went on listing a refusal the file no
-    // longer held and a suggested retraction was a no-op. (Codex, round on
-    // b59eb00.) A guard test holds every tool that assigns
-    // `registry.workspaceBinding` to assigning this too.
+    // ONLY A CALL THAT WROTE ADOPTS THE BINDING — and with it the default, so
+    // the two never move apart. Both halves of that rule were learned the hard
+    // way, one lot apart:
+    //
+    //   - An earlier round made BOTH exit paths adopt, because a no-write
+    //     `unlock_vaults --persist` that found the disk binding pointing
+    //     elsewhere adopted the binding and left the default behind: a
+    //     registry contradicting itself. Correct diagnosis, and the fix
+    //     matched the halves.
+    //   - The binding lot's seventh round showed the pair should not move at
+    //     all when nothing was written. `registry.workspaceBinding` is what
+    //     `isVaultReachable` consults on every call, so adopting a sibling's
+    //     binding from a call that changed nothing silently changes which
+    //     vaults answer. Moving neither keeps the halves matched AND leaves a
+    //     no-op a no-op.
+    //
+    // The REFUSALS are different, and are adopted either way: nothing routes
+    // by them, and a refusal recorded elsewhere must be honoured on sight.
     registry.workspaceRefusals = readRefusals(next, cwd);
-    // AND SO DOES THE DEFAULT VAULT. The binding is tier 0 of the cascade, so
-    // a persisted lock that moves the primary moves the session default with
-    // it — otherwise `unlock_vaults` handed the session back to whatever the
-    // cascade had picked at start-up, while the config said the workspace goes
-    // with the vault just locked. Found in the final review, 2026-09-03.
-    if (b) {
-      registry.defaultVault = b.vault;
-      registry.defaultVaultSource = { origin: 'binding', variable: null };
+    // AN UNRESOLVABLE PRIMARY DECIDES NOTHING, the same rule the binding tool
+    // learned in the same round: a sibling can register a vault AND bind to it
+    // while this session runs, and under `--no-watch` that name is one this
+    // catalogue has never heard of.
+    if (wrote) {
+      registry.workspaceBinding = b;
+      if (b?.vault && (registry.vaults || []).some((v) => v.name === b.vault)) {
+        registry.defaultVault = b.vault;
+        registry.defaultVaultSource = { origin: 'binding', variable: null };
+      }
     }
     // The hint is a statement ABOUT the binding, so it is re-read whenever the
     // binding changes.

@@ -28,19 +28,26 @@ primary and drops every secondary not passed again, which is exactly the call th
   may now succeed because the other session bound that vault, or it may refuse without proposing
   because the other session refused it. The session refreshes from the file before answering, and
   when that file cannot be read it falls back to the last set of refusals it SAW, never to an older
-  one. That fallback covers the refusals specifically; the binding this session holds can still be
-  older than the file until a call goes through the acceptance path.
+  one. That fallback covers the refusals specifically. The binding this session routes by stays the
+  one it started with until this session itself writes a new one, which is deliberate: a running
+  session's reachability does not shift under it.
   Which of the three answers you get depends on what the other session did.
 - **Resolved twice, and the lock decides.** A preflight reads the config file for an early, readable
   answer; the check that decides runs inside the write lock. The preflight may let a yes through on
   an optimistic read, but it may never turn one away **on a stale in-memory copy** — it still refuses
   a vault already declared, a vault you refused, and an identifier this router never minted.
-- **A call that writes nothing changes what the session KNOWS, never where it ROUTES.** When the
-  acceptance preflight reads the file, this session learns the binding and the refusals it finds
-  there, so the advice above is true rather than a loop. It does not move the default vault and does
-  not touch the lock guard: that happens only when a binding is actually written. A refused call
-  leaving the session pointing somewhere else — or locked to a vault nobody asked for — is a worse
-  outcome than the stale-but-coherent state it replaced.
+- **A call that writes nothing leaves this session alone.** Not the default vault, not the lock
+  guard, and not the binding either — which matters more than it sounds, because the binding is what
+  decides which vaults this session may reach. Adopting a parallel session's binding from a call
+  that then refuses would silently change which vaults answer, and could leave the default vault no
+  longer declared by the binding just adopted, so the next unqualified call failed where it worked.
+  Only the refusals are taken from the file on sight: nothing routes by them, and a no recorded
+  elsewhere must be honoured at once. The same rule now holds in `set_secondary_vault_mode` and in
+  `unlock_vaults --persist`, both of which have a real no-op and both of which used to re-route.
+- **Re-running a refused call really does hand back something new.** The proposal is minted from the
+  config file rather than from this session's copy, so an identifier that died because a parallel
+  session moved the binding is replaced rather than reissued. That is done by reading, not by
+  installing: the reachability of a running session is settled once and stays settled.
 - **A lock is lifted only by whoever imposed it.** A binding that no longer asks for a lock releases
   the lock the binding imposed, and nothing else: a `lock_vault` you issued in this session survives
   a binding change. A lock you persisted with `lock_vault --persist` is recorded ON the binding, so

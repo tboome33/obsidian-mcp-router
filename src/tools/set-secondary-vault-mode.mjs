@@ -172,6 +172,9 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   const shown = safeForMessage(vault, 80);
   const io = { readFile, writeFile };
   let previousMode = null;
+  // Whether the transform actually changed anything. Read after the lock to
+  // decide if this session's ROUTING may move — see the block below.
+  let wrote = false;
   const next = updateConfigBindings(configPath, (cfg) => {
     const existing = readBinding(cfg, cwd);
     if (!existing) {
@@ -206,6 +209,7 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     // nobody gave. (Codex, round on fd9e1cd.) `updateConfigBindings` reads
     // the returned identity and leaves the file alone.
     if (previousMode === mode) return cfg;
+    wrote = true;
     const alsoLocked = existing.alsoLocked.filter((n) => n !== vault);
     const alsoWritable = existing.alsoWritable.filter((n) => n !== vault);
     if (mode === 'locked') alsoLocked.push(vault);
@@ -220,12 +224,29 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   // and a registry whose binding says `notes` while unqualified calls still go
   // to `ref` is the self-contradiction `lock_vault` had to fix in round 5.
   const binding = readBinding(next, cwd);
-  registry.workspaceBinding = binding;
+  // ADOPTED ONLY IF THIS CALL WROTE. `registry.workspaceBinding` is what
+  // `isVaultReachable` reads on every call, so installing a sibling session's
+  // binding after a no-op — asking for the mode a secondary already has —
+  // silently changes which vaults answer. (Binding lot, round seven.)
+  if (wrote) registry.workspaceBinding = binding;
   // The refusals too: `withBinding` drops a stale refusal of any bound vault
   // on its way through, and the live copy must say what the file says
   // (Codex, round on b59eb00 — found one writer over, in lock.mjs).
   registry.workspaceRefusals = readRefusals(next, cwd);
-  if (binding) {
+  // THE DEFAULT MOVES ONLY IF SOMETHING WAS WRITTEN, and only to a vault this
+  // session can resolve. Two repairs from the binding lot's seventh round,
+  // both found one file over from where they had just been made:
+  //
+  //   - A CALL THAT WRITES NOTHING MUST NOT RE-ROUTE. Asking for the mode a
+  //     secondary already has returns the config untouched, and this block
+  //     still moved `defaultVault` to whatever primary the FILE held — so a
+  //     no-op silently re-routed a session whose sibling had re-bound the
+  //     workspace. The binding lot had just promised the opposite in writing.
+  //   - AN UNRESOLVABLE PRIMARY DECIDES NOTHING. A sibling can register a
+  //     vault AND bind to it between this session's start-up and now; under
+  //     `--no-watch` that name is unknown here, and adopting it as the default
+  //     points every unqualified call at something this session cannot reach.
+  if (wrote && binding?.vault && (registry.vaults || []).some((v) => v.name === binding.vault)) {
     registry.defaultVault = binding.vault;
     registry.defaultVaultSource = { origin: 'binding', variable: null };
   }

@@ -308,44 +308,34 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   }
 
   /**
-   * WHAT THIS SESSION KNOWS THE FILE SAYS — and nothing about where its calls
-   * go.
+   * THE REFUSALS THIS SESSION HONOURS — the one field that is pure knowledge.
    *
-   * THE SPLIT IS THE WHOLE POINT, and it took three rounds to find. Round 3
-   * made the acceptance preflight refresh the session from the file, so that
-   * "re-run the refused call" was true advice rather than a loop. Round 4 saw
-   * that refresh leave the session half-updated and widened it to the default
-   * vault and the lock guard. Rounds 5 and 6 then found, twice over, that
-   * widening it was the mistake: the preflight runs on a call that MAY REFUSE,
-   * and it was moving where unqualified calls go, and which vaults answer at
-   * all, on the way to writing nothing.
+   * SEVEN ROUNDS WENT INTO DRAWING THIS LINE, and it moved twice. Round 3 made
+   * the acceptance preflight refresh the session from the file, so that
+   * "re-run the refused call" was advice rather than a loop. Round 4 found the
+   * refresh half-done and made it WIDER — default vault and lock guard too.
+   * Rounds 5 and 6 each found a blocker inside that widening, and round 6
+   * split it: knowledge on any path, routing only after a write.
    *
-   * Round 6's blocker is the sharpest form of it. `else if` on a lock release
-   * read "this binding imposes no lock", but it was also entered when the
-   * binding could not be APPLIED at all — so a binding naming a vault this
-   * session has never heard of, carrying `locked: true`, released the lock
-   * that was in force. "I cannot apply this lock" became "I must drop the
-   * previous one", on a call that then failed.
+   * ROUND 7 SHOWED THE SPLIT WAS STILL IN THE WRONG PLACE. The binding is not
+   * knowledge. `isVaultReachable` consults `registry.workspaceBinding` on
+   * EVERY call, so installing a sibling session's binding changes which vaults
+   * answer — and doing it from a path that then refuses could leave this
+   * session's default vault no longer declared by the binding just adopted:
+   * the next unqualified call fails where it had worked. Reachability is
+   * settled once per session and stays settled; that is the contract
+   * everywhere else under `--no-watch`, and a refusal is not the place to
+   * break it.
    *
-   * So there are two adoptions, and only one of them is safe on a path that
-   * can still refuse:
+   * The refusals are the residue, and they really are knowledge: nothing
+   * routes by them, they gate PROPOSALS only, and a no recorded by another
+   * session must be honoured the moment it is seen. The hint goes with them,
+   * because a hint is a claim about a binding and stale claims are what
+   * round 3 was about.
    *
-   *   KNOWLEDGE (here)  the binding and the refusals as the file has them,
-   *                     plus the hint, which is a statement ABOUT the binding.
-   *                     Nothing here decides where a call goes.
-   *   ROUTING (below)   the default vault and the lock guard. Only after a
-   *                     write has succeeded, which is exactly when the old
-   *                     code did it, before round 4 widened the refresh.
-   *
-   * This is also what the refusal messages already promise in as many words:
-   * the session has been refreshed "from the file, which is a change to what
-   * it knows, not to what it holds". The code now says the same thing.
-   *
-   * @param {object|null} binding
    * @param {Map<string, unknown>} refusals
    */
-  const adoptKnowledge = (binding, refusals) => {
-    registry.workspaceBinding = binding;
+  const adoptRefusals = (refusals) => {
     registry.workspaceRefusals = refusals;
     // THE HINT IS RE-CLASSIFIED. It is computed once at start-up, so a hint
     // the user had just adopted through this very call went on being reported
@@ -353,15 +343,14 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // a confirmation whenever it sees that status, so the assistant would keep
     // proposing what had already been accepted. Under `--no-watch` nothing
     // ever corrected it. Measured through the real `list_vaults`, in one
-    // process, in the final review of 2026-09-03. It belongs to KNOWLEDGE: a
-    // hint is a claim about the binding, not a route.
+    // process, in the final review of 2026-09-03.
     refreshRegistryBindingHint(registry);
   };
 
   /**
    * WHERE THIS SESSION'S CALLS GO — the default vault and the lock guard.
    *
-   * ONLY AFTER A SUCCESSFUL WRITE. See `adoptKnowledge` above for why: on any
+   * ONLY AFTER A SUCCESSFUL WRITE. See `adoptRefusals` above for why: on any
    * path that can still refuse, moving these is changing the session on the
    * way to changing nothing, and both of the last two review rounds found a
    * separate blocker inside that one mistake.
@@ -501,11 +490,25 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // (Codex, rounds 2 and 3 — two halves of one loop.)
   const accepted = args.accept === undefined ? null : (() => {
     const fresh = readConfig();
-    // KNOWLEDGE ONLY. This runs before anything is decided and the call may
-    // still refuse; moving the default vault or the lock here is changing the
-    // session on the way to changing nothing. (Codex, rounds five and six.)
-    adoptKnowledge(readBinding(fresh, cwd), readRefusals(fresh, cwd));
-    return resolveAcceptance(registry.workspaceBinding, registry.workspaceRefusals);
+    // READ TO DECIDE, INSTALL ALMOST NOTHING — and the distinction is round
+    // seven's repair. The binding is passed to `resolveAcceptance` as a LOCAL
+    // value and never assigned to the registry, because
+    // `registry.workspaceBinding` is not knowledge: `isVaultReachable` reads
+    // it on every call, so installing a sibling's binding from a path that
+    // can still refuse changes which vaults answer — and can leave this
+    // session's default vault no longer declared by the binding it just
+    // adopted, so the next unqualified call fails where it worked.
+    //
+    // The stale-proposal loop rounds 2 and 3 closed stays closed, from the
+    // other end: `resolveVault` now mints the proposal from the FILE, so
+    // re-running a refused call cannot keep returning the same dead
+    // identifier. Nothing has to be installed here to make that true.
+    //
+    // The REFUSALS are different and are still adopted: nothing routes by
+    // them, they gate proposals only, and a refusal recorded elsewhere must be
+    // honoured the moment it is seen.
+    adoptRefusals(readRefusals(fresh, cwd));
+    return resolveAcceptance(readBinding(fresh, cwd), registry.workspaceRefusals);
   })();
 
   const primary = accepted ? accepted.primary : args.vault;
@@ -656,9 +659,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // exactly the advice the messages themselves now give. (Codex, round 5,
       // on a sentence a round-4 repair had left standing beside the messages
       // it corrected.)
-      // KNOWLEDGE ONLY, for the same reason: every exit from this block is a
-      // REFUSAL, and a refusal must leave the session routing as it did.
-      const refreshLive = () => adoptKnowledge(previous, readRefusals(cfg, cwd));
+      // REFUSALS ONLY, for the same reason: every exit from this block is a
+      // REFUSAL, and a refusal must leave both the routing AND the reachability
+      // of this session exactly as it found them. The binding read inside the
+      // lock is used to DECIDE, never installed. (Codex, rounds five to seven.)
+      const refreshLive = () => adoptRefusals(readRefusals(cfg, cwd));
       let onDisk;
       try {
         // The FILE's refusals, not the live Map: another process may have
@@ -712,12 +717,28 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // Apply to the LIVE registry too, so the session that just confirmed does
   // not have to be restarted to see its own answer.
   const binding = readBinding(next, cwd);
-  // THE SAME ADOPTER THE PREFLIGHT USES. Three call sites once wrote three
-  // subsets of this state; the widest of them is the only correct one, so it
-  // is now the only one. (Codex, round four.)
   // THE WRITE SUCCEEDED, so both halves apply: what the session knows, and
-  // where its calls now go.
-  adoptKnowledge(binding, readRefusals(next, cwd));
+  // where its calls now go. This is the ONLY place the second half runs.
+  //
+  // AND THIS IS WHY `adoptRouting` NEEDS NO NULL OR UNRESOLVABLE BRANCH.
+  // `assertBindable(cfg)` is the first statement inside the lock, on every
+  // path that reaches this line, and it refuses any requested name that is
+  // absent from the live registry OR from the file. `primary` is a validated
+  // non-empty string, so the binding just written is non-null and its vault is
+  // one this session resolves. Branches for the other cases would be dead code
+  // reading as coverage — the lesson phase 6 was rewritten around. The two
+  // paths that DO see a null or unusable binding are `clear`, which has its
+  // own release and its own cascade re-run, and the acceptance preflight,
+  // which is knowledge-only by design.
+  //
+  // (The comment that stood here claimed one adopter shared by three call
+  // sites, "the widest of them the only correct one". Round 6 measured the
+  // opposite: the widest was the mistake, and it cost two blockers.)
+  // THE WRITE SUCCEEDED, so this session adopts the whole of it: the binding
+  // it just recorded (which is also what decides reachability from here on),
+  // the refusals as the file now holds them, and the routing that follows.
+  registry.workspaceBinding = binding;
+  adoptRefusals(readRefusals(next, cwd));
   adoptRouting(binding);
 
   // Open what is not open. Best effort by design: a window that did not appear

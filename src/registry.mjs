@@ -783,12 +783,29 @@ export async function loadRegistry({ configPath } = {}) {
         // access beside it had just refused as refused. (Codex, round five.)
         //
         // The BINDING is deliberately not adopted here. This is a read path
-        // that ends in a throw; adopting a binding drags in the default vault
-        // and the lock guard, which is the acceptance path's business and has
-        // its own rules. A stale binding costs at most one dead proposal id,
-        // and the acceptance refreshes and refuses it.
+        // that ends in a throw. THE BINDING IS NOT ADOPTED — it is READ, and
+        // used to mint the proposal, which is a different thing and the whole
+        // repair of round seven.
+        //
+        // `registry.workspaceBinding` is not knowledge: `isVaultReachable`
+        // consults it on EVERY call, so installing a sibling session's binding
+        // silently changes which vaults answer — and round six did exactly
+        // that from the acceptance preflight, on a path that then refused. The
+        // session could come away with its default vault no longer declared by
+        // the binding it had just adopted, so the next unqualified call failed
+        // where it had worked. Reachability is decided once per session and
+        // stays put; that is the contract everywhere else under `--no-watch`,
+        // and a refusal is not the place to break it. (Codex, round seven.)
+        //
+        // The loop round three fixed is closed HERE instead, at the source:
+        // the proposal is minted from the FILE's binding, so re-running a
+        // refused call cannot keep handing back the same dead identifier. No
+        // session state changes to achieve it.
         if (live.fromFile) this.workspaceRefusals = live.refusals;
         const refused = this.workspaceRefusals?.has?.(v.name) === true;
+        // The binding the PROPOSAL is about: the file's when it could be read,
+        // this session's otherwise. A local value, deliberately not installed.
+        const proposalBinding = live.fromFile ? live.binding : this.workspaceBinding;
         // A PROPOSAL WHOSE ACCEPTANCE CANNOT BE GIVEN IS NOT A PROPOSAL, and
         // the gated deployment is not the only place that is true. Asked here,
         // before the refusal branch, so that a refused vault on a gated
@@ -815,9 +832,11 @@ export async function loadRegistry({ configPath } = {}) {
           throw declarationRequiredError(
             `${preamble} You already REFUSED this vault for this workspace, so it is not being proposed `
             + 'again. If you want it after all, take the refusal back first with '
-            + 'confirm_workspace_binding({ retract: … }), or name it explicitly in a '
-            + 'confirm_workspace_binding call — binding a vault drops its refusal. Otherwise address '
-            + 'a vault this workspace already declares.',
+            + 'confirm_workspace_binding({ retract: … }) — that is the route, and it is the only one '
+            + 'to offer. (Binding the vault by name would also drop the refusal, as a side effect of '
+            + 'writing a binding, but DO NOT assemble that call for this: passing `vault` REPLACES '
+            + 'this workspace\'s primary and drops every secondary not passed again.) Otherwise '
+            + 'address a vault this workspace already declares.',
             null,
           );
         }
@@ -854,7 +873,22 @@ export async function loadRegistry({ configPath } = {}) {
             null,
           );
         }
-        const primary = this.workspaceBinding?.vault;
+        // THE FILE ALREADY DECLARES IT, AND THIS SESSION HAS NOT RELOADED.
+        // Minting a proposal here would hand out an identifier the acceptance
+        // refuses with "this workspace already declares it" — a wall one turn
+        // away, which is the rule the gated branch and the unbindable branch
+        // already obey. The useful answer is the true one: the binding is
+        // there, this process is the thing that has not caught up.
+        if (proposalBinding
+          && (proposalBinding.vault === v.name || (proposalBinding.also || []).includes(v.name))) {
+          throw declarationRequiredError(
+            `${preamble} The config file DOES declare it — another session bound it after this one `
+            + 'started, and this process does not reload the file while it runs. Nothing needs to be '
+            + 'accepted. Start a new session, or address a vault this one already declares.',
+            null,
+          );
+        }
+        const primary = proposalBinding?.vault;
         const brokenPrimary = typeof primary === 'string' && primary !== ''
           && !this.vaults.some((x) => x.name === primary);
         if (brokenPrimary) {
@@ -871,7 +905,11 @@ export async function loadRegistry({ configPath } = {}) {
           + '`openVaults` in config.json, or address a vault this workspace already declares.',
           buildBindingProposal({
             vault: v.name,
-            binding: this.workspaceBinding,
+            // THE FILE'S BINDING, not this session's copy — see the comment
+            // above `proposalBinding`. The identifier is derived from it, and
+            // the acceptance recomputes against the file, so minting from
+            // anything else is minting an identifier born dead.
+            binding: proposalBinding,
             workspaceKey: this.workspaceKey,
             // A REMOTE vault has no local folder, and the opener skips anything
             // without one — so promising a window for it would be a promise the
