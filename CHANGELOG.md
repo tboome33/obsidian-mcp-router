@@ -103,18 +103,43 @@ primary and drops every secondary not passed again, which is exactly the call th
   the lock the binding imposed, and nothing else: a `lock_vault` you issued in this session survives
   a binding change. A lock you persisted with `lock_vault --persist` is recorded ON the binding, so
   it does follow the binding — that is what persisting it means.
-- **Three refusals.** A vault this workspace already declares (nothing to accept), a vault you
+- **Four refusals.** A vault this workspace already declares (nothing to accept), a vault you
   REFUSED (deliberately not symmetric with naming it explicitly, which is you bringing it up again),
-  and an identifier this router never minted.
+  an identifier this router never minted — and a binding the config file holds in a shape the router
+  had to repair to read (below). That last one is asked of the file's entry AS WRITTEN, because the
+  identifier cannot see it: it is derived from the repaired reading, so a duplicate hand-edited into
+  `also` between the proposal and the yes leaves the identifier resolving. The yes is still refused,
+  with the repair spelled out and nothing written.
+- **An incoherent binding is diagnosed, and nothing is proposed over it.** The accepted decision says
+  a structurally incoherent binding blocks the proposal and explains the repair. The lot had shipped
+  the opposite: the reading every binding goes through repairs a duplicate silently, so the proposal
+  code never saw one, and that absorption was documented as the policy. It was not a policy anyone
+  had accepted (the round-8 conformance pass; settled on 2026-09-18 by delegation). Now the file's
+  entry is inspected as written — a vault twice in `also`, the primary listed as its own secondary, a
+  secondary in both write tiers, a tier naming a vault that is not a secondary, a field of the wrong
+  shape, or **no usable primary at all** beside secondaries or a lock — and the refusal names each
+  fault and spells out the whole binding to re-pass, lock included, with the write tiers the router
+  would carry over. The forgiving reading still routes the session (a vault in both tiers is read as
+  locked, the safe direction); it just no longer decides what may be proposed. A missing primary is
+  one of those faults, not "no binding": only an absent or empty entry means no binding and proposes
+  a primary. A hand-edited entry that carries secondaries and no primary is a state to read first.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
-  gated deployment where no acceptance verb exists at all, a local vault the config file does not
-  list — never registered, or removed since this session started (it cannot be bound, so offering it
-  would hand you a yes that leads to a wall) — and `list_vaults`, an inventory rather than an offer,
-  so a workspace with twenty undeclared vaults does not become twenty questions at once. Known and
-  not closed here: a REMOTE vault removed from the file can still be proposed and bound, because the
+  binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance
+  verb exists at all, a local vault the config file does not list — never registered, or removed
+  since this session started (it cannot be bound, so offering it would hand you a yes that leads to a
+  wall) — a vault the file already declares while this session has not reloaded (nothing to accept:
+  retry, or restart), and `list_vaults`, an inventory rather than an offer, so a workspace with
+  twenty undeclared vaults does not become twenty questions at once. The last two are refusals the
+  accepted decision did not list — they come from two sessions sharing one file, which it did not
+  have in view — and they are now recorded on it as its sixth and seventh cases. Known and not
+  closed here: a REMOTE vault removed from the file can still be proposed and bound, because the
   binding tool exempts remotes from that check; widening it is its own change, carried as its own
   item rather than half-done under cover of this one.
+- **Saying yes also moves THIS session.** After a yes the session routes by the binding it just
+  wrote, which is what lets the refused call be replayed at once (decision §5). The decision's point
+  4 describes the file; this second effect is now written on it too. The consent it rests on is
+  informed: the proposal is minted from the file and names `currentPrimary` as the file has it.
 - **The refusal is asked of the file, so a parallel session is heard.** A no you record in one
   session stops the other session PROPOSING that vault, not merely writing it, and a no you take
   back stops silencing it. Both directions matter when two routers share one configuration, which is

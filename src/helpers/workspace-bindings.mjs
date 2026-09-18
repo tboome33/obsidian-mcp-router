@@ -60,6 +60,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
+import { safeForMessage, identifierForCall } from './sanitize.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -217,6 +218,29 @@ export function normalizeBinding(raw) {
  * @returns {{ vault: string, also: string[], locked: boolean, confirmedAt: string|null, confirmedVia: string|null }|null}
  */
 export function readBinding(config, cwd) {
+  return normalizeBinding(rawBindingEntry(config, cwd));
+}
+
+/**
+ * This workspace's binding entry AS THE FILE HOLDS IT — before
+ * `normalizeBinding` repairs anything — or null when the file has none.
+ *
+ * Two readers of one lookup, and the split is the point. `readBinding` answers
+ * "what does this workspace route by", and for that a hand-edited duplicate is
+ * rightly absorbed: routing on a repaired reading is the safe direction. But
+ * the accepted decision (`proposition-de-liaison-a-l-acces`, "Mal configuré")
+ * says a binding that is structurally incoherent BLOCKS a proposal and
+ * explains its repair — and a proposal can only be blocked by a state the
+ * code can still see. Phase 6 of the lot measured that the normalised reading
+ * hides it, and absorbed it instead; Roland's decision of 2026-09-18 (under
+ * delegation) is that the decision as accepted stands. So the raw entry is
+ * read here, once, for `bindingIncoherences` to look at.
+ *
+ * @param {object} config the parsed router config
+ * @param {string} cwd
+ * @returns {unknown} the stored entry, whatever its shape, or null
+ */
+export function rawBindingEntry(config, cwd) {
   const key = canonicalWorkspaceKey(cwd);
   if (!key) return null;
   const all = config?.[WORKSPACE_BINDINGS_KEY];
@@ -226,7 +250,7 @@ export function readBinding(config, cwd) {
   // may hold a raw path. Canonicalise BOTH sides before comparing rather than
   // trusting the file's spelling — the same reason the vault registry compares
   // normalised paths instead of raw ones.
-  if (Object.hasOwn(all, key)) return normalizeBinding(all[key]);
+  if (Object.hasOwn(all, key)) return all[key];
 
   // AMBIGUITY IS RESOLVED DETERMINISTICALLY, not by whichever spelling the
   // file happens to list first. A hand-edited config can hold the same
@@ -245,7 +269,154 @@ export function readBinding(config, cwd) {
   const colliding = Object.keys(all)
     .filter((storedKey) => canonicalWorkspaceKey(storedKey) === key)
     .sort();
-  return colliding.length ? normalizeBinding(all[colliding[0]]) : null;
+  return colliding.length ? all[colliding[0]] : null;
+}
+
+/**
+ * The kinds of structural incoherence a stored binding entry can carry. One
+ * enumeration, so the predicate, the prose and the tests name the same things.
+ */
+export const BINDING_INCOHERENCE = Object.freeze({
+  /** An entry exists, but names no usable primary (missing, empty, not a string). */
+  NO_PRIMARY: 'no-primary',
+  /** The primary is also listed as its own secondary. */
+  PRIMARY_IN_ALSO: 'primary-in-also',
+  /** A vault appears twice in `also`. */
+  DUPLICATE_SECONDARY: 'duplicate-secondary',
+  /** A secondary is in BOTH write tiers. */
+  TIER_CONFLICT: 'tier-conflict',
+  /** A write tier names a vault that is not a secondary of this binding. */
+  TIER_WITHOUT_ROLE: 'tier-without-role',
+  /** A field has the wrong shape (`also` not a list, a tier not a list, `locked` not a boolean). */
+  MALFORMED_FIELD: 'malformed-field',
+});
+
+/**
+ * Everything `normalizeBinding` would silently repair in `raw`, named.
+ *
+ * `normalizeBinding` is the one boundary where a config becomes a binding, and
+ * it is deliberately forgiving: a duplicate is dropped, a primary listed as
+ * its own secondary is dropped, a vault in both tiers is locked, a field of
+ * the wrong shape is ignored. That forgiveness is RIGHT for routing — the
+ * safe reading is the one to route by — and WRONG as a policy for the
+ * proposal: the accepted decision says such a binding is one to REPAIR, and
+ * that no role is proposed on top of a binding the router cannot read as
+ * written. This predicate is the other half of that boundary: it says, for
+ * the same input, what the forgiving reading changed.
+ *
+ * An empty object is NOT incoherent: it carries nothing to lose, and reads as
+ * "no binding" everywhere else. The line is "the entry says something, and
+ * what it says cannot be taken as written".
+ *
+ * Every kind is reported, not just the first: a reader repairing the file
+ * should not have to come back three times.
+ *
+ * @param {unknown} raw the stored entry, from `rawBindingEntry`
+ * @returns {Array<{ kind: string, names: string[] }>} empty when coherent
+ */
+export function bindingIncoherences(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  if (Object.keys(raw).length === 0) return [];
+  const out = [];
+  const names = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim() !== '') : []);
+  const unique = (list) => [...new Set(list)];
+
+  const vault = raw.vault;
+  const hasPrimary = typeof vault === 'string' && vault.trim() !== '';
+  if (!hasPrimary) out.push({ kind: BINDING_INCOHERENCE.NO_PRIMARY, names: [] });
+
+  const malformed = [];
+  for (const field of ['also', 'alsoLocked', 'alsoWritable']) {
+    if (raw[field] === undefined) continue;
+    if (!Array.isArray(raw[field]) || raw[field].some((s) => typeof s !== 'string' || s.trim() === '')) {
+      malformed.push(field);
+    }
+  }
+  if (raw.locked !== undefined && typeof raw.locked !== 'boolean') malformed.push('locked');
+  if (malformed.length) out.push({ kind: BINDING_INCOHERENCE.MALFORMED_FIELD, names: malformed });
+
+  const also = names(raw.also);
+  if (hasPrimary && also.includes(vault)) {
+    out.push({ kind: BINDING_INCOHERENCE.PRIMARY_IN_ALSO, names: [vault] });
+  }
+  const duplicated = unique(also.filter((n, i) => also.indexOf(n) !== i));
+  if (duplicated.length) out.push({ kind: BINDING_INCOHERENCE.DUPLICATE_SECONDARY, names: duplicated });
+
+  const locked = names(raw.alsoLocked);
+  const writable = names(raw.alsoWritable);
+  const both = unique(locked.filter((n) => writable.includes(n)));
+  if (both.length) out.push({ kind: BINDING_INCOHERENCE.TIER_CONFLICT, names: both });
+  const alsoSet = new Set(also);
+  const roleless = unique([...locked, ...writable].filter((n) => !alsoSet.has(n)));
+  if (roleless.length) out.push({ kind: BINDING_INCOHERENCE.TIER_WITHOUT_ROLE, names: roleless });
+
+  return out;
+}
+
+/**
+ * The repair, spelled out — the decision's own requirement: "un diagnostic
+ * dit comment réparer … à condition que le message épelle la liaison entière
+ * à repasser". One renderer, used by the proposal path and by the acceptance,
+ * so the two doors describe the same incoherence in the same words.
+ *
+ * The suggested call is built from the FORGIVING reading, because that is the
+ * one unambiguous repair for every kind but one: a missing primary has no
+ * repair the router can guess, so that call carries a placeholder the reader
+ * must fill in. Tiers are not part of `confirm_workspace_binding`'s arguments;
+ * the reader is told what the router would keep and how to change it.
+ *
+ * Names are spelled through `identifierForCall` inside the call (lossless,
+ * never capped: a command that does not carry the whole identifier is not a
+ * command) and through `safeForMessage` in the prose.
+ *
+ * @param {unknown} raw the stored entry
+ * @param {Array<{ kind: string, names: string[] }>} [incoherences] from `bindingIncoherences(raw)`
+ * @returns {string} one paragraph: what is wrong, then the call to re-pass
+ */
+export function describeBindingRepair(raw, incoherences = bindingIncoherences(raw)) {
+  const listed = (list) => list.map((n) => safeForMessage(n, 80)).join(', ');
+  const what = incoherences.map(({ kind, names: n }) => {
+    switch (kind) {
+      case BINDING_INCOHERENCE.NO_PRIMARY:
+        return 'it names no usable primary vault';
+      case BINDING_INCOHERENCE.PRIMARY_IN_ALSO:
+        return `its primary ${listed(n)} is also listed as its own secondary`;
+      case BINDING_INCOHERENCE.DUPLICATE_SECONDARY:
+        return `${listed(n)} appears more than once in \`also\``;
+      case BINDING_INCOHERENCE.TIER_CONFLICT:
+        return `${listed(n)} is in BOTH write tiers (alsoLocked and alsoWritable)`;
+      case BINDING_INCOHERENCE.TIER_WITHOUT_ROLE:
+        return `a write tier names ${listed(n)}, which is not a secondary of this binding`;
+      case BINDING_INCOHERENCE.MALFORMED_FIELD:
+        return `the field(s) ${listed(n)} do not have the expected shape (a list of vault names; a boolean for \`locked\`)`;
+      default:
+        return kind;
+    }
+  });
+
+  const repaired = normalizeBinding(raw);
+  const primary = repaired ? identifierForCall(repaired.vault) : '"<the primary vault you intend>"';
+  // Without a primary the forgiving reading is null, so the secondaries are
+  // taken from the entry itself — deduplicated, since that is the repair.
+  const also = repaired
+    ? repaired.also
+    : [...new Set((Array.isArray(raw.also) ? raw.also : []).filter((s) => typeof s === 'string' && s.trim() !== ''))];
+  const lockedArg = repaired?.locked || raw.locked === true ? ', locked: true' : '';
+  const call = `confirm_workspace_binding({ vault: ${primary}, also: [${also.map(identifierForCall).join(', ')}]${lockedArg} })`;
+
+  const tiers = repaired
+    ? [
+      repaired.alsoLocked.length ? `locked: ${repaired.alsoLocked.map(identifierForCall).join(', ')}` : '',
+      repaired.alsoWritable.length ? `writable: ${repaired.alsoWritable.map(identifierForCall).join(', ')}` : '',
+    ].filter(Boolean).join('; ')
+    : '';
+  const tierNote = tiers
+    ? ` The write tiers it would carry over, as this router reads them today (a vault in both tiers is read as locked): ${tiers} — change any of them afterwards with set_secondary_vault_mode.`
+    : '';
+
+  return `This workspace's binding, as the config file holds it, cannot be taken as written: ${what.join('; ')}. `
+    + 'It needs repairing before anything is proposed or added on top of it — a role is never proposed over a '
+    + `binding the router cannot read as written. Re-confirm it, naming the whole binding to keep: ${call}.${tierNote}`;
 }
 
 /**

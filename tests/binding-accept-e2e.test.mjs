@@ -237,6 +237,45 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rt.kill(); }
   });
 
+  test('a binding hand-edited into INCOHERENCE between the proposal and the yes refuses the yes, and writes nothing', async () => {
+    // THE CHANGE THE IDENTIFIER CANNOT SEE. The digest is computed on the
+    // forgiving reading, so adding a duplicate to `also` in the file changes
+    // nothing the identifier looks at: it still resolves. Without its own
+    // check the acceptance would add a secondary on top of an entry the
+    // decision says must be read and repaired first ("Mal configuré", rows 1
+    // and 2). This witness is the only thing separating that check from the
+    // identifier — which is why a mutation that drops the check must turn
+    // THIS red and nothing else.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const proposal = await proposalFor(rt, 'sci');
+
+      // Another process (a hand edit, here) duplicates a secondary. Same
+      // forgiving reading, same digest, same identifier.
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.workspaceBindings[key].also = ['writable-ref', 'locked-ref', 'locked-ref'];
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+
+      const yes = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.equal(yes.result?.isError, true, `an acceptance was applied over an incoherent binding:\n${textOf(yes)}`);
+      const text = textOf(yes);
+      assert.match(text, /NO BINDING WAS WRITTEN/);
+      assert.match(text, /locked-ref appears more than once in `also`/);
+      assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["writable-ref", "locked-ref"\] \}\)/);
+      assert.match(text, /locked: "locked-ref"; writable: "writable-ref"/);
+
+      const after = bindingOnDisk(configPath, key);
+      assert.deepEqual(after.also, ['writable-ref', 'locked-ref', 'locked-ref'], 'the file was rewritten');
+      assert.ok(!after.also.includes('sci'), 'the yes wrote anyway');
+    } finally { rt.kill(); }
+  });
+
   test('TRAP 3, THE HALF THE PREFLIGHT CANNOT SEE — another PROCESS moves the binding, and the yes is still refused', async () => {
     // ► THE WITNESS THAT WAS MISSING, and the mutation that found the hole:
     //   blank out the in-lock re-resolution and every other test here stays

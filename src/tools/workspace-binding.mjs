@@ -60,6 +60,9 @@ import {
   readRefusals,
   withRefusal,
   withoutRefusal,
+  rawBindingEntry,
+  bindingIncoherences,
+  describeBindingRepair,
 } from '../helpers/workspace-bindings.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
@@ -415,7 +418,24 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // early and readable answer, and once inside the lock against the FILE, which
   // is the call that DECIDES. A preflight alone would be exactly the race the
   // id exists to close.
-  const resolveAcceptance = (binding, refusals) => {
+  const resolveAcceptance = (binding, refusals, rawEntry) => {
+    // A BINDING THE FILE HOLDS IN A SHAPE THE ROUTER HAD TO REPAIR TO READ IS
+    // NOT ONE TO ADD TO — the same rule as the proposal path in
+    // `resolveVault`, asked again here because the identifier cannot ask it:
+    // the digest is computed on the FORGIVING reading, so an entry hand-edited
+    // into a duplicate between the proposal and the yes keeps the same digest,
+    // the identifier still resolves, and without this check the add would be
+    // applied on top of a binding the decision says must be read first. Asked
+    // BEFORE the identifier, because the repair outranks every other answer:
+    // a yes to a proposal minted over a coherent file is still a yes the file
+    // as it stands cannot honour. (Decision, "Mal configuré"; 2026-09-18.)
+    const incoherences = bindingIncoherences(rawEntry);
+    if (incoherences.length) {
+      throw new Error(
+        `confirm_workspace_binding: the acceptance was NOT applied and NO BINDING WAS WRITTEN. `
+        + describeBindingRepair(rawEntry, incoherences),
+      );
+    }
     const target = resolveProposalId(args.accept, {
       workspaceKey: key,
       binding,
@@ -515,7 +535,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // them, they gate proposals only, and a refusal recorded elsewhere must be
     // honoured the moment it is seen.
     adoptRefusals(readRefusals(fresh, cwd));
-    return resolveAcceptance(readBinding(fresh, cwd), registry.workspaceRefusals);
+    return resolveAcceptance(readBinding(fresh, cwd), registry.workspaceRefusals, rawBindingEntry(fresh, cwd));
   })();
 
   const primary = accepted ? accepted.primary : args.vault;
@@ -676,7 +696,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         // The FILE's refusals, not the live Map: another process may have
         // recorded one since this session started, and under `--no-watch` the
         // copy in memory never learns.
-        onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd));
+        onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd), rawBindingEntry(cfg, cwd));
       } catch (err) {
         refreshLive();
         throw err;

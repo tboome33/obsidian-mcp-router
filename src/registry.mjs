@@ -80,6 +80,9 @@ import {
   updateConfigBindings,
   canonicalWorkspaceKey,
   readRefusals,
+  rawBindingEntry,
+  bindingIncoherences,
+  describeBindingRepair,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -144,6 +147,14 @@ function freshWorkspaceState(cfgPath, fallbackConfig, cwd) {
     fromFile,
     binding: readBinding(fresh, cwd),
     refusals: readRefusals(fresh, cwd),
+    // THE ENTRY AS WRITTEN, from the FILE ONLY. `binding` above is the
+    // forgiving reading and is what a proposal is minted from; this is what
+    // `bindingIncoherences` inspects to decide whether a proposal may be
+    // minted at all. When the file could not be read there is nothing honest
+    // to inspect — a copy loaded at start-up says nothing about the file now —
+    // so the answer is null, a proposal may go out, and the acceptance, which
+    // re-reads the file under the write lock, is the door that decides.
+    rawEntry: fromFile ? rawBindingEntry(fresh, cwd) : null,
   };
 }
 
@@ -875,6 +886,32 @@ export async function loadRegistry({ configPath } = {}) {
             + 'this workspace to it.',
             null,
           );
+        }
+        // A BINDING THE ROUTER CANNOT READ AS WRITTEN IS ONE TO REPAIR, and no
+        // role is proposed on top of it — the accepted decision's third
+        // silence, "Mal configuré" rows 1 and 2, honoured as written. Phase 6
+        // had measured that `normalizeBinding` absorbs a duplicate before the
+        // proposal code can see it, and shipped that absorption as the policy;
+        // the round-8 conformance pass found the contradiction, and the
+        // decision of 2026-09-18 (Roland, by delegation) is that the accepted
+        // text stands: diagnose, spell out the repair, propose nothing.
+        //
+        // The forgiving reading still ROUTES this session — least privilege
+        // is the right reading to act on — and `proposalBinding` above is
+        // still that reading. What changes is that a proposal is not minted
+        // over a file whose entry says something the router had to repair to
+        // read. `rawEntry` is null when the file could not be read, so the
+        // acceptance, which re-reads the file inside the write lock, is the
+        // door that decides in that case.
+        //
+        // A missing or empty primary is one of those incoherences, not "no
+        // binding": an entry that carries secondaries, a lock or tiers but no
+        // primary is a state to read first, not an occasion to create a
+        // primary over it (decision point 2 says `primary` for a NULL binding;
+        // the drift the conformance pass named as its third).
+        const incoherences = bindingIncoherences(live.rawEntry);
+        if (incoherences.length) {
+          throw declarationRequiredError(`${preamble} ${describeBindingRepair(live.rawEntry, incoherences)}`, null);
         }
         const primary = proposalBinding?.vault;
         const brokenPrimary = typeof primary === 'string' && primary !== ''

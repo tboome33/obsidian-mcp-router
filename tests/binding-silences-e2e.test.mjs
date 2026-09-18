@@ -12,6 +12,11 @@
  *   workspaceRefusals   the user already said no. (Proved in
  *                       tests/binding-proposal-e2e.test.mjs.)
  *   broken binding      a binding to REPAIR is not one to extend. (Same file.)
+ *   incoherent binding  an entry the router had to repair to read — a
+ *                       duplicate, a primary as its own secondary, a vault in
+ *                       both tiers, no primary at all — is diagnosed with the
+ *                       whole binding to re-pass, and NOTHING is proposed
+ *                       over it. (Decision, "Mal configuré"; this file.)
  *   gated deployment    no verb of confirm_workspace_binding exists there, so
  *                       an `accept` call would be a wall.
  *   the INVENTORY       `list_vaults` is a list, not an offer.
@@ -30,7 +35,9 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalWorkspaceKey, normalizeBinding } from '../src/helpers/workspace-bindings.mjs';
+import {
+  canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
+} from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
@@ -247,32 +254,37 @@ describe('the silences — what must NOT produce a proposal', () => {
   });
 });
 
-describe('the duplicate incoherence is ABSORBED, not diagnosed — and this is the tripwire', () => {
-  // Phase 6 of the roadmap asked for a diagnostic when a vault sits in a
-  // binding TWICE — as primary and as a secondary, or twice in `also`. The
-  // measurement says that state cannot reach the proposal code: every binding
-  // becomes one through `normalizeBinding`, whose `seen` set STARTS with the
-  // primary, so the duplicate is gone before anyone can be confused by it.
+describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decision as accepted', () => {
+  // ► THIS BLOCK USED TO ASSERT THE OPPOSITE, and its history is the point.
   //
-  // Absorbing is the right answer here, and not a dodge. A duplicate has ONE
-  // unambiguous meaning — that vault is a secondary — so repairing it silently
-  // at the single boundary where a config becomes a binding costs nothing,
-  // while refusing the call would turn an obvious typo into a wall. Contrast
-  // the primary that is ABSENT from the registry, which has no unambiguous
-  // repair and IS diagnosed (see binding-proposal-e2e).
+  //   Phase 6 of the roadmap asked for a diagnostic when a vault sits in a
+  //   binding TWICE. The measurement found that `normalizeBinding` absorbs the
+  //   duplicate before the proposal code can see it, and the phase shipped that
+  //   absorption AS THE POLICY, with this block as a "tripwire": a router
+  //   started on an incoherent config rendered a coherent proposal, and the
+  //   last test here required exactly that ("the primary stays work").
   //
-  // ► SO THIS IS A TRIPWIRE, not a behaviour test. The day `normalizeBinding`
-  //   stops deduplicating, the state becomes reachable, `bindingDigest` starts
-  //   seeing it (it deliberately does NOT deduplicate), and the proposal code
-  //   needs the diagnostic phase 6 described. These assertions are what will
-  //   say so.
+  //   The round-8 conformance pass read the accepted decision again: a
+  //   structurally incoherent binding "bloque la proposition et explique la
+  //   réparation" — rows 1 and 2 of its "Mal configuré" table. Absorbing was a
+  //   policy Roland never accepted, and this block was the witness locking it
+  //   in. Roland delegated the call on 2026-09-18; the decision as written
+  //   stands. So: the forgiving reading still ROUTES the session (least
+  //   privilege is the reading to act on, proved below), but a proposal is
+  //   never minted over an entry the router had to repair to read, and the
+  //   refusal spells out the whole binding to re-pass.
+  //
+  //   The `normalizeBinding` assertions stay, reframed: they are no longer a
+  //   tripwire for "the state cannot reach the proposal code" — it can, through
+  //   `rawBindingEntry` — but the contract of the reading this session routes
+  //   by, which the diagnostic must NOT change.
   const shapes = [
     ['the primary also listed as a secondary', { vault: 'work', also: ['work', 'sci'] }],
     ['a duplicate inside also', { vault: 'work', also: ['sci', 'sci'] }],
     ['both at once, repeatedly', { vault: 'work', also: ['work', 'sci', 'sci', 'work'] }],
   ];
   for (const [name, raw] of shapes) {
-    test(`${name} is cleaned to a coherent binding`, () => {
+    test(`${name} still ROUTES as a coherent binding — the forgiving reading is unchanged`, () => {
       const n = normalizeBinding(raw);
       assert.deepEqual(n.also, ['sci'], `got ${JSON.stringify(n.also)}`);
       assert.ok(!n.also.includes(n.vault), 'the primary survived inside also');
@@ -280,38 +292,112 @@ describe('the duplicate incoherence is ABSORBED, not diagnosed — and this is t
     });
   }
 
-  test('a write tier naming something that is not a secondary is dropped, and a name in BOTH tiers is LOCKED', () => {
+  test('a write tier naming something that is not a secondary is dropped, and a name in BOTH tiers is LOCKED — for ROUTING', () => {
     // The hard tier wins a conflict, exactly as it does for the global lists —
-    // the safe direction, and the one the decision names.
+    // the safe direction to route by. Diagnosed below, all the same.
     assert.deepEqual(normalizeBinding({ vault: 'work', also: ['sci'], alsoLocked: ['ghost'] }).alsoLocked, []);
     const both = normalizeBinding({ vault: 'work', also: ['sci'], alsoLocked: ['sci'], alsoWritable: ['sci'] });
     assert.deepEqual(both.alsoLocked, ['sci']);
     assert.deepEqual(both.alsoWritable, []);
   });
 
-  test('so a proposal built from an incoherent config is still coherent, end to end', async () => {
-    // The consequence that matters: the prose can never read "the primary stays
-    // work" while `work` is also listed as a secondary of itself.
-    const vault = await startFakeVault();
-    const { dir, configPath } = writeConfig(vault.port, {
-      binding: {
-        vault: 'work',
-        also: ['work', 'other', 'other'],
-        locked: false,
-        confirmedAt: '2026-09-16',
-        confirmedVia: 'test',
-      },
+  // THE PREDICATE, kind by kind, on the raw entry. `{}` is deliberately in the
+  // "coherent" column: it carries nothing to lose and reads as "no binding".
+  const incoherent = [
+    ['primary listed as its own secondary', { vault: 'work', also: ['work', 'sci'] }, ['primary-in-also']],
+    ['a duplicate in also', { vault: 'work', also: ['sci', 'sci'] }, ['duplicate-secondary']],
+    ['both at once', { vault: 'work', also: ['work', 'sci', 'sci', 'work'] }, ['primary-in-also', 'duplicate-secondary']],
+    ['a vault in both tiers', { vault: 'work', also: ['sci'], alsoLocked: ['sci'], alsoWritable: ['sci'] }, ['tier-conflict']],
+    ['a tier naming a non-secondary', { vault: 'work', also: ['sci'], alsoLocked: ['ghost'] }, ['tier-without-role']],
+    ['an empty primary beside secondaries', { vault: '', also: ['x'] }, ['no-primary']],
+    ['no primary at all beside secondaries', { also: ['x'] }, ['no-primary']],
+    ['a null primary', { vault: null }, ['no-primary']],
+    ['also that is not a list', { vault: 'work', also: 'sci' }, ['malformed-field']],
+    ['locked that is not a boolean', { vault: 'work', also: [], locked: 'yes' }, ['malformed-field']],
+  ];
+  for (const [name, raw, kinds] of incoherent) {
+    test(`bindingIncoherences — ${name}`, () => {
+      assert.deepEqual(bindingIncoherences(raw).map((i) => i.kind), kinds, JSON.stringify(raw));
     });
+  }
+  test('bindingIncoherences — coherent shapes, and the shapes that mean "no binding"', () => {
+    for (const raw of [
+      { vault: 'work', also: [] },
+      { vault: 'work', also: ['sci', 'other'], alsoLocked: ['sci'], alsoWritable: ['other'], locked: true },
+      {},
+      null,
+      undefined,
+      'work',
+      ['work'],
+    ]) {
+      assert.deepEqual(bindingIncoherences(raw), [], JSON.stringify(raw));
+    }
+  });
+
+  test('describeBindingRepair — the call carries the lock, the tiers, and a lossless spelling of every name', () => {
+    // A persisted lock is part of "the whole binding to re-pass" — leaving it
+    // out of the suggested call would hand the reader a repair that silently
+    // unlocks the workspace. And a name with a quote in it must come back as
+    // a JSON literal, not as a broken call (the `identifierForCall` lesson).
+    const text = describeBindingRepair({
+      vault: 'work', also: ['te"am', 'te"am', 'other'], alsoLocked: ['other'], alsoWritable: ['te"am'], locked: true,
+    });
+    // Prose spells the name as prose; only the CALL carries the JSON literal.
+    assert.match(text, /te"am appears more than once/);
+    assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["te\\"am", "other"\], locked: true \}\)/);
+    assert.match(text, /locked: "other"; writable: "te\\"am"/);
+    assert.match(text, /set_secondary_vault_mode/);
+  });
+
+  // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
+  // spelled out with the whole binding to re-pass.
+  const onDisk = [
+    ['the primary as its own secondary, and a duplicate', {
+      vault: 'work', also: ['work', 'other', 'other'], locked: false, confirmedAt: '2026-09-16', confirmedVia: 'test',
+    }, [/its primary work is also listed as its own secondary/, /other appears more than once/,
+      /confirm_workspace_binding\(\{ vault: "work", also: \["other"\] \}\)/]],
+    // No `locked: true` in this fixture: a persisted lock closes an EARLIER
+    // door (the lock guard refuses every other vault before reachability is
+    // asked), so the diagnostic would never be reached through the dispatcher.
+    // That fixture was tried and hit the lock; the `locked` argument of the
+    // repair call is proved on the renderer, below.
+    ['a vault in both tiers', {
+      vault: 'work', also: ['other'], alsoLocked: ['other'], alsoWritable: ['other'], locked: false,
+    }, [/other is in BOTH write tiers/, /confirm_workspace_binding\(\{ vault: "work", also: \["other"\] \}\)/,
+      /read as locked\): locked: "other"/]],
+    ['secondaries but no primary — NOT an occasion to create one', {
+      also: ['other'], locked: false,
+    }, [/names no usable primary vault/, /vault: "<the primary vault you intend>", also: \["other"\]/]],
+  ];
+  for (const [name, binding, expectations] of onDisk) {
+    test(`e2e — ${name}: refused, no proposal, repair spelled out`, async () => {
+      const vault = await startFakeVault();
+      const { dir, configPath } = writeConfig(vault.port, { binding });
+      const rt = startRouter({ configPath, cwd: dir });
+      try {
+        await handshake(rt);
+        const res = await read(rt, 2, 'sci');
+        assert.equal(res.result?.isError, true, textOf(res));
+        const text = textOf(res);
+        assert.equal(res.result?._meta?.bindingProposal, undefined, `a proposal was minted over an incoherent binding:\n${text}`);
+        assert.ok(!/"proposalId"/.test(text), `a proposal identifier leaked into the text:\n${text}`);
+        for (const re of expectations) assert.match(text, re);
+      } finally { rt.kill(); }
+    });
+  }
+
+  test('e2e — an EMPTY entry is "no binding": the proposal is for a primary, not a wall', async () => {
+    // The positive control for the predicate's one deliberate exemption. A
+    // reader who confuses "malformed" with "empty" would turn a harmless `{}`
+    // into a repair demand for a binding that holds nothing.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, { binding: {} });
     const rt = startRouter({ configPath, cwd: dir });
     try {
       await handshake(rt);
       const res = await read(rt, 2, 'sci');
-      assert.equal(res.result?.isError, true);
-      const proposal = res.result?._meta?.bindingProposal;
-      assert.ok(proposal, textOf(res));
-      assert.equal(proposal.proposedRole, 'secondary');
-      assert.equal(proposal.currentPrimary, 'work');
-      assert.match(textOf(res), /the primary stays work/);
+      assert.equal(res.result?.isError, true, textOf(res));
+      assert.equal(res.result?._meta?.bindingProposal?.proposedRole, 'primary', textOf(res));
     } finally { rt.kill(); }
   });
 });
@@ -324,8 +410,15 @@ describe('proposedRoleFor — the rule, and the shapes a hand-edited config can 
 
   test('a binding whose primary is empty or missing is NOT a binding for this purpose', () => {
     // A config file is a file: it can be hand-edited into shapes the writer
-    // never produces. "Secondary of nothing" is not an answer, so these read as
-    // "no binding" and the proposal is for a primary.
+    // never produces. "Secondary of nothing" is not an answer, so the PURE
+    // function reads these as "no binding" and answers `primary`.
+    //
+    // ► WHAT THIS NO LONGER MEANS: that such an entry PRODUCES a primary
+    //   proposal. It used to (the third drift the round-8 conformance pass
+    //   named: point 2 says `primary` for a NULL binding, and a malformed one
+    //   is not null). `resolveVault` now diagnoses the raw entry BEFORE this
+    //   function is consulted — see the e2e block above — so these shapes
+    //   reach it only through `{}`, the one that really is "no binding".
     for (const shape of [{ vault: '', also: [] }, { also: ['x'] }, { vault: null }, {}]) {
       assert.equal(proposedRoleFor(shape), 'primary', JSON.stringify(shape));
     }
