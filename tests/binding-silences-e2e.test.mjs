@@ -320,18 +320,53 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       assert.deepEqual(bindingIncoherences(raw).map((i) => i.kind), kinds, JSON.stringify(raw));
     });
   }
-  test('bindingIncoherences — coherent shapes, and the shapes that mean "no binding"', () => {
+  test('bindingIncoherences — coherent shapes, and the TWO shapes that mean "no binding"', () => {
+    // ► `null`, `'work'` and `['work']` USED TO BE IN THIS LIST. Round 10 read
+    //   it back against the rule the block above states — "only an absent or
+    //   empty entry means no binding" — and found the test consecrating three
+    //   exemptions the rule does not make: a present entry of the wrong type
+    //   is something someone wrote, and the forgiving reading turns it into
+    //   "no binding" in silence. They moved to the malformed column.
     for (const raw of [
       { vault: 'work', also: [] },
       { vault: 'work', also: ['sci', 'other'], alsoLocked: ['sci'], alsoWritable: ['other'], locked: true },
       {},
-      null,
       undefined,
-      'work',
-      ['work'],
     ]) {
       assert.deepEqual(bindingIncoherences(raw), [], JSON.stringify(raw));
     }
+  });
+
+  test('bindingIncoherences — a PRESENT entry of the wrong type is malformed, not "no binding"', () => {
+    for (const raw of [null, 'work', ['work'], 42, true]) {
+      assert.deepEqual(bindingIncoherences(raw).map((i) => i.kind), ['malformed-entry'], JSON.stringify(raw));
+    }
+  });
+
+  test('bindingIncoherences — a duplicate INSIDE a tier, and the primary holding a tier through `also`', () => {
+    // Two shapes `normalizeBinding` repairs that the first predicate did not
+    // name — its claim was "everything the forgiving reading changes", and
+    // these two were the gap (Codex, round 10).
+    assert.deepEqual(
+      bindingIncoherences({ vault: 'work', also: ['ref'], alsoLocked: ['ref', 'ref'] }).map((i) => i.kind),
+      ['duplicate-tier-entry'],
+    );
+    assert.deepEqual(
+      bindingIncoherences({ vault: 'work', also: ['ref'], alsoWritable: ['ref', 'ref'] }).map((i) => i.kind),
+      ['duplicate-tier-entry'],
+    );
+    // A vault in both tiers once each is a CONFLICT, not a duplicate.
+    assert.deepEqual(
+      bindingIncoherences({ vault: 'work', also: ['ref'], alsoLocked: ['ref'], alsoWritable: ['ref'] }).map((i) => i.kind),
+      ['tier-conflict'],
+    );
+    // The primary listed in `also` AND in a tier: it is its own secondary, and
+    // the tier qualifies nothing — the role set is `also` minus the primary,
+    // as the forgiving reading has it.
+    assert.deepEqual(
+      bindingIncoherences({ vault: 'work', also: ['work', 'ref'], alsoLocked: ['work'] }).map((i) => i.kind),
+      ['primary-in-also', 'tier-without-role'],
+    );
   });
 
   test('describeBindingRepair — the call carries the lock, the tiers, and a lossless spelling of every name', () => {
@@ -344,9 +379,34 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     });
     // Prose spells the name as prose; only the CALL carries the JSON literal.
     assert.match(text, /te"am appears more than once/);
-    assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["te\\"am", "other"\], locked: true \}\)/);
+    assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["te\\"am", "other"\], locked: true, ifBindingDigest: "[0-9a-f]{64}" \}\)/);
     assert.match(text, /locked: "other"; writable: "te\\"am"/);
     assert.match(text, /set_secondary_vault_mode/);
+  });
+
+  test('describeBindingRepair — without a primary the call still carries the TIERS, and says the placeholder is not to be copied', () => {
+    // ► THE ROUND-10 BLOCKER. The first renderer said nothing about tiers when
+    //   the repaired reading was null, and the tool then carried none: a
+    //   strict secondary came out of its own repair as soft. Both Codex
+    //   passes found it. The tool now reads the tiers from the entry as
+    //   written (proved end to end in binding-accept-e2e), and the text says
+    //   what that keeps.
+    const text = describeBindingRepair({ also: ['strict', 'editable'], alsoLocked: ['strict'], alsoWritable: ['editable'] });
+    assert.match(text, /names no usable primary vault/);
+    assert.match(text, /vault: "<the primary vault you intend>", also: \["strict", "editable"\], ifBindingDigest: "[0-9a-f]{64}"/);
+    assert.match(text, /locked: "strict"; writable: "editable"/);
+    assert.match(text, /never copy the placeholder literally/);
+  });
+
+  test('describeBindingRepair — a primary no registry knows gets the placeholder too, in the same breath as the other faults', () => {
+    const text = describeBindingRepair(
+      { vault: 'ghost', also: ['ref', 'ref'] },
+      [...bindingIncoherences({ vault: 'ghost', also: ['ref', 'ref'] }), { kind: 'primary-not-registered', names: ['ghost'] }],
+    );
+    assert.match(text, /ref appears more than once/);
+    assert.match(text, /its primary ghost is not a vault this config file or this session registers/);
+    assert.match(text, /vault: "<the primary vault you intend>", also: \["ref"\]/);
+    assert.ok(!/vault: "ghost"/.test(text), 'the repair call named the unregistered primary');
   });
 
   // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
@@ -355,7 +415,10 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     ['the primary as its own secondary, and a duplicate', {
       vault: 'work', also: ['work', 'other', 'other'], locked: false, confirmedAt: '2026-09-16', confirmedVia: 'test',
     }, [/its primary work is also listed as its own secondary/, /other appears more than once/,
-      /confirm_workspace_binding\(\{ vault: "work", also: \["other"\] \}\)/]],
+      /confirm_workspace_binding\(\{ vault: "work", also: \["other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/,
+      // The preamble names its source: the binding THIS SESSION routes by —
+      // not "this workspace's binding", which the file's entry may contradict.
+      /the binding this session routes by does not name it/]],
     // No `locked: true` in this fixture: a persisted lock closes an EARLIER
     // door (the lock guard refuses every other vault before reachability is
     // asked), so the diagnostic would never be reached through the dispatcher.
@@ -363,11 +426,24 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // repair call is proved on the renderer, below.
     ['a vault in both tiers', {
       vault: 'work', also: ['other'], alsoLocked: ['other'], alsoWritable: ['other'], locked: false,
-    }, [/other is in BOTH write tiers/, /confirm_workspace_binding\(\{ vault: "work", also: \["other"\] \}\)/,
+    }, [/other is in BOTH write tiers/, /confirm_workspace_binding\(\{ vault: "work", also: \["other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/,
       /read as locked\): locked: "other"/]],
     ['secondaries but no primary — NOT an occasion to create one', {
       also: ['other'], locked: false,
     }, [/names no usable primary vault/, /vault: "<the primary vault you intend>", also: \["other"\]/]],
+    // TWO FAULTS AT ONCE: incoherent AND a primary nobody registers. The
+    // first version stopped at the duplicate and spelled a call naming the
+    // unknown primary — a call the tool refuses one step later. Both are
+    // named now, and the call carries the placeholder. (Codex, round 10.)
+    ['a duplicate AND a primary no registry knows', {
+      vault: 'ghost', also: ['other', 'other'],
+    }, [/other appears more than once/, /its primary ghost is not a vault this config file or this session registers/,
+      /vault: "<the primary vault you intend>", also: \["other"\]/]],
+    // A PRESENT entry of the wrong type: something was written, and the
+    // forgiving reading would have turned it into "no binding" and proposed
+    // a primary over it.
+    ['a string where the entry should be', 'work',
+      [/the entry is not an object at all/, /vault: "<the primary vault you intend>", also: \[\]/]],
   ];
   for (const [name, binding, expectations] of onDisk) {
     test(`e2e — ${name}: refused, no proposal, repair spelled out`, async () => {

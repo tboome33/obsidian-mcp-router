@@ -63,6 +63,7 @@ import {
   rawBindingEntry,
   bindingIncoherences,
   describeBindingRepair,
+  normalizeBinding,
 } from '../helpers/workspace-bindings.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
@@ -83,7 +84,7 @@ import {
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
-import { resolveProposalId, canOpenLocally, sameSecondarySet } from '../helpers/binding-proposal.mjs';
+import { resolveProposalId, canOpenLocally, sameSecondarySet, bindingDigest } from '../helpers/binding-proposal.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -190,6 +191,19 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // the caller composing a binding again, which is the whole thing the proposal
   // exists to stop.
   const verbs = ['refuse', 'retract', 'accept'].filter((k) => args[k] !== undefined);
+  // `ifBindingDigest` is a PRECONDITION on the `vault` path only — the repair
+  // call a diagnostic spells out carries it, so that call cannot land on a
+  // binding a sibling session has since replaced (round 10). The verbs have
+  // their own precondition (the identifier) or none to have (a refusal).
+  if (args.ifBindingDigest !== undefined && (typeof args.ifBindingDigest !== 'string' || args.ifBindingDigest === '')) {
+    throw new Error('confirm_workspace_binding: `ifBindingDigest` must be the digest string a diagnostic handed you.');
+  }
+  if (args.ifBindingDigest !== undefined && (verbs.length || args.clear === true || args.vault === undefined)) {
+    throw new Error(
+      'confirm_workspace_binding: `ifBindingDigest` goes with `vault` (a re-confirmation that repairs a binding) '
+      + 'and with nothing else — not with accept, refuse, retract or clear.',
+    );
+  }
   if (verbs.length) {
     const others = ['vault', 'also', 'locked', 'clear'].filter((k) => args[k] !== undefined);
     if (verbs.length > 1 || others.length) {
@@ -432,7 +446,8 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     const incoherences = bindingIncoherences(rawEntry);
     if (incoherences.length) {
       throw new Error(
-        `confirm_workspace_binding: the acceptance was NOT applied and NO BINDING WAS WRITTEN. `
+        'confirm_workspace_binding: the acceptance was NOT applied and NO BINDING WAS WRITTEN (this '
+        + 'session\'s refusals were refreshed from the file; its binding and routing are unchanged). '
         + describeBindingRepair(rawEntry, incoherences),
       );
     }
@@ -646,6 +661,25 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   const next = updateConfigBindings(configPath, (cfg) => {
     assertBindable(cfg);
     const previous = readBinding(cfg, cwd);
+    const rawPrevious = rawBindingEntry(cfg, cwd);
+    // THE REPAIR CALL HAS A PRECONDITION, LIKE THE YES. A diagnostic spells
+    // out `{ vault, also }` to re-pass, and a plain `{ vault, also }` replaces
+    // whatever the file holds at write time — so between the diagnostic and
+    // the call a sibling session could have bound this workspace elsewhere,
+    // and the repair would put an old photograph over its work (Codex, round
+    // 10 — a blocker the round-10 repair itself created by recommending the
+    // call). The digest is taken on the entry AS WRITTEN, so it moves for a
+    // hand-edited duplicate too, not only for what the repaired reading sees.
+    if (args.ifBindingDigest !== undefined && bindingDigest(rawPrevious ?? null) !== args.ifBindingDigest) {
+      adoptRefusals(readRefusals(cfg, cwd));
+      throw new Error(
+        'confirm_workspace_binding: this workspace\'s binding is no longer the one that diagnostic '
+        + 'described — another session changed it since — so the repair was NOT applied and NO BINDING '
+        + 'WAS WRITTEN (this session\'s refusals were refreshed from the file; its binding and routing '
+        + 'are unchanged). Re-run the call that was refused and follow WHAT COMES BACK: it may diagnose '
+        + 'again with a fresh digest, propose, succeed, or refuse for another reason.',
+      );
+    }
     // A refusal of any vault being bound is dropped by `withBinding` itself;
     // read here, inside the lock, only so the answer can SAY so.
     const refusedBefore = readRefusals(cfg, cwd);
@@ -712,13 +746,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         || onDisk.primary !== primary
         || !sameSecondarySet(onDisk.also, also)) {
         refreshLive();
+        // WHAT THE REFRESH DID IS WHAT THE SENTENCE SAYS. `refreshLive` adopts
+        // the refusals and nothing else since round 7; the sentence went on
+        // claiming the session had been "refreshed to the binding" — the
+        // adoption this path deliberately does not do. (Codex, round 10.)
         throw new Error(
           'confirm_workspace_binding: this workspace\'s binding changed while the acceptance was '
-          + 'being applied, so it was NOT applied and NO BINDING WAS WRITTEN. This session has been '
-          + 'refreshed to the binding as it now stands: re-run the call that was refused and relay '
-          + 'what comes back. It may propose again, it may now succeed, or it may refuse without '
-          + 'proposing — the answer depends on what the other session did, so read it rather than '
-          + 'predicting it.',
+          + 'being applied, so it was NOT applied and NO BINDING WAS WRITTEN (this session\'s refusals '
+          + 'were refreshed from the file; its binding and routing are unchanged). Re-run the call that '
+          + 'was refused and relay what comes back. It may propose again, it may now succeed, or it '
+          + 'may refuse without proposing — the answer depends on what the other session did, so read '
+          + 'it rather than predicting it.',
         );
       }
     }
@@ -730,14 +768,28 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // version would have reset every mode `set_secondary_vault_mode` had
     // recorded. Carried from the binding as it is INSIDE the lock, filtered
     // to the vaults that are still secondaries after this call.
-    const keep = (list) => (previous && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
+    //
+    // AND THEY SURVIVE THE REPAIR OF AN ENTRY WITHOUT A PRIMARY. The repaired
+    // reading of such an entry is null, so the first version read no tiers at
+    // all and a strict secondary came out of its own repair as soft — the
+    // restriction silently lifted by the call the diagnostic told the user to
+    // make (Codex, round 10, both passes). The tiers are read from the entry
+    // as written, given the primary this call names, through the same
+    // forgiving reading (a vault in both tiers is locked), then filtered to
+    // the secondaries that stay — exactly what `previous` supplies when there
+    // is one.
+    const tierSource = previous
+      ?? (rawPrevious && typeof rawPrevious === 'object' && !Array.isArray(rawPrevious)
+        ? normalizeBinding({ ...rawPrevious, vault: primary })
+        : null);
+    const keep = (list) => (tierSource && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
     return withBinding(cfg, cwd, {
       vault: primary,
       also,
       locked,
       confirmedVia: CONFIRMED_VIA,
-      alsoLocked: keep(previous?.alsoLocked),
-      alsoWritable: keep(previous?.alsoWritable),
+      alsoLocked: keep(tierSource?.alsoLocked),
+      alsoWritable: keep(tierSource?.alsoWritable),
     });
   }, io);
 

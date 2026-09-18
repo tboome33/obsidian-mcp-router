@@ -267,12 +267,147 @@ describe('E2E: accepting a binding proposal', () => {
       const text = textOf(yes);
       assert.match(text, /NO BINDING WAS WRITTEN/);
       assert.match(text, /locked-ref appears more than once in `also`/);
-      assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["writable-ref", "locked-ref"\] \}\)/);
+      assert.match(text, /confirm_workspace_binding\(\{ vault: "work", also: \["writable-ref", "locked-ref"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/);
       assert.match(text, /locked: "locked-ref"; writable: "writable-ref"/);
+      // What the session did before refusing is SAID, as the neighbouring
+      // exits say it (Codex, round 10).
+      assert.match(text, /refusals were refreshed from the file; its binding and routing are unchanged/);
 
       const after = bindingOnDisk(configPath, key);
       assert.deepEqual(after.also, ['writable-ref', 'locked-ref', 'locked-ref'], 'the file was rewritten');
       assert.ok(!after.also.includes('sci'), 'the yes wrote anyway');
+    } finally { rt.kill(); }
+  });
+
+  test('THE REPAIR IS FOLLOWED, not just read: an entry with NO primary keeps its write tiers through the call the diagnostic spells out', async () => {
+    // ► THE ROUND-10 BLOCKER, found by both passes. The diagnostic told the
+    //   user to re-confirm `{ vault, also }`; the tool then read the tiers
+    //   from the REPAIRED reading of the entry, which is null when the entry
+    //   has no primary — so `keep()` kept nothing and a strict secondary came
+    //   out of its own repair as soft. A regex on the diagnostic's text could
+    //   never see that; only executing the call can.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { also: ['writable-ref', 'locked-ref'], alsoLocked: ['locked-ref'], alsoWritable: ['writable-ref'], locked: false },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      assert.equal(res.result?.isError, true, textOf(res));
+      const text = textOf(res);
+      assert.equal(res.result?._meta?.bindingProposal, undefined, `a primary was proposed over a primary-less entry:\n${text}`);
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(text)?.[1];
+      assert.ok(digest, `no precondition in the diagnostic:\n${text}`);
+      assert.match(text, /locked: "locked-ref"; writable: "writable-ref"/);
+
+      // The user names the primary; the model copies the rest of the call.
+      const repaired = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: ['writable-ref', 'locked-ref'], ifBindingDigest: digest, open: false },
+      });
+      assert.ok(repaired.result, `no result at all:\n${JSON.stringify(repaired)}`);
+      assert.notEqual(repaired.result?.isError, true, textOf(repaired));
+
+      const after = bindingOnDisk(configPath, key);
+      assert.equal(after.vault, 'work');
+      assert.deepEqual(after.also, ['writable-ref', 'locked-ref']);
+      assert.deepEqual(after.alsoLocked, ['locked-ref'], 'the strict tier was lost in the repair');
+      assert.deepEqual(after.alsoWritable, ['writable-ref'], 'the writable tier was lost in the repair');
+
+      // And THIS session applies it: the write is adopted in full.
+      const lv = await rt.call(4, 'tools/call', { name: 'list_vaults', arguments: {} });
+      const wb = JSON.parse(textOf(lv)).workspaceBinding;
+      assert.deepEqual(wb.alsoLocked, ['locked-ref']);
+      assert.deepEqual(wb.alsoWritable, ['writable-ref']);
+    } finally { rt.kill(); }
+  });
+
+  test('THE REPAIR HAS A PRECONDITION: a binding another session replaced since the diagnostic refuses the spelled-out call', async () => {
+    // ► THE OTHER ROUND-10 BLOCKER. `{ vault, also }` replaces whatever the
+    //   file holds at write time; recommending it in a diagnostic recommended
+    //   putting an old photograph over a sibling's work. The call now carries
+    //   the digest of the entry AS WRITTEN, and the tool refuses to apply it
+    //   over anything else.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { vault: 'work', also: ['locked-ref', 'locked-ref'], locked: false },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(textOf(res))?.[1];
+      assert.ok(digest, textOf(res));
+
+      // A sibling binds this workspace elsewhere.
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.workspaceBindings[key] = { vault: 'other', also: ['sci'], locked: false, confirmedVia: 'sibling' };
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const stale = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: ['locked-ref'], ifBindingDigest: digest, open: false },
+      });
+      assert.equal(stale.result?.isError, true, `the stale repair was applied over the sibling's binding:\n${textOf(stale)}`);
+      assert.match(textOf(stale), /no longer the one that diagnostic described/);
+      assert.match(textOf(stale), /NO BINDING WAS WRITTEN/);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
+      assert.equal(bindingOnDisk(configPath, key).vault, 'other');
+    } finally { rt.kill(); }
+  });
+
+  test('the placeholder copied literally is refused, and `ifBindingDigest` cannot ride along with `accept`', async () => {
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { binding: { also: ['locked-ref'], alsoLocked: ['locked-ref'] } });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(textOf(res))?.[1];
+      assert.ok(digest, textOf(res));
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const literal = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: '<the primary vault you intend>', also: ['locked-ref'], ifBindingDigest: digest, open: false },
+      });
+      assert.equal(literal.result?.isError, true, textOf(literal));
+      assert.match(textOf(literal), /not a registered vault/);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'a literal placeholder was written');
+
+      const mixed = await rt.call(4, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: 'bp1_anything', ifBindingDigest: digest, open: false },
+      });
+      assert.equal(mixed.result?.isError, true, textOf(mixed));
+      assert.match(textOf(mixed), /goes with `vault`/);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore));
+      assert.deepEqual(bindingOnDisk(configPath, key).alsoLocked, ['locked-ref']);
+    } finally { rt.kill(); }
+  });
+
+  test('a config that cannot be READ at the yes refuses the yes, and does not replace the file', async () => {
+    // Round 10, angle F: "the acceptance decides" was an intention; this is
+    // the measurement. Invalid JSON at the preflight is an explicit refusal
+    // and the bytes on disk are left exactly as they were.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const proposal = await proposalFor(rt, 'sci');
+      fs.writeFileSync(configPath, '{ this is not json', 'utf8');
+      const bytesBefore = fs.readFileSync(configPath);
+      const yes = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.equal(yes.result?.isError, true, textOf(yes));
+      assert.match(textOf(yes), /cannot read the router config/);
+      assert.match(textOf(yes), /Nothing was changed/);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'an unreadable config was replaced');
     } finally { rt.kill(); }
   });
 

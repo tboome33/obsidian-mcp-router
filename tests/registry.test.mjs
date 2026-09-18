@@ -851,6 +851,29 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(await fs.readFile(envPath, 'utf8').catch(() => null), envBefore, 'no OBSIDIAN_ROUTER_LOCKED hint for a lock that was refused');
   });
 
+  test('lockVault persist:true REFUSES to rebuild a binding over an entry the router cannot read as written', async () => {
+    // Round 10, angle B. With the repaired reading null (the entry has no
+    // primary) the persist used to write `{ vault, also: [] }` over an entry
+    // that still carried a secondary and its strict tier — a lock erasing
+    // declarations it was never asked about. Same rule as the proposal and
+    // the acceptance: repair first, and the refusal spells out what to re-pass.
+    const cfgPath = path.join(tmpDir, 'persist-over-incoherent.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      workspaceBindings: { [key]: { also: ['beta'], alsoLocked: ['beta'] } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const reg = { ...makeRegistry(), configPath: cfgPath, workspaceBinding: null, alsoWritable: [], alsoLocked: [] };
+    await assert.rejects(
+      lockVault(reg, { vault: 'alpha', persist: true }),
+      /NO BINDING WAS WRITTEN[\s\S]*names no usable primary vault[\s\S]*locked: "beta"/,
+    );
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the persist rebuilt the binding over the entry');
+    assert.equal(reg.lockedVault, null, 'a refused persist left the in-memory lock in place');
+  });
+
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {
     const reg = makeRegistry();
     const result = await lockVault(reg, { vault: 'alpha' });

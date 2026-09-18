@@ -61,6 +61,7 @@ import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
 import { safeForMessage, identifierForCall } from './sanitize.mjs';
+import { bindingDigest } from './binding-proposal.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -242,9 +243,12 @@ export function readBinding(config, cwd) {
  */
 export function rawBindingEntry(config, cwd) {
   const key = canonicalWorkspaceKey(cwd);
-  if (!key) return null;
+  // ABSENT IS `undefined`, so that a PRESENT `null` stays visible: an entry
+  // hand-edited to `null` is an entry, and `bindingIncoherences` must be able
+  // to tell it from no entry at all. (Codex, round 10.)
+  if (!key) return undefined;
   const all = config?.[WORKSPACE_BINDINGS_KEY];
-  if (!all || typeof all !== 'object' || Array.isArray(all)) return null;
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return undefined;
 
   // The stored keys were canonicalised when written, but a hand-edited config
   // may hold a raw path. Canonicalise BOTH sides before comparing rather than
@@ -269,13 +273,22 @@ export function rawBindingEntry(config, cwd) {
   const colliding = Object.keys(all)
     .filter((storedKey) => canonicalWorkspaceKey(storedKey) === key)
     .sort();
-  return colliding.length ? all[colliding[0]] : null;
+  return colliding.length ? all[colliding[0]] : undefined;
 }
 
 /**
  * The kinds of structural incoherence a stored binding entry can carry. One
  * enumeration, so the predicate, the prose and the tests name the same things.
  */
+/**
+ * The `code` carried by a refusal that says "repair the binding first". A
+ * best-effort writer that swallows every error into "the config could not be
+ * written" (the persisted lock) must let THIS one through, exactly as it lets
+ * the promotion refusal through: a refusal on purpose is not a write that
+ * failed, and the sentence it would replace sends the user to fix permissions.
+ */
+export const BINDING_REPAIR_REQUIRED_CODE = 'binding-repair-required';
+
 export const BINDING_INCOHERENCE = Object.freeze({
   /** An entry exists, but names no usable primary (missing, empty, not a string). */
   NO_PRIMARY: 'no-primary',
@@ -289,6 +302,16 @@ export const BINDING_INCOHERENCE = Object.freeze({
   TIER_WITHOUT_ROLE: 'tier-without-role',
   /** A field has the wrong shape (`also` not a list, a tier not a list, `locked` not a boolean). */
   MALFORMED_FIELD: 'malformed-field',
+  /** A vault appears twice inside one write tier. */
+  DUPLICATE_TIER_ENTRY: 'duplicate-tier-entry',
+  /** The entry itself is not an object (a present `null`, a string, a list, a number). */
+  MALFORMED_ENTRY: 'malformed-entry',
+  /**
+   * The primary names a vault neither the file nor the session registers.
+   * NOT produced by `bindingIncoherences`, which knows no registry: injected by
+   * the caller that does, so the renderer names it in the same breath.
+   */
+  PRIMARY_NOT_REGISTERED: 'primary-not-registered',
 });
 
 /**
@@ -304,18 +327,28 @@ export const BINDING_INCOHERENCE = Object.freeze({
  * written. This predicate is the other half of that boundary: it says, for
  * the same input, what the forgiving reading changed.
  *
- * An empty object is NOT incoherent: it carries nothing to lose, and reads as
- * "no binding" everywhere else. The line is "the entry says something, and
- * what it says cannot be taken as written".
+ * An ABSENT entry (`undefined`) and an empty object are NOT incoherent: they
+ * carry nothing to lose, and read as "no binding" everywhere else. A PRESENT
+ * entry of the wrong type — `null`, a string, a list — is: someone wrote it,
+ * and the forgiving reading turns it into "no binding" in silence, which is
+ * exactly the substitution this predicate exists to name (Codex, round 10:
+ * the first version exempted those, and a test consecrated the exemption).
+ * The line is "the entry says something, and what it says cannot be taken as
+ * written".
  *
  * Every kind is reported, not just the first: a reader repairing the file
- * should not have to come back three times.
+ * should not have to come back three times. Metadata (`confirmedAt`,
+ * `confirmedVia`) and unknown keys are outside this predicate's claim: the
+ * forgiving reading drops them without changing what the binding grants.
  *
  * @param {unknown} raw the stored entry, from `rawBindingEntry`
  * @returns {Array<{ kind: string, names: string[] }>} empty when coherent
  */
 export function bindingIncoherences(raw) {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  if (raw === undefined) return [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return [{ kind: BINDING_INCOHERENCE.MALFORMED_ENTRY, names: [] }];
+  }
   if (Object.keys(raw).length === 0) return [];
   const out = [];
   const names = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim() !== '') : []);
@@ -344,9 +377,15 @@ export function bindingIncoherences(raw) {
 
   const locked = names(raw.alsoLocked);
   const writable = names(raw.alsoWritable);
+  const dupTier = unique([...locked, ...writable].filter((n, i, all) => all.indexOf(n) !== i
+    && (locked.indexOf(n) !== locked.lastIndexOf(n) || writable.indexOf(n) !== writable.lastIndexOf(n))));
+  if (dupTier.length) out.push({ kind: BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY, names: dupTier });
   const both = unique(locked.filter((n) => writable.includes(n)));
   if (both.length) out.push({ kind: BINDING_INCOHERENCE.TIER_CONFLICT, names: both });
-  const alsoSet = new Set(also);
+  // A role is "a secondary of this binding" — so the primary, even when it is
+  // listed in `also` by mistake, has no tier to hold: the same set the
+  // forgiving reading qualifies tiers against.
+  const alsoSet = new Set(hasPrimary ? also.filter((n) => n !== vault) : also);
   const roleless = unique([...locked, ...writable].filter((n) => !alsoSet.has(n)));
   if (roleless.length) out.push({ kind: BINDING_INCOHERENCE.TIER_WITHOUT_ROLE, names: roleless });
 
@@ -360,17 +399,27 @@ export function bindingIncoherences(raw) {
  * so the two doors describe the same incoherence in the same words.
  *
  * The suggested call is built from the FORGIVING reading, because that is the
- * one unambiguous repair for every kind but one: a missing primary has no
- * repair the router can guess, so that call carries a placeholder the reader
- * must fill in. Tiers are not part of `confirm_workspace_binding`'s arguments;
- * the reader is told what the router would keep and how to change it.
+ * one unambiguous repair for every kind but two: a missing primary, and a
+ * primary no registry knows, have no repair the router can guess, so that call
+ * carries a placeholder the reader must replace. Tiers are not part of
+ * `confirm_workspace_binding`'s arguments; the call carries them over from
+ * the entry as written (given the primary it names), and the reader is told
+ * what that keeps and how to change it.
+ *
+ * THE CALL CARRIES A PRECONDITION. A plain `{ vault, also }` replaces whatever
+ * the file holds at write time, and between this diagnostic and the call a
+ * sibling session may have bound the workspace elsewhere — so the call
+ * carries `ifBindingDigest`, the digest of the entry AS WRITTEN, and the tool
+ * refuses to apply it over anything else. (Codex, round 10: the blocker the
+ * round-10 repair created by recommending an unconditional call.)
  *
  * Names are spelled through `identifierForCall` inside the call (lossless,
  * never capped: a command that does not carry the whole identifier is not a
  * command) and through `safeForMessage` in the prose.
  *
  * @param {unknown} raw the stored entry
- * @param {Array<{ kind: string, names: string[] }>} [incoherences] from `bindingIncoherences(raw)`
+ * @param {Array<{ kind: string, names: string[] }>} [incoherences] from `bindingIncoherences(raw)`,
+ *   possibly with a `PRIMARY_NOT_REGISTERED` the caller injected
  * @returns {string} one paragraph: what is wrong, then the call to re-pass
  */
 export function describeBindingRepair(raw, incoherences = bindingIncoherences(raw)) {
@@ -379,6 +428,12 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
     switch (kind) {
       case BINDING_INCOHERENCE.NO_PRIMARY:
         return 'it names no usable primary vault';
+      case BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED:
+        return `its primary ${listed(n)} is not a vault this config file or this session registers`;
+      case BINDING_INCOHERENCE.MALFORMED_ENTRY:
+        return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
+      case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
+        return `${listed(n)} appears more than once inside a write tier`;
       case BINDING_INCOHERENCE.PRIMARY_IN_ALSO:
         return `its primary ${listed(n)} is also listed as its own secondary`;
       case BINDING_INCOHERENCE.DUPLICATE_SECONDARY:
@@ -394,29 +449,42 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
     }
   });
 
-  const repaired = normalizeBinding(raw);
-  const primary = repaired ? identifierForCall(repaired.vault) : '"<the primary vault you intend>"';
-  // Without a primary the forgiving reading is null, so the secondaries are
-  // taken from the entry itself — deduplicated, since that is the repair.
-  const also = repaired
-    ? repaired.also
-    : [...new Set((Array.isArray(raw.also) ? raw.also : []).filter((s) => typeof s === 'string' && s.trim() !== ''))];
-  const lockedArg = repaired?.locked || raw.locked === true ? ', locked: true' : '';
-  const call = `confirm_workspace_binding({ vault: ${primary}, also: [${also.map(identifierForCall).join(', ')}]${lockedArg} })`;
+  const isObject = raw && typeof raw === 'object' && !Array.isArray(raw);
+  const repaired = isObject ? normalizeBinding(raw) : null;
+  const primaryUnusable = !repaired
+    || incoherences.some((i) => i.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED);
+  const PLACEHOLDER = '<the primary vault you intend>';
+  const primary = primaryUnusable ? identifierForCall(PLACEHOLDER) : identifierForCall(repaired.vault);
+  // The tiers the tool will carry over: the same forgiving reading of the
+  // entry as written, given SOME primary — which is how the tool itself reads
+  // them when the entry has none (`tierSource` in confirm_workspace_binding).
+  const forTiers = repaired || (isObject ? normalizeBinding({ ...raw, vault: PLACEHOLDER }) : null);
+  const also = forTiers ? forTiers.also : [];
+  const lockedArg = isObject && raw.locked === true ? ', locked: true' : '';
+  const digest = bindingDigest(isObject ? raw : null);
+  const call = `confirm_workspace_binding({ vault: ${primary}, also: [${also.map(identifierForCall).join(', ')}]`
+    + `${lockedArg}, ifBindingDigest: ${identifierForCall(digest)} })`;
 
-  const tiers = repaired
+  const tiers = forTiers
     ? [
-      repaired.alsoLocked.length ? `locked: ${repaired.alsoLocked.map(identifierForCall).join(', ')}` : '',
-      repaired.alsoWritable.length ? `writable: ${repaired.alsoWritable.map(identifierForCall).join(', ')}` : '',
+      forTiers.alsoLocked.length ? `locked: ${forTiers.alsoLocked.map(identifierForCall).join(', ')}` : '',
+      forTiers.alsoWritable.length ? `writable: ${forTiers.alsoWritable.map(identifierForCall).join(', ')}` : '',
     ].filter(Boolean).join('; ')
     : '';
   const tierNote = tiers
-    ? ` The write tiers it would carry over, as this router reads them today (a vault in both tiers is read as locked): ${tiers} — change any of them afterwards with set_secondary_vault_mode.`
+    ? ` The write tiers that call carries over, as this router reads them today (a vault in both tiers is read as locked): ${tiers} — change any of them afterwards with set_secondary_vault_mode.`
+    : '';
+  const placeholderNote = primaryUnusable
+    ? ` Replace ${identifierForCall(PLACEHOLDER)} with the name of a REGISTERED vault the user chooses — ask them; `
+      + 'never copy the placeholder literally, the tool refuses a name it does not know.'
     : '';
 
   return `This workspace's binding, as the config file holds it, cannot be taken as written: ${what.join('; ')}. `
     + 'It needs repairing before anything is proposed or added on top of it — a role is never proposed over a '
-    + `binding the router cannot read as written. Re-confirm it, naming the whole binding to keep: ${call}.${tierNote}`;
+    + `binding the router cannot read as written. Re-confirm it, naming the whole binding to keep: ${call}.`
+    + `${placeholderNote}${tierNote} \`ifBindingDigest\` is the precondition: the repair is applied only if the `
+    + 'file still holds this exact entry, so a change by another session refuses it instead of being overwritten. '
+    + '(list_vaults shows the repaired reading this session routes by, not the entry as the file holds it.)';
 }
 
 /**

@@ -123,6 +123,26 @@ primary and drops every secondary not passed again, which is exactly the call th
   locked, the safe direction); it just no longer decides what may be proposed. A missing primary is
   one of those faults, not "no binding": only an absent or empty entry means no binding and proposes
   a primary. A hand-edited entry that carries secondaries and no primary is a state to read first.
+- **The repair call the diagnostic spells out is safe to follow — it was not.** Two things the
+  tenth review round found in the diagnostic itself. First, an entry with no primary has no repaired
+  reading, so the tool carried no write tiers through the re-confirmation it had just recommended: a
+  strict secondary came out of its own repair as soft, and the text said nothing. The tiers are now
+  read from the entry as written, given the primary the call names, and the text says what that keeps.
+  Second, `{ vault, also }` replaces whatever the file holds at write time, so a diagnostic
+  recommending it recommended putting an old photograph over a sibling session's work. The call now
+  carries **`ifBindingDigest`**, the digest of the entry as written, and `confirm_workspace_binding`
+  refuses to apply it over anything else — the same shape as the proposal identifier, for the repair.
+  Only with `vault`; never with `accept`, `refuse`, `retract` or `clear`. Also: a primary no registry
+  knows is named in the same breath as the other faults and the call carries a placeholder (the first
+  version stopped at the duplicate and spelled a call naming the unknown primary, which the tool
+  refuses one step later); the placeholder says not to copy it literally; the broken-primary refusal
+  spells out the whole binding to re-pass, as the decision requires, instead of "naming a registered
+  primary and the secondaries you want to keep"; a present entry of the wrong type (a `null`, a
+  string, a list) is a fault, not "no binding"; a duplicate inside a write tier is one too; the
+  preamble of the incoherent refusal names what it looked at (the binding this session routes by);
+  every refusal that refreshed the session's refusals says so; and `lock_vault --persist` no longer
+  rebuilds `{ vault, also: [] }` over an entry it could not read as written — it refuses with the same
+  repair spelled out.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

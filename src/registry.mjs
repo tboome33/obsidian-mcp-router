@@ -83,6 +83,7 @@ import {
   rawBindingEntry,
   bindingIncoherences,
   describeBindingRepair,
+  BINDING_INCOHERENCE,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -910,8 +911,32 @@ export async function loadRegistry({ configPath } = {}) {
         // primary over it (decision point 2 says `primary` for a NULL binding;
         // the drift the conformance pass named as its third).
         const incoherences = bindingIncoherences(live.rawEntry);
+        // A PRIMARY NO REGISTRY KNOWS IS NAMED IN THE SAME BREATH. An entry can
+        // be both incoherent and broken, and the first version stopped at the
+        // duplicate and spelled a repair call naming the unknown primary — a
+        // call the tool refuses one step later. The predicate knows no
+        // registry, so the fact is injected here, where both are known, and
+        // the renderer puts a placeholder in the call. (Codex, round 10.)
+        const rawPrimary = live.rawEntry && typeof live.rawEntry === 'object' && !Array.isArray(live.rawEntry)
+          ? live.rawEntry.vault : undefined;
+        const primaryUnregistered = typeof rawPrimary === 'string' && rawPrimary.trim() !== ''
+          && !bindableVaultNames(live.config).has(rawPrimary)
+          && !this.vaults.some((x) => x.name === rawPrimary);
         if (incoherences.length) {
-          throw declarationRequiredError(`${preamble} ${describeBindingRepair(live.rawEntry, incoherences)}`, null);
+          if (primaryUnregistered) {
+            incoherences.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [rawPrimary] });
+          }
+          // ITS OWN PREAMBLE, naming the source. The shared one says "this
+          // workspace's binding does not name it", which the repaired reading
+          // of THIS SESSION established — while the file's entry, incoherent,
+          // may well name it. Two true sentences read as one false one unless
+          // each says what it looked at. (Codex, round 10.)
+          throw declarationRequiredError(
+            `Vault "${v.name}" is registered but not reachable from this workspace (vaultReach: "declared" `
+            + 'is active, and the binding this session routes by does not name it). '
+            + describeBindingRepair(live.rawEntry, incoherences),
+            null,
+          );
         }
         const primary = proposalBinding?.vault;
         const brokenPrimary = typeof primary === 'string' && primary !== ''
@@ -926,13 +951,26 @@ export async function loadRegistry({ configPath } = {}) {
           // rewrite a configuration that was right. The file knows which case
           // it is, and `bindableVaultNames` already asks it. (Codex, round 9.)
           const fileHasIt = bindableVaultNames(live.config).has(primary);
+          // THE GENUINELY BROKEN CASE SPELLS THE WHOLE BINDING TO RE-PASS —
+          // the decision's own words for this row: "comment le remplacer sans
+          // perdre les secondaires … à condition que le message épelle la
+          // liaison entière à repasser". The first version said only "naming a
+          // registered primary and the secondaries you want to keep", which
+          // names nothing (Codex, round 10 — a non-conformity, not a wording).
+          // Same renderer as the incoherent branch, with the fact injected;
+          // the old sentence stays only for the fallback where the file could
+          // not be read and there is no entry to spell.
           throw declarationRequiredError(
             fileHasIt
               ? `${preamble} This workspace's binding names "${primary}" as its primary, and the config `
                 + 'file does have it — this session loaded its vault list before that vault existed, and '
                 + 'has not picked it up: hot-reload is off here, or has not fired yet. Nothing needs '
                 + 'repairing. Retry in a moment, or restart the session.'
-              : `${preamble} This workspace's binding names "${primary}" as its primary, and neither this `
+              : live.rawEntry !== undefined && live.rawEntry !== null
+                ? `${preamble} ${describeBindingRepair(live.rawEntry, [
+                  { kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] },
+                ])}`
+                : `${preamble} This workspace's binding names "${primary}" as its primary, and neither this `
                 + 'session nor the config file has such a vault, so the binding needs repairing before '
                 + 'anything can be added to it. Re-confirm it with confirm_workspace_binding, naming a '
                 + 'registered primary and the secondaries you want to keep.',

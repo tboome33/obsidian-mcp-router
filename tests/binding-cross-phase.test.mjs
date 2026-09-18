@@ -896,6 +896,111 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     } finally { a.kill(); b.kill(); }
   });
 
+  test('the acceptance asks the RAW entry INSIDE THE LOCK too — an incoherence born between the preflight and the write is refused there', async () => {
+    // ► MUTATION WITNESS for the second of two sites. The end-to-end witness in
+    //   binding-accept-e2e duplicates the secondary BEFORE the yes, so the
+    //   preflight alone stops it, and removing only the in-lock check leaves
+    //   that witness green (Codex, round 10, angle E: "a coverage of the
+    //   preflight, not a proof of both sites"). Here the file is coherent at
+    //   the preflight's read and incoherent at the lock's — the same repaired
+    //   reading, the same digest, the identifier still resolving — so only the
+    //   in-lock check can refuse, and only this goes red when it is removed.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-inlock-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (also) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('ref'), remote('sci')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: {
+        [canonicalWorkspaceKey(process.cwd())]: { vault: 'work', also, locked: false, confirmedVia: 'test' },
+      },
+    }, null, 2);
+    fs.writeFileSync(configPath, config(['ref']), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const registry = await loadRegistry({ configPath });
+
+    let proposal = null;
+    try { registry.resolveVault('sci'); } catch (e) { proposal = e.bindingProposal; }
+    assert.ok(proposal?.proposalId, 'the fixture produced no proposal');
+
+    // The seam: the preflight reads a coherent file, the lock reads one a
+    // sibling has just hand-edited into a duplicate. Same digest either way.
+    let reads = 0;
+    const writes = [];
+    const seams = {
+      cwd: process.cwd(),
+      readFile: (p) => {
+        reads += 1;
+        return reads === 1 ? config(['ref']) : config(['ref', 'ref']);
+      },
+      writeFile: (p, c) => { writes.push(c); },
+      launch: async () => ({}),
+      ping: async () => ({ ok: true }),
+    };
+    await assert.rejects(
+      confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false }, seams),
+      /NO BINDING WAS WRITTEN[\s\S]*ref appears more than once/,
+    );
+    assert.ok(reads >= 2, `the lock never re-read the file (${reads} read)`);
+    assert.equal(writes.length, 0, 'the yes was written over an entry the lock found incoherent');
+  });
+
+  test('a config that becomes UNREADABLE between the preflight and the lock refuses the yes and writes nothing', async () => {
+    // Round 10, angle F, the half the end-to-end witness cannot reach: the
+    // preflight read a good file, the lock's read throws. "The acceptance
+    // decides" was an intention; this is the measurement for that door.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-unreadable-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const good = JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('sci')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: {
+        [canonicalWorkspaceKey(process.cwd())]: { vault: 'work', also: [], locked: false, confirmedVia: 'test' },
+      },
+    }, null, 2);
+    fs.writeFileSync(configPath, good, 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const registry = await loadRegistry({ configPath });
+    let proposal = null;
+    try { registry.resolveVault('sci'); } catch (e) { proposal = e.bindingProposal; }
+    assert.ok(proposal?.proposalId, 'the fixture produced no proposal');
+
+    let reads = 0;
+    const writes = [];
+    const seams = {
+      cwd: process.cwd(),
+      readFile: () => {
+        reads += 1;
+        if (reads === 1) return good;
+        const err = new Error('EACCES: permission denied');
+        err.code = 'EACCES';
+        throw err;
+      },
+      writeFile: (p, c) => { writes.push(c); },
+      launch: async () => ({}),
+      ping: async () => ({ ok: true }),
+    };
+    const before = { binding: registry.workspaceBinding, defaultVault: registry.defaultVault };
+    await assert.rejects(confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false }, seams));
+    assert.ok(reads >= 2, `the lock never re-read the file (${reads} read)`);
+    assert.equal(writes.length, 0, 'a yes was written past a config the lock could not read');
+    assert.equal(registry.workspaceBinding, before.binding, 'the routing moved on a refused yes');
+    assert.equal(registry.defaultVault, before.defaultVault);
+  });
+
   test('a BROKEN binding is diagnosed as broken, even when it declares the vault asked for', async () => {
     // ► MUTATION WITNESS: move the "the config file DOES declare it" branch
     //   back above the broken-primary branch and only this goes red. It
@@ -943,7 +1048,14 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.ok(err, 'sci resolved instead of being refused');
     assert.equal(err.bindingProposal, undefined, 'a binding that needs repairing was extended instead');
     assert.match(err.message, /needs repairing/);
-    assert.match(err.message, /neither this session nor the config file/);
+    // AND THE WHOLE BINDING TO RE-PASS IS SPELLED OUT — the decision's own
+    // requirement for this row, which the first message did not meet ("naming
+    // a registered primary and the secondaries you want to keep" names
+    // nothing). Round 10: a non-conformity, not a wording. The primary is a
+    // placeholder, the secondary the binding declares is carried, and the
+    // call carries its precondition.
+    assert.match(err.message, /its primary absent is not a vault this config file or this session registers/);
+    assert.match(err.message, /vault: "<the primary vault you intend>", also: \["sci"\], ifBindingDigest: "[0-9a-f]{64}"/);
     assert.doesNotMatch(
       err.message,
       /Start a new session|Retry in a moment/,

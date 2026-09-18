@@ -37,6 +37,10 @@ import {
   readBinding,
   readRefusals,
   refreshRegistryBindingHint,
+  rawBindingEntry,
+  bindingIncoherences,
+  describeBindingRepair,
+  BINDING_REPAIR_REQUIRED_CODE,
 } from '../helpers/workspace-bindings.mjs';
 import {
   isVaultReachable,
@@ -189,11 +193,11 @@ export async function lockVault(registry, args = {}) {
     try {
       bindingRecorded = recordLockInBinding(registry, cwd, vault);
     } catch (err) {
-      if (err?.code !== PROMOTION_REFUSED_CODE) throw err;
+      if (err?.code !== PROMOTION_REFUSED_CODE && err?.code !== BINDING_REPAIR_REQUIRED_CODE) throw err;
       // The preflight promised "no half-state", and the stale path keeps that
       // promise by hand: the in-memory lock applied above is taken back, so a
       // refused persist:true does not degrade into a volatile lock the user
-      // did not ask for.
+      // did not ask for. The same for a binding that needs repairing first.
       registry.lockedVault = before.lockedVault;
       registry.lockSource = before.lockSource;
       throw err;
@@ -438,6 +442,29 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
       // taken. That was the shape of the merge review's BLOCKER.
       const existing = readBinding(cfg, cwd);
       if (vault) {
+        // AN ENTRY THE ROUTER CANNOT READ AS WRITTEN IS NOT REBUILT FROM
+        // NOTHING. With `existing` null and a hand-edited entry that still
+        // carries secondaries and tiers, the persist below would have written
+        // `{ vault, also: [] }` over them — a lock erasing declarations it was
+        // never asked about. Same rule as the proposal and the acceptance:
+        // repair first, and the refusal spells out what to re-pass. Only the
+        // null case: a coherent binding is carried over below, as before.
+        // (Codex, round 10, angle B.)
+        if (!existing) {
+          const raw = rawBindingEntry(cfg, cwd);
+          const incoherences = bindingIncoherences(raw);
+          if (incoherences.length) {
+            const err = new Error(
+              `lock_vault --persist: the lock was NOT recorded and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
+            );
+            // Coded, so the catch below lets it through as a refusal on
+            // purpose instead of folding it into "the config could not be
+            // written" — which would ALSO have left the in-memory lock in
+            // place as a volatile lock nobody asked for.
+            err.code = BINDING_REPAIR_REQUIRED_CODE;
+            throw err;
+          }
+        }
         // ASKED AGAIN, OF THE FILE. `lockVault`'s preflight asked
         // `isPromotionOfLockedSecondary` of the live registry; between that
         // answer and this lock a sibling session may have recorded `vault` as
@@ -584,7 +611,7 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // take — is `null`, "the config could not be written, fix it and retry";
     // sending the user to fix permissions on a file that refused on purpose
     // would be the wrong sentence. The code on the error is the difference.
-    if (err?.code === PROMOTION_REFUSED_CODE) throw err;
+    if (err?.code === PROMOTION_REFUSED_CODE || err?.code === BINDING_REPAIR_REQUIRED_CODE) throw err;
     return null;
   }
 }
