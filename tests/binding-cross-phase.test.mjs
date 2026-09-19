@@ -982,6 +982,73 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.doesNotMatch(err.message, /not an object at all|cannot be taken as written/, 'an unread file was diagnosed');
     assert.ok(err.bindingProposal, `no proposal from the session's own binding:\n${err.message}`);
     assert.equal(err.bindingProposal.currentPrimary, 'work');
+    // AND THE PROVENANCE IS SAID (round 12): the proposal rests on the
+    // session's binding because the file could not be read.
+    assert.match(err.message, /could not be read just now, so this proposal rests on the binding this session loaded/);
+  });
+
+  test('a BROKEN primary with an UNREADABLE file is not told "the config file has no such vault" from a copy', async () => {
+    // Round 12: the fallback answered "neither this session nor the config
+    // file has such a vault" from the copy loaded at start-up, about a file
+    // it had just failed to read.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-broken-unread-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('sci')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: { vault: 'ghost', also: [], locked: false } },
+    }, null, 2), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const registry = await loadRegistry({ configPath });
+    fs.rmSync(configPath);
+    let err = null;
+    try { registry.resolveVault('sci'); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.equal(err.bindingProposal, undefined);
+    assert.doesNotMatch(err.message, /neither this session nor the config file/, 'an unread file was described');
+    assert.match(err.message, /the config file could not be read just now, so what it currently says is unverified/);
+  });
+
+  test('an ACCEPTANCE is not refused by a strict tier only this session\'s stale copy still holds', async () => {
+    // Round 12: the in-memory promotion preflight refused a yes whose
+    // proposal, minted from the file, named the file's primary — because the
+    // stale session still held that vault as a strict secondary. Gone: the
+    // lock, asked of the file, is the one judge.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-accept-stale-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (binding) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('ref'), remote('sci')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: binding },
+    }, null, 2);
+    fs.writeFileSync(configPath, config({ vault: 'work', also: ['ref'], alsoLocked: ['ref'] }), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const registry = await loadRegistry({ configPath });
+    assert.deepEqual(registry.workspaceBinding?.alsoLocked, ['ref']);
+    // A sibling makes `ref` the primary.
+    fs.writeFileSync(configPath, config({ vault: 'ref', also: ['work'] }), 'utf8');
+    let proposal = null;
+    try { registry.resolveVault('sci'); } catch (e) { proposal = e.bindingProposal; }
+    assert.equal(proposal?.currentPrimary, 'ref', 'the proposal was not minted from the file');
+    const res = await confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false },
+      { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) });
+    assert.ok(res, 'no result');
+    const written = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())];
+    assert.equal(written.vault, 'ref');
+    assert.deepEqual(written.also, ['work', 'sci']);
   });
 
   test('a primary the FILE has and this session has not loaded is a reload, not a repair — said in the same breath as the duplicate', async () => {
@@ -1070,6 +1137,12 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     const registry = await loadRegistry({ configPath });
     const later = { also: ['ref'], alsoLocked: ['ref'] };
     fs.writeFileSync(configPath, config(later, { other: '2026-09-19' }), 'utf8');
+    const before = {
+      defaultVault: registry.defaultVault,
+      defaultVaultSource: registry.defaultVaultSource,
+      lockedVault: registry.lockedVault,
+      lockSource: registry.lockSource,
+    };
     await assert.rejects(
       confirmWorkspaceBinding(registry, { vault: 'ref', also: [], ifBindingDigest: rawEntryDigest(later), open: false },
         { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) }),
@@ -1077,6 +1150,12 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     );
     assert.equal(registry.workspaceRefusals?.has?.('other'), true, 'a refusal the lock read was not honoured');
     assert.equal(registry.workspaceBinding?.vault, 'work', 'a refused promotion moved the routing');
+    // "The routing did not move" is every routing field, not the primary
+    // alone (Codex, round 12).
+    assert.equal(registry.defaultVault, before.defaultVault);
+    assert.deepEqual(registry.defaultVaultSource, before.defaultVaultSource);
+    assert.equal(registry.lockedVault, before.lockedVault);
+    assert.deepEqual(registry.lockSource, before.lockSource);
   });
 
   test('a config that becomes UNREADABLE between the preflight and the lock refuses the yes and writes nothing', async () => {
@@ -1281,10 +1360,19 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     ].join('\n');
     assert.match(probe, rebuildsByHand, 'the scan would walk past a hand-built copy of the set');
 
-    // Both readers ask for it by name.
-    for (const rel of ['src/registry.mjs', 'src/tools/workspace-binding.mjs']) {
+    // Both readers ask for the WRITER's set by name — `writerBindableNames`,
+    // which composes `bindableVaultNames` with the environment's remotes
+    // (round 12: the writer's own rule, in one place, after the remote
+    // exemption was closed). The composition is the one place that asks
+    // `bindableVaultNames` on their behalf.
+    for (const rel of ['src/registry.mjs', 'src/tools/workspace-binding.mjs', 'src/tools/lock.mjs']) {
       const src = fs.readFileSync(path.join(REPO, rel), 'utf8');
-      assert.match(src, /bindableVaultNames\(/, `${rel} does not ask the shared predicate`);
+      assert.match(src, /writerBindableNames\(/, `${rel} does not ask the writer's predicate`);
     }
+    assert.match(
+      fs.readFileSync(path.join(REPO, 'src/helpers/workspace-bindings.mjs'), 'utf8'),
+      /export function writerBindableNames[^]{0,400}bindableVaultNames\(cfg\)/,
+      'the writer\'s set no longer composes the shared predicate',
+    );
   });
 });

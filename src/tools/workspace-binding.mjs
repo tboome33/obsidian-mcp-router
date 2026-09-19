@@ -65,7 +65,8 @@ import {
   describeBindingRepair,
   rawEntryDigest,
   rawSecondaryTiers,
-  primaryRegistryIncoherences,
+  registryIncoherences,
+  writerBindableNames,
 } from '../helpers/workspace-bindings.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
@@ -79,10 +80,8 @@ import {
 import { launchObsidianVault } from '../helpers/obsidian-launcher.mjs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename, _internals as registryInternals } from '../registry.mjs';
-import { bindableVaultNames } from '../helpers/vault-slug.mjs';
 import {
   isVaultReachable,
-  isPromotionOfLockedSecondary,
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
@@ -245,10 +244,13 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // act the user just performed, whatever the migration had decided.
     let had = null;
     let hadRawEntry = false;
+    let hadIncoherentEntry = false;
     let refusals = null;
     updateConfigBindings(configPath, (cfg) => {
       had = readBinding(cfg, cwd);
-      hadRawEntry = rawBindingEntry(cfg, cwd) !== undefined;
+      const raw = rawBindingEntry(cfg, cwd);
+      hadRawEntry = raw !== undefined;
+      hadIncoherentEntry = bindingIncoherences(raw).length > 0;
       // Untouched by a clear — read so the live copy below is the file's,
       // not whatever this process loaded at start-up.
       refusals = readRefusals(cfg, cwd);
@@ -327,8 +329,12 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         : hadRawEntry
           // AN ENTRY THE ROUTER COULD NOT READ AS WRITTEN WAS REMOVED — a
           // clear is the one act for which that needs no prior repair, and
-          // "nothing changed" would have been false. (Codex, round 11.)
-          ? `This workspace held an entry the router could not read as a binding (no usable primary, or the wrong shape); it has been removed, so the workspace now has no binding. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`
+          // "nothing changed" would have been false. (Codex, round 11.) An
+          // EMPTY entry is not "could not read": it means no binding, and
+          // its removal is said as such. (Codex, round 12.)
+          ? (hadIncoherentEntry
+            ? `This workspace held an entry the router could not read as a binding (no usable primary, or the wrong shape); it has been removed, so the workspace now has no binding. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`
+            : `This workspace held an empty binding entry, which already meant no binding; the entry has been removed. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`)
           : `This workspace had no binding; nothing changed. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`,
     };
   }
@@ -458,8 +464,8 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // 10 added to `resolveVault` and not to this door, so an acceptance
       // refused for a duplicate could still spell a repair call naming the
       // unknown primary. Same fact, same renderer. (Codex, round 11.)
-      incoherences.push(...primaryRegistryIncoherences(rawEntry, {
-        fileNames: bindableVaultNames(cfgForNames),
+      incoherences.push(...registryIncoherences(rawEntry, {
+        bindable: writerBindableNames(cfgForNames, registry.vaults),
         sessionNames: new Set(registry.vaults.map((v) => v.name)),
       }));
       throw new Error(
@@ -583,15 +589,15 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // exceptions" (decision portee-et-mode-ecriture-des-vaults §2; review
   // round 3). Read against the LIVE binding here, for an early answer; the
   // check that DECIDES is asked again of the file, inside the lock (below).
-  // NOT FOR A REPAIR. A repair (`ifBindingDigest`) is about the entry as the
-  // FILE holds it, and this session's copy may be older: it can still hold a
-  // vault as strict that the file now holds as writable, so this early answer
-  // would refuse a valid repair on the strength of a tier that no longer
-  // exists — and a preflight that refuses decides. For a repair the check
-  // inside the lock, asked of the file, is the only one. (Codex, round 11.)
-  if (args.ifBindingDigest === undefined && isPromotionOfLockedSecondary(primary, registry)) {
-    throw lockedSecondaryPromotionError(promotionRefusal(primary));
-  }
+  // NO IN-MEMORY PROMOTION PREFLIGHT ANY MORE. It answered from this
+  // session's copy of the binding "for an early, readable message", and a
+  // preflight that refuses DECIDES: round 11 found it refusing a valid repair
+  // on the strength of a tier the file no longer held, and round 12 found the
+  // same for an ACCEPTANCE — the proposal minted from the file names the
+  // file's primary, and a stale session still holding that vault as strict
+  // turned the yes away before the lock could look. The check inside the
+  // lock, asked of the file, is the one judge for every path; the message
+  // is the same sentence, one round trip later. (Codex, rounds 11 and 12.)
 
   // EVERY name is checked against the registry. This is the same rule the
   // dotenv hint has always had, and the reason a binding cannot reach a vault
@@ -647,11 +653,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // that PROPOSES has to ask the same question before it offers an
     // identifier, or it hands out a yes this function will turn away.
     // (Codex, round four.)
-    const fileNames = bindableVaultNames(cfg);
-    const unknown = requested.filter((n) => typeof n !== 'string' || !known.has(n)
-      // A live vault that the file no longer lists — or that only the
-      // environment provides (VAULT_*), which the next session may not have.
-      || (known.get(n)?.type === 'local' && !fileNames.has(n)));
+    // THE FILE'S NAMES PLUS THE ENVIRONMENT'S REMOTES — `writerBindableNames`,
+    // the one rule. The first version exempted EVERY remote from the file
+    // check (`type === 'local' && !fileNames.has(n)`), so a remote a sibling
+    // had removed from the file could still be bound and the next start found
+    // no such vault; a remote the environment provides is the one case the
+    // exemption was for, and it is now told apart by its `source`. The same
+    // set feeds every diagnostic that spells a repair, so "cannot be bound"
+    // is said exactly when this refuses. (Codex, round 12 — the hole carried
+    // as open since round 5.)
+    const bindable = writerBindableNames(cfg, registry.vaults);
+    const unknown = requested.filter((n) => typeof n !== 'string' || !known.has(n) || !bindable.has(n));
     if (!unknown.length) return;
     const names = unknown.map((n) => `"${safeForMessage(String(n), 60)}"`).join(', ');
     // THE CATALOGUE IS SANITISED TOO. These names come from `vaultNames`, from
@@ -704,9 +716,10 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         'confirm_workspace_binding: this workspace\'s binding is no longer the entry that diagnostic '
         + 'described — another session changed or removed it since — so the repair was NOT applied and '
         + 'NO BINDING WAS WRITTEN (this session\'s refusals were refreshed from the file; its binding and '
-        + 'routing are unchanged). Do NOT retry this repair with the same digest: it will refuse again. '
-        + 'Re-run the ACCESS call that produced the diagnostic (the get_file, search, … that was refused) '
-        + 'and follow WHAT COMES BACK: a new diagnostic with a fresh digest, a proposal, a success, or a '
+        + 'routing are unchanged). Do NOT retry this repair with the same digest: it refuses for as long '
+        + 'as the entry differs from the one it was spelled for. Re-run the call that PRODUCED the diagnostic '
+        + '— the access that was refused (get_file, search, …), or the acceptance, or the lock_vault --persist '
+        + '— and follow WHAT COMES BACK: a new diagnostic with a fresh digest, a proposal, a success, or a '
         + 'refusal for a reason of its own.',
       );
     }

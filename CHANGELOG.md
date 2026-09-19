@@ -165,6 +165,26 @@ primary and drops every secondary not passed again, which is exactly the call th
   entry the router could not read says it removed one instead of "nothing changed"; and the stale-digest
   refusal names the ACCESS call to re-run, not this repair with its old digest, which would refuse
   forever.
+- **A remote the file no longer lists can no longer be bound — the hole carried open since round 5
+  is closed.** The binding tool exempted every remote vault from the "listed in the config file"
+  check, so a remote a parallel session had removed from the file could still be proposed, accepted
+  and bound, and the next start found no such vault. The exemption existed for one honest case — a
+  remote the environment provides (`VAULT_*`), which the file never lists — and that case is now told
+  apart by its source: the writer's set is the file's names plus the environment's remotes, in one
+  function, and every diagnostic that spells a repair asks that same set, so "cannot be bound" is
+  said exactly when the tool refuses. With it, from the twelfth round: the registry facts are asked of a
+  COHERENT binding too (a primary the file had lost was extended with a proposal whose yes was then
+  refused, forever), and a secondary no binding can be written with is left OUT of the spelled call
+  and said so; the third door that spells a repair — the refused `lock_vault --persist` — names an
+  unregistered primary with a placeholder like the other two; lifting a persisted lock over an
+  incoherent entry is refused like recording one (it rewrote the whole entry through the normaliser),
+  and `unlock_vaults` then says the router WILL re-lock until the entry is repaired; the in-memory
+  promotion preflight is gone altogether — it decided from a copy that could be stale, and refused a
+  valid repair (eleventh round) and a valid acceptance (twelfth) on tiers the file no longer held; the
+  lock, asked of the file, is the one judge; an unreadable config is no longer described from the copy
+  loaded at start-up, and a proposal minted from the session's own binding says so; `clear: true` on an
+  empty entry says an empty entry was removed; and the stale-digest refusal names every producer a
+  diagnostic can have (the access, the acceptance, or the persisted lock), not an access it invented.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance
@@ -174,10 +194,8 @@ primary and drops every secondary not passed again, which is exactly the call th
   retry, or restart), and `list_vaults`, an inventory rather than an offer, so a workspace with
   twenty undeclared vaults does not become twenty questions at once. The last two are refusals the
   accepted decision did not list — they come from two sessions sharing one file, which it did not
-  have in view — and they are now recorded on it as its sixth and seventh cases. Known and not
-  closed here: a REMOTE vault removed from the file can still be proposed and bound, because the
-  binding tool exempts remotes from that check; widening it is its own change, carried as its own
-  item rather than half-done under cover of this one.
+  have in view — and they are now recorded on it as its sixth and seventh cases. (The remote
+  exemption this paragraph used to carry as "known and not closed" is closed above.)
 - **Saying yes also moves THIS session.** After a yes the session routes by the binding it just
   wrote, which is what lets the refused call be replayed at once (decision §5). The decision's point
   4 describes the file; this second effect is now written on it too. The consent it rests on is

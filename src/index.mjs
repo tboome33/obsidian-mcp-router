@@ -847,7 +847,7 @@ const TOOLS = [
         },
         ifBindingDigest: {
           type: 'string',
-          description: 'A precondition for a REPAIR: the `ifBindingDigest` value copied VERBATIM from a refusal that diagnosed this workspace\'s binding as incoherent or broken and spelled out the call to re-pass. The write is applied only if the binding on file is still the one that diagnostic described; if another session changed it since, the call is REFUSED and nothing is written — re-run the refused call and follow what comes back. Only with `vault` (and `also`/`locked`/`open`): never with accept, refuse, retract or clear, and never a value you assembled yourself.',
+          description: 'A precondition for a REPAIR: the `ifBindingDigest` value copied VERBATIM from a refusal that diagnosed this workspace\'s binding as incoherent or broken and spelled out the call to re-pass. The write is applied only if the entry on file is still the one that diagnostic described; if another session changed or removed it since, the call is REFUSED and nothing is written — do NOT retry this repair with the same digest; re-run the call that PRODUCED the diagnostic (the refused access, the acceptance, or the lock_vault --persist) and follow what comes back. Only with `vault` (and `also`/`locked`/`open`): never with accept, refuse, retract or clear, and never a value you assembled yourself.',
         },
         refuse: {
           type: 'string',

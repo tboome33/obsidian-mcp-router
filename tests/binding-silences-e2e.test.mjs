@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
-  rawSecondaryTiers, rawEntryDigest, primaryRegistryIncoherences,
+  rawSecondaryTiers, rawEntryDigest, registryIncoherences, writerBindableNames,
 } from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
@@ -444,17 +444,49 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.match(rawEntryDigest({}), /^[0-9a-f]{64}$/);
   });
 
-  test('primaryRegistryIncoherences — the FILE decides what can be bound; the session decides what is loaded', () => {
-    const file = new Set(['work', 'newer']);
-    const session = new Set(['work']);
-    assert.deepEqual(primaryRegistryIncoherences({ vault: 'ghost' }, { fileNames: file, sessionNames: session }).map((i) => i.kind), ['primary-not-registered']);
+  test('registryIncoherences — the WRITER\'s set decides what can be bound; the session decides what is loaded', () => {
+    const bindable = new Set(['work', 'newer', 'sci']);
+    const session = new Set(['work', 'sci']);
+    assert.deepEqual(registryIncoherences({ vault: 'ghost' }, { bindable, sessionNames: session }).map((i) => i.kind), ['primary-not-registered']);
     // Known to the session, gone from the file: the writer refuses it, so
     // "known to file OR session" was the wrong test (Codex, round 11).
-    assert.deepEqual(primaryRegistryIncoherences({ vault: 'old' }, { fileNames: file, sessionNames: new Set(['old']) }).map((i) => i.kind), ['primary-not-registered']);
-    assert.deepEqual(primaryRegistryIncoherences({ vault: 'newer' }, { fileNames: file, sessionNames: session }).map((i) => i.kind), ['primary-not-loaded-here']);
-    assert.deepEqual(primaryRegistryIncoherences({ vault: 'work' }, { fileNames: file, sessionNames: session }), []);
-    assert.deepEqual(primaryRegistryIncoherences({ also: ['x'] }, { fileNames: file, sessionNames: session }), []);
-    assert.deepEqual(primaryRegistryIncoherences('work', { fileNames: file, sessionNames: session }), []);
+    assert.deepEqual(registryIncoherences({ vault: 'old' }, { bindable, sessionNames: new Set(['old']) }).map((i) => i.kind), ['primary-not-registered']);
+    assert.deepEqual(registryIncoherences({ vault: 'newer' }, { bindable, sessionNames: session }).map((i) => i.kind), ['primary-not-loaded-here']);
+    assert.deepEqual(registryIncoherences({ vault: 'work' }, { bindable, sessionNames: session }), []);
+    // A SECONDARY the writer refuses is named too, and left out of the call
+    // (round 12: the spelled call failed at assertBindable before the
+    // precondition was even looked at).
+    assert.deepEqual(
+      registryIncoherences({ vault: 'work', also: ['sci', 'gone', 'gone'] }, { bindable, sessionNames: session }),
+      [{ kind: 'secondary-not-registered', names: ['gone'] }],
+    );
+    assert.deepEqual(registryIncoherences({ also: ['x'] }, { bindable, sessionNames: session }).map((i) => i.kind), ['secondary-not-registered']);
+    assert.deepEqual(registryIncoherences('work', { bindable, sessionNames: session }), []);
+    assert.deepEqual(registryIncoherences(undefined, { bindable, sessionNames: session }), []);
+  });
+
+  test('writerBindableNames — the file\'s names plus the ENVIRONMENT\'s remotes, nothing else', () => {
+    // The hole carried since round 5: every remote was exempt from the file
+    // check, so a remote a sibling removed from the file stayed bindable. The
+    // exemption existed for remotes the environment provides (VAULT_*), which
+    // the file never lists — told apart by their `source` now.
+    const cfg = { portRegistry: {}, vaultNames: {}, remoteVaults: [{ name: 'filed' }] };
+    const vaults = [{ name: 'filed', type: 'remote' }, { name: 'env-only', type: 'remote', source: 'env' }, { name: 'stale-remote', type: 'remote' }];
+    const set = writerBindableNames(cfg, vaults);
+    assert.equal(set.has('filed'), true);
+    assert.equal(set.has('env-only'), true, 'an environment-provided remote must stay bindable');
+    assert.equal(set.has('stale-remote'), false, 'a remote the file no longer lists was still bindable');
+  });
+
+  test('describeBindingRepair — an unregistered secondary is left OUT of the spelled call, and said so', () => {
+    const raw = { vault: 'work', also: ['sci', 'gone'], alsoLocked: ['gone'] };
+    const text = describeBindingRepair(raw, [
+      ...bindingIncoherences(raw),
+      { kind: 'secondary-not-registered', names: ['gone'] },
+    ]);
+    assert.match(text, /its secondary gone is not a vault this config file registers/);
+    assert.match(text, /vault: "work", also: \["sci"\], ifBindingDigest/);
+    assert.ok(!/also: \["sci", "gone"\]/.test(text), 'the unregistered secondary was spelled into the call');
   });
 
   // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
@@ -492,6 +524,12 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // a primary over it.
     ['a string where the entry should be', 'work',
       [/the entry is not an object at all/, /vault: "<the primary vault you intend>", also: \[\]/]],
+    // A SECONDARY no registry knows is named and left OUT of the call —
+    // spelled in, the call failed at assertBindable before the precondition
+    // was even looked at (Codex, round 12).
+    ['a duplicate secondary no registry knows', { vault: 'work', also: ['gone', 'gone'] },
+      [/gone appears more than once/, /its secondary gone is not a vault this config file registers/,
+        /vault: "work", also: \[\], ifBindingDigest/]],
   ];
   for (const [name, binding, expectations] of onDisk) {
     test(`e2e — ${name}: refused, no proposal, repair spelled out`, async () => {
@@ -509,6 +547,61 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       } finally { rt.kill(); }
     });
   }
+
+  test('e2e — a COHERENT binding whose primary the file no longer lists is a repair, not a proposal', async () => {
+    // Round 12: with no structural fault the proposal path went on minting
+    // a proposal whose yes the writer then refused (the primary was gone from
+    // the file), forever. The registry facts are asked whether or not the
+    // entry is coherent.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      // A sibling removes `work` from the file (this session still knows it).
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.remoteVaults = cfg.remoteVaults.filter((r) => r.name !== 'work');
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const res = await read(rt, 2, 'sci');
+      assert.equal(res.result?.isError, true, textOf(res));
+      const text = textOf(res);
+      assert.equal(res.result?._meta?.bindingProposal, undefined, `a proposal was minted over a primary the file lost:\n${text}`);
+      assert.match(text, /its primary work is not a vault this config file registers/);
+      assert.match(text, /vault: "<the primary vault you intend>", also: \[\]/);
+    } finally { rt.kill(); }
+  });
+
+  test('e2e — a remote the ENVIRONMENT provides stays bindable, a remote the file dropped does not', async () => {
+    // The closure of the exemption every remote had (carried as open since
+    // round 5): `writerBindableNames` is the file's names plus the
+    // environment's remotes, told apart by their `source`.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port);
+    const rt = startRouter({
+      configPath,
+      cwd: dir,
+      env: { VAULT_ENVR: JSON.stringify({ name: 'envr', baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY }) },
+    });
+    try {
+      await handshake(rt);
+      const ok = await rt.call(2, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: ['envr'], open: false },
+      });
+      assert.ok(ok.result, JSON.stringify(ok));
+      assert.notEqual(ok.result?.isError, true, `an environment-provided remote was refused:\n${textOf(ok)}`);
+      // Now the file drops `other`; this session still knows it.
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.remoteVaults = cfg.remoteVaults.filter((r) => r.name !== 'other');
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const no = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: ['envr', 'other'], open: false },
+      });
+      assert.equal(no.result?.isError, true, `a remote the file no longer lists was bound:\n${textOf(no)}`);
+      assert.match(textOf(no), /"other" is not a registered vault/);
+    } finally { rt.kill(); }
+  });
 
   test('e2e — an EMPTY entry is "no binding": the proposal is for a primary, not a wall', async () => {
     // The positive control for the predicate's one deliberate exemption. A

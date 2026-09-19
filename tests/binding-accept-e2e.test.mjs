@@ -385,7 +385,10 @@ describe('E2E: accepting a binding proposal', () => {
       // (Codex, round 11: "re-run the call that was refused" pointed at the
       // repair itself, which repeats the same refusal forever).
       assert.match(textOf(stale), /Do NOT retry this repair with the same digest/);
-      assert.match(textOf(stale), /Re-run the ACCESS call/);
+      // …and names EVERY producer a diagnostic can have (round 12: "the
+      // ACCESS call" invented an access for a diagnostic the acceptance or
+      // lock_vault --persist had produced).
+      assert.match(textOf(stale), /Re-run the call that PRODUCED the diagnostic — the access that was refused .*, or the acceptance, or the lock_vault --persist/);
       assert.match(textOf(stale), /NO BINDING WAS WRITTEN/);
       assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
       assert.equal(bindingOnDisk(configPath, key).vault, 'other');
@@ -523,6 +526,63 @@ describe('E2E: accepting a binding proposal', () => {
       assert.match(textOf(res), /could not read as a binding/);
       assert.ok(!/nothing changed/.test(textOf(res)), textOf(res));
       assert.equal(bindingOnDisk(configPath, key), undefined, 'the malformed entry survived the clear');
+    } finally { rt.kill(); }
+  });
+
+  test('THE RENDERED CALL IS EXECUTED AS RENDERED — and a file re-saved with keys reordered and re-indented is the same entry', async () => {
+    // Round 12, angle E: the witnesses recopied the arguments by hand and
+    // fabricated the digest with the helper. This one takes the call from the
+    // text, replaces ONLY the placeholder, and runs it — after the file has
+    // been rewritten with every key in another order and another indentation,
+    // which the precondition must read as "the same entry".
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { also: ['writable-ref', 'locked-ref'], alsoLocked: ['locked-ref'], alsoWritable: ['writable-ref'], locked: false },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const text = textOf(res);
+      const spelled = /confirm_workspace_binding\((\{[^\n]*?\})\)\./.exec(text)?.[1];
+      assert.ok(spelled, `no call spelled:\n${text}`);
+      // The rendered object literal → JSON: quote the bare keys.
+      const call = JSON.parse(spelled.replace(/(\w+):/g, '"$1":'));
+      assert.equal(call.vault, '<the primary vault you intend>');
+      assert.deepEqual(call.also, ['writable-ref', 'locked-ref']);
+      assert.match(call.ifBindingDigest, /^[0-9a-f]{64}$/);
+
+      // A sibling re-saves the file: same values, other key order, other
+      // indentation, other line endings.
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const entry = cfg.workspaceBindings[key];
+      cfg.workspaceBindings[key] = { locked: entry.locked, alsoWritable: entry.alsoWritable, also: entry.also, alsoLocked: entry.alsoLocked };
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 4).replace(/\n/g, '\r\n'), 'utf8');
+
+      const repaired = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { ...call, vault: 'work', open: false },
+      });
+      assert.ok(repaired.result, JSON.stringify(repaired));
+      assert.notEqual(repaired.result?.isError, true, `a re-saved identical entry refused its own repair:\n${textOf(repaired)}`);
+      const after = bindingOnDisk(configPath, key);
+      assert.equal(after.vault, 'work');
+      assert.deepEqual(after.alsoLocked, ['locked-ref']);
+      assert.deepEqual(after.alsoWritable, ['writable-ref']);
+    } finally { rt.kill(); }
+  });
+
+  test('`clear: true` on an EMPTY entry says an empty entry was removed — not that the router could not read it', async () => {
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { binding: {} });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'confirm_workspace_binding', arguments: { clear: true } });
+      assert.notEqual(res.result?.isError, true, textOf(res));
+      assert.match(textOf(res), /held an empty binding entry/);
+      assert.ok(!/could not read as a binding/.test(textOf(res)), textOf(res));
+      assert.equal(bindingOnDisk(configPath, key), undefined);
     } finally { rt.kill(); }
   });
 

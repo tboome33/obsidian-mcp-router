@@ -84,7 +84,8 @@ import {
   bindingIncoherences,
   describeBindingRepair,
   BINDING_INCOHERENCE,
-  primaryRegistryIncoherences,
+  registryIncoherences,
+  writerBindableNames,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -884,13 +885,18 @@ export async function loadRegistry({ configPath } = {}) {
         // A diagnostic that names the wrong cause sends the reader to fix the
         // wrong thing. (Codex, round five — and its own witness had asserted
         // the false sentence, which is how a test locks a mistake in.)
-        if (v.type === 'local' && !bindableVaultNames(live.config).has(v.name)) {
+        // THE WRITER'S SET, for every type: a remote the file no longer lists
+        // is as unbindable as a local one, and a remote the environment
+        // provides is bindable by its `source`. (Round 12 — the exemption
+        // remotes had here and in the writer was the hole carried since
+        // round 5.)
+        if (!writerBindableNames(live.config, this.vaults).has(v.name)) {
           throw declarationRequiredError(
-            `${preamble} This vault is not listed in the router's config file — either it was never `
-            + 'registered there, or it has been removed since this session started — so it cannot be '
-            + 'recorded in a workspace binding: confirm_workspace_binding refuses a local vault the '
-            + 'file does not know. Register it (setup-vault) or restore it in the config, then bind '
-            + 'this workspace to it.',
+            `${preamble} This vault is not listed in the router's config file (and not provided by the `
+            + 'environment) — either it was never registered there, or it has been removed since this '
+            + 'session started — so it cannot be recorded in a workspace binding: '
+            + 'confirm_workspace_binding refuses a vault the file does not know. Register it '
+            + '(setup-vault, or remoteVaults) or restore it in the config, then bind this workspace to it.',
             null,
           );
         }
@@ -923,14 +929,24 @@ export async function loadRegistry({ configPath } = {}) {
         // call the tool refuses one step later. The predicate knows no
         // registry, so the fact is injected here, where both are known, and
         // the renderer puts a placeholder in the call. (Codex, round 10.)
-        if (incoherences.length) {
-          // ONE FUNCTION FOR BOTH DOORS, and the file is the authority for
-          // what can be bound (round 11: "known to file OR session" let a
-          // primary through that the writer then refused as not in the file).
-          incoherences.push(...primaryRegistryIncoherences(live.rawEntry, {
-            fileNames: bindableVaultNames(live.config),
+        // WHAT THE REGISTRY SAYS ABOUT THE ENTRY'S VAULTS — the writer's own
+        // set (`writerBindableNames`: the file's names plus the environment's
+        // remotes) and this session's catalogue. Asked whether or not the
+        // entry is structurally coherent: a COHERENT binding whose primary the
+        // file no longer lists used to be extended with a proposal whose yes
+        // the writer then refused, forever (Codex, round 12). Only computed
+        // from a file that was read; "not observed" says nothing.
+        const facts = live.fromFile
+          ? registryIncoherences(live.rawEntry, {
+            bindable: writerBindableNames(live.config, this.vaults),
             sessionNames: new Set(this.vaults.map((x) => x.name)),
-          }));
+          })
+          : [];
+        const unbindableParts = facts.filter((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED
+          || f.kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED);
+        if (incoherences.length || unbindableParts.length) {
+          // ONE FUNCTION FOR EVERY DOOR (rounds 11 and 12).
+          incoherences.push(...facts);
           // ITS OWN PREAMBLE, naming the source. The shared one says "this
           // workspace's binding does not name it", which the repaired reading
           // of THIS SESSION established — while the file's entry, incoherent,
@@ -955,7 +971,7 @@ export async function loadRegistry({ configPath } = {}) {
           // machine has no such vault, re-confirm the binding" sends them to
           // rewrite a configuration that was right. The file knows which case
           // it is, and `bindableVaultNames` already asks it. (Codex, round 9.)
-          const fileHasIt = bindableVaultNames(live.config).has(primary);
+          const fileHasIt = live.fromFile && bindableVaultNames(live.config).has(primary);
           // THE GENUINELY BROKEN CASE SPELLS THE WHOLE BINDING TO RE-PASS —
           // the decision's own words for this row: "comment le remplacer sans
           // perdre les secondaires … à condition que le message épelle la
@@ -975,10 +991,14 @@ export async function loadRegistry({ configPath } = {}) {
                 ? `${preamble} ${describeBindingRepair(live.rawEntry, [
                   { kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] },
                 ])}`
-                : `${preamble} This workspace's binding names "${primary}" as its primary, and neither this `
-                + 'session nor the config file has such a vault, so the binding needs repairing before '
-                + 'anything can be added to it. Re-confirm it with confirm_workspace_binding, naming a '
-                + 'registered primary and the secondaries you want to keep.',
+                // NOT OBSERVED IS NOT "THE FILE HAS NO SUCH VAULT". The first
+                // fallback answered "neither this session nor the config
+                // file" from the copy loaded at start-up, about a file it had
+                // just failed to read. (Codex, round 12.)
+                : `${preamble} This workspace's binding names "${primary}" as its primary, which this session `
+                + 'does not know — and the config file could not be read just now, so what it currently says '
+                + 'is unverified. Nothing can be diagnosed or repaired from an unread file: retry in a moment, '
+                + 'or restart the session.',
             null,
           );
         }
@@ -1000,7 +1020,14 @@ export async function loadRegistry({ configPath } = {}) {
         }
         throw declarationRequiredError(
           `${preamble} Bind this workspace to it with confirm_workspace_binding, add it to `
-          + '`openVaults` in config.json, or address a vault this workspace already declares.',
+          + '`openVaults` in config.json, or address a vault this workspace already declares.'
+          // PROVENANCE, when the file could not be read: the proposal then
+          // rests on the binding this session loaded, and the reader should
+          // know the yes may be refused if the file has moved. (Codex, round
+          // 12.)
+          + (live.fromFile ? '' : ' (The config file could not be read just now, so this proposal rests on '
+            + 'the binding this session loaded; if another session has changed it since, the yes will be '
+            + 'refused and a fresh proposal handed back.)'),
           buildBindingProposal({
             vault: v.name,
             // THE FILE'S BINDING, not this session's copy — see the comment
@@ -1549,6 +1576,13 @@ function parseEnvVaults(env = {}) {
     const descriptor = {
       name: parsed.name.trim(),
       type: 'remote',
+      // WHERE IT CAME FROM, so a writer can tell "the file no longer lists
+      // this remote" from "the environment provides this remote at every
+      // start". Round 12 closed the exemption `assertBindable` gave every
+      // remote — a remote a sibling had removed from the file could still be
+      // bound, and the next start found no such vault — and this marker is
+      // what lets the closure spare the vaults the file never listed at all.
+      source: 'env',
       baseUrl: parsed.baseUrl.trim().replace(/\/$/, ''),
       apiKey: parsed.apiKey,
       description:

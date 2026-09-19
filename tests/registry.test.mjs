@@ -902,6 +902,59 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(reg.lockedVault, null);
   });
 
+  test('lockVault persist:true refusing an incoherent entry spells a PLACEHOLDER for a primary no registry knows', async () => {
+    // Round 12: the third door that spells a repair went on naming
+    // `vault: "ghost"`, a call the tool refuses one step later.
+    const cfgPath = path.join(tmpDir, 'persist-ghost.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'beta', baseUrl: 'https://b/' }, { name: 'gamma', baseUrl: 'https://c/' }],
+      workspaceBindings: { [key]: { vault: 'ghost', also: ['beta', 'beta'] } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const reg = { ...makeRegistry(), configPath: cfgPath, vaults: [{ name: 'beta' }, { name: 'gamma' }], workspaceBinding: null, alsoWritable: [], alsoLocked: [] };
+    let err = null;
+    try { await lockVault(reg, { vault: 'gamma', persist: true }); } catch (e) { err = e; }
+    assert.ok(err, 'the persist over an incoherent entry was applied');
+    assert.match(err.message, /its primary ghost is not a vault this config file registers/);
+    assert.match(err.message, /vault: "<the primary vault you intend>", also: \["beta"\]/);
+    assert.doesNotMatch(err.message, /vault: "ghost"/);
+    assert.match(err.message, /the lock in force before this call, if any, stays as it was/);
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original);
+  });
+
+  test('unlockVaults persist:true over an INCOHERENT locked entry refuses to lift it, and says the router will re-lock', async () => {
+    // Round 12: lifting a persisted lock rewrote the whole entry through the
+    // normaliser, repairing in silence what the lock path refused to touch.
+    const cfgPath = path.join(tmpDir, 'unlock-over-incoherent.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta', 'beta'], locked: true } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      lockedVault: 'alpha',
+      lockSource: { origin: 'binding', variable: null },
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: true, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await assert.rejects(
+        unlockVaults(reg, { persist: true }),
+        /in-memory lock cleared[\s\S]*NOT lifted[\s\S]*beta appears more than once[\s\S]*WILL re-lock to "alpha"/,
+      );
+    } finally { process.chdir(prevCwd); }
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the unlock normalised the entry');
+  });
+
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {
     const reg = makeRegistry();
     const result = await lockVault(reg, { vault: 'alpha' });

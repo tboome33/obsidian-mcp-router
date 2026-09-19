@@ -606,11 +606,12 @@ export function alsoLockedEntries(cfg) {
  * says nothing about where the live entry came from. (Codex, round five.)
  *
  * Remote entries join this set on the strength of `remoteVaults[].name` alone.
- * KNOWN LIMIT, deliberately not closed here: `assertBindable` exempts remote
- * vaults from the file check altogether, so a remote the file no longer lists
- * can still be proposed AND bound. Widening that exemption is a change to the
- * binding tool's contract, not to this predicate, and it is carried as its own
- * roadmap item rather than half-fixed under cover of this one.
+ * The exemption `assertBindable` once gave every remote (a remote the file no
+ * longer listed could still be proposed AND bound — carried as a known limit
+ * from round 5) is closed since round 12: the writer's set is
+ * `writerBindableNames` in workspace-bindings.mjs, this set plus the remotes
+ * the ENVIRONMENT provides (`VAULT_*`, marked `source: 'env'`), and every
+ * diagnostic asks that same set.
  *
  * @param {unknown} cfg the parsed router config
  * @returns {Set<string>}

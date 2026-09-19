@@ -366,9 +366,35 @@ describe('confirm_workspace_binding — an alsoLocked SECONDARY cannot be promot
   });
 
   test('promoting the locked secondary is refused, and nothing is written', async () => {
-    const { written, seam } = seams();
+    // ► THE FILE DECIDES, since round 12. This fixture used to put the hard
+    //   tier in the LIVE registry only (`alsoLocked: ['work']` on the object)
+    //   and the in-memory preflight refused from it; the preflight is gone —
+    //   it decided definitively from a copy that could be stale, and refused
+    //   a valid repair (round 11) and a valid acceptance (round 12) on tiers
+    //   the file no longer held. The check inside the lock reads the FILE's
+    //   global list, so the tier lives there now, as it does in production.
+    //   And the BINDING lives in the file too: a session-only binding is
+    //   exactly what the judge no longer looks at.
+    const { written, seam } = seams({
+      config: {
+        ...ON_DISK(),
+        alsoLocked: ['work'],
+        workspaceBindings: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'], locked: false } },
+      },
+    });
     await assert.rejects(confirmWorkspaceBinding(bound(), { vault: 'work' }, seam), /alsoLocked SECONDARY/);
     assert.equal(written.length, 0);
+  });
+
+  test('a hard tier held ONLY by this session\'s stale copy no longer refuses — the file is the judge', async () => {
+    // The other half of the same rule. The live registry says `work` is
+    // strict; the file does not (a sibling lifted the tier, and this session
+    // never reloaded). Refusing here would be deciding on a restriction that
+    // no longer exists — the preflight's defect.
+    const { written, seam } = seams();
+    const r = await confirmWorkspaceBinding(bound(), { vault: 'work' }, seam);
+    assert.equal(r.boundTo, 'work');
+    assert.equal(written.length, 1);
   });
 
   test('the SAME call on a soft-tier secondary still promotes it (the refusal is about the hard tier only)', async () => {

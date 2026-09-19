@@ -62,6 +62,7 @@ import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
 import { createHash } from 'node:crypto';
 import { safeForMessage, identifierForCall } from './sanitize.mjs';
+import { bindableVaultNames } from './vault-slug.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -354,6 +355,8 @@ export const BINDING_INCOHERENCE = Object.freeze({
    * restart. Injected by the caller, like the kind above.
    */
   PRIMARY_NOT_LOADED_HERE: 'primary-not-loaded-here',
+  /** A secondary names a vault no binding can be written with; left out of the spelled call. */
+  SECONDARY_NOT_REGISTERED: 'secondary-not-registered',
 });
 
 /**
@@ -384,28 +387,61 @@ export function rawSecondaryTiers(raw) {
 }
 
 /**
- * What the REGISTRY knows about an entry's primary, as incoherence kinds the
- * renderer speaks — the facts `bindingIncoherences` cannot know. One
- * function for both doors (the proposal in `resolveVault`, the acceptance
- * in `confirm_workspace_binding`): round 10 injected this at the first door
- * only, and the second went on spelling a repair call naming a primary the
- * tool refuses one step later. (Codex, round 11.)
+ * Every vault name a binding may be written with — THE writer's rule, in one
+ * place: the vaults the config file lists (`bindableVaultNames`), plus the
+ * remotes the ENVIRONMENT provides (`VAULT_*`, marked `source: 'env'` by the
+ * registry), which the file never lists and which every start re-provides.
  *
- * The FILE is the authority for what can be bound (`bindableVaultNames`):
- * a primary the file does not list gets the placeholder whatever this
- * session knows, because the writer refuses it. A primary the file lists
- * and this session has not loaded is not a repair but a reload.
+ * Until round 12 `assertBindable` exempted every remote from the file check,
+ * so a remote a sibling had removed from the file could still be proposed,
+ * accepted and bound — and the next start found no such vault. The known
+ * hole carried since round 5. Closed here, and the diagnostics ask the same
+ * set, so "this vault cannot be bound" is said exactly when the writer
+ * refuses it. (Codex, rounds 11 and 12.)
+ *
+ * @param {unknown} cfg the parsed router config
+ * @param {Array<{ name: string, source?: string }>} vaults the live catalogue
+ * @returns {Set<string>}
+ */
+export function writerBindableNames(cfg, vaults) {
+  const out = bindableVaultNames(cfg);
+  for (const v of Array.isArray(vaults) ? vaults : []) {
+    if (v && v.source === 'env' && typeof v.name === 'string') out.add(v.name);
+  }
+  return out;
+}
+
+/**
+ * What the REGISTRY knows about an entry's vaults, as incoherence kinds the
+ * renderer speaks — the facts `bindingIncoherences` cannot know. One
+ * function for EVERY door that spells a repair (the proposal in
+ * `resolveVault`, the acceptance in `confirm_workspace_binding`, the
+ * persisted lock): round 10 injected this at the first door only, round 11
+ * at the second, and the third went on spelling a repair call naming a
+ * primary the tool refuses one step later. (Codex, rounds 11 and 12.)
+ *
+ * `bindable` is the writer's own set (`writerBindableNames`): a primary
+ * outside it gets the placeholder whatever this session knows, because the
+ * writer refuses it; a secondary outside it is left OUT of the spelled call,
+ * and said so, for the same reason. A primary inside it that this session
+ * has not loaded is not a repair but a reload.
  *
  * @param {unknown} raw the entry as written
- * @param {{ fileNames: Set<string>, sessionNames: Set<string> }} registry
+ * @param {{ bindable: Set<string>, sessionNames: Set<string> }} registry
  * @returns {Array<{ kind: string, names: string[] }>}
  */
-export function primaryRegistryIncoherences(raw, { fileNames, sessionNames }) {
-  const primary = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.vault : undefined;
-  if (typeof primary !== 'string' || primary.trim() === '') return [];
-  if (!fileNames.has(primary)) return [{ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] }];
-  if (!sessionNames.has(primary)) return [{ kind: BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE, names: [primary] }];
-  return [];
+export function registryIncoherences(raw, { bindable, sessionNames }) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  const out = [];
+  const primary = raw.vault;
+  if (typeof primary === 'string' && primary.trim() !== '') {
+    if (!bindable.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] });
+    else if (!sessionNames.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE, names: [primary] });
+  }
+  const tiers = rawSecondaryTiers(raw);
+  const gone = tiers ? tiers.also.filter((n) => !bindable.has(n)) : [];
+  if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED, names: gone });
+  return out;
 }
 
 /**
@@ -528,6 +564,9 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
         return `its primary ${listed(n)} is in the config file but this session has not loaded it yet — retry in a `
           + 'moment or restart the session BEFORE repairing, or the repair call will be refused here for a name '
           + 'this session does not know';
+      case BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED:
+        return `its secondary ${listed(n)} is not a vault this config file registers, so no binding can keep it — `
+          + 'it is left OUT of the call below; register it, then add it back with confirm_workspace_binding';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
@@ -558,7 +597,13 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
   // uses when the entry has none. (Round 10 read them under a sentinel
   // primary; see that function for why not.)
   const forTiers = repaired || rawSecondaryTiers(raw);
-  const also = forTiers ? forTiers.also : [];
+  // A secondary no binding can be written with is left out of the call —
+  // spelling it would hand the reader a call `assertBindable` refuses before
+  // the precondition is even looked at. (Codex, round 12.)
+  const unregistered = new Set(incoherences
+    .filter((i) => i.kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED)
+    .flatMap((i) => i.names));
+  const also = forTiers ? forTiers.also.filter((n) => !unregistered.has(n)) : [];
   const lockedArg = isObject && raw.locked === true ? ', locked: true' : '';
   // THE ENTRY AS WRITTEN, whatever its shape — the same function the tool
   // compares with, on the same value. See `rawEntryDigest`.
@@ -592,7 +637,7 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
     + 'It needs repairing before anything is proposed or added on top of it — a role is never proposed over a '
     + `binding the router cannot read as written. Re-confirm it, naming the whole binding to keep: ${call}.`
     + `${placeholderNote}${tierNote} \`ifBindingDigest\` is the precondition: the repair is applied only if the `
-    + 'file still holds this exact entry (byte for byte, key order aside), so any change by another session — '
+    + 'file still holds this exact entry (the same JSON value, key order aside), so any change by another session — '
     + 'including deleting the entry — refuses it instead of being overwritten. '
     + '(list_vaults shows the repaired reading this session routes by, not the entry as the file holds it.)';
 }

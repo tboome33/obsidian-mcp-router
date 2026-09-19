@@ -41,6 +41,8 @@ import {
   bindingIncoherences,
   describeBindingRepair,
   BINDING_REPAIR_REQUIRED_CODE,
+  registryIncoherences,
+  writerBindableNames,
 } from '../helpers/workspace-bindings.mjs';
 import {
   isVaultReachable,
@@ -306,7 +308,18 @@ export async function unlockVaults(registry, args = {}) {
     // goes with its vault, it is simply no longer restricted to it. Best effort,
     // and before the throwing branch below so an unwritable config cannot mask
     // the dotenv failure, which is the one that actually re-locks on restart.
-    bindingLifted = recordLockInBinding(registry, process.cwd(), null) !== null;
+    try {
+      bindingLifted = recordLockInBinding(registry, process.cwd(), null) !== null;
+    } catch (err) {
+      if (err?.code !== BINDING_REPAIR_REQUIRED_CODE) throw err;
+      // The in-memory lock IS already cleared above; the recorded one is
+      // not, on purpose, and the router WILL re-lock from it on restart until
+      // the entry is repaired. Said in full, the dotenv line left alone.
+      throw new Error(
+        `unlock_vaults: in-memory lock cleared for this session, but ${err.message.replace(/^unlock_vaults --persist: /, '')} `
+        + `The router WILL re-lock to "${wasLocked}" on the next restart until the binding is repaired.`,
+      );
+    }
     try {
       persistRemoved = await removeDotenvVar(envPath, 'OBSIDIAN_ROUTER_LOCKED');
     } catch (err) {
@@ -459,8 +472,17 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
           const raw = rawBindingEntry(cfg, cwd);
           const incoherences = bindingIncoherences(raw);
           if (incoherences.length) {
+            // THE REGISTRY FACTS TOO — this is the third door that spells a
+            // repair, and round 11 left it spelling `vault: "ghost"`. (Codex,
+            // round 12.)
+            incoherences.push(...registryIncoherences(raw, {
+              bindable: writerBindableNames(cfg, registry.vaults),
+              sessionNames: new Set((registry.vaults || []).map((v) => v.name)),
+            }));
             const err = new Error(
-              `lock_vault --persist: the lock was NOT recorded and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
+              'lock_vault --persist: the lock was NOT recorded and NO BINDING WAS WRITTEN; the lock in force '
+              + 'before this call, if any, stays as it was. '
+              + describeBindingRepair(raw, incoherences),
             );
             // Coded, so the catch below lets it through as a refusal on
             // purpose instead of folding it into "the config could not be
@@ -514,6 +536,27 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
       // binding at all there is nothing to lift, and the config is returned
       // untouched rather than rewritten to the same bytes.
       if (!existing || !existing.locked) return cfg;
+      // THE SAME DISCIPLINE ON THE WAY OUT. Lifting a persisted lock rewrites
+      // the whole entry through `withBinding`, which normalises — so lifting
+      // a lock recorded on an incoherent entry repaired that entry in silence
+      // while the lock path refused to touch it (Codex, round 12). Refused,
+      // coded, with the repair spelled out; `unlockVaults` says what that
+      // leaves in force.
+      {
+        const raw = rawBindingEntry(cfg, cwd);
+        const incoherences = bindingIncoherences(raw);
+        if (incoherences.length) {
+          incoherences.push(...registryIncoherences(raw, {
+            bindable: writerBindableNames(cfg, registry.vaults),
+            sessionNames: new Set((registry.vaults || []).map((v) => v.name)),
+          }));
+          const err = new Error(
+            `unlock_vaults --persist: the lock recorded in the config was NOT lifted and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
+          );
+          err.code = BINDING_REPAIR_REQUIRED_CODE;
+          throw err;
+        }
+      }
       wrote = true;
       return withBinding(cfg, cwd, { ...existing, locked: false });
     }, seams);
