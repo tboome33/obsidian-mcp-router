@@ -43,6 +43,7 @@ import {
 } from '../src/helpers/temporal-validity.mjs';
 import { parseFrontmatter } from '../src/helpers/llms-txt-exporter.mjs';
 import { TEMPORAL_VALIDITY_CASES, DIVERGENT_CASE_IDS } from './fixtures/temporal-validity-cases.mjs';
+import { OBSIDIAN_ORACLE, ORACLE_CAPTURED_ON } from './fixtures/obsidian-frontmatter-oracle.mjs';
 
 describe('normalizeBound — absent, readable, or unreadable, never a fourth thing', () => {
   test('absence has several spellings and one meaning', () => {
@@ -399,6 +400,113 @@ describe('the shared conformance corpus, replayed through the router line parser
       classifyValidity({ valid_from: { date: '2026-01-01' }, valid_through: '2026-12-31' }, { asOf: objectBound.asOf }).state,
       'unreadable',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('THE THIRD DOOR, against Obsidian — the comparison this corpus was built for', () => {
+  // The corpus pins `parseFrontmatter` (`expect`) and declares what a spec YAML
+  // parser would say on two shapes (`expectYaml`). It never ran
+  // `windowFieldsFromFrontmatterText` — the raw-text reader the recall hook
+  // uses — against any of it, and the neighbouring test says why: "comparing
+  // the two parsers for real needs Obsidian's".
+  //
+  // `obsidian-frontmatter-oracle.mjs` is that capture, measured from a live
+  // vault. These tests are what it was captured for.
+
+  /** What Obsidian saw, judged by the same helper every door is judged by. */
+  const obsidianVerdict = (testCase) => {
+    const fm = OBSIDIAN_ORACLE[testCase.id];
+    assert.ok(fm !== undefined, `no oracle entry for ${testCase.id} — re-capture the fixture`);
+    return classifyValidity(fm, { asOf: testCase.asOf });
+  };
+
+  /**
+   * What the raw reader says, with its third outcome kept distinct.
+   *
+   * `classifyValidity` answers `null` for "this page declares no window", so a
+   * verdict is `null | {state,…} | {refused:[…]}` — three shapes, and the null
+   * is why every reader of this value has to check it before touching a field.
+   */
+  const rawVerdict = (testCase) => {
+    const { fields, undetermined } = windowFieldsFromFrontmatterText(testCase.markdown);
+    if (undetermined.length > 0) return { refused: undetermined };
+    return classifyValidity(fields, { asOf: testCase.asOf });
+  };
+  const isRefusal = (verdict) => verdict !== null && Array.isArray(verdict.refused);
+
+  test('the oracle covers the corpus exactly — no case unmeasured, no entry orphaned', () => {
+    const corpusIds = TEMPORAL_VALIDITY_CASES.map((c) => c.id).sort();
+    const oracleIds = Object.keys(OBSIDIAN_ORACLE).sort();
+    assert.deepEqual(oracleIds, corpusIds,
+      'add a case and the oracle must be re-captured, or the comparison below silently skips it');
+    assert.match(ORACLE_CAPTURED_ON, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  for (const testCase of TEMPORAL_VALIDITY_CASES) {
+    test(`raw reader vs Obsidian: ${testCase.id}`, () => {
+      const obsidian = obsidianVerdict(testCase);
+      const raw = rawVerdict(testCase);
+
+      // REFUSING IS ALWAYS ALLOWED. The reader's third outcome exists so it can
+      // decline a shape it does not decode, and a declined field is reported,
+      // never silently dropped. That is the safe direction and it is the ONLY
+      // disagreement this test accepts.
+      if (isRefusal(raw)) return;
+
+      if (obsidian === null) {
+        assert.equal(raw, null,
+          `${testCase.id}: Obsidian sees no window here, so claiming one would be a window nobody declared (invariant 1)`);
+        return;
+      }
+
+      assert.notEqual(raw, null,
+        `${testCase.id}: Obsidian sees a bound and the reader is SILENT — an unreadable window reported as absent is invariant 2`);
+      assert.equal(raw.state, obsidian.state, `${testCase.id}: state`);
+      assert.equal(raw.from, obsidian.from, `${testCase.id}: from`);
+      assert.equal(raw.through, obsidian.through, `${testCase.id}: through`);
+    });
+  }
+
+  test('and the reader refuses at most where it has to — a refusal is a cost, not a free pass', () => {
+    // Without this, "refusing is always allowed" would let a reader that
+    // refuses EVERYTHING pass every case above. The corpus is 23 ordinary
+    // shapes; one of them is genuinely undecidable for a line reader.
+    const refused = TEMPORAL_VALIDITY_CASES.filter((c) => isRefusal(rawVerdict(c)));
+    assert.deepEqual(refused.map((c) => c.id), ['object-as-a-bound-loses-its-error'],
+      'the raw reader declines exactly one corpus shape; a change here is a behaviour change to argue for');
+  });
+
+  test('the DECLARED divergences are the ones Obsidian actually produces', () => {
+    // `expectYaml` was a prediction — the corpus said so. Measured against a
+    // live Obsidian, it holds on both cases, and the line parser is the door
+    // that is wrong on both.
+    const disagreeing = TEMPORAL_VALIDITY_CASES.filter((c) => {
+      const line = classifyValidity(parseFrontmatter(c.markdown).frontmatter, { asOf: c.asOf });
+      const obsidian = obsidianVerdict(c);
+      if (line === null || obsidian === null) return line !== obsidian;
+      return line.state !== obsidian.state || line.from !== obsidian.from || line.through !== obsidian.through;
+    }).map((c) => c.id);
+
+    assert.deepEqual(disagreeing, DIVERGENT_CASE_IDS,
+      'the line parser disagrees with Obsidian on exactly the shapes the corpus declared, and no others');
+  });
+
+  test('on both of those, the RAW reader is the one that does not mislead', () => {
+    // The point of the whole comparison, stated once: where the line parser
+    // reports a confident wrong state, the raw reader either declines or stays
+    // silent — and Obsidian says it is right to.
+    const objectBound = TEMPORAL_VALIDITY_CASES.find((c) => c.id === 'object-as-a-bound-loses-its-error');
+    assert.equal(classifyValidity(parseFrontmatter(objectBound.markdown).frontmatter, { asOf: objectBound.asOf }).state,
+      'in-force', 'the line parser is confidently wrong here');
+    assert.equal(obsidianVerdict(objectBound).state, 'unreadable', 'Obsidian calls it unreadable');
+    assert.deepEqual(rawVerdict(objectBound).refused, ['valid_from'], 'and the raw reader declines it by name');
+
+    const nested = TEMPORAL_VALIDITY_CASES.find((c) => c.id === 'nested-object-hides-the-window');
+    assert.equal(classifyValidity(parseFrontmatter(nested.markdown).frontmatter, { asOf: nested.asOf }).state,
+      'in-force', 'the line parser invents a window from a nested key');
+    assert.equal(obsidianVerdict(nested), null, 'Obsidian sees nothing at the top level');
+    assert.equal(rawVerdict(nested), null, 'and neither does the raw reader');
   });
 });
 
