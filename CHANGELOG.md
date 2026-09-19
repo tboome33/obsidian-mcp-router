@@ -143,6 +143,28 @@ primary and drops every secondary not passed again, which is exactly the call th
   every refusal that refreshed the session's refusals says so; and `lock_vault --persist` no longer
   rebuilds `{ vault, also: [] }` over an entry it could not read as written — it refuses with the same
   repair spelled out.
+- **The precondition is the entry itself, not a projection of it.** The eleventh round found that
+  `ifBindingDigest` reused the binding digest — five known fields, list items coerced to strings, a
+  non-list read as an empty list, an absent entry equal to a present `null`. So a stale repair could
+  recreate an entry another session had just deleted, or erase a strict tier that session had just
+  recorded by turning `[7]` into `["7"]`; and a repair spelled for an array-shaped entry could never be
+  applied at all, because the diagnostic and the tool digested two different things. The digest is
+  now the identity of the entry as written — canonical JSON, key order aside — so any change,
+  deletion included, refuses the repair, and a legitimate one is never refused for a re-saved file.
+  Also from that round: the tiers of a primary-less entry are read with **no primary invented**
+  (round 10 read them under a sentinel name, and a vault carrying that exact name lost its strict
+  tier before the promotion guard asked); the promotion guard inside the lock reads those raw tiers
+  too, so the repair of a primary-less entry cannot promote a secondary it holds as strict — and for
+  a repair the in-memory preflight steps aside, because this session's copy may hold as strict a
+  vault the file now holds as writable; the acceptance names an unregistered primary as the proposal
+  does, and "known to the file OR this session" became "listed in the file" (the writer's own rule),
+  with a separate sentence for a primary the file has and this session has not loaded (a reload, not
+  a repair); an unreadable config is no longer diagnosed as a malformed entry nobody had read;
+  `lock_vault --persist` refuses over ANY incoherent entry, not only one without a primary; a
+  promotion refused inside the lock still honours the refusals it just read; `clear: true` on an
+  entry the router could not read says it removed one instead of "nothing changed"; and the stale-digest
+  refusal names the ACCESS call to re-run, not this repair with its old digest, which would refuse
+  forever.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

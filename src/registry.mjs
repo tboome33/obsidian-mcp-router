@@ -84,6 +84,7 @@ import {
   bindingIncoherences,
   describeBindingRepair,
   BINDING_INCOHERENCE,
+  primaryRegistryIncoherences,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -155,7 +156,12 @@ function freshWorkspaceState(cfgPath, fallbackConfig, cwd) {
     // to inspect — a copy loaded at start-up says nothing about the file now —
     // so the answer is null, a proposal may go out, and the acceptance, which
     // re-reads the file under the write lock, is the door that decides.
-    rawEntry: fromFile ? rawBindingEntry(fresh, cwd) : null,
+    // `undefined` here means "not observed", the same value `rawBindingEntry`
+    // uses for "no entry" — and NOT `null`, which since round 10 is a PRESENT
+    // entry of the wrong type: the first version put `null` here and an
+    // unreadable file was diagnosed as "the entry is not an object at all",
+    // a sentence about a file nobody had read. (Codex, round 11.)
+    rawEntry: fromFile ? rawBindingEntry(fresh, cwd) : undefined,
   };
 }
 
@@ -917,15 +923,14 @@ export async function loadRegistry({ configPath } = {}) {
         // call the tool refuses one step later. The predicate knows no
         // registry, so the fact is injected here, where both are known, and
         // the renderer puts a placeholder in the call. (Codex, round 10.)
-        const rawPrimary = live.rawEntry && typeof live.rawEntry === 'object' && !Array.isArray(live.rawEntry)
-          ? live.rawEntry.vault : undefined;
-        const primaryUnregistered = typeof rawPrimary === 'string' && rawPrimary.trim() !== ''
-          && !bindableVaultNames(live.config).has(rawPrimary)
-          && !this.vaults.some((x) => x.name === rawPrimary);
         if (incoherences.length) {
-          if (primaryUnregistered) {
-            incoherences.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [rawPrimary] });
-          }
+          // ONE FUNCTION FOR BOTH DOORS, and the file is the authority for
+          // what can be bound (round 11: "known to file OR session" let a
+          // primary through that the writer then refused as not in the file).
+          incoherences.push(...primaryRegistryIncoherences(live.rawEntry, {
+            fileNames: bindableVaultNames(live.config),
+            sessionNames: new Set(this.vaults.map((x) => x.name)),
+          }));
           // ITS OWN PREAMBLE, naming the source. The shared one says "this
           // workspace's binding does not name it", which the repaired reading
           // of THIS SESSION established — while the file's entry, incoherent,
@@ -966,7 +971,7 @@ export async function loadRegistry({ configPath } = {}) {
                 + 'file does have it — this session loaded its vault list before that vault existed, and '
                 + 'has not picked it up: hot-reload is off here, or has not fired yet. Nothing needs '
                 + 'repairing. Retry in a moment, or restart the session.'
-              : live.rawEntry !== undefined && live.rawEntry !== null
+              : live.fromFile && live.rawEntry !== undefined
                 ? `${preamble} ${describeBindingRepair(live.rawEntry, [
                   { kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] },
                 ])}`

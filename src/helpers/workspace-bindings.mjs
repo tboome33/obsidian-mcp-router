@@ -60,8 +60,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
+import { createHash } from 'node:crypto';
 import { safeForMessage, identifierForCall } from './sanitize.mjs';
-import { bindingDigest } from './binding-proposal.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -239,7 +239,8 @@ export function readBinding(config, cwd) {
  *
  * @param {object} config the parsed router config
  * @param {string} cwd
- * @returns {unknown} the stored entry, whatever its shape, or null
+ * @returns {unknown} the stored entry, whatever its shape (a present `null`
+ *   included), or `undefined` when the file holds no entry for this workspace
  */
 export function rawBindingEntry(config, cwd) {
   const key = canonicalWorkspaceKey(cwd);
@@ -289,6 +290,41 @@ export function rawBindingEntry(config, cwd) {
  */
 export const BINDING_REPAIR_REQUIRED_CODE = 'binding-repair-required';
 
+/**
+ * The digest of a stored entry EXACTLY AS WRITTEN — the precondition a repair
+ * call carries (`ifBindingDigest`).
+ *
+ * Not `bindingDigest`, deliberately: that one is the identity of a BINDING
+ * (five known fields, lists sorted, strings coerced) and it is right for the
+ * proposal identifier, where "the same binding" is the question. Here the
+ * question is "is this the same ENTRY", and a projection answers it wrongly
+ * in both directions: an absent entry and a present `null` shared a digest,
+ * so a stale repair recreated an entry another session had just deleted; a
+ * list of numbers and a list of the same numbers as strings shared one, so
+ * a repair spelled against a malformed list could drop a real tier recorded
+ * since; and the renderer digested `null` for an array entry while the tool
+ * digested the array, so that repair could never be applied at all. (Codex,
+ * round 11 — the blocker of that round.)
+ *
+ * Canonical JSON (object keys sorted at every depth, arrays in order, values
+ * as JSON writes them), so re-saving the file with keys in another order is
+ * not a change and a hand edit of any byte that matters is. `undefined`
+ * (no entry) gets its own sentinel.
+ *
+ * @param {unknown} raw the stored entry, from `rawBindingEntry`
+ * @returns {string} 64-hex sha256
+ */
+export function rawEntryDigest(raw) {
+  const canonical = (v) => {
+    if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+    if (Array.isArray(v)) return `[${v.map(canonical).join(',')}]`;
+    return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(',')}}`;
+  };
+  const NUL = String.fromCharCode(0);
+  const body = raw === undefined ? `re1${NUL}absent` : `re1${NUL}entry${NUL}${canonical(raw)}`;
+  return createHash('sha256').update(body, 'utf8').digest('hex');
+}
+
 export const BINDING_INCOHERENCE = Object.freeze({
   /** An entry exists, but names no usable primary (missing, empty, not a string). */
   NO_PRIMARY: 'no-primary',
@@ -312,7 +348,65 @@ export const BINDING_INCOHERENCE = Object.freeze({
    * the caller that does, so the renderer names it in the same breath.
    */
   PRIMARY_NOT_REGISTERED: 'primary-not-registered',
+  /**
+   * The primary is in the config file but this session has not loaded it
+   * (a sibling registered it; hot-reload off). Not a repair: a retry or a
+   * restart. Injected by the caller, like the kind above.
+   */
+  PRIMARY_NOT_LOADED_HERE: 'primary-not-loaded-here',
 });
+
+/**
+ * The secondaries and their tiers of an entry AS WRITTEN, with no primary
+ * involved: `also` deduplicated in order, each tier a subset of `also`, a
+ * vault in both tiers locked — the tail of `normalizeBinding`, without the
+ * step that needs a primary.
+ *
+ * THIS IS HOW A PRIMARY-LESS ENTRY IS READ, instead of reading it through
+ * `normalizeBinding` under a made-up primary. Round 10 did the latter, with a
+ * sentinel name — and a sentinel is a string a vault can be named: an entry
+ * holding a secondary of that exact name lost it (the made-up primary is
+ * dropped from `also`) and, for the promotion guard, a strict secondary of
+ * that name stopped being a secondary before the question was asked.
+ * (Codex, round 11.) No name is invented here, so no name can collide.
+ *
+ * @param {unknown} raw
+ * @returns {{ also: string[], alsoLocked: string[], alsoWritable: string[] }|null} null when `raw` is not an object
+ */
+export function rawSecondaryTiers(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const names = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === 'string' && s.trim() !== '') : []);
+  const also = [...new Set(names(raw.also))];
+  const alsoSet = new Set(also);
+  const alsoLocked = [...new Set(names(raw.alsoLocked).filter((n) => alsoSet.has(n)))];
+  const alsoWritable = [...new Set(names(raw.alsoWritable).filter((n) => alsoSet.has(n) && !alsoLocked.includes(n)))];
+  return { also, alsoLocked, alsoWritable };
+}
+
+/**
+ * What the REGISTRY knows about an entry's primary, as incoherence kinds the
+ * renderer speaks — the facts `bindingIncoherences` cannot know. One
+ * function for both doors (the proposal in `resolveVault`, the acceptance
+ * in `confirm_workspace_binding`): round 10 injected this at the first door
+ * only, and the second went on spelling a repair call naming a primary the
+ * tool refuses one step later. (Codex, round 11.)
+ *
+ * The FILE is the authority for what can be bound (`bindableVaultNames`):
+ * a primary the file does not list gets the placeholder whatever this
+ * session knows, because the writer refuses it. A primary the file lists
+ * and this session has not loaded is not a repair but a reload.
+ *
+ * @param {unknown} raw the entry as written
+ * @param {{ fileNames: Set<string>, sessionNames: Set<string> }} registry
+ * @returns {Array<{ kind: string, names: string[] }>}
+ */
+export function primaryRegistryIncoherences(raw, { fileNames, sessionNames }) {
+  const primary = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw.vault : undefined;
+  if (typeof primary !== 'string' || primary.trim() === '') return [];
+  if (!fileNames.has(primary)) return [{ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] }];
+  if (!sessionNames.has(primary)) return [{ kind: BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE, names: [primary] }];
+  return [];
+}
 
 /**
  * Everything `normalizeBinding` would silently repair in `raw`, named.
@@ -429,7 +523,11 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
       case BINDING_INCOHERENCE.NO_PRIMARY:
         return 'it names no usable primary vault';
       case BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED:
-        return `its primary ${listed(n)} is not a vault this config file or this session registers`;
+        return `its primary ${listed(n)} is not a vault this config file registers, so no binding can name it`;
+      case BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE:
+        return `its primary ${listed(n)} is in the config file but this session has not loaded it yet — retry in a `
+          + 'moment or restart the session BEFORE repairing, or the repair call will be refused here for a name '
+          + 'this session does not know';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
@@ -455,13 +553,16 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
     || incoherences.some((i) => i.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED);
   const PLACEHOLDER = '<the primary vault you intend>';
   const primary = primaryUnusable ? identifierForCall(PLACEHOLDER) : identifierForCall(repaired.vault);
-  // The tiers the tool will carry over: the same forgiving reading of the
-  // entry as written, given SOME primary — which is how the tool itself reads
-  // them when the entry has none (`tierSource` in confirm_workspace_binding).
-  const forTiers = repaired || (isObject ? normalizeBinding({ ...raw, vault: PLACEHOLDER }) : null);
+  // The tiers the tool will carry over: read from the entry as written with
+  // NO primary invented — `rawSecondaryTiers`, the same reading the tool
+  // uses when the entry has none. (Round 10 read them under a sentinel
+  // primary; see that function for why not.)
+  const forTiers = repaired || rawSecondaryTiers(raw);
   const also = forTiers ? forTiers.also : [];
   const lockedArg = isObject && raw.locked === true ? ', locked: true' : '';
-  const digest = bindingDigest(isObject ? raw : null);
+  // THE ENTRY AS WRITTEN, whatever its shape — the same function the tool
+  // compares with, on the same value. See `rawEntryDigest`.
+  const digest = rawEntryDigest(raw);
   const call = `confirm_workspace_binding({ vault: ${primary}, also: [${also.map(identifierForCall).join(', ')}]`
     + `${lockedArg}, ifBindingDigest: ${identifierForCall(digest)} })`;
 
@@ -471,8 +572,16 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
       forTiers.alsoWritable.length ? `writable: ${forTiers.alsoWritable.map(identifierForCall).join(', ')}` : '',
     ].filter(Boolean).join('; ')
     : '';
+  // "CARRIES OVER" IS QUALIFIED BY THE CHOICE OF PRIMARY: a secondary the
+  // user names as the new primary leaves `also`, and a tier belongs to a
+  // secondary. A strict one named as primary is refused outright (the
+  // promotion guard); a writable one loses its tier by becoming the primary,
+  // which is read-write anyway. (Codex, round 11.)
   const tierNote = tiers
-    ? ` The write tiers that call carries over, as this router reads them today (a vault in both tiers is read as locked): ${tiers} — change any of them afterwards with set_secondary_vault_mode.`
+    ? ` The write tiers that call carries over, for the vaults that remain secondaries after your choice of primary, `
+      + `as this router reads them today (a vault in both tiers is read as locked; a name with no secondary role holds `
+      + `no tier): ${tiers} — change any of them afterwards with set_secondary_vault_mode. A secondary held as locked `
+      + 'cannot be named as the primary: that call is refused.'
     : '';
   const placeholderNote = primaryUnusable
     ? ` Replace ${identifierForCall(PLACEHOLDER)} with the name of a REGISTERED vault the user chooses — ask them; `
@@ -483,7 +592,8 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
     + 'It needs repairing before anything is proposed or added on top of it — a role is never proposed over a '
     + `binding the router cannot read as written. Re-confirm it, naming the whole binding to keep: ${call}.`
     + `${placeholderNote}${tierNote} \`ifBindingDigest\` is the precondition: the repair is applied only if the `
-    + 'file still holds this exact entry, so a change by another session refuses it instead of being overwritten. '
+    + 'file still holds this exact entry (byte for byte, key order aside), so any change by another session — '
+    + 'including deleting the entry — refuses it instead of being overwritten. '
     + '(list_vaults shows the repaired reading this session routes by, not the entry as the file holds it.)';
 }
 

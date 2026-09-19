@@ -951,6 +951,134 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.equal(writes.length, 0, 'the yes was written over an entry the lock found incoherent');
   });
 
+  test('a config the session can no longer READ is not diagnosed as a malformed entry — nothing was observed', async () => {
+    // Round 11: `freshWorkspaceState` put `null` in `rawEntry` for an
+    // unreadable file, and since round 10 a present `null` IS a malformed
+    // entry — so an unreadable file was diagnosed as "the entry is not an
+    // object at all", a sentence about a file nobody had read, with a repair
+    // call spelled for it. Not observed is `undefined`, and the proposal is
+    // minted from this session's own binding, as before.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-unobserved-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('sci')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: {
+        [canonicalWorkspaceKey(process.cwd())]: { vault: 'work', also: [], locked: false, confirmedVia: 'test' },
+      },
+    }, null, 2), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const registry = await loadRegistry({ configPath });
+    fs.rmSync(configPath);
+    let err = null;
+    try { registry.resolveVault('sci'); } catch (e) { err = e; }
+    assert.ok(err, 'sci resolved');
+    assert.doesNotMatch(err.message, /not an object at all|cannot be taken as written/, 'an unread file was diagnosed');
+    assert.ok(err.bindingProposal, `no proposal from the session's own binding:\n${err.message}`);
+    assert.equal(err.bindingProposal.currentPrimary, 'work');
+  });
+
+  test('a primary the FILE has and this session has not loaded is a reload, not a repair — said in the same breath as the duplicate', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-notloaded-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (vaults, binding) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: vaults.map(remote),
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: binding },
+    }, null, 2);
+    fs.writeFileSync(configPath, config(['work', 'sci'], { vault: 'work', also: [] }), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const registry = await loadRegistry({ configPath });
+    // A sibling registers `newer`, binds to it, and leaves a duplicate.
+    fs.writeFileSync(configPath, config(['work', 'sci', 'newer'], { vault: 'newer', also: ['sci', 'sci'] }), 'utf8');
+    let err = null;
+    try { registry.resolveVault('sci'); } catch (e) { err = e; }
+    assert.ok(err);
+    assert.equal(err.bindingProposal, undefined);
+    assert.match(err.message, /sci appears more than once/);
+    assert.match(err.message, /its primary newer is in the config file but this session has not loaded it yet/);
+    assert.match(err.message, /vault: "newer", also: \["sci"\]/, 'a primary the file has must stay in the call, with the reload advice');
+  });
+
+  test('a REPAIR is not refused by the promotion preflight on a tier this session holds and the file no longer does', async () => {
+    // Round 11: the in-memory preflight decided definitively when it refused.
+    // This session still holds `ref` as strict; the file's entry (no primary)
+    // holds it as writable; naming `ref` as primary is a valid repair the
+    // lock would allow. For a repair the preflight is skipped and the lock,
+    // asked of the file, decides.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-stalepreflight-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (binding) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('ref')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: binding },
+    }, null, 2);
+    fs.writeFileSync(configPath, config({ vault: 'work', also: ['ref'], alsoLocked: ['ref'] }), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const { rawEntryDigest } = await import('../src/helpers/workspace-bindings.mjs');
+    const registry = await loadRegistry({ configPath });
+    assert.deepEqual(registry.workspaceBinding?.alsoLocked, ['ref'], 'the fixture did not load ref as strict');
+    const later = { also: ['ref'], alsoWritable: ['ref'] };
+    fs.writeFileSync(configPath, config(later), 'utf8');
+    const res = await confirmWorkspaceBinding(registry, {
+      vault: 'ref', also: [], ifBindingDigest: rawEntryDigest(later), open: false,
+    }, { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) });
+    assert.ok(res, 'no result');
+    const written = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())];
+    assert.equal(written.vault, 'ref');
+  });
+
+  test('a promotion refused inside the lock still honours the refusals the lock just read', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-promo-refusals-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const key = canonicalWorkspaceKey(process.cwd());
+    const config = (binding, refusals) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: [remote('work'), remote('ref'), remote('other')],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [key]: binding },
+      ...(refusals ? { workspaceRefusals: { [key]: refusals } } : {}),
+    }, null, 2);
+    fs.writeFileSync(configPath, config({ vault: 'work', also: [] }, null), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const { rawEntryDigest } = await import('../src/helpers/workspace-bindings.mjs');
+    const registry = await loadRegistry({ configPath });
+    const later = { also: ['ref'], alsoLocked: ['ref'] };
+    fs.writeFileSync(configPath, config(later, { other: '2026-09-19' }), 'utf8');
+    await assert.rejects(
+      confirmWorkspaceBinding(registry, { vault: 'ref', also: [], ifBindingDigest: rawEntryDigest(later), open: false },
+        { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) }),
+      /alsoLocked SECONDARY/,
+    );
+    assert.equal(registry.workspaceRefusals?.has?.('other'), true, 'a refusal the lock read was not honoured');
+    assert.equal(registry.workspaceBinding?.vault, 'work', 'a refused promotion moved the routing');
+  });
+
   test('a config that becomes UNREADABLE between the preflight and the lock refuses the yes and writes nothing', async () => {
     // Round 10, angle F, the half the end-to-end witness cannot reach: the
     // preflight read a good file, the lock's read throws. "The acceptance
@@ -1054,7 +1182,7 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     // nothing). Round 10: a non-conformity, not a wording. The primary is a
     // placeholder, the secondary the binding declares is carried, and the
     // call carries its precondition.
-    assert.match(err.message, /its primary absent is not a vault this config file or this session registers/);
+    assert.match(err.message, /its primary absent is not a vault this config file registers/);
     assert.match(err.message, /vault: "<the primary vault you intend>", also: \["sci"\], ifBindingDigest: "[0-9a-f]{64}"/);
     assert.doesNotMatch(
       err.message,

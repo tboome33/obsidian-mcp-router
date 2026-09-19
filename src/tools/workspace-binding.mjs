@@ -63,7 +63,9 @@ import {
   rawBindingEntry,
   bindingIncoherences,
   describeBindingRepair,
-  normalizeBinding,
+  rawEntryDigest,
+  rawSecondaryTiers,
+  primaryRegistryIncoherences,
 } from '../helpers/workspace-bindings.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
@@ -84,7 +86,7 @@ import {
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
-import { resolveProposalId, canOpenLocally, sameSecondarySet, bindingDigest } from '../helpers/binding-proposal.mjs';
+import { resolveProposalId, canOpenLocally, sameSecondarySet } from '../helpers/binding-proposal.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -198,7 +200,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   if (args.ifBindingDigest !== undefined && (typeof args.ifBindingDigest !== 'string' || args.ifBindingDigest === '')) {
     throw new Error('confirm_workspace_binding: `ifBindingDigest` must be the digest string a diagnostic handed you.');
   }
-  if (args.ifBindingDigest !== undefined && (verbs.length || args.clear === true || args.vault === undefined)) {
+  if (args.ifBindingDigest !== undefined && (verbs.length || args.clear !== undefined || args.vault === undefined)) {
     throw new Error(
       'confirm_workspace_binding: `ifBindingDigest` goes with `vault` (a re-confirmation that repairs a binding) '
       + 'and with nothing else — not with accept, refuse, retract or clear.',
@@ -242,9 +244,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // The registry side closes it for `already-bound`; this closes it for the
     // act the user just performed, whatever the migration had decided.
     let had = null;
+    let hadRawEntry = false;
     let refusals = null;
     updateConfigBindings(configPath, (cfg) => {
       had = readBinding(cfg, cwd);
+      hadRawEntry = rawBindingEntry(cfg, cwd) !== undefined;
       // Untouched by a clear — read so the live copy below is the file's,
       // not whatever this process loaded at start-up.
       refusals = readRefusals(cfg, cwd);
@@ -320,7 +324,12 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         // measured on 2026-09-03. Every other config-derived value in this
         // file goes through `safeForMessage`; this one had been missed.
         ? `This workspace is no longer bound to "${safeForMessage(had.vault, 80)}". Reachability still follows vaultReach: with "declared", only openVaults remain reachable (possibly none); otherwise registered vaults are available. The default follows the reachable cascade.${stillLocked}`
-        : `This workspace had no binding; nothing changed. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`,
+        : hadRawEntry
+          // AN ENTRY THE ROUTER COULD NOT READ AS WRITTEN WAS REMOVED — a
+          // clear is the one act for which that needs no prior repair, and
+          // "nothing changed" would have been false. (Codex, round 11.)
+          ? `This workspace held an entry the router could not read as a binding (no usable primary, or the wrong shape); it has been removed, so the workspace now has no binding. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`
+          : `This workspace had no binding; nothing changed. Reachability still follows vaultReach: with "declared", only openVaults are reachable (possibly none); otherwise registered vaults are available.${stillLocked}`,
     };
   }
 
@@ -432,7 +441,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // early and readable answer, and once inside the lock against the FILE, which
   // is the call that DECIDES. A preflight alone would be exactly the race the
   // id exists to close.
-  const resolveAcceptance = (binding, refusals, rawEntry) => {
+  const resolveAcceptance = (binding, refusals, rawEntry, cfgForNames) => {
     // A BINDING THE FILE HOLDS IN A SHAPE THE ROUTER HAD TO REPAIR TO READ IS
     // NOT ONE TO ADD TO — the same rule as the proposal path in
     // `resolveVault`, asked again here because the identifier cannot ask it:
@@ -445,6 +454,14 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // as it stands cannot honour. (Decision, "Mal configuré"; 2026-09-18.)
     const incoherences = bindingIncoherences(rawEntry);
     if (incoherences.length) {
+      // A PRIMARY NO REGISTRY KNOWS IS NAMED HERE TOO — the injection round
+      // 10 added to `resolveVault` and not to this door, so an acceptance
+      // refused for a duplicate could still spell a repair call naming the
+      // unknown primary. Same fact, same renderer. (Codex, round 11.)
+      incoherences.push(...primaryRegistryIncoherences(rawEntry, {
+        fileNames: bindableVaultNames(cfgForNames),
+        sessionNames: new Set(registry.vaults.map((v) => v.name)),
+      }));
       throw new Error(
         'confirm_workspace_binding: the acceptance was NOT applied and NO BINDING WAS WRITTEN (this '
         + 'session\'s refusals were refreshed from the file; its binding and routing are unchanged). '
@@ -550,7 +567,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // them, they gate proposals only, and a refusal recorded elsewhere must be
     // honoured the moment it is seen.
     adoptRefusals(readRefusals(fresh, cwd));
-    return resolveAcceptance(readBinding(fresh, cwd), registry.workspaceRefusals, rawBindingEntry(fresh, cwd));
+    return resolveAcceptance(readBinding(fresh, cwd), registry.workspaceRefusals, rawBindingEntry(fresh, cwd), fresh);
   })();
 
   const primary = accepted ? accepted.primary : args.vault;
@@ -566,7 +583,13 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // exceptions" (decision portee-et-mode-ecriture-des-vaults §2; review
   // round 3). Read against the LIVE binding here, for an early answer; the
   // check that DECIDES is asked again of the file, inside the lock (below).
-  if (isPromotionOfLockedSecondary(primary, registry)) {
+  // NOT FOR A REPAIR. A repair (`ifBindingDigest`) is about the entry as the
+  // FILE holds it, and this session's copy may be older: it can still hold a
+  // vault as strict that the file now holds as writable, so this early answer
+  // would refuse a valid repair on the strength of a tier that no longer
+  // exists — and a preflight that refuses decides. For a repair the check
+  // inside the lock, asked of the file, is the only one. (Codex, round 11.)
+  if (args.ifBindingDigest === undefined && isPromotionOfLockedSecondary(primary, registry)) {
     throw lockedSecondaryPromotionError(promotionRefusal(primary));
   }
 
@@ -670,14 +693,21 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // 10 — a blocker the round-10 repair itself created by recommending the
     // call). The digest is taken on the entry AS WRITTEN, so it moves for a
     // hand-edited duplicate too, not only for what the repaired reading sees.
-    if (args.ifBindingDigest !== undefined && bindingDigest(rawPrevious ?? null) !== args.ifBindingDigest) {
+    // THE ENTRY AS WRITTEN, THROUGH THE SAME FUNCTION THE DIAGNOSTIC USED.
+    // `bindingDigest` projected it (five fields, coerced, absent == null) and
+    // the precondition let a stale repair recreate an entry a sibling had
+    // deleted; `rawEntryDigest` is the identity of the entry itself. (Codex,
+    // round 11.)
+    if (args.ifBindingDigest !== undefined && rawEntryDigest(rawPrevious) !== args.ifBindingDigest) {
       adoptRefusals(readRefusals(cfg, cwd));
       throw new Error(
-        'confirm_workspace_binding: this workspace\'s binding is no longer the one that diagnostic '
-        + 'described — another session changed it since — so the repair was NOT applied and NO BINDING '
-        + 'WAS WRITTEN (this session\'s refusals were refreshed from the file; its binding and routing '
-        + 'are unchanged). Re-run the call that was refused and follow WHAT COMES BACK: it may diagnose '
-        + 'again with a fresh digest, propose, succeed, or refuse for another reason.',
+        'confirm_workspace_binding: this workspace\'s binding is no longer the entry that diagnostic '
+        + 'described — another session changed or removed it since — so the repair was NOT applied and '
+        + 'NO BINDING WAS WRITTEN (this session\'s refusals were refreshed from the file; its binding and '
+        + 'routing are unchanged). Do NOT retry this repair with the same digest: it will refuse again. '
+        + 'Re-run the ACCESS call that produced the diagnostic (the get_file, search, … that was refused) '
+        + 'and follow WHAT COMES BACK: a new diagnostic with a fresh digest, a proposal, a success, or a '
+        + 'refusal for a reason of its own.',
       );
     }
     // A refusal of any vault being bound is dropped by `withBinding` itself;
@@ -692,7 +722,27 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // fresh tier and dropped it as "no longer a secondary" — the bypass the
     // preflight exists to stop, through the re-read meant to make the write
     // safe. (Codex, round on fd9e1cd.)
-    if (isPromotionOfLockedSecondaryOnDisk(primary, previous, cfg)) {
+    // ASKED OF THE ENTRY AS WRITTEN WHEN THE REPAIRED READING IS NULL. Round
+    // 10 made the tiers of a primary-less entry survive the repair call by
+    // reading them from the raw entry — and left this guard reading
+    // `previous`, null for that very entry. So the repair call could name a
+    // secondary the entry holds as STRICT as the new primary, and the hard
+    // tier was lifted by the call the diagnostic told the user to make — the
+    // promotion this guard exists to refuse, through the door round 10
+    // opened. The raw entry is read under a sentinel primary (no vault can be
+    // named that), so its own tiers stay visible to the question. (Round 11,
+    // own read before the review.)
+    // NO SENTINEL: the tiers are read with no primary at all (round 11 — a
+    // sentinel is a name a vault can carry, and one of that name lost its
+    // strict tier before the question was asked).
+    const rawTiers = previous ? null : rawSecondaryTiers(rawPrevious);
+    const rawAsBinding = rawTiers ? { vault: null, ...rawTiers } : null;
+    if (isPromotionOfLockedSecondaryOnDisk(primary, previous ?? rawAsBinding, cfg)) {
+      // THE REFUSALS ARE HONOURED ON SIGHT here as on every other refusing
+      // exit of this transform: they were just read, and a refusal recorded
+      // elsewhere must not stay unknown because this call refused. (Codex,
+      // round 11.)
+      adoptRefusals(refusedBefore);
       throw lockedSecondaryPromotionError(promotionRefusal(primary));
     }
     // THE ACCEPTANCE IS RE-RESOLVED AGAINST THE FILE, and this is the call that
@@ -730,7 +780,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         // The FILE's refusals, not the live Map: another process may have
         // recorded one since this session started, and under `--no-watch` the
         // copy in memory never learns.
-        onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd), rawBindingEntry(cfg, cwd));
+        onDisk = resolveAcceptance(previous, readRefusals(cfg, cwd), rawBindingEntry(cfg, cwd), cfg);
       } catch (err) {
         refreshLive();
         throw err;
@@ -778,10 +828,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // forgiving reading (a vault in both tiers is locked), then filtered to
     // the secondaries that stay — exactly what `previous` supplies when there
     // is one.
-    const tierSource = previous
-      ?? (rawPrevious && typeof rawPrevious === 'object' && !Array.isArray(rawPrevious)
-        ? normalizeBinding({ ...rawPrevious, vault: primary })
-        : null);
+    const tierSource = previous ?? rawTiers;
     const keep = (list) => (tierSource && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
     return withBinding(cfg, cwd, {
       vault: primary,

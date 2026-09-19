@@ -874,6 +874,34 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(reg.lockedVault, null, 'a refused persist left the in-memory lock in place');
   });
 
+  test('lockVault persist:true to a NEW primary over an incoherent entry WITH a primary refuses too', async () => {
+    // Round 11: the round-10 guard covered only a null repaired reading, so a
+    // persisted lock to `gamma` over `{ vault: alpha, also: [beta, beta] }`
+    // added a role on top of an entry to repair, normalising it in passing.
+    const cfgPath = path.join(tmpDir, 'persist-over-incoherent-with-primary.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }, { name: 'gamma', baseUrl: 'https://c/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta', 'beta'], alsoLocked: ['beta'] } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      vaults: [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }],
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: ['beta'], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    await assert.rejects(
+      lockVault(reg, { vault: 'gamma', persist: true }),
+      /NO BINDING WAS WRITTEN[\s\S]*beta appears more than once/,
+    );
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the persist wrote over the entry');
+    assert.equal(reg.lockedVault, null);
+  });
+
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {
     const reg = makeRegistry();
     const result = await lockVault(reg, { vault: 'alpha' });

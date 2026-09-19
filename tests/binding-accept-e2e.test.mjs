@@ -323,6 +323,35 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rt.kill(); }
   });
 
+  test('the repair of a primary-less entry cannot PROMOTE a secondary that entry holds as strict', async () => {
+    // ► THE DOOR ROUND 10 OPENED. Reading the tiers from the raw entry made
+    //   them survive the repair — and the promotion guard still read the
+    //   repaired binding, null for that entry, so naming the strict secondary
+    //   as the new primary walked past it and lifted the hard tier. Found on
+    //   my own read before round 11; the guard now reads the raw entry too.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { also: ['locked-ref', 'writable-ref'], alsoLocked: ['locked-ref'], alsoWritable: ['writable-ref'] },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(textOf(res))?.[1];
+      assert.ok(digest, textOf(res));
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const promote = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'locked-ref', also: ['writable-ref'], ifBindingDigest: digest, open: false },
+      });
+      assert.equal(promote.result?.isError, true, `a strict secondary was promoted through the repair:\n${textOf(promote)}`);
+      assert.match(textOf(promote), /alsoLocked SECONDARY/);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the promotion was written');
+      assert.deepEqual(bindingOnDisk(configPath, key).alsoLocked, ['locked-ref']);
+    } finally { rt.kill(); }
+  });
+
   test('THE REPAIR HAS A PRECONDITION: a binding another session replaced since the diagnostic refuses the spelled-out call', async () => {
     // ► THE OTHER ROUND-10 BLOCKER. `{ vault, also }` replaces whatever the
     //   file holds at write time; recommending it in a diagnostic recommended
@@ -351,10 +380,149 @@ describe('E2E: accepting a binding proposal', () => {
         arguments: { vault: 'work', also: ['locked-ref'], ifBindingDigest: digest, open: false },
       });
       assert.equal(stale.result?.isError, true, `the stale repair was applied over the sibling's binding:\n${textOf(stale)}`);
-      assert.match(textOf(stale), /no longer the one that diagnostic described/);
+      assert.match(textOf(stale), /no longer the entry that diagnostic described/);
+      // The advice names the ACCESS call, not this repair with its old digest
+      // (Codex, round 11: "re-run the call that was refused" pointed at the
+      // repair itself, which repeats the same refusal forever).
+      assert.match(textOf(stale), /Do NOT retry this repair with the same digest/);
+      assert.match(textOf(stale), /Re-run the ACCESS call/);
       assert.match(textOf(stale), /NO BINDING WAS WRITTEN/);
       assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
       assert.equal(bindingOnDisk(configPath, key).vault, 'other');
+    } finally { rt.kill(); }
+  });
+
+  test('THE PRECONDITION IS THE ENTRY, NOT A PROJECTION: a sibling turning `[7]` into `["7"]` — a strict tier appearing — refuses the stale repair', async () => {
+    // ► THE ROUND-11 BLOCKER. `bindingDigest` coerced list items to strings
+    //   and read a non-list as an empty list, so this change kept the digest:
+    //   the stale repair (spelled with `also: []`) went through and erased the
+    //   strict secondary the sibling had just recorded. `rawEntryDigest` is
+    //   the identity of the entry as written.
+    const vault = await startFakeVault();
+    // ► SAME NAME, DIFFERENT TYPE — the first fixture changed the name too
+    //   (`[7]` → `["locked-ref"]`), so the digest moved for the name and the
+    //   coercion under test was never exercised: mutation P1 (coerce
+    //   primitives to strings) left this witness green. The lesson of round 9
+    //   again: the fixture must reach the branch.
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { vault: 'work', also: [7], alsoLocked: ['7'] },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const text = textOf(res);
+      assert.match(text, /malformed|do not have the expected shape/, text);
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(text)?.[1];
+      assert.ok(digest, text);
+
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.workspaceBindings[key] = { vault: 'work', also: ['7'], alsoLocked: ['7'] };
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const stale = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: [], ifBindingDigest: digest, open: false },
+      });
+      assert.equal(stale.result?.isError, true, `the stale repair erased a strict tier recorded since:\n${textOf(stale)}`);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
+      assert.deepEqual(bindingOnDisk(configPath, key).alsoLocked, ['7']);
+    } finally { rt.kill(); }
+  });
+
+  test('a diagnostic on a present `null` entry does not let the repair recreate an entry a sibling has DELETED since', async () => {
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { binding: null });
+    // `binding: null` writes no entry; put a PRESENT null there by hand.
+    const cfg0 = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    cfg0.workspaceBindings = { [key]: null };
+    fs.writeFileSync(configPath, JSON.stringify(cfg0, null, 2), 'utf8');
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const text = textOf(res);
+      assert.match(text, /not an object at all/, text);
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(text)?.[1];
+      assert.ok(digest, text);
+
+      // A sibling deletes the entry (a clear).
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      delete cfg.workspaceBindings[key];
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const stale = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: [], ifBindingDigest: digest, open: false },
+      });
+      assert.equal(stale.result?.isError, true, `a stale repair recreated a deleted entry:\n${textOf(stale)}`);
+      assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
+    } finally { rt.kill(); }
+  });
+
+  test('an ARRAY entry can actually be repaired with the digest the diagnostic shows', async () => {
+    // Round 11: the renderer digested `null` for an array (not an object)
+    // while the tool digested the array, so the diagnosed repair could never
+    // be applied and blamed "another session" for a change nobody made.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { binding: null });
+    const cfg0 = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    cfg0.workspaceBindings = { [key]: ['work'] };
+    fs.writeFileSync(configPath, JSON.stringify(cfg0, null, 2), 'utf8');
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'sci', path: 'wiki/x.md' } });
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(textOf(res))?.[1];
+      assert.ok(digest, textOf(res));
+      const repaired = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: [], ifBindingDigest: digest, open: false },
+      });
+      assert.ok(repaired.result, JSON.stringify(repaired));
+      assert.notEqual(repaired.result?.isError, true, textOf(repaired));
+      assert.equal(bindingOnDisk(configPath, key).vault, 'work');
+    } finally { rt.kill(); }
+  });
+
+  test('the ACCEPTANCE names an unregistered primary too, in the same breath as the duplicate', async () => {
+    // Round 10 injected the registry fact at the proposal door only; this
+    // door went on spelling `vault: "ghost"`. (Codex, round 11.)
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port);
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const proposal = await proposalFor(rt, 'sci');
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.workspaceBindings[key] = { vault: 'ghost', also: ['locked-ref', 'locked-ref'] };
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const yes = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { accept: proposal.proposalId, open: false },
+      });
+      assert.equal(yes.result?.isError, true, textOf(yes));
+      const text = textOf(yes);
+      assert.match(text, /locked-ref appears more than once/);
+      assert.match(text, /its primary ghost is not a vault this config file registers/);
+      assert.match(text, /vault: "<the primary vault you intend>", also: \["locked-ref"\]/);
+      assert.ok(!/vault: "ghost"/.test(text), 'the acceptance spelled a repair naming the unregistered primary');
+    } finally { rt.kill(); }
+  });
+
+  test('`clear: true` on an entry the router could not read says it REMOVED one, not "nothing changed"', async () => {
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, { binding: { also: ['locked-ref'], alsoLocked: ['locked-ref'] } });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'confirm_workspace_binding', arguments: { clear: true } });
+      assert.notEqual(res.result?.isError, true, textOf(res));
+      assert.match(textOf(res), /could not read as a binding/);
+      assert.ok(!/nothing changed/.test(textOf(res)), textOf(res));
+      assert.equal(bindingOnDisk(configPath, key), undefined, 'the malformed entry survived the clear');
     } finally { rt.kill(); }
   });
 

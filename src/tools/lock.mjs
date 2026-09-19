@@ -450,7 +450,12 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         // repair first, and the refusal spells out what to re-pass. Only the
         // null case: a coherent binding is carried over below, as before.
         // (Codex, round 10, angle B.)
-        if (!existing) {
+        // ANY incoherent entry, not only one whose repaired reading is null:
+        // round 10 guarded the null case and a persisted lock to a NEW
+        // primary over `{ vault, also: ["a","a"], alsoLocked: ["a"] }` still
+        // added a role on top of an entry to repair, normalising it in
+        // passing. (Codex, round 11.) Repair first, then lock.
+        {
           const raw = rawBindingEntry(cfg, cwd);
           const incoherences = bindingIncoherences(raw);
           if (incoherences.length) {

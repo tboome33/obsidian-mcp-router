@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
+  rawSecondaryTiers, rawEntryDigest, primaryRegistryIncoherences,
 } from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
@@ -404,9 +405,56 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       [...bindingIncoherences({ vault: 'ghost', also: ['ref', 'ref'] }), { kind: 'primary-not-registered', names: ['ghost'] }],
     );
     assert.match(text, /ref appears more than once/);
-    assert.match(text, /its primary ghost is not a vault this config file or this session registers/);
+    assert.match(text, /its primary ghost is not a vault this config file registers/);
     assert.match(text, /vault: "<the primary vault you intend>", also: \["ref"\]/);
     assert.ok(!/vault: "ghost"/.test(text), 'the repair call named the unregistered primary');
+  });
+
+  test('rawSecondaryTiers — the tiers of a primary-less entry, read with NO primary invented', () => {
+    // Round 10 read them under a sentinel primary. A sentinel is a name a
+    // vault can carry: an entry holding a secondary of that exact name lost
+    // it, and a strict one of that name stopped being a secondary before the
+    // promotion guard asked. (Codex, round 11.) Nothing is invented here.
+    const sentinel = '<the primary vault you intend>';
+    const t = rawSecondaryTiers({ also: [sentinel, 'b', 'b'], alsoLocked: [sentinel], alsoWritable: ['b', 'ghost'] });
+    assert.deepEqual(t, { also: [sentinel, 'b'], alsoLocked: [sentinel], alsoWritable: ['b'] });
+    // A vault in both tiers is locked; a name without a role holds none.
+    assert.deepEqual(
+      rawSecondaryTiers({ also: ['a'], alsoLocked: ['a'], alsoWritable: ['a', 'x'] }),
+      { also: ['a'], alsoLocked: ['a'], alsoWritable: [] },
+    );
+    assert.equal(rawSecondaryTiers('work'), null);
+    assert.equal(rawSecondaryTiers(undefined), null);
+  });
+
+  test('rawEntryDigest — the identity of the ENTRY, not of a projection of it', () => {
+    // The round-11 blocker: `bindingDigest` projected the entry (five
+    // fields, strings coerced, absent == null), so a stale repair could be
+    // applied after a sibling deleted the entry, or after `[7]` became
+    // `["7"]` — a real strict tier appearing. And the renderer digested
+    // `null` for an array entry while the tool digested the array.
+    assert.notEqual(rawEntryDigest(undefined), rawEntryDigest(null), 'absent and a present null share a digest');
+    assert.notEqual(rawEntryDigest({ vault: 'w', also: [7], alsoLocked: ['7'] }), rawEntryDigest({ vault: 'w', also: ['7'], alsoLocked: ['7'] }));
+    assert.notEqual(rawEntryDigest(['work']), rawEntryDigest(null));
+    assert.notEqual(rawEntryDigest({ vault: 'w', also: ['a', 'b'] }), rawEntryDigest({ vault: 'w', also: ['b', 'a'] }), 'list order is part of the entry');
+    // Key order is not a change: re-saving the file with keys reordered must
+    // not refuse a legitimate repair.
+    assert.equal(rawEntryDigest({ vault: 'w', also: ['a'], locked: true }), rawEntryDigest({ locked: true, also: ['a'], vault: 'w' }));
+    assert.equal(rawEntryDigest({ a: { y: 1, x: [1, { q: 2, p: 3 }] } }), rawEntryDigest({ a: { x: [1, { p: 3, q: 2 }], y: 1 } }));
+    assert.match(rawEntryDigest({}), /^[0-9a-f]{64}$/);
+  });
+
+  test('primaryRegistryIncoherences — the FILE decides what can be bound; the session decides what is loaded', () => {
+    const file = new Set(['work', 'newer']);
+    const session = new Set(['work']);
+    assert.deepEqual(primaryRegistryIncoherences({ vault: 'ghost' }, { fileNames: file, sessionNames: session }).map((i) => i.kind), ['primary-not-registered']);
+    // Known to the session, gone from the file: the writer refuses it, so
+    // "known to file OR session" was the wrong test (Codex, round 11).
+    assert.deepEqual(primaryRegistryIncoherences({ vault: 'old' }, { fileNames: file, sessionNames: new Set(['old']) }).map((i) => i.kind), ['primary-not-registered']);
+    assert.deepEqual(primaryRegistryIncoherences({ vault: 'newer' }, { fileNames: file, sessionNames: session }).map((i) => i.kind), ['primary-not-loaded-here']);
+    assert.deepEqual(primaryRegistryIncoherences({ vault: 'work' }, { fileNames: file, sessionNames: session }), []);
+    assert.deepEqual(primaryRegistryIncoherences({ also: ['x'] }, { fileNames: file, sessionNames: session }), []);
+    assert.deepEqual(primaryRegistryIncoherences('work', { fileNames: file, sessionNames: session }), []);
   });
 
   // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
@@ -427,7 +475,7 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     ['a vault in both tiers', {
       vault: 'work', also: ['other'], alsoLocked: ['other'], alsoWritable: ['other'], locked: false,
     }, [/other is in BOTH write tiers/, /confirm_workspace_binding\(\{ vault: "work", also: \["other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/,
-      /read as locked\): locked: "other"/]],
+      /no secondary role holds no tier\): locked: "other"/]],
     ['secondaries but no primary — NOT an occasion to create one', {
       also: ['other'], locked: false,
     }, [/names no usable primary vault/, /vault: "<the primary vault you intend>", also: \["other"\]/]],
@@ -437,7 +485,7 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // named now, and the call carries the placeholder. (Codex, round 10.)
     ['a duplicate AND a primary no registry knows', {
       vault: 'ghost', also: ['other', 'other'],
-    }, [/other appears more than once/, /its primary ghost is not a vault this config file or this session registers/,
+    }, [/other appears more than once/, /its primary ghost is not a vault this config file registers/,
       /vault: "<the primary vault you intend>", also: \["other"\]/]],
     // A PRESENT entry of the wrong type: something was written, and the
     // forgiving reading would have turned it into "no binding" and proposed
