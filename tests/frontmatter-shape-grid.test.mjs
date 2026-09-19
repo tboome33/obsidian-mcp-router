@@ -84,42 +84,81 @@ describe('the shape grid — 225 assemblies of the forms this lot had to learn',
     assert.deepEqual(defects, [], `${defects.length} shape(s) where the reader and Obsidian disagree`);
   });
 
-  test('the reader agrees outright on 72 shapes, and refuses 153', () => {
+  test('the reader agrees outright on 88 shapes, and refuses 137', () => {
     // Pinned so a reader that starts refusing more cannot hide behind "refusing
     // is allowed". Both numbers moving is a behaviour change; one moving
     // without the other is arithmetic that does not add up.
+    //
+    // 72/153 when the grid was first captured. Decoding a QUOTED key — which
+    // Obsidian reads identically to a plain one — moved sixteen shapes from
+    // refused to read, without a single new disagreement.
     let agrees = 0;
     let refuses = 0;
     for (const c of CASES) {
       if (isRefusal(readerVerdict(c.markdown))) refuses += 1;
       else agrees += 1;
     }
-    assert.equal(agrees, 72);
-    assert.equal(refuses, 153);
+    assert.equal(agrees, 88);
+    assert.equal(refuses, 137);
     assert.equal(agrees + refuses, CASES.length);
   });
 
-  test('54 of those refusals decline a shape Obsidian read as a clean date — the measured cost', () => {
+  test('48 of those refusals decline a shape Obsidian read as a clean date — the measured cost', () => {
     // NOT a defect: a refusal says "I do not decode this", and nothing is ever
     // reported as absent. It IS a false alarm on a well-formed page, so the
     // number is written down rather than left to be rediscovered.
     //
-    // Two families, and they are independent. Roughly three quarters are a
-    // bound written as a BLOCK SCALAR (`valid_from: |` then the date on the
-    // line below): reading those means tracking indentation and chomping,
-    // which is the "implement YAML" slope this reader exists to stay off. The
-    // rest are an ordinary date under a key that is not plain — quoted,
-    // escaped, explicit or indented.
+    // Two families, and they are independent. 39 are a bound written as a BLOCK
+    // SCALAR (`valid_from: |` then the date below): reading those means tracking
+    // indentation and chomping, which is the "implement YAML" slope this reader
+    // exists to stay off — left refused on purpose.
+    //
+    // The remaining 9 are three key forms this reader declines on principle,
+    // three value forms each: a key ESCAPED beyond decoding (`valid_from`
+    // names the bound without spelling it), an EXPLICIT key (`? valid_from`,
+    // a different structure spanning two lines), and an INDENTED key (root
+    // node or child — the line alone cannot say). Each refusal is a doubt this
+    // reader is right to have.
     const costly = CASES.filter((c) => {
       if (!isRefusal(readerVerdict(c.markdown))) return false;
       const obsidian = obsidianVerdict(c.id);
       return obsidian !== null && obsidian.state !== 'unreadable';
     });
-    assert.equal(costly.length, 54);
+    assert.equal(costly.length, 48);
 
     const blockScalar = costly.filter((c) => /v\.block-scalar/.test(c.id));
     assert.equal(blockScalar.length, 39, 'the block-scalar family');
-    assert.equal(costly.length - blockScalar.length, 15, 'an ordinary date under a non-plain key');
+
+    const principled = costly.filter((c) => !/v\.block-scalar/.test(c.id));
+    assert.equal(principled.length, 9);
+    assert.deepEqual(
+      [...new Set(principled.map((c) => (c.id.match(/k\.([a-z-]+)/) ?? [])[1]))].sort(),
+      ['escaped', 'explicit', 'indented'],
+      'no QUOTED key is refused any more — that was the sixteen shapes recovered',
+    );
+  });
+
+  test('a quoted key is the SAME key, and Obsidian is what says so', () => {
+    // The change this grid paid for. Asserted against the oracle rather than
+    // against an expectation: `"valid_from": 2026-01-01` and the plain
+    // spelling produce the same frontmatter in Obsidian, so a reader that
+    // treated one as unreadable was raising a false alarm on the very signal
+    // this lot exists to make trustworthy.
+    for (const id of ['k.double-quoted__v.date', 'k.single-quoted__v.date', 'k.double-quoted__v.date-quoted']) {
+      const c = CASES.find((x) => x.id === id);
+      assert.deepEqual(readerVerdict(c.markdown), obsidianVerdict(id), id);
+    }
+  });
+
+  test('but an ESCAPED key is still refused — the guard the decode leans on', () => {
+    // `"valid_from"` IS `valid_from`, spelled so no text search finds it.
+    // Dropping the quotes is only safe because this one is declined first: a
+    // reader that decoded quotes blindly would read that key as a foreign
+    // property and let a declared bound vanish.
+    const c = CASES.find((x) => x.id === 'k.escaped__v.date');
+    assert.ok(isRefusal(readerVerdict(c.markdown)), 'an escaped key must stay refused');
+    assert.notEqual(obsidianVerdict('k.escaped__v.date'), null,
+      'and Obsidian DOES read it — which is exactly why guessing would be wrong');
   });
 
   test('and every refusal names the field it declined', () => {

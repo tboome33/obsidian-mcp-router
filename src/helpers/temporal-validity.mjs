@@ -596,25 +596,32 @@ export function windowFieldsFromFrontmatterText(text) {
     // on its delimiter, so its value is group 3 and a plain key's is group 2.
     awaitingSequence = yamlTrim(quotedKey ? quotedKey[3] : plainKey[2]) === '';
 
+    // QUOTING A KEY DOES NOT CHANGE WHICH KEY IT IS. `"valid_from": 2026-01-01`
+    // is the same declaration as `valid_from: 2026-01-01`, and Obsidian reads
+    // both identically — measured, across the shape grid. Refusing the quoted
+    // spelling raised "this window cannot be read" on a page that is perfectly
+    // well formed: a false alarm, not a wrong answer, but a false alarm on the
+    // one signal this lot exists to make trustworthy.
+    //
+    // The quotes can be dropped here precisely BECAUSE the undecodable case is
+    // refused just above: a double-quoted key holding a backslash escape may
+    // name `valid_from` without spelling it, and that one this reader still
+    // declines rather than guesses. A single-quoted key needs no such guard —
+    // its only escape is `''` for an apostrophe, and neither bound has one, so
+    // a key whose text EQUALS the bound cannot be hiding a different name.
+    let key;
+    let rest;
     if (quotedKey) {
       const [, quote, keyText, quotedRest] = quotedKey;
-      // A DOUBLE-QUOTED KEY MAY BE ESCAPED, and `"valid_from"` names
-      // `valid_from` without spelling it. This reader does not decode escapes,
-      // so it cannot say which key that is — and classing it among foreign
-      // properties made a declared bound disappear.
       if (quote === '"' && keyText.includes(String.fromCharCode(92))) {
         unsupportedShape = true;
         continue;
       }
-      if (keyText === VALID_FROM || keyText === VALID_THROUGH) undetermined.add(keyText);
-      // Quoted or not, a key still opens whatever its value opens.
-      const rest = quotedRest.trim();
-      if (BLOCK_SCALAR_RE.test(rest)) skipIndentedUntilDedent = true;
-      else if (opensUnclosedQuote(rest)) insideUnclosedQuote = rest[0];
-      continue;
+      key = keyText;
+      rest = quotedRest;
+    } else {
+      [, key, rest] = plainKey;
     }
-
-    const [, key, rest] = plainKey;
 
     const scalar = plainScalar(rest);
     const rawRest = rest.trim();

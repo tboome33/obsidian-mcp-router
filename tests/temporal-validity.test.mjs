@@ -581,7 +581,8 @@ describe('windowFieldsFromFrontmatterText — three outcomes, and it says which'
       ['a bound holding a list at the key\'s own column', '---\nvalid_from:\n- 2026-01-01\n---\nbody'],
       ['a block scalar', '---\nvalid_from: |-\n  2027-01-01\n---\nbody'],
       ['a folded continuation line', '---\nvalid_from: 2027-01-01\n  suffixe\n---\nbody'],
-      ['a quoted key', '---\n"valid_from": 2027-01-01\n---\nbody'],
+      // (`a quoted key` used to live here. It was moved out, not silently
+      //  dropped — see "quoting a key does not change which key it is" below.)
       ['an unterminated quote on the bound itself', '---\nvalid_from: "2026-01-01\n---\nbody'],
       ['an escape inside a double-quoted scalar', `---\nvalid_from: "2027${BACKSLASH}u002D01-01"\n---\nbody`],
       ['a repeated key', '---\nvalid_from: illisible\nvalid_from:\n---\nbody'],
@@ -592,6 +593,41 @@ describe('windowFieldsFromFrontmatterText — three outcomes, and it says which'
         assert.equal(verdict(text), 'undetermined');
       });
     }
+
+    test('quoting a key does not change which key it is', () => {
+      // A DELIBERATE BEHAVIOUR CHANGE, and the measurement is why. This shape
+      // was in the refused list above until the shape grid put 225 assemblies
+      // through Obsidian and showed that `"valid_from": 2026-01-01` produces
+      // exactly the frontmatter the plain spelling does. Refusing it raised
+      // "this window cannot be read" on a page that is perfectly well formed —
+      // a false alarm on the one signal this lot exists to make trustworthy.
+      const dq = String.fromCharCode(34);
+      const sq = String.fromCharCode(39);
+      assert.equal(verdict(`---\n${dq}valid_from${dq}: 2027-01-01\n---\nbody`), STATE_NOT_YET);
+      assert.equal(verdict(`---\n${sq}valid_from${sq}: 2027-01-01\n---\nbody`), STATE_NOT_YET);
+      assert.equal(verdict(`---\n${dq}valid_through${dq}: 2025-12-31\n---\nbody`), STATE_NO_LONGER);
+    });
+
+    test('but an ESCAPED key is still refused, and that is what makes the decode safe', () => {
+      // `"valid_from"` names `valid_from` without spelling it. The quotes
+      // can only be dropped because this case is declined FIRST — otherwise a
+      // reader that unquoted blindly would file it as a foreign property and
+      // let a declared bound disappear.
+      const dq = String.fromCharCode(34);
+      const bs = String.fromCharCode(92);
+      assert.equal(verdict(`---\n${dq}valid_${bs}u0066rom${dq}: 2027-01-01\n---\nbody`), 'undetermined');
+    });
+
+    test('and a quoted key still counts for the REPEATED-key rule', () => {
+      // Two spellings of one key is a document a YAML loader rejects. Decoding
+      // the quoted form would have been a way to smuggle a duplicate past the
+      // check that exists to catch it.
+      const dq = String.fromCharCode(34);
+      assert.equal(
+        verdict(`---\nvalid_from: 2026-01-01\n${dq}valid_from${dq}: 2027-01-01\n---\nbody`),
+        'undetermined',
+      );
+    });
 
     test('and the field is absent from `fields`, so a caller cannot mistake it for a silent page', () => {
       const { fields, undetermined } = windowFieldsFromFrontmatterText('---\nvalid_from: |-\n  2027-01-01\n---\nbody');
