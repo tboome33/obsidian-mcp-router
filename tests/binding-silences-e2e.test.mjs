@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
-  rawSecondaryTiers, rawEntryDigest, registryIncoherences, writerBindableNames,
+  rawSecondaryTiers, rawEntryDigest, registryIncoherences, registryFactsFor, writerBindableNames,
 } from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
@@ -466,6 +466,30 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.deepEqual(registryIncoherences({ also: ['x'] }, { bindable, sessionNames: session }).map((i) => i.kind), ['secondary-not-registered']);
     assert.deepEqual(registryIncoherences('work', { bindable, sessionNames: session }), []);
     assert.deepEqual(registryIncoherences(undefined, { bindable, sessionNames: session }), []);
+    // THREE FACTS ABOUT A SECONDARY OUTSIDE THE SET, told apart (round 14):
+    // disabled by the file; dropped from the file but still loaded here; and
+    // neither listed nor loaded. And a disabled PRIMARY is its own kind.
+    const disabled = new Set(['off']);
+    assert.deepEqual(
+      registryIncoherences(
+        { vault: 'work', also: ['off', 'old', 'gone'] },
+        { bindable, sessionNames: new Set(['work', 'old']), disabled },
+      ),
+      [
+        { kind: 'secondary-disabled', names: ['off'] },
+        { kind: 'secondary-dropped-still-loaded', names: ['old'] },
+        { kind: 'secondary-not-registered', names: ['gone'] },
+      ],
+    );
+    assert.deepEqual(registryIncoherences({ vault: 'off' }, { bindable, sessionNames: session, disabled }).map((i) => i.kind), ['primary-disabled']);
+    // The facts helper builds the three sets from one config and one catalogue.
+    const facts = registryFactsFor(
+      { portRegistry: {}, vaultNames: {}, remoteVaults: [{ name: 'work' }, { name: 'off' }], disabledVaults: ['off'] },
+      [{ name: 'work', type: 'remote' }, { name: 'old', type: 'remote' }],
+    );
+    assert.deepEqual([...facts.bindable].sort(), ['work']);
+    assert.deepEqual([...facts.sessionNames].sort(), ['old', 'work']);
+    assert.deepEqual([...facts.disabled], ['off']);
   });
 
   test('e2e — a COHERENT binding with a secondary this session cannot bind still PROPOSES (only the primary blocks)', async () => {
@@ -503,6 +527,12 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // retry or restart for an exclusion that outlives every restart).
     const disabled = writerBindableNames({ ...cfg, disabledVaults: ['filed'] }, vaults);
     assert.equal(disabled.has('filed'), false);
+    // AND AN ENVIRONMENT REMOTE THE FILE DISABLES IS NOT PUT BACK (round 14: a
+    // session loaded before a sibling disabled it still carried the `env`
+    // descriptor, and the re-add ran after the deletion).
+    const envOff = writerBindableNames({ ...cfg, disabledVaults: ['env-only'] }, vaults);
+    assert.equal(envOff.has('env-only'), false, 'a disabled environment remote came back through the env re-add');
+    assert.equal(envOff.has('filed'), true);
   });
 
   test('describeBindingRepair — a secondary this session cannot bind is NAMED and KEPT in the spelled call', () => {
@@ -517,10 +547,29 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       ...bindingIncoherences(raw),
       { kind: 'secondary-not-registered', names: ['gone'] },
     ]);
-    assert.match(text, /its secondary gone is not a vault THIS session can bind or reach/);
+    assert.match(text, /its secondary gone is not a vault this config file lists nor one this session's environment provides, and this session has not loaded it/);
     assert.match(text, /it is KEPT in the call below, tier included/);
+    // Round 14: "stays unreachable … for good" overstated both halves. What is
+    // said now is what is known: from here it answers "Unknown vault"; a
+    // removal is a choice, and the tier can be set again.
+    assert.match(text, /from here it does not answer \(Unknown vault\)/);
+    assert.match(text, /Removing it from the call is a choice, not a fix/);
+    assert.doesNotMatch(text, /for good|stays unreachable/);
     assert.match(text, /vault: "work", also: \["sci", "gone"\], ifBindingDigest/);
     assert.match(text, /locked: "gone"/);
+    // The two other facts about such a secondary, and the disabled primary,
+    // each with its own sentence and the same KEEP (round 14).
+    const three = describeBindingRepair(raw, [
+      ...bindingIncoherences(raw),
+      { kind: 'secondary-disabled', names: ['gone'] },
+      { kind: 'secondary-dropped-still-loaded', names: ['sci'] },
+    ]);
+    assert.match(three, /its secondary gone is DISABLED by `disabledVaults`[^.]*registering it again or restarting lifts nothing; it is KEPT in the call below/);
+    assert.match(three, /its secondary sci is no longer a vault this config file lists[^.]*it still ANSWERS here[^.]*the next start will not load it; it is KEPT in the call below/);
+    assert.match(three, /vault: "work", also: \["sci", "gone"\], ifBindingDigest/);
+    const offPrimary = describeBindingRepair({ vault: 'off', also: ['sci'] }, [{ kind: 'primary-disabled', names: ['off'] }]);
+    assert.match(offPrimary, /its primary off is DISABLED by `disabledVaults`/);
+    assert.match(offPrimary, /vault: "<the primary vault you intend>", also: \["sci"\]/);
   });
 
   // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
@@ -562,7 +611,7 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // (round 13 — round 12 left it out, which dropped its tier for good and
     // erased what another session's environment provided).
     ['a duplicate secondary no registry knows', { vault: 'work', also: ['gone', 'gone'] },
-      [/gone appears more than once/, /its secondary gone is not a vault THIS session can bind or reach/,
+      [/gone appears more than once/, /its secondary gone is not a vault this config file lists/,
         /vault: "work", also: \["gone"\], ifBindingDigest/]],
   ];
   for (const [name, binding, expectations] of onDisk) {
@@ -640,6 +689,43 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     } finally { rt.kill(); }
   });
 
+  test('e2e — a vault DISABLED after this session loaded it is refused as disabled, not as "not listed in the config file"', async () => {
+    // Round 14: the writer's set lacks a disabled name, and the refusal read
+    // that absence as "never registered, or removed since — register it",
+    // for an exclusion no registration and no restart lifts.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, { binding: { vault: 'work', also: [] } });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.disabledVaults = ['other'];
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const res = await read(rt, 2, 'other');
+      assert.equal(res.result?.isError, true, textOf(res));
+      const text = textOf(res);
+      assert.match(text, /DISABLED by `disabledVaults` in the router's config file/);
+      assert.match(text, /registering it again or restarting lifts nothing/);
+      assert.doesNotMatch(text, /not listed in the router's config file/);
+      assert.equal(res.result?._meta?.bindingProposal, undefined, 'a disabled vault was proposed');
+      // And adding it by name says the same thing.
+      const add = await rt.call(3, 'tools/call', { name: 'confirm_workspace_binding', arguments: { vault: 'work', also: ['other'], open: false } });
+      assert.equal(add.result?.isError, true, textOf(add));
+      assert.match(textOf(add), /"other" is DISABLED by `disabledVaults`/);
+      assert.doesNotMatch(textOf(add), /Register it first/);
+      // AND A DISABLED PRIMARY IS A REPAIR, NOT A PROPOSAL — the session still
+      // has it loaded, so "broken primary" (asked of the catalogue) would not
+      // say so; the writer's set does.
+      cfg.disabledVaults = ['other', 'work'];
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const sci = await read(rt, 4, 'sci');
+      assert.equal(sci.result?.isError, true, textOf(sci));
+      assert.match(textOf(sci), /its primary work is DISABLED by `disabledVaults`/);
+      assert.match(textOf(sci), /vault: "<the primary vault you intend>"/);
+      assert.equal(sci.result?._meta?.bindingProposal, undefined, 'a proposal was minted over a disabled primary');
+    } finally { rt.kill(); }
+  });
+
   test('e2e — a secondary another session\'s ENVIRONMENT provides is KEPT by a session that lacks it — accept and repair alike', async () => {
     // Scenario S3 of round 13. A (with VAULT_ENVR) binds `envr` as a
     // secondary. B, without the variable, cannot resolve `envr` — and round
@@ -655,14 +741,27 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       await handshake(rt);
       const res = await read(rt, 2, 'sci');
       const text = textOf(res);
-      assert.match(text, /its secondary envr is not a vault THIS session can bind or reach/);
+      assert.match(text, /its secondary envr is not a vault this config file lists nor one this session's environment provides, and this session has not loaded it/);
       assert.match(text, /vault: "work", also: \["envr", "other"\], ifBindingDigest/);
+      // THE DIGEST MUST BE EXTRACTED, or the call below runs WITHOUT the
+      // precondition (JSON drops an undefined field) and this witness proves
+      // an unconditional confirmation instead of the repair. (Codex, round 14,
+      // angle E.)
       const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(text)?.[1];
+      assert.ok(digest, `no digest rendered in:\n${text}`);
       const repaired = await rt.call(3, 'tools/call', {
         name: 'confirm_workspace_binding',
         arguments: { vault: 'work', also: ['envr', 'other'], ifBindingDigest: digest, open: false },
       });
       assert.notEqual(repaired.result?.isError, true, `B could not keep A's environment secondary:\n${textOf(repaired)}`);
+      // AND THE SUCCESS SAYS WHAT THE KEPT SECONDARY IS FROM HERE: declared,
+      // tier kept, not answering — not "addressable by name" (round 14).
+      const repairedJson = JSON.parse(textOf(repaired));
+      assert.match(repairedJson.message, /"envr" stays declared in the binding \(tier kept\) but this session has not loaded it/);
+      assert.match(repairedJson.message, /with "other" also bound and addressable by name/);
+      assert.doesNotMatch(repairedJson.message, /"envr"[^.]*addressable by name/);
+      assert.deepEqual(repairedJson.notLoadedHere, ['envr']);
+      assert.deepEqual(repairedJson.also, ['envr', 'other']);
       const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[key];
       assert.deepEqual(cfg.also, ['envr', 'other']);
       assert.deepEqual(cfg.alsoLocked, ['envr'], 'the kept secondary lost its strict tier');

@@ -86,6 +86,7 @@ import {
   BINDING_INCOHERENCE,
   registryIncoherences,
   writerBindableNames,
+  registryFactsFor,
 } from './helpers/workspace-bindings.mjs';
 
 const DEFAULT_CONFIG_PATH = path.join(
@@ -894,12 +895,22 @@ export async function loadRegistry({ configPath } = {}) {
         // claim about the file, and the fallback copy cannot make it (round
         // 13). Unread, this falls through to the proposal, which says so.
         if (live.fromFile && !writerBindableNames(live.config, this.vaults).has(v.name)) {
+          // TWO REASONS THE WRITER'S SET LACKS A NAME THE FILE MAY STILL LIST:
+          // never registered / removed since, or DISABLED by `disabledVaults`
+          // — and "not listed … register it" was false for the second, which
+          // no registration and no restart lifts. (Codex, round 14.)
+          const off = new Set(disabledVaultEntries(live.config)).has(v.name);
           throw declarationRequiredError(
-            `${preamble} This vault is not listed in the router's config file (and not provided by the `
-            + 'environment) — either it was never registered there, or it has been removed since this '
-            + 'session started — so it cannot be recorded in a workspace binding: '
-            + 'confirm_workspace_binding refuses a vault the file does not know. Register it '
-            + '(setup-vault, or remoteVaults) or restore it in the config, then bind this workspace to it.',
+            off
+              ? `${preamble} This vault is DISABLED by \`disabledVaults\` in the router's config file, so it cannot `
+                + 'be recorded in a workspace binding: confirm_workspace_binding refuses it, and registering it '
+                + 'again or restarting lifts nothing. Remove it from `disabledVaults` first, then bind this '
+                + 'workspace to it.'
+              : `${preamble} This vault is not listed in the router's config file (and not provided by the `
+                + 'environment) — either it was never registered there, or it has been removed since this '
+                + 'session started — so it cannot be recorded in a workspace binding: '
+                + 'confirm_workspace_binding refuses a vault the file does not know. Register it '
+                + '(setup-vault, or remoteVaults) or restore it in the config, then bind this workspace to it.',
             null,
           );
         }
@@ -940,10 +951,7 @@ export async function loadRegistry({ configPath } = {}) {
         // the writer then refused, forever (Codex, round 12). Only computed
         // from a file that was read; "not observed" says nothing.
         const facts = live.fromFile
-          ? registryIncoherences(live.rawEntry, {
-            bindable: writerBindableNames(live.config, this.vaults),
-            sessionNames: new Set(this.vaults.map((x) => x.name)),
-          })
+          ? registryIncoherences(live.rawEntry, registryFactsFor(live.config, this.vaults))
           : [];
         // THE PRIMARY ONLY. Round 12 also blocked every proposal on a secondary
         // this session cannot bind, and round 13 measured that as a policy
@@ -951,7 +959,8 @@ export async function loadRegistry({ configPath } = {}) {
         // real victim: a secondary another session's environment provides
         // silenced this session for good. Such a secondary is named in a
         // diagnostic when one is issued, and kept; it blocks nothing.
-        const unbindableParts = facts.filter((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED);
+        const unbindableParts = facts.filter((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED
+          || f.kind === BINDING_INCOHERENCE.PRIMARY_DISABLED);
         if (incoherences.length || unbindableParts.length) {
           // ONE FUNCTION FOR EVERY DOOR (rounds 11 and 12).
           incoherences.push(...facts);

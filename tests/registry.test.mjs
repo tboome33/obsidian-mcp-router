@@ -978,7 +978,11 @@ describe('lockVault / unlockVaults — tool handlers', () => {
       // repair keeps the lock. (Codex, round 13.)
       await assert.rejects(
         unlockVaults(reg, { persist: true }),
-        /in-memory lock cleared[\s\S]*NOT lifted[\s\S]*beta appears more than once[\s\S]*WILL re-lock to "alpha"[\s\S]*that repair KEEPS the lock[\s\S]*run unlock_vaults\(\{ persist: true \}\) again/,
+        // Round 14: the re-lock target after the repair is the primary THAT
+        // REPAIR names — the same vault here, but a placeholder repair ends
+        // with the user's choice, and "WILL re-lock to alpha" promised the old
+        // name unconditionally.
+        /in-memory lock cleared[\s\S]*NOT lifted[\s\S]*beta appears more than once[\s\S]*WILL re-lock — to "alpha" at the next restart if the entry is left as it is[\s\S]*to the PRIMARY THAT REPAIR NAMES[\s\S]*that repair KEEPS the lock[\s\S]*run unlock_vaults\(\{ persist: true \}\) again/,
       );
     } finally { process.chdir(prevCwd); }
     assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the unlock normalised the entry');
@@ -1006,7 +1010,7 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     const prevCwd = process.cwd();
     process.chdir(tmpDir);
     try {
-      await assert.rejects(unlockVaults(reg, { persist: true }), /WILL re-lock to "alpha"/);
+      await assert.rejects(unlockVaults(reg, { persist: true }), /WILL re-lock — to "alpha" at the next restart/);
     } finally { process.chdir(prevCwd); }
     // "in-memory lock cleared" is measured, not read (Codex, round 13).
     assert.equal(reg.lockedVault, null);

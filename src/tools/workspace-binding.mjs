@@ -66,8 +66,11 @@ import {
   rawEntryDigest,
   rawSecondaryTiers,
   registryIncoherences,
+  registryFactsFor,
   writerBindableNames,
+  BINDING_INCOHERENCE,
 } from '../helpers/workspace-bindings.mjs';
+import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
   envKeyOrigin,
@@ -459,15 +462,23 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // a yes to a proposal minted over a coherent file is still a yes the file
     // as it stands cannot honour. (Decision, "Mal configuré"; 2026-09-18.)
     const incoherences = bindingIncoherences(rawEntry);
-    if (incoherences.length) {
-      // A PRIMARY NO REGISTRY KNOWS IS NAMED HERE TOO — the injection round
-      // 10 added to `resolveVault` and not to this door, so an acceptance
-      // refused for a duplicate could still spell a repair call naming the
-      // unknown primary. Same fact, same renderer. (Codex, round 11.)
-      incoherences.push(...registryIncoherences(rawEntry, {
-        bindable: writerBindableNames(cfgForNames, registry.vaults),
-        sessionNames: new Set(registry.vaults.map((v) => v.name)),
-      }));
+    // A PRIMARY NO REGISTRY KNOWS IS NAMED HERE TOO — the injection round
+    // 10 added to `resolveVault` and not to this door, so an acceptance
+    // refused for a duplicate could still spell a repair call naming the
+    // unknown primary. Same fact, same renderer. (Codex, round 11.)
+    // AND ASKED WHETHER OR NOT THE ENTRY IS STRUCTURALLY COHERENT, as the
+    // proposal door already does (round 12): an identifier minted while the
+    // primary was registered still resolves after a sibling drops that
+    // primary from the file — the entry is coherent and unchanged — and the
+    // yes then fell through to `assertBindable`, which refused the primary
+    // as "not a registered vault … register it first" with no repair spelled.
+    // (Codex, round 14, scenario S10.) Only an unbindable PRIMARY refuses
+    // here, the decision's own row; a kept secondary blocks nothing.
+    const facts = registryIncoherences(rawEntry, registryFactsFor(cfgForNames, registry.vaults));
+    const primaryUnbindable = facts.some((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED
+      || f.kind === BINDING_INCOHERENCE.PRIMARY_DISABLED);
+    if (incoherences.length || primaryUnbindable) {
+      incoherences.push(...facts);
       throw new Error(
         'confirm_workspace_binding: the acceptance was NOT applied and NO BINDING WAS WRITTEN (this '
         + 'session\'s refusals were refreshed from the file; its binding and routing are unchanged). '
@@ -681,16 +692,16 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // FILE lists that this session has not loaded is a reload, not a
     // registration — "register it first" sent the reader to re-register a
     // vault a sibling had just registered.
+    // THREE CAUSES, EACH NAME UNDER ITS OWN (round 14: a call adding one name
+    // the file lists but this session has not loaded AND one nobody
+    // registered said both were "not a registered vault"; and a DISABLED
+    // vault was told "register it first" for an exclusion no registration
+    // lifts).
+    const quoted = (list) => list.map((n) => `"${safeForMessage(String(n), 60)}"`).join(', ');
+    const disabled = new Set(disabledVaultEntries(cfg));
     const notLoaded = unknown.filter((n) => typeof n === 'string' && bindable.has(n) && !known.has(n));
-    if (notLoaded.length === unknown.length) {
-      throw new Error(
-        `confirm_workspace_binding: ${notLoaded.map((n) => `"${safeForMessage(n, 60)}"`).join(', ')} is listed in `
-        + 'the config file but this session has not loaded it (registered by another session; hot-reload is '
-        + 'off here, or has not fired yet). Nothing needs registering: retry in a moment, or restart the '
-        + 'session, then confirm. No binding was written.',
-      );
-    }
-    const names = unknown.map((n) => `"${safeForMessage(String(n), 60)}"`).join(', ');
+    const off = unknown.filter((n) => typeof n === 'string' && !bindable.has(n) && disabled.has(n));
+    const unregistered = unknown.filter((n) => !notLoaded.includes(n) && !off.includes(n));
     // THE CATALOGUE IS SANITISED TOO. These names come from `vaultNames`, from
     // `remoteVaults[].name` and from vault paths — all hand-editable — so a
     // name carrying a terminal escape or a newline reached this message raw
@@ -700,10 +711,22 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // list could cite the very name it was refusing. (Codex, round 13.)
     const available = [...known.keys()].filter((n) => bindable.has(n))
       .map((n) => safeForMessage(String(n), 60)).join(', ') || '(none)';
-    throw new Error(
-      `confirm_workspace_binding: ${names} is not a registered vault, so it cannot be bound. `
-      + `Registered vaults: ${available}. Register it first (setup-vault), then confirm.`,
-    );
+    const parts = [];
+    if (notLoaded.length) {
+      parts.push(`${quoted(notLoaded)} is listed in the config file but this session has not loaded it (the file `
+        + 'and this session\'s catalogue differ — typically a sibling session registered it and hot-reload is '
+        + 'off here, or has not fired yet). Nothing needs registering: retry in a moment, or restart the '
+        + 'session, then confirm.');
+    }
+    if (off.length) {
+      parts.push(`${quoted(off)} is DISABLED by \`disabledVaults\` in the config file, so it cannot be bound as a `
+        + 'new name; registering it again or restarting lifts nothing — remove it from `disabledVaults` first.');
+    }
+    if (unregistered.length) {
+      parts.push(`${quoted(unregistered)} is not a registered vault, so it cannot be bound. Registered vaults: `
+        + `${available}. Register it first (setup-vault), then confirm.`);
+    }
+    throw new Error(`confirm_workspace_binding: ${parts.join(' ')} No binding was written.`);
   };
   // `locked` IS TRI-STATE. `true` locks, `false` unlocks, and ABSENT keeps
   // whatever the binding already says. The first version wrote
@@ -722,9 +745,17 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // identical shape in the migration.
   let refusalsDropped = [];
   const next = updateConfigBindings(configPath, (cfg) => {
-    assertBindable(cfg);
     const previous = readBinding(cfg, cwd);
     const rawPrevious = rawBindingEntry(cfg, cwd);
+    // THE PRECONDITION IS ASKED BEFORE THE NAMES ARE JUDGED. `assertBindable`
+    // exempts a secondary the entry holds (round 13) — so when a sibling
+    // REMOVES that secondary between the diagnostic and the spelled repair,
+    // the name is no longer "kept", and asked first the writer refused it as
+    // "not a registered vault … register it first" for what was a stale
+    // repair: the digest would have said so, one statement later. (Codex,
+    // round 14, scenario S9.) A stale repair is refused as stale; the names
+    // are judged on a call that is at least about the entry it was spelled
+    // for.
     // THE REPAIR CALL HAS A PRECONDITION, LIKE THE YES. A diagnostic spells
     // out `{ vault, also }` to re-pass, and a plain `{ vault, also }` replaces
     // whatever the file holds at write time — so between the diagnostic and
@@ -751,6 +782,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         + 'with a fresh digest, a proposal, a success, or a refusal for a reason of its own.',
       );
     }
+    assertBindable(cfg);
     // A refusal of any vault being bound is dropped by `withBinding` itself;
     // read here, inside the lock, only so the answer can SAY so.
     const refusedBefore = readRefusals(cfg, cwd);
@@ -888,9 +920,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // where its calls now go. This is the ONLY place the second half runs.
   //
   // AND THIS IS WHY `adoptRouting` NEEDS NO NULL OR UNRESOLVABLE BRANCH.
-  // `assertBindable(cfg)` is the first statement inside the lock, on every
-  // path that reaches this line, and it refuses any requested name that is
-  // absent from the live registry OR from the file. `primary` is a validated
+  // `assertBindable(cfg)` runs inside the lock, right after the digest
+  // precondition, on every path that reaches this line, and it refuses any
+  // requested name that is absent from the live registry OR from the file —
+  // except a secondary the entry already held, which is KEPT (round 13) and
+  // named below as not answering from here. `primary` is a validated
   // non-empty string, so the binding just written is non-null and its vault is
   // one this session resolves. Branches for the other cases would be dead code
   // reading as coverage — the lesson phase 6 was rewritten around. The two
@@ -986,11 +1020,27 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   }
 
   const several = also.length > 0;
+  // A KEPT SECONDARY THIS SESSION HAS NOT LOADED IS NOT "ADDRESSABLE BY NAME"
+  // from here: the writer keeps it (round 13), the open loop above skipped it
+  // in silence, and the sentence below promised an access the next call
+  // answered with "Unknown vault". Named, in the response and in the message.
+  // (Codex, round 14, both passes.)
+  const notLoadedHere = also.filter((n) => !known.has(n));
+  const reachableAlso = also.filter((n) => known.has(n));
+  const notLoadedNote = notLoadedHere.length
+    ? ` ${notLoadedHere.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} stays declared in the binding (tier kept) but `
+      + 'this session has not loaded it — not in the config file as this session reads it, nor provided by its '
+      + 'environment — so from here it answers "Unknown vault" until it is registered, provided, or the '
+      + 'session restarts with it available.'
+    : '';
   return {
     cleared: false,
     workspace: key,
     boundTo: primary,
     also,
+    // The secondaries above that this session cannot resolve: declared, kept,
+    // not answering from here. Empty in the ordinary case.
+    notLoadedHere,
     locked: binding.locked,
     opened,
     // The refusals this binding made stale, and dropped. Named so the user
@@ -1006,8 +1056,12 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       // guard refuses every vault but the primary, secondaries included; they
       // stay bound and answer again once it is lifted. (Sixth review.)
       (several
-        ? `This workspace is now bound to "${safeForMessage(primary, 80)}", with ${also.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} also bound and `
-          + (binding.locked ? 'addressable by name once the lock is lifted (while it holds, no other vault answers).' : 'addressable by name.')
+        ? `This workspace is now bound to "${safeForMessage(primary, 80)}"`
+          + (reachableAlso.length
+            ? `, with ${reachableAlso.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} also bound and `
+              + (binding.locked ? 'addressable by name once the lock is lifted (while it holds, no other vault answers).' : 'addressable by name.')
+            : '.')
+          + notLoadedNote
         : `This workspace is now bound to "${safeForMessage(primary, 80)}".`)
       + describeOpened(opened)
       + (refusalsDropped.length

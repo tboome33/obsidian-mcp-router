@@ -204,6 +204,24 @@ primary and drops every secondary not passed again, which is exactly the call th
   and says the spelled repair KEEPS the lock, so `unlock_vaults --persist` must be run again after
   it; "not listed in the config file" is never said from a copy of a file that could not be read;
   and every list of diagnostic producers includes `unlock_vaults --persist`.
+- **The repair REPAIRS the file.** The fourteenth round found the blocker the thirteenth had created:
+  with every secondary kept, the spelled repair normalised to exactly what the incoherent entry
+  normalised to, the writer's "same binding, nothing to write" rule said unchanged, the duplicate
+  stayed on disk, and the tool announced a success the next access re-diagnosed — a loop of identical
+  diagnostics, and for a locked entry a `repair → unlock again` procedure with no exit. An entry the
+  router had to repair to read is never "unchanged" now. With it: a success that keeps a secondary
+  this session cannot resolve says so (`notLoadedHere` in the response, "answers Unknown vault from
+  here" in the message) instead of "addressable by name"; the repair's precondition is checked BEFORE
+  the names are judged, so a stale repair is refused as stale and not as "register it first"; an
+  acceptance minted while the primary was registered, arriving after the file dropped that primary,
+  gets the repair diagnostic (placeholder and digest) instead of the generic refusal; a vault the
+  config DISABLES is refused as disabled everywhere it was told "not listed in the config file,
+  register it" (the access, the confirmation, the diagnostic — and an environment remote disabled after
+  this session loaded it no longer slips back into the writer's set); a diagnostic tells apart a kept
+  secondary that is disabled, one the file dropped but this session still answers for, and one nobody
+  has; a call adding several refused names says each name's own cause; and the refused
+  `unlock_vaults --persist` says the repair re-locks to the primary THAT REPAIR names, not
+  unconditionally to the one recorded today.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

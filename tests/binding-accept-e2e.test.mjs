@@ -575,6 +575,65 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rt.kill(); }
   });
 
+  test('THE REPAIR REPAIRS THE FILE — an entry the tool confirmed today, holding a duplicate, is REWRITTEN by the spelled call, not reported "unchanged"', async () => {
+    // Round 14, both passes, the blocker the round-13 repair created: with
+    // every secondary KEPT, the spelled repair normalised to exactly what the
+    // incoherent entry normalised to, `unchangedBindings` said "same
+    // binding", nothing was written, the duplicate stayed, and the tool
+    // announced a success the next access re-diagnosed — forever. The
+    // metadata has to match too for the no-op to occur, which is why this
+    // entry carries today's date and the tool's own `confirmedVia`.
+    const vault = await startFakeVault();
+    const { _internals: bindingInternals } = await import('../src/tools/workspace-binding.mjs');
+    const { bindingIncoherences } = await import('../src/helpers/workspace-bindings.mjs');
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: {
+        vault: 'work',
+        also: ['sci', 'sci'],
+        locked: true,
+        alsoLocked: [],
+        alsoWritable: [],
+        confirmedAt: new Date().toISOString().slice(0, 10),
+        confirmedVia: bindingInternals.CONFIRMED_VIA,
+      },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      // The lock guard answers every access first, so the door that issues
+      // the diagnostic here is `unlock_vaults --persist` — the very procedure
+      // pass B followed to its end (d4): refused, repair, unlock again.
+      const first = await rt.call(2, 'tools/call', { name: 'unlock_vaults', arguments: { persist: true } });
+      assert.equal(first.result?.isError, true, textOf(first));
+      const text = textOf(first);
+      assert.match(text, /sci appears more than once/);
+      const spelled = /confirm_workspace_binding\((\{[^\n]*?\})\)\./.exec(text)?.[1];
+      assert.ok(spelled, `no call spelled:\n${text}`);
+      const call = JSON.parse(spelled.replace(/(\w+):/g, '"$1":'));
+      assert.equal(call.vault, 'work');
+      assert.deepEqual(call.also, ['sci']);
+      assert.equal(call.locked, true);
+      assert.match(call.ifBindingDigest, /^[0-9a-f]{64}$/);
+      const bytesBefore = fs.readFileSync(configPath);
+
+      const repaired = await rt.call(3, 'tools/call', { name: 'confirm_workspace_binding', arguments: { ...call, open: false } });
+      assert.notEqual(repaired.result?.isError, true, `the rendered repair was refused:\n${textOf(repaired)}`);
+      // THE FILE CHANGED, and the entry as written is coherent now.
+      assert.ok(!fs.readFileSync(configPath).equals(bytesBefore), 'the repair wrote nothing: the duplicate is still on disk');
+      const after = bindingOnDisk(configPath, key);
+      assert.deepEqual(after.also, ['sci']);
+      assert.equal(after.locked, true);
+      assert.deepEqual(bindingIncoherences(after), [], `still incoherent as written: ${JSON.stringify(after)}`);
+      // And the procedure ends where the message said it would: the second
+      // unlock lifts the recorded lock instead of refusing again.
+      const second = await rt.call(4, 'tools/call', { name: 'unlock_vaults', arguments: { persist: true } });
+      assert.notEqual(second.result?.isError, true, `the second unlock refused again — the loop:\n${textOf(second)}`);
+      const lifted = JSON.parse(textOf(second));
+      assert.equal(lifted.bindingLifted, true);
+      assert.equal(bindingOnDisk(configPath, key).locked, false);
+    } finally { rt.kill(); }
+  });
+
   test('`clear: true` on an EMPTY entry says an empty entry was removed — not that the router could not read it', async () => {
     const vault = await startFakeVault();
     const { dir, configPath, key } = writeConfig(vault.port, { binding: {} });

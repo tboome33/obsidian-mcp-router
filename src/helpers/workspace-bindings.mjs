@@ -355,8 +355,25 @@ export const BINDING_INCOHERENCE = Object.freeze({
    * restart. Injected by the caller, like the kind above.
    */
   PRIMARY_NOT_LOADED_HERE: 'primary-not-loaded-here',
-  /** A secondary names a vault no binding can be written with; left out of the spelled call. */
+  /**
+   * A secondary names a vault the writer cannot bind as a NEW name (not in
+   * the file, not provided by this session's environment) and this session
+   * has not loaded. KEPT in the spelled call (round 13).
+   */
   SECONDARY_NOT_REGISTERED: 'secondary-not-registered',
+  /**
+   * A secondary the writer cannot bind as a new name, but which THIS session
+   * still has loaded (the file dropped it after this session started): it
+   * still answers here, and the next start will not load it. Kept too.
+   */
+  SECONDARY_DROPPED_STILL_LOADED: 'secondary-dropped-still-loaded',
+  /**
+   * A secondary the config file DISABLES (`disabledVaults`): registering or
+   * restarting lifts nothing. Kept too.
+   */
+  SECONDARY_DISABLED: 'secondary-disabled',
+  /** The primary is disabled by `disabledVaults` — same placeholder as unregistered, its own sentence. */
+  PRIMARY_DISABLED: 'primary-disabled',
 });
 
 /**
@@ -408,11 +425,38 @@ export function writerBindableNames(cfg, vaults) {
   // A vault the config DISABLES is not bindable, whatever lists it: round 13
   // found a disabled remote still counted as "listed", so its owner was told
   // to "retry or restart" for an exclusion that will outlive every restart.
-  for (const name of disabledVaultEntries(cfg)) out.delete(name);
+  const disabled = new Set(disabledVaultEntries(cfg));
+  for (const name of disabled) out.delete(name);
   for (const v of Array.isArray(vaults) ? vaults : []) {
-    if (v && v.source === 'env' && typeof v.name === 'string') out.add(v.name);
+    // AND THE EXCLUSION HOLDS FOR AN ENVIRONMENT REMOTE TOO. The registry skips
+    // a disabled env vault at start-up, but a session loaded BEFORE a sibling
+    // disabled it still carries the descriptor, and this line put the name
+    // straight back after the deletion above — so a confirmation or a
+    // persisted lock could record as primary a vault the next start will not
+    // load. (Codex, round 14.)
+    if (v && v.source === 'env' && typeof v.name === 'string' && !disabled.has(v.name)) out.add(v.name);
   }
   return out;
+}
+
+/**
+ * The three sets `registryIncoherences` asks, built ONCE from the config the
+ * writer is about to judge and the catalogue this session loaded — so every
+ * door that spells a repair hands the renderer the same facts. Round 14 added
+ * a third set (`disabled`) and the four callers would each have had to learn
+ * it; one function, four call sites.
+ *
+ * @param {unknown} cfg the parsed router config (the file as read inside the lock, or the live copy)
+ * @param {Array<{ name: string, source?: string }>} vaults this session's catalogue
+ * @returns {{ bindable: Set<string>, sessionNames: Set<string>, disabled: Set<string> }}
+ */
+export function registryFactsFor(cfg, vaults) {
+  const list = Array.isArray(vaults) ? vaults : [];
+  return {
+    bindable: writerBindableNames(cfg, list),
+    sessionNames: new Set(list.map((v) => v?.name).filter((n) => typeof n === 'string')),
+    disabled: new Set(disabledVaultEntries(cfg)),
+  };
 }
 
 /**
@@ -433,20 +477,33 @@ export function writerBindableNames(cfg, vaults) {
  * primary inside the set that this session has not loaded is not a repair
  * but a reload.
  *
+ * THREE DIFFERENT FACTS ABOUT A SECONDARY OUTSIDE THE SET, said apart (Codex,
+ * round 14: one sentence — "not in the config file … stays unreachable from
+ * here" — was false for a vault still listed but DISABLED, and false for a
+ * vault this session had loaded before the file dropped it, which still
+ * answers here until the next start). `disabled` is `disabledVaultEntries`
+ * of the same config `bindable` was computed from.
+ *
  * @param {unknown} raw the entry as written
- * @param {{ bindable: Set<string>, sessionNames: Set<string> }} registry
+ * @param {{ bindable: Set<string>, sessionNames: Set<string>, disabled?: Set<string> }} registry
  * @returns {Array<{ kind: string, names: string[] }>}
  */
-export function registryIncoherences(raw, { bindable, sessionNames }) {
+export function registryIncoherences(raw, { bindable, sessionNames, disabled = new Set() }) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
   const out = [];
   const primary = raw.vault;
   if (typeof primary === 'string' && primary.trim() !== '') {
-    if (!bindable.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] });
+    if (disabled.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_DISABLED, names: [primary] });
+    else if (!bindable.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED, names: [primary] });
     else if (!sessionNames.has(primary)) out.push({ kind: BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE, names: [primary] });
   }
   const tiers = rawSecondaryTiers(raw);
-  const gone = tiers ? tiers.also.filter((n) => !bindable.has(n)) : [];
+  const outside = tiers ? tiers.also.filter((n) => !bindable.has(n)) : [];
+  const off = outside.filter((n) => disabled.has(n));
+  const stillLoaded = outside.filter((n) => !disabled.has(n) && sessionNames.has(n));
+  const gone = outside.filter((n) => !disabled.has(n) && !sessionNames.has(n));
+  if (off.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: off });
+  if (stillLoaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED, names: stillLoaded });
   if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED, names: gone });
   return out;
 }
@@ -572,12 +629,27 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
         return `its primary ${listed(n)} is in the config file but this session has not loaded it yet — retry in a `
           + 'moment or restart the session BEFORE repairing, or the repair call will be refused here for a name '
           + 'this session does not know';
+      case BINDING_INCOHERENCE.PRIMARY_DISABLED:
+        return `its primary ${listed(n)} is DISABLED by \`disabledVaults\` in this config file, so no binding can `
+          + 'name it — registering it again or restarting lifts nothing; remove it from `disabledVaults` first, '
+          + 'or choose another primary';
       case BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED:
-        return `its secondary ${listed(n)} is not a vault THIS session can bind or reach (not in the config file, `
-          + 'not provided by this session\'s environment) — it is KEPT in the call below, tier included, because '
-          + 'a repair keeps what was there and another session\'s environment may provide it; it stays '
-          + 'unreachable from here until it is registered or provided. Do not remove it from the call to '
-          + '"fix" this: that would drop its write tier for good';
+        return `its secondary ${listed(n)} is not a vault this config file lists nor one this session's `
+          + 'environment provides, and this session has not loaded it — it is KEPT in the call below, tier '
+          + 'included, because a repair keeps what was there and another session\'s environment may provide '
+          + 'it; from here it does not answer (Unknown vault) until it is registered or provided. Removing it '
+          + 'from the call is a choice, not a fix: it drops the declaration and its write tier, and a later '
+          + 're-add comes back soft unless set_secondary_vault_mode sets the tier again';
+      case BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED:
+        return `its secondary ${listed(n)} is no longer a vault this config file lists (removed since this `
+          + 'session started, and not provided by this session\'s environment) — it still ANSWERS here, from '
+          + 'the catalogue this session loaded, and the next start will not load it; it is KEPT in the call '
+          + 'below, tier included, because a repair keeps what was there. Removing it from the call is a '
+          + 'choice, not a fix: it drops the declaration and its write tier';
+      case BINDING_INCOHERENCE.SECONDARY_DISABLED:
+        return `its secondary ${listed(n)} is DISABLED by \`disabledVaults\` in this config file — still listed `
+          + 'there, so registering it again or restarting lifts nothing; it is KEPT in the call below, tier '
+          + 'included, and answers again once it is removed from `disabledVaults`';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
@@ -600,7 +672,8 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
   const isObject = raw && typeof raw === 'object' && !Array.isArray(raw);
   const repaired = isObject ? normalizeBinding(raw) : null;
   const primaryUnusable = !repaired
-    || incoherences.some((i) => i.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED);
+    || incoherences.some((i) => i.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED
+      || i.kind === BINDING_INCOHERENCE.PRIMARY_DISABLED);
   const PLACEHOLDER = '<the primary vault you intend>';
   const primary = primaryUnusable ? identifierForCall(PLACEHOLDER) : identifierForCall(repaired.vault);
   // The tiers the tool will carry over: read from the entry as written with
@@ -939,6 +1012,17 @@ function unchangedBindings(base, all) {
   if (before.length !== after.length) return false;
   for (const k of after) {
     if (!Object.hasOwn(existing, k)) return false;
+    // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NEVER "UNCHANGED". Round
+    // 13 made a repair KEEP every secondary the entry holds — and with nothing
+    // left out, the spelled repair normalised to exactly what the incoherent
+    // entry normalised to (a duplicate collapses, a tier without a role drops),
+    // so this function said "unchanged", no write happened, the duplicate
+    // stayed on disk, and the tool announced a success the next access
+    // re-diagnosed: a loop of identical diagnostics. (Codex, round 14, both
+    // passes — a blocker the round-13 repair created.) The question here is
+    // "does the FILE already say this?", and a file that says it incoherently
+    // does not.
+    if (bindingIncoherences(existing[k]).length) return false;
     // Compared through `normalizeBinding` on BOTH sides, so the question asked
     // is "does this mean the same thing?" and not "is it spelled the same".
     //

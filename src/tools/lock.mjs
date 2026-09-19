@@ -42,6 +42,7 @@ import {
   describeBindingRepair,
   BINDING_REPAIR_REQUIRED_CODE,
   registryIncoherences,
+  registryFactsFor,
   writerBindableNames,
 } from '../helpers/workspace-bindings.mjs';
 import {
@@ -323,9 +324,15 @@ export async function unlockVaults(registry, args = {}) {
       // repaired" was the wrong condition. (Codex, round 13.)
       throw new Error(
         `unlock_vaults: in-memory lock cleared for this session, but ${err.message.replace(/^unlock_vaults --persist: /, '')} `
-        + `The router WILL re-lock to "${safeForMessage(err.recordedLock ?? wasLocked, 80)}" — at the next restart, `
-        + 'and in this session as soon as the repair spelled above succeeds, because that repair KEEPS the lock '
-        + '(locked: true). After repairing, run unlock_vaults({ persist: true }) again to lift it.',
+        // TO THE PRIMARY THE REPAIR NAMES, not unconditionally to the one
+        // recorded today: a repair whose diagnostic hands out the placeholder
+        // ends with whichever primary the user chooses, and the lock follows
+        // it. (Codex, round 14 — the round-13 sentence promised the old name.)
+        + `The router WILL re-lock — to "${safeForMessage(err.recordedLock ?? wasLocked, 80)}" at the next restart `
+        + 'if the entry is left as it is, and in this session as soon as the repair spelled above succeeds, to '
+        + 'the PRIMARY THAT REPAIR NAMES (the same vault, or the one you choose in place of the placeholder), '
+        + 'because that repair KEEPS the lock (locked: true). After repairing, run unlock_vaults({ persist: true }) '
+        + 'again to lift it.',
       );
     }
     try {
@@ -483,10 +490,7 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
             // THE REGISTRY FACTS TOO — this is the third door that spells a
             // repair, and round 11 left it spelling `vault: "ghost"`. (Codex,
             // round 12.)
-            incoherences.push(...registryIncoherences(raw, {
-              bindable: writerBindableNames(cfg, registry.vaults),
-              sessionNames: new Set((registry.vaults || []).map((v) => v.name)),
-            }));
+            incoherences.push(...registryIncoherences(raw, registryFactsFor(cfg, registry.vaults)));
             const err = new Error(
               'lock_vault --persist: the lock was NOT recorded and NO BINDING WAS WRITTEN; the lock in force '
               + 'before this call, if any, stays as it was. '
@@ -572,10 +576,7 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         const raw = rawBindingEntry(cfg, cwd);
         const incoherences = bindingIncoherences(raw);
         if (incoherences.length) {
-          incoherences.push(...registryIncoherences(raw, {
-            bindable: writerBindableNames(cfg, registry.vaults),
-            sessionNames: new Set((registry.vaults || []).map((v) => v.name)),
-          }));
+          incoherences.push(...registryIncoherences(raw, registryFactsFor(cfg, registry.vaults)));
           const err = new Error(
             `unlock_vaults --persist: the lock recorded on the binding (to "${safeForMessage(existing.vault, 80)}") `
             + `was NOT lifted and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
