@@ -52,6 +52,24 @@ sites, and the reader of raw frontmatter now refuses the shapes it does not deco
 reporting them as pages that declare nothing — an unreadable bound and an absent one are different
 claims, and only one of them is safe to act on.
 
+### A bound under a quoted key is read, and what stays refused now carries a number
+
+That raw-frontmatter reader — the one the decisions-recall hook uses, because a hook runs before any
+`npm install` — now reads `"valid_from": 2026-01-01` as the same key as `valid_from: 2026-01-01`.
+Obsidian produces an identical frontmatter for both spellings; that was measured, not assumed. So
+refusing the quoted one was a false alarm on a perfectly well-formed page.
+
+A double-quoted key carrying a backslash escape is still declined rather than guessed. Decoding it
+blindly would turn the key into a foreign property, and the reader would go **silent** on a page that
+really does hold a date — a worse failure than the refusal it replaces.
+
+What the reader declines is now a figure instead of something left to rediscover. Across a grid of
+225 legal YAML assemblies, each compared against the frontmatter Obsidian itself returns: no wrong
+window in any of them, and 48 refusals on shapes Obsidian reads as a clean date — 39 of those a bound
+written as a block scalar (`valid_from: |`, the date on the next line). Those stay refused on
+purpose: reading them means tracking indentation and chomping, which is reimplementing YAML inside a
+dependency-free hook. On the real fleet — 3848 frontmatter blocks — nothing is refused.
+
 ### Saying yes to a binding proposal ADDS to the binding, and never replaces it
 
 `confirm_workspace_binding({ accept: "<proposalId>" })` answers the proposal the refusal handed you.
