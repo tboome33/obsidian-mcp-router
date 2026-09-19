@@ -2066,6 +2066,10 @@ describe('GUARD — a workspace file proposes a vault; only the host may choose 
       'hooks/vault-link-linter.mjs',
       'src/index.mjs',
       'src/registry.mjs',
+      // `unlock_vaults --persist` asks whether the HOST re-imposes the lock
+      // through the gate, not through the lock's provenance (a confirmed
+      // `locked: true` binding had shadowed it — round 15 of the binding lot).
+      'src/tools/lock.mjs',
       'src/tools/workspace-binding.mjs',
     ], 'every consumer of the gate, by path — a row removed here is a door reopened');
   });

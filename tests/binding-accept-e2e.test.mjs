@@ -634,6 +634,48 @@ describe('E2E: accepting a binding proposal', () => {
     } finally { rt.kill(); }
   });
 
+  test('THE REPAIR REPAIRS THE FILE from the ACCESS door too — unlocked, confirmed today, and the next access earns a proposal', async () => {
+    // Round 15, angle B: the round-14 witness reached the diagnostic through
+    // the lock (`unlock_vaults --persist`); the ordinary door is an access to
+    // an undeclared vault on an unlocked workspace. Same no-op, same loop.
+    const vault = await startFakeVault();
+    const { _internals: bindingInternals } = await import('../src/tools/workspace-binding.mjs');
+    const { bindingIncoherences } = await import('../src/helpers/workspace-bindings.mjs');
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: {
+        vault: 'work',
+        also: ['sci', 'sci'],
+        locked: false,
+        alsoLocked: [],
+        alsoWritable: [],
+        confirmedAt: new Date().toISOString().slice(0, 10),
+        confirmedVia: bindingInternals.CONFIRMED_VIA,
+      },
+    });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await rt.call(2, 'tools/call', { name: 'get_file', arguments: { vault: 'other', path: 'wiki/x.md' } });
+      const text = textOf(res);
+      assert.match(text, /sci appears more than once/);
+      assert.equal(res.result?._meta?.bindingProposal, undefined, 'a proposal was minted over the duplicate');
+      const spelled = /confirm_workspace_binding\((\{[^\n]*?\})\)\./.exec(text)?.[1];
+      assert.ok(spelled, `no call spelled:\n${text}`);
+      const call = JSON.parse(spelled.replace(/(\w+):/g, '"$1":'));
+      assert.deepEqual(call.also, ['sci']);
+      const bytesBefore = fs.readFileSync(configPath);
+      const repaired = await rt.call(3, 'tools/call', { name: 'confirm_workspace_binding', arguments: { ...call, open: false } });
+      assert.notEqual(repaired.result?.isError, true, textOf(repaired));
+      assert.ok(!fs.readFileSync(configPath).equals(bytesBefore), 'the repair wrote nothing');
+      assert.deepEqual(bindingIncoherences(bindingOnDisk(configPath, key)), []);
+      // The loop is broken: the same access now earns the proposal.
+      const again = await rt.call(4, 'tools/call', { name: 'get_file', arguments: { vault: 'other', path: 'wiki/x.md' } });
+      assert.equal(again.result?.isError, true, textOf(again));
+      assert.equal(again.result?._meta?.bindingProposal?.proposedRole, 'secondary', `no proposal:\n${textOf(again)}`);
+      assert.ok(!/appears more than once/.test(textOf(again)), textOf(again));
+    } finally { rt.kill(); }
+  });
+
   test('`clear: true` on an EMPTY entry says an empty entry was removed — not that the router could not read it', async () => {
     const vault = await startFakeVault();
     const { dir, configPath, key } = writeConfig(vault.port, { binding: {} });

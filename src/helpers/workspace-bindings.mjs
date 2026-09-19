@@ -374,6 +374,13 @@ export const BINDING_INCOHERENCE = Object.freeze({
   SECONDARY_DISABLED: 'secondary-disabled',
   /** The primary is disabled by `disabledVaults` — same placeholder as unregistered, its own sentence. */
   PRIMARY_DISABLED: 'primary-disabled',
+  /**
+   * A secondary the config file lists (bindable) that this session has not
+   * loaded — a sibling registered it. Not an incoherence of the entry: never
+   * rendered by `describeBindingRepair`, produced for the SUCCESS sentence
+   * (`describeUnresolvedSecondaries`) so it is not told as "unregistered".
+   */
+  SECONDARY_NOT_LOADED_HERE: 'secondary-not-loaded-here',
 });
 
 /**
@@ -460,6 +467,48 @@ export function registryFactsFor(cfg, vaults) {
 }
 
 /**
+ * The sentence a SUCCESS owes for the secondaries it wrote that this session
+ * cannot resolve — one renderer for the confirmation tool and for
+ * `lock_vault --persist`, which both keep such names (round 13) and both
+ * promised, or said nothing about, an access the next call refused. Round
+ * 14 said "not in the config file … nor provided by its environment" from
+ * the one fact it had (absent from the catalogue); round 15 asks the three
+ * facts apart: disabled, listed but not loaded here, neither — and a
+ * descriptor still loaded for a name the file dropped. `facts` are the
+ * secondary kinds of `registryIncoherences`.
+ *
+ * @param {Array<{ kind: string, names: string[] }>} facts
+ * @param {{ locked?: boolean }} [opts]
+ * @returns {string} '' when nothing needs saying
+ */
+export function describeUnresolvedSecondaries(facts, { locked = false } = {}) {
+  const q = (names) => names.map((n) => `"${safeForMessage(n, 80)}"`).join(', ');
+  const parts = [];
+  for (const { kind, names } of facts) {
+    if (kind === BINDING_INCOHERENCE.SECONDARY_DISABLED) {
+      parts.push(`${q(names)} stays declared in the binding (tier kept) but is DISABLED by \`disabledVaults\` in the `
+        + 'config file: from here it answers "Unknown vault", and registering it again or restarting lifts '
+        + 'nothing while that list names it.');
+    } else if (kind === BINDING_INCOHERENCE.SECONDARY_NOT_LOADED_HERE) {
+      parts.push(`${q(names)} stays declared in the binding (tier kept) and the config file lists it, but this `
+        + 'session has not loaded it (registered after this session started): from here it answers '
+        + '"Unknown vault" until the session restarts or hot-reload catches up.');
+    } else if (kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED) {
+      parts.push(`${q(names)} stays declared in the binding (tier kept) but this session has not loaded it — `
+        + 'neither in the config file as this session reads it nor provided by its environment (another '
+        + 'session\'s environment may provide it): from here it answers "Unknown vault" until it is '
+        + 'registered or provided and this session loads it.');
+    } else if (kind === BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED) {
+      parts.push(`${q(names)} stays declared in the binding (tier kept); the config file no longer lists it but `
+        + 'this session still holds its descriptor, so it can still be reached here until the next start, '
+        + 'which will not load it.');
+    }
+  }
+  if (!parts.length) return '';
+  return ` ${parts.join(' ')}${locked ? ' (While the lock holds, no vault but the primary answers anyway.)' : ''}`;
+}
+
+/**
  * What the REGISTRY knows about an entry's vaults, as incoherence kinds the
  * renderer speaks — the facts `bindingIncoherences` cannot know. One
  * function for EVERY door that spells a repair (the proposal in
@@ -505,6 +554,26 @@ export function registryIncoherences(raw, { bindable, sessionNames, disabled = n
   if (off.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: off });
   if (stillLoaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED, names: stillLoaded });
   if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED, names: gone });
+  return out;
+}
+
+/**
+ * The facts a SUCCESS needs about the secondaries it just wrote: the ones
+ * `registryIncoherences` names (disabled, dropped-but-loaded, unregistered)
+ * plus the one it deliberately does not — listed by the file and simply not
+ * loaded here — because that one is no fault of the entry. Same inputs.
+ *
+ * @param {unknown} raw the entry as written
+ * @param {{ bindable: Set<string>, sessionNames: Set<string>, disabled?: Set<string> }} registry
+ * @returns {Array<{ kind: string, names: string[] }>}
+ */
+export function unresolvedSecondaryFacts(raw, facts) {
+  const out = registryIncoherences(raw, facts).filter((f) => f.kind.startsWith('secondary-'));
+  const tiers = rawSecondaryTiers(raw);
+  const notLoaded = tiers
+    ? tiers.also.filter((n) => facts.bindable.has(n) && !facts.sessionNames.has(n))
+    : [];
+  if (notLoaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_NOT_LOADED_HERE, names: notLoaded });
   return out;
 }
 
@@ -642,14 +711,16 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
           + 're-add comes back soft unless set_secondary_vault_mode sets the tier again';
       case BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED:
         return `its secondary ${listed(n)} is no longer a vault this config file lists (removed since this `
-          + 'session started, and not provided by this session\'s environment) — it still ANSWERS here, from '
-          + 'the catalogue this session loaded, and the next start will not load it; it is KEPT in the call '
-          + 'below, tier included, because a repair keeps what was there. Removing it from the call is a '
-          + 'choice, not a fix: it drops the declaration and its write tier';
+          + 'session started, and not provided by this session\'s environment) — this session still holds '
+          + 'its descriptor, so a call can still reach it here (subject to the lock and to this session\'s '
+          + 'routing) until the next start, which will not load it; it is KEPT in the call below, tier '
+          + 'included, because a repair keeps what was there. Removing it from the call is a choice, not '
+          + 'a fix: it drops the declaration and its write tier';
       case BINDING_INCOHERENCE.SECONDARY_DISABLED:
-        return `its secondary ${listed(n)} is DISABLED by \`disabledVaults\` in this config file — still listed `
-          + 'there, so registering it again or restarting lifts nothing; it is KEPT in the call below, tier '
-          + 'included, and answers again once it is removed from `disabledVaults`';
+        return `its secondary ${listed(n)} is DISABLED by \`disabledVaults\` in this config file, for as long `
+          + 'as that list names it — registering it again or restarting lifts nothing; it is KEPT in the call '
+          + 'below, tier included. Removing it from `disabledVaults` is necessary, and this session must '
+          + 'then load it (a restart) before it answers here';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
@@ -965,10 +1036,26 @@ export function withBinding(config, cwd, binding) {
   // adding: a hand-edited config could hold the same directory under two
   // spellings, and leaving the stale one would make `readBinding`'s answer
   // depend on object key order.
+  let storedRaw;
   for (const storedKey of Object.keys(all)) {
-    if (canonicalWorkspaceKey(storedKey) === key) delete all[storedKey];
+    if (canonicalWorkspaceKey(storedKey) === key) {
+      if (storedRaw === undefined) storedRaw = all[storedKey];
+      delete all[storedKey];
+    }
   }
+  // A FIELD THIS VERSION DOES NOT KNOW SURVIVES THE WRITE. The identity rule
+  // below used to be the only thing keeping such a field (a future version's,
+  // or the user's): the moment anything else about the entry changed, the
+  // normalised record replaced it without the field. Round 14 made a repair
+  // always write, so a repair of a duplicate also dropped `foo: 1` in silence
+  // (Codex, round 15). Carried through explicitly: the known fields are
+  // written from the normalised record, everything else as it was.
+  const KNOWN = new Set(['vault', 'also', 'locked', 'confirmedAt', 'confirmedVia', 'alsoLocked', 'alsoWritable']);
+  const unknownFields = storedRaw && typeof storedRaw === 'object' && !Array.isArray(storedRaw)
+    ? Object.fromEntries(Object.entries(storedRaw).filter(([k]) => !KNOWN.has(k)))
+    : {};
   all[key] = {
+    ...unknownFields,
     ...normalized,
     confirmedAt: normalized.confirmedAt || new Date().toISOString().slice(0, 10),
   };
@@ -980,7 +1067,7 @@ export function withBinding(config, cwd, binding) {
   // door away in `withMigrationState` (where it hit EVERY router start), and a
   // repair that reaches only its first site is the defect this repository
   // keeps rediscovering — so all three transforms now share the rule.
-  let next = unchangedBindings(base, all) ? base : { ...base, [WORKSPACE_BINDINGS_KEY]: all };
+  let next = unchangedBindings(base, all, key) ? base : { ...base, [WORKSPACE_BINDINGS_KEY]: all };
   // BINDING A VAULT ADOPTS IT. A refusal of the primary or of a secondary,
   // recorded for this workspace, is stale the moment the user binds it — and
   // it is dropped HERE, in the one transform every binding writer goes
@@ -1004,25 +1091,31 @@ export function withBinding(config, cwd, binding) {
  * @param {Record<string, object>} all
  * @returns {boolean}
  */
-function unchangedBindings(base, all) {
+function unchangedBindings(base, all, key) {
   const existing = base[WORKSPACE_BINDINGS_KEY];
   if (!existing || typeof existing !== 'object' || Array.isArray(existing)) return false;
   const before = Object.keys(existing);
   const after = Object.keys(all);
   if (before.length !== after.length) return false;
+  // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NEVER "UNCHANGED". Round 13
+  // made a repair KEEP every secondary the entry holds — and with nothing
+  // left out, the spelled repair normalised to exactly what the incoherent
+  // entry normalised to (a duplicate collapses, a tier without a role drops),
+  // so this function said "unchanged", no write happened, the duplicate
+  // stayed on disk, and the tool announced a success the next access
+  // re-diagnosed: a loop of identical diagnostics. (Codex, round 14, both
+  // passes — a blocker the round-13 repair created.) The question here is
+  // "does the FILE already say this?", and a file that says it incoherently
+  // does not.
+  // FOR THE ENTRY BEING WRITTEN ONLY. Round 14 asked it of every entry, so an
+  // incoherent binding of ANOTHER workspace forced a rewrite of this one at
+  // every call — never repairing that other entry, which `withBinding` copies
+  // as it is — and the "no needless rewrite of the file holding every API
+  // key" rule was lost for every workspace sharing a config with one bad
+  // entry. (Codex, round 15, both passes.)
+  if (Object.hasOwn(existing, key) && bindingIncoherences(existing[key]).length) return false;
   for (const k of after) {
     if (!Object.hasOwn(existing, k)) return false;
-    // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NEVER "UNCHANGED". Round
-    // 13 made a repair KEEP every secondary the entry holds — and with nothing
-    // left out, the spelled repair normalised to exactly what the incoherent
-    // entry normalised to (a duplicate collapses, a tier without a role drops),
-    // so this function said "unchanged", no write happened, the duplicate
-    // stayed on disk, and the tool announced a success the next access
-    // re-diagnosed: a loop of identical diagnostics. (Codex, round 14, both
-    // passes — a blocker the round-13 repair created.) The question here is
-    // "does the FILE already say this?", and a file that says it incoherently
-    // does not.
-    if (bindingIncoherences(existing[k]).length) return false;
     // Compared through `normalizeBinding` on BOTH sides, so the question asked
     // is "does this mean the same thing?" and not "is it spelled the same".
     //

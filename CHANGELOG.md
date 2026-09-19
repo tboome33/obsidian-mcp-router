@@ -222,6 +222,27 @@ primary and drops every secondary not passed again, which is exactly the call th
   has; a call adding several refused names says each name's own cause; and the refused
   `unlock_vaults --persist` says the repair re-locks to the primary THAT REPAIR names, not
   unconditionally to the one recorded today.
+- **The "never unchanged" rule asks the entry being written, not the whole config — and the last
+  writer of the binding record gets the rule the others follow.** The fifteenth round found what the
+  fourteenth had created: the guard that makes a repair always write looked at EVERY workspace's entry,
+  so one incoherent binding in a shared config forced every other workspace's no-op (a re-lock, say) to
+  rewrite the file that holds every API key, at every call, without ever repairing the bad entry it was
+  copying as it was. Scoped to the entry being written; and a write now carries through the fields this
+  version does not know (a repair dropped `foo: 1` in silence). `set_secondary_vault_mode` — carried as
+  "to settle at the bump" since round ten — refuses, with the repair spelled, to rewrite an entry the
+  router had to repair to read: changing one secondary's tier normalised the whole entry behind "mode
+  recorded". With it: a success that keeps a secondary this session cannot resolve tells the three
+  absences apart (disabled; listed in the file but not loaded here; neither listed nor provided) instead
+  of "not in the config file nor provided by the environment" for all of them, and the persisted lock
+  says the same for the previous primary it carries over as a secondary; a vault disabled BEFORE this
+  session started is refused as disabled, not "Unknown vault", and `list_vaults` no longer offers a vault
+  disabled since start-up for binding; the refused persist on a disabled target says "remove it from
+  `disabledVaults`", not "register it"; an acceptance whose primary a sibling dropped between the
+  preflight and the lock still gets the repair; `unlock_vaults --persist` sees the host lock a binding
+  lock had shadowed (the variable is asked, not the lock's provenance) and says the `.env` line it
+  removed may have named another vault; and "still ANSWERS here" / "answers again once removed from
+  `disabledVaults`" say what is known: a loaded descriptor, subject to the lock; a config edit that
+  this session must then load.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

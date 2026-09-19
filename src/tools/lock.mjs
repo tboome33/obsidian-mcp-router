@@ -43,8 +43,12 @@ import {
   BINDING_REPAIR_REQUIRED_CODE,
   registryIncoherences,
   registryFactsFor,
+  unresolvedSecondaryFacts,
+  describeUnresolvedSecondaries,
   writerBindableNames,
+  authoritativeLockedVault,
 } from '../helpers/workspace-bindings.mjs';
+import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
 import {
   isVaultReachable,
   isPromotionOfLockedSecondaryOnDisk,
@@ -246,6 +250,15 @@ export async function lockVault(registry, args = {}) {
   // `persisted: true` that meant "the .env, at least"); closing the gate that
   // same day turned it from misleading into false.
   const persisted = bindingRecorded !== null;
+  // WHAT THIS LOCK CARRIED OVER AS A SECONDARY THAT THIS SESSION CANNOT
+  // RESOLVE — the previous primary, typically, when the file dropped or
+  // disabled it. Kept by the round-13 rule; unsaid until round 15 (O2).
+  // Same sentence as the confirmation tool's success.
+  const carriedFacts = bindingRecorded?.carriedFacts ?? [];
+  const carriedNote = describeUnresolvedSecondaries(carriedFacts, { locked: true });
+  const notLoadedHere = carriedFacts
+    .filter((f) => f.kind !== 'secondary-dropped-still-loaded')
+    .flatMap((f) => f.names);
   const hintFailed = hintError
     ? ` OBSIDIAN_ROUTER_LOCKED could NOT be written to ${envPath} (${hintError}) — the portable hint for another machine is missing, nothing else.`
     : '';
@@ -262,12 +275,18 @@ export async function lockVault(registry, args = {}) {
     envPath: hintWritten ? envPath : undefined,
     // What was recorded in the user's own config, or null when nothing was
     // (no persist asked, or a config that could not be written).
-    bindingRecorded,
+    bindingRecorded: bindingRecorded
+      ? { vault: bindingRecorded.vault, locked: bindingRecorded.locked, also: bindingRecorded.also }
+      : bindingRecorded,
+    // Secondaries the recorded binding declares that this session cannot
+    // resolve (kept, not added — see the message). Empty in the ordinary case.
+    notLoadedHere,
     message:
       `Router locked to "${vault}". ` +
       (persisted
         ? 'The workspace is bound to it in your own router config, so the lock survives a restart'
           + (hintWritten ? `, and OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath} as a portable hint for another machine.` : `.${hintFailed}`)
+          + carriedNote
         : hintWritten
           ? `OBSIDIAN_ROUTER_LOCKED=${vault} was written to ${envPath}, but your router config could NOT be written`
             + ' — so this lock does NOT survive a restart: a lock named only by a project file is no longer'
@@ -296,7 +315,14 @@ export async function unlockVaults(registry, args = {}) {
   // is re-imposed at every start whatever this tool writes: the config cannot
   // lift it, and the message used to promise "it will not come back on
   // restart" regardless. Found in the sixth review, 2026-09-04.
-  const hostReimposes = registry.lockSource?.origin === 'host';
+  // ASKED OF THE HOST'S OWN DECLARATION, NOT ONLY OF THE LOCK'S PROVENANCE.
+  // `adoptRouting` sets the source to `binding` when a confirmed binding
+  // carries `locked: true` (and a volatile unlock sets it to `unset`), so a
+  // host lock the binding had been shadowing read as "no host lock" here,
+  // `persisted: true`, "will not come back on restart" — and the next start
+  // re-imposed it from the environment. (Codex, rounds 14 and 15, O1.) The
+  // variable itself is what re-imposes, so the variable is what is asked.
+  const hostReimposes = registry.lockSource?.origin === 'host' || Boolean(authoritativeLockedVault());
   registry.lockedVault = null;
   registry.lockSource = { origin: 'unset', variable: null };
 
@@ -351,8 +377,13 @@ export async function unlockVaults(registry, args = {}) {
         `unlock_vaults: in-memory lock cleared, but failed to remove `
         + `OBSIDIAN_ROUTER_LOCKED from ${envPath} (${err.message}). `
         + (bindingLifted
-          ? 'No lock is recorded for this workspace in your router config, so the router will NOT '
-            + 're-lock; the leftover line is only a stale hint for another machine — remove it when convenient.'
+          ? (hostReimposes
+            ? 'No lock is recorded for this workspace in your router config any more, but this lock came from '
+              + 'the host (OBSIDIAN_ROUTER_LOCKED in your MCP declaration or your shell) and WILL come back at '
+              + 'the next start until that variable is removed where it is set; the leftover line is only a '
+              + 'stale hint for another machine.'
+            : 'No lock is recorded for this workspace in your router config, so the router will NOT '
+              + 're-lock; the leftover line is only a stale hint for another machine — remove it when convenient.')
           : `Your router config could ALSO not be written, so if a lock is recorded there the router WILL re-lock to `
             + `"${wasLocked}" on next restart. Fix the config permissions and run unlock_vaults again.`),
       );
@@ -397,7 +428,9 @@ export async function unlockVaults(registry, args = {}) {
               : ' Your router config could NOT be written — if a lock was recorded there,'
                 + ' it will come back on restart.')
               + (persistRemoved
-                ? ` The hint was also removed from ${envPath}.`
+                // BY KEY, WHATEVER IT NAMED: after a repair that chose another
+                // primary, the line still named the old one (Codex, round 15).
+                ? ` The OBSIDIAN_ROUTER_LOCKED line was also removed from ${envPath} (whatever vault it named).`
                 : ` No OBSIDIAN_ROUTER_LOCKED line found in ${envPath} — already absent.`)
             // A volatile unlock leaves whatever is recorded in the config
             // untouched, and THAT is what re-locks. A leftover `.env` line no
@@ -463,6 +496,9 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
   if (!registry?.configPath) return null;
   try {
     let wrote = false;
+    // The secondaries this lock carries over that this session cannot resolve
+    // (round 15); read inside the lock, reported on the result.
+    let carriedFacts = [];
     const next = updateConfigBindings(registry.configPath, (cfg) => {
       // READ INSIDE THE LOCK. Everything this transform decides — which
       // secondaries survive, whose confirmation this was — is derived from
@@ -522,12 +558,21 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         // vault. The secondaries carried over are kept, not added (the same
         // keep-not-add rule as the confirmation tool).
         if (!writerBindableNames(cfg, registry.vaults).has(vault)) {
+          // TWO CAUSES, TWO REMEDIES: "register it, then lock again" sent the
+          // owner of a DISABLED vault to re-register it, for an exclusion no
+          // registration lifts (Codex, round 15).
+          const off = new Set(disabledVaultEntries(cfg)).has(vault);
           const err = new Error(
-            `lock_vault --persist: "${safeForMessage(vault, 80)}" is not a vault the config file registers (or it `
-            + 'is disabled there, or only this session\'s environment provided it and it has since gone), so it '
-            + 'cannot be recorded as this workspace\'s primary. The lock was NOT recorded and NO BINDING WAS '
-            + 'WRITTEN; the lock in force before this call, if any, stays as it was. Register it (setup-vault, '
-            + 'or remoteVaults), then lock again.',
+            off
+              ? `lock_vault --persist: "${safeForMessage(vault, 80)}" is DISABLED by \`disabledVaults\` in the config `
+                + 'file, so it cannot be recorded as this workspace\'s primary. The lock was NOT recorded and NO '
+                + 'BINDING WAS WRITTEN; the lock in force before this call, if any, stays as it was. Registering '
+                + 'it again or restarting lifts nothing: remove it from `disabledVaults` first, then lock again.'
+              : `lock_vault --persist: "${safeForMessage(vault, 80)}" is not a vault the config file registers (or `
+                + 'only this session\'s environment provided it and it has since gone), so it cannot be recorded '
+                + 'as this workspace\'s primary. The lock was NOT recorded and NO BINDING WAS WRITTEN; the lock in '
+                + 'force before this call, if any, stays as it was. Register it (setup-vault, or remoteVaults), '
+                + 'then lock again.',
           );
           err.code = BINDING_REPAIR_REQUIRED_CODE;
           throw err;
@@ -539,6 +584,12 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         const carried = existing
           ? [existing.vault, ...existing.also].filter((n) => n !== vault)
           : [];
+        // WHAT THIS LOCK CARRIES OVER THAT THIS SESSION CANNOT RESOLVE — the
+        // previous primary in particular, which becomes a secondary by this
+        // call even when the file dropped or disabled it (kept, by the
+        // round-13 rule; never named, until round 15). Read here, inside the
+        // lock, for the sentence `lockVault` adds to its success.
+        carriedFacts = unresolvedSecondaryFacts({ vault, also: carried }, registryFactsFor(cfg, registry.vaults));
         // The tier of each secondary that STAYS a secondary survives; the
         // previous primary joins `also` with no tier (soft), like any newly
         // declared secondary. Same rule as confirm_workspace_binding.
@@ -675,7 +726,7 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
     // The hint is a statement ABOUT the binding, so it is re-read whenever the
     // binding changes.
     refreshRegistryBindingHint(registry);
-    if (b) return { vault: b.vault, locked: b.locked, also: b.also };
+    if (b) return { vault: b.vault, locked: b.locked, also: b.also, carriedFacts };
     // NO BINDING, AND WHICH OPERATION THIS WAS DECIDES THE ANSWER. Lifting a
     // lock on a workspace that has none is a SUCCESS — there is nothing to
     // lift and nothing will come back — and `unlock_vaults` turns it into

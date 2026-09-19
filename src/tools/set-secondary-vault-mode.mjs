@@ -58,6 +58,12 @@ import {
   canonicalWorkspaceKey,
   updateConfigBindings,
   refreshRegistryBindingHint,
+  rawBindingEntry,
+  bindingIncoherences,
+  registryIncoherences,
+  registryFactsFor,
+  describeBindingRepair,
+  BINDING_REPAIR_REQUIRED_CODE,
 } from '../helpers/workspace-bindings.mjs';
 import { isGatedDeployment, gatedDeploymentRefusal } from '../helpers/workspace-dotenv.mjs';
 import { _internals as registryInternals } from '../registry.mjs';
@@ -204,6 +210,28 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
       );
     }
     previousMode = recordedMode(existing, vault);
+    // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NOT REWRITTEN BY A TIER
+    // CHANGE. This was the last writer of the binding record without the
+    // rule the lock, the unlock and the confirmation follow (rounds 10–12):
+    // changing one secondary's mode rewrote the whole entry through
+    // `withBinding`, which normalises — a duplicate, a tier without a role, a
+    // malformed field vanished in silence behind "mode recorded". Carried as
+    // "to settle at the bump" since round 10; both passes of round 15 called
+    // it what it is. Same refusal, same renderer, same code — and asked ONLY
+    // when something would be written: the no-op below stays a no-op.
+    if (previousMode !== mode) {
+      const raw = rawBindingEntry(cfg, cwd);
+      const incoherences = bindingIncoherences(raw);
+      if (incoherences.length) {
+        incoherences.push(...registryIncoherences(raw, registryFactsFor(cfg, registry.vaults)));
+        const err = new Error(
+          `set_secondary_vault_mode: the mode of "${shown}" was NOT recorded and NO BINDING WAS WRITTEN. `
+          + describeBindingRepair(raw, incoherences),
+        );
+        err.code = BINDING_REPAIR_REQUIRED_CODE;
+        throw err;
+      }
+    }
     // THE SAME ANSWER TWICE WRITES NOTHING — decided HERE, not left to
     // `withBinding`'s identity rule. That rule compares NORMALISED records,
     // and a hand-authored binding with no `confirmedAt` normalises to one

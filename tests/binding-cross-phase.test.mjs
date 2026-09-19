@@ -1113,6 +1113,12 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.ok(res, 'the acceptance carrying a not-yet-loaded secondary was refused');
     const written = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())];
     assert.deepEqual(written.also, ['q', 'sci']);
+    // AND THE SUCCESS SAYS WHICH ABSENCE (round 15): the file lists `q`, this
+    // session has not loaded it — not "neither in the config file nor
+    // provided by the environment", which round 14 said for every such name.
+    assert.deepEqual(res.notLoadedHere, ['q']);
+    assert.match(res.message, /"q" stays declared in the binding \(tier kept\) and the config file lists it, but this session has not loaded it/);
+    assert.doesNotMatch(res.message, /"q"[^.]*neither in the config file/);
     // 3. Now that the entry holds `q`, naming it again by hand is KEEPING it:
     //    the call resolves (one outcome, asserted as such — not "either").
     const kept = await confirmWorkspaceBinding(registry, { vault: 'work', also: ['q', 'sci'], open: false }, seams);
@@ -1157,7 +1163,9 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     // The sibling removes `envr` from the entry.
     fs.writeFileSync(configPath, config(['work', 'sci'], { vault: 'work', also: [] }), 'utf8');
     const seams = { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) };
-    const routingBefore = JSON.stringify(registry.workspaceBinding);
+    // EVERY ROUTING FIELD, not the binding alone (round 15, angle B).
+    const routingOf = (r) => JSON.stringify([r.workspaceBinding, r.lockedVault, r.lockSource, r.defaultVault, r.defaultVaultSource]);
+    const routingBefore = routingOf(registry);
     await assert.rejects(
       confirmWorkspaceBinding(registry, { vault: 'work', also: ['envr'], ifBindingDigest: digest, open: false }, seams),
       (e) => /binding entry now differs from the one that diagnostic described/.test(e.message)
@@ -1170,7 +1178,7 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     );
     // Routing is what it was (the repaired reading of the start-up entry): a
     // refusal adopts nothing.
-    assert.equal(JSON.stringify(registry.workspaceBinding), routingBefore, 'a refused repair changed routing');
+    assert.equal(routingOf(registry), routingBefore, 'a refused repair changed routing');
   });
 
   test('an acceptance minted while the primary was registered, arriving after the file DROPPED that primary, gets the repair — not "register it first"', async () => {
@@ -1202,17 +1210,122 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     // The sibling drops `work` from the file; the entry itself is untouched.
     fs.writeFileSync(configPath, config(['sci'], { vault: 'work', also: [] }), 'utf8');
     const seams = { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) };
+    let diagnostic = null;
     await assert.rejects(
       confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false }, seams),
-      (e) => /its primary work is not a vault this config file registers/.test(e.message)
-        && /<the primary vault you intend>/.test(e.message)
-        && /ifBindingDigest: "[0-9a-f]{64}"/.test(e.message)
-        && !/not a registered vault, so it cannot be bound/.test(e.message),
+      (e) => {
+        diagnostic = e.message;
+        return /its primary work is not a vault this config file registers/.test(e.message)
+          && /<the primary vault you intend>/.test(e.message)
+          && /ifBindingDigest: "[0-9a-f]{64}"/.test(e.message)
+          && !/not a registered vault, so it cannot be bound/.test(e.message);
+      },
     );
     assert.deepEqual(
       JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())],
       { vault: 'work', also: [] }, 'the yes wrote',
     );
+    // AND THE SPELLED REPAIR IS EXECUTED (round 15, angle B: the witness
+    // proved the diagnostic, not that its digest works): the placeholder
+    // replaced by the one primary this session can bind, the digest kept.
+    const spelled = /confirm_workspace_binding\((\{[^\n]*?\})\)\./.exec(diagnostic)?.[1];
+    assert.ok(spelled, diagnostic);
+    const call = JSON.parse(spelled.replace(/(\w+):/g, '"$1":'));
+    assert.equal(call.vault, '<the primary vault you intend>');
+    const repaired = await confirmWorkspaceBinding(registry, { ...call, vault: 'sci', open: false }, seams);
+    assert.ok(repaired, 'the rendered repair was refused');
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())].vault,
+      'sci',
+    );
+    assert.equal(registry.workspaceBinding?.vault, 'sci', 'routing did not adopt the repair');
+  });
+
+  test('a primary a sibling drops BETWEEN the preflight and the lock still gets the repair, not "register it first"', async () => {
+    // Round 15, S13. Round 14 asked the registry facts of the acceptance at
+    // both doors — and put `assertBindable` before the in-lock re-resolution,
+    // so a primary dropped in that window was refused by the names check
+    // and the door that spells the repair never ran.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-window-accept-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (vaults, binding) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: vaults.map(remote),
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: binding },
+    }, null, 2);
+    const intact = config(['work', 'sci'], { vault: 'work', also: [] });
+    const dropped = config(['sci'], { vault: 'work', also: [] });
+    fs.writeFileSync(configPath, intact, 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const registry = await loadRegistry({ configPath });
+    // Loading wrote the migration state; the bytes to hold are the ones after it.
+    const onDisk = fs.readFileSync(configPath, 'utf8');
+    let proposal = null;
+    try { registry.resolveVault('sci'); } catch (e) { proposal = e.bindingProposal; }
+    assert.ok(proposal?.proposalId, 'no proposal for sci');
+    // The preflight reads the intact file; every read after it — the one
+    // inside the lock — finds `work` gone from the registry.
+    let reads = 0;
+    const seams = {
+      cwd: process.cwd(),
+      launch: async () => ({}),
+      ping: async () => ({ ok: true }),
+      readFile: () => { reads += 1; return reads === 1 ? intact : dropped; },
+    };
+    await assert.rejects(
+      confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false }, seams),
+      (e) => /its primary work is not a vault this config file registers/.test(e.message)
+        && /<the primary vault you intend>/.test(e.message)
+        && !/not a registered vault, so it cannot be bound/.test(e.message)
+        && !/Register it first/.test(e.message),
+    );
+    assert.ok(reads >= 2, `the lock never re-read the file (${reads} reads)`);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), onDisk, 'the refused yes wrote');
+  });
+
+  test('set_secondary_vault_mode REFUSES to rewrite an entry the router had to repair to read — the last writer gets the rule', async () => {
+    // Carried as "to settle at the bump" since round 10; both passes of
+    // round 15 measured it: changing one secondary's tier rewrote the whole
+    // entry through the normaliser, and a duplicate vanished behind "mode
+    // recorded". The no-op (same mode again) stays a no-op.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-mode-incoherent-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const entry = { vault: 'work', also: ['sci', 'sci', 'other'], alsoLocked: ['other'] };
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: ['work', 'sci', 'other'].map(remote),
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: entry },
+    }, null, 2), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { setSecondaryVaultMode } = await import('../src/tools/set-secondary-vault-mode.mjs');
+    const registry = await loadRegistry({ configPath });
+    // Loading wrote the migration state; the bytes to hold are the ones after it.
+    const original = fs.readFileSync(configPath, 'utf8');
+    await assert.rejects(
+      setSecondaryVaultMode(registry, { vault: 'sci', mode: 'locked' }, { cwd: process.cwd() }),
+      (e) => e.code === 'binding-repair-required'
+        && /NOT recorded and NO BINDING WAS WRITTEN/.test(e.message)
+        && /sci appears more than once/.test(e.message)
+        && /confirm_workspace_binding\(\{ vault: "work", also: \["sci", "other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/.test(e.message),
+    );
+    assert.equal(fs.readFileSync(configPath, 'utf8'), original, 'the mode change normalised the entry in silence');
+    // The same mode again writes nothing and asks nothing: still a no-op.
+    const same = await setSecondaryVaultMode(registry, { vault: 'other', mode: 'locked' }, { cwd: process.cwd() });
+    assert.equal(same.previousMode, 'locked');
+    assert.equal(fs.readFileSync(configPath, 'utf8'), original);
   });
 
   test('a call ADDING one name the file lists but this session has not loaded AND one nobody registered names each cause', async () => {

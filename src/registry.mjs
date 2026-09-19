@@ -725,6 +725,19 @@ export async function loadRegistry({ configPath } = {}) {
       const v = this.vaults.find((x) => x.name === target);
       if (!v) {
         const known = this.vaults.map((x) => x.name).join(', ') || '(none)';
+        // A VAULT THE CONFIG DISABLED BEFORE THIS SESSION STARTED never
+        // reached the catalogue, and read as "Unknown vault" — the reader
+        // was sent to register a vault the file lists and excludes on
+        // purpose. The loader recorded why it was skipped; said here.
+        // (Codex, round 15, S15.)
+        const off = (this.skipped || []).some((s) => s && s.name === target && s.reason === 'disabled');
+        if (off) {
+          throw new Error(
+            `Vault "${target}" is DISABLED by \`disabledVaults\` in the router's config file, so this session did `
+            + 'not load it. Registering it again or restarting lifts nothing while that list names it: remove '
+            + `it from \`disabledVaults\` first, then restart. Known vaults: ${known}.`,
+          );
+        }
         throw new Error(`Unknown vault "${target}". Known vaults: ${known}.`);
       }
       // Reachability (decision portee-et-mode-ecriture-des-vaults §1). A

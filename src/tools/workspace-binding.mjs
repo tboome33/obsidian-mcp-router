@@ -67,6 +67,8 @@ import {
   rawSecondaryTiers,
   registryIncoherences,
   registryFactsFor,
+  unresolvedSecondaryFacts,
+  describeUnresolvedSecondaries,
   writerBindableNames,
   BINDING_INCOHERENCE,
 } from '../helpers/workspace-bindings.mjs';
@@ -782,7 +784,6 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         + 'with a fresh digest, a proposal, a success, or a refusal for a reason of its own.',
       );
     }
-    assertBindable(cfg);
     // A refusal of any vault being bound is dropped by `withBinding` itself;
     // read here, inside the lock, only so the answer can SAY so.
     const refusedBefore = readRefusals(cfg, cwd);
@@ -883,6 +884,15 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         );
       }
     }
+    // THE NAMES ARE JUDGED AFTER THE ACCEPTANCE IS RE-RESOLVED. Round 14 put
+    // `assertBindable` right after the digest — before this block — so a
+    // primary a sibling dropped BETWEEN the preflight and this lock was
+    // refused here as "not a registered vault … register it first", and the
+    // in-lock `resolveAcceptance`, the one that spells the repair with the
+    // placeholder and the digest, never ran. (Codex, round 15, S13.) The
+    // digest, the promotion guard and the re-resolution all decide on the
+    // entry; the names come last.
+    assertBindable(cfg);
     const locked = typeof args.locked === 'boolean'
       ? args.locked
       : Boolean(previous && previous.vault === primary && previous.locked);
@@ -920,8 +930,8 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // where its calls now go. This is the ONLY place the second half runs.
   //
   // AND THIS IS WHY `adoptRouting` NEEDS NO NULL OR UNRESOLVABLE BRANCH.
-  // `assertBindable(cfg)` runs inside the lock, right after the digest
-  // precondition, on every path that reaches this line, and it refuses any
+  // `assertBindable(cfg)` runs inside the lock, after the digest precondition
+  // and the acceptance's re-resolution, on every path that reaches this line, and it refuses any
   // requested name that is absent from the live registry OR from the file —
   // except a secondary the entry already held, which is KEPT (round 13) and
   // named below as not answering from here. `primary` is a validated
@@ -1027,12 +1037,16 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // (Codex, round 14, both passes.)
   const notLoadedHere = also.filter((n) => !known.has(n));
   const reachableAlso = also.filter((n) => known.has(n));
-  const notLoadedNote = notLoadedHere.length
-    ? ` ${notLoadedHere.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} stays declared in the binding (tier kept) but `
-      + 'this session has not loaded it — not in the config file as this session reads it, nor provided by its '
-      + 'environment — so from here it answers "Unknown vault" until it is registered, provided, or the '
-      + 'session restarts with it available.'
-    : '';
+  // THE CAUSE IS ASKED, NOT INFERRED FROM "not in the catalogue". Round 14
+  // said "not in the config file … nor provided by its environment" for
+  // every such name — false for one the file lists that a sibling registered
+  // after this session started, and for one `disabledVaults` excludes. The
+  // three facts are told apart, by the same function the lock's success
+  // uses, from the config just written. (Codex, round 15, both passes.)
+  const notLoadedNote = describeUnresolvedSecondaries(
+    unresolvedSecondaryFacts(rawBindingEntry(next, cwd), registryFactsFor(next, registry.vaults)),
+    { locked: binding.locked },
+  );
   return {
     cleared: false,
     workspace: key,

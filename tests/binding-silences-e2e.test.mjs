@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
-  rawSecondaryTiers, rawEntryDigest, registryIncoherences, registryFactsFor, writerBindableNames,
+  rawSecondaryTiers, rawEntryDigest, registryIncoherences, registryFactsFor, writerBindableNames, withBinding,
 } from '../src/helpers/workspace-bindings.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
@@ -564,8 +564,14 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       { kind: 'secondary-disabled', names: ['gone'] },
       { kind: 'secondary-dropped-still-loaded', names: ['sci'] },
     ]);
-    assert.match(three, /its secondary gone is DISABLED by `disabledVaults`[^.]*registering it again or restarting lifts nothing; it is KEPT in the call below/);
-    assert.match(three, /its secondary sci is no longer a vault this config file lists[^.]*it still ANSWERS here[^.]*the next start will not load it; it is KEPT in the call below/);
+    // Round 15: "still ANSWERS here" said more than a loaded descriptor
+    // proves (the lock, the routing decide); "answers again once removed
+    // from disabledVaults" more than a config edit does (this session must
+    // then load it). Both say what is known.
+    assert.match(three, /its secondary gone is DISABLED by `disabledVaults`[^.]*for as long as that list names it[^.]*registering it again or restarting lifts nothing; it is KEPT in the call below/);
+    assert.match(three, /Removing it from `disabledVaults` is necessary, and this session must then load it \(a restart\) before it answers here/);
+    assert.match(three, /its secondary sci is no longer a vault this config file lists[^.]*still holds its descriptor, so a call can still reach it here \(subject to the lock and to this session's routing\) until the next start, which will not load it; it is KEPT in the call below/);
+    assert.doesNotMatch(three, /still ANSWERS here|answers again once/);
     assert.match(three, /vault: "work", also: \["sci", "gone"\], ifBindingDigest/);
     const offPrimary = describeBindingRepair({ vault: 'off', also: ['sci'] }, [{ kind: 'primary-disabled', names: ['off'] }]);
     assert.match(offPrimary, /its primary off is DISABLED by `disabledVaults`/);
@@ -723,7 +729,64 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       assert.match(textOf(sci), /its primary work is DISABLED by `disabledVaults`/);
       assert.match(textOf(sci), /vault: "<the primary vault you intend>"/);
       assert.equal(sci.result?._meta?.bindingProposal, undefined, 'a proposal was minted over a disabled primary');
+      // AND THE INVENTORY AGREES (round 15, pass B): a vault disabled after
+      // this session started is still in the catalogue and unreachable, and
+      // `list_vaults` read that as "bind this workspace to it" — the very
+      // declaration the tool refuses for it.
+      const inv = JSON.parse(textOf(await rt.call(5, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      const other = inv.disabled.find((d) => d.name === 'other');
+      assert.ok(other, JSON.stringify(inv.disabled));
+      assert.equal(other.awaitingDeclaration, false, 'the inventory offered a disabled vault for binding');
+      assert.match(other.reason, /disabled/);
+      assert.ok(!inv.vaults.some((v) => v.name === 'other'));
     } finally { rt.kill(); }
+  });
+
+  test('e2e — a vault DISABLED BEFORE this session started is refused as disabled, not as "Unknown vault"', async () => {
+    // Round 15, S15: never loaded, the name fell into the catalogue's "Unknown
+    // vault" branch, and the reader was sent to register a vault the file
+    // lists and excludes on purpose.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, { binding: { vault: 'work', also: [] } });
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    cfg.disabledVaults = ['other'];
+    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await read(rt, 2, 'other');
+      assert.equal(res.result?.isError, true, textOf(res));
+      assert.match(textOf(res), /is DISABLED by `disabledVaults` in the router's config file, so this session did not load it/);
+      assert.doesNotMatch(textOf(res), /Unknown vault "other"/);
+      assert.equal(res.result?._meta?.bindingProposal, undefined);
+      const inv = JSON.parse(textOf(await rt.call(3, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      const other = inv.disabled.find((d) => d.name === 'other');
+      assert.ok(other && other.awaitingDeclaration === false, JSON.stringify(inv.disabled));
+    } finally { rt.kill(); }
+  });
+
+  test('withBinding — an incoherent entry of ANOTHER workspace forces no rewrite, and a repair keeps the fields it does not know', () => {
+    // Round 15, S11 (both passes): the round-14 guard asked every entry, so
+    // one bad entry in a shared config made every other workspace's no-op
+    // write the file that holds every API key — and never repaired the bad
+    // entry, which is copied as it is. And a repair, always written now,
+    // dropped `foo: 1` in silence: the known fields come from the normalised
+    // record, everything else as it was.
+    const a = path.join(os.tmpdir(), 'ws-a');
+    const b = path.join(os.tmpdir(), 'ws-b');
+    const today = new Date().toISOString().slice(0, 10);
+    const entryA = { vault: 'work', also: ['sci'], locked: true, alsoLocked: [], alsoWritable: [], confirmedAt: today, confirmedVia: 'tool', foo: 1 };
+    const cfg = { workspaceBindings: { [canonicalWorkspaceKey(a)]: entryA, [canonicalWorkspaceKey(b)]: { vault: 'other', also: ['s', 's'] } } };
+    const same = withBinding(cfg, a, { vault: 'work', also: ['sci'], locked: true, confirmedAt: today, confirmedVia: 'tool' });
+    assert.equal(same, cfg, 'an identical binding of A was rewritten because B is incoherent');
+    // A's own incoherence is a rewrite — with `foo` kept.
+    const dup = { ...cfg, workspaceBindings: { ...cfg.workspaceBindings, [canonicalWorkspaceKey(a)]: { ...entryA, also: ['sci', 'sci'] } } };
+    const repaired = withBinding(dup, a, { vault: 'work', also: ['sci'], locked: true, confirmedAt: today, confirmedVia: 'tool' });
+    assert.notEqual(repaired, dup, 'a repair of A wrote nothing');
+    const written = repaired.workspaceBindings[canonicalWorkspaceKey(a)];
+    assert.deepEqual(written.also, ['sci']);
+    assert.equal(written.foo, 1, 'the repair dropped a field this version does not know');
+    assert.deepEqual(repaired.workspaceBindings[canonicalWorkspaceKey(b)], { vault: 'other', also: ['s', 's'] }, 'B was touched');
   });
 
   test('e2e — a secondary another session\'s ENVIRONMENT provides is KEPT by a session that lacks it — accept and repair alike', async () => {

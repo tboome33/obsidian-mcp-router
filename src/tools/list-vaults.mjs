@@ -14,8 +14,10 @@
  * fix in the natural-language warning. See
  * `wiki/obsidian-mcp-router/router-ux-improvements-roadmap.md` Phase 1.
  */
+import fs from 'node:fs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
+import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
@@ -216,17 +218,36 @@ export async function listVaults(registry, sharedConfig = null) {
   // So the distinction is DATA, not prose a reader has to parse out of
   // `reason`: `awaitingDeclaration: true` means "registered and healthy, this
   // workspace has simply never declared it — bind it and it answers".
+  // A VAULT DISABLED AFTER THIS SESSION STARTED is still in the catalogue and
+  // unreachable, and read as "bind this workspace to it" — the very
+  // declaration `confirm_workspace_binding` refuses for a disabled vault.
+  // The FILE as it is now decides (Codex, round 15, pass B); the start-up copy
+  // is the fallback when it cannot be read.
+  let disabledNow;
+  try {
+    disabledNow = new Set(disabledVaultEntries(JSON.parse(fs.readFileSync(registry.configPath, 'utf8'))));
+  } catch {
+    disabledNow = new Set(disabledVaultEntries(registry.config));
+  }
   const disabled = [
     ...(registry.skipped || []).map((s) => ({
       name: s.name, type: s.type, reason: s.reason, awaitingDeclaration: false,
     })),
-    ...unreachable.map((v) => ({
-      name: v.name,
-      type: v.type,
-      reason: 'not reachable from this workspace (vaultReach: "declared" — bind this workspace '
-        + 'to it, or add it to `openVaults`)',
-      awaitingDeclaration: true,
-    })),
+    ...unreachable.map((v) => (disabledNow.has(v.name)
+      ? {
+        name: v.name,
+        type: v.type,
+        reason: 'disabled (`disabledVaults` names it since this session started — a binding cannot name it; '
+          + 'remove it from that list first, then restart)',
+        awaitingDeclaration: false,
+      }
+      : {
+        name: v.name,
+        type: v.type,
+        reason: 'not reachable from this workspace (vaultReach: "declared" — bind this workspace '
+          + 'to it, or add it to `openVaults`)',
+        awaitingDeclaration: true,
+      })),
   ];
 
   // Default vault health summary (v0.10.0) — null when no default vault

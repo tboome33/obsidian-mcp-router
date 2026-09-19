@@ -1497,6 +1497,111 @@ describe('lockVault / unlockVaults — tool handlers', () => {
       'but the sentence must not stop at "available again" while the guard refuses every other vault');
   });
 
+  test('unlock_vaults --persist after a BINDING lock shadowed a HOST lock still says the host WILL re-lock', async () => {
+    // Round 15, O1 (open since round 14): a confirmed `locked: true` binding
+    // set the lock's source to `binding`, so `hostReimposes` read false, the
+    // unlock said "will not come back on restart", and the next start
+    // re-imposed the host's OBSIDIAN_ROUTER_LOCKED. The variable is what
+    // re-imposes; the variable is what is asked.
+    const configPath = path.join(tmpDir, 'host-shadowed-unlock-config.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const reg = {
+      ...makeRegistry(),
+      configPath,
+      lockedVault: 'alpha',
+      lockSource: { origin: 'binding', variable: null },
+      workspaceBinding: { vault: 'alpha', also: [], locked: true, alsoLocked: [], alsoWritable: [] },
+    };
+    const hadEnv = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_LOCKED');
+    const prevEnv = process.env.OBSIDIAN_ROUTER_LOCKED;
+    process.env.OBSIDIAN_ROUTER_LOCKED = 'alpha';
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    let r;
+    try {
+      r = await unlockVaults(reg, { persist: true });
+    } finally {
+      process.chdir(prevCwd);
+      if (hadEnv) process.env.OBSIDIAN_ROUTER_LOCKED = prevEnv; else delete process.env.OBSIDIAN_ROUTER_LOCKED;
+    }
+    assert.equal(r.bindingLifted, true, 'the binding lock was not lifted');
+    assert.equal(r.hostReimposes, true, 'the host lock behind the binding lock went unseen');
+    assert.equal(r.persisted, false);
+    assert.match(r.message, /came from the host[\s\S]*WILL come back at the next start/);
+    assert.doesNotMatch(r.message, /will not come back on restart/);
+  });
+
+  test('lockVault persist:true REFUSES a DISABLED target as disabled — not "register it, then lock again"', async () => {
+    // Round 15: the refusal on an unbindable target had one remedy for two
+    // causes, and sent the owner of a disabled vault to re-register it.
+    const cfgPath = path.join(tmpDir, 'persist-disabled-target.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      disabledVaults: ['beta'],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], confirmedVia: 'tool' } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      vaults: [{ name: 'alpha' }, { name: 'beta' }],
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await assert.rejects(
+        lockVault(reg, { vault: 'beta', persist: true }),
+        (e) => /is DISABLED by `disabledVaults`/.test(e.message)
+          && /remove it from `disabledVaults` first, then lock again/.test(e.message)
+          && !/Register it/.test(e.message),
+      );
+    } finally { process.chdir(prevCwd); }
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original);
+    assert.equal(reg.lockedVault, null);
+  });
+
+  test('lockVault --persist onto ANOTHER vault NAMES the previous primary it carries over when this session cannot resolve it', async () => {
+    // Round 15, O2 (open since round 14): the previous primary becomes a
+    // secondary by this call even when the file dropped it — kept by the
+    // round-13 rule, and unsaid. The success now says what it is from here.
+    const cfgPath = path.join(tmpDir, 'persist-carries-old-primary.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(cfgPath, `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 's', baseUrl: 'https://s/' }],
+      workspaceBindings: { [key]: { vault: 'gone', also: ['s'], confirmedVia: 'tool' } },
+    }, null, 2)}\n`, 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      vaults: [{ name: 'alpha' }, { name: 's' }],
+      workspaceBinding: { vault: 'gone', also: ['s'], locked: false, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    let r;
+    try { r = await lockVault(reg, { vault: 'alpha', persist: true }); } finally { process.chdir(prevCwd); }
+    assert.equal(r.persisted, true, r.message);
+    assert.deepEqual(r.bindingRecorded, { vault: 'alpha', locked: true, also: ['gone', 's'] });
+    assert.deepEqual(r.notLoadedHere, ['gone']);
+    assert.match(r.message, /"gone" stays declared in the binding \(tier kept\) but this session has not loaded it — neither in the config file as this session reads it nor provided by its environment/);
+    assert.match(r.message, /While the lock holds, no vault but the primary answers anyway/);
+    assert.doesNotMatch(r.message, /"s" stays declared/);
+  });
+
   test('unlock_vaults --persist under a HOST lock says it WILL come back, and persisted is false', async () => {
     // OBSIDIAN_ROUTER_LOCKED from the MCP declaration or the shell is
     // re-imposed at every start; nothing the config says lifts it. The

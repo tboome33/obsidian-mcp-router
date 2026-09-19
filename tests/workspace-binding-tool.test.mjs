@@ -648,7 +648,7 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     // block green and turns that one red. Codex flagged the gap on
     // 2026-09-03 — a private-function suite is a description, not a contract.
     const next = _internals.recordLockInBinding(reg, CWD, 'notes', io().seam);
-    assert.deepEqual(next, { vault: 'notes', locked: true, also: [] });
+    assert.deepEqual(next, { vault: 'notes', locked: true, also: [], carriedFacts: [] });
   });
 
   test('locking a workspace that ALREADY has a binding keeps its `also` and its provenance', async () => {
@@ -746,7 +746,7 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     const { written, seam } = io(config);
     const r = lockModule._internals.recordLockInBinding(registryOf(), CWD, 'notes', seam);
     assert.deepEqual(written, [], 'nothing to change, nothing written');
-    assert.deepEqual(r, { vault: 'notes', locked: true, also: ['work'] }, 'and the state is still reported');
+    assert.deepEqual(r, { vault: 'notes', locked: true, also: ['work'], carriedFacts: [] }, 'and the state is still reported');
   });
 
   test('an imported binding stops claiming nobody confirmed it once the user locks it', async () => {
@@ -801,7 +801,7 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     const { written, seam } = io(config);
     const r = _internals.recordLockInBinding(registryOf(), CWD, null, seam);
     assert.deepEqual(written, [], 'no rewrite of an unchanged file');
-    assert.deepEqual(r, { vault: 'notes', locked: false, also: ['work'] });
+    assert.deepEqual(r, { vault: 'notes', locked: false, also: ['work'], carriedFacts: [] });
   });
 
   test('BEST EFFORT: an unwritable config returns null instead of throwing', async () => {
