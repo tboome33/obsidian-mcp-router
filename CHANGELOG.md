@@ -70,6 +70,28 @@ written as a block scalar (`valid_from: |`, the date on the next line). Those st
 purpose: reading them means tracking indentation and chomping, which is reimplementing YAML inside a
 dependency-free hook. On the real fleet — 3848 frontmatter blocks — nothing is refused.
 
+### Editing a vault file from a script now has one door, and a guard that watches it
+
+`scripts/vault-edit.mjs` reads a note, applies edits from a JSON spec, and writes through
+`writeFileIfMatch` — so the precondition is always computed from the bytes just read. Every edit must
+match **exactly once** (zero means a stale anchor, two means the anchor names nothing), and for
+targeted edits the original is rebuilt from the result and compared byte for byte before anything is
+sent. It reports which tier served the write rather than hiding the difference: `atomic` is
+serialised by the bridge against other CAS writers, `fallback` only re-checked the hash one round
+trip earlier.
+
+It exists because the rule it enforces was already written down and broken anyway. A hand-rolled
+`fetch(url, { method: 'PUT' })` against the core `/vault/` route carries **no precondition at all** —
+that route implements none, so the `If-Match` header people reach for is ignored rather than
+honoured. The working precondition is `If-Match-Content-Sha256` on the bridge's `PUT /vault-cas/`.
+The wrong way took ten lines and the right way took forty; this closes that gap.
+
+The matching guard (`tests/vault-write-door.test.mjs`) fails the build if any source under `src/`,
+`scripts/`, `hooks/` or `bin/` names a core `/vault/` route with a write verb, or calls `fetch()`
+outside a small allowlist whose entries each carry a reason. It scans for the forbidden construct
+rather than for a required mention — a dead mention cannot satisfy it — and it is driven against
+real offenders so an inert pattern cannot report a clean repository forever.
+
 ### Saying yes to a binding proposal ADDS to the binding, and never replaces it
 
 `confirm_workspace_binding({ accept: "<proposalId>" })` answers the proposal the refusal handed you.
