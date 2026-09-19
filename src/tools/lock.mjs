@@ -46,7 +46,6 @@ import {
 } from '../helpers/workspace-bindings.mjs';
 import {
   isVaultReachable,
-  isPromotionOfLockedSecondary,
   isPromotionOfLockedSecondaryOnDisk,
   lockedSecondaryPromotionError,
   PROMOTION_REFUSED_CODE,
@@ -116,9 +115,12 @@ export async function lockVault(registry, args = {}) {
   // leaves no half-state behind. A volatile lock to S stays allowed: it
   // does not touch the binding, S stays a locked secondary, and every write
   // routed to it is still refused by the gate.
-  if (persist && isPromotionOfLockedSecondary(vault, registry)) {
-    throw lockedSecondaryPromotionError(promotionRefusal(vault));
-  }
+  // NO IN-MEMORY PREFLIGHT HERE EITHER (round 13). It answered from this
+  // session's copy of the binding, which a sibling can have outgrown, and a
+  // preflight that refuses decides: a strict tier the file no longer held
+  // refused a valid persisted lock. `recordLockInBinding` asks the FILE
+  // inside the config lock, and its refusal takes the in-memory lock back
+  // (see the catch below), so no half-state is left either way.
 
   // A NAME THAT CANNOT BE PERSISTED IS REFUSED BEFORE ANYTHING IS APPLIED.
   // The value check used to live only around the `.env` write, at the END of
@@ -315,9 +317,15 @@ export async function unlockVaults(registry, args = {}) {
       // The in-memory lock IS already cleared above; the recorded one is
       // not, on purpose, and the router WILL re-lock from it on restart until
       // the entry is repaired. Said in full, the dotenv line left alone.
+      // THE REPAIR KEEPS THE LOCK. The spelled call carries `locked: true`
+      // (the entry as written has it), so a successful repair re-applies the
+      // binding lock in this session at once — "until the binding is
+      // repaired" was the wrong condition. (Codex, round 13.)
       throw new Error(
         `unlock_vaults: in-memory lock cleared for this session, but ${err.message.replace(/^unlock_vaults --persist: /, '')} `
-        + `The router WILL re-lock to "${wasLocked}" on the next restart until the binding is repaired.`,
+        + `The router WILL re-lock to "${safeForMessage(err.recordedLock ?? wasLocked, 80)}" — at the next restart, `
+        + 'and in this session as soon as the repair spelled above succeeds, because that repair KEEPS the lock '
+        + '(locked: true). After repairing, run unlock_vaults({ persist: true }) again to lift it.',
       );
     }
     try {
@@ -502,6 +510,24 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
         if (isPromotionOfLockedSecondaryOnDisk(vault, existing, cfg)) {
           throw lockedSecondaryPromotionError(promotionRefusal(vault));
         }
+        // THE NAME THIS LOCK RECORDS AS PRIMARY MUST BE ONE A BINDING MAY
+        // NAME — the writer's rule, asked of the FILE inside the lock. Round
+        // 13: the confirmation tool got that rule in round 12 and this writer
+        // did not, so `lock_vault --persist old` over a coherent entry wrote a
+        // primary the file no longer listed, and the next start found no such
+        // vault. The secondaries carried over are kept, not added (the same
+        // keep-not-add rule as the confirmation tool).
+        if (!writerBindableNames(cfg, registry.vaults).has(vault)) {
+          const err = new Error(
+            `lock_vault --persist: "${safeForMessage(vault, 80)}" is not a vault the config file registers (or it `
+            + 'is disabled there, or only this session\'s environment provided it and it has since gone), so it '
+            + 'cannot be recorded as this workspace\'s primary. The lock was NOT recorded and NO BINDING WAS '
+            + 'WRITTEN; the lock in force before this call, if any, stays as it was. Register it (setup-vault, '
+            + 'or remoteVaults), then lock again.',
+          );
+          err.code = BINDING_REPAIR_REQUIRED_CODE;
+          throw err;
+        }
         wrote = true;
         // The previous primary and its secondaries, minus the new primary.
         // `withBinding` drops the primary from `also` itself; the filter here
@@ -551,9 +577,15 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
             sessionNames: new Set((registry.vaults || []).map((v) => v.name)),
           }));
           const err = new Error(
-            `unlock_vaults --persist: the lock recorded in the config was NOT lifted and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
+            `unlock_vaults --persist: the lock recorded on the binding (to "${safeForMessage(existing.vault, 80)}") `
+            + `was NOT lifted and NO BINDING WAS WRITTEN. ${describeBindingRepair(raw, incoherences)}`,
           );
           err.code = BINDING_REPAIR_REQUIRED_CODE;
+          // WHAT THE FILE WILL RE-LOCK TO — the binding's primary, not
+          // whatever this session happened to hold in memory. (Codex, round
+          // 13: the message named `wasLocked`, which could be another vault,
+          // or null.)
+          err.recordedLock = existing.vault;
           throw err;
         }
       }

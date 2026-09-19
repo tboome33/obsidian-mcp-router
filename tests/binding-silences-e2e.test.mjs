@@ -97,7 +97,10 @@ function writeConfig(port, { openVaults = [], binding = 'default' } = {}) {
 function startRouter({ configPath, cwd, env = {} }) {
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    // A throwaway HOME UNDER the workspace, never the workspace itself: with
+    // HOME === cwd, `lock_vault --persist` refuses as "your home directory"
+    // before the binding is reached (round 13, seen in the also-tier E2E).
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       OBSIDIAN_ROUTER_NO_WATCH: '1',
       MD_ALLOWED_PATHS: cwd,
       OBSIDIAN_ROUTER_LOCKED: '',
@@ -465,6 +468,25 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.deepEqual(registryIncoherences(undefined, { bindable, sessionNames: session }), []);
   });
 
+  test('e2e — a COHERENT binding with a secondary this session cannot bind still PROPOSES (only the primary blocks)', async () => {
+    // Round 13: round 12 blocked every proposal on such a secondary — a
+    // policy nobody accepted (the decision's row is about the primary), with
+    // a real victim: a secondary another session's environment provides
+    // silenced this one for good.
+    const vault = await startFakeVault();
+    const { dir, configPath } = writeConfig(vault.port, { binding: { vault: 'work', also: ['other'] } });
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      cfg.remoteVaults = cfg.remoteVaults.filter((r) => r.name !== 'other');
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const res = await read(rt, 2, 'sci');
+      assert.equal(res.result?.isError, true, textOf(res));
+      assert.equal(res.result?._meta?.bindingProposal?.proposedRole, 'secondary', `no proposal:\n${textOf(res)}`);
+    } finally { rt.kill(); }
+  });
+
   test('writerBindableNames — the file\'s names plus the ENVIRONMENT\'s remotes, nothing else', () => {
     // The hole carried since round 5: every remote was exempt from the file
     // check, so a remote a sibling removed from the file stayed bindable. The
@@ -476,17 +498,29 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.equal(set.has('filed'), true);
     assert.equal(set.has('env-only'), true, 'an environment-provided remote must stay bindable');
     assert.equal(set.has('stale-remote'), false, 'a remote the file no longer lists was still bindable');
+    // A vault the config DISABLES is not bindable, whatever lists it (round
+    // 13: a disabled remote counted as "listed", and its owner was told to
+    // retry or restart for an exclusion that outlives every restart).
+    const disabled = writerBindableNames({ ...cfg, disabledVaults: ['filed'] }, vaults);
+    assert.equal(disabled.has('filed'), false);
   });
 
-  test('describeBindingRepair — an unregistered secondary is left OUT of the spelled call, and said so', () => {
+  test('describeBindingRepair — a secondary this session cannot bind is NAMED and KEPT in the spelled call', () => {
+    // ► ROUND 12 LEFT IT OUT, and round 13 measured what that did: the
+    //   repair dropped the secondary AND its tier for good (it came back
+    //   soft), and a secondary another session's ENVIRONMENT provides was
+    //   "unregistered" for this one — so this session's repair erased that
+    //   session's binding with the precondition satisfied. A repair keeps
+    //   what was there.
     const raw = { vault: 'work', also: ['sci', 'gone'], alsoLocked: ['gone'] };
     const text = describeBindingRepair(raw, [
       ...bindingIncoherences(raw),
       { kind: 'secondary-not-registered', names: ['gone'] },
     ]);
-    assert.match(text, /its secondary gone is not a vault this config file registers/);
-    assert.match(text, /vault: "work", also: \["sci"\], ifBindingDigest/);
-    assert.ok(!/also: \["sci", "gone"\]/.test(text), 'the unregistered secondary was spelled into the call');
+    assert.match(text, /its secondary gone is not a vault THIS session can bind or reach/);
+    assert.match(text, /it is KEPT in the call below, tier included/);
+    assert.match(text, /vault: "work", also: \["sci", "gone"\], ifBindingDigest/);
+    assert.match(text, /locked: "gone"/);
   });
 
   // END TO END, through the dispatcher: a refusal, NO proposal, and the repair
@@ -524,12 +558,12 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     // a primary over it.
     ['a string where the entry should be', 'work',
       [/the entry is not an object at all/, /vault: "<the primary vault you intend>", also: \[\]/]],
-    // A SECONDARY no registry knows is named and left OUT of the call —
-    // spelled in, the call failed at assertBindable before the precondition
-    // was even looked at (Codex, round 12).
+    // A SECONDARY this session cannot bind is named and KEPT in the call
+    // (round 13 — round 12 left it out, which dropped its tier for good and
+    // erased what another session's environment provided).
     ['a duplicate secondary no registry knows', { vault: 'work', also: ['gone', 'gone'] },
-      [/gone appears more than once/, /its secondary gone is not a vault this config file registers/,
-        /vault: "work", also: \[\], ifBindingDigest/]],
+      [/gone appears more than once/, /its secondary gone is not a vault THIS session can bind or reach/,
+        /vault: "work", also: \["gone"\], ifBindingDigest/]],
   ];
   for (const [name, binding, expectations] of onDisk) {
     test(`e2e — ${name}: refused, no proposal, repair spelled out`, async () => {
@@ -600,6 +634,50 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       });
       assert.equal(no.result?.isError, true, `a remote the file no longer lists was bound:\n${textOf(no)}`);
       assert.match(textOf(no), /"other" is not a registered vault/);
+      // And the list of what CAN be bound does not cite the very name it
+      // refuses (round 13).
+      assert.ok(!/Registered vaults: [^.]*\bother\b/.test(textOf(no)), textOf(no));
+    } finally { rt.kill(); }
+  });
+
+  test('e2e — a secondary another session\'s ENVIRONMENT provides is KEPT by a session that lacks it — accept and repair alike', async () => {
+    // Scenario S3 of round 13. A (with VAULT_ENVR) binds `envr` as a
+    // secondary. B, without the variable, cannot resolve `envr` — and round
+    // 12 refused B's acceptance of an unrelated proposal for it, and spelled
+    // B a repair that dropped it. Keeping is not adding: B carries it over.
+    const vault = await startFakeVault();
+    const { dir, configPath, key } = writeConfig(vault.port, {
+      binding: { vault: 'work', also: ['envr', 'other', 'other'], alsoLocked: ['envr'] },
+    });
+    // B: no VAULT_ENVR in its environment.
+    const rt = startRouter({ configPath, cwd: dir });
+    try {
+      await handshake(rt);
+      const res = await read(rt, 2, 'sci');
+      const text = textOf(res);
+      assert.match(text, /its secondary envr is not a vault THIS session can bind or reach/);
+      assert.match(text, /vault: "work", also: \["envr", "other"\], ifBindingDigest/);
+      const digest = /ifBindingDigest: "([0-9a-f]{64})"/.exec(text)?.[1];
+      const repaired = await rt.call(3, 'tools/call', {
+        name: 'confirm_workspace_binding',
+        arguments: { vault: 'work', also: ['envr', 'other'], ifBindingDigest: digest, open: false },
+      });
+      assert.notEqual(repaired.result?.isError, true, `B could not keep A's environment secondary:\n${textOf(repaired)}`);
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[key];
+      assert.deepEqual(cfg.also, ['envr', 'other']);
+      assert.deepEqual(cfg.alsoLocked, ['envr'], 'the kept secondary lost its strict tier');
+      // And a proposal from B now, accepted by B, keeps it too.
+      const res2 = await read(rt, 4, 'sci');
+      const proposal = res2.result?._meta?.bindingProposal;
+      assert.ok(proposal, textOf(res2));
+      const yes = await rt.call(5, 'tools/call', { name: 'confirm_workspace_binding', arguments: { accept: proposal.proposalId, open: false } });
+      assert.notEqual(yes.result?.isError, true, textOf(yes));
+      const after = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[key];
+      assert.deepEqual(after.also, ['envr', 'other', 'sci']);
+      assert.deepEqual(after.alsoLocked, ['envr']);
+      // But B can never ADD a name it cannot bind.
+      const add = await rt.call(6, 'tools/call', { name: 'confirm_workspace_binding', arguments: { vault: 'work', also: ['envr', 'other', 'sci', 'nowhere'], open: false } });
+      assert.equal(add.result?.isError, true, textOf(add));
     } finally { rt.kill(); }
   });
 

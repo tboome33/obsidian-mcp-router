@@ -130,7 +130,10 @@ function addSecondWorkspace(configPath, vaultName) {
 function startRouter({ configPath, cwd }) {
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    // A throwaway HOME UNDER the workspace, never the workspace itself: with
+    // HOME === cwd, `lock_vault --persist` refuses as "your home directory"
+    // before the binding is reached (round 13, seen in the also-tier E2E).
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       // NO WATCH: the freshness under test must come from the gate's own
       // re-read of the file, never from a hot-reload of the registry.
       OBSIDIAN_ROUTER_NO_WATCH: '1',

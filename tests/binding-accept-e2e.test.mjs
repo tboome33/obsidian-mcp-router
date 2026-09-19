@@ -94,7 +94,10 @@ function writeConfig(port, { binding = 'default', refuse = null } = {}) {
 function startRouter({ configPath, cwd }) {
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    // A throwaway HOME UNDER the workspace, never the workspace itself: with
+    // HOME === cwd, `lock_vault --persist` refuses as "your home directory"
+    // before the binding is reached (round 13, seen in the also-tier E2E).
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       OBSIDIAN_ROUTER_NO_WATCH: '1',
       MD_ALLOWED_PATHS: cwd,
       OBSIDIAN_ROUTER_LOCKED: '',
@@ -380,7 +383,7 @@ describe('E2E: accepting a binding proposal', () => {
         arguments: { vault: 'work', also: ['locked-ref'], ifBindingDigest: digest, open: false },
       });
       assert.equal(stale.result?.isError, true, `the stale repair was applied over the sibling's binding:\n${textOf(stale)}`);
-      assert.match(textOf(stale), /no longer the entry that diagnostic described/);
+      assert.match(textOf(stale), /binding entry now differs from the one that diagnostic described/);
       // The advice names the ACCESS call, not this repair with its old digest
       // (Codex, round 11: "re-run the call that was refused" pointed at the
       // repair itself, which repeats the same refusal forever).
@@ -388,7 +391,7 @@ describe('E2E: accepting a binding proposal', () => {
       // …and names EVERY producer a diagnostic can have (round 12: "the
       // ACCESS call" invented an access for a diagnostic the acceptance or
       // lock_vault --persist had produced).
-      assert.match(textOf(stale), /Re-run the call that PRODUCED the diagnostic — the access that was refused .*, or the acceptance, or the lock_vault --persist/);
+      assert.match(textOf(stale), /Re-run the call that PRODUCED the diagnostic — the access that was refused .*, the acceptance, the lock_vault --persist, or the unlock_vaults --persist/);
       assert.match(textOf(stale), /NO BINDING WAS WRITTEN/);
       assert.ok(fs.readFileSync(configPath).equals(bytesBefore), 'the file was rewritten');
       assert.equal(bindingOnDisk(configPath, key).vault, 'other');

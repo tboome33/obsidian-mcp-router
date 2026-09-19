@@ -890,7 +890,10 @@ export async function loadRegistry({ configPath } = {}) {
         // provides is bindable by its `source`. (Round 12 — the exemption
         // remotes had here and in the writer was the hole carried since
         // round 5.)
-        if (!writerBindableNames(live.config, this.vaults).has(v.name)) {
+        // ONLY FROM A FILE THAT WAS READ: "not listed in the config file" is a
+        // claim about the file, and the fallback copy cannot make it (round
+        // 13). Unread, this falls through to the proposal, which says so.
+        if (live.fromFile && !writerBindableNames(live.config, this.vaults).has(v.name)) {
           throw declarationRequiredError(
             `${preamble} This vault is not listed in the router's config file (and not provided by the `
             + 'environment) — either it was never registered there, or it has been removed since this '
@@ -942,8 +945,13 @@ export async function loadRegistry({ configPath } = {}) {
             sessionNames: new Set(this.vaults.map((x) => x.name)),
           })
           : [];
-        const unbindableParts = facts.filter((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED
-          || f.kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED);
+        // THE PRIMARY ONLY. Round 12 also blocked every proposal on a secondary
+        // this session cannot bind, and round 13 measured that as a policy
+        // nobody accepted (the decision's row is about the primary) with a
+        // real victim: a secondary another session's environment provides
+        // silenced this session for good. Such a secondary is named in a
+        // diagnostic when one is issued, and kept; it blocks nothing.
+        const unbindableParts = facts.filter((f) => f.kind === BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED);
         if (incoherences.length || unbindableParts.length) {
           // ONE FUNCTION FOR EVERY DOOR (rounds 11 and 12).
           incoherences.push(...facts);
@@ -1026,8 +1034,8 @@ export async function loadRegistry({ configPath } = {}) {
           // know the yes may be refused if the file has moved. (Codex, round
           // 12.)
           + (live.fromFile ? '' : ' (The config file could not be read just now, so this proposal rests on '
-            + 'the binding this session loaded; if another session has changed it since, the yes will be '
-            + 'refused and a fresh proposal handed back.)'),
+            + 'the binding this session loaded; the acceptance re-reads the file and refuses if the entry '
+            + 'differs — re-run this access then, for the answer that applies.)'),
           buildBindingProposal({
             vault: v.name,
             // THE FILE'S BINDING, not this session's copy — see the comment

@@ -627,9 +627,14 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
 
   function io(config = {}) {
     const written = [];
+    // THE FILE LISTS THE VAULTS, as a real one does: since round 13 the
+    // persisted lock records only a vault a binding may name (the writer's
+    // rule, asked of the file inside the lock), and this block used to hand
+    // it an empty file.
+    const onDisk = { ...ON_DISK(), ...config };
     return {
       written,
-      seam: { readFile: () => JSON.stringify(config), writeFile: (p, c) => written.push(JSON.parse(c)) },
+      seam: { readFile: () => JSON.stringify(onDisk), writeFile: (p, c) => written.push(JSON.parse(c)) },
     };
   }
 
@@ -680,11 +685,15 @@ describe('lock_vault --persist writes the BINDING too — the second writer', ()
     // others", so they move into `also`, where they stay bound and addressable
     // by name. Nothing the user recorded is lost by an operation whose whole
     // subject is something else.
+    // `third` is a registered vault — in the file AND in this session — since
+    // round 13 a persisted lock records only a vault a binding may name.
     const config = {
+      portRegistry: { ...ON_DISK().portRegistry, '/v/Third': 27126 },
       [WORKSPACE_BINDINGS_KEY]: { [canonicalWorkspaceKey(CWD)]: { vault: 'notes', also: ['work'] } },
     };
     const { written, seam } = io(config);
-    _internals.recordLockInBinding(registryOf(), CWD, 'third', seam);
+    const reg = registryOf({ vaults: [...registryOf().vaults, { name: 'third', type: 'local', path: '/v/Third' }] });
+    _internals.recordLockInBinding(reg, CWD, 'third', seam);
     const b = readBinding(written[0], CWD);
     assert.equal(b.vault, 'third', 'the locked vault is the primary');
     assert.deepEqual(b.also, ['notes', 'work'], 'the previous primary first, then its secondaries');
@@ -945,8 +954,10 @@ describe('the live registry after a binding change — what THIS session sees', 
       const reg = registryOf({
         bindingHint: { status: 'unconfirmed', hint: 'notes', boundTo: null, origin: 'workspace-dotenv' },
       });
+      // The file lists the vaults (round 13: a persisted lock records only a
+      // vault a binding may name).
       const lockSeam = (config = {}) => ({
-        readFile: () => JSON.stringify(config),
+        readFile: () => JSON.stringify({ ...ON_DISK(), ...config }),
         writeFile: () => {},
       });
       lockModule._internals.recordLockInBinding(reg, CWD, 'notes', lockSeam());

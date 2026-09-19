@@ -160,9 +160,15 @@ function writeConfig(port, { vaultReach, tiersOnBinding = false } = {}) {
 }
 
 function startRouter({ configPath, cwd, env = {} }) {
+  // The throwaway HOME is a SUBDIRECTORY of the workspace, never the
+  // workspace itself: with HOME === cwd, `lock_vault --persist` refuses as
+  // "your home directory" before it reaches the binding — a refusal no real
+  // launch from a project folder ever sees. The in-memory promotion preflight
+  // used to fire first and hid it; once the FILE became the one judge
+  // (round 13), the promotion test read the home refusal instead.
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       OBSIDIAN_ROUTER_NO_WATCH: '1',
       MD_ALLOWED_PATHS: cwd,
       OBSIDIAN_ROUTER_LOCKED: '',

@@ -793,9 +793,15 @@ describe('lockVault / unlockVaults — tool handlers', () => {
 
   function makeRegistry() {
     return {
+      // A CATALOGUE NO FILE LISTS IS AN ENVIRONMENT-PROVIDED ONE. Since round
+      // 13 a persisted lock records only a vault a binding may name — the
+      // file's names plus the environment's remotes — and most fixtures in
+      // this block write a config with no vaults at all. Their vaults are
+      // therefore what they always implicitly were: provided by the
+      // environment (`VAULT_*`), which the registry marks `source: 'env'`.
       vaults: [
-        { name: 'alpha', type: 'remote', baseUrl: 'https://a/', apiKey: 'k' },
-        { name: 'beta', type: 'remote', baseUrl: 'https://b/', apiKey: 'k' },
+        { name: 'alpha', type: 'remote', source: 'env', baseUrl: 'https://a/', apiKey: 'k' },
+        { name: 'beta', type: 'remote', source: 'env', baseUrl: 'https://b/', apiKey: 'k' },
       ],
       lockedVault: null,
     };
@@ -806,16 +812,35 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     // the locked vault on top, and a primary is never under a write tier —
     // so a persisted lock was a one-call way past "no exceptions", through
     // the tool whose job is to RESTRICT the session.
+    // ► THE FILE DECIDES, since round 13 — this fixture used to hold the hard
+    //   tier in the LIVE registry only and pointed at a file that did not
+    //   exist, because the in-memory preflight refused before any read. That
+    //   preflight decided from a copy that could be stale, and is gone; the
+    //   check inside the config lock reads the FILE's `alsoLocked`, so the
+    //   tier lives there now. The in-memory lock is applied and taken back.
+    const cfgPath = path.join(tmpDir, 'persist-strict-secondary.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      alsoLocked: ['beta'],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], locked: false, confirmedVia: 'tool' } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
     const reg = {
       ...makeRegistry(),
-      configPath: path.join(tmpDir, 'never-written.json'),
-      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false },
+      configPath: cfgPath,
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: [], alsoWritable: [] },
       alsoWritable: [],
       alsoLocked: ['beta'],
     };
-    await assert.rejects(lockVault(reg, { vault: 'beta', persist: true }), /alsoLocked SECONDARY/);
-    assert.equal(reg.lockedVault, null, 'refused BEFORE the in-memory lock is applied — no half-state');
-    await assert.rejects(fs.access(reg.configPath), 'and nothing was written');
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await assert.rejects(lockVault(reg, { vault: 'beta', persist: true }), /alsoLocked SECONDARY/);
+    } finally { process.chdir(prevCwd); }
+    assert.equal(reg.lockedVault, null, 'the in-memory lock applied before the refusal was not taken back — half-state');
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the refused promotion was written');
 
     const volatile = await lockVault(reg, { vault: 'beta' });
     assert.equal(volatile.locked, true);
@@ -947,12 +972,104 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     const prevCwd = process.cwd();
     process.chdir(tmpDir);
     try {
+      // The vault named is the BINDING's primary (what the file will re-lock
+      // to), not what this session held in memory — here they coincide; the
+      // mirror below separates them. And the condition is said right: the
+      // repair keeps the lock. (Codex, round 13.)
       await assert.rejects(
         unlockVaults(reg, { persist: true }),
-        /in-memory lock cleared[\s\S]*NOT lifted[\s\S]*beta appears more than once[\s\S]*WILL re-lock to "alpha"/,
+        /in-memory lock cleared[\s\S]*NOT lifted[\s\S]*beta appears more than once[\s\S]*WILL re-lock to "alpha"[\s\S]*that repair KEEPS the lock[\s\S]*run unlock_vaults\(\{ persist: true \}\) again/,
       );
     } finally { process.chdir(prevCwd); }
     assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'the unlock normalised the entry');
+  });
+
+  test('unlockVaults persist:true refusing names the BINDING\'s primary as the re-lock target, not the in-memory one', async () => {
+    // Round 13: the message said `wasLocked` — the vault this session held in
+    // memory, possibly another one (a runtime lock), possibly null.
+    const cfgPath = path.join(tmpDir, 'unlock-relock-target.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(cfgPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta', 'beta'], locked: true } },
+    }, null, 2), 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      lockedVault: 'beta',
+      lockSource: { origin: 'runtime', variable: null },
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: true, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await assert.rejects(unlockVaults(reg, { persist: true }), /WILL re-lock to "alpha"/);
+    } finally { process.chdir(prevCwd); }
+    // "in-memory lock cleared" is measured, not read (Codex, round 13).
+    assert.equal(reg.lockedVault, null);
+  });
+
+  test('lockVault persist:true is not refused by a strict tier only this session\'s stale copy holds — the file decides', async () => {
+    // Round 13: `lockVault` kept its own in-memory preflight after the
+    // binding tool lost its; same defect, same removal. The live registry
+    // says `beta` is strict; the file does not.
+    const cfgPath = path.join(tmpDir, 'persist-stale-tier.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(cfgPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], confirmedVia: 'tool' } },
+    }, null, 2), 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: ['beta'], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      const result = await lockVault(reg, { vault: 'beta', persist: true });
+      assert.equal(result.vault, 'beta');
+      const written = JSON.parse(await fs.readFile(cfgPath, 'utf8')).workspaceBindings[key];
+      assert.equal(written.vault, 'beta');
+      assert.equal(written.locked, true);
+    } finally { process.chdir(prevCwd); }
+  });
+
+  test('lockVault persist:true REFUSES to record as primary a vault the file no longer lists, even over a coherent entry', async () => {
+    // Round 13: the confirmation tool got the writer's rule in round 12; this
+    // writer did not, and `lock_vault --persist old` over `{ work, also: [old] }`
+    // wrote a primary the file had dropped — the next start found no such
+    // vault.
+    const cfgPath = path.join(tmpDir, 'persist-unbindable-target.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    const original = `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['beta'], confirmedVia: 'tool' } },
+    }, null, 2)}\n`;
+    await fs.writeFile(cfgPath, original, 'utf8');
+    // This session still knows `beta` (loaded before a sibling dropped it).
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      vaults: [{ name: 'alpha' }, { name: 'beta' }],
+      workspaceBinding: { vault: 'alpha', also: ['beta'], locked: false, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      await assert.rejects(lockVault(reg, { vault: 'beta', persist: true }), /not a vault the config file registers[\s\S]*NO BINDING WAS WRITTEN/);
+    } finally { process.chdir(prevCwd); }
+    assert.equal(await fs.readFile(cfgPath, 'utf8'), original, 'a primary the file does not list was recorded');
+    assert.equal(reg.lockedVault, null, 'a refused persist left a volatile lock behind');
   });
 
   test('lockVault sets registry.lockedVault on the in-memory state', async () => {

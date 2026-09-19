@@ -62,7 +62,7 @@ import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
 import { createHash } from 'node:crypto';
 import { safeForMessage, identifierForCall } from './sanitize.mjs';
-import { bindableVaultNames } from './vault-slug.mjs';
+import { bindableVaultNames, disabledVaultEntries } from './vault-slug.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -405,6 +405,10 @@ export function rawSecondaryTiers(raw) {
  */
 export function writerBindableNames(cfg, vaults) {
   const out = bindableVaultNames(cfg);
+  // A vault the config DISABLES is not bindable, whatever lists it: round 13
+  // found a disabled remote still counted as "listed", so its owner was told
+  // to "retry or restart" for an exclusion that will outlive every restart.
+  for (const name of disabledVaultEntries(cfg)) out.delete(name);
   for (const v of Array.isArray(vaults) ? vaults : []) {
     if (v && v.source === 'env' && typeof v.name === 'string') out.add(v.name);
   }
@@ -422,9 +426,12 @@ export function writerBindableNames(cfg, vaults) {
  *
  * `bindable` is the writer's own set (`writerBindableNames`): a primary
  * outside it gets the placeholder whatever this session knows, because the
- * writer refuses it; a secondary outside it is left OUT of the spelled call,
- * and said so, for the same reason. A primary inside it that this session
- * has not loaded is not a repair but a reload.
+ * writer refuses it. A secondary outside it is NAMED — this session cannot
+ * reach it — and KEPT in the spelled call: the writer keeps a secondary the
+ * entry already holds (round 13: leaving it out dropped its tier for good,
+ * and erased what another session's environment legitimately provided). A
+ * primary inside the set that this session has not loaded is not a repair
+ * but a reload.
  *
  * @param {unknown} raw the entry as written
  * @param {{ bindable: Set<string>, sessionNames: Set<string> }} registry
@@ -559,14 +566,18 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
       case BINDING_INCOHERENCE.NO_PRIMARY:
         return 'it names no usable primary vault';
       case BINDING_INCOHERENCE.PRIMARY_NOT_REGISTERED:
-        return `its primary ${listed(n)} is not a vault this config file registers, so no binding can name it`;
+        return `its primary ${listed(n)} is not a vault this config file registers (or it is disabled there), so no `
+          + 'binding can name it';
       case BINDING_INCOHERENCE.PRIMARY_NOT_LOADED_HERE:
         return `its primary ${listed(n)} is in the config file but this session has not loaded it yet — retry in a `
           + 'moment or restart the session BEFORE repairing, or the repair call will be refused here for a name '
           + 'this session does not know';
       case BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED:
-        return `its secondary ${listed(n)} is not a vault this config file registers, so no binding can keep it — `
-          + 'it is left OUT of the call below; register it, then add it back with confirm_workspace_binding';
+        return `its secondary ${listed(n)} is not a vault THIS session can bind or reach (not in the config file, `
+          + 'not provided by this session\'s environment) — it is KEPT in the call below, tier included, because '
+          + 'a repair keeps what was there and another session\'s environment may provide it; it stays '
+          + 'unreachable from here until it is registered or provided. Do not remove it from the call to '
+          + '"fix" this: that would drop its write tier for good';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:
@@ -597,13 +608,13 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
   // uses when the entry has none. (Round 10 read them under a sentinel
   // primary; see that function for why not.)
   const forTiers = repaired || rawSecondaryTiers(raw);
-  // A secondary no binding can be written with is left out of the call —
-  // spelling it would hand the reader a call `assertBindable` refuses before
-  // the precondition is even looked at. (Codex, round 12.)
-  const unregistered = new Set(incoherences
-    .filter((i) => i.kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED)
-    .flatMap((i) => i.names));
-  const also = forTiers ? forTiers.also.filter((n) => !unregistered.has(n)) : [];
+  // EVERY secondary the entry holds stays in the call — round 12 left an
+  // unregistered one OUT, and round 13 measured what that did: the repair
+  // dropped the secondary and its tier for good (it came back soft), and a
+  // secondary another session's ENVIRONMENT provides was "unregistered" for
+  // this one, so this session's repair erased that session's binding with the
+  // precondition satisfied. The writer keeps what the entry already holds.
+  const also = forTiers ? forTiers.also : [];
   const lockedArg = isObject && raw.locked === true ? ', locked: true' : '';
   // THE ENTRY AS WRITTEN, whatever its shape — the same function the tool
   // compares with, on the same value. See `rawEntryDigest`.

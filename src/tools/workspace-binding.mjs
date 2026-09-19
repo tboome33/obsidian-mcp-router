@@ -663,15 +663,43 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // is said exactly when this refuses. (Codex, round 12 — the hole carried
     // as open since round 5.)
     const bindable = writerBindableNames(cfg, registry.vaults);
-    const unknown = requested.filter((n) => typeof n !== 'string' || !known.has(n) || !bindable.has(n));
+    // A SECONDARY THE ENTRY ALREADY HOLDS IS KEPT, NOT ADDED — and keeping is
+    // not subject to bindability. Round 13 (both passes, scenario S3): session
+    // A binds a secondary its ENVIRONMENT provides; session B, without that
+    // variable, cannot resolve the name, so B's acceptance of an unrelated
+    // proposal was refused for a secondary B was merely carrying over, and
+    // the repair spelled for B dropped A's secondary — tier included — with
+    // the precondition satisfied. What was in the entry as written stays
+    // allowed in the call; this session simply cannot reach it. The PRIMARY
+    // is never exempt: a repair that keeps an unregistered primary is not a
+    // repair.
+    const keptFromEntry = new Set(rawSecondaryTiers(rawBindingEntry(cfg, cwd))?.also ?? []);
+    const unknown = requested.filter((n, i) => typeof n !== 'string'
+      || !((known.has(n) && bindable.has(n)) || (i > 0 && keptFromEntry.has(n))));
     if (!unknown.length) return;
+    // TWO DIFFERENT ABSENCES, said apart (round 13, scenario S2): a name the
+    // FILE lists that this session has not loaded is a reload, not a
+    // registration — "register it first" sent the reader to re-register a
+    // vault a sibling had just registered.
+    const notLoaded = unknown.filter((n) => typeof n === 'string' && bindable.has(n) && !known.has(n));
+    if (notLoaded.length === unknown.length) {
+      throw new Error(
+        `confirm_workspace_binding: ${notLoaded.map((n) => `"${safeForMessage(n, 60)}"`).join(', ')} is listed in `
+        + 'the config file but this session has not loaded it (registered by another session; hot-reload is '
+        + 'off here, or has not fired yet). Nothing needs registering: retry in a moment, or restart the '
+        + 'session, then confirm. No binding was written.',
+      );
+    }
     const names = unknown.map((n) => `"${safeForMessage(String(n), 60)}"`).join(', ');
     // THE CATALOGUE IS SANITISED TOO. These names come from `vaultNames`, from
     // `remoteVaults[].name` and from vault paths — all hand-editable — so a
     // name carrying a terminal escape or a newline reached this message raw
     // while the rejected argument beside it was carefully cleaned. Half a
     // guard reads as a guard. Found in the final review, 2026-09-03.
-    const available = [...known.keys()].map((n) => safeForMessage(String(n), 60)).join(', ') || '(none)';
+    // AND IT LISTS WHAT CAN BE BOUND, not what this session knows: the first
+    // list could cite the very name it was refusing. (Codex, round 13.)
+    const available = [...known.keys()].filter((n) => bindable.has(n))
+      .map((n) => safeForMessage(String(n), 60)).join(', ') || '(none)';
     throw new Error(
       `confirm_workspace_binding: ${names} is not a registered vault, so it cannot be bound. `
       + `Registered vaults: ${available}. Register it first (setup-vault), then confirm.`,
@@ -713,14 +741,14 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     if (args.ifBindingDigest !== undefined && rawEntryDigest(rawPrevious) !== args.ifBindingDigest) {
       adoptRefusals(readRefusals(cfg, cwd));
       throw new Error(
-        'confirm_workspace_binding: this workspace\'s binding is no longer the entry that diagnostic '
-        + 'described — another session changed or removed it since — so the repair was NOT applied and '
-        + 'NO BINDING WAS WRITTEN (this session\'s refusals were refreshed from the file; its binding and '
-        + 'routing are unchanged). Do NOT retry this repair with the same digest: it refuses for as long '
-        + 'as the entry differs from the one it was spelled for. Re-run the call that PRODUCED the diagnostic '
-        + '— the access that was refused (get_file, search, …), or the acceptance, or the lock_vault --persist '
-        + '— and follow WHAT COMES BACK: a new diagnostic with a fresh digest, a proposal, a success, or a '
-        + 'refusal for a reason of its own.',
+        'confirm_workspace_binding: this workspace\'s binding entry now differs from the one that diagnostic '
+        + 'described (another session changed or removed it, or it was changed and is still different), so '
+        + 'the repair was NOT applied and NO BINDING WAS WRITTEN (this session\'s refusals were refreshed from '
+        + 'the file; its binding and routing are unchanged). Do NOT retry this repair with the same digest: it '
+        + 'refuses for as long as the entry differs from the one it was spelled for. Re-run the call that '
+        + 'PRODUCED the diagnostic — the access that was refused (get_file, search, …), the acceptance, the '
+        + 'lock_vault --persist, or the unlock_vaults --persist — and follow WHAT COMES BACK: a new diagnostic '
+        + 'with a fresh digest, a proposal, a success, or a refusal for a reason of its own.',
       );
     }
     // A refusal of any vault being bound is dropped by `withBinding` itself;

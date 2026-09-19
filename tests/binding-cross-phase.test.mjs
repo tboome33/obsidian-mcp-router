@@ -98,7 +98,10 @@ function writeConfig(port, { binding = 'default', refuse = null } = {}) {
 function startRouter({ configPath, cwd, env = {} }) {
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    // A throwaway HOME UNDER the workspace, never the workspace itself: with
+    // HOME === cwd, `lock_vault --persist` refuses as "your home directory"
+    // before the binding is reached (round 13, seen in the also-tier E2E).
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       OBSIDIAN_ROUTER_NO_WATCH: '1',
       MD_ALLOWED_PATHS: cwd,
       OBSIDIAN_ROUTER_LOCKED: '',
@@ -1049,6 +1052,75 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     const written = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())];
     assert.equal(written.vault, 'ref');
     assert.deepEqual(written.also, ['work', 'sci']);
+    // AND THE SESSION APPLIES ITS OWN WRITE (round 13: the file alone left
+    // this witness green with the adoption removed).
+    assert.equal(registry.workspaceBinding?.vault, 'ref');
+    assert.deepEqual(registry.workspaceBinding?.also, ['work', 'sci']);
+    assert.equal(registry.defaultVault, 'ref');
+  });
+
+  test('a secondary the FILE lists and this session has not loaded is KEPT by an acceptance, and named as a reload when confirmed by name', async () => {
+    // Round 13, angle B: A started without `q`; B registered `q` and added it
+    // as a secondary. A's acceptance of an unrelated proposal carried `q`
+    // over — and was refused as "not a registered vault" (it IS registered;
+    // A has not loaded it). Keeping is not adding: A carries it over. And
+    // naming it by hand gets a reload sentence, not "register it first".
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cross-phase-notloaded-secondary-'));
+    tmpDirs.push(dir);
+    const configPath = path.join(dir, 'config.json');
+    const vault = await startFakeVault();
+    const remote = (name) => ({ name, baseUrl: `http://127.0.0.1:${vault.port}`, apiKey: API_KEY });
+    const config = (vaults, binding) => JSON.stringify({
+      portRegistry: {},
+      vaultNames: {},
+      remoteVaults: vaults.map(remote),
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [canonicalWorkspaceKey(process.cwd())]: binding },
+    }, null, 2);
+    fs.writeFileSync(configPath, config(['work', 'sci'], { vault: 'work', also: [] }), 'utf8');
+    const { loadRegistry } = await import('../src/registry.mjs');
+    const { confirmWorkspaceBinding } = await import('../src/tools/workspace-binding.mjs');
+    const registry = await loadRegistry({ configPath });
+    const seams = { cwd: process.cwd(), launch: async () => ({}), ping: async () => ({ ok: true }) };
+    // 1. A sibling registered `q`; the entry does NOT hold it yet. ADDING it
+    //    by name from here is a reload, not a registration — and this is the
+    //    ONE outcome allowed. The first version of this witness ran the same
+    //    call AFTER the entry held `q` (kept, so the call resolved) and
+    //    accepted "resolved" in the same regex: the not-loaded sentence could
+    //    be deleted outright and the witness stayed green (mutation T8 of
+    //    round 13 survived; the tautology was found by the harness, not by
+    //    a reviewer).
+    fs.writeFileSync(configPath, config(['work', 'sci', 'q'], { vault: 'work', also: [] }), 'utf8');
+    await assert.rejects(
+      confirmWorkspaceBinding(registry, { vault: 'work', also: ['q'], open: false }, seams),
+      (e) => /listed in the config file but this session has not loaded it/.test(e.message)
+        && /retry in a moment, or restart the session/.test(e.message)
+        && !/not a registered vault/.test(e.message)
+        && !/Register it first/.test(e.message),
+    );
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())],
+      { vault: 'work', also: [] }, 'the refusal wrote',
+    );
+    // 2. The sibling added `q` to the entry. A's acceptance of an unrelated
+    //    proposal CARRIES `q` over: kept, not added, so no bindability asked.
+    fs.writeFileSync(configPath, config(['work', 'sci', 'q'], { vault: 'work', also: ['q'] }), 'utf8');
+    let proposal = null;
+    try { registry.resolveVault('sci'); } catch (e) { proposal = e.bindingProposal; }
+    assert.ok(proposal?.proposalId, 'no proposal for sci');
+    const res = await confirmWorkspaceBinding(registry, { accept: proposal.proposalId, open: false }, seams);
+    assert.ok(res, 'the acceptance carrying a not-yet-loaded secondary was refused');
+    const written = JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())];
+    assert.deepEqual(written.also, ['q', 'sci']);
+    // 3. Now that the entry holds `q`, naming it again by hand is KEEPING it:
+    //    the call resolves (one outcome, asserted as such — not "either").
+    const kept = await confirmWorkspaceBinding(registry, { vault: 'work', also: ['q', 'sci'], open: false }, seams);
+    assert.ok(kept, 'keeping a secondary the entry holds was refused');
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings[canonicalWorkspaceKey(process.cwd())].also,
+      ['q', 'sci'],
+    );
   });
 
   test('a primary the FILE has and this session has not loaded is a reload, not a repair — said in the same breath as the duplicate', async () => {
@@ -1374,5 +1446,42 @@ describe('bindableVaultNames — one predicate, two readers', () => {
       /export function writerBindableNames[^]{0,400}bindableVaultNames\(cfg\)/,
       'the writer\'s set no longer composes the shared predicate',
     );
+  });
+
+  test('no real-router fixture launches the router with HOME === cwd — the home refusal would stand in for the binding\'s', () => {
+    // Round 13. Once `lock_vault --persist` stopped preflighting the promotion
+    // from this session's copy and let the FILE judge, the also-tier E2E read
+    // "refusing to persist … in your home directory" where it expected the
+    // promotion refusal: its fixture handed the router a throwaway HOME that
+    // WAS the workspace, and the home guard sits between the in-memory lock
+    // and the binding writer. No launch from a project folder ever takes that
+    // branch, so a fixture that does proves nothing about the writer. Ten
+    // fixtures shared the shape; the class is closed by the tree, not by the
+    // one file that happened to persist a lock.
+    const dir = path.join(REPO, 'tests');
+    const self = path.basename(fileURLToPath(import.meta.url));
+    const spawnsTheRouter = /\[BIN, '--config'/;
+    const homeIsCwd = /homeSafeEnv\(\s*cwd\s*,/;
+    // The positive control below is a LITERAL in this file, so the scan
+    // flagged its own suite on the first run. This file's fixture is checked
+    // apart, by the line that matters, rather than skipped.
+    const offenders = [];
+    let fixtures = 0;
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith('.test.mjs') || name === self) continue;
+      const src = fs.readFileSync(path.join(dir, name), 'utf8');
+      if (!spawnsTheRouter.test(src)) continue;
+      fixtures += 1;
+      if (homeIsCwd.test(src)) offenders.push(name);
+    }
+    assert.ok(fixtures >= 5, `only ${fixtures} real-router fixtures found — the scan is not looking at the tree`);
+    assert.deepEqual(offenders, [], `these hand the router a HOME that is its cwd: ${offenders.join(', ')}`);
+    const own = fs.readFileSync(path.join(dir, self), 'utf8').split('\n')
+      .filter((line) => /env: homeSafeEnv\(/.test(line) && !/assert\.match/.test(line));
+    assert.ok(own.length >= 1, 'this suite\'s own fixture was not found');
+    assert.ok(own.every((line) => !homeIsCwd.test(line)), `this suite's own fixture hands the router its cwd as HOME: ${own.join(' | ')}`);
+    // Positive control, in the spelling the fixtures used before the sweep.
+    assert.match('    env: homeSafeEnv(cwd, {', homeIsCwd, 'the scan would walk past the shape it was written for');
+    assert.match("  spawn(process.execPath, [BIN, '--config', configPath], {", spawnsTheRouter);
   });
 });

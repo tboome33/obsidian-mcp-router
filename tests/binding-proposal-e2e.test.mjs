@@ -100,7 +100,10 @@ function writeConfig(port, { refuseSci = false, primary = 'work' } = {}) {
 function startRouter({ configPath, cwd }) {
   const child = spawn(process.execPath, [BIN, '--config', configPath], {
     cwd,
-    env: homeSafeEnv(cwd, {
+    // A throwaway HOME UNDER the workspace, never the workspace itself: with
+    // HOME === cwd, `lock_vault --persist` refuses as "your home directory"
+    // before the binding is reached (round 13, seen in the also-tier E2E).
+    env: homeSafeEnv(path.join(cwd, 'home'), {
       OBSIDIAN_ROUTER_NO_WATCH: '1',
       MD_ALLOWED_PATHS: cwd,
       OBSIDIAN_ROUTER_LOCKED: '',

@@ -185,6 +185,25 @@ primary and drops every secondary not passed again, which is exactly the call th
   loaded at start-up, and a proposal minted from the session's own binding says so; `clear: true` on an
   empty entry says an empty entry was removed; and the stale-digest refusal names every producer a
   diagnostic can have (the access, the acceptance, or the persisted lock), not an access it invented.
+- **A repair keeps what the entry already holds — and a session's blind spot is not a reason to
+  erase another session's binding.** The thirteenth round played whole sessions, two at a time on one
+  config, and the twelfth round's "unregistered secondary is left out of the call" turned out to be the
+  worst kind of help: a secondary one session's environment provides (`VAULT_*`) is unresolvable in a
+  session without that variable, and that session's repair — precondition satisfied, since the entry
+  was unchanged — dropped it, tier and all; a secondary that was merely gone from the file came back
+  soft after "register it, then add it back". Now a secondary the entry already holds is KEPT by every
+  write, named as unreachable from here when a diagnostic is issued, and never blocks a proposal (only
+  an unbindable PRIMARY does — the decision's own row); a name can never be ADDED that the writer
+  cannot bind. With it: `lock_vault --persist` validates the vault it records as primary against the
+  same rule (it wrote a primary the file had dropped, over a coherent entry), and lost its own
+  in-memory promotion preflight like the binding tool did; a vault the config DISABLES is not bindable
+  whatever lists it; "not a registered vault" tells a vault the file lists but this session has not
+  loaded from one nobody registered (a reload, not a registration), and the list of what can be bound
+  no longer cites the very name it refuses; the refused `unlock_vaults --persist` names the vault the
+  BINDING will re-lock to (not whatever this session held in memory, possibly another vault or none)
+  and says the spelled repair KEEPS the lock, so `unlock_vaults --persist` must be run again after
+  it; "not listed in the config file" is never said from a copy of a file that could not be read;
+  and every list of diagnostic producers includes `unlock_vaults --persist`.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance
