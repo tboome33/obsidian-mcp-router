@@ -62,7 +62,7 @@ import { normalizePathForCompare } from './vault-path-identity.mjs';
 import { writeFileAtomicSync } from './write-file-atomic.mjs';
 import { createHash } from 'node:crypto';
 import { safeForMessage, identifierForCall } from './sanitize.mjs';
-import { bindableVaultNames, disabledVaultEntries } from './vault-slug.mjs';
+import { bindableVaultNames, disabledVaultNames } from './vault-slug.mjs';
 import { envKeyOrigin, ENV_ORIGINS, dotenvRefusalHint, workspaceBindingProposal, workspaceLockProposed, isGatedDeployment } from './workspace-dotenv.mjs';
 import { acquireLock, lockPathFor } from './file-lock.mjs';
 
@@ -381,6 +381,12 @@ export const BINDING_INCOHERENCE = Object.freeze({
    * (`describeUnresolvedSecondaries`) so it is not told as "unregistered".
    */
   SECONDARY_NOT_LOADED_HERE: 'secondary-not-loaded-here',
+  /**
+   * A secondary `disabledVaults` names that THIS session still holds (disabled
+   * after it started): it may still answer here until the next start. For the
+   * success sentence only, like the kind above.
+   */
+  SECONDARY_DISABLED_STILL_LOADED: 'secondary-disabled-still-loaded',
 });
 
 /**
@@ -432,7 +438,8 @@ export function writerBindableNames(cfg, vaults) {
   // A vault the config DISABLES is not bindable, whatever lists it: round 13
   // found a disabled remote still counted as "listed", so its owner was told
   // to "retry or restart" for an exclusion that will outlive every restart.
-  const disabled = new Set(disabledVaultEntries(cfg));
+  // BY NAME OR BY PATH, as the loader reads the list (round 16).
+  const disabled = disabledVaultNames(cfg);
   for (const name of disabled) out.delete(name);
   for (const v of Array.isArray(vaults) ? vaults : []) {
     // AND THE EXCLUSION HOLDS FOR AN ENVIRONMENT REMOTE TOO. The registry skips
@@ -462,7 +469,7 @@ export function registryFactsFor(cfg, vaults) {
   return {
     bindable: writerBindableNames(cfg, list),
     sessionNames: new Set(list.map((v) => v?.name).filter((n) => typeof n === 'string')),
-    disabled: new Set(disabledVaultEntries(cfg)),
+    disabled: disabledVaultNames(cfg),
   };
 }
 
@@ -483,25 +490,39 @@ export function registryFactsFor(cfg, vaults) {
  */
 export function describeUnresolvedSecondaries(facts, { locked = false } = {}) {
   const q = (names) => names.map((n) => `"${safeForMessage(n, 80)}"`).join(', ');
+  // "(tier kept)" was wrong for a previous primary the persisted lock carries
+  // over: it acquires the soft tier by that call. What is said is what the
+  // binding now records (Codex, round 16, pass B).
+  const declared = (names) => `${q(names)} stays declared in the binding (with the tier the binding now records for it)`;
   const parts = [];
   for (const { kind, names } of facts) {
     if (kind === BINDING_INCOHERENCE.SECONDARY_DISABLED) {
-      parts.push(`${q(names)} stays declared in the binding (tier kept) but is DISABLED by \`disabledVaults\` in the `
-        + 'config file: from here it answers "Unknown vault", and registering it again or restarting lifts '
-        + 'nothing while that list names it.');
+      // NOT LOADED HERE: skipped at start-up, or never registered here. No
+      // "Unknown vault" promise: the access says DISABLED for one the loader
+      // skipped (round 16 — round 15 promised a response it had not asked).
+      parts.push(`${declared(names)} but is DISABLED by \`disabledVaults\` in the config file and this session `
+        + 'has not loaded it: it does not answer from here, a new declaration of it is refused, and '
+        + 'registering it again or restarting lifts nothing while that list names it.');
+    } else if (kind === BINDING_INCOHERENCE.SECONDARY_DISABLED_STILL_LOADED) {
+      parts.push(`${declared(names)} but is DISABLED by \`disabledVaults\` in the config file since this session `
+        + 'started: this session still holds its descriptor, so it may still answer here (subject to the '
+        + 'lock and to this session\'s routing) until the next start, which will not load it; a new '
+        + 'declaration of it is refused meanwhile.');
     } else if (kind === BINDING_INCOHERENCE.SECONDARY_NOT_LOADED_HERE) {
-      parts.push(`${q(names)} stays declared in the binding (tier kept) and the config file lists it, but this `
-        + 'session has not loaded it (registered after this session started): from here it answers '
-        + '"Unknown vault" until the session restarts or hot-reload catches up.');
+      // THE CAUSE IS NOT CLAIMED: "registered after this session started" was
+      // one of several — a vault skipped at load for an identity mismatch is
+      // listed by the file and absent here too (Codex, round 16).
+      parts.push(`${declared(names)} and the config file lists it, but this session's catalogue does not hold `
+        + 'it (registered after this session started, or skipped at load — list_vaults.disabled[] says '
+        + 'which): it does not answer from here until this session loads it.');
     } else if (kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED) {
-      parts.push(`${q(names)} stays declared in the binding (tier kept) but this session has not loaded it — `
-        + 'neither in the config file as this session reads it nor provided by its environment (another '
-        + 'session\'s environment may provide it): from here it answers "Unknown vault" until it is '
-        + 'registered or provided and this session loads it.');
+      parts.push(`${declared(names)} but this session has not loaded it — neither in the config file as this `
+        + 'session reads it nor provided by its environment (another session\'s environment may provide '
+        + 'it): it does not answer from here until it is registered or provided and this session loads it.');
     } else if (kind === BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED) {
-      parts.push(`${q(names)} stays declared in the binding (tier kept); the config file no longer lists it but `
-        + 'this session still holds its descriptor, so it can still be reached here until the next start, '
-        + 'which will not load it.');
+      parts.push(`${declared(names)}; the config file no longer lists it but this session still holds its `
+        + 'descriptor, so it can still be reached here (subject to the lock and to this session\'s '
+        + 'routing) until the next start, which will not load it.');
     }
   }
   if (!parts.length) return '';
@@ -568,7 +589,16 @@ export function registryIncoherences(raw, { bindable, sessionNames, disabled = n
  * @returns {Array<{ kind: string, names: string[] }>}
  */
 export function unresolvedSecondaryFacts(raw, facts) {
-  const out = registryIncoherences(raw, facts).filter((f) => f.kind.startsWith('secondary-'));
+  const out = [];
+  for (const f of registryIncoherences(raw, facts).filter((x) => x.kind.startsWith('secondary-'))) {
+    if (f.kind !== BINDING_INCOHERENCE.SECONDARY_DISABLED) { out.push(f); continue; }
+    // DISABLED SPLITS IN TWO for a success: still loaded here (disabled after
+    // this session started — it may still answer) or not (Codex, round 16).
+    const loaded = f.names.filter((n) => facts.sessionNames.has(n));
+    const gone = f.names.filter((n) => !facts.sessionNames.has(n));
+    if (loaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED_STILL_LOADED, names: loaded });
+    if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: gone });
+  }
   const tiers = rawSecondaryTiers(raw);
   const notLoaded = tiers
     ? tiers.also.filter((n) => facts.bindable.has(n) && !facts.sessionNames.has(n))
@@ -1036,12 +1066,14 @@ export function withBinding(config, cwd, binding) {
   // adding: a hand-edited config could hold the same directory under two
   // spellings, and leaving the stale one would make `readBinding`'s answer
   // depend on object key order.
-  let storedRaw;
+  // THE ENTRY THE READER SELECTS, not the first alias in insertion order:
+  // `rawBindingEntry` prefers the canonical key and sorts the aliases, and the
+  // first version of this carry-over took whichever spelling came first in
+  // the object — so the unknown fields kept could come from an entry the
+  // reading never used. (Codex, round 16.)
+  const storedRaw = rawBindingEntry(base, cwd);
   for (const storedKey of Object.keys(all)) {
-    if (canonicalWorkspaceKey(storedKey) === key) {
-      if (storedRaw === undefined) storedRaw = all[storedKey];
-      delete all[storedKey];
-    }
+    if (canonicalWorkspaceKey(storedKey) === key) delete all[storedKey];
   }
   // A FIELD THIS VERSION DOES NOT KNOW SURVIVES THE WRITE. The identity rule
   // below used to be the only thing keeping such a field (a future version's,
@@ -1394,6 +1426,17 @@ export const IMPORT_REASON = Object.freeze({
    * the very same write.
    */
   GATED_DEPLOYMENT: 'gated-deployment',
+  /**
+   * The workspace HAS an entry, one the router had to repair to read (no
+   * usable primary beside secondaries, tiers or a lock; a duplicate; …). Not
+   * "no binding": the import used to read the repaired `null` as an absence
+   * and REPLACE the entry with `{ vault: hint, also: [] }` at a start-up —
+   * secondaries, tiers and a strict role erased with no tool and no human,
+   * and a strict secondary promoted to primary by the hint. (Codex, round
+   * 16, W4.) Never imported over; NOT a closing reason: the entry can be
+   * repaired, and the hint is then looked at again.
+   */
+  ENTRY_TO_REPAIR: 'entry-to-repair',
 });
 
 /**
@@ -1548,6 +1591,7 @@ export function migrationDecision({
   lockHintOrigin = null,
   lockMtimeMs = null,
   isRefused = null,
+  entryToRepair = false,
 }) {
   const no = (reason) => ({
     import: false,
@@ -1562,6 +1606,10 @@ export function migrationDecision({
   // announce it. `confirm_workspace_binding` refuses a caller that write; the
   // import must not make it automatically. See IMPORT_REASON.GATED_DEPLOYMENT.
   if (isGatedDeployment()) return no(IMPORT_REASON.GATED_DEPLOYMENT);
+  // AN ENTRY THE ROUTER HAD TO REPAIR TO READ IS NOT "NO BINDING" (round 16):
+  // asked before `binding`, whose repaired reading is `null` for exactly the
+  // entry this protects.
+  if (entryToRepair) return no(IMPORT_REASON.ENTRY_TO_REPAIR);
   if (binding) return no(IMPORT_REASON.ALREADY_BOUND);
   if (alreadyImported) return no(IMPORT_REASON.ALREADY_CONSIDERED);
 

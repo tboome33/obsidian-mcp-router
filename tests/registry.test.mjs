@@ -19,7 +19,7 @@ import os from 'node:os';
 import { loadRegistry, _internals } from '../src/registry.mjs';
 import { lockVault, unlockVaults, _internals as lockInternals } from '../src/tools/lock.mjs';
 import { dotenvLockPath, dotenvKeyLineRegex, readDotenvVarSync } from '../src/helpers/dotenv-writer.mjs';
-import { parseDotenv } from '../src/helpers/workspace-dotenv.mjs';
+import { parseDotenv, applyWorkspaceDotenv, _resetWorkspaceDotenvProvenance } from '../src/helpers/workspace-dotenv.mjs';
 import { acquireLockAsync } from '../src/helpers/file-lock.mjs';
 import { stripExtendedPathPrefix } from '../src/helpers/vault-path-identity.mjs';
 import fsSync from 'node:fs';
@@ -775,6 +775,80 @@ describe('loadRegistry — integration', () => {
 // ---------------------------------------------------------------------------
 // lock_vault / unlock_vaults — tool handler tests
 // ---------------------------------------------------------------------------
+
+describe('the one-time import, re-decided INSIDE the lock against the file as it is', () => {
+  const KEYS = ['OBSIDIAN_ROUTER_DEFAULT_VAULT', 'OBSIDIAN_ROUTER_LOCKED', 'OBSIDIAN_ROUTER_REFUSED_VAULT'];
+  const roots = [];
+  after(() => { for (const r of roots) fsSync.rmSync(r, { recursive: true, force: true }); });
+
+  async function withCleanEnv(fn) {
+    const saved = KEYS.map((k) => [k, Object.hasOwn(process.env, k), process.env[k]]);
+    for (const k of KEYS) delete process.env[k];
+    _resetWorkspaceDotenvProvenance();
+    try { return await fn(); } finally {
+      for (const [k, had, value] of saved) { if (had) process.env[k] = value; else delete process.env[k]; }
+      _resetWorkspaceDotenvProvenance();
+    }
+  }
+
+  test('a hinted vault a sibling DROPPED between start-up and the lock is not imported — the file re-read decides', async () => {
+    // Round 16, W4 (serious): `hints.isRegistered` closed over the catalogue
+    // built before the lock, so the in-lock re-decision still found the
+    // vault registered and imported it over the fresh file that had lost it.
+    // `loadRegistry` never leaves this window open, so the import is called
+    // as it is called there, with a start-up copy and a file that moved.
+    await withCleanEnv(async () => {
+      const ws = fsSync.mkdtempSync(path.join(os.tmpdir(), 'import-window-ws-'));
+      roots.push(ws);
+      fsSync.writeFileSync(path.join(ws, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT=s\n', 'utf8');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      const cfgPath = path.join(ws, 'config.json');
+      const startup = { portRegistry: {}, remoteVaults: [{ name: 's', baseUrl: 'https://s/' }] };
+      // The FILE, as a sibling left it: `s` gone.
+      await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, remoteVaults: [] }, null, 2), 'utf8');
+      const prevCwd = process.cwd();
+      process.chdir(ws);
+      let out;
+      try {
+        out = _internals.importDotenvHintOnce(startup, cfgPath, [{ name: 's', type: 'remote' }]);
+      } finally { process.chdir(prevCwd); }
+      assert.equal(out.imported, null, 'a vault the file no longer registers was imported from the stale catalogue');
+      const after = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+      assert.equal(after.workspaceBindings?.[canonicalWorkspaceKey(ws)], undefined, 'the import wrote a binding');
+    });
+  });
+
+  test('an entry the router had to repair to read is not imported over, end to end — the file keeps it', async () => {
+    // W4, the blocker, through the real writer: a primary-less entry holding
+    // a strict secondary, and a hint naming that very secondary.
+    await withCleanEnv(async () => {
+      const ws = fsSync.mkdtempSync(path.join(os.tmpdir(), 'import-repair-ws-'));
+      roots.push(ws);
+      fsSync.writeFileSync(path.join(ws, '.env'), 'OBSIDIAN_ROUTER_DEFAULT_VAULT=s\n', 'utf8');
+      applyWorkspaceDotenv({ cwd: ws, env: process.env, warn: () => {} });
+      const cfgPath = path.join(ws, 'config.json');
+      const entry = { also: ['s', 'envr'], alsoLocked: ['s'], alsoWritable: ['envr'] };
+      const cfg = {
+        portRegistry: {},
+        remoteVaults: [{ name: 's', baseUrl: 'https://s/' }],
+        workspaceBindings: { [canonicalWorkspaceKey(ws)]: entry },
+      };
+      await fs.writeFile(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const prevCwd = process.cwd();
+      process.chdir(ws);
+      let out;
+      try {
+        out = _internals.importDotenvHintOnce(cfg, cfgPath, [{ name: 's', type: 'remote' }]);
+      } finally { process.chdir(prevCwd); }
+      assert.equal(out.imported, null, 'the import replaced an entry to repair');
+      const after = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+      assert.deepEqual(after.workspaceBindings[canonicalWorkspaceKey(ws)], entry, 'the entry was rewritten');
+      // And the window is NOT closed on this workspace: the hint is looked at
+      // again once the entry is repaired.
+      assert.ok(!(after.workspaceBindingsMigration?.imported || []).includes(canonicalWorkspaceKey(ws)), 'a repairable entry closed the window');
+    });
+  });
+});
 
 describe('lockVault / unlockVaults — tool handlers', () => {
   let tmpDir;
@@ -1533,8 +1607,54 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(r.bindingLifted, true, 'the binding lock was not lifted');
     assert.equal(r.hostReimposes, true, 'the host lock behind the binding lock went unseen');
     assert.equal(r.persisted, false);
-    assert.match(r.message, /came from the host[\s\S]*WILL come back at the next start/);
+    // WHICH lock the host holds is said: the one lifted came from the binding
+    // (round 16 — "this lock came from the host" named a binding lock).
+    assert.match(r.message, /The lock just lifted came from the binding, but the host also declares one[\s\S]*OBSIDIAN_ROUTER_LOCKED=alpha[\s\S]*WILL come back at the next start/);
+    assert.doesNotMatch(r.message, /This lock came from the host/);
     assert.doesNotMatch(r.message, /will not come back on restart/);
+  });
+
+  test('unlock_vaults --persist does NOT predict a host re-lock the start-up validation would reject', async () => {
+    // Round 16, R105: round 15 read the variable's presence as a lock to
+    // come. Start-up validates the candidate — known to the catalogue AND
+    // reachable from this workspace — and rejects it otherwise; so does this.
+    const configPath = path.join(tmpDir, 'host-unreachable-unlock-config.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      vaultReach: 'declared',
+      openVaults: [],
+      workspaceBindings: { [key]: { vault: 'alpha', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const reg = {
+      ...makeRegistry(),
+      configPath,
+      vaultReach: 'declared',
+      openVaults: [],
+      lockedVault: 'alpha',
+      lockSource: { origin: 'binding', variable: null },
+      workspaceBinding: { vault: 'alpha', also: [], locked: true, alsoLocked: [], alsoWritable: [] },
+    };
+    const hadEnv = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_LOCKED');
+    const prevEnv = process.env.OBSIDIAN_ROUTER_LOCKED;
+    // `beta` is registered but this workspace does not declare it: start-up
+    // rejects such a host lock.
+    process.env.OBSIDIAN_ROUTER_LOCKED = 'beta';
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    let r;
+    try {
+      r = await unlockVaults(reg, { persist: true });
+    } finally {
+      process.chdir(prevCwd);
+      if (hadEnv) process.env.OBSIDIAN_ROUTER_LOCKED = prevEnv; else delete process.env.OBSIDIAN_ROUTER_LOCKED;
+    }
+    assert.equal(r.bindingLifted, true);
+    assert.equal(r.hostReimposes, false, 'a host candidate this workspace cannot reach was predicted to re-lock');
+    assert.equal(r.persisted, true);
+    assert.match(r.message, /will not come back on restart/);
   });
 
   test('lockVault persist:true REFUSES a DISABLED target as disabled — not "register it, then lock again"', async () => {
@@ -1597,9 +1717,41 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(r.persisted, true, r.message);
     assert.deepEqual(r.bindingRecorded, { vault: 'alpha', locked: true, also: ['gone', 's'] });
     assert.deepEqual(r.notLoadedHere, ['gone']);
-    assert.match(r.message, /"gone" stays declared in the binding \(tier kept\) but this session has not loaded it — neither in the config file as this session reads it nor provided by its environment/);
+    // "(tier kept)" was wrong for a previous primary, which acquires the soft
+    // tier by this very call (round 16).
+    assert.match(r.message, /"gone" stays declared in the binding \(with the tier the binding now records for it\) but this session has not loaded it — neither in the config file as this session reads it nor provided by its environment/);
+    assert.doesNotMatch(r.message, /tier kept/);
     assert.match(r.message, /While the lock holds, no vault but the primary answers anyway/);
     assert.doesNotMatch(r.message, /"s" stays declared/);
+  });
+
+  test('lockVault --persist: a carried secondary DISABLED after this session loaded it is not "not loaded here"', async () => {
+    // Round 16: `notLoadedHere` on the lock's result counted every disabled
+    // secondary, loaded or not; the confirmation tool asks the catalogue.
+    const cfgPath = path.join(tmpDir, 'persist-carries-disabled-loaded.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(cfgPath, `${JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 's', baseUrl: 'https://s/' }],
+      disabledVaults: ['s'],
+      workspaceBindings: { [key]: { vault: 'alpha', also: ['s'], confirmedVia: 'tool' } },
+    }, null, 2)}\n`, 'utf8');
+    const reg = {
+      ...makeRegistry(),
+      configPath: cfgPath,
+      vaults: [{ name: 'alpha' }, { name: 's' }],
+      workspaceBinding: { vault: 'alpha', also: ['s'], locked: false, alsoLocked: [], alsoWritable: [] },
+      alsoWritable: [],
+      alsoLocked: [],
+    };
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    let r;
+    try { r = await lockVault(reg, { vault: 'alpha', persist: true }); } finally { process.chdir(prevCwd); }
+    assert.equal(r.persisted, true, r.message);
+    assert.deepEqual(r.notLoadedHere, [], 'a disabled secondary this session still holds was counted as not loaded');
+    assert.match(r.message, /"s" stays declared in the binding[^.]*DISABLED by `disabledVaults` in the config file since this session started: this session still holds its descriptor, so it may still answer here/);
+    assert.doesNotMatch(r.message, /Unknown vault/);
   });
 
   test('unlock_vaults --persist under a HOST lock says it WILL come back, and persisted is false', async () => {

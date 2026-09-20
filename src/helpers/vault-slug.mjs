@@ -463,6 +463,27 @@ export function disabledVaultEntries(cfg) {
 }
 
 /**
+ * The NAMES `disabledVaults` disables — the entries as written, plus the
+ * slug of every registered PATH the list names. The loader accepts either
+ * spelling ("users know their vault path, rarely the generated name"), and
+ * every writer-side reader compared the raw entries to NAMES: a local vault
+ * disabled by its path was skipped at start-up and still "bindable" for the
+ * confirmation, the persisted lock, the diagnostics and `list_vaults`.
+ * (Codex, round 16, W5.) One function, the loader's own rule.
+ *
+ * @param {unknown} cfg
+ * @returns {Set<string>}
+ */
+export function disabledVaultNames(cfg) {
+  const entries = new Set(disabledVaultEntries(cfg));
+  const out = new Set(entries);
+  for (const vp of registeredVaultPaths(cfg)) {
+    if (entries.has(vp)) out.add(vaultSlug(cfg, vp));
+  }
+  return out;
+}
+
+/**
  * Shared body for every "array of vault names, hand-editable" config key in
  * this module (`disabledVaults`, `openVaults`, `alsoWritable`, `alsoLocked`):
  * absent/malformed container → `[]`, a bare string is NOT iterated

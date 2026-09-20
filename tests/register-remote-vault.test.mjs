@@ -29,6 +29,23 @@ function seams({ config = { portRegistry: {}, remoteVaults: [] } } = {}) {
 const registry = { configPath: CONFIG_PATH };
 
 describe('register_remote_vault', () => {
+  test('a name `disabledVaults` lists is registered but SAID to be disabled — not "becomes reachable"', async () => {
+    // Round 16, W5: the descriptor was written, the loader will skip it, and
+    // the message promised it would become reachable within a moment.
+    const { written, seam } = seams({ config: { portRegistry: {}, remoteVaults: [], disabledVaults: ['new'] } });
+    const r = await registerRemoteVaultTool(registry, { name: 'new', baseUrl: 'https://10.8.0.10:27161', apiKey: 'k' }, seam);
+    assert.equal(r.registered, true);
+    assert.equal(r.disabled, true);
+    assert.match(r.message, /`disabledVaults` names it, so no session will load it/);
+    assert.doesNotMatch(r.message, /becomes reachable/);
+    assert.equal(written.length, 1);
+    // And "registered" is not "reachable" for an ordinary name either.
+    const ok = await registerRemoteVaultTool(registry, { name: 'plain', baseUrl: 'https://10.8.0.10:27162', apiKey: 'k' }, seams().seam);
+    assert.equal(ok.disabled, false);
+    assert.match(ok.message, /a workspace then reaches it once it declares it \(confirm_workspace_binding\) or `openVaults` lists it/);
+    assert.doesNotMatch(ok.message, /becomes reachable/);
+  });
+
   test('registers a new entry, written ONLY to config.json (never a workspace .env)', async () => {
     const { written, seam } = seams();
     const out = await registerRemoteVaultTool(

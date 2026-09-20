@@ -623,11 +623,99 @@ describe('--attach (CLI)', () => {
     let entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
     assert.deepEqual(entry.alsoLocked, ['other'], 'the secondary stayed, so its strict tier must too');
 
+    // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND (round 16, W2):
+    // the first version of this test expected the promotion — the very
+    // one-call lifting of a strict tier the confirmation tool and the
+    // persisted lock refuse. The CLI is a writer of the same record.
+    const before = fs.readFileSync(sc.configPath, 'utf8');
+    res = run(sc, ['--attach', 'other']);
+    assert.notEqual(res.status, 0, res.out);
+    assert.match(res.out, /"other" is a secondary this workspace holds as LOCKED read-only/);
+    assert.equal(fs.readFileSync(sc.configPath, 'utf8'), before, 'a refused promotion wrote');
+    // Lift the tier first (as the refusal says), and the attach goes through.
+    const cfg2 = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg2.workspaceBindings[key].alsoLocked = [];
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg2, null, 2));
     res = run(sc, ['--attach', 'other']);
     assert.equal(res.status, 0, res.out);
     entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
     assert.equal(entry.vault, 'other');
-    assert.deepEqual(entry.alsoLocked, [], 'promoted to primary — a primary has no tier');
+    assert.deepEqual(entry.alsoLocked, []);
+    // And what this attach left out is said: `myvault` was declared and is
+    // not named now.
+    assert.match(res.out, /DROPPED "myvault" from the binding/);
+  });
+
+  test('--link-workspace REFUSES an incoherent entry, names what a re-link elsewhere drops, and refuses a promotion', () => {
+    // Round 16, W1: the re-link read the REPAIRED binding and normalised the
+    // entry in silence behind "Linked workspace"; a re-link to another
+    // primary dropped secondaries, tiers and lock with a warning that looked
+    // at the .env hint, not at the binding.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other', 'other'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+    const before = fs.readFileSync(sc.configPath, 'utf8');
+    let res = run(sc, ['--link-workspace', sc.ws, 'myvault']);
+    assert.notEqual(res.status, 0, res.out);
+    assert.match(res.out, /--link-workspace: this workspace's binding entry in the router config cannot be taken as written/);
+    assert.match(res.out, /other appears more than once/);
+    assert.equal(fs.readFileSync(sc.configPath, 'utf8'), before, 'the refused re-link normalised the entry');
+
+    // Coherent now, with a strict secondary: linking elsewhere says what it drops.
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], alsoLocked: ['other'], locked: true, confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+    // …but not onto the strict secondary itself.
+    res = run(sc, ['--link-workspace', sc.ws, 'other']);
+    assert.notEqual(res.status, 0, res.out);
+    assert.match(res.out, /"other" is a secondary this workspace holds as LOCKED read-only/);
+    // A third vault to move to.
+    const third = makeVault(sc.root, 'THIRD');
+    const cfg3 = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg3.portRegistry[third] = 27300;
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg3, null, 2));
+    res = run(sc, ['--link-workspace', sc.ws, 'third']);
+    assert.equal(res.status, 0, res.out);
+    assert.match(res.out, /DROPPED the previous binding's secondaries \(other\) and their write tiers and its lock/);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'third');
+    assert.deepEqual(entry.also, []);
+  });
+
+  test('--unlink-workspace says it removed an entry the router could not read as a binding — not "Nothing to do"', () => {
+    // Round 16, W3: a primary-less entry read as "no binding", was removed all
+    // the same, and the command printed "Nothing to do".
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { also: ['other'], alsoLocked: ['other'] } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+    const res = run(sc, ['--unlink-workspace', sc.ws]);
+    assert.equal(res.status, 0, res.out);
+    assert.match(res.out, /Removed this workspace's binding entry[^\n]*could not read as a binding \(no usable primary\), with whatever secondaries and tiers it held/);
+    assert.doesNotMatch(res.out, /Nothing to do/);
+    assert.doesNotMatch(res.out, /No binding was recorded/);
+    assert.equal(JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings?.[key], undefined);
+  });
+
+  test('--attach REFUSES to rewrite an entry the router had to repair to read — a primary-less entry keeps its strict secondary', () => {
+    // Round 16, W2 (blocker): `previous = readBinding(...)` was null for a
+    // primary-less entry, so `keep(previous?.alsoLocked)` wrote `[]` — the
+    // secondary the user named again came out of the attach SOFT, and the
+    // steps said only that the binding was recorded.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { also: ['other'], alsoLocked: ['other'] } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+    const before = fs.readFileSync(sc.configPath, 'utf8');
+    const res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.notEqual(res.status, 0, res.out);
+    assert.match(res.out, /--attach: this workspace's binding entry in the router config cannot be taken as written/);
+    assert.match(res.out, /names no usable primary vault/);
+    assert.match(res.out, /confirm_workspace_binding\(\{ vault: "<the primary vault you intend>", also: \["other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/);
+    assert.equal(fs.readFileSync(sc.configPath, 'utf8'), before, 'the refused attach rewrote the entry');
   });
 
   test('tells the user the secondary is not auto-loaded', () => {

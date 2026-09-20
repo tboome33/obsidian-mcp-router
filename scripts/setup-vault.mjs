@@ -37,7 +37,13 @@ import {
   withoutBinding,
   withMigrationState,
   readBinding,
+  rawBindingEntry,
+  bindingIncoherences,
+  describeBindingRepair,
+  writerBindableNames,
+  BINDING_REPAIR_REQUIRED_CODE,
 } from '../src/helpers/workspace-bindings.mjs';
+import { isPromotionOfLockedSecondaryOnDisk, PROMOTION_REFUSED_CODE } from '../src/helpers/vault-reach.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
 import { snapshotConfig, mergeConfigOntoDisk } from '../src/helpers/config-merge.mjs';
@@ -2299,6 +2305,34 @@ function removeEnvVarSync(file, key) {
  * On `opts.quiet`, suppresses the success log lines (used by setupVault inline
  * call which has its own final recap).
  */
+/**
+ * The refusal every writer of the binding record shares (rounds 10–16): an
+ * entry the router had to repair to read is diagnosed, never rewritten by a
+ * command that did not look at it. Thrown inside the config lock, coded so
+ * the caller can print it as the refusal it is.
+ */
+function refuseIncoherentEntry(cfg, workspacePath, command) {
+  const raw = rawBindingEntry(cfg, workspacePath);
+  const incoherences = bindingIncoherences(raw);
+  if (!incoherences.length) return;
+  const err = new Error(
+    `${command}: this workspace's binding entry in the router config cannot be taken as written, so nothing was ` +
+    `recorded there. ${describeBindingRepair(raw, incoherences)}`,
+  );
+  err.code = BINDING_REPAIR_REQUIRED_CODE;
+  throw err;
+}
+
+function promotionRefusal(slug) {
+  const err = new Error(
+    `"${slug}" is a secondary this workspace holds as LOCKED read-only (alsoLocked), and making it the primary ` +
+    'would lift that restriction in one call. Nothing was recorded. Change its tier first with ' +
+    'set_secondary_vault_mode, or choose another primary.',
+  );
+  err.code = PROMOTION_REFUSED_CODE;
+  return err;
+}
+
 function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }) {
   if (!fs.existsSync(workspacePath)) fail(`Workspace path does not exist: ${workspacePath}`);
   if (!fs.statSync(workspacePath).isDirectory()) fail(`Workspace path is not a directory: ${workspacePath}`);
@@ -2355,14 +2389,29 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
   // binding of its own (secondaries included) a few lines later and would
   // otherwise write the config twice.
   let bindingRecorded = false;
+  // What a re-link to ANOTHER primary drops, said after the write (round 16).
+  let dropped = null;
   if (opts.recordBinding !== false) {
     try {
       updateConfigBindings(CONFIG_PATH, (cfg) => {
+        // THE SAME RULE AS EVERY WRITER OF THIS RECORD (rounds 10–16): an
+        // entry the router had to repair to read is not rewritten by a
+        // command that never looked at it — this one read the REPAIRED
+        // binding and normalised the entry in silence behind "Linked
+        // workspace". Refused, with the repair spelled; the .env hint above
+        // is already written and says nothing on its own.
+        refuseIncoherentEntry(cfg, workspacePath, '--link-workspace');
         // A re-link to the SAME primary keeps its lock and its secondaries;
         // pointing the workspace elsewhere drops both, because they belonged
         // to the vault it is being moved away from. Read inside the lock.
         const previous = readBinding(cfg, workspacePath);
         const same = previous && previous.vault === vaultSlug;
+        // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND EITHER — the
+        // promotion the tools refuse (round 16, W2).
+        if (!same && isPromotionOfLockedSecondaryOnDisk(vaultSlug, previous, cfg)) {
+          throw promotionRefusal(vaultSlug);
+        }
+        if (previous && !same) dropped = { also: previous.also, alsoLocked: previous.alsoLocked, alsoWritable: previous.alsoWritable, locked: previous.locked };
         // The write tier of each secondary that STAYS (Phase 3, per-workspace
         // `alsoLocked`/`alsoWritable` on the binding) survives a re-link to the
         // same primary — the secondaries do, so their modes must, or a re-run
@@ -2377,7 +2426,20 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
         });
       });
       bindingRecorded = true;
+      if (dropped && !opts.quiet) {
+        warn(
+          `Rebinding to "${vaultSlug}" DROPPED the previous binding's secondaries` +
+          (dropped.also.length ? ` (${dropped.also.join(', ')})` : ' (none)') +
+          (dropped.alsoLocked.length || dropped.alsoWritable.length ? ' and their write tiers' : '') +
+          (dropped.locked ? ' and its lock' : '') +
+          ': they belonged to the vault this workspace is being moved away from. Re-declare what you\n' +
+          '   still want with confirm_workspace_binding({ vault, also }) and set_secondary_vault_mode.',
+        );
+      }
     } catch (e) {
+      // A REFUSAL IS A REFUSAL, said as such — not "could not record … fix
+      // the permissions" (round 16).
+      if (e?.code === BINDING_REPAIR_REQUIRED_CODE || e?.code === PROMOTION_REFUSED_CODE) fail(e.message);
       // A FAILURE HERE FAILS THE COMMAND. The binding is the half that
       // decides; the `.env` line is a hint the router reports and does not
       // apply. Warning and exiting 0 printed "Linked workspace" for a command
@@ -2645,8 +2707,28 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
   //     the CLAUDE.md prose block, which the router never reads.
   //     Best effort: a config that cannot be written must not abort an attach
   //     whose workspace-side writes already succeeded.
+  let attachDropped = [];
   try {
     updateConfigBindings(CONFIG_PATH, (cfg) => {
+      // THE SAME RULE AS EVERY WRITER OF THIS RECORD (round 16, W2): an entry
+      // the router had to repair to read — a primary-less one holding a
+      // strict secondary, say — is not rewritten from `previous = null` with
+      // its tiers gone. Refused, with the repair spelled.
+      refuseIncoherentEntry(cfg, ws, '--attach');
+      // AND THE NAMES ARE JUDGED BY THE FILE INSIDE THE LOCK, not by the
+      // catalogue resolved before it: a sibling dropping or disabling a vault
+      // in between wrote a binding the next start could not resolve.
+      const bindable = writerBindableNames(cfg, []);
+      for (const v of [primary, ...secondaries]) {
+        if (!bindable.has(v.slug)) {
+          const err = new Error(
+            `--attach: "${v.slug}" is no longer a vault the config file can bind (removed or disabled since it ` +
+            'was resolved). Nothing was recorded in the router config. Check config.json and run --attach again.',
+          );
+          err.code = BINDING_REPAIR_REQUIRED_CODE;
+          throw err;
+        }
+      }
       // A RE-ATTACH TO THE SAME PRIMARY KEEPS ITS LOCK. Rewriting the binding
       // from scratch dropped `locked: true` silently — the same shape as the
       // confirmation tool's `locked === true`, found together in round 2 of
@@ -2654,6 +2736,11 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
       // lock belonged to the previous primary.
       const previous = readBinding(cfg, ws);
       const also = secondaries.map((s) => s.slug);
+      // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND (round 16, W2).
+      if (isPromotionOfLockedSecondaryOnDisk(primary.slug, previous, cfg)) throw promotionRefusal(primary.slug);
+      // The previous PRIMARY too: unlike `lock_vault --persist`, this command
+      // does not carry it over as a secondary.
+      attachDropped = previous ? [previous.vault, ...previous.also].filter((n) => !also.includes(n) && n !== primary.slug) : [];
       // Same rule as confirm_workspace_binding: the write tier of a secondary
       // that stays in `also` survives the re-attach; one that leaves takes its
       // tier with it; the previous primary, if it drops to `also`, starts soft.
@@ -2669,7 +2756,17 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
     });
     const alsoNote = secondaries.length ? ` (+${secondaries.length} also)` : '';
     steps.push({ step: 'binding', detail: `${primary.slug}${alsoNote} — in your router config, not in this project`, path: CONFIG_PATH });
+    // WHAT THIS ATTACH LEFT OUT, said: a secondary the previous binding
+    // declared and this call did not name is gone, tier included (round 16).
+    if (attachDropped.length) {
+      warn(
+        `This attach DROPPED ${attachDropped.map((n) => `"${n}"`).join(', ')} from the binding (declared before, ` +
+        'not named in --also now), with any write tier it held. Add it back with --also, or with\n' +
+        '   confirm_workspace_binding({ vault, also }), then set_secondary_vault_mode for its tier.',
+      );
+    }
   } catch (e) {
+    if (e?.code === BINDING_REPAIR_REQUIRED_CODE || e?.code === PROMOTION_REFUSED_CODE) fail(e.message);
     // Same as `--link-workspace`: attaching IS this command's purpose, and the
     // binding is the only part of it that decides anything now. Reporting a
     // successful attach whose binding was not written would be reporting the
@@ -5796,9 +5893,15 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
     // line) and quietly re-create what they just removed.
     let bindingRemoved = false;
     let hadBinding = false;
+    let hadUnusableEntry = false;
     try {
       updateConfigBindings(CONFIG_PATH, (cfg) => {
-        hadBinding = readBinding(cfg, wsPath) !== null;
+        // THE ENTRY AS WRITTEN, not the repaired reading: an entry with no
+        // usable primary read as "no binding", was removed all the same, and
+        // the command printed "Nothing to do" (Codex, round 16, W3).
+        const raw = rawBindingEntry(cfg, wsPath);
+        hadBinding = raw !== undefined;
+        hadUnusableEntry = hadBinding && readBinding(cfg, wsPath) === null;
         return withMigrationState(withoutBinding(cfg, wsPath), { cwd: wsPath, recordImported: true });
       });
       bindingRemoved = true;
@@ -5817,7 +5920,8 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
     }
     if (removed) ok(`Removed OBSIDIAN_ROUTER_DEFAULT_VAULT from ${envPath}`);
     else info(`No OBSIDIAN_ROUTER_DEFAULT_VAULT entry in ${envPath} (or file absent).`);
-    if (bindingRemoved && hadBinding) ok(`Removed this workspace's binding from ${CONFIG_PATH}`);
+    if (bindingRemoved && hadUnusableEntry) ok(`Removed this workspace's binding entry from ${CONFIG_PATH} — one the router could not read as a binding (no usable primary), with whatever secondaries and tiers it held.`);
+    else if (bindingRemoved && hadBinding) ok(`Removed this workspace's binding from ${CONFIG_PATH}`);
     else if (bindingRemoved) info('No binding was recorded for this workspace in your router config.');
     if (removed || hadBinding) {
       info('Restart Claude Code in this workspace so the hooks stop loading the previously-associated vault.');

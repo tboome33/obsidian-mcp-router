@@ -24,7 +24,7 @@
  * same Set for this one.
  */
 
-import { registeredVaultPaths, vaultSlug } from '../helpers/vault-slug.mjs';
+import { registeredVaultPaths, vaultSlug, disabledVaultNames } from '../helpers/vault-slug.mjs';
 import { updateConfigBindings } from '../helpers/workspace-bindings.mjs';
 import { safeForMessage } from '../helpers/sanitize.mjs';
 import { hostIsWireguardOrLoopback, isTruthyEnv } from '../registry.mjs';
@@ -177,12 +177,17 @@ export async function registerRemoteVaultTool(registry, args = {}, seams = {}) {
     throw new Error(collisionMessage());
   }
 
+  // WHETHER THE FILE DISABLES THIS NAME, read inside the lock: registering a
+  // name `disabledVaults` lists writes a descriptor the loader will skip, and
+  // the message promised it "becomes reachable" (Codex, round 16, W5).
+  let disabledNow = false;
   updateConfigBindings(configPath, (cfg) => {
     const localNames = registeredVaultPaths(cfg).map((vp) => vaultSlug(cfg, vp));
     const remoteVaults = Array.isArray(cfg.remoteVaults) ? cfg.remoteVaults : [];
     if (localNames.some(collidesWith) || remoteVaults.some((r) => r && collidesWith(r.name))) {
       throw new Error(collisionMessage());
     }
+    disabledNow = disabledVaultNames(cfg).has(name);
     return { ...cfg, remoteVaults: [...remoteVaults, entry] };
   }, seams);
 
@@ -190,9 +195,16 @@ export async function registerRemoteVaultTool(registry, args = {}, seams = {}) {
     registered: true,
     name,
     baseUrl,
+    disabled: disabledNow,
     message:
       `Registered remote vault "${name}" in your router config (never in a workspace .env). `
-      + 'It becomes reachable within a moment as the router reloads its config — or on the next '
-      + 'restart if this server was started with --no-watch.',
+      + (disabledNow
+        ? '`disabledVaults` names it, so no session will load it until it is removed from that list. '
+        // REGISTERED IS NOT REACHABLE: the router loads it at the next reload
+        // or restart, and under vaultReach "declared" a workspace reaches it
+        // only once it declares it (round 16).
+        : 'This session loads it at the next config reload — or at the next restart if this server was '
+          + 'started with --no-watch; with vaultReach "declared" active, a workspace then reaches it once it '
+          + 'declares it (confirm_workspace_binding) or `openVaults` lists it.'),
   };
 }

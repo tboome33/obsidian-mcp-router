@@ -125,6 +125,36 @@ describe('set_secondary_vault_mode — recording the user\'s answer', () => {
   });
 });
 
+describe('set_secondary_vault_mode — a write adopts the file\'s LOCK with its binding', () => {
+  test('a sibling re-bound the workspace elsewhere, unlocked: recording a tier adopts that binding AND releases this session\'s binding lock', async () => {
+    // Round 16, W2 (blocker): the write adopted the binding and the default
+    // but left `lockedVault`/`lockSource` on the vault the adopted binding
+    // no longer named — unqualified calls routed to a vault outside the
+    // binding, calls to the new primary refused under a lock the file had
+    // lifted.
+    const reg = registryOf({
+      lockedVault: 'notes',
+      lockSource: { origin: 'binding', variable: null },
+      workspaceBinding: { vault: 'notes', also: ['ref'], locked: true, alsoLocked: [], alsoWritable: [] },
+    });
+    // The FILE: re-bound to `scratch` (unlocked) with `ref` kept.
+    const { seam } = seams({ config: onDisk({ vault: 'scratch', also: ['ref'], locked: false }) });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(r.mode, 'locked');
+    assert.equal(reg.workspaceBinding.vault, 'scratch', 'the write did not adopt the file\'s binding');
+    assert.equal(reg.lockedVault, null, 'the binding lock on the OLD primary survived the adoption of an unlocked binding');
+    assert.equal(reg.lockSource.origin, 'unset');
+  });
+
+  test('…and adopts a lock the file carries', async () => {
+    const reg = registryOf({ lockedVault: null, lockSource: { origin: 'unset', variable: null } });
+    const { seam } = seams({ config: onDisk({ vault: 'notes', also: ['ref', 'scratch'], locked: true }) });
+    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(reg.lockedVault, 'notes');
+    assert.equal(reg.lockSource.origin, 'binding');
+  });
+});
+
 describe('set_secondary_vault_mode — what it refuses', () => {
   test('an unknown mode, with the three valid ones named', async () => {
     const { written, seam } = seams();

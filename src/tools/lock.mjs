@@ -48,7 +48,7 @@ import {
   writerBindableNames,
   authoritativeLockedVault,
 } from '../helpers/workspace-bindings.mjs';
-import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
+import { disabledVaultNames } from '../helpers/vault-slug.mjs';
 import {
   isVaultReachable,
   isPromotionOfLockedSecondaryOnDisk,
@@ -90,10 +90,14 @@ export async function lockVault(registry, args = {}) {
   const target = registry.vaults.find((v) => v.name === vault);
   if (!target) {
     const known = registry.vaults.map((v) => v.name).join(', ') || '(none)';
-    throw new Error(
-      `lock_vault: cannot lock to "${vault}" — not in the active vault set. ` +
-        `Known vaults: ${known}.`,
-    );
+    // A VAULT THE LOADER SKIPPED AS DISABLED is not "not in the active set"
+    // for the reader: the loader said why (Codex, round 16, R103).
+    const off = (registry.skipped || []).some((s) => s && s.name === vault && s.reason === 'disabled');
+    throw new Error(off
+      ? `lock_vault: cannot lock to "${vault}" — it is DISABLED by \`disabledVaults\` in the config file, so this `
+        + 'session did not load it. Remove it from `disabledVaults` first, then restart, then lock. '
+        + `Known vaults: ${known}.`
+      : `lock_vault: cannot lock to "${vault}" — not in the active vault set. Known vaults: ${known}.`);
   }
   // Same reasoning, one guard further: applyLockGuard() (src/index.mjs) makes
   // EVERY subsequent resolveVault() call — including calls that omit `vault`
@@ -256,9 +260,10 @@ export async function lockVault(registry, args = {}) {
   // Same sentence as the confirmation tool's success.
   const carriedFacts = bindingRecorded?.carriedFacts ?? [];
   const carriedNote = describeUnresolvedSecondaries(carriedFacts, { locked: true });
-  const notLoadedHere = carriedFacts
-    .filter((f) => f.kind !== 'secondary-dropped-still-loaded')
-    .flatMap((f) => f.names);
+  // WHAT THIS SESSION HAS NOT LOADED, measured against its catalogue — the
+  // same question the confirmation tool asks. Derived from the facts it
+  // counted a disabled secondary this session still holds (Codex, round 16).
+  const notLoadedHere = (bindingRecorded?.also ?? []).filter((n) => !registry.vaults.some((v) => v.name === n));
   const hintFailed = hintError
     ? ` OBSIDIAN_ROUTER_LOCKED could NOT be written to ${envPath} (${hintError}) — the portable hint for another machine is missing, nothing else.`
     : '';
@@ -322,7 +327,16 @@ export async function unlockVaults(registry, args = {}) {
   // `persisted: true`, "will not come back on restart" — and the next start
   // re-imposed it from the environment. (Codex, rounds 14 and 15, O1.) The
   // variable itself is what re-imposes, so the variable is what is asked.
-  const hostReimposes = registry.lockSource?.origin === 'host' || Boolean(authoritativeLockedVault());
+  // AND THE HOST CANDIDATE IS VALIDATED AS START-UP VALIDATES IT: a variable
+  // naming a vault this session does not know, or one this workspace cannot
+  // reach, is rejected at start-up and re-imposes nothing (round 16 — the
+  // round-15 line read the variable's presence as a lock to come).
+  const hostCandidate = authoritativeLockedVault();
+  const hostWouldApply = Boolean(hostCandidate)
+    && (registry.vaults || []).some((v) => v.name === hostCandidate)
+    && isVaultReachable(hostCandidate, registry);
+  const liftedCameFromHost = registry.lockSource?.origin === 'host';
+  const hostReimposes = liftedCameFromHost || hostWouldApply;
   registry.lockedVault = null;
   registry.lockSource = { origin: 'unset', variable: null };
 
@@ -416,9 +430,16 @@ export async function unlockVaults(registry, args = {}) {
         ? `Router unlocked from "${wasLocked}".` +
           (persist
             ? (hostReimposes
-              ? ` This lock came from the host — OBSIDIAN_ROUTER_LOCKED in your MCP declaration or your shell —`
-                + ' and the router config cannot lift that: it WILL come back at the next start until that'
-                + ' variable is removed where it is set.'
+              // WHICH lock the host holds: the one just lifted, or one a
+              // binding lock had shadowed (round 16 — "this lock came from
+              // the host" named a binding lock).
+              ? (liftedCameFromHost
+                ? ` This lock came from the host — OBSIDIAN_ROUTER_LOCKED in your MCP declaration or your shell —`
+                  + ' and the router config cannot lift that: it WILL come back at the next start until that'
+                  + ' variable is removed where it is set.'
+                : ` The lock just lifted came from the binding, but the host also declares one — OBSIDIAN_ROUTER_LOCKED=`
+                  + `${safeForMessage(hostCandidate, 80)} in your MCP declaration or your shell — which the router config`
+                  + ' cannot lift: it WILL come back at the next start until that variable is removed where it is set.')
               : bindingLifted
               // True also when the workspace had no recorded lock at all —
               // "no lock is recorded" is the fact the user needs, and it is
@@ -561,7 +582,7 @@ function recordLockInBinding(registry, cwd, vault, seams = {}) {
           // TWO CAUSES, TWO REMEDIES: "register it, then lock again" sent the
           // owner of a DISABLED vault to re-register it, for an exclusion no
           // registration lifts (Codex, round 15).
-          const off = new Set(disabledVaultEntries(cfg)).has(vault);
+          const off = disabledVaultNames(cfg).has(vault);
           const err = new Error(
             off
               ? `lock_vault --persist: "${safeForMessage(vault, 80)}" is DISABLED by \`disabledVaults\` in the config `

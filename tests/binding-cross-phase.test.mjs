@@ -1117,8 +1117,11 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     // session has not loaded it — not "neither in the config file nor
     // provided by the environment", which round 14 said for every such name.
     assert.deepEqual(res.notLoadedHere, ['q']);
-    assert.match(res.message, /"q" stays declared in the binding \(tier kept\) and the config file lists it, but this session has not loaded it/);
+    // And the CAUSE is not claimed (round 16): "registered after this session
+    // started" was one of several — an identity mismatch at load is another.
+    assert.match(res.message, /"q" stays declared in the binding \(with the tier the binding now records for it\) and the config file lists it, but this session's catalogue does not hold it \(registered after this session started, or skipped at load — list_vaults\.disabled\[\] says which\)/);
     assert.doesNotMatch(res.message, /"q"[^.]*neither in the config file/);
+    assert.doesNotMatch(res.message, /Unknown vault/);
     // 3. Now that the entry holds `q`, naming it again by hand is KEEPING it:
     //    the call resolves (one outcome, asserted as such — not "either").
     const kept = await confirmWorkspaceBinding(registry, { vault: 'work', also: ['q', 'sci'], open: false }, seams);

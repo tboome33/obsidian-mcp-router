@@ -72,7 +72,7 @@ import {
   writerBindableNames,
   BINDING_INCOHERENCE,
 } from '../helpers/workspace-bindings.mjs';
-import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
+import { disabledVaultNames } from '../helpers/vault-slug.mjs';
 import { upsertDotenvVar } from '../helpers/dotenv-writer.mjs';
 import {
   envKeyOrigin,
@@ -700,7 +700,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // vault was told "register it first" for an exclusion no registration
     // lifts).
     const quoted = (list) => list.map((n) => `"${safeForMessage(String(n), 60)}"`).join(', ');
-    const disabled = new Set(disabledVaultEntries(cfg));
+    const disabled = disabledVaultNames(cfg);
     const notLoaded = unknown.filter((n) => typeof n === 'string' && bindable.has(n) && !known.has(n));
     const off = unknown.filter((n) => typeof n === 'string' && !bindable.has(n) && disabled.has(n));
     const unregistered = unknown.filter((n) => !notLoaded.includes(n) && !off.includes(n));
@@ -1307,4 +1307,4 @@ function releaseBindingLock(registry) {
 }
 
 /** Exported for tests only. */
-export const _internals = { CONFIRMED_VIA, defaultConfigDir: path.dirname };
+export const _internals = { CONFIRMED_VIA, defaultConfigDir: path.dirname, releaseBindingLock };

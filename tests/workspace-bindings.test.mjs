@@ -40,6 +40,7 @@ import {
   authoritativeVaultPath,
   MIGRATION_KEY,
   IMPORT_REASON,
+  CLOSING_REASONS,
   readMigrationState,
   migrationDecision,
   withMigrationState,
@@ -1106,6 +1107,19 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
     assert.equal(r.reason, IMPORT_REASON.REFUSED);
   });
 
+  test('an entry the router had to repair to read is NEVER imported over — and the window stays open', () => {
+    // Round 16, W4 (blocker): the import read the repaired `null` of a
+    // primary-less entry as "no binding" and REPLACED it with
+    // `{ vault: hint, also: [] }` at a start-up — secondaries, tiers and a
+    // strict role erased, a strict secondary promoted by the hint, no tool
+    // and no human. Asked of the raw entry, before `binding`; not a closing
+    // reason, because the entry can be repaired.
+    assert.deepEqual(decide({ binding: null, entryToRepair: true }), {
+      import: false, vault: null, locked: false, reason: IMPORT_REASON.ENTRY_TO_REPAIR, record: false,
+    });
+    assert.equal(CLOSING_REASONS.includes(IMPORT_REASON.ENTRY_TO_REPAIR), false);
+  });
+
   test('the reasons are exhaustive — every path names itself', () => {
     const seen = new Set([
       decide().reason,
@@ -1116,6 +1130,7 @@ describe('the ONE-TIME import — every rule, without a disk', () => {
       decide({ hint: 'ghost' }).reason,
       decide({ dotenvMtimeMs: Date.parse('2026-09-04T00:00:00Z') }).reason,
       decide({ isRefused: (n) => n === 'notes' }).reason,
+      decide({ entryToRepair: true }).reason,
     ]);
     // The gated reason needs the environment, not an argument: the predicate
     // reads `process.env` at call time, like every other consumer of it.

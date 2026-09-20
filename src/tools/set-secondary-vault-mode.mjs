@@ -67,6 +67,7 @@ import {
 } from '../helpers/workspace-bindings.mjs';
 import { isGatedDeployment, gatedDeploymentRefusal } from '../helpers/workspace-dotenv.mjs';
 import { _internals as registryInternals } from '../registry.mjs';
+import { _internals as bindingInternals } from './workspace-binding.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -285,6 +286,18 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     });
     registry.defaultVault = again.name;
     registry.defaultVaultSource = { origin: again.origin, variable: again.variable };
+    // AND THE LOCK THE ADOPTED BINDING CARRIES — the same rule as the
+    // confirmation tool's `adoptRouting`. Adopting a sibling's re-binding
+    // (primary `b`, unlocked) while keeping this session's binding lock on
+    // `a` routed unqualified calls to a vault the adopted binding no longer
+    // named, and refused `b` under a lock the file had lifted. (Codex, round
+    // 16, W2.) A binding lock is set or released; a host lock is re-derived.
+    if (binding.locked) {
+      registry.lockedVault = binding.vault;
+      registry.lockSource = { origin: 'binding', variable: null };
+    } else if (registry.lockSource?.origin === 'binding') {
+      bindingInternals.releaseBindingLock(registry);
+    }
   }
   refreshRegistryBindingHint(registry);
 

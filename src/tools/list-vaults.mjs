@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
-import { disabledVaultEntries } from '../helpers/vault-slug.mjs';
+import { disabledVaultNames } from '../helpers/vault-slug.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
@@ -223,22 +223,38 @@ export async function listVaults(registry, sharedConfig = null) {
   // declaration `confirm_workspace_binding` refuses for a disabled vault.
   // The FILE as it is now decides (Codex, round 15, pass B); the start-up copy
   // is the fallback when it cannot be read.
-  let disabledNow;
+  // `null` when NEITHER the file nor a start-up copy could be read: then the
+  // loader's verdict is the only one there is, and no re-enabling is claimed.
+  let disabledNow = null;
   try {
-    disabledNow = new Set(disabledVaultEntries(JSON.parse(fs.readFileSync(registry.configPath, 'utf8'))));
+    disabledNow = disabledVaultNames(JSON.parse(fs.readFileSync(registry.configPath, 'utf8')));
   } catch {
-    disabledNow = new Set(disabledVaultEntries(registry.config));
+    if (registry.config && typeof registry.config === 'object') disabledNow = disabledVaultNames(registry.config);
   }
+  const disabledSince = (name) => disabledNow !== null && disabledNow.has(name);
   const disabled = [
+    // A VAULT THE LOADER SKIPPED AS DISABLED that the file no longer disables
+    // (re-enabled since start-up, `--no-watch`) is not "disabled": it is not
+    // loaded yet (Codex, round 16, R103).
     ...(registry.skipped || []).map((s) => ({
-      name: s.name, type: s.type, reason: s.reason, awaitingDeclaration: false,
+      name: s.name,
+      type: s.type,
+      reason: s.reason === 'disabled' && disabledNow !== null && !disabledNow.has(s.name)
+        ? 'disabled when this session started; the config file no longer disables it — restart the session '
+          + '(or wait for hot-reload) to load it'
+        : s.reason,
+      awaitingDeclaration: false,
     })),
-    ...unreachable.map((v) => (disabledNow.has(v.name)
+    ...unreachable.map((v) => (disabledSince(v.name)
       ? {
         name: v.name,
         type: v.type,
-        reason: 'disabled (`disabledVaults` names it since this session started — a binding cannot name it; '
-          + 'remove it from that list first, then restart)',
+        // NO RESTART IS OWED for a descriptor this session already holds:
+        // the declaration is what was missing, and it is refused while the
+        // list names the vault (round 16 — "then restart" sent the reader to
+        // a restart that declares nothing).
+        reason: 'disabled (`disabledVaults` names it since this session started — a binding cannot name it while '
+          + 'it does; remove it from that list, then bind this workspace to it)',
         awaitingDeclaration: false,
       }
       : {

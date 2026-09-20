@@ -38,7 +38,9 @@ import { fileURLToPath } from 'node:url';
 import {
   canonicalWorkspaceKey, normalizeBinding, bindingIncoherences, describeBindingRepair,
   rawSecondaryTiers, rawEntryDigest, registryIncoherences, registryFactsFor, writerBindableNames, withBinding,
+  unresolvedSecondaryFacts, describeUnresolvedSecondaries,
 } from '../src/helpers/workspace-bindings.mjs';
+import { vaultSlug, disabledVaultNames } from '../src/helpers/vault-slug.mjs';
 import { proposedRoleFor } from '../src/helpers/binding-proposal.mjs';
 import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
@@ -762,6 +764,20 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       const inv = JSON.parse(textOf(await rt.call(3, 'tools/call', { name: 'list_vaults', arguments: {} })));
       const other = inv.disabled.find((d) => d.name === 'other');
       assert.ok(other && other.awaitingDeclaration === false, JSON.stringify(inv.disabled));
+      assert.equal(other.reason, 'disabled');
+      // RE-ENABLED SINCE START-UP, under --no-watch (round 16, R103): the
+      // loader's verdict is stale, and "is DISABLED" was false — the file
+      // allows it, this session has not loaded it.
+      delete cfg.disabledVaults;
+      fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+      const again = await read(rt, 4, 'other');
+      assert.equal(again.result?.isError, true, textOf(again));
+      assert.match(textOf(again), /was DISABLED by `disabledVaults` when this session started[^.]*the config file no longer disables it\. Restart the session/);
+      assert.doesNotMatch(textOf(again), /is DISABLED by/);
+      const inv2 = JSON.parse(textOf(await rt.call(5, 'tools/call', { name: 'list_vaults', arguments: {} })));
+      const other2 = inv2.disabled.find((d) => d.name === 'other');
+      assert.ok(other2 && other2.awaitingDeclaration === false, JSON.stringify(inv2.disabled));
+      assert.match(other2.reason, /no longer disables it/);
     } finally { rt.kill(); }
   });
 
@@ -787,6 +803,58 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.deepEqual(written.also, ['sci']);
     assert.equal(written.foo, 1, 'the repair dropped a field this version does not know');
     assert.deepEqual(repaired.workspaceBindings[canonicalWorkspaceKey(b)], { vault: 'other', also: ['s', 's'] }, 'B was touched');
+    // AND THE FIELDS COME FROM THE ENTRY THE READER SELECTS (round 16): two
+    // spellings of one workspace, the non-canonical one inserted FIRST — the
+    // reading prefers the canonical key, and so must the carry-over.
+    const alias = `${a}${path.sep}`;
+    assert.equal(canonicalWorkspaceKey(alias), canonicalWorkspaceKey(a), 'the alias must canonicalise to the same key');
+    const twoSpellings = { workspaceBindings: { [alias]: { ...entryA, foo: 1 }, [canonicalWorkspaceKey(a)]: { ...entryA, also: ['sci', 'sci'], foo: 2, bar: 3 } } };
+    const merged = withBinding(twoSpellings, a, { vault: 'work', also: ['sci'], locked: true, confirmedAt: today, confirmedVia: 'tool' });
+    const kept = merged.workspaceBindings[canonicalWorkspaceKey(a)];
+    assert.equal(kept.foo, 2, 'the unknown fields came from the first alias inserted, not from the entry the reader uses');
+    assert.equal(kept.bar, 3);
+    assert.equal(Object.keys(merged.workspaceBindings).length, 1);
+  });
+
+  test('disabledVaultNames — a local vault disabled by its registered PATH is disabled by NAME for every writer', () => {
+    // Round 16, W5 (class): the loader accepts a name OR a path in
+    // `disabledVaults`; every writer-side reader compared the raw entries to
+    // names, so a path-disabled local was skipped at start-up and still
+    // "bindable" for the confirmation, the persisted lock and the diagnostics.
+    const cfg = { portRegistry: { '/v/Notes': 27124, '/v/Work': 27125 }, vaultNames: {}, remoteVaults: [], disabledVaults: ['/v/Notes'] };
+    const notes = vaultSlug(cfg, '/v/Notes');
+    const work = vaultSlug(cfg, '/v/Work');
+    assert.ok(disabledVaultNames(cfg).has(notes), 'the path entry was not resolved to its name');
+    assert.ok(!disabledVaultNames(cfg).has(work));
+    assert.ok(!writerBindableNames(cfg, []).has(notes), 'a path-disabled local stayed bindable');
+    assert.ok(writerBindableNames(cfg, []).has(work));
+    assert.deepEqual(
+      registryIncoherences({ vault: work, also: [notes] }, registryFactsFor(cfg, [{ name: work }])),
+      [{ kind: 'secondary-disabled', names: [notes] }],
+    );
+  });
+
+  test('describeUnresolvedSecondaries — a disabled secondary still loaded is not told "Unknown vault", and no cause is invented', () => {
+    // Round 16: round 15 promised "Unknown vault" for every disabled
+    // secondary (false for one this session still holds, and the loader
+    // says DISABLED for one it skipped), and "registered after this session
+    // started" for every listed-not-loaded one (an identity mismatch at load
+    // is another cause).
+    const loaded = describeUnresolvedSecondaries([{ kind: 'secondary-disabled-still-loaded', names: ['s'] }]);
+    assert.match(loaded, /"s" stays declared in the binding \(with the tier the binding now records for it\) but is DISABLED by `disabledVaults` in the config file since this session started: this session still holds its descriptor, so it may still answer here/);
+    assert.doesNotMatch(loaded, /Unknown vault/);
+    const gone = describeUnresolvedSecondaries([{ kind: 'secondary-disabled', names: ['s'] }]);
+    assert.match(gone, /this session has not loaded it: it does not answer from here, a new declaration of it is refused/);
+    assert.doesNotMatch(gone, /Unknown vault/);
+    const notLoaded = describeUnresolvedSecondaries([{ kind: 'secondary-not-loaded-here', names: ['q'] }]);
+    assert.match(notLoaded, /registered after this session started, or skipped at load — list_vaults\.disabled\[\] says which/);
+    assert.doesNotMatch(notLoaded, /tier kept/);
+    // The split itself: disabled AND in the catalogue → still loaded.
+    const facts = { bindable: new Set(['work']), sessionNames: new Set(['work', 's']), disabled: new Set(['s', 'off']) };
+    assert.deepEqual(
+      unresolvedSecondaryFacts({ vault: 'work', also: ['s', 'off'] }, facts).map((f) => [f.kind, f.names]),
+      [['secondary-disabled-still-loaded', ['s']], ['secondary-disabled', ['off']]],
+    );
   });
 
   test('e2e — a secondary another session\'s ENVIRONMENT provides is KEPT by a session that lacks it — accept and repair alike', async () => {
@@ -820,7 +888,8 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
       // AND THE SUCCESS SAYS WHAT THE KEPT SECONDARY IS FROM HERE: declared,
       // tier kept, not answering — not "addressable by name" (round 14).
       const repairedJson = JSON.parse(textOf(repaired));
-      assert.match(repairedJson.message, /"envr" stays declared in the binding \(tier kept\) but this session has not loaded it/);
+      assert.match(repairedJson.message, /"envr" stays declared in the binding \(with the tier the binding now records for it\) but this session has not loaded it — neither in the config file as this session reads it nor provided by its environment/);
+      assert.doesNotMatch(repairedJson.message, /Unknown vault|tier kept/);
       assert.match(repairedJson.message, /with "other" also bound and addressable by name/);
       assert.doesNotMatch(repairedJson.message, /"envr"[^.]*addressable by name/);
       assert.deepEqual(repairedJson.notLoadedHere, ['envr']);

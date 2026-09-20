@@ -283,6 +283,32 @@ primary and drops every secondary not passed again, which is exactly the call th
   removed may have named another vault; and "still ANSWERS here" / "answers again once removed from
   `disabledVaults`" say what is known: a loaded descriptor, subject to the lock; a config edit that
   this session must then load.
+- **The writers of the binding record that no review had seen get the rule — and a start-up can no
+  longer erase an entry.** The sixteenth round put the out-of-tool writers in front of the reviewers for
+  the first time: the one-time migration import, `register_remote_vault`, and the `--link-workspace`,
+  `--attach` and `--unlink-workspace` commands. The import read the repaired `null` of a primary-less
+  entry as "no binding" and REPLACED it with `{ vault: hint, also: [] }` at a start-up — secondaries,
+  write tiers and a strict role erased with no tool and no human, a strict secondary promoted by the
+  hint; an entry the router had to repair to read is never imported over now (a non-closing verdict, so
+  the hint is looked at again once the entry is repaired), and the hinted vault is judged by the file
+  re-read inside the lock. `--attach` rebuilt a primary-less entry from `previous = null` and wrote the
+  strict secondary the user named again as SOFT; `--link-workspace` normalised an incoherent entry in
+  silence behind "Linked workspace"; both promoted a strict secondary to primary in one call. All three
+  refuse an incoherent entry with the repair spelled, refuse the promotion, judge the names by the file
+  inside the lock, and say what a re-link or re-attach elsewhere drops (secondaries, tiers, lock, the
+  previous primary). `--unlink-workspace` said "Nothing to do" after removing a primary-less entry.
+  `set_secondary_vault_mode` adopted a sibling's re-binding without its lock state (a session kept a
+  binding lock on a vault the adopted binding no longer named). With it: `disabledVaults` entries by
+  PATH are disabled by NAME for every writer and diagnostic (the loader accepted both, the writers
+  compared names — a path-disabled local stayed bindable); a vault re-enabled since start-up is said to
+  await a restart, not "is DISABLED"; `register_remote_vault` says when the name it registered is
+  disabled and no longer promises "becomes reachable"; a disabled secondary this session still holds is
+  told apart from one it never loaded (no "Unknown vault" promise for either); "registered after this
+  session started" is no longer claimed as the one cause of "listed but not loaded here"; the unlock
+  validates a host lock candidate the way start-up does before predicting it will come back, and says
+  when the lock it lifted came from the binding while the host declares another; the unknown fields a
+  write carries over come from the entry the reader selects, not the first alias inserted; and the
+  `lock_vault` result's `notLoadedHere` asks the catalogue, as the confirmation's does.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

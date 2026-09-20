@@ -46,6 +46,7 @@ import {
   configuredDefaultVault,
   defaultNameFromPath,
   disabledVaultEntries,
+  disabledVaultNames,
   registeredVaultPaths,
   vaultRecordsOf,
   vaultSlug,
@@ -730,13 +731,23 @@ export async function loadRegistry({ configPath } = {}) {
         // was sent to register a vault the file lists and excludes on
         // purpose. The loader recorded why it was skipped; said here.
         // (Codex, round 15, S15.)
-        const off = (this.skipped || []).some((s) => s && s.name === target && s.reason === 'disabled');
-        if (off) {
-          throw new Error(
-            `Vault "${target}" is DISABLED by \`disabledVaults\` in the router's config file, so this session did `
-            + 'not load it. Registering it again or restarting lifts nothing while that list names it: remove '
-            + `it from \`disabledVaults\` first, then restart. Known vaults: ${known}.`,
-          );
+        const skippedOff = (this.skipped || []).some((s) => s && s.name === target && s.reason === 'disabled');
+        if (skippedOff) {
+          // AND WHETHER THE FILE STILL SAYS SO: re-enabled since start-up under
+          // `--no-watch`, the loader's verdict is stale and "is DISABLED" was
+          // false — the file allows it, this session has not reloaded (Codex,
+          // round 16, R103).
+          let stillOff = true;
+          try {
+            stillOff = disabledVaultNames(JSON.parse(fsSync.readFileSync(this.configPath, 'utf8'))).has(target);
+          } catch { /* unreadable now: the start-up verdict stands */ }
+          throw new Error(stillOff
+            ? `Vault "${target}" is DISABLED by \`disabledVaults\` in the router's config file, so this session did `
+              + 'not load it. Registering it again or restarting lifts nothing while that list names it: remove '
+              + `it from \`disabledVaults\` first, then restart. Known vaults: ${known}.`
+            : `Vault "${target}" was DISABLED by \`disabledVaults\` when this session started, so it was not loaded; `
+              + 'the config file no longer disables it. Restart the session (or wait for hot-reload) to load it. '
+              + `Known vaults: ${known}.`);
         }
         throw new Error(`Unknown vault "${target}". Known vaults: ${known}.`);
       }
@@ -912,7 +923,7 @@ export async function loadRegistry({ configPath } = {}) {
           // never registered / removed since, or DISABLED by `disabledVaults`
           // — and "not listed … register it" was false for the second, which
           // no registration and no restart lifts. (Codex, round 14.)
-          const off = new Set(disabledVaultEntries(live.config)).has(v.name);
+          const off = disabledVaultNames(live.config).has(v.name);
           throw declarationRequiredError(
             off
               ? `${preamble} This vault is DISABLED by \`disabledVaults\` in the router's config file, so it cannot `
@@ -1176,9 +1187,13 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
     // written down as considered, or clearing that binding later re-opens the
     // window and the next start puts the binding back.
     const stale = readMigrationState(config);
+    // AN ENTRY THE ROUTER HAD TO REPAIR TO READ is asked of the RAW entry, the
+    // one fact the repaired reading hides (round 16, W4).
+    const toRepair = (cfg) => bindingIncoherences(rawBindingEntry(cfg, cwd)).length > 0;
     const staleDecision = migrationDecision({
       ...hints,
       binding: readBinding(config, cwd),
+      entryToRepair: toRepair(config),
       openedAt: stale.openedAt,
       alreadyImported: stale.imported.has(key),
       isRefused: refusedIn(config),
@@ -1215,7 +1230,12 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
       refusalsInLock = readRefusals(cfg, cwd);
       const decision = migrationDecision({
         ...hints,
+        // THE FILE JUST RE-READ DECIDES WHAT IS REGISTERED, not the catalogue
+        // built before the lock: a sibling dropping or disabling the hinted
+        // vault in between left `isRegistered` true (Codex, round 16, W4).
+        isRegistered: (name) => hints.isRegistered(name) && writerBindableNames(cfg, vaults).has(name),
         binding: bindingInLock,
+        entryToRepair: toRepair(cfg),
         openedAt: fresh.openedAt,
         alreadyImported: fresh.imported.has(key),
         isRefused: refusedIn(cfg),
@@ -1727,6 +1747,9 @@ async function readLocalRestData(vaultPath) {
 export const _internals = {
   resolveDefaultVault,
   resolveDefaultVaultWithSource,
+  // Test-only: the one-time import, callable with a start-up copy and a file
+  // that has moved since — the window `loadRegistry` never leaves open.
+  importDotenvHintOnce,
   normalizePathForCompare,
   defaultNameFromPath,
   pathBasename,
