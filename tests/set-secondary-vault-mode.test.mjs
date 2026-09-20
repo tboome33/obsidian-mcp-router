@@ -149,9 +149,76 @@ describe('set_secondary_vault_mode — a write adopts the file\'s LOCK with its 
   test('…and adopts a lock the file carries', async () => {
     const reg = registryOf({ lockedVault: null, lockSource: { origin: 'unset', variable: null } });
     const { seam } = seams({ config: onDisk({ vault: 'notes', also: ['ref', 'scratch'], locked: true }) });
-    await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
     assert.equal(reg.lockedVault, 'notes');
     assert.equal(reg.lockSource.origin, 'binding');
+    // The primary did not change and the lock was already what the file said,
+    // so nothing about the routing is reported: the note is for a CHANGE.
+    assert.equal(r.adoptedRouting?.lockBefore ?? null, null);
+    assert.equal(r.adoptedRouting?.lockAfter, 'notes');
+    assert.match(r.message, /this write also adopted the binding the config file holds/);
+  });
+
+  test('a lock on a primary this session cannot resolve is NOT applied — lock_vault refuses exactly that', async () => {
+    // Round 16 made the adoption carry the lock by copying `adoptRouting`.
+    // But `adoptRouting`'s own comment says the guards it dropped belonged to
+    // paths that WRITE the binding, where `assertBindable` has already
+    // refused a name the live registry cannot resolve. Here the binding is a
+    // SIBLING's, adopted whole, and nothing validated its primary: a sibling
+    // that registers `b` and binds this workspace to it, locked, left the
+    // older session locked to a vault it never loaded — through
+    // `applyLockGuard`, every later call resolves a name that is not there.
+    // A mechanism copied without its discipline. (Codex, round 17, C7.)
+    const reg = registryOf({ lockedVault: null, lockSource: { origin: 'unset', variable: null } });
+    // The FILE names `b` as primary, locked. This session's catalogue has no `b`.
+    const { seam } = seams({ config: onDisk({ vault: 'b', also: ['ref'], locked: true }) });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(r.mode, 'locked', 'the tier the user asked for is still recorded');
+    assert.equal(reg.workspaceBinding.vault, 'b', 'the binding itself is adopted, as a write always is');
+    assert.equal(reg.lockedVault, null, 'a lock was applied to a vault this session cannot resolve');
+    assert.notEqual(reg.lockSource.origin, 'binding');
+    // AND IT IS SAID: the user asked for one secondary's tier.
+    assert.match(r.message, /records a lock on "b", which this session has not loaded/);
+    assert.match(r.message, /The lock was NOT applied here/);
+    assert.match(r.message, /It applies at the next start/);
+  });
+
+  test('a lock on a primary this session DOES hold is still applied — the guard is narrow', async () => {
+    // The guard must not swallow the repair round 16 made: a lock the file
+    // records on a vault this session loaded is adopted, as before.
+    const reg = registryOf({ lockedVault: null, lockSource: { origin: 'unset', variable: null } });
+    const { seam } = seams({ config: onDisk({ vault: 'scratch', also: ['ref'], locked: true }) });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'locked' }, seam);
+    assert.equal(reg.lockedVault, 'scratch');
+    assert.equal(reg.lockSource.origin, 'binding');
+    assert.doesNotMatch(r.message, /The lock was NOT applied here/);
+  });
+
+  test('the routing a write ADOPTS is reported — the user asked for a tier, not a new primary', async () => {
+    // The adoption is deliberate and right (round 9). What was missing is
+    // the sentence: a call about one secondary's write tier could change the
+    // session's primary and its lock, and the answer spoke only of the tier.
+    // (Codex, round 17.)
+    const reg = registryOf({ lockedVault: 'notes', lockSource: { origin: 'binding', variable: null } });
+    const { seam } = seams({ config: onDisk({ vault: 'scratch', also: ['ref'], locked: false }) });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'writable' }, seam);
+    assert.deepEqual(r.adoptedRouting, {
+      primaryBefore: undefined, primaryAfter: 'scratch', lockBefore: 'notes', lockAfter: null,
+    });
+    assert.match(r.message, /this session's primary is now "scratch"/);
+    assert.match(r.message, /its lock none \(was "notes"\)/);
+  });
+
+  test('a write that changes no routing says nothing about it', async () => {
+    const reg = registryOf({
+      defaultVault: 'notes',
+      lockedVault: null,
+      lockSource: { origin: 'unset', variable: null },
+    });
+    const { seam } = seams({ config: onDisk({ vault: 'notes', also: ['ref', 'scratch'], locked: false }) });
+    const r = await setSecondaryVaultMode(reg, { vault: 'ref', mode: 'writable' }, seam);
+    assert.equal(r.adoptedRouting, null);
+    assert.doesNotMatch(r.message, /also adopted the binding/);
   });
 });
 

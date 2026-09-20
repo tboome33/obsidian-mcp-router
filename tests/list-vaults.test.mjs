@@ -56,6 +56,11 @@ describe('listVaults — reachability (trap 4)', () => {
       vaults: [vault('reachable')],
       skipped: [{ name: 'off', type: 'local', reason: 'disabled' }],
       configPath: '/c',
+      // THE CONFIG THIS SESSION PARSED, so the "does the file still disable
+      // it?" question has an answer here. `/c` is not a real path: without
+      // this the verdict is "unverified", which is a different sentence and
+      // not the one this test is about. (Round 17.)
+      config: { disabledVaults: ['off'] },
       vaultReach: 'declared', openVaults: ['reachable'],
     };
     const out = await listVaults(registry);
@@ -63,6 +68,30 @@ describe('listVaults — reachability (trap 4)', () => {
     const byName = Object.fromEntries(out.disabled.map((d) => [d.name, d.reason]));
     assert.equal(byName.off, 'disabled');
     assert.equal(byName.reachable, undefined, 'a reachable vault must not ALSO appear in disabled');
+  });
+
+  test('a vault skipped as disabled whose config cannot be read now is UNVERIFIED, not "disabled"', async () => {
+    // Round 16 re-read the file to tell "still disabled" from "re-enabled
+    // since start-up", and folded the third outcome — no answer at all —
+    // into the first: an unreadable config reported the START-UP verdict in
+    // the present tense. A state nobody could check is not a state observed.
+    // (Codex, round 17, C2.)
+    const registry = {
+      vaults: [vault('reachable')],
+      skipped: [{ name: 'off', type: 'local', reason: 'disabled' }],
+      configPath: '/no-such-config-for-this-test',
+      // no `config` copy either: nothing can answer
+      vaultReach: 'declared', openVaults: ['reachable'],
+    };
+    const out = await listVaults(registry);
+    const byName = Object.fromEntries(out.disabled.map((d) => [d.name, d.reason]));
+    assert.match(byName.off, /could not be read just now/);
+    assert.match(byName.off, /unverified/);
+    assert.equal(
+      out.disabled.find((d) => d.name === 'off').awaitingDeclaration,
+      false,
+      'an unverified state is still not a declaration the user can give',
+    );
   });
 
   test('the two absences are told apart BY DATA — awaitingDeclaration, not by parsing the reason', async () => {

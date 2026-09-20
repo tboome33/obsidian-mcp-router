@@ -256,6 +256,11 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   // and a registry whose binding says `notes` while unqualified calls still go
   // to `ref` is the self-contradiction `lock_vault` had to fix in round 5.
   const binding = readBinding(next, cwd);
+  // WHAT THIS SESSION ROUTED BY BEFORE THE ADOPTION, kept so the answer can
+  // say what this call changed beyond the tier it was asked for (round 17).
+  const routingBefore = { defaultVault: registry.defaultVault, lockedVault: registry.lockedVault };
+  let adopted = null;
+  let unlockableAdoptedPrimary = null;
   // The refusals: `withBinding` drops a stale refusal of any bound vault
   // on its way through, and the live copy must say what the file says
   // (Codex, round on b59eb00 — found one writer over, in lock.mjs).
@@ -292,12 +297,39 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     // `a` routed unqualified calls to a vault the adopted binding no longer
     // named, and refused `b` under a lock the file had lifted. (Codex, round
     // 16, W2.) A binding lock is set or released; a host lock is re-derived.
-    if (binding.locked) {
+    //
+    // BUT `adoptRouting` MAY ASSUME WHAT THIS PATH MAY NOT. Its own comment
+    // says the guards it dropped "belonged to the paths that do NOT write"
+    // and that `assertBindable` has already refused any name the live
+    // registry cannot resolve. Here the binding is not one this call wrote:
+    // it is a SIBLING's, adopted whole, and nothing validated its primary.
+    // Locking to a vault this session never loaded is exactly what
+    // `lock_vault` refuses twice before applying — and through
+    // `applyLockGuard` it makes every later call resolve a name that is not
+    // there. A mechanism copied without its discipline, one round after the
+    // copy. (Codex, round 17, C7.) So the lock is adopted only where
+    // `lock_vault` would allow it, and what this call changed about the
+    // session's routing is REPORTED rather than done in silence.
+    // ONLY THE CATALOGUE IS ASKED, and deliberately not reachability:
+    // `registry.workspaceBinding` is the adopted binding by now, and a
+    // binding's own primary is reachable BY DEFINITION — a second check
+    // there would be dead code, which this lot has twice learned reads as
+    // coverage.
+    const lockable = binding.locked
+      && (registry.vaults || []).some((v) => v.name === binding.vault);
+    if (lockable) {
       registry.lockedVault = binding.vault;
       registry.lockSource = { origin: 'binding', variable: null };
     } else if (registry.lockSource?.origin === 'binding') {
       bindingInternals.releaseBindingLock(registry);
     }
+    if (binding.locked && !lockable) unlockableAdoptedPrimary = binding.vault;
+    adopted = {
+      primaryBefore: routingBefore.defaultVault,
+      primaryAfter: registry.defaultVault,
+      lockBefore: routingBefore.lockedVault,
+      lockAfter: registry.lockedVault,
+    };
   }
   refreshRegistryBindingHint(registry);
 
@@ -326,6 +358,15 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
   const inForceHere = sessionTier(registry.workspaceBinding);
   const sessionDiffers = !wrote && inForceHere !== mode;
 
+  // A WRITE ADOPTS THE FILE'S BINDING, WHICH IS NOT ALWAYS THE ONE THIS
+  // SESSION HELD. Round 16 made that adoption carry the lock; nothing said
+  // it. The user asked for one secondary's tier and could walk away with a
+  // different primary and a different lock — a re-routing they never
+  // requested, reported nowhere. (Codex, round 17.)
+  const routingChanged = adopted
+    && (adopted.primaryBefore !== adopted.primaryAfter || adopted.lockBefore !== adopted.lockAfter);
+  const named = (v) => (v === null || v === undefined ? 'none' : `"${safeForMessage(String(v), 80)}"`);
+
   return {
     workspace: key,
     vault,
@@ -336,6 +377,10 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
     modeInForceHere: inForceHere,
     effectiveMode: overriddenBy === 'alsoLocked' ? 'locked' : overriddenBy === 'alsoWritable' ? 'writable' : mode,
     overriddenBy,
+    // What the write ALSO changed about this session's routing, because it
+    // adopted the binding the file holds (round 17). `null` when nothing was
+    // written, or when the adopted binding routed exactly as this one did.
+    adoptedRouting: routingChanged ? adopted : null,
     message:
       `"${shown}" is now ${MODE_WORDS[mode]} as a secondary of this workspace`
       + (previousMode === mode ? ' (unchanged).' : ` (was: ${previousMode}).`)
@@ -348,6 +393,18 @@ export async function setSecondaryVaultMode(registry, args = {}, seams = {}) {
           + `${inForceHere === null ? 'no secondary tier at all (the binding this session holds does not declare it)' : `"${inForceHere}"`}`
           + '. Another session changed the binding after this one started. Restart the session, or '
           + 'retry once hot-reload has caught up, before relying on the recorded mode here.'
+        : '')
+      + (routingChanged
+        ? ' NOTE: this write also adopted the binding the config file holds, which another session had changed:'
+          + ` this session's primary is now ${named(adopted.primaryAfter)} (was ${named(adopted.primaryBefore)})`
+          + ` and its lock ${named(adopted.lockAfter)} (was ${named(adopted.lockBefore)}). Calls that name no vault`
+          + ' go to the primary — check it before relying on one.'
+        : '')
+      + (unlockableAdoptedPrimary
+        ? ' NOTE: that binding records a lock on '
+          + `"${safeForMessage(unlockableAdoptedPrimary, 80)}", which this session has not loaded. The lock was `
+          + 'NOT applied here — applying it would refuse every call until unlock, which is what lock_vault '
+          + 'itself refuses for the same name. It applies at the next start, once that vault is loaded.'
         : '')
       + ' Recorded in your own router config, for this workspace only.',
   };

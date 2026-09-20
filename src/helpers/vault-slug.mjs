@@ -484,6 +484,70 @@ export function disabledVaultNames(cfg) {
 }
 
 /**
+ * The three answers to "the loader skipped this vault as disabled — does the
+ * file still disable it?", and `null` for a vault the loader did not skip
+ * that way.
+ *
+ * Round 16 gave that question to `resolveVault` and to `list_vaults` and
+ * wrote the re-read twice, each with its own fallback; `lock_vault`, whose
+ * sentence was ADDED by the same round, kept answering from the start-up
+ * verdict alone, so a vault re-enabled under `--no-watch` was "is DISABLED …
+ * remove it from `disabledVaults` first" from one door while the other two
+ * already said it was allowed. A repair that reaches its first two call
+ * sites and not the third reads as closed — the defect class this repo has
+ * now paid for five times. One function, three callers, and a scan that
+ * refuses a fourth reader of `skipped` outside it. (Codex, round 17.)
+ *
+ * `UNVERIFIED` is the answer round 16 could not give: both readers folded an
+ * unreadable file into a verdict (`resolveVault` kept "is DISABLED", and
+ * `list_vaults` fell back to the start-up copy without saying so), and a
+ * state nobody could check is not a state observed.
+ */
+export const DISABLED_SINCE_START = Object.freeze({
+  STILL: 'still-disabled',
+  REENABLED: 're-enabled',
+  UNVERIFIED: 'unverified',
+});
+
+/**
+ * `disabledVaults` as the FILE holds it right now — `null` when neither the
+ * file nor this session's parsed copy could answer.
+ *
+ * @param {{configPath?: string, config?: unknown}} registry
+ * @param {(p: string, enc: string) => string} readFileSync
+ * @returns {Set<string>|null}
+ */
+export function liveDisabledVaultNames(registry, readFileSync) {
+  try {
+    return disabledVaultNames(JSON.parse(readFileSync(registry.configPath, 'utf8')));
+  } catch {
+    // The start-up copy is a fact about a file that HAS been read, so it
+    // beats nothing — but it is not the file now, and the caller is told
+    // which of the two it got by the verdict it receives.
+    if (registry && registry.config && typeof registry.config === 'object') {
+      return disabledVaultNames(registry.config);
+    }
+    return null;
+  }
+}
+
+/**
+ * @param {{skipped?: Array<{name?: string, reason?: string}>, configPath?: string, config?: unknown}} registry
+ * @param {string} name
+ * @param {(p: string, enc: string) => string} readFileSync
+ * @returns {'still-disabled'|'re-enabled'|'unverified'|null}
+ */
+export function disabledSinceStart(registry, name, readFileSync) {
+  const skippedOff = (registry?.skipped || []).some(
+    (s) => s && s.name === name && s.reason === 'disabled',
+  );
+  if (!skippedOff) return null;
+  const now = liveDisabledVaultNames(registry, readFileSync);
+  if (now === null) return DISABLED_SINCE_START.UNVERIFIED;
+  return now.has(name) ? DISABLED_SINCE_START.STILL : DISABLED_SINCE_START.REENABLED;
+}
+
+/**
  * Shared body for every "array of vault names, hand-editable" config key in
  * this module (`disabledVaults`, `openVaults`, `alsoWritable`, `alsoLocked`):
  * absent/malformed container → `[]`, a bare string is NOT iterated

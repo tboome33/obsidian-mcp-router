@@ -309,6 +309,34 @@ primary and drops every secondary not passed again, which is exactly the call th
   when the lock it lifted came from the binding while the host declares another; the unknown fields a
   write carries over come from the entry the reader selects, not the first alias inserted; and the
   `lock_vault` result's `notLoadedHere` asks the catalogue, as the confirmation's does.
+- **The other half of the pair, and the repair that reached two of its three readers.** The
+  seventeenth round attacked the sixteenth's own repairs. `--link-workspace` — the command the
+  bootstrap flag calls, and the twin of the `--attach` that had just been taught to judge names by the
+  file inside the lock — never got that check at all: a vault a sibling had removed from
+  `portRegistry`, or added to `disabledVaults`, between the resolution and the lock was recorded as the
+  primary under "Linked workspace … workspaceBindings: <name> (this is what decides)", for a next start
+  that cannot resolve it. `set_secondary_vault_mode`, taught the round before to adopt the file's lock
+  with its binding, copied that mechanism from the confirmation tool without the guard it rests on
+  (`assertBindable` has refused an unresolvable name on the paths that WRITE a binding; this one adopts
+  a sibling's whole): a workspace re-bound and locked elsewhere left the older session locked to a
+  vault it had never loaded, and `applyLockGuard` then resolved that name on every call. The lock is
+  now adopted only where `lock_vault` would allow it, and what the write changed about the session's
+  routing — primary and lock, before and after — is reported instead of done in silence. And the
+  "is it still disabled?" question the sixteenth round gave to `resolveVault` and `list_vaults` had
+  been written twice by hand, so the `lock_vault` sentence the same round ADDED kept answering from
+  the start-up verdict: one function now answers it for all three doors, a scan refuses a fourth
+  reader outside it, and it has a third answer — the config file could not be read, so the state is
+  unverified rather than reported in the present tense. With them: `--attach` keeps a secondary the
+  entry already declares even when the file now disables it, as `confirm_workspace_binding` does
+  (two writers of one record must not disagree about one name); an attach that swaps a locked
+  primary and its secondary says it lifted the workspace's lock, which no name disappearing had
+  shown; both CLI refusals say that the portable `.env` hint was written before the lock opened, so
+  "nothing was recorded" is read as the fact about the config that it is; the unlock no longer calls a
+  volatile `lock_vault` lock "the binding", no longer predicts a host lock "WILL come back" from this
+  session's catalogue rather than the next start's, and judges the host candidate against the binding
+  it LEAVES rather than the one it replaces; the repair diagnostic tells a disabled secondary this
+  session still holds from one it never loaded, as the success sentence already did; and the reader is
+  no longer sent to `list_vaults.disabled[]` for a cause that field cannot hold.
 - **What never proposes anything**, each for its own reason: a vault in `openVaults`, a vault you
   refused, a binding whose primary this machine does not have (it needs repairing, not extending), a
   binding the file holds in an incoherent shape (same reason), a gated deployment where no acceptance

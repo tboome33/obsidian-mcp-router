@@ -17,7 +17,11 @@
 import fs from 'node:fs';
 import { pingVault } from '../rest-client.mjs';
 import { pathBasename } from '../registry.mjs';
-import { disabledVaultNames } from '../helpers/vault-slug.mjs';
+import {
+  liveDisabledVaultNames,
+  disabledSinceStart,
+  DISABLED_SINCE_START,
+} from '../helpers/vault-slug.mjs';
 import { probeConversionToolbox } from '../helpers/conversion-readiness.mjs';
 import { DEFAULT_PROJECT_ROOT as PROJECT_ROOT } from '../markdownify/markitdown.mjs';
 import { isVaultReachable } from '../helpers/vault-reach.mjs';
@@ -225,26 +229,35 @@ export async function listVaults(registry, sharedConfig = null) {
   // is the fallback when it cannot be read.
   // `null` when NEITHER the file nor a start-up copy could be read: then the
   // loader's verdict is the only one there is, and no re-enabling is claimed.
-  let disabledNow = null;
-  try {
-    disabledNow = disabledVaultNames(JSON.parse(fs.readFileSync(registry.configPath, 'utf8')));
-  } catch {
-    if (registry.config && typeof registry.config === 'object') disabledNow = disabledVaultNames(registry.config);
-  }
+  // THE FILE AS IT IS NOW, through the one function the three doors that ask
+  // this question share (round 17 — `lock_vault` had been left on the
+  // start-up verdict). `null` here means neither the file nor this session's
+  // copy could answer.
+  const disabledNow = liveDisabledVaultNames(registry, fs.readFileSync);
   const disabledSince = (name) => disabledNow !== null && disabledNow.has(name);
   const disabled = [
     // A VAULT THE LOADER SKIPPED AS DISABLED that the file no longer disables
     // (re-enabled since start-up, `--no-watch`) is not "disabled": it is not
-    // loaded yet (Codex, round 16, R103).
-    ...(registry.skipped || []).map((s) => ({
-      name: s.name,
-      type: s.type,
-      reason: s.reason === 'disabled' && disabledNow !== null && !disabledNow.has(s.name)
-        ? 'disabled when this session started; the config file no longer disables it — restart the session '
-          + '(or wait for hot-reload) to load it'
-        : s.reason,
-      awaitingDeclaration: false,
-    })),
+    // loaded yet (Codex, round 16, R103). And one whose current state could
+    // not be read is neither: said as unverified rather than folded into the
+    // start-up verdict (round 17).
+    ...(registry.skipped || []).map((s) => {
+      // ASKED UNCONDITIONALLY: the helper owns the "was it skipped AS
+      // disabled?" test too, so no door re-derives it (round 17).
+      const verdict = disabledSinceStart(registry, s.name, fs.readFileSync);
+      return {
+        name: s.name,
+        type: s.type,
+        reason: verdict === DISABLED_SINCE_START.REENABLED
+          ? 'disabled when this session started; the config file no longer disables it — restart the session '
+            + '(or wait for hot-reload) to load it'
+          : verdict === DISABLED_SINCE_START.UNVERIFIED
+            ? 'disabled when this session started; the config file could not be read just now, so whether it '
+              + 'still disables it is unverified'
+            : s.reason,
+        awaitingDeclaration: false,
+      };
+    }),
     ...unreachable.map((v) => (disabledSince(v.name)
       ? {
         name: v.name,

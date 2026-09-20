@@ -847,14 +847,46 @@ describe('an INCOHERENT binding is DIAGNOSED, never proposed over — the decisi
     assert.match(gone, /this session has not loaded it: it does not answer from here, a new declaration of it is refused/);
     assert.doesNotMatch(gone, /Unknown vault/);
     const notLoaded = describeUnresolvedSecondaries([{ kind: 'secondary-not-loaded-here', names: ['q'] }]);
-    assert.match(notLoaded, /registered after this session started, or skipped at load — list_vaults\.disabled\[\] says which/);
+    assert.match(notLoaded, /registered after this session started, or skipped at load/);
     assert.doesNotMatch(notLoaded, /tier kept/);
+    // ROUND 17: the pointer round 16 added led nowhere in the very case it
+    // was written for. `list_vaults.disabled[]` is built from what the loader
+    // SKIPPED and from loaded-but-unreachable descriptors; a vault registered
+    // in the file after this session started is in neither, so the sentence
+    // must not send the reader there for that cause.
+    assert.doesNotMatch(notLoaded, /list_vaults\.disabled\[\] says which/);
+    assert.match(notLoaded, /a vault skipped at load is named in list_vaults\.disabled\[\] with the reason, one registered since is in neither list until a restart/);
     // The split itself: disabled AND in the catalogue → still loaded.
     const facts = { bindable: new Set(['work']), sessionNames: new Set(['work', 's']), disabled: new Set(['s', 'off']) };
     assert.deepEqual(
       unresolvedSecondaryFacts({ vault: 'work', also: ['s', 'off'] }, facts).map((f) => [f.kind, f.names]),
       [['secondary-disabled-still-loaded', ['s']], ['secondary-disabled', ['off']]],
     );
+    // ROUND 17 — AND THE SPLIT HAPPENS ONCE, so the REFUSAL that precedes
+    // the success describes the same availability. Round 16 taught only the
+    // success renderer, and the repair diagnostic went on demanding a
+    // restart for a descriptor this session already holds.
+    assert.deepEqual(
+      registryIncoherences({ vault: 'work', also: ['s', 'off'] }, facts).map((f) => [f.kind, f.names]),
+      [['secondary-disabled-still-loaded', ['s']], ['secondary-disabled', ['off']]],
+    );
+  });
+
+  test('describeBindingRepair — a disabled secondary this session still HOLDS is not owed a restart', () => {
+    // The refusal and the success that follows it must not describe two
+    // different availabilities of one name (Codex, round 17).
+    const facts = { bindable: new Set(['work']), sessionNames: new Set(['work', 's']), disabled: new Set(['s', 'off']) };
+    const raw = { vault: 'work', also: ['s', 'off'], alsoLocked: ['s'] };
+    const text = describeBindingRepair(raw, registryIncoherences(raw, facts));
+    // The one this session holds: it may still answer, no restart claimed.
+    assert.match(text, /its secondary s is DISABLED by `disabledVaults` in this config file since this session started/);
+    assert.match(text, /this session still holds its descriptor, so a call can still reach it here/);
+    // The one it does not: the original sentence, restart and all.
+    assert.match(text, /its secondary off is DISABLED by `disabledVaults` in this config file, for as long as that list names it/);
+    assert.match(text, /this session must then load it \(a restart\) before it answers here/);
+    // And both are KEPT in the spelled call, tier included.
+    assert.match(text, /also: \["s", "off"\]/);
+    assert.match(text, /locked: "s"/);
   });
 
   test('e2e — a secondary another session\'s ENVIRONMENT provides is KEPT by a session that lacks it — accept and repair alike', async () => {

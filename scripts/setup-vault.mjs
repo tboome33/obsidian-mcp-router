@@ -2317,7 +2317,12 @@ function refuseIncoherentEntry(cfg, workspacePath, command) {
   if (!incoherences.length) return;
   const err = new Error(
     `${command}: this workspace's binding entry in the router config cannot be taken as written, so nothing was ` +
-    `recorded there. ${describeBindingRepair(raw, incoherences)}`,
+    // "NOTHING WAS RECORDED THERE" IS TRUE OF THE CONFIG AND OF NOTHING
+    // ELSE. Both commands write the portable `.env` hint BEFORE this lock
+    // opens, so a reader who takes the refusal for "nothing happened" is
+    // wrong about the workspace they are standing in. (Codex, round 17.)
+    `recorded there — the portable hint in the workspace's .env was already written and now names the vault you ` +
+    `asked for, which decides nothing on its own. ${describeBindingRepair(raw, incoherences)}`,
   );
   err.code = BINDING_REPAIR_REQUIRED_CODE;
   throw err;
@@ -2326,8 +2331,9 @@ function refuseIncoherentEntry(cfg, workspacePath, command) {
 function promotionRefusal(slug) {
   const err = new Error(
     `"${slug}" is a secondary this workspace holds as LOCKED read-only (alsoLocked), and making it the primary ` +
-    'would lift that restriction in one call. Nothing was recorded. Change its tier first with ' +
-    'set_secondary_vault_mode, or choose another primary.',
+    'would lift that restriction in one call. Nothing was recorded in the router config — the portable hint in ' +
+    "the workspace's .env was already written and now names it, which decides nothing on its own. Change its " +
+    'tier first with set_secondary_vault_mode, or choose another primary.',
   );
   err.code = PROMOTION_REFUSED_CODE;
   return err;
@@ -2401,6 +2407,26 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
         // workspace". Refused, with the repair spelled; the .env hint above
         // is already written and says nothing on its own.
         refuseIncoherentEntry(cfg, workspacePath, '--link-workspace');
+        // AND THE NAME IS JUDGED BY THE FILE INSIDE THE LOCK. Round 16 gave
+        // this check to `--attach` and claimed it for "the writers"; this
+        // one, the other half of the same pair and the one the bootstrap
+        // flag calls, never had it. Between the resolution above (outside
+        // any lock) and this callback, a sibling can remove the vault from
+        // `portRegistry` or add it to `disabledVaults`: the command then
+        // recorded a binding to a name the next start cannot resolve, under
+        // "Linked workspace … workspaceBindings: <name> (this is what
+        // decides)". A repair that reaches one of two writers reads as
+        // closed. (Codex, round 17, C4.)
+        if (!writerBindableNames(cfg, []).has(vaultSlug)) {
+          const err = new Error(
+            `--link-workspace: "${vaultSlug}" is no longer a vault the config file can bind (removed from `
+            + '`portRegistry`, or added to `disabledVaults`, since it was resolved a moment ago). Nothing was '
+            + `recorded in the router config; the portable hint in ${envPath} WAS written and names it. Check `
+            + 'config.json and run this again.',
+          );
+          err.code = BINDING_REPAIR_REQUIRED_CODE;
+          throw err;
+        }
         // A re-link to the SAME primary keeps its lock and its secondaries;
         // pointing the workspace elsewhere drops both, because they belonged
         // to the vault it is being moved away from. Read inside the lock.
@@ -2467,7 +2493,12 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
     }
     console.log(`    ${c('gray', `(vault path: ${vaultPath})`)}`);
   }
-  return { envPath, vaultSlug, vaultPath, previousSlug, bindingRecorded };
+  // `dropped` RETURNED, not only warned: the warning is suppressed by
+  // `opts.quiet`, which is how a caller that silences the log also loses the
+  // one fact round 16 added (Codex, round 17). The only quiet caller today
+  // writes no binding at all, so nothing is lost in practice — returned so
+  // that stays true of the next one.
+  return { envPath, vaultSlug, vaultPath, previousSlug, bindingRecorded, dropped };
 }
 
 function appendGitignore(vaultPath) {
@@ -2708,6 +2739,8 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
   //     Best effort: a config that cannot be written must not abort an attach
   //     whose workspace-side writes already succeeded.
   let attachDropped = [];
+  let attachLockLifted = false;
+  let previousPrimaryForWarning = null;
   try {
     updateConfigBindings(CONFIG_PATH, (cfg) => {
       // THE SAME RULE AS EVERY WRITER OF THIS RECORD (round 16, W2): an entry
@@ -2719,28 +2752,48 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
       // catalogue resolved before it: a sibling dropping or disabling a vault
       // in between wrote a binding the next start could not resolve.
       const bindable = writerBindableNames(cfg, []);
-      for (const v of [primary, ...secondaries]) {
-        if (!bindable.has(v.slug)) {
-          const err = new Error(
-            `--attach: "${v.slug}" is no longer a vault the config file can bind (removed or disabled since it ` +
-            'was resolved). Nothing was recorded in the router config. Check config.json and run --attach again.',
-          );
-          err.code = BINDING_REPAIR_REQUIRED_CODE;
-          throw err;
-        }
-      }
       // A RE-ATTACH TO THE SAME PRIMARY KEEPS ITS LOCK. Rewriting the binding
       // from scratch dropped `locked: true` silently — the same shape as the
       // confirmation tool's `locked === true`, found together in round 2 of
       // the Codex review (2026-09-03). Attaching elsewhere drops it, since the
       // lock belonged to the previous primary.
       const previous = readBinding(cfg, ws);
+      // AND A SECONDARY THE ENTRY ALREADY DECLARES IS KEPT, NOT ADDED —
+      // `assertBindable`'s own exception (`i > 0 && keptFromEntry.has(n)`),
+      // which the new loop did not have. The tools keep a declared secondary
+      // that has since been disabled; this command refused it, told the user
+      // it was "removed or disabled since it was resolved" (a chronology
+      // nothing here establishes), and left them the choice of dropping the
+      // declaration and its tier to get the command through. Two writers of
+      // one record must not disagree about the same name. (Codex, round 17.)
+      const declared = new Set(previous ? [previous.vault, ...previous.also] : []);
+      for (const [i, v] of [primary, ...secondaries].entries()) {
+        if (bindable.has(v.slug)) continue;
+        if (i > 0 && declared.has(v.slug)) continue;
+        const err = new Error(
+          `--attach: "${v.slug}" is not a vault the config file can bind${declared.has(v.slug) ? ' as the primary' : ''} `
+          + '(absent from `portRegistry`, or named by `disabledVaults`, in the file as it reads inside the lock). '
+          + "Nothing was recorded in the router config — the portable hint in the workspace's .env was already "
+          + 'written and names the primary you asked for. Check config.json and run --attach again.',
+        );
+        err.code = BINDING_REPAIR_REQUIRED_CODE;
+        throw err;
+      }
       const also = secondaries.map((s) => s.slug);
       // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND (round 16, W2).
       if (isPromotionOfLockedSecondaryOnDisk(primary.slug, previous, cfg)) throw promotionRefusal(primary.slug);
       // The previous PRIMARY too: unlike `lock_vault --persist`, this command
       // does not carry it over as a secondary.
       attachDropped = previous ? [previous.vault, ...previous.also].filter((n) => !also.includes(n) && n !== primary.slug) : [];
+      // AND THE LOCK IS A LOSS THE NAMES DO NOT SHOW. `attachDropped`
+      // compares names only, so swapping the roles of a locked primary and
+      // its secondary (`--attach b --also a` over `{ vault: a, also: [b],
+      // locked: true }`) drops nothing by name and lifts the workspace's lock
+      // in silence: every vault the binding declares answers again, which is
+      // the isolation boundary the user had explicitly persisted. (Codex,
+      // round 17, C8.)
+      attachLockLifted = Boolean(previous && previous.locked && previous.vault !== primary.slug);
+      if (attachLockLifted) previousPrimaryForWarning = previous.vault;
       // Same rule as confirm_workspace_binding: the write tier of a secondary
       // that stays in `also` survives the re-attach; one that leaves takes its
       // tier with it; the previous primary, if it drops to `also`, starts soft.
@@ -2763,6 +2816,13 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
         `This attach DROPPED ${attachDropped.map((n) => `"${n}"`).join(', ')} from the binding (declared before, ` +
         'not named in --also now), with any write tier it held. Add it back with --also, or with\n' +
         '   confirm_workspace_binding({ vault, also }), then set_secondary_vault_mode for its tier.',
+      );
+    }
+    if (attachLockLifted) {
+      warn(
+        `This attach also LIFTED this workspace's lock: it was locked to "${previousPrimaryForWarning}", and a lock\n` +
+        '   belongs to the primary it was set on — every vault this binding declares answers again. Re-apply it\n' +
+        '   with lock_vault({ vault, persist: true }) from a session in this workspace if you still want it.',
       );
     }
   } catch (e) {

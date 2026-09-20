@@ -47,6 +47,8 @@ import {
   defaultNameFromPath,
   disabledVaultEntries,
   disabledVaultNames,
+  disabledSinceStart,
+  DISABLED_SINCE_START,
   registeredVaultPaths,
   vaultRecordsOf,
   vaultSlug,
@@ -731,23 +733,31 @@ export async function loadRegistry({ configPath } = {}) {
         // was sent to register a vault the file lists and excludes on
         // purpose. The loader recorded why it was skipped; said here.
         // (Codex, round 15, S15.)
-        const skippedOff = (this.skipped || []).some((s) => s && s.name === target && s.reason === 'disabled');
-        if (skippedOff) {
-          // AND WHETHER THE FILE STILL SAYS SO: re-enabled since start-up under
-          // `--no-watch`, the loader's verdict is stale and "is DISABLED" was
-          // false — the file allows it, this session has not reloaded (Codex,
-          // round 16, R103).
-          let stillOff = true;
-          try {
-            stillOff = disabledVaultNames(JSON.parse(fsSync.readFileSync(this.configPath, 'utf8'))).has(target);
-          } catch { /* unreadable now: the start-up verdict stands */ }
-          throw new Error(stillOff
-            ? `Vault "${target}" is DISABLED by \`disabledVaults\` in the router's config file, so this session did `
-              + 'not load it. Registering it again or restarting lifts nothing while that list names it: remove '
-              + `it from \`disabledVaults\` first, then restart. Known vaults: ${known}.`
-            : `Vault "${target}" was DISABLED by \`disabledVaults\` when this session started, so it was not loaded; `
-              + 'the config file no longer disables it. Restart the session (or wait for hot-reload) to load it. '
-              + `Known vaults: ${known}.`);
+        // AND WHETHER THE FILE STILL SAYS SO: re-enabled since start-up under
+        // `--no-watch`, the loader's verdict is stale and "is DISABLED" was
+        // false — the file allows it, this session has not reloaded (Codex,
+        // round 16, R103). Through the ONE function that answers this for the
+        // three doors that ask it; the hand-written version here left
+        // `lock_vault` on the start-up verdict for a whole round (round 17).
+        const verdict = disabledSinceStart(this, target, fsSync.readFileSync);
+        if (verdict) {
+          throw new Error(
+            verdict === DISABLED_SINCE_START.STILL
+              ? `Vault "${target}" is DISABLED by \`disabledVaults\` in the router's config file, so this session did `
+                + 'not load it. Registering it again or restarting lifts nothing while that list names it: remove '
+                + `it from \`disabledVaults\` first, then restart. Known vaults: ${known}.`
+              : verdict === DISABLED_SINCE_START.REENABLED
+                ? `Vault "${target}" was DISABLED by \`disabledVaults\` when this session started, so it was not loaded; `
+                  + 'the config file no longer disables it. Restart the session (or wait for hot-reload) to load it. '
+                  + `Known vaults: ${known}.`
+                // A STATE NOBODY COULD CHECK IS NOT A STATE OBSERVED — the
+                // round-16 line kept "is DISABLED" here, which reads as the
+                // file's word when it is only the start-up verdict.
+                : `Vault "${target}" was DISABLED by \`disabledVaults\` when this session started, so it was not `
+                  + 'loaded. The config file could not be read just now, so whether it still disables it is '
+                  + 'unverified: check `disabledVaults` in it, then restart the session to load the vault. '
+                  + `Known vaults: ${known}.`,
+          );
         }
         throw new Error(`Unknown vault "${target}". Known vaults: ${known}.`);
       }

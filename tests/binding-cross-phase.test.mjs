@@ -1119,7 +1119,13 @@ describe('bindableVaultNames — one predicate, two readers', () => {
     assert.deepEqual(res.notLoadedHere, ['q']);
     // And the CAUSE is not claimed (round 16): "registered after this session
     // started" was one of several — an identity mismatch at load is another.
-    assert.match(res.message, /"q" stays declared in the binding \(with the tier the binding now records for it\) and the config file lists it, but this session's catalogue does not hold it \(registered after this session started, or skipped at load — list_vaults\.disabled\[\] says which\)/);
+    assert.match(res.message, /"q" stays declared in the binding \(with the tier the binding now records for it\) and the config file lists it, but this session's catalogue does not hold it — registered after this session started, or skipped at load \(a name collision, an identity mismatch\)/);
+    // ROUND 17: and the reader is not sent to `list_vaults.disabled[]` for a
+    // cause it cannot hold. `q` here IS a vault registered after start-up —
+    // the exact case the round-16 pointer named — and it appears in neither
+    // of the two lists that field is built from.
+    assert.doesNotMatch(res.message, /list_vaults\.disabled\[\] says which/);
+    assert.match(res.message, /one registered since is in neither list until a restart/);
     assert.doesNotMatch(res.message, /"q"[^.]*neither in the config file/);
     assert.doesNotMatch(res.message, /Unknown vault/);
     // 3. Now that the entry holds `q`, naming it again by hand is KEEPING it:

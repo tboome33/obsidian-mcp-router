@@ -512,9 +512,17 @@ export function describeUnresolvedSecondaries(facts, { locked = false } = {}) {
       // THE CAUSE IS NOT CLAIMED: "registered after this session started" was
       // one of several — a vault skipped at load for an identity mismatch is
       // listed by the file and absent here too (Codex, round 16).
+      // AND THE READER IS NOT SENT SOMEWHERE THE ANSWER MAY NOT BE.
+      // `list_vaults.disabled[]` is built from what the loader SKIPPED and
+      // from loaded descriptors that do not answer — a vault registered in
+      // the file after this session started is in neither, so the pointer
+      // round 16 added led nowhere in the very case it was written for.
+      // (Codex, round 17.)
       parts.push(`${declared(names)} and the config file lists it, but this session's catalogue does not hold `
-        + 'it (registered after this session started, or skipped at load — list_vaults.disabled[] says '
-        + 'which): it does not answer from here until this session loads it.');
+        + 'it — registered after this session started, or skipped at load (a name collision, an identity '
+        + 'mismatch): a vault skipped at load is named in list_vaults.disabled[] with the reason, one '
+        + 'registered since is in neither list until a restart. It does not answer from here until this '
+        + 'session loads it.');
     } else if (kind === BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED) {
       parts.push(`${declared(names)} but this session has not loaded it — neither in the config file as this `
         + 'session reads it nor provided by its environment (another session\'s environment may provide '
@@ -572,7 +580,17 @@ export function registryIncoherences(raw, { bindable, sessionNames, disabled = n
   const off = outside.filter((n) => disabled.has(n));
   const stillLoaded = outside.filter((n) => !disabled.has(n) && sessionNames.has(n));
   const gone = outside.filter((n) => !disabled.has(n) && !sessionNames.has(n));
-  if (off.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: off });
+  // DISABLED SPLITS IN TWO HERE, not in the success renderer only. Round 16
+  // taught `unresolvedSecondaryFacts` that a disabled secondary this session
+  // still holds may still answer, and left the REPAIR diagnostic saying
+  // "this session must then load it (a restart) before it answers here" for
+  // the same vault — so the refusal and the success that follows it
+  // described two different availabilities of one name. One split, both
+  // renderers. (Codex, round 17.)
+  const offLoaded = off.filter((n) => sessionNames.has(n));
+  const offGone = off.filter((n) => !sessionNames.has(n));
+  if (offLoaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED_STILL_LOADED, names: offLoaded });
+  if (offGone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: offGone });
   if (stillLoaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DROPPED_STILL_LOADED, names: stillLoaded });
   if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_NOT_REGISTERED, names: gone });
   return out;
@@ -589,16 +607,12 @@ export function registryIncoherences(raw, { bindable, sessionNames, disabled = n
  * @returns {Array<{ kind: string, names: string[] }>}
  */
 export function unresolvedSecondaryFacts(raw, facts) {
-  const out = [];
-  for (const f of registryIncoherences(raw, facts).filter((x) => x.kind.startsWith('secondary-'))) {
-    if (f.kind !== BINDING_INCOHERENCE.SECONDARY_DISABLED) { out.push(f); continue; }
-    // DISABLED SPLITS IN TWO for a success: still loaded here (disabled after
-    // this session started — it may still answer) or not (Codex, round 16).
-    const loaded = f.names.filter((n) => facts.sessionNames.has(n));
-    const gone = f.names.filter((n) => !facts.sessionNames.has(n));
-    if (loaded.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED_STILL_LOADED, names: loaded });
-    if (gone.length) out.push({ kind: BINDING_INCOHERENCE.SECONDARY_DISABLED, names: gone });
-  }
+  // DISABLED ALREADY ARRIVES SPLIT — still loaded here (disabled after this
+  // session started, it may still answer) or not. Round 16 split it here, for
+  // the success sentence alone; round 17 moved the split into
+  // `registryIncoherences` so the refusal that precedes the success says the
+  // same thing about the same name.
+  const out = registryIncoherences(raw, facts).filter((x) => x.kind.startsWith('secondary-'));
   const tiers = rawSecondaryTiers(raw);
   const notLoaded = tiers
     ? tiers.also.filter((n) => facts.bindable.has(n) && !facts.sessionNames.has(n))
@@ -751,6 +765,15 @@ export function describeBindingRepair(raw, incoherences = bindingIncoherences(ra
           + 'as that list names it — registering it again or restarting lifts nothing; it is KEPT in the call '
           + 'below, tier included. Removing it from `disabledVaults` is necessary, and this session must '
           + 'then load it (a restart) before it answers here';
+      // THE SAME NAME, THE OTHER AVAILABILITY. Round 16 gave this case to the
+      // success sentence and left the refusal above claiming a restart was
+      // owed for a descriptor this session already holds (Codex, round 17).
+      case BINDING_INCOHERENCE.SECONDARY_DISABLED_STILL_LOADED:
+        return `its secondary ${listed(n)} is DISABLED by \`disabledVaults\` in this config file since this `
+          + 'session started — this session still holds its descriptor, so a call can still reach it here '
+          + '(subject to the lock and to this session\'s routing) until the next start, which will not load '
+          + 'it; it is KEPT in the call below, tier included. A NEW declaration of it is refused while that '
+          + 'list names it';
       case BINDING_INCOHERENCE.MALFORMED_ENTRY:
         return 'the entry is not an object at all (a null, a string, a list or a number where { vault, also, … } was expected)';
       case BINDING_INCOHERENCE.DUPLICATE_TIER_ENTRY:

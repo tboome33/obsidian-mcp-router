@@ -670,6 +670,8 @@ describe('--attach (CLI)', () => {
     res = run(sc, ['--link-workspace', sc.ws, 'other']);
     assert.notEqual(res.status, 0, res.out);
     assert.match(res.out, /"other" is a secondary this workspace holds as LOCKED read-only/);
+    // ROUND 17 — the promotion refusal says the same about the hint.
+    assert.match(res.out, /the portable hint in the workspace's \.env was already written/);
     // A third vault to move to.
     const third = makeVault(sc.root, 'THIRD');
     const cfg3 = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
@@ -716,6 +718,13 @@ describe('--attach (CLI)', () => {
     assert.match(res.out, /names no usable primary vault/);
     assert.match(res.out, /confirm_workspace_binding\(\{ vault: "<the primary vault you intend>", also: \["other"\], ifBindingDigest: "[0-9a-f]{64}" \}\)/);
     assert.equal(fs.readFileSync(sc.configPath, 'utf8'), before, 'the refused attach rewrote the entry');
+    // ROUND 17 — "nothing was recorded there" is true of the CONFIG and of
+    // nothing else: both commands write the portable `.env` hint before this
+    // lock opens, so a reader who takes the refusal for "nothing happened"
+    // is wrong about the workspace they are standing in.
+    assert.match(res.out, /the portable hint in the workspace's \.env was already written/);
+    assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/,
+      'the hint the refusal mentions must actually be there');
   });
 
   test('tells the user the secondary is not auto-loaded', () => {
@@ -870,6 +879,126 @@ describe('--attach refusals', () => {
     const res = run(sc, ['--attach', 'myvault']);
     assert.equal(res.status, 1);
     assert.match(res.out, /no vaults in portRegistry/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 17 — the writers of one record must not disagree about one name
+// ---------------------------------------------------------------------------
+
+describe('the CLI writers judge names as the tools do (round 17)', () => {
+  test('--link-workspace refuses a primary the FILE cannot bind — the check round 16 gave only to --attach', () => {
+    // R108 claimed "the names are judged by the file inside the lock" for the
+    // writers. `--attach` got the check; `--link-workspace` — the other half
+    // of the same pair, and the one the bootstrap flag calls — never had it,
+    // so a vault the config disables (or a sibling removed from
+    // `portRegistry` between the resolution and the lock) was recorded as the
+    // primary under "Linked workspace … workspaceBindings: <name> (this is
+    // what decides)". The next start cannot resolve it. (Codex, round 17, C4.)
+    const sc = makeScenario();
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.disabledVaults = [sc.paths.myvault]; // by PATH, as the loader accepts
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--link-workspace', sc.ws, 'myvault'], { cwd: sc.root });
+    assert.equal(res.status, 1, res.out);
+    assert.match(res.out, /is no longer a vault the config file can bind/);
+    const after = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    assert.equal(after.workspaceBindings?.[canonicalWorkspaceKey(sc.ws)], undefined,
+      'a binding was recorded to a name the file cannot bind');
+    // AND THE REFUSAL SAYS WHAT DID HAPPEN: the portable hint is written
+    // before this lock opens, so "nothing was recorded" is true of the config
+    // and of nothing else (round 17).
+    assert.match(res.out, /the portable hint in .*\.env WAS written/);
+    assert.match(wsFiles(sc.ws).env, /OBSIDIAN_ROUTER_DEFAULT_VAULT=myvault/);
+  });
+
+  test('--attach KEEPS a declared secondary the file disables, as confirm_workspace_binding does', () => {
+    // Round 16 gave `--attach` a name check over `[primary, ...secondaries]`
+    // with no exemption, while `assertBindable` exempts a secondary the entry
+    // ALREADY declares (`i > 0 && keptFromEntry.has(n)`). So the tool kept a
+    // declared-then-disabled secondary and the CLI refused the same name,
+    // telling the user it was "removed or disabled since it was resolved" —
+    // a chronology nothing established — and leaving them to drop the
+    // declaration and its strict tier to get the command through. (Codex,
+    // round 17, C4b.)
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.disabledVaults = ['other'];
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], alsoLocked: ['other'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.equal(res.status, 0, res.out);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.deepEqual(entry.also, ['other'], 'the declared secondary was dropped by the CLI');
+    assert.deepEqual(entry.alsoLocked, ['other'], 'and its strict tier went with it');
+  });
+
+  test('--attach still refuses a NEW secondary the file disables — the exemption is for what is declared', () => {
+    const sc = makeScenario({ vaults: ['MYVAULT', 'OTHER', 'THIRD'] });
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.disabledVaults = ['third'];
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'myvault', '--also', 'third']);
+    assert.equal(res.status, 1, res.out);
+    assert.match(res.out, /"third" is not a vault the config file can bind/);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.deepEqual(entry.also, ['other'], 'the refused call must leave the entry alone');
+  });
+
+  test('--attach refuses a disabled PRIMARY even when the entry declares it as a secondary', () => {
+    // The exemption is `i > 0`: keeping a name is not promoting it.
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.disabledVaults = ['other'];
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'other']);
+    assert.equal(res.status, 1, res.out);
+    assert.match(res.out, /"other" is not a vault the config file can bind as the primary/);
+  });
+
+  test('--attach that swaps the roles LIFTS the workspace lock, and says so — no name disappears', () => {
+    // `attachDropped` compares names only. `--attach other --also myvault`
+    // over `{ vault: myvault, also: [other], locked: true }` keeps both names,
+    // so nothing was reported — while the binding came back with
+    // `locked: false` and every declared vault answered again. The isolation
+    // boundary the user had persisted, lifted in silence. (Codex, round 17, C8.)
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], locked: true, confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'other', '--also', 'myvault']);
+    assert.equal(res.status, 0, res.out);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.vault, 'other');
+    assert.equal(entry.locked, false, 'the lock belonged to the previous primary');
+    assert.match(res.out, /LIFTED this workspace's lock/);
+    assert.match(res.out, /locked to "myvault"/);
+    assert.match(res.out, /lock_vault/);
+  });
+
+  test('a re-attach to the SAME primary keeps the lock and says nothing about lifting it', () => {
+    const sc = makeScenario();
+    const key = canonicalWorkspaceKey(sc.ws);
+    const cfg = JSON.parse(fs.readFileSync(sc.configPath, 'utf8'));
+    cfg.workspaceBindings = { [key]: { vault: 'myvault', also: ['other'], locked: true, confirmedVia: 'tool' } };
+    fs.writeFileSync(sc.configPath, JSON.stringify(cfg, null, 2));
+
+    const res = run(sc, ['--attach', 'myvault', '--also', 'other']);
+    assert.equal(res.status, 0, res.out);
+    const entry = JSON.parse(fs.readFileSync(sc.configPath, 'utf8')).workspaceBindings[key];
+    assert.equal(entry.locked, true);
+    assert.doesNotMatch(res.out, /LIFTED this workspace's lock/);
   });
 });
 

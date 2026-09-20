@@ -29,6 +29,8 @@ import { applyLockGuard, validateLock, validateAutoEnrichMode } from '../src/ind
 import { buildDefaultVaultStatus } from '../src/tools/list-vaults.mjs';
 import { canonicalWorkspaceKey } from '../src/helpers/workspace-bindings.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
+import { disabledSinceStart, DISABLED_SINCE_START } from '../src/helpers/vault-slug.mjs';
+import { blankStringsAndComments } from './_source-scan.mjs';
 
 const { normalizePathForCompare, resolveDefaultVault, defaultNameFromPath, pathBasename } = _internals;
 const { upsertDotenvVar, removeDotenvVar } = lockInternals;
@@ -1609,7 +1611,7 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(r.persisted, false);
     // WHICH lock the host holds is said: the one lifted came from the binding
     // (round 16 — "this lock came from the host" named a binding lock).
-    assert.match(r.message, /The lock just lifted came from the binding, but the host also declares one[\s\S]*OBSIDIAN_ROUTER_LOCKED=alpha[\s\S]*WILL come back at the next start/);
+    assert.match(r.message, /The lock just lifted came from the binding, but the host also declares one[\s\S]*OBSIDIAN_ROUTER_LOCKED=alpha[\s\S]*comes back at the next start, for as long as that variable is set/);
     assert.doesNotMatch(r.message, /This lock came from the host/);
     assert.doesNotMatch(r.message, /will not come back on restart/);
   });
@@ -1768,13 +1770,109 @@ describe('lockVault / unlockVaults — tool handlers', () => {
     assert.equal(r.hostReimposes, true);
     assert.equal(r.persisted, false, '"survives a restart" is false when the host re-imposes the lock');
     assert.match(r.message, /came from the host/);
-    assert.match(r.message, /WILL come back at the next start/);
+    // "WILL come back" was a certainty about a start-up this call cannot see:
+    // the variable may be unset, and the vault it names may be disabled or
+    // gone by then. The condition is said instead (round 17).
+    assert.match(r.message, /comes back at the next start, for as long as that variable is set and the vault it names is loaded and reachable then/);
     assert.doesNotMatch(r.message, /will not come back on restart/);
 
     // And the volatile form says the same thing in fewer words.
     const reg2 = { ...makeRegistry(), lockedVault: 'alpha', lockSource: { origin: 'host', variable: 'OBSIDIAN_ROUTER_LOCKED' } };
     const r2 = await unlockVaults(reg2, {});
-    assert.match(r2.message, /came from the host .* will come back on restart/);
+    assert.match(r2.message, /came from the host .* comes back on restart while that variable is set/);
+  });
+
+  test('unlock_vaults: a VOLATILE lock this session set is not called "the binding" when a host lock exists', async () => {
+    // Round 16 split the host message on `liftedCameFromHost` alone, so every
+    // other origin became "the binding" — including `runtime`, the origin
+    // `lock_vault` itself sets. The user reads that their CONFIG held a lock
+    // they never persisted. (Codex, round 17.)
+    const configPath = path.join(tmpDir, 'runtime-vs-binding-config.json');
+    await fs.writeFile(configPath, JSON.stringify({ portRegistry: {} }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const prev = process.env.OBSIDIAN_ROUTER_LOCKED;
+    process.env.OBSIDIAN_ROUTER_LOCKED = 'alpha';
+    try {
+      const reg = {
+        ...makeRegistry(),
+        configPath,
+        vaults: [{ name: 'alpha' }],
+        // This session called lock_vault: the origin is `runtime`, not `binding`.
+        lockedVault: 'beta',
+        lockSource: { origin: 'runtime', variable: null },
+      };
+      const prevCwd = process.cwd();
+      process.chdir(tmpDir);
+      let r;
+      try { r = await unlockVaults(reg, { persist: true }); } finally { process.chdir(prevCwd); }
+      assert.equal(r.hostReimposes, true, 'the host declares a lock on a vault this session can reach');
+      assert.match(r.message, /came from this session \(lock_vault\)/);
+      assert.doesNotMatch(r.message, /just lifted came from the binding/);
+
+      // The volatile form carries the same distinction.
+      const reg2 = {
+        ...makeRegistry(),
+        configPath,
+        vaults: [{ name: 'alpha' }],
+        lockedVault: 'beta',
+        lockSource: { origin: 'runtime', variable: null },
+      };
+      const r2 = await unlockVaults(reg2, {});
+      assert.match(r2.message, /the lock just lifted came from this session/);
+      assert.doesNotMatch(r2.message, /this lock came from the host/);
+    } finally {
+      if (prev === undefined) delete process.env.OBSIDIAN_ROUTER_LOCKED;
+      else process.env.OBSIDIAN_ROUTER_LOCKED = prev;
+    }
+  });
+
+  test('the host prediction is made on the binding this call LEAVES, not the one it replaces', async () => {
+    // `isVaultReachable` answers from the workspace's binding, and the
+    // persisted unlock ADOPTS the file's binding on its way through
+    // (`recordLockInBinding` writes, then takes the file's entry). Round 16
+    // computed the prediction before that write: a host candidate the OLD
+    // binding did not declare was judged unreachable, "persisted: true",
+    // "will not come back on restart" — and the next start re-imposed it,
+    // because by then the workspace was bound to it. (Codex, round 17, D.)
+    const configPath = path.join(tmpDir, 'host-after-adoption.json');
+    const key = canonicalWorkspaceKey(tmpDir);
+    await fs.writeFile(configPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'alpha', baseUrl: 'https://a/' }, { name: 'beta', baseUrl: 'https://b/' }],
+      // THE FILE: a sibling re-bound this workspace to `beta`.
+      workspaceBindings: { [key]: { vault: 'beta', also: [], locked: true, confirmedVia: 'tool' } },
+    }), 'utf8');
+    await fs.rm(path.join(tmpDir, '.env'), { force: true });
+    const reg = {
+      ...makeRegistry(),
+      configPath,
+      vaults: [{ name: 'alpha' }, { name: 'beta' }],
+      vaultReach: 'declared',
+      openVaults: [],
+      // THIS SESSION: still on the older binding, which does not declare `beta`.
+      workspaceBinding: { vault: 'alpha', also: [], locked: true, alsoLocked: [], alsoWritable: [] },
+      lockedVault: 'alpha',
+      lockSource: { origin: 'binding', variable: null },
+      alsoLocked: [],
+      alsoWritable: [],
+    };
+    const hadEnv = Object.hasOwn(process.env, 'OBSIDIAN_ROUTER_LOCKED');
+    const prevEnv = process.env.OBSIDIAN_ROUTER_LOCKED;
+    process.env.OBSIDIAN_ROUTER_LOCKED = 'beta';
+    const prevCwd = process.cwd();
+    process.chdir(tmpDir);
+    let r;
+    try {
+      r = await unlockVaults(reg, { persist: true });
+    } finally {
+      process.chdir(prevCwd);
+      if (hadEnv) process.env.OBSIDIAN_ROUTER_LOCKED = prevEnv; else delete process.env.OBSIDIAN_ROUTER_LOCKED;
+    }
+    assert.equal(reg.workspaceBinding.vault, 'beta', 'the persisted unlock did not adopt the file\'s binding');
+    assert.equal(r.hostReimposes, true,
+      'the host candidate was judged against the binding this call replaced');
+    assert.equal(r.persisted, false, '"survives a restart" cannot be true when the host re-imposes');
+    assert.doesNotMatch(r.message, /will not come back on restart/);
   });
 });
 
@@ -2908,5 +3006,192 @@ describe('setAutoEnrichMode — homedir refusal (mirrors lock_vault E.2)', () =>
     const result = await setAutoEnrichMode(reg, { mode: 'FullAuto', persist: false });
     assert.equal(reg.autoEnrichMode, 'FullAuto');
     assert.equal(result.persisted, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "the loader skipped it as disabled" — ONE question, three doors (round 17)
+// ---------------------------------------------------------------------------
+
+describe('disabledSinceStart — one verdict for every door that asks it', () => {
+  let tmpDir;
+
+  before(async () => { tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'router-disabled-verdict-')); });
+  after(async () => { await fs.rm(tmpDir, { recursive: true, force: true }); });
+
+  test('the three verdicts, and null for a vault the loader skipped for another reason', async () => {
+    const cfgPath = path.join(tmpDir, 'verdict.json');
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: ['off'] }), 'utf8');
+    const reg = {
+      configPath: cfgPath,
+      skipped: [
+        { name: 'off', type: 'local', reason: 'disabled' },
+        { name: 'clash', type: 'local', reason: 'name-collision' },
+      ],
+    };
+    assert.equal(disabledSinceStart(reg, 'off', fsSync.readFileSync), DISABLED_SINCE_START.STILL);
+    // The file no longer names it: re-enabled since start-up (`--no-watch`).
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: [] }), 'utf8');
+    assert.equal(disabledSinceStart(reg, 'off', fsSync.readFileSync), DISABLED_SINCE_START.REENABLED);
+    // Nothing can answer: not a verdict about the file, and said as such.
+    const blind = { configPath: path.join(tmpDir, 'no-such-file.json'), skipped: reg.skipped };
+    assert.equal(disabledSinceStart(blind, 'off', fsSync.readFileSync), DISABLED_SINCE_START.UNVERIFIED);
+    // The session's own parsed copy is a reading of the file, so it answers.
+    const copy = { configPath: path.join(tmpDir, 'no-such-file.json'), config: { disabledVaults: ['off'] }, skipped: reg.skipped };
+    assert.equal(disabledSinceStart(copy, 'off', fsSync.readFileSync), DISABLED_SINCE_START.STILL);
+    // A vault skipped for a DIFFERENT reason is not this question's business.
+    assert.equal(disabledSinceStart(reg, 'clash', fsSync.readFileSync), null);
+    assert.equal(disabledSinceStart(reg, 'never-seen', fsSync.readFileSync), null);
+  });
+
+  test('lock_vault answers with the FILE, like resolveVault and list_vaults — the reader round 16 left behind', async () => {
+    // Round 16 taught `resolveVault` and `list_vaults` to re-read the file so
+    // a vault re-enabled under `--no-watch` is not "is DISABLED"; the
+    // `lock_vault` sentence that same round ADDED kept the start-up verdict,
+    // so two doors said the list no longer names it while the third demanded
+    // it be removed from that list. (Codex, round 17.)
+    const cfgPath = path.join(tmpDir, 'lock-reenabled.json');
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: [] }), 'utf8');
+    const reg = {
+      configPath: cfgPath,
+      vaults: [{ name: 'other' }],
+      skipped: [{ name: 'off', type: 'local', reason: 'disabled' }],
+      vaultReach: 'all',
+      openVaults: [],
+      workspaceBinding: null,
+    };
+    await assert.rejects(
+      () => lockVault(reg, { vault: 'off' }),
+      (e) => {
+        assert.match(e.message, /was DISABLED by `disabledVaults` when this session started/);
+        assert.match(e.message, /the config file no longer disables it/);
+        assert.doesNotMatch(e.message, /Remove it from `disabledVaults` first/);
+        return true;
+      },
+    );
+
+    // Still listed: the original sentence, unchanged.
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: ['off'] }), 'utf8');
+    await assert.rejects(
+      () => lockVault(reg, { vault: 'off' }),
+      (e) => {
+        assert.match(e.message, /it is DISABLED by `disabledVaults` in the config file/);
+        assert.match(e.message, /Remove it from `disabledVaults` first, then restart, then lock/);
+        return true;
+      },
+    );
+
+    // Unreadable: neither of the two, and the reader is told so.
+    const blind = { ...reg, configPath: path.join(tmpDir, 'gone.json'), config: undefined };
+    await assert.rejects(
+      () => lockVault(blind, { vault: 'off' }),
+      (e) => {
+        assert.match(e.message, /could not be read just now/);
+        assert.match(e.message, /unverified/);
+        return true;
+      },
+    );
+
+    // And a vault that was never skipped still gets the plain refusal.
+    await assert.rejects(
+      () => lockVault(reg, { vault: 'nowhere' }),
+      (e) => {
+        assert.match(e.message, /not in the active vault set/);
+        return true;
+      },
+    );
+  });
+
+  test('resolveVault says UNVERIFIED rather than keeping the start-up verdict in the present tense', async () => {
+    const reg = {
+      vaults: [{ name: 'other' }],
+      skipped: [{ name: 'off', type: 'local', reason: 'disabled' }],
+      configPath: path.join(tmpDir, 'absent-for-resolve.json'),
+      vaultReach: 'all',
+      openVaults: [],
+      workspaceBinding: null,
+      resolveVault: _internals.resolveVaultFor,
+    };
+    // Through a real registry, so the branch under test is the shipped one.
+    const cfgPath = path.join(tmpDir, 'resolve-reenabled.json');
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: ['off'] }), 'utf8');
+    const registry = await loadRegistry({ configPath: cfgPath });
+    // The loader skipped nothing (no vault is registered), so fake the skip
+    // the way the loader records it and ask the shipped method.
+    registry.skipped = [{ name: 'off', type: 'local', reason: 'disabled' }];
+    assert.throws(() => registry.resolveVault('off'), /is DISABLED by `disabledVaults`/);
+    await fs.writeFile(cfgPath, JSON.stringify({ portRegistry: {}, disabledVaults: [] }), 'utf8');
+    assert.throws(() => registry.resolveVault('off'), /was DISABLED by `disabledVaults` when this session started/);
+    registry.configPath = path.join(tmpDir, 'vanished.json');
+    registry.config = undefined;
+    assert.throws(() => registry.resolveVault('off'), /unverified/);
+    void reg;
+  });
+
+  test('every reader of registry.skipped goes through the one verdict — a fourth cannot arrive unnoticed', () => {
+    // The behavioural witnesses above cover the three doors that exist. This
+    // is the half that notices a NEW one. Round 16 repaired two of the three
+    // readers of this exact fact and shipped; a repair that reaches its first
+    // call sites and not the last reads as closed, which is the defect class
+    // this repository has now paid for five times.
+    const OWNER = path.join('src', 'helpers', 'vault-slug.mjs');
+    const roots = ['src', 'scripts', 'hooks', 'bin'];
+    const files = [];
+    const walk = (dir) => {
+      let entries;
+      try { entries = fsSync.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name === 'node_modules') continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/[.](mjs|cjs|js)$/.test(e.name)) files.push(p);
+      }
+    };
+    for (const r of roots) walk(r);
+    assert.ok(files.length > 50, 'the scan found suspiciously few files to read');
+
+    // Files allowed to read the loader's `skipped` list without asking the
+    // verdict, because they REPORT it rather than act on it: the start-up
+    // note names what the loader skipped, at the moment it skipped it, which
+    // is the one instant at which the start-up verdict IS the file.
+    const REPORTERS = new Set([path.join('src', 'index.mjs')]);
+    const offenders = [];
+    const readers = [];
+    const judges = [];
+    for (const f of files) {
+      const raw = fsSync.readFileSync(f, 'utf8');
+      const code = blankStringsAndComments(raw);
+      // THE VERDICT ITSELF, hand-rolled. Read from the RAW source: blanking
+      // erases the string's content, so the literal has to be looked for
+      // before it is blanked (the lesson of the OBSIDIAN_ROUTER_LOCKED scan,
+      // whose bracket branch was dead for a whole round).
+      if (/reason\s*===\s*(['"])disabled\1/.test(raw)) {
+        judges.push(path.normalize(f));
+        if (path.normalize(f) !== OWNER) offenders.push(`${f}: decides "skipped as disabled" by hand`);
+      }
+      // THE LOADER'S OWN LIST, by the names the registry object goes by here.
+      if (/\b(registry|reg|this)\.skipped\b/.test(code)) {
+        readers.push(path.normalize(f));
+        // A CALL, not merely an import: a file that imports the helper and
+        // then answers the question itself would otherwise pass this scan on
+        // the strength of a line it does not use.
+        if (path.normalize(f) !== OWNER
+          && !REPORTERS.has(path.normalize(f))
+          && !/disabledSinceStart\s*\(/.test(code)
+          && !/liveDisabledVaultNames\s*\(/.test(code)) {
+          offenders.push(`${f}: reads the loader's \`skipped\` without asking ${OWNER}`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [], `readers of \`skipped\` that answer the disabled question themselves:\n${offenders.join('\n')}`);
+    // POSITIVE CONTROL: the scan must actually be finding something, or it
+    // passes by finding nothing — the failure mode that let a class defect
+    // sit at 211/211 green in an earlier lot.
+    assert.deepEqual(judges, [OWNER], 'the verdict is decided somewhere other than its owner, or the scan finds nothing');
+    assert.ok(
+      readers.includes(path.join('src', 'tools', 'list-vaults.mjs')),
+      'the scan no longer sees list_vaults reading the loader\'s skipped list — it is looking for the wrong thing',
+    );
+    assert.ok(readers.length >= 2, 'the scan found fewer readers than the doors that exist');
   });
 });
