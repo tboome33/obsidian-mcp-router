@@ -262,6 +262,11 @@ const NETWORK_PLUGIN_ALLOWLIST = new Set([
   'templater-obsidian',
   'obsidian-livesync',
   'smart-connections',
+  // Smart Lookup: the search half of Smart Connections, split out into its own
+  // plugin at Smart Connections 4.7. Same author, same `.smart-env` index —
+  // without it here, a vault synced from a network archive would get the
+  // connections panel and lose the search window.
+  'smart-lookup',
   'hot-reload',
 ]);
 // --- Plugin clone list: DERIVED from the source, not a hardcoded constant ---
