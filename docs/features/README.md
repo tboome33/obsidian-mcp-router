@@ -33,7 +33,7 @@ Presque tout ce que fait le router est accessible par trois chemins équivalents
 | 8 | [Graphe de connaissances](08-graphe-de-connaissances.md) | Construire et interroger le graphe du wiki : communautés, visites guidées, voisins d'une page, chemin entre deux pages. |
 | 9 | [Export et interopérabilité](09-export-et-interoperabilite.md) | Sortir le savoir du vault : export `llms.txt`, bundles OKF (Open Knowledge Format), validation de conformité. |
 | 10 | [Liens et navigation](10-liens-et-navigation.md) | Des liens qui ouvrent vraiment Obsidian : click-to-open, ouverture côté serveur, view links et smart links pour les vaults distants. |
-| 11 | [Sécurité et isolation](11-securite-et-isolation.md) | Le mode lock mono-vault, le multi-tenant (whitelist, lecture seule, audit), les gardes réseau et les garde-fous anti-accident. |
+| 11 | [Sécurité et isolation](11-securite-et-isolation.md) | Le mode lock mono-vault, le multi-tenant (whitelist, lecture seule, audit), les gardes réseau, la **réparation d'une liaison** (ce qu'elle garde, et depuis un terminal) et les garde-fous anti-accident. |
 | 12 | [Hooks et automatisations](12-hooks-et-automatisations.md) | Les 9 hooks Claude Code qui journalisent, rechargent le contexte, vérifient les liens et gardent la doc synchrone — automatiquement. |
 | 13 | [Installation et administration](13-installation-et-administration.md) | Installer le router, créer et attacher des vaults (wizard), diagnostiquer, synchroniser le vault de référence, conventions, mises à jour, déploiement serveur. |
 
