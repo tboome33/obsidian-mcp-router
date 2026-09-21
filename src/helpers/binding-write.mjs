@@ -189,7 +189,16 @@ export function planBindingWrite(ctx, { mode, primary, also = [], locked, confir
   // to its own clock, and the approved plan named a date the write did not
   // use. A silent degradation to the clock is exactly the hole the sealed date
   // was added to close. (Codex, round 8.)
-  if (confirmedAt !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(confirmedAt))) {
+  //
+  // `typeof` FIRST, AND THAT IS NOT PEDANTRY. The check was
+  // `!/…/.test(String(confirmedAt))`, and `String(["2000-01-01"])` is
+  // `"2000-01-01"` — so a one-element ARRAY passed validation, travelled into
+  // the plan and the sealed core, was then dropped by `normalizeBinding`
+  // (which takes strings only), and `withBinding` fell back to its own clock.
+  // The exact silent degradation this guard was written to stop, through the
+  // coercion inside the guard. (Codex, round 10.)
+  if (confirmedAt !== undefined
+    && (typeof confirmedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(confirmedAt))) {
     throw new TypeError(
       'planBindingWrite: `confirmedAt`, when given, must be a YYYY-MM-DD date — omit it to let the writer '
       + 'stamp today, but do not pass an empty or malformed one, which would silently become that.',
@@ -307,9 +316,17 @@ export function planBindingWrite(ctx, { mode, primary, also = [], locked, confir
     promoted,
     // The old primary, kept but no longer primary. Its own fact, like
     // `promoted`, and for the same reason: `droppedSecondaries` cannot carry
-    // it (it was never a secondary), and the role change is a RESTRICTION
-    // worth stating — a primary is read-write, a secondary with no tier is
-    // read-only unless the user confirms each write.
+    // it (it was never a secondary), and the ROLE change is worth stating on
+    // its own. NOT "a restriction": a primary is unconditionally read-write,
+    // while a secondary's access is decided by the binding's tier lists AND
+    // the config's global ones. The role always changes; the access may not.
+    //
+    // NO EXAMPLE HERE, on purpose. This comment used to add "so a global
+    // `alsoWritable` leaves the write access exactly as it was" — which is
+    // false the moment a global `alsoLocked` names the same vault, strict
+    // winning over writable. It repeated, as an affirmative explanation, the
+    // exact precedence error the sentence had just been repaired for.
+    // (Codex, rounds 10 and 12.)
     demoted: demotedPrimary ? { vault: demotedPrimary, tier: 'soft' } : null,
     lockedFrom: typeof locked === 'boolean' ? 'argument' : (carried ? (ctx?.previous ? 'binding' : 'rawEntry') : 'none'),
     // Property 2: a lock that was recorded, is kept, and now names a vault
@@ -445,9 +462,12 @@ export function describeBindingWriteEffects(
   const out = [];
   if (plan?.demoted) {
     // KEPT, BUT NOT UNCHANGED. Saying only "it is kept" would be as misleading
-    // as the silent drop it replaces: a primary is read-write, and a secondary
-    // with no tier of its own is read-only unless the user confirms each
-    // write. The name survives; the access narrows.
+    // as the silent drop it replaces: the name survives, the ROLE does not,
+    // and a role is not a detail — a primary is unconditionally read-write,
+    // where a secondary is whatever the tier lists say. What that does to the
+    // write access is conditional, and the sentence says so rather than
+    // guessing. (This comment used to end "the access narrows", which is
+    // false under a global `alsoWritable`.)
     // WHAT IT SAYS IS THE **LOCAL** FACT, and that distinction is the whole
     // lot. The first version said the demoted primary becomes "read-only
     // unless you confirm each write" — the SOFT tier — which is only true
@@ -456,13 +476,47 @@ export function describeBindingWriteEffects(
     // strict, where no confirmation can authorise a write. The sentence
     // asserted an EFFECTIVE tier from a LOCAL absence, which is the exact
     // confusion `keep()` exists to prevent. (Codex, review of the demotion.)
+    //
+    // THIS SENTENCE STOPPED ENUMERATING OUTCOMES, and that is the repair —
+    // the fourth attempt at it, and the first structural one.
+    //
+    // Three rounds in a row caught it over-promising, each time for a
+    // different missing fact: it asserted the soft tier (wrong under a global
+    // rule); then "not the same access" (wrong under a global `alsoWritable`,
+    // where the access is identical); then it enumerated the three global
+    // cases and still got it wrong twice — it said "a global `alsoWritable`
+    // leaves it writable" without the strict precedence that wins when BOTH
+    // global lists name the vault, and "nothing changes for writes" while the
+    // moved lock was about to stop that vault answering at all.
+    //
+    // The pattern is not a wording problem. `planBindingWrite` does not have
+    // the config's global lists, so it cannot know what a vault that BECOMES A
+    // SECONDARY may do — that is the one case `alsoWriteTierFor` decides with
+    // them. This sentence therefore states only what the transform computes —
+    // the role, and the absence of a LOCAL tier — and names what decides the
+    // rest without predicting it. The CLI computes and prints that tier, for
+    // exactly these vaults.
+    //
+    // THE PROHIBITION IS THAT NARROW, and saying it wider was itself wrong:
+    // the lock, drop and promotion sentences DO predict outcomes and are right
+    // to, because `alsoWriteTierFor` answers null for a primary and for a
+    // non-secondary BEFORE it looks at the global lists. A transform that
+    // computes `lockedOut` really does know that no other vault answers.
+    // (Codex, rounds 9 to 13 — the last one refuting the over-broad version
+    // of this very comment.)
     out.push(
       `${quote(plan.demoted.vault)} was this workspace's PRIMARY and ${become()} a SECONDARY — kept, first in `
-      + '`also`, with no write tier OF ITS OWN. That is not the same access: a primary is always read-write, '
-      + 'while a secondary\'s access is decided by this binding\'s tier lists AND the config\'s global ones. '
-      + 'With no local tier and no global rule naming it, it is read-only unless you confirm each write; a '
-      + 'global `alsoWritable` makes it writable, a global `alsoLocked` makes it strict. '
-      + 'set_secondary_vault_mode records a local tier if you want to decide it here.',
+      + '`also`, with no write tier OF ITS OWN. A primary is unconditionally read-write; a secondary is not, '
+      + 'and what it may do is NOT decided here: the effective write tier is computed from this binding\'s '
+      + 'tier lists together with the config\'s GLOBAL ones (strict anywhere wins), and whether the vault '
+      + 'answers at all depends besides on the lock and on whether the session loaded it. '
+      // NOT "record a local tier to decide it HERE rather than globally":
+      // a global `alsoLocked` beats a local `alsoWritable`, so recording a
+      // local tier does not take the decision back from the global rules — it
+      // adds one more input to the same precedence. The remedy sentence was
+      // promising control the mechanism does not give. (Codex, round 12.)
+      + 'set_secondary_vault_mode records a LOCAL tier for it, which is then combined with the global rules '
+      + 'under that same precedence — it adds an input, it does not take the decision back.',
     );
   }
   if (plan?.promoted) {

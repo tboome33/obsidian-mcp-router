@@ -131,6 +131,12 @@ L'ancien principal rejoint désormais `also`, **en tête**, sans palier propre �
 
 Un ancien principal que le fichier ne sait plus lier est conservé lui aussi — un nom que l'entrée tient est gardé — et **signalé** : désactivé et absent reçoivent des remèdes opposés (réenregistrer ne lève rien pour un désactivé), et le texte dit ce que la conservation préserve vraiment : un rattachement **futur** par ce nom, pas une archive inerte.
 
+### Un refus de promotion nomme le remède qui marche
+
+Tout refus de « ce secondaire strict ne peut pas devenir principal » se terminait par *change son palier d'abord avec `set_secondary_vault_mode`*. Cet outil écrit un palier sur la **liaison**, et un palier local ne bat jamais l'`alsoLocked` **global** de la configuration : le strict l'emporte où qu'il soit. Quand le verrou venait du global, suivre le conseil ramenait donc au même refus, pour la même raison, avec le même conseil.
+
+Le remède dépend désormais de l'**origine** du palier strict — local, global, ou les deux — et une seule fonction le rend pour tous les refus : changer le palier local quand il est local, retirer le vault de l'`alsoLocked` global quand il est global, les deux quand il est aux deux endroits.
+
 ### Question 4(b), tranchée : non
 
 Un secondaire tenu en lecture seule **stricte** n'est jamais promu principal. La mesure qui a tranché : l'autoriser ne lèverait pas la protection une fois, cela l'**effacerait**.

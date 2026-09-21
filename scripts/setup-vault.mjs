@@ -57,7 +57,12 @@ import {
   bindingRepairPlanCore,
   BINDING_REPAIR_OP,
 } from '../src/helpers/binding-repair-plan.mjs';
-import { isPromotionOfLockedSecondaryOnDisk, PROMOTION_REFUSED_CODE } from '../src/helpers/vault-reach.mjs';
+import {
+  isPromotionOfLockedSecondaryOnDisk,
+  lockedSecondaryTierSource,
+  lockedSecondaryPromotionRemedy,
+  PROMOTION_REFUSED_CODE,
+} from '../src/helpers/vault-reach.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
 import { snapshotConfig, mergeConfigOntoDisk } from '../src/helpers/config-merge.mjs';
@@ -2342,12 +2347,18 @@ function refuseIncoherentEntry(cfg, workspacePath, command) {
   throw err;
 }
 
-function promotionRefusal(slug) {
+// `source` IS WHERE THE STRICT TIER LIVES, because the remedy depends on it.
+// This message used to end "Change its tier first with set_secondary_vault_
+// mode" unconditionally — false whenever the lock is the config's GLOBAL one,
+// which that tool does not touch and which a binding-local tier never beats.
+// The same false advice stood at three sites; one predicate now answers for
+// all of them. (Codex, round 13.)
+function promotionRefusal(slug, source = null) {
   const err = new Error(
     `"${slug}" is a secondary this workspace holds as LOCKED read-only (alsoLocked), and making it the primary ` +
     'would lift that restriction in one call. Nothing was recorded in the router config — the portable hint in ' +
-    "the workspace's .env was already written and now names it, which decides nothing on its own. Change its " +
-    'tier first with set_secondary_vault_mode, or choose another primary.',
+    "the workspace's .env was already written and now names it, which decides nothing on its own. " +
+    lockedSecondaryPromotionRemedy(source),
   );
   err.code = PROMOTION_REFUSED_CODE;
   return err;
@@ -2448,8 +2459,9 @@ function linkWorkspaceToVault({ workspacePath, vaultPath, vaultSlug, opts = {} }
         const same = previous && previous.vault === vaultSlug;
         // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND EITHER — the
         // promotion the tools refuse (round 16, W2).
-        if (!same && isPromotionOfLockedSecondaryOnDisk(vaultSlug, previous, cfg)) {
-          throw promotionRefusal(vaultSlug);
+        const strictFrom = same ? null : lockedSecondaryTierSource(vaultSlug, previous, cfg);
+        if (strictFrom) {
+          throw promotionRefusal(vaultSlug, strictFrom);
         }
         if (previous && !same) dropped = { also: previous.also, alsoLocked: previous.alsoLocked, alsoWritable: previous.alsoWritable, locked: previous.locked };
         // The write tier of each secondary that STAYS (Phase 3, per-workspace
@@ -2795,7 +2807,10 @@ export function attachWorkspace({ workspacePath, primarySlug, alsoSlugs = [], op
       }
       const also = secondaries.map((s) => s.slug);
       // A STRICT SECONDARY IS NOT MADE PRIMARY BY THIS COMMAND (round 16, W2).
-      if (isPromotionOfLockedSecondaryOnDisk(primary.slug, previous, cfg)) throw promotionRefusal(primary.slug);
+      {
+        const strictFrom = lockedSecondaryTierSource(primary.slug, previous, cfg);
+        if (strictFrom) throw promotionRefusal(primary.slug, strictFrom);
+      }
       // The previous PRIMARY too: unlike `lock_vault --persist`, this command
       // does not carry it over as a secondary.
       attachDropped = previous ? [previous.vault, ...previous.also].filter((n) => !also.includes(n) && n !== primary.slug) : [];
@@ -6183,7 +6198,14 @@ if (args[0] === '--repair-binding') {
       : preview.blocked === 'promotion-refused'
       // Two explicit acts, never one — the rule the tools have held since
       // round sixteen, and question 4(b) does not reopen it from here.
-      ? 'Choose another primary, or change that vault\'s tier first with set_secondary_vault_mode.'
+      //
+      // THE REMEDY DEPENDS ON WHERE THE STRICT TIER LIVES. "Change its tier
+      // with set_secondary_vault_mode" is false advice whenever the lock is
+      // the config's GLOBAL one: that tool writes a binding-local tier, and a
+      // local tier never beats a global one, so following it left the
+      // operator refused a second time by the same guard for the same reason.
+      // One predicate answers it for every refusal. (Codex, round 13.)
+      ? lockedSecondaryPromotionRemedy(preview.promotionBlockedBy)
       // The remaining verdicts all concern an entry that EXISTS — absence is
       // caught above — so there is no "no entry" branch here. One would be
       // dead code, and dead code reads as coverage.
@@ -6325,12 +6347,24 @@ if (args[0] === '--repair-binding') {
         ? `${preview.promoted.vault}'s SECONDARY role and its ${preview.promoted.tier} tier, because you made `
           + 'it the primary — a tier qualifies a secondary, and a primary is read-write'
         : null,
-      // The old primary keeps its NAME (it is demoted, not dropped), but not
-      // its access. An exception to "keeps what the entry holds" that is about
-      // the ROLE rather than the name.
+      // The old primary keeps its NAME (it is demoted, not dropped) but not
+      // its ROLE — an exception to "keeps what the entry holds" that is about
+      // the role rather than the name. NOT "but not its access": under a
+      // global `alsoWritable` the write access is identical before and after,
+      // and this line is in no position to know. The effective tier is
+      // printed above; this one says what changed in the ENTRY.
+      // (Codex, round 11.)
       preview.demoted
-        ? `${preview.demoted.vault}'s PRIMARY role: it is KEPT, as a secondary with no tier, because you chose `
-          + 'another primary — read-only unless you confirm each write, where a primary is read-write'
+        // NO EFFECTIVE-ACCESS CLAIM HERE. This line said "read-only unless you
+        // confirm each write" — the SOFT outcome — which is the exact claim
+        // the previous round removed from the shared sentence and left
+        // standing here. Both then fired in one preview with incompatible
+        // instructions. The role and the absence of a LOCAL tier are stated
+        // once, here; what that means for write access is the shared
+        // sentence's job, because only it says the conditional truth.
+        // (Codex, round 10 — a repair that reached one of two sites.)
+        ? `${preview.demoted.vault}'s PRIMARY role: it is KEPT, as a secondary with no tier OF ITS OWN, because `
+          + 'you chose another primary. See the consequences below for what that means for write access'
           // THE PRECONDITION OF THE CARRY, said. Keeping a name the config
           // cannot bind is the round-13 rule and is deliberate, but calling it
           // a conservation without qualifying it would be a half-truth.
@@ -6476,11 +6510,15 @@ if (args[0] === '--repair-binding') {
         // the raw entry when the repaired reading is null, which is precisely
         // the entry a repair is for (round 11).
         guardPromotion: ({ source }) => {
-          if (isPromotionOfLockedSecondaryOnDisk(fresh.primary, source, cfg)) {
+          // THE SAME PREDICATE AS THE PREVIEW, and the same remedy: a refusal
+          // that recommends a local tier change a global lock ignores sends
+          // the operator round the loop once for nothing.
+          const strictFrom = lockedSecondaryTierSource(fresh.primary, source, cfg);
+          if (strictFrom) {
             const err = new Error(
               `--repair-binding: "${fresh.primary}" is a secondary this workspace holds as LOCKED read-only ` +
               '(alsoLocked), and making it the primary would lift that restriction in one command. Nothing was ' +
-              'written. Choose another primary, or change its tier first with set_secondary_vault_mode.',
+              `written. ${lockedSecondaryPromotionRemedy(strictFrom)}`,
             );
             err.code = PROMOTION_REFUSED_CODE;
             throw err;
@@ -6526,6 +6564,18 @@ if (args[0] === '--repair-binding') {
     info(`  recorded refusal(s) dropped (binding a vault is adopting it): ${appliedPlan.refusalsDropped.join(', ')}`);
   }
   for (const s of repairEffects(applied, 'stored')) info(`  ${s}`);
+  // THE EFFECTIVE TIERS AS THEY ARE **NOW**, printed here and not only in the
+  // preview. The consequence sentences say the effective tier is computed
+  // from the global lists — which are deliberately OUTSIDE the seal, so they
+  // can legitimately have moved between the dry-run and this apply. Telling
+  // the operator to go and read the tier, while printing it only in a plan
+  // that may now be out of date, sends them to the wrong answer. It is
+  // re-derived from the config the write just used. (Codex, round 12.)
+  if (appliedPlan.effectiveTiers.length) {
+    info('  effective write tiers now (entry + the config\'s GLOBAL lists, re-read for this write — the');
+    info('    global lists are not sealed, so these can differ from what the --dry-run showed):');
+    for (const t of appliedPlan.effectiveTiers) info(`      ${t.vault}: ${t.tier}`);
+  }
   console.log('');
   info(RUNNING_SESSION_NOTE);
   process.exit(0);

@@ -270,6 +270,61 @@ export function isPromotionOfLockedSecondaryOnDisk(vaultName, binding, cfg) {
 }
 
 /**
+ * WHERE the strict tier that blocks a promotion comes from — and therefore
+ * which remedy is true.
+ *
+ * Every refusal of this promotion used to end with "change its tier first with
+ * set_secondary_vault_mode". That tool records a tier on the BINDING, and a
+ * binding-local tier does not beat a GLOBAL `alsoLocked`: `alsoWriteTierFor`
+ * checks strict in either list before it checks writable in either. So the
+ * advice was false whenever the strict tier was the config's, and following it
+ * left the operator refused a second time by the same guard, for the same
+ * reason, with the same advice.
+ *
+ * One predicate, so every refusal can name the right remedy instead of each
+ * guessing. (Codex, review round 13 — a precedence correction that had reached
+ * the demotion renderer and not the refusals.)
+ *
+ * @param {string} vaultName
+ * @param {object|null} binding the workspace's binding, as read inside the lock
+ * @param {object} cfg the parsed config
+ * @returns {'local'|'global'|'both'|null} null when nothing blocks
+ */
+export function lockedSecondaryTierSource(vaultName, binding, cfg) {
+  if (!isPromotionOfLockedSecondaryOnDisk(vaultName, binding, cfg)) return null;
+  const local = Array.isArray(binding?.alsoLocked) && binding.alsoLocked.includes(vaultName);
+  const global = alsoLockedEntries(cfg).includes(vaultName);
+  if (local && global) return 'both';
+  return local ? 'local' : 'global';
+}
+
+/**
+ * The remedy that is TRUE for that source, in one place so four refusals
+ * cannot give four answers.
+ *
+ * @param {'local'|'global'|'both'|null} source
+ * @returns {string}
+ */
+export function lockedSecondaryPromotionRemedy(source) {
+  if (source === 'local') {
+    return 'That strict tier is recorded on THIS WORKSPACE\'S BINDING, so set_secondary_vault_mode can change '
+      + 'it — do that first, in its own act, or choose another primary.';
+  }
+  if (source === 'global') {
+    return 'That strict tier comes from the config\'s GLOBAL `alsoLocked`, which set_secondary_vault_mode does '
+      + 'NOT touch: a binding-local tier never beats a global one, so changing it here would leave this refusal '
+      + 'exactly where it is. Remove the vault from the global `alsoLocked` in config.json, or choose another '
+      + 'primary.';
+  }
+  if (source === 'both') {
+    return 'That strict tier is recorded BOTH on this workspace\'s binding and in the config\'s GLOBAL '
+      + '`alsoLocked`. Both have to go — set_secondary_vault_mode for the first, an edit of config.json for '
+      + 'the second — or choose another primary.';
+  }
+  return 'Choose another primary.';
+}
+
+/**
  * The error code carried by a promotion refusal, so that a caller which
  * swallows every other failure of a best-effort config write (`lock_vault`'s
  * `recordLockInBinding` returns `null` for "the config could not be written")

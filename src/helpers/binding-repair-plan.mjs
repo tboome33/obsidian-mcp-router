@@ -80,7 +80,11 @@ import {
   BINDING_INCOHERENCE,
 } from './workspace-bindings.mjs';
 import { readBindingWriteContext, planBindingWrite, BINDING_WRITE_MODE } from './binding-write.mjs';
-import { isPromotionOfLockedSecondaryOnDisk, alsoWriteTierFor } from './vault-reach.mjs';
+import {
+  isPromotionOfLockedSecondaryOnDisk,
+  lockedSecondaryTierSource,
+  alsoWriteTierFor,
+} from './vault-reach.mjs';
 import { disabledVaultNames, alsoLockedEntries, alsoWritableEntries } from './vault-slug.mjs';
 
 /** The operation tag folded into every seal of this kind. */
@@ -306,10 +310,19 @@ export function planBindingRepair(cfg, cwd, {
   // repaired reading is null, which is precisely the entry a repair is for).
   // Question 4(b) of the decision page stays where it was: refused since round
   // sixteen, and opening a terminal route does not reopen it.
-  if (isPromotionOfLockedSecondaryOnDisk(primary, ctx.source, cfg)) {
-    return blocked('promotion-refused',
-      `"${primary}" is a secondary this workspace holds as LOCKED read-only (alsoLocked), and making it the `
-      + 'primary would lift that restriction in one command');
+  const strictFrom = lockedSecondaryTierSource(primary, ctx.source, cfg);
+  if (strictFrom) {
+    return {
+      ...blocked('promotion-refused',
+        `"${primary}" is a secondary this workspace holds as LOCKED read-only (alsoLocked), and making it the `
+        + 'primary would lift that restriction in one command'),
+      // WHERE the strict tier comes from, so the façade can give the remedy
+      // that is TRUE rather than the one that sounds helpful. A local tier
+      // never beats a global one, so "change its tier with
+      // set_secondary_vault_mode" was false advice whenever the config held
+      // the lock. (Codex, round 13.)
+      promotionBlockedBy: strictFrom,
+    };
   }
 
   const plan = planBindingWrite(ctx, {

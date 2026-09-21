@@ -292,12 +292,118 @@ describe('the write transform, asked directly — what the pure function decides
     const [said] = describeBindingWriteEffects(plan, (s) => s);
     assert.match(said, /was this workspace's PRIMARY and is now a SECONDARY/);
     assert.match(said, /no write tier OF ITS OWN/, 'the LOCAL fact, which is what the code decides');
-    assert.match(said, /AND the config's global ones/, 'and the effective answer needs both');
-    assert.match(said, /a global `alsoWritable` makes it writable, a global `alsoLocked` makes it strict/);
-    assert.doesNotMatch(said, /^[^.]*read-only unless you confirm each write/,
-      'the soft outcome is never stated unconditionally');
+    // IT ASSERTS NO EFFECTIVE OUTCOME AT ALL, and that is the repair — the
+    // fourth attempt at this sentence and the first structural one. Three
+    // rounds caught it over-promising, each time for a different missing
+    // fact: the soft tier (wrong under any global rule), "not the same
+    // access" (wrong under a global `alsoWritable`), then an enumeration of
+    // the three global cases that still missed the strict precedence when
+    // BOTH lists name the vault, and still said "nothing changes for writes"
+    // while a moved lock was about to stop that vault answering.
+    //
+    // `planBindingWrite` holds neither the global lists, nor the lock
+    // outcome, nor the session catalogue. Any effective claim it makes is a
+    // guess dressed as a fact. It now names what decides, and predicts
+    // nothing.
+    assert.match(said, /NOT decided here/);
+    assert.match(said, /strict anywhere wins/, 'the precedence is named, not the outcome');
+    assert.match(said, /depends besides on the lock and on whether the session loaded it/);
+    // NO NAVIGATION ADVICE: "read the effective tier in the plan" was
+    // caller-specific knowledge the renderer does not have — the CLI's apply
+    // recap prints no plan, and pointed the reader at a dry-run that the
+    // unsealed global lists may have outdated. Each façade says where to look;
+    // this sentence says what decides. (Codex, round 12.)
+    assert.doesNotMatch(said, /Read the effective tier in the plan/);
+    assert.match(said, /records a LOCAL tier for it, which is then combined with the global rules/);
+    assert.match(said, /it adds an input, it does not take the decision back/);
+    for (const overclaim of [
+      /not the same access/,
+      /read-only unless you confirm each write/,
+      /nothing changes for writes/,
+      /leaves it writable/,
+    ]) {
+      assert.doesNotMatch(said, overclaim, `this sentence must not predict: ${overclaim}`);
+    }
     // And it obeys the voice, like every other sentence here.
     assert.match(describeBindingWriteEffects(plan, (s) => s, { voice: 'planned' })[0], /WOULD become a SECONDARY/);
+  });
+
+  test('THE CLASS IS SWEPT: no sentence predicts a SECONDARY\'s effective tier', () => {
+    // A SWEEP OF THE SINK, not an assertion per sentence. Three rounds found
+    // the demotion sentence predicting an access outcome it cannot compute,
+    // and each repair was written for the phrasing that had just been caught.
+    //
+    // THE RULE IS NARROWER THAN "PREDICTS NO OUTCOME", and claiming the wider
+    // one was wrong — a review round refuted it by naming three predictions
+    // this renderer makes and SHOULD make. The line is whether the answer
+    // depends on the config the transform does not hold:
+    //
+    //   - a LOCK stopping other vaults, a PRIMARY being read-write, and a
+    //     DROPPED secondary becoming writable are all decided before the
+    //     global lists are consulted (`alsoWriteTierFor` returns null for a
+    //     primary and for a non-secondary), so the transform really does know
+    //     them, and saying them is the whole point of those sentences;
+    //   - a vault becoming a SECONDARY lands in the one case where the global
+    //     lists decide. That is what must never be predicted here.
+    //
+    // Scanned on the OUTPUT rather than the source, deliberately: the
+    // comments beside this code quote the wrong versions in order to explain
+    // them, and a text scan would either flag those or need an exemption —
+    // and an exemption is how a scan passes while the thing it hunts is still
+    // there.
+    const plans = [
+      { demoted: { vault: 'a', tier: 'soft' } },
+      { promoted: { vault: 'b', tier: 'locked' } },
+      { promoted: { vault: 'b', tier: 'writable' } },
+      { lockMovesTo: 'c' },
+      { droppedSecondaries: ['d'] },
+      { demoted: { vault: 'a', tier: 'soft' }, promoted: { vault: 'b', tier: 'soft' }, lockMovesTo: 'b' },
+    ];
+    const banned = [
+      /\bnot the same access\b/i,
+      /\bnothing changes for writes\b/i,
+      /\bleaves it writable\b/i,
+      // A local tier does not take the decision back from the global rules:
+      // a global `alsoLocked` beats a local `alsoWritable`.
+      /\bdecide it here rather than globally\b/i,
+    ];
+    // The demotion sentence is the one that lands in the config-dependent
+    // case, so it is scanned hardest: it must not name ANY of the three
+    // outcomes as this vault's.
+    const demotionOnly = [/\bread-only unless you confirm each write\b/i, /\bbecomes? strict\b/i];
+    for (const plan of plans) {
+      for (const voice of ['live', 'stored', 'planned']) {
+        for (const said of describeBindingWriteEffects(plan, (s) => s, { voice })) {
+          const where = `voice=${voice} plan=${JSON.stringify(plan)}`;
+          for (const pattern of banned) {
+            assert.doesNotMatch(said, pattern, `${where} must not predict ${pattern}`);
+          }
+          if (!said.includes('was this workspace\'s PRIMARY')) continue;
+          for (const pattern of demotionOnly) {
+            assert.doesNotMatch(said, pattern, `${where} — the demotion sentence must not predict ${pattern}`);
+          }
+        }
+      }
+    }
+  });
+
+  test('and the sweep has a POSITIVE CONTROL — it really would catch one', () => {
+    // A scan that has never been seen to fail is a scan nobody has tested.
+    // The offending phrasings are built here on purpose and the same patterns
+    // are asked of them.
+    const offenders = [
+      'notes was this workspace\'s PRIMARY and is now a SECONDARY — read-only unless you confirm each write.',
+      'set_secondary_vault_mode records a local tier if you want to decide it here rather than globally.',
+      'a global `alsoWritable` leaves it writable, so nothing changes for writes.',
+    ];
+    const patterns = [
+      /\bread-only unless you confirm each write\b/i,
+      /\bdecide it here rather than globally\b/i,
+      /\bleaves it writable\b/i,
+    ];
+    offenders.forEach((text, i) => {
+      assert.match(text, patterns[i], 'the instrument must move when the defect is present');
+    });
   });
 
   test('the demoted primary is first EVEN WHEN the call names its own secondaries', () => {
@@ -376,6 +482,16 @@ describe('the write transform, asked directly — what the pure function decides
     for (const bad of ['', '2026-1-2', 'yesterday', null, 7]) {
       assert.throws(() => planBindingWrite(ctx, { ...base, confirmedAt: bad }), /YYYY-MM-DD/,
         `confirmedAt=${JSON.stringify(bad)} must be refused`);
+    }
+    // A VALUE THAT COERCES TO A VALID DATE IS STILL NOT ONE. The guard tested
+    // `String(confirmedAt)`, and `String(["2000-01-01"])` is `"2000-01-01"` —
+    // so a one-element array passed, reached the sealed core, was dropped by
+    // `normalizeBinding` (strings only) and `withBinding` read its own clock.
+    // The degradation the guard exists to stop, through the coercion inside
+    // the guard. (Codex, round 10.)
+    for (const coercible of [['2000-01-01'], new String('2000-01-01'), { toString: () => '2000-01-01' }]) {
+      assert.throws(() => planBindingWrite(ctx, { ...base, confirmedAt: coercible }), /YYYY-MM-DD/,
+        'a value that merely COERCES to a date is refused');
     }
   });
 

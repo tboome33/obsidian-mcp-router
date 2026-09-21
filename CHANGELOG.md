@@ -28,6 +28,19 @@ which is `null` for an entry that names no primary — precisely the entry a rep
 repairing such an entry silently dropped its lock, and only the printed sentence put it back. The
 lock now falls back to the entry as written, exactly as the write tiers have since an earlier round.
 
+### A promotion refusal now names a remedy that can actually work
+
+Every refusal of "you cannot make this strict secondary the primary" ended with *change its tier
+first with `set_secondary_vault_mode`*. That tool writes a tier on the **binding**, and a
+binding-local tier never beats the config's **global** `alsoLocked`: strict anywhere wins. So
+whenever the lock was the global one, following the advice left the operator refused a second time
+by the same guard, for the same reason, with the same advice.
+
+`lockedSecondaryTierSource` now says where the strict tier lives — local, global, or both — and one
+shared `lockedSecondaryPromotionRemedy` gives the answer that is true for that case. Three refusals
+carried the false version (`--repair-binding` twice, `--attach`/`--link-workspace` once); all three
+quote the shared one now.
+
 ### A repair no longer loses the vault it was pointing at
 
 `also` never contains the primary. So "what the entry holds", read from `also` alone, missed the one

@@ -46,6 +46,7 @@ import {
   withRefusal,
 } from '../src/helpers/workspace-bindings.mjs';
 import { describeBindingWriteEffects, RUNNING_SESSION_NOTE } from '../src/helpers/binding-write.mjs';
+import { lockedSecondaryPromotionRemedy, lockedSecondaryTierSource } from '../src/helpers/vault-reach.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = path.resolve(__dirname, '..', 'scripts', 'setup-vault.mjs');
@@ -146,6 +147,45 @@ describe('the repair plan — what it keeps', () => {
     const entry = { also: ['work'], alsoLocked: ['work'] };
     const plan = planBindingRepair(configWith(WS, entry), WS, { wantedPrimary: 'work' });
     assert.equal(plan.blocked, 'promotion-refused');
+    assert.equal(plan.promotionBlockedBy, 'local');
+  });
+
+  test('the plan names WHERE the strict tier lives, because the remedy depends on it', () => {
+    // Found by review round 13. Every refusal ended "change its tier first
+    // with set_secondary_vault_mode" — false whenever the lock is the config's
+    // GLOBAL one, which that tool does not touch and which a binding-local
+    // tier never beats. Following the advice left the operator refused a
+    // second time by the same guard, for the same reason, with the same
+    // advice.
+    const local = planBindingRepair(
+      configWith(WS, { also: ['work'], alsoLocked: ['work'] }),
+      WS,
+      { wantedPrimary: 'work' },
+    );
+    const global = planBindingRepair(
+      configWith(WS, { also: ['work'] }, { alsoLocked: ['work'] }),
+      WS,
+      { wantedPrimary: 'work' },
+    );
+    const both = planBindingRepair(
+      configWith(WS, { also: ['work'], alsoLocked: ['work'] }, { alsoLocked: ['work'] }),
+      WS,
+      { wantedPrimary: 'work' },
+    );
+    assert.equal(local.promotionBlockedBy, 'local');
+    assert.equal(global.promotionBlockedBy, 'global');
+    assert.equal(both.promotionBlockedBy, 'both');
+  });
+
+  test('the remedy is TRUE for each source — and says so differently', () => {
+    assert.match(lockedSecondaryPromotionRemedy('local'), /set_secondary_vault_mode can change it/);
+    const g = lockedSecondaryPromotionRemedy('global');
+    assert.match(g, /does\s+NOT touch/);
+    assert.match(g, /a binding-local tier never beats a global one/);
+    assert.match(g, /Remove the vault from the global `alsoLocked` in config\.json/);
+    assert.match(lockedSecondaryPromotionRemedy('both'), /Both have to go/);
+    // The global remedy must NOT send the reader to the tool that cannot help.
+    assert.doesNotMatch(g, /set_secondary_vault_mode can change it/);
   });
 
   test('a GLOBAL strict tier blocks the promotion too', () => {
@@ -566,6 +606,13 @@ describe('the effect sentences — when what they describe takes effect', () => 
     const [said] = describeBindingWriteEffects({ promoted: { vault: 'work', tier: 'locked' } }, (s) => s);
     assert.match(said, /RECORDED ON THIS BINDING/);
     assert.match(said, /GLOBAL alsoLocked\/alsoWritable rule naming it is untouched/);
+    // "NO TIER OF ITS OWN", not "no tier at all" — a mutation to the flat
+    // version survived every witness, which meant nothing held this clause.
+    // The distinction is the whole point of the sentence: the LOCAL tier is
+    // what leaves with the role; a global rule survives and applies again the
+    // moment the vault is a secondary.
+    assert.match(said, /brings back no tier of its own unless set_secondary_vault_mode sets one again/);
+    assert.doesNotMatch(said, /brings back no tier at all/);
   });
 });
 
@@ -745,7 +792,23 @@ describe('--repair-binding, spawned', () => {
     assert.equal(dry.status, 1);
     assert.equal(sealOf(dry.stdout), null, 'no seal is minted for a plan that cannot be applied');
     assert.match(dry.stdout + dry.stderr, /LOCKED read-only/);
+    // The tier is LOCAL here, so the tool that writes local tiers is the right
+    // advice — and the refusal says so.
+    assert.match(dry.stdout + dry.stderr, /set_secondary_vault_mode can change it/);
     assert.equal(fs.readFileSync(f.configPath, 'utf8'), before);
+  });
+
+  test('a GLOBALLY strict secondary is refused with a remedy that can actually work', () => {
+    // Found by review round 13, end to end. `set_secondary_vault_mode` writes
+    // a binding-local tier and a global `alsoLocked` beats it, so telling the
+    // operator to use it would send them round the loop for nothing.
+    const f = fixture({ vault: 'notes', also: ['work'] }, { alsoLocked: ['work'] });
+    const r = runRepair(f.configPath, f.ws, '--primary', 'work', '--dry-run');
+    assert.equal(r.status, 1);
+    const said = r.stdout + r.stderr;
+    assert.match(said, /comes from the config's GLOBAL `alsoLocked`/);
+    assert.match(said, /Remove the vault from the global `alsoLocked` in config\.json/);
+    assert.doesNotMatch(said, /set_secondary_vault_mode can change it/);
   });
 
   test('a strict secondary held only by the entry of a PRIMARY-LESS binding is refused too', () => {
@@ -837,10 +900,32 @@ describe('--repair-binding, spawned', () => {
     // rather than just naming the role change — in the dry-run's conditional.
     assert.match(dry.stdout, /WOULD become a SECONDARY/);
     assert.match(dry.stdout, /no write tier OF ITS OWN/);
-    assert.match(dry.stdout, /AND the config's global ones/);
+    assert.match(dry.stdout, /See the consequences below for what that means for write access/);
+    // NO PROSE PREDICTS THE EFFECTIVE OUTCOME — it is COMPUTED and PRINTED.
+    // Three rounds of rewording this failed, each time for a different
+    // missing fact. The preview already shows `alsoWriteTierFor`'s answer for
+    // exactly these vaults, so the sentences name what decides and the table
+    // states what it decided. (Codex, rounds 9, 10, 11.)
+    assert.equal(
+      (dry.stdout.match(/read-only unless you confirm each write/g) ?? []).length,
+      0,
+      'the soft outcome is never asserted in prose — it is shown in the effective tier',
+    );
+    assert.match(dry.stdout, /effective write tiers/);
+    assert.match(dry.stdout, /notes: soft/, 'and the demoted primary IS in that table');
+    assert.match(dry.stdout, /strict anywhere wins/);
 
     const r = runRepair(f.configPath, f.ws, '--primary', 'remote', '--approved-plan-sha256', sealOf(dry.stdout));
     assert.equal(r.status, 0, r.stderr || r.stdout);
+    // THE APPLY RECAP PRINTS THE EFFECTIVE TIERS AS THEY ARE NOW. The
+    // consequence sentence says the effective tier is decided by the global
+    // lists, which are deliberately outside the seal and can therefore have
+    // moved since the dry-run. A recap that names no tier, after prose that
+    // tells you to read one, sends the operator to a stale answer.
+    // (Codex, round 12.)
+    assert.match(r.stdout, /effective write tiers now/);
+    assert.match(r.stdout, /can differ from what the --dry-run showed/);
+    assert.match(r.stdout, /notes: soft/);
     const binding = readBinding(f.read(), f.ws);
     assert.equal(binding.vault, 'remote');
     assert.deepEqual(binding.also, ['notes', 'work']);

@@ -687,7 +687,16 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // proposal was refused for a secondary B was merely carrying over, and
     // the repair spelled for B dropped A's secondary — tier included — with
     // the precondition satisfied. What was in the entry as written stays
-    // allowed in the call; this session simply cannot reach it. The PRIMARY
+    // allowed in the call; whether this session can reach it is a separate
+    // question this check does not answer. A name the FILE cannot bind may
+    // still be served by a session whose environment provides it or which
+    // holds an older descriptor, and registering that name later may make it
+    // resolvable — "may", because reaching it also depends on the lock, on
+    // `vaultReach`, and on the session having loaded it. ("Simply cannot
+    // reach it" was too strong, and so was the "becomes reachable for good"
+    // that replaced it: the unresolved-secondary diagnostics say the cases
+    // apart, and this comment should not pre-empt them. Codex, rounds 10
+    // and 11.) The PRIMARY
     // is never exempt: a repair that keeps an unregistered primary is not a
     // repair.
     //
