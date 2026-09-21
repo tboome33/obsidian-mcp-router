@@ -186,9 +186,17 @@ export class PlanDriftError extends Error {
  * @param {string} [params.previewHint]       how to obtain a fresh seal, e.g.
  *   "re-run refresh_okf_projections with check:true" — surfaced in the drift
  *   message so the caller knows the remedy.
+ * @param {string} [params.subject]           WHAT moved, for the drift sentence.
+ *   Defaults to "The vault", which is true of every operation this helper was
+ *   written for — they all act on one. It is NOT true of every operation that
+ *   uses it: a binding repair acts on a workspace and a config file, and
+ *   telling its operator "the vault changed" sends them to look at a vault
+ *   that is fine. A caller whose subject is something else names it.
  * @returns {string} the verified seal (equals approvedPlanSha256).
  */
-export function verifyPlanSeal({ op, identity = null, plan = null, approvedPlanSha256, previewHint } = {}) {
+export function verifyPlanSeal({
+  op, identity = null, plan = null, approvedPlanSha256, previewHint, subject = 'The vault',
+} = {}) {
   if (!isPlanSeal(approvedPlanSha256)) {
     throw new PlanDriftError(
       `Invalid approvedPlanSha256: expected a 64-char lowercase hex plan seal ` +
@@ -203,7 +211,7 @@ export function verifyPlanSeal({ op, identity = null, plan = null, approvedPlanS
       : `Re-run the preview to get a fresh approvedPlanSha256 and pass THAT.`;
     throw new PlanDriftError(
       `[${op}] sealed-preview drift: the approved plan no longer matches the current ` +
-        `state or vault. The vault changed between the preview and this apply, so the ` +
+        `state. ${subject} changed between the preview and this apply, so the ` +
         `plan you approved is not the plan that would run now. Nothing was written. ${remedy}`,
       { op, expected: current, provided: approvedPlanSha256, hint: remedy },
     );

@@ -256,7 +256,12 @@ export function rawBindingEntry(config, cwd) {
   // may hold a raw path. Canonicalise BOTH sides before comparing rather than
   // trusting the file's spelling — the same reason the vault registry compares
   // normalised paths instead of raw ones.
-  if (Object.hasOwn(all, key)) return all[key];
+  //
+  // THE CANONICAL-KEY PREFERENCE LIVES IN `selectBindingKey` AND NOWHERE ELSE.
+  // It used to be spelled here as well, which left the extraction of that rule
+  // half-done: the shared function existed, and this reader still answered the
+  // common case from its own copy. A rule with two homes has two futures.
+  // (Codex, review round 4, claim 1.)
 
   // AMBIGUITY IS RESOLVED DETERMINISTICALLY, not by whichever spelling the
   // file happens to list first. A hand-edited config can hold the same
@@ -272,10 +277,76 @@ export function rawBindingEntry(config, cwd) {
   // and correct, where an unstable one looks like the router changing its mind.
   // The ambiguity also self-heals: the next `withBinding` collapses every
   // colliding spelling into the canonical key.
+  const { selected } = selectBindingKey(all, key);
+  return selected === undefined ? undefined : all[selected];
+}
+
+/**
+ * WHICH stored key answers for a workspace, and which others name it too —
+ * decided ONCE, here, because two readers ask it.
+ *
+ * The rule: the canonical key when the file holds it, otherwise the first of
+ * the colliding spellings in sorted order (see `rawBindingEntry` for why
+ * sorting, and not object order, is what makes the answer stable).
+ *
+ * It was spelled twice for one review round — once in `rawBindingEntry` and
+ * once in `bindingEntryAliases` — under a comment claiming it was not. Two
+ * hand-written copies of one rule is exactly how a preview and the write it
+ * previews come to disagree, so the comment was not merely inaccurate, it
+ * described the defect it was denying. (Codex, review round 3, claim 1.)
+ *
+ * @param {Record<string, unknown>} all the `workspaceBindings` object
+ * @param {string} key the canonical workspace key
+ * @returns {{ selected: string|undefined, colliding: string[] }}
+ */
+function selectBindingKey(all, key) {
+  if (Object.hasOwn(all, key)) {
+    return {
+      selected: key,
+      colliding: Object.keys(all).filter((k) => canonicalWorkspaceKey(k) === key).sort(),
+    };
+  }
   const colliding = Object.keys(all)
     .filter((storedKey) => canonicalWorkspaceKey(storedKey) === key)
     .sort();
-  return colliding.length ? all[colliding[0]] : undefined;
+  return { selected: colliding.length ? colliding[0] : undefined, colliding };
+}
+
+/**
+ * The stored keys that name THIS workspace but are NOT the one the reader
+ * above selected — the aliases a write will silently collapse.
+ *
+ * `withBinding` deletes every key whose canonical form matches before writing
+ * the canonical one, which is what makes the ambiguity self-heal. For a
+ * routing reader that is invisible and right. For an operator APPROVING a
+ * write it is not: those entries carry their own vault, tiers, lock and
+ * unknown fields, and they disappear. A preview that does not name them
+ * describes a smaller write than the one that runs. (Codex, review of the
+ * repair lot, round 2.)
+ *
+ * THE SELECTION RULE IS NOT SPELLED TWICE: `selectBindingKey` decides it, and
+ * `rawBindingEntry` answers with the value at that same key.
+ *
+ * EACH ALIAS COMES WITH THE DIGEST OF ITS CONTENT, not just its name. Sealing
+ * the key alone caught a sibling ADDING an alias and missed a sibling EDITING
+ * one: the selected entry is untouched, so its own digest does not move, the
+ * alias list is identical, and the apply destroys content nobody approved
+ * destroying. Through `rawEntryDigest`, so a re-save that only reorders JSON
+ * keys is still not a change. (Codex, review round 3.)
+ *
+ * @param {object} config the parsed router config
+ * @param {string} cwd
+ * @returns {Array<{ key: string, digest: string }>} sorted by key, empty in the ordinary case
+ */
+export function bindingEntryAliases(config, cwd) {
+  const key = canonicalWorkspaceKey(cwd);
+  if (!key) return [];
+  const all = config?.[WORKSPACE_BINDINGS_KEY];
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return [];
+  const { selected, colliding } = selectBindingKey(all, key);
+  return colliding
+    .filter((storedKey) => storedKey !== selected)
+    .map((storedKey) => ({ key: storedKey, digest: rawEntryDigest(all[storedKey]) }));
 }
 
 /**
@@ -992,6 +1063,35 @@ export function readRefusals(config, cwd) {
     }
   }
   return out;
+}
+
+/**
+ * Every stored spelling of THIS workspace under `workspaceRefusals`, each with
+ * the digest of its content — the refusal half of `bindingEntryAliases`.
+ *
+ * A write that drops a refusal does not edit one key: `withoutRefusal`
+ * rebuilds this workspace's entry from the UNION `readRefusals` computes and
+ * deletes every colliding spelling. So a sibling editing a spelling that loses
+ * the union destroys nothing the selected entry's digest can see — R3's alias
+ * defect, one object over, found by the round that reviewed the repair for it.
+ * (Codex, review round 4.)
+ *
+ * All spellings, not only the losing ones: which one wins a given name is
+ * decided per NAME, so "losing" is not a property of a spelling.
+ *
+ * @param {object} config
+ * @param {string} cwd
+ * @returns {Array<{ key: string, digest: string }>} sorted by key
+ */
+export function refusalEntrySpellings(config, cwd) {
+  const key = canonicalWorkspaceKey(cwd);
+  if (!key) return [];
+  const all = config?.[WORKSPACE_REFUSALS_KEY];
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return [];
+  return Object.keys(all)
+    .filter((stored) => canonicalWorkspaceKey(stored) === key)
+    .sort()
+    .map((stored) => ({ key: stored, digest: rawEntryDigest(all[stored]) }));
 }
 
 /**

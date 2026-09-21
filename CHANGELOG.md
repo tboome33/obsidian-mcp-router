@@ -10,6 +10,53 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A binding repair keeps what the entry held, because the code keeps it
+
+Until now, "repairing a workspace binding loses nothing" was a property of a *sentence*. When the
+router could not read a workspace's entry as written, it printed a `confirm_workspace_binding` call
+naming everything worth keeping — every secondary, every local write tier, `locked: true`. Copy that
+call and you lost nothing. Write your own and you lost whatever you forgot.
+
+The transform that decides what gets written now lives in one place
+(`src/helpers/binding-write.mjs`) and has two modes. **Replacement** is what
+`confirm_workspace_binding` has always done, unchanged: the call names the binding, and a secondary
+not named again is gone. **Repair** keeps the entry's secondaries, their local tiers, its lock and
+any field this version does not know — by rule, not by remembering.
+
+One defect is closed by the move. `locked` was derived from the *repaired* reading of the entry,
+which is `null` for an entry that names no primary — precisely the entry a repair is for. So
+repairing such an entry silently dropped its lock, and only the printed sentence put it back. The
+lock now falls back to the entry as written, exactly as the write tiers have since an earlier round.
+
+### `setup-vault.mjs --repair-binding` — the terminal is no longer a dead end
+
+A binding the router cannot read was diagnosed everywhere and repairable in exactly one place: an
+MCP session whose *server* had that workspace as its working directory. An operator at a terminal
+was handed a call they could not make.
+
+```
+setup-vault.mjs --repair-binding <workspace> [--primary <vault>] [--locked|--no-locked] --dry-run
+setup-vault.mjs --repair-binding <workspace> ... --approved-plan-sha256 <hash>
+```
+
+The dry-run prints what it found, what it would write, what it will **not** do, and the two
+consequences that read backwards unless they are said out loud: keeping `locked: true` while
+choosing a different primary **moves** the lock onto another vault; and dropping a secondary can
+make a vault *writable*, because a write tier only applies to a vault the binding declares
+(`alsoWriteTierFor` answers `null` before it ever consults the global lists).
+
+The apply **requires** the seal the dry-run printed — stricter than the other sealed flows in that
+script, because a binding repair is applied by someone who has read what it would keep. The seal is
+bound to the **workspace and the config file**, not to a vault: a binding repair acts on neither,
+and borrowing the vault identity would have let a plan previewed for one workspace confirm an apply
+on another whenever both chose the same primary. Two preconditions, two questions: the entry digest
+asks "has the entry moved?", the seal asks "is the approved plan still the plan?".
+
+It never promotes a secondary held as strict read-only to primary — refused at the dry-run, before a
+seal exists. It never registers or opens a vault, never touches the workspace's `.env`, and refuses
+to *create* a binding where none exists (that is `--attach`'s job, and `--attach` writes four other
+things a workspace bound this way would never get).
+
 ### `search_smart` can be asked to keep only what still applies
 
 Two optional parameters, and neither changes anything unless you pass it. `asOf` fixes the reference

@@ -41,8 +41,22 @@ import {
   bindingIncoherences,
   describeBindingRepair,
   writerBindableNames,
+  rawEntryDigest,
+  canonicalWorkspaceKey,
   BINDING_REPAIR_REQUIRED_CODE,
 } from '../src/helpers/workspace-bindings.mjs';
+import {
+  applyBindingWrite,
+  describeBindingWriteEffects,
+  RUNNING_SESSION_NOTE,
+  BINDING_WRITE_MODE,
+} from '../src/helpers/binding-write.mjs';
+import {
+  planBindingRepair,
+  bindingRepairIdentity,
+  bindingRepairPlanCore,
+  BINDING_REPAIR_OP,
+} from '../src/helpers/binding-repair-plan.mjs';
 import { isPromotionOfLockedSecondaryOnDisk, PROMOTION_REFUSED_CODE } from '../src/helpers/vault-reach.mjs';
 import { acquireLock, lockPathFor } from '../src/helpers/file-lock.mjs';
 import { writeFileAtomicSync } from '../src/helpers/write-file-atomic.mjs';
@@ -5146,9 +5160,9 @@ function printPlanSeal(seal, applyHint) {
  * (exit 1) BEFORE any mutation with an actionable message. Any other error type
  * propagates unchanged.
  */
-function verifyPlanSealOrFail({ op, identity, plan, provided, previewHint }) {
+function verifyPlanSealOrFail({ op, identity, plan, provided, previewHint, subject }) {
   try {
-    verifyPlanSeal({ op, identity, plan, approvedPlanSha256: provided, previewHint });
+    verifyPlanSeal({ op, identity, plan, approvedPlanSha256: provided, previewHint, subject });
   } catch (e) {
     if (e instanceof PlanDriftError) {
       fail(`Sealed-preview drift — nothing was changed.\n   ${e.message}`);
@@ -5332,6 +5346,21 @@ if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
   node setup-vault.mjs --uninstall-hooks                     Remove all router hooks from ~/.claude/settings.json
                                                               (preserves user-defined hooks)
   node setup-vault.mjs --hooks-status                        Report which router hooks are currently active
+  node setup-vault.mjs --repair-binding <workspace-path>     Repair a workspace's binding ENTRY in the router
+      [--primary <vault>] [--locked|--no-locked]              config, from the terminal — the route that used to
+      --dry-run | --approved-plan-sha256 <hash>               exist only as a confirm_workspace_binding call from
+                                                              an MCP session sitting in that workspace. It KEEPS
+                                                              every secondary the entry holds, their LOCAL write
+                                                              tiers, the lock and any unknown field, by rule and
+                                                              not by naming them. --primary is needed only when
+                                                              the entry names no primary the config can bind;
+                                                              omit --locked/--no-locked to keep the lock as it is.
+                                                              --dry-run prints the plan and an approvedPlanSha256;
+                                                              the apply REQUIRES that seal (unlike the other
+                                                              sealed flows here, where it is opt-in) and refuses
+                                                              if the entry or the plan moved since. It never
+                                                              promotes an alsoLocked secondary to primary, never
+                                                              registers or opens a vault, and never touches .env.
   node setup-vault.mjs --migrate-wiki-meta <vault-path>      Migrate ONE vault from wiki/<scaffold>.md to
                                                               wiki-meta/<scaffold>.md (v0.12.1+). Uses git mv
                                                               if .git/ exists, plain rename otherwise. Also
@@ -6039,6 +6068,435 @@ if (args[0] === '--link-workspace' || args[0] === '--unlink-workspace') {
   info('Restart Claude Code in this workspace to activate:');
   info('  • hot-cache-load will print the associated vault\'s wiki-meta/hot.md');
   info('  • wiki-query-first-nudge will inject pre-answer reminders');
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// --repair-binding — repair a workspace's binding entry FROM THE TERMINAL
+// ---------------------------------------------------------------------------
+//
+//   --repair-binding <workspace-path> [--primary <vault>] [--locked|--no-locked] --dry-run
+//   --repair-binding <workspace-path> [--primary <vault>] [--locked|--no-locked] \
+//       --approved-plan-sha256 <hash>
+//
+// WHY THIS EXISTS. Until it, an entry the router could not read as written was
+// diagnosed everywhere and repairable in exactly one place: a
+// `confirm_workspace_binding` call, made from an MCP session whose SERVER has
+// that workspace as its working directory. An operator at a terminal had no
+// path from end to end — the refusal spelled a call they could not make.
+// Decision `politique-desactive-et-reparation-des-liaisons`, points 4a and 5
+// (Roland, 2026-09-20).
+//
+// WHAT MAKES IT A REPAIR AND NOT A REWRITE. It runs the SAME transform as the
+// tool (`helpers/binding-write.mjs`) in `repair` mode: every secondary the
+// entry holds, every LOCAL write tier, the lock and the unknown fields are
+// kept because the code keeps them — not because this command remembered to
+// name them. That is the whole point of the lot: the guarantee used to live in
+// the sentence `describeBindingRepair` spells, and a caller who wrote its own
+// call lost whatever it forgot.
+//
+// WHAT IT WILL NOT DO. It never promotes a secondary held as strict read-only
+// to primary — the same guard the tools ask (`isPromotionOfLockedSecondary
+// OnDisk`), for the same reason, and question 4(b) of the decision page stays
+// open with its status quo intact. It never registers a vault, never opens
+// one, and never touches the workspace's `.env`.
+//
+// TWO PRECONDITIONS, BOTH REQUIRED ON APPLY. The entry digest answers "has the
+// entry moved?"; the plan seal answers "is the plan I approved still the plan
+// that would run?". Unlike the other sealed flows in this file, the seal is
+// MANDATORY here rather than opt-in: a binding repair is applied by someone
+// who has read what it would keep, and the seal is what proves they saw it.
+if (args[0] === '--repair-binding') {
+  const dryRun = args.includes('--dry-run');
+  const wsArg = args[1] && !args[1].startsWith('-') ? args[1] : null;
+  if (!wsArg) {
+    fail(
+      'Usage: --repair-binding <workspace-path> [--primary <vault>] [--locked|--no-locked]\n' +
+      '          [--dry-run | --approved-plan-sha256 <hash>]',
+    );
+  }
+  const wsPath = path.resolve(wsArg);
+  // THE DIRECTORY MUST EXIST, like every other command in this file that takes
+  // one. A repair keyed on a path nobody stands in would write an entry for a
+  // workspace that cannot read it back.
+  if (!fs.existsSync(wsPath)) fail(`Workspace path does not exist: ${wsPath}`);
+  if (!fs.statSync(wsPath).isDirectory()) fail(`Workspace path is not a directory: ${wsPath}`);
+
+  const primaryIdx = args.indexOf('--primary');
+  let wantedPrimary = null;
+  if (primaryIdx !== -1) {
+    const raw = args[primaryIdx + 1];
+    if (raw === undefined || raw.startsWith('-')) fail('--primary requires a value (a registered vault name).');
+    wantedPrimary = raw;
+  }
+  // TRI-STATE, SPELLED AS TWO FLAGS. Absent means "keep what the entry holds"
+  // — which is the whole conservation this command exists for — so there has
+  // to be a way to say `false` that is not "say nothing".
+  if (args.includes('--locked') && args.includes('--no-locked')) {
+    fail('--locked and --no-locked cannot both be passed: pass one, or neither to keep the lock the entry holds.');
+  }
+  const lockedArg = args.includes('--locked') ? true : (args.includes('--no-locked') ? false : undefined);
+  // ONE SPELLING FOR BOTH READERS — the dry-run's plan and the apply's recap.
+  // Two call sites is exactly the count at which this repository's recurring
+  // defect appears: a rule given to the first site and announced for all.
+  //
+  // THE TWO READERS DO NOT SHARE A TENSE, and that was a finding. A dry-run
+  // has written nothing; an apply has written a FILE, which is a different
+  // thing on a different clock — see `RUNNING_SESSION_NOTE` for what a
+  // running router does about it, and do NOT paraphrase it here. This comment
+  // denied any effect on a running session for one round after the note
+  // existed to say otherwise (the phrase is not reproduced here: a SCAN keeps
+  // it out of these files, and a scan cannot tell a quotation from a relapse
+  // without an exemption). A repair that reaches the code and not the sentences beside
+  // it has reached half its sites. (Codex, review round 5.)
+  const repairEffects = (p, voice) => describeBindingWriteEffects(
+    p,
+    (n) => `"${String(n)}"`,
+    { unlockHint: 'pass --no-locked', voice },
+  );
+
+  const approvedPlanSha256 = readApprovedPlanSeal(args);
+  if (!dryRun && !approvedPlanSha256) {
+    fail(
+      'Refusing to repair without --approved-plan-sha256.\n   ' +
+      'Run `--repair-binding <workspace-path> --dry-run` first, read what it would KEEP and what it would ' +
+      'change,\n   then pass back the seal it printed.',
+    );
+  }
+
+  const identity = bindingRepairIdentity({ cwd: wsPath, configPath: CONFIG_PATH });
+  const cfgNow = loadConfigReadOnly();
+  const preview = planBindingRepair(cfgNow, wsPath, { wantedPrimary, locked: lockedArg });
+
+  // EVERY REASON THE APPLY WOULD REFUSE, REFUSED HERE TOO — including on a
+  // --dry-run. Printing a plan and a seal for a repair the apply turns away
+  // hands the operator an approval for something that cannot happen, which
+  // reads as a green light. The plan decides; this only says it out loud.
+  if (preview.blocked) {
+    const raw = rawBindingEntry(cfgNow, wsPath);
+    const bindableNow = [...writerBindableNames(cfgNow, [])].sort().join(', ') || '(none)';
+    const remedy = preview.blocked === 'no-entry'
+      // A repair repairs. Creating a binding is `--attach`'s job, and
+      // `--attach` also writes the `.env` hint, the plugin settings and the
+      // CLAUDE.md block that a workspace bound from here would never get.
+      ? 'There is nothing to repair. Use --attach or --link-workspace to create a binding.'
+      : preview.blocked === 'promotion-refused'
+      // Two explicit acts, never one — the rule the tools have held since
+      // round sixteen, and question 4(b) does not reopen it from here.
+      ? 'Choose another primary, or change that vault\'s tier first with set_secondary_vault_mode.'
+      // The remaining verdicts all concern an entry that EXISTS — absence is
+      // caught above — so there is no "no entry" branch here. One would be
+      // dead code, and dead code reads as coverage.
+      //
+      // The ONE thing a repair cannot decide for itself is decided by a
+      // person — exactly as `describeBindingRepair` refuses to fill its own
+      // placeholder rather than guessing a vault. The spelled-out repair is
+      // appended only when the entry actually carries something the router
+      // could not read: on a coherent entry `describeBindingRepair` would
+      // announce anomalies it has not got.
+      : `Pass --primary <vault> naming a REGISTERED vault you choose. Bindable now: ${bindableNow}.`
+        + (preview.anomalies.length ? `\n   ${describeBindingRepair(raw)}` : '');
+    fail(`Cannot repair this workspace's binding: ${preview.reason}.\n   ${remedy}`);
+  }
+
+  const describePlan = () => {
+    console.log('');
+    console.log(c('bold', `Binding repair — ${wsPath}`));
+    info(`config: ${CONFIG_PATH}`);
+    info(`entry digest: ${preview.entryDigest}`);
+    console.log('');
+    if (preview.anomalies.length) {
+      console.log(c('bold', 'What the router cannot take as written:'));
+      for (const a of preview.anomalies) {
+        info(`  ${a.kind}${a.names.length ? `: ${a.names.join(', ')}` : ''}`);
+      }
+    } else {
+      // TWO SEPARATE FACTS, and merging them made the second one false. "This
+      // entry reads as written" is about the ENTRY; "only re-writes it as it
+      // stands" is about THIS CALL, and a call carrying --primary/--locked
+      // changes it. The merged sentence told an operator repointing a healthy
+      // binding that nothing would change. (Codex, review round 2.)
+      info('No structural anomaly: this entry reads as written.');
+      // THE CHANGES ARE READ OFF THE PLAN, NEVER OFF THE FLAGS. Counting
+      // flags announced a change for `--locked` on an already-locked entry,
+      // and announced NONE when the write would still collapse an alias or
+      // drop a recorded refusal. A flag is a request; the plan is the answer.
+      // (Codex, review round 3.)
+      const now = readBinding(cfgNow, wsPath);
+      const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+      const changes = [
+        now && preview.primary !== now.vault ? `the primary becomes ${preview.primary}` : null,
+        now && !same(preview.also, now.also) ? 'the secondaries change' : null,
+        now && !same(preview.alsoLocked, now.alsoLocked) ? 'the strict tier list changes' : null,
+        now && !same(preview.alsoWritable, now.alsoWritable) ? 'the writable tier list changes' : null,
+        now && preview.locked !== now.locked ? `locked becomes ${preview.locked}` : null,
+        preview.aliasesCollapsed.length ? 'other spellings of this workspace are deleted' : null,
+        preview.refusalsDropped.length ? 'a recorded refusal is dropped' : null,
+        // WHAT THE WRITER CONSTRUCTS, not only what the plan chooses. The
+        // first version compared the routing fields alone and reported
+        // "changing nothing" for a write that moved the entry to the
+        // canonical key and stamped fresh metadata over the old. (Codex,
+        // review round 4.)
+        preview.relocatesToCanonicalKey ? 'the entry moves to this workspace\'s canonical key' : null,
+        preview.metadataRewritten
+          ? `confirmedVia becomes repair-binding and confirmedAt becomes ${preview.confirmedAt}`
+          : null,
+        // THE REBUILD, and what it actually leaves behind. The first version
+        // said "collapsed into one canonical entry" — which `withoutRefusal`
+        // does only `if (current.size)`: when the vaults being bound were the
+        // ONLY refusals this workspace had, the record is REMOVED, and with
+        // no other workspace's refusals the whole property goes with it.
+        // (Codex, round 6.)
+        preview.refusalsDropped.length
+          ? (preview.refusalsSurviving.length
+            ? `this workspace's refusal record is rebuilt, keeping ${preview.refusalsSurviving.join(', ')}`
+            : 'this workspace\'s refusal record is REMOVED — the vaults being bound were the only refusals it held')
+          : null,
+      ].filter(Boolean);
+      // THE EMPTY CASE IS REACHABLE, and deleting its branch was a mistake
+      // built on a wrong predicate. Round 4 removed it because
+      // `metadataRewritten` was `raw !== undefined` — "the metadata is
+      // assigned" — which is true of every entry. What matters is whether it
+      // DIFFERS: repair the same entry twice on one day and the second call
+      // assigns identical values, `unchangedBindings` finds the record
+      // unchanged, and no file is written at all. (Codex, review round 5.)
+      info(changes.length
+        ? `This call still changes it: ${changes.join('; ')}.`
+        : 'This call would write nothing: every field it stores already holds that value, so the config '
+          + 'file is left untouched.');
+    }
+    console.log('');
+    console.log(c('bold', 'What it would write:'));
+    info(`  primary:      ${preview.primary}`);
+    info(`  secondaries:  ${preview.also.join(', ') || '(none)'}`);
+    info(`  alsoLocked:   ${preview.alsoLocked.join(', ') || '(none)'}`);
+    info(`  alsoWritable: ${preview.alsoWritable.join(', ') || '(none)'}`);
+    info(`  locked:       ${preview.locked}`);
+    info(`  other fields kept: ${preview.unknownFields.join(', ') || '(none)'}`);
+    // WHAT IT WILL PERMIT, which the two lists above do not answer alone: a
+    // secondary's effective tier is decided by the entry's lists AND the
+    // config's global ones, strict anywhere winning. "alsoLocked: (none)" can
+    // sit above a vault a global rule holds strict, and an operator reading
+    // only the local lists would conclude the opposite.
+    if (preview.effectiveTiers.length) {
+      info(`  effective write tiers (entry + the config's GLOBAL lists, as of this reading — the global`);
+      info(`    lists are NOT part of the seal, because this repair does not write them):`);
+      for (const t of preview.effectiveTiers) info(`      ${t.vault}: ${t.tier}`);
+    }
+    // THE REST OF THE WRITE, which naming only the entry left out. Both are
+    // things `withBinding` really does, and an approval that did not mention
+    // them approved a smaller write than the one that runs. (Codex, review
+    // round 2.)
+    if (preview.aliasesCollapsed.length) {
+      console.log('');
+      console.log(c('bold', 'What it also DELETES:'));
+      info('  This workspace is stored under more than one spelling, and the write collapses them all into');
+      info('  the canonical key. These entries DISAPPEAR, with whatever vault, tiers, lock and unknown fields');
+      info('  they carry — only the one read above survives:');
+      for (const a of preview.aliasesCollapsed) info(`      ${a.key}  (content digest ${a.digest.slice(0, 12)}…)`);
+    }
+    if (preview.refusalsDropped.length) {
+      console.log('');
+      info(`  It also drops this workspace's recorded refusal of ${preview.refusalsDropped.join(', ')} — `);
+      info('  binding a vault is adopting it, so an earlier "no" about it stops being in force.');
+      // AND THE REBUILD THAT DROP PERFORMS, which the seal covered but no
+      // sentence described: removing a refusal does not edit one key. Every
+      // spelling of this workspace's refusals is DELETED and one canonical
+      // entry is written from the union of the READABLE ones — so a spelling
+      // whose content the reader ignores (an array, a string, a number where
+      // an object was expected) is destroyed and replaced by nothing.
+      // (Codex, review round 5.)
+      info('  Removing a refusal REBUILDS this workspace\'s refusal record: these stored entries are deleted —');
+      for (const s of preview.refusalSpellings) info(`      ${s.key}  (content digest ${s.digest.slice(0, 12)}…)`);
+      info('  and anything in them the reader cannot take as a refusal map is dropped with them.');
+      info(preview.refusalsSurviving.length
+        ? `  What is written back, in one canonical entry: ${preview.refusalsSurviving.join(', ')}.`
+        : '  NOTHING is written back: these were the only refusals this workspace held, so its refusal record'
+          + ' is removed entirely (and the top-level property too, if no other workspace has one).');
+    }
+    console.log('');
+    console.log(c('bold', 'What it will NOT do:'));
+    // CONDITIONAL ON WHAT YOU ASKED FOR. The unqualified "it does not drop a
+    // lock" was printed above a plan showing `locked: false` whenever
+    // --no-locked was passed: a promise contradicted four lines up.
+    const exceptions = [
+      lockedArg === false ? 'the LOCK, because you passed --no-locked' : null,
+      preview.promoted
+        ? `${preview.promoted.vault}'s SECONDARY role and its ${preview.promoted.tier} tier, because you made `
+          + 'it the primary — a tier qualifies a secondary, and a primary is read-write'
+        : null,
+      preview.anomalies.length
+        ? 'whatever makes the entry unreadable (a duplicate, a tier naming no secondary, a field of the wrong '
+          + 'shape) — normalising those away IS the repair'
+        : null,
+      // The fourth exception, missing until a review round named it: metadata
+      // was never part of the conservation claim, and saying nothing about it
+      // made the claim read as covering it.
+      preview.metadataRewritten
+        ? 'the confirmation METADATA (confirmedVia, confirmedAt), which a repair re-stamps because a repair '
+          + 'is itself a fresh confirmation'
+        : null,
+    ].filter(Boolean);
+    if (exceptions.length) {
+      // THE UNQUALIFIED PROMISE IS NOT PRINTED AT ALL WHEN IT HAS AN
+      // EXCEPTION. Printing it and then listing the exceptions underneath
+      // still puts a false sentence on screen and asks the reader to keep
+      // going before believing it. A promotion really does remove a secondary
+      // declaration and its tier; --no-locked really does drop a lock; a
+      // repair really does normalise away what it cannot read.
+      info('  It keeps what the entry holds — every secondary, write tier, lock and unknown field — EXCEPT:');
+      for (const e of exceptions) info(`      ${e}`);
+      info('  Everything else is kept by rule, not by remembering to name it.');
+    } else {
+      info('  It does not drop a secondary, a write tier, a lock or an unknown field — a repair keeps what the');
+      info('  entry holds, by rule and not by remembering to name it.');
+    }
+    info('  It does not promote a secondary held as strict read-only (alsoLocked) to primary.');
+    info('  It does not register, open or reach any vault, and it does not touch the workspace\'s .env.');
+    info('  The write tiers it keeps are the entry\'s OWN. A tier that comes from the config\'s GLOBAL');
+    info('  alsoLocked/alsoWritable stays global: freezing it here would outlive the global rule.');
+    // NOT a denial of any effect on a running session, which was false: the
+    // router watches its config by default. One definition, quoted.
+    info(`  It writes the config file and nothing else. ${RUNNING_SESSION_NOTE}`);
+    // The two consequences that read backwards unless they are said, from the
+    // transform that decided them.
+    const effects = repairEffects(preview, 'planned');
+    if (effects.length) {
+      console.log('');
+      console.log(c('bold', 'Consequences to read before approving:'));
+      for (const s of effects) info(`  ${s}`);
+    }
+  };
+
+  if (dryRun) {
+    describePlan();
+    printPlanSeal(
+      computePlanSeal({ op: BINDING_REPAIR_OP, identity, plan: bindingRepairPlanCore(preview) }),
+      `Apply with: --repair-binding ${wsArg}` +
+      `${wantedPrimary ? ` --primary ${wantedPrimary}` : ''}` +
+      `${lockedArg === true ? ' --locked' : (lockedArg === false ? ' --no-locked' : '')}` +
+      ' --approved-plan-sha256 <seal>',
+    );
+    process.exit(0);
+  }
+
+  // THE PLAN IS RE-DERIVED INSIDE THE LOCK, and that re-derivation is what the
+  // seal is checked against — never the preview above. A preview read the file
+  // before the lock opened; between the two, a sibling session can have
+  // changed the entry, the registry or `disabledVaults`. Verifying the seal
+  // against the preview would prove only that this process had not changed its
+  // own mind. (The same shape the tool re-reads for: rounds 4 and 5.)
+  let applied = null;
+  let appliedPlan = null;
+  try {
+    updateConfigBindings(CONFIG_PATH, (cfg) => {
+      const fresh = planBindingRepair(cfg, wsPath, { wantedPrimary, locked: lockedArg });
+      appliedPlan = fresh;
+      if (fresh.blocked) {
+        const err = new Error(
+          `--repair-binding: ${fresh.reason}. Nothing was written. Re-run with --dry-run to see the entry as it is now.`,
+        );
+        err.code = BINDING_REPAIR_REQUIRED_CODE;
+        throw err;
+      }
+      verifyPlanSealOrFail({
+        op: BINDING_REPAIR_OP,
+        identity,
+        plan: bindingRepairPlanCore(fresh),
+        provided: approvedPlanSha256,
+        previewHint: `node scripts/setup-vault.mjs --repair-binding ${wsArg} --dry-run`,
+        // NOT "the vault": this operation acts on a workspace's entry in a
+        // config file, and no vault of it moved.
+        subject: 'This workspace\'s binding entry, or what the config file says about the vaults it names,',
+      });
+      return applyBindingWrite(cfg, wsPath, {
+        mode: BINDING_WRITE_MODE.REPAIR,
+        primary: fresh.primary,
+        // The call names NOTHING to keep: `repair` mode keeps the entry's own
+        // secondaries by rule. Naming them here would re-introduce, one line
+        // lower, the very "the caller must remember" the lot removes.
+        also: [],
+        locked: lockedArg,
+        confirmedVia: 'repair-binding',
+        // THE DATE THE SEAL JUST VERIFIED, not one the writer reads for
+        // itself. `withBinding` stamps `new Date()` when the entry carries no
+        // `confirmedAt`, so without this the verified plan and the write could
+        // straddle midnight and disagree. (Codex, round 6.)
+        confirmedAt: fresh.confirmedAt,
+      }, {
+        // THE ENTRY PRECONDITION, asked of the file inside the lock. It is not
+        // the seal's job: the seal says "the plan is the one you approved",
+        // this says "the entry is the one the plan was built on". An entry can
+        // be replaced by an equivalent one from a sibling session without the
+        // plan moving at all.
+        precondition: ({ rawPrevious }) => {
+          if (rawEntryDigest(rawPrevious) !== preview.entryDigest) {
+            const err = new Error(
+              '--repair-binding: this workspace\'s binding entry changed between the dry-run and this apply ' +
+              '(another session wrote it, or it was hand-edited), so NOTHING was written. Re-run with ' +
+              '--dry-run, read the new plan, and pass ITS seal.',
+            );
+            err.code = BINDING_REPAIR_REQUIRED_CODE;
+            throw err;
+          }
+        },
+        // A STRICT SECONDARY IS NEVER PROMOTED BY THIS COMMAND EITHER. The
+        // shared guard, asked of the file, on the same reading the tools use —
+        // the raw entry when the repaired reading is null, which is precisely
+        // the entry a repair is for (round 11).
+        guardPromotion: ({ source }) => {
+          if (isPromotionOfLockedSecondaryOnDisk(fresh.primary, source, cfg)) {
+            const err = new Error(
+              `--repair-binding: "${fresh.primary}" is a secondary this workspace holds as LOCKED read-only ` +
+              '(alsoLocked), and making it the primary would lift that restriction in one command. Nothing was ' +
+              'written. Choose another primary, or change its tier first with set_secondary_vault_mode.',
+            );
+            err.code = PROMOTION_REFUSED_CODE;
+            throw err;
+          }
+        },
+        // THE NAMES COME LAST, as they do in the tool — but this command has no
+        // session catalogue, so the judge is the FILE, which is what the next
+        // start reads. A secondary the entry already holds is KEPT and not
+        // re-judged (round 13); only the primary must be bindable.
+        assertNames: (c2) => {
+          if (!writerBindableNames(c2, []).has(fresh.primary)) {
+            const err = new Error(
+              `--repair-binding: "${fresh.primary}" is not a vault this config file can bind (absent from ` +
+              '`portRegistry`/`remoteVaults`, or named in `disabledVaults`). Nothing was written.',
+            );
+            err.code = BINDING_REPAIR_REQUIRED_CODE;
+            throw err;
+          }
+        },
+        onPlan: (p) => { applied = p; },
+      });
+    });
+  } catch (e) {
+    // A REFUSAL IS A REFUSAL, said as such — not "could not write the config,
+    // check the permissions", which sends the reader to repair a file that is
+    // fine. (Round 16, the same lesson as `--link-workspace`.)
+    if (e?.code === BINDING_REPAIR_REQUIRED_CODE || e?.code === PROMOTION_REFUSED_CODE) fail(e.message);
+    fail(`Could not update ${CONFIG_PATH} (${e.message}). Nothing was repaired.`);
+  }
+
+  ok(`Repaired this workspace's binding in ${CONFIG_PATH}.`);
+  info(`  primary: ${applied.entry.vault}`);
+  info(`  secondaries kept: ${applied.entry.also.join(', ') || '(none)'}`);
+  info(`  tiers kept: locked [${applied.entry.alsoLocked.join(', ') || '—'}] writable [${applied.entry.alsoWritable.join(', ') || '—'}]`);
+  info(`  locked: ${applied.entry.locked}`);
+  // THE REST OF WHAT THE WRITE DID, reported like the preview promised it
+  // would be. A recap that names only the entry describes a smaller write
+  // than the one that ran.
+  if (appliedPlan.aliasesCollapsed.length) {
+    info(`  other spellings of this workspace DELETED: ${appliedPlan.aliasesCollapsed.map((a) => a.key).join(', ')}`);
+  }
+  if (appliedPlan.refusalsDropped.length) {
+    info(`  recorded refusal(s) dropped (binding a vault is adopting it): ${appliedPlan.refusalsDropped.join(', ')}`);
+  }
+  for (const s of repairEffects(applied, 'stored')) info(`  ${s}`);
+  console.log('');
+  info(RUNNING_SESSION_NOTE);
   process.exit(0);
 }
 

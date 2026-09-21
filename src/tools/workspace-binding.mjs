@@ -47,7 +47,6 @@ import { writeFileAtomicSync } from '../helpers/write-file-atomic.mjs';
 import { safeForMessage, identifierForCall } from '../helpers/sanitize.mjs';
 import {
   HINT_STATUS,
-  withBinding,
   withoutBinding,
   readBinding,
   boundVaults,
@@ -91,6 +90,11 @@ import {
   lockedSecondaryPromotionError,
 } from '../helpers/vault-reach.mjs';
 import { resolveProposalId, canOpenLocally, sameSecondarySet } from '../helpers/binding-proposal.mjs';
+import {
+  applyBindingWrite,
+  describeBindingWriteEffects,
+  BINDING_WRITE_MODE,
+} from '../helpers/binding-write.mjs';
 
 const { resolveDefaultVaultWithSource } = registryInternals;
 
@@ -746,9 +750,30 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
   // Found in the final review, 2026-09-03; the merge review had found the
   // identical shape in the migration.
   let refusalsDropped = [];
-  const next = updateConfigBindings(configPath, (cfg) => {
-    const previous = readBinding(cfg, cwd);
-    const rawPrevious = rawBindingEntry(cfg, cwd);
+  // THE TRANSFORM ITSELF LIVES IN `helpers/binding-write.mjs` SINCE THE LOT
+  // « réparation des liaisons ». What used to be a closure here is now a
+  // shared function, for one reason: the accepted decision of 2026-09-20
+  // opens a command-line route to a repair, and a sharing that covered the
+  // MESSAGES but not the TRANSFORMATION would have rebuilt the very defect
+  // the lot exists to close — two repairers, drifting.
+  //
+  // WHAT MOVED AND WHAT STAYED. The ORDER of the guards moved (it is the
+  // contract, and it belongs with the transform); the guards' own SENTENCES
+  // stayed here, because a tool refusal names a call and a CLI refusal names
+  // a flag. The mode is `replace`: this tool has always replaced, and the
+  // decision explicitly declined to break that general API (Q4 — no
+  // `dropSecondaries` obligation imposed on every writer).
+  let writePlan = null;
+  const next = updateConfigBindings(configPath, (cfg) => applyBindingWrite(cfg, cwd, {
+    mode: BINDING_WRITE_MODE.REPLACE,
+    primary,
+    also,
+    // TRI-STATE, passed through as it came. `true` locks, `false` unlocks, and
+    // ABSENT keeps whatever the entry already says — including, since this lot,
+    // the lock of an entry that names no primary (see `planBindingWrite`).
+    locked: args.locked,
+    confirmedVia: CONFIRMED_VIA,
+  }, {
     // THE PRECONDITION IS ASKED BEFORE THE NAMES ARE JUDGED. `assertBindable`
     // exempts a secondary the entry holds (round 13) — so when a sibling
     // REMOVES that secondary between the diagnostic and the spelled repair,
@@ -771,6 +796,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // the precondition let a stale repair recreate an entry a sibling had
     // deleted; `rawEntryDigest` is the identity of the entry itself. (Codex,
     // round 11.)
+    precondition: ({ rawPrevious }) => {
     if (args.ifBindingDigest !== undefined && rawEntryDigest(rawPrevious) !== args.ifBindingDigest) {
       adoptRefusals(readRefusals(cfg, cwd));
       throw new Error(
@@ -784,10 +810,9 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         + 'with a fresh digest, a proposal, a success, or a refusal for a reason of its own.',
       );
     }
+    },
     // A refusal of any vault being bound is dropped by `withBinding` itself;
     // read here, inside the lock, only so the answer can SAY so.
-    const refusedBefore = readRefusals(cfg, cwd);
-    refusalsDropped = requested.filter((n) => refusedBefore.has(n));
     // THE PROMOTION REFUSAL IS ASKED AGAIN, OF THE FILE. The preflight above
     // answered from the live registry; between it and this lock a sibling
     // session may have recorded `primary` as a strict secondary of this very
@@ -809,9 +834,12 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // NO SENTINEL: the tiers are read with no primary at all (round 11 — a
     // sentinel is a name a vault can carry, and one of that name lost its
     // strict tier before the question was asked).
-    const rawTiers = previous ? null : rawSecondaryTiers(rawPrevious);
-    const rawAsBinding = rawTiers ? { vault: null, ...rawTiers } : null;
-    if (isPromotionOfLockedSecondaryOnDisk(primary, previous ?? rawAsBinding, cfg)) {
+    // `source` IS THAT SAME READING, computed once by the transform and shared
+    // with the lock and the tiers, so the three cannot drift apart again.
+    guardPromotion: ({ source }) => {
+    const refusedBefore = readRefusals(cfg, cwd);
+    refusalsDropped = requested.filter((n) => refusedBefore.has(n));
+    if (isPromotionOfLockedSecondaryOnDisk(primary, source, cfg)) {
       // THE REFUSALS ARE HONOURED ON SIGHT here as on every other refusing
       // exit of this transform: they were just read, and a refusal recorded
       // elsewhere must not stay unknown because this call refused. (Codex,
@@ -819,6 +847,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       adoptRefusals(refusedBefore);
       throw lockedSecondaryPromotionError(promotionRefusal(primary));
     }
+    },
     // THE ACCEPTANCE IS RE-RESOLVED AGAINST THE FILE, and this is the call that
     // decides. The preflight above answered from the live registry; between it
     // and this lock a sibling session may have changed the binding, and under
@@ -826,6 +855,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // vault's id matches any more — which is precisely what "the binding moved"
     // means — and the re-derived pair must equal what this transform is about
     // to write, or the write is not the one that was approved.
+    reresolve: ({ previous }) => {
     if (accepted) {
       // THE REFRESH WRAPS BOTH REFUSALS OF THIS BLOCK — and the first version
       // of it was unreachable in exactly the case it was written for. It sat
@@ -884,6 +914,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
         );
       }
     }
+    },
     // THE NAMES ARE JUDGED AFTER THE ACCEPTANCE IS RE-RESOLVED. Round 14 put
     // `assertBindable` right after the digest — before this block — so a
     // primary a sibling dropped BETWEEN the preflight and this lock was
@@ -892,36 +923,11 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // placeholder and the digest, never ran. (Codex, round 15, S13.) The
     // digest, the promotion guard and the re-resolution all decide on the
     // entry; the names come last.
-    assertBindable(cfg);
-    const locked = typeof args.locked === 'boolean'
-      ? args.locked
-      : Boolean(previous && previous.vault === primary && previous.locked);
-    // THE TIER OF EACH SECONDARY SURVIVES A RE-CONFIRMATION. Adding a
-    // secondary is the ordinary reason to call this again, and the first
-    // version would have reset every mode `set_secondary_vault_mode` had
-    // recorded. Carried from the binding as it is INSIDE the lock, filtered
-    // to the vaults that are still secondaries after this call.
-    //
-    // AND THEY SURVIVE THE REPAIR OF AN ENTRY WITHOUT A PRIMARY. The repaired
-    // reading of such an entry is null, so the first version read no tiers at
-    // all and a strict secondary came out of its own repair as soft — the
-    // restriction silently lifted by the call the diagnostic told the user to
-    // make (Codex, round 10, both passes). The tiers are read from the entry
-    // as written, given the primary this call names, through the same
-    // forgiving reading (a vault in both tiers is locked), then filtered to
-    // the secondaries that stay — exactly what `previous` supplies when there
-    // is one.
-    const tierSource = previous ?? rawTiers;
-    const keep = (list) => (tierSource && Array.isArray(list) ? list.filter((n) => also.includes(n)) : []);
-    return withBinding(cfg, cwd, {
-      vault: primary,
-      also,
-      locked,
-      confirmedVia: CONFIRMED_VIA,
-      alsoLocked: keep(tierSource?.alsoLocked),
-      alsoWritable: keep(tierSource?.alsoWritable),
-    });
-  }, io);
+    assertNames: (c) => assertBindable(c),
+    // The plan's own facts, kept for the answer: what the write DID, said
+    // once, by the code that decided it. See `describeBindingWriteEffects`.
+    onPlan: (plan) => { writePlan = plan; },
+  }), io);
 
   // Apply to the LIVE registry too, so the session that just confirmed does
   // not have to be restarted to see its own answer.
@@ -1047,11 +1053,23 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     unresolvedSecondaryFacts(rawBindingEntry(next, cwd), registryFactsFor(next, registry.vaults)),
     { locked: binding.locked },
   );
+  // THE TWO CONSEQUENCES THAT READ BACKWARDS IF THEY ARE NOT SAID (decision
+  // of 2026-09-20, and the fact its Q4 established). Keeping a lock while
+  // changing primary MOVES it onto another vault; and dropping a secondary is
+  // not "reducing an access" — `alsoWriteTierFor` returns null before it ever
+  // consults the global lists, so a strict vault that stays reachable another
+  // way comes out WRITABLE. Built by the transform that decided them, not
+  // re-derived here.
+  const effects = describeBindingWriteEffects(writePlan, (n) => `"${safeForMessage(String(n), 80)}"`);
   return {
     cleared: false,
     workspace: key,
     boundTo: primary,
     also,
+    // What this write dropped, and where the lock landed — the facts behind
+    // the sentences above, for a caller that would rather read data.
+    droppedSecondaries: writePlan?.droppedSecondaries ?? [],
+    lockMovedTo: writePlan?.lockMovesTo ?? null,
     // The secondaries above that this session cannot resolve: declared, kept,
     // not answering from here. Empty in the ordinary case.
     notLoadedHere,
@@ -1081,6 +1099,7 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
       + (refusalsDropped.length
         ? ` The earlier refusal of ${refusalsDropped.map((n) => `"${safeForMessage(n, 80)}"`).join(', ')} recorded for this workspace is dropped — binding a vault is adopting it.`
         : '')
+      + (effects.length ? ` ${effects.join(' ')}` : '')
       + ' The binding lives in your own router config, not in this project, so it does not travel with a clone.',
   };
 }

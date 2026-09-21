@@ -102,6 +102,46 @@ L'acceptation **ajoute**. Le vault devient principal si le workspace n'avait rie
 
 **Une limite dite plutôt que masquée.** Le chat Desktop démarre dans le dossier de l'application et n'appartient à aucun projet — mais ce dossier et un projet honnête encore non lié sont, pour le routeur, la même chose : un répertoire sans entrée au registre. Plutôt qu'une heuristique qui se tromperait dans les deux sens, une proposition qui créerait une **première** liaison **nomme le répertoire** qu'elle lierait et invite à refuser si ce n'est pas un projet.
 
+## Réparer une liaison — la garantie passe de la phrase au code
+
+**Le besoin.** Jusqu'ici, « une réparation ne perd rien » était une propriété de la **phrase**, pas du programme. Quand le routeur ne savait pas lire l'entrée d'un workspace, il épelait un appel `confirm_workspace_binding` nommant tout ce qu'il fallait garder : chaque secondaire, chaque palier local, `locked: true`. Qui recopiait cet appel ne perdait rien. Qui écrivait le sien perdait ce qu'il avait oublié. La décision du 2026-09-20 (`politique-desactive-et-reparation-des-liaisons`) demande que la garantie devienne une règle du code.
+
+**Ce que ça fait.** Le transformateur qui décide de ce qui sera écrit vit maintenant à un seul endroit et connaît **deux modes** :
+
+| Mode | Ce qu'il fait |
+|---|---|
+| **remplacement** | le comportement de `confirm_workspace_binding`, inchangé : l'appel nomme la liaison, et un secondaire non renommé disparaît |
+| **réparation** | conserve les secondaires de l'entrée, leurs paliers **locaux**, le verrou et les champs inconnus — par règle, pas par mémoire |
+
+La décision a explicitement **écarté** l'option qui aurait imposé de nommer tout retrait dans tous les writers : l'API générale ne casse pas.
+
+**Le défaut que le déplacement referme.** `locked` se déduisait de la lecture **réparée** de l'entrée, qui vaut `null` pour une entrée sans principal utilisable — c'est-à-dire précisément l'entrée qu'une réparation vise. Réparer une telle entrée perdait donc son verrou, et seule la phrase épelée le remettait. Le verrou se reprend désormais de l'entrée **telle qu'écrite**, exactement comme les paliers depuis un tour antérieur.
+
+**Ce qui est conservé, c'est la donnée LOCALE, jamais le palier EFFECTIF.** Le palier effectif d'un secondaire se calcule à la lecture, à partir des listes de la liaison **et** des listes globales de la configuration, le strict l'emportant partout. Figer ce résultat dans l'entrée créerait une restriction locale qui **survivrait à la suppression de la règle globale** qui l'a causée. L'aperçu **affiche** le palier effectif — sans quoi « alsoLocked : aucun » se lit à tort comme « écrivable » au-dessus d'un vault qu'une règle globale tient strict — mais il ne l'écrit nulle part, et il ne fait pas partie du sceau.
+
+**Et conserver `locked: true` en changeant de principal DÉPLACE le verrou** sur un autre vault : ce n'est pas un booléen reporté, c'est une isolation qui change de cible. Le plan et le message le disent.
+
+## Réparer depuis le terminal — `setup-vault.mjs --repair-binding`
+
+**Le besoin.** Une liaison que le routeur ne sait pas lire était diagnostiquée partout et réparable à un seul endroit : une session MCP dont le **serveur** a ce workspace pour répertoire de travail. Un opérateur au terminal recevait un appel qu'il ne pouvait pas passer. La décision du 2026-09-20 ouvre ce chemin (points 4a et 5).
+
+```
+setup-vault.mjs --repair-binding <workspace> [--primary <vault>] [--locked|--no-locked] --dry-run
+setup-vault.mjs --repair-binding <workspace> ...  --approved-plan-sha256 <hash>
+```
+
+`--primary` n'est nécessaire que si l'entrée ne nomme aucun principal que le fichier sache lier — la seule chose qu'une réparation ne peut pas décider seule, et qu'une personne tranche. Omettre `--locked`/`--no-locked` conserve le verrou tel quel.
+
+**Le `--dry-run` montre le plan** : les anomalies trouvées, ce qui serait écrit (principal, secondaires, paliers locaux, palier effectif, verrou, champs inconnus conservés), ce que l'opération **ne fera pas**, et les conséquences qui se lisent à l'envers si on ne les dit pas — le déplacement du verrou, et le fait que **retirer un secondaire peut rendre l'écriture permise** : `alsoWriteTierFor` rend `null` avant même de consulter les listes globales dès qu'un nom n'est plus dans `also`, et un palier `null` laisse écrire. Un vault tenu en lecture seule stricte, retiré de `also` mais resté joignable autrement, devient **écrivable**.
+
+**L'application exige le sceau** que le `--dry-run` a imprimé — plus strict que les autres flux scellés de ce script, parce qu'une réparation de liaison s'applique par quelqu'un qui a lu ce qu'elle garde. Deux préconditions, deux questions différentes : l'empreinte de l'entrée demande « l'entrée a-t-elle bougé ? », le sceau demande « le plan approuvé est-il encore celui qui va s'appliquer ? ». Les deux, pas l'une pour l'autre.
+
+**Le sceau est lié au WORKSPACE et au FICHIER de configuration**, pas à un vault. Une réparation de liaison n'agit sur aucun vault ; détourner l'identité de vault aurait laissé un plan prévisualisé pour un workspace confirmer une application sur un autre dès que les deux choisissent le même principal. Il couvre **ce que l'opération écrit** : le principal, les secondaires et leurs paliers locaux, le verrou, ce qui est abandonné, les entrées **alias** que l'écriture supprime (avec l'empreinte de leur contenu), les refus qu'elle retire, et les métadonnées de confirmation — `confirmedVia` et la **date**, en valeur. Conséquence à connaître : un sceau ne survit pas au passage de minuit, parce que l'écriture ne stamperait plus la même date.
+
+**Ce qu'elle ne fait jamais** : promouvoir en principal un secondaire tenu en lecture seule stricte (refusé dès le `--dry-run`, avant qu'un sceau existe — la question 4(b) reste ouverte et son statu quo intact) ; enregistrer, ouvrir ou joindre un vault ; toucher au `.env` du workspace ; et **créer** une liaison là où il n'y en a pas — c'est le travail d'`--attach`, qui écrit aussi l'indice `.env`, les réglages du plugin et le bloc CLAUDE.md qu'un workspace lié depuis ici n'aurait jamais.
+
+**Et elle n'affirme rien sur une session déjà démarrée.** Le routeur **surveille** sa configuration et tente un rechargement quand les changements se stabilisent : une session en cours peut donc prendre le changement sans redémarrer. Mais un rechargement qui échoue garde l'état précédent, et la surveillance peut être coupée (`--no-watch`) ou abandonnée après une erreur. Redémarrez la session si vous devez en être sûr.
+
 ## Les garde-fous anti-accident, en travers de toutes les features
 
 Une série de protections plus petites, décrites dans leurs fiches respectives mais rassemblées ici parce qu'elles forment une politique cohérente :
