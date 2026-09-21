@@ -284,7 +284,9 @@ const NETWORK_PLUGIN_ALLOWLIST = new Set([
 // folder carries a `.hotreload` (or `.git`) marker — the bridge's deploy.mjs
 // drops that marker so `npm run deploy:all` reloads the bridge live in every
 // open vault. `obsidian42-brat` (TfTHacker, MIT) auto-installs + auto-updates
-// GitHub-only plugins (the bridge, hot-reload) from releases at startup. Both
+// GitHub-only plugins from releases at startup — since 2026-09-22 the bridge is
+// the ONLY one it manages: hot-reload reached Obsidian's official community
+// store, so Obsidian updates it now and BRAT was cleared of it fleet-wide. Both
 // are cloned automatically when the reference enables them.
 
 // --- Reference-vault skeleton: shipped with the repo, used by --bootstrap-reference --
@@ -3450,7 +3452,7 @@ async function bootstrapReference(targetPath, opts = {}) {
   console.log(`  3. Obsidian will prompt you to install the plugins listed in community-plugins.json.`);
   console.log(`     Click ${c('cyan', 'Install')} for: Local REST API, Smart Connections, Templater, Quiet Outline.`);
   console.log(`     (The bridge plugin and BRAT are already in place — no action needed for those;`);
-  console.log(`      BRAT auto-updates the bridge + hot-reload from GitHub releases at startup.)`);
+  console.log(`      BRAT auto-updates the bridge from GitHub releases at startup.)`);
   console.log(`  4. Enable all four in Settings → Community plugins.`);
   console.log(`  5. Restart Obsidian once so Local REST API generates its certificate.`);
   console.log(`  6. ${c('bold', 'Finalize')}: ${c('cyan', `node "${fileURLToPath(import.meta.url)}" --init-reference "${abs}"`)}`);
@@ -3572,7 +3574,8 @@ export function applyThemeChoice(targetVault, themeChoice) {
 }
 
 // Lot 2 — anti-downgrade guard. BRAT auto-updates GitHub-sourced plugins
-// (the bridge, hot-reload) inside USER vaults at Obsidian startup, so a
+// (the bridge; hot-reload too until 2026-09-22, when it moved to the official
+// store and Obsidian took its updates over) inside USER vaults at startup, so a
 // target's installed plugin can legitimately be NEWER than the copy sitting
 // in the reference vault. Overwriting it would downgrade live code — locked
 // decision 2026-06-19: never. Compares manifest.json versions; returns false
