@@ -690,7 +690,26 @@ export async function confirmWorkspaceBinding(registry, args = {}, seams = {}) {
     // allowed in the call; this session simply cannot reach it. The PRIMARY
     // is never exempt: a repair that keeps an unregistered primary is not a
     // repair.
-    const keptFromEntry = new Set(rawSecondaryTiers(rawBindingEntry(cfg, cwd))?.also ?? []);
+    //
+    // AND THE ENTRY'S OWN PRIMARY IS A NAME THE ENTRY HOLDS TOO. Round 13
+    // read "what the entry holds" from `also`, which never contains the
+    // primary — the same blind spot that made a repair lose the old primary
+    // until the owner's question exposed it. The consequence here was an
+    // asymmetry between two ways of asking for one binding: naming the old
+    // primary as a secondary while changing primary was refused as "not a
+    // registered vault" when the file no longer binds it, while leaving it
+    // out and letting a repair carry it over succeeded.
+    //
+    // THE EXEMPTION STILL ONLY APPLIES TO A SECONDARY POSITION (`i > 0`
+    // below), so this cannot make an unbindable name the new PRIMARY — that
+    // refusal is untouched, and a repair that keeps an unregistered primary
+    // is still not a repair. (Codex, review of the demotion.)
+    const rawEntryHere = rawBindingEntry(cfg, cwd);
+    const keptFromEntry = new Set(rawSecondaryTiers(rawEntryHere)?.also ?? []);
+    if (rawEntryHere && typeof rawEntryHere === 'object' && !Array.isArray(rawEntryHere)
+      && typeof rawEntryHere.vault === 'string' && rawEntryHere.vault.trim() !== '') {
+      keptFromEntry.add(rawEntryHere.vault);
+    }
     const unknown = requested.filter((n, i) => typeof n !== 'string'
       || !((known.has(n) && bindable.has(n)) || (i > 0 && keptFromEntry.has(n))));
     if (!unknown.length) return;

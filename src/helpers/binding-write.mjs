@@ -199,11 +199,41 @@ export function planBindingWrite(ctx, { mode, primary, also = [], locked, confir
   const requested = (Array.isArray(also) ? also : []).filter((n) => typeof n === 'string' && n !== primary);
   const entryAlso = (Array.isArray(source?.also) ? source.also : []).filter((n) => n !== primary);
 
+  // THE OLD PRIMARY IS A NAME THE ENTRY HOLDS TOO, and `repair` was losing it.
+  // `also` never contains the primary, so reading "what the entry holds" from
+  // `also` alone missed the one name the entry holds most firmly: repairing
+  // `{ vault: "notes", also: ["work"] }` to another primary kept `work` and
+  // made `notes` vanish — with `droppedSecondaries` empty, because `notes`
+  // had never been a secondary to drop. Nothing announced it, and the
+  // command's own sentence promised the opposite.
+  //
+  // It is DEMOTED, not dropped (Roland, 2026-09-21): it joins `also`, first,
+  // with no tier of its own — exactly what `lock_vault --persist` has always
+  // done when it records a secondary as the new primary. That is the only
+  // behaviour that makes "a repair loses nothing" true of the whole entry
+  // rather than of its secondaries.
+  //
+  // `source.vault` is null for the raw fallback (an entry naming no primary),
+  // and there is then no old primary to demote.
+  const demotedPrimary = mode === BINDING_WRITE_MODE.REPAIR
+    && typeof source?.vault === 'string' && source.vault !== primary
+    ? source.vault
+    : null;
+
   // REPAIR KEEPS WHAT THE ENTRY HOLDS, whether or not the call named it. That
   // is the whole difference between the two modes, and the reason the
   // guarantee no longer depends on a caller copying a sentence.
+  //
+  // The demoted primary comes FIRST, as it does in `lock_vault --persist`, so
+  // the order of `also` still reads as a history.
+  //
+  // BEFORE `requested`, NOT BETWEEN. It sat after, which put it first only
+  // when the call named no secondaries of its own — true of the CLI, which
+  // passes `also: []`, and false of the shared transform in general. The
+  // sentence below says "first in `also`"; a contract that holds for one
+  // caller is not a contract. (Codex, review of the demotion.)
   const written = mode === BINDING_WRITE_MODE.REPAIR
-    ? [...new Set([...requested, ...entryAlso])]
+    ? [...new Set([...(demotedPrimary ? [demotedPrimary] : []), ...requested, ...entryAlso])]
     : [...new Set(requested)];
 
   // THE ENTRY'S OWN LISTS, filtered to the vaults that are still secondaries
@@ -275,6 +305,12 @@ export function planBindingWrite(ctx, { mode, primary, also = [], locked, confir
     keptFromEntry: entryAlso.filter((n) => written.includes(n)),
     droppedSecondaries: entryAlso.filter((n) => !written.includes(n)),
     promoted,
+    // The old primary, kept but no longer primary. Its own fact, like
+    // `promoted`, and for the same reason: `droppedSecondaries` cannot carry
+    // it (it was never a secondary), and the role change is a RESTRICTION
+    // worth stating — a primary is read-write, a secondary with no tier is
+    // read-only unless the user confirms each write.
+    demoted: demotedPrimary ? { vault: demotedPrimary, tier: 'soft' } : null,
     lockedFrom: typeof locked === 'boolean' ? 'argument' : (carried ? (ctx?.previous ? 'binding' : 'rawEntry') : 'none'),
     // Property 2: a lock that was recorded, is kept, and now names a vault
     // other than the one it named before — including the case where the entry
@@ -407,6 +443,28 @@ export function describeBindingWriteEffects(
   const dropped = DROP_VOICE[voice] ?? DROP_VOICE.live;
   const become = () => BECOME_VOICE[voice] ?? BECOME_VOICE.live;
   const out = [];
+  if (plan?.demoted) {
+    // KEPT, BUT NOT UNCHANGED. Saying only "it is kept" would be as misleading
+    // as the silent drop it replaces: a primary is read-write, and a secondary
+    // with no tier of its own is read-only unless the user confirms each
+    // write. The name survives; the access narrows.
+    // WHAT IT SAYS IS THE **LOCAL** FACT, and that distinction is the whole
+    // lot. The first version said the demoted primary becomes "read-only
+    // unless you confirm each write" — the SOFT tier — which is only true
+    // when no GLOBAL rule names it. With `alsoWritable: ["notes"]` in the
+    // config it comes out writable; with `alsoLocked: ["notes"]` it comes out
+    // strict, where no confirmation can authorise a write. The sentence
+    // asserted an EFFECTIVE tier from a LOCAL absence, which is the exact
+    // confusion `keep()` exists to prevent. (Codex, review of the demotion.)
+    out.push(
+      `${quote(plan.demoted.vault)} was this workspace's PRIMARY and ${become()} a SECONDARY — kept, first in `
+      + '`also`, with no write tier OF ITS OWN. That is not the same access: a primary is always read-write, '
+      + 'while a secondary\'s access is decided by this binding\'s tier lists AND the config\'s global ones. '
+      + 'With no local tier and no global rule naming it, it is read-only unless you confirm each write; a '
+      + 'global `alsoWritable` makes it writable, a global `alsoLocked` makes it strict. '
+      + 'set_secondary_vault_mode records a local tier if you want to decide it here.',
+    );
+  }
   if (plan?.promoted) {
     // The loss `droppedSecondaries` deliberately does not report, said here
     // rather than hidden behind "a repair keeps what the entry holds".

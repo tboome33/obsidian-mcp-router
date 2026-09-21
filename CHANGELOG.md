@@ -28,6 +28,39 @@ which is `null` for an entry that names no primary — precisely the entry a rep
 repairing such an entry silently dropped its lock, and only the printed sentence put it back. The
 lock now falls back to the entry as written, exactly as the write tiers have since an earlier round.
 
+### A repair no longer loses the vault it was pointing at
+
+`also` never contains the primary. So "what the entry holds", read from `also` alone, missed the one
+name the entry holds most firmly. Repairing `{ vault: "notes", also: ["work"] }` to another primary
+kept `work` and made `notes` **vanish** — and `droppedSecondaries` was empty, because `notes` had
+never been a secondary to drop. Nothing named the loss, under a command whose own sentence promises
+that a repair keeps what the entry holds.
+
+The old primary is now **demoted, not dropped**: it joins `also` first, with no write tier of its
+own, exactly as `lock_vault --persist` has always done when it records a secondary as the new
+primary. Only the `repair` mode does this; `confirm_workspace_binding` replaces as before.
+
+The preview says so, and says it as a **local** fact: a primary is always read-write, while a
+secondary's access is decided by this binding's tier lists **and** the config's global ones. With no
+local tier and no global rule, it is read-only unless you confirm each write — but a global
+`alsoWritable` makes it writable and a global `alsoLocked` makes it strict. An old primary the
+config file can no longer bind is kept too (a name the entry holds is kept), and flagged: disabled
+and absent get their own remedies, and the note says what retention really preserves — a future
+attachment by that name, not an inert historical record.
+
+Related, found in the same review: `confirm_workspace_binding` refused a call that named the entry's
+**own primary** as a secondary when the file no longer bound it, while a repair that carried the same
+name over implicitly succeeded. Two ways of asking for one binding, two answers. The retention
+exemption now covers the entry's primary — in a secondary position only, so an unbindable name still
+cannot become the new primary.
+
+**Question 4(b) is closed: no.** A secondary held as strict read-only is still never promoted to
+primary. The measurement that settled it: allowing it would not lift the protection once, it would
+**launder** it. Promote a strict secondary, then make the old primary primary again — same names in
+the same places, and the strict tier is gone, with no act ever naming it. Promoting a soft or
+writable secondary stays allowed, because `lock_vault --persist` on a secondary does exactly that and
+is a shipped feature.
+
 ### `setup-vault.mjs --repair-binding` — the terminal is no longer a dead end
 
 A binding the router cannot read was diagnosed everywhere and repairable in exactly one place: an

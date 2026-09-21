@@ -269,6 +269,7 @@ export function planBindingRepair(cfg, cwd, {
     lockMovesTo: null,
     keptFromEntry: [],
     promoted: null,
+    demoted: null,
     refusalsDropped: [],
     refusalSpellings: [],
     refusalsSurviving: [],
@@ -355,6 +356,27 @@ export function planBindingRepair(cfg, cwd, {
     // its local tier goes with the role. Named separately because
     // `droppedSecondaries` deliberately does not count it.
     promoted: plan.promoted,
+    // The old primary, kept as a secondary rather than dropped in silence
+    // (Roland, 2026-09-21). Sealed like `promoted`: which vault changes role
+    // is part of the plan an operator approves.
+    //
+    // `bindable` IS THE PRECONDITION OF THE MECHANISM THIS COPIES.
+    // `lock_vault --persist` carries the old primary down unconditionally —
+    // including one the file has dropped or disabled, by the round-13 rule
+    // that a name the entry already holds is KEPT — and it NAMES it when this
+    // session cannot resolve it (round 15). Copying the carry without the
+    // naming would keep a dead declaration and call it a conservation.
+    // `disabled` IS TOLD APART FROM `absent`, because their remedies are
+    // opposites: registering a name again lifts nothing for a disabled one.
+    // Every other diagnostic in this project makes that distinction; this one
+    // said "register it" for both. (Codex, review of the demotion.)
+    demoted: plan.demoted
+      ? {
+        ...plan.demoted,
+        bindable: facts.bindable.has(plan.demoted.vault),
+        disabled: facts.disabled.has(plan.demoted.vault),
+      }
+      : null,
     // `withBinding` drops a recorded refusal for every vault it binds —
     // adopting is the opposite of refusing. The MCP façade has always named
     // them in its answer; this one did not even know about them. Sealed,
@@ -480,6 +502,7 @@ export function bindingRepairPlanCore(plan) {
     dropped: [...(p.dropped ?? [])].map(String),
     lockMovesTo: p.lockMovesTo ?? null,
     promoted: p.promoted ?? null,
+    demoted: p.demoted ?? null,
     unknownFields: [...(p.unknownFields ?? [])].map(String),
     // The rest of the write's footprint. Sealed because this operation WRITES
     // them: a sibling that adds an alias entry, EDITS one, or records a

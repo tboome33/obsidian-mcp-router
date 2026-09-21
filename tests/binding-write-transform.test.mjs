@@ -222,12 +222,106 @@ describe('the write transform, asked directly — what the pure function decides
     }
   });
 
+  test('REPAIR demotes the old primary instead of losing it — replace still does not', () => {
+    // Roland, 2026-09-21. `also` never contains the primary, so "what the
+    // entry holds" read from `also` alone missed the name the entry holds
+    // most firmly: repairing to another primary kept the secondaries and made
+    // the OLD PRIMARY vanish, with `droppedSecondaries` empty because it had
+    // never been a secondary to drop. Nothing announced it, and the command's
+    // own sentence promised the opposite.
+    const ctx = ctxFor({ vault: 'notes', also: ['work'], alsoLocked: ['work'] });
+
+    const repaired = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPAIR, primary: 'remote', also: [], confirmedVia: 'repair-binding',
+    });
+    assert.deepEqual(repaired.entry.also, ['notes', 'work'],
+      'the demoted primary comes FIRST, as it does in lock_vault --persist');
+    assert.deepEqual(repaired.demoted, { vault: 'notes', tier: 'soft' });
+    assert.deepEqual(repaired.entry.alsoLocked, ['work'], 'and the other tiers are untouched');
+    assert.deepEqual(repaired.droppedSecondaries, [], 'nothing is dropped, and that is now TRUE');
+
+    const replaced = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPLACE, primary: 'remote', also: [], confirmedVia: 'tool',
+    });
+    assert.deepEqual(replaced.entry.also, [], 'the tool replaces, and its API is untouched');
+    assert.equal(replaced.demoted, null);
+  });
+
+  test('the demoted primary gets NO tier of its own', () => {
+    // Same rule as lock_vault --persist: the previous primary joins `also`
+    // soft, like any newly declared secondary. A primary carries no tier to
+    // bring down with it.
+    const ctx = ctxFor({ vault: 'notes', also: [], alsoWritable: [] });
+    const plan = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPAIR, primary: 'work', also: [], confirmedVia: 'repair-binding',
+    });
+    assert.deepEqual(plan.entry.also, ['notes']);
+    assert.deepEqual(plan.entry.alsoLocked, []);
+    assert.deepEqual(plan.entry.alsoWritable, []);
+  });
+
+  test('an entry with NO primary has none to demote', () => {
+    // The raw fallback reads `vault: null`, and null is not a vault name to
+    // push into `also`.
+    const ctx = ctxFor({ also: ['work'], locked: true });
+    const plan = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPAIR, primary: 'notes', also: [], confirmedVia: 'repair-binding',
+    });
+    assert.equal(plan.demoted, null);
+    assert.deepEqual(plan.entry.also, ['work']);
+  });
+
+  test('repairing WITHOUT changing the primary demotes nothing', () => {
+    const ctx = ctxFor({ vault: 'notes', also: ['work', 'work'] });
+    const plan = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPAIR, primary: 'notes', also: [], confirmedVia: 'repair-binding',
+    });
+    assert.equal(plan.demoted, null);
+    assert.deepEqual(plan.entry.also, ['work']);
+  });
+
+  test('the demotion is SAID, and said as a LOCAL fact — not an effective tier', () => {
+    // Found by review. The first version said the demoted primary becomes
+    // "read-only unless you confirm each write" — the SOFT tier — which is
+    // only true when no GLOBAL rule names it. A global `alsoWritable` makes
+    // it writable; a global `alsoLocked` makes it strict, where no
+    // confirmation can authorise a write. Asserting an EFFECTIVE tier from a
+    // LOCAL absence is the exact confusion `keep()` exists to prevent, and it
+    // had crept into the sentence describing `keep()`'s own result.
+    const plan = { demoted: { vault: 'notes', tier: 'soft' } };
+    const [said] = describeBindingWriteEffects(plan, (s) => s);
+    assert.match(said, /was this workspace's PRIMARY and is now a SECONDARY/);
+    assert.match(said, /no write tier OF ITS OWN/, 'the LOCAL fact, which is what the code decides');
+    assert.match(said, /AND the config's global ones/, 'and the effective answer needs both');
+    assert.match(said, /a global `alsoWritable` makes it writable, a global `alsoLocked` makes it strict/);
+    assert.doesNotMatch(said, /^[^.]*read-only unless you confirm each write/,
+      'the soft outcome is never stated unconditionally');
+    // And it obeys the voice, like every other sentence here.
+    assert.match(describeBindingWriteEffects(plan, (s) => s, { voice: 'planned' })[0], /WOULD become a SECONDARY/);
+  });
+
+  test('the demoted primary is first EVEN WHEN the call names its own secondaries', () => {
+    // Found by review. `written` put the demoted name after `requested`, so
+    // "first in `also`" held only for a caller passing `also: []` — the CLI.
+    // A contract that holds for one caller is not a contract.
+    const ctx = ctxFor({ vault: 'notes', also: ['work', 'remote'] });
+    const plan = planBindingWrite(ctx, {
+      mode: BINDING_WRITE_MODE.REPAIR, primary: 'work', also: ['remote'], confirmedVia: 'repair-binding',
+    });
+    assert.equal(plan.entry.also[0], 'notes', 'the sentence says first, so it must BE first');
+    assert.deepEqual(plan.entry.also, ['notes', 'remote']);
+  });
+
   test('a vault named as the new primary stops being a secondary of itself', () => {
     const ctx = ctxFor({ vault: 'notes', also: ['work'] });
     const plan = planBindingWrite(ctx, {
       mode: BINDING_WRITE_MODE.REPAIR, primary: 'work', also: [], confirmedVia: 'repair-binding',
     });
-    assert.deepEqual(plan.entry.also, []);
+    // The point is that `work` leaves `also` — not that `also` empties. Since
+    // the demotion, the old primary takes its place there, so asserting `[]`
+    // would have been asserting the position of a second, unrelated fact.
+    assert.equal(plan.entry.also.includes('work'), false);
+    assert.deepEqual(plan.entry.also, ['notes']);
   });
 
   test('a SECONDARY made primary is reported as a promotion, tier included', () => {
@@ -243,7 +337,12 @@ describe('the write transform, asked directly — what the pure function decides
     assert.deepEqual(plan.promoted, { vault: 'work', tier: 'writable' });
     assert.deepEqual(plan.droppedSecondaries, [], 'and it is NOT counted twice as a drop');
     assert.deepEqual(plan.entry.alsoWritable, []);
-    const [said] = describeBindingWriteEffects(plan, (s) => s);
+    // Found by position once, which broke the day a second sentence was added
+    // ahead of it. The renderer returns a SET of sentences; look for the one
+    // being asserted rather than for its index.
+    const said = describeBindingWriteEffects(plan, (s) => s)
+      .find((s) => s.includes('is now its PRIMARY'));
+    assert.ok(said, 'the promotion is stated');
     assert.match(said, /was a SECONDARY of this workspace and is now its PRIMARY/);
     assert.match(said, /writable tier RECORDED ON THIS BINDING leaves with it/);
   });
@@ -480,6 +579,41 @@ describe('the write transform — the order of its guards', () => {
     );
     assert.deepEqual(storedEntry(written).also, ['elsewhere']);
     assert.deepEqual(r.notLoadedHere, ['elsewhere']);
+  });
+
+  test('the entry\'s OWN PRIMARY may be named as a secondary, even if unbindable', async () => {
+    // Found by review of the demotion. Round 13 read "what the entry holds"
+    // from `also`, which never contains the primary — the same blind spot
+    // that made a repair lose the old primary. The consequence: two ways of
+    // asking for one binding behaved differently. Naming the old primary as a
+    // secondary while changing primary was refused as "not a registered
+    // vault" when the file no longer binds it; leaving it out and letting a
+    // repair carry it over succeeded.
+    const entry = { vault: 'elsewhere', also: ['work'] };
+    const { written, seam } = seams(onDisk({ entry }));
+    const r = await confirmWorkspaceBinding(
+      registryOf(),
+      { vault: 'notes', also: ['elsewhere', 'work'], ifBindingDigest: rawEntryDigest(entry) },
+      seam,
+    );
+    assert.deepEqual(storedEntry(written).also, ['elsewhere', 'work']);
+    assert.deepEqual(r.notLoadedHere, ['elsewhere'], 'kept, and named as unreachable from here');
+  });
+
+  test('the exemption does NOT let an unbindable name become the PRIMARY', async () => {
+    // The exemption applies to a secondary position only (`i > 0`). A repair
+    // that keeps an unregistered primary is still not a repair.
+    const entry = { vault: 'elsewhere', also: ['work'] };
+    const { written, seam } = seams(onDisk({ entry }));
+    await assert.rejects(
+      () => confirmWorkspaceBinding(
+        registryOf(),
+        { vault: 'elsewhere', also: ['work'], ifBindingDigest: rawEntryDigest(entry) },
+        seam,
+      ),
+      /not a registered vault/,
+    );
+    assert.equal(written.length, 0);
   });
 
   test('an unregistered PRIMARY is refused even when the entry names it', async () => {

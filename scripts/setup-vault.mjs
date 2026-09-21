@@ -6325,6 +6325,37 @@ if (args[0] === '--repair-binding') {
         ? `${preview.promoted.vault}'s SECONDARY role and its ${preview.promoted.tier} tier, because you made `
           + 'it the primary — a tier qualifies a secondary, and a primary is read-write'
         : null,
+      // The old primary keeps its NAME (it is demoted, not dropped), but not
+      // its access. An exception to "keeps what the entry holds" that is about
+      // the ROLE rather than the name.
+      preview.demoted
+        ? `${preview.demoted.vault}'s PRIMARY role: it is KEPT, as a secondary with no tier, because you chose `
+          + 'another primary — read-only unless you confirm each write, where a primary is read-write'
+          // THE PRECONDITION OF THE CARRY, said. Keeping a name the config
+          // cannot bind is the round-13 rule and is deliberate, but calling it
+          // a conservation without qualifying it would be a half-truth.
+          //
+          // AND QUALIFIED THREE TIMES OVER, after review:
+          //   - `disabled` is NOT `absent`: registering a disabled name lifts
+          //     nothing, so the two get opposite remedies;
+          //   - this is what THE FILE can bind. It is not "it will not
+          //     answer": a session whose ENVIRONMENT provides that remote, or
+          //     one still holding an older descriptor, can reach it;
+          //   - retention preserves a FUTURE attachment by name, not an inert
+          //     historical record — register that name later and this
+          //     workspace holds it as a secondary, with no new confirmation.
+          + (preview.demoted.bindable
+            ? ''
+            : (preview.demoted.disabled
+              ? '. ⚠ `disabledVaults` names it in this config file, so no NEW declaration of it is accepted and '
+                + 'the next start will not load it — registering it again lifts nothing; remove it from '
+                + '`disabledVaults` first, or drop it from the binding'
+              : '. ⚠ This config FILE cannot bind that name (absent from `portRegistry`/`remoteVaults`). The '
+                + 'declaration is kept anyway, which is the rule — but note what that means: a session whose '
+                + 'environment provides that remote, or one still holding an older descriptor, may still reach '
+                + 'it; and if that name is registered later, this workspace holds it as a secondary without any '
+                + 'further confirmation. Drop it from the binding if that is not what you want'))
+        : null,
       preview.anomalies.length
         ? 'whatever makes the entry unreadable (a duplicate, a tier naming no secondary, a field of the wrong '
           + 'shape) — normalising those away IS the repair'

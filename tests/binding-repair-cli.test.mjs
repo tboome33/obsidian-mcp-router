@@ -202,7 +202,29 @@ describe('the repair plan — what it keeps', () => {
     });
     assert.equal(plan.locked, true, 'a repair keeps the lock the entry holds');
     assert.equal(plan.lockMovesTo, 'notes', 'and says where keeping it puts it');
-    assert.deepEqual(plan.also, ['work']);
+    // `ghost` is DEMOTED, not dropped (Roland, 2026-09-21) — kept first in
+    // `also` by the round-13 rule, even though the config cannot bind it…
+    assert.deepEqual(plan.also, ['ghost', 'work']);
+    // …and marked as such, because `lock_vault --persist`, the mechanism this
+    // copies, names a carried primary that will not answer.
+    assert.deepEqual(plan.demoted, { vault: 'ghost', tier: 'soft', bindable: false, disabled: false });
+  });
+
+  test('a demoted primary the config CAN bind is not flagged', () => {
+    const plan = planBindingRepair(configWith(WS, { vault: 'notes', also: [] }), WS, { wantedPrimary: 'work' });
+    assert.deepEqual(plan.demoted, { vault: 'notes', tier: 'soft', bindable: true, disabled: false });
+  });
+
+  test('a DISABLED demoted primary is told apart from an absent one', () => {
+    // Found by review: the warning said "register it" for both, and
+    // registering a disabled name lifts nothing. Every other diagnostic in
+    // this project makes that distinction; this one did not.
+    const plan = planBindingRepair(
+      configWith(WS, { vault: 'notes', also: [] }, { disabledVaults: ['notes'] }),
+      WS,
+      { wantedPrimary: 'work' },
+    );
+    assert.deepEqual(plan.demoted, { vault: 'notes', tier: 'soft', bindable: false, disabled: true });
   });
 
   test('the effective tier is SHOWN, and a global rule is what makes it strict', () => {
@@ -779,11 +801,51 @@ describe('--repair-binding, spawned', () => {
     assert.equal(dry.status, 0, dry.stderr || dry.stdout);
     assert.match(dry.stdout, /locked:\s+true/);
     assert.match(dry.stdout, /keeping it MOVES it/);
+    // The old primary is kept, and its unbindability is flagged rather than
+    // dressed up as a conservation.
+    assert.match(dry.stdout, /ghost's PRIMARY role: it is KEPT/);
+    assert.match(dry.stdout, /This config FILE cannot bind that name/);
+    // NOT "it will not answer": the file's bindable set is not a session's
+    // reachability, and retention preserves a future attachment by name.
+    assert.match(dry.stdout, /may still reach it/);
+    assert.match(dry.stdout, /registered later, this workspace holds it as a secondary/);
+    assert.doesNotMatch(dry.stdout, /will NOT answer/);
     const r = runRepair(f.configPath, f.ws, '--primary', 'notes', '--approved-plan-sha256', sealOf(dry.stdout));
     assert.equal(r.status, 0, r.stderr || r.stdout);
     const binding = readBinding(f.read(), f.ws);
     assert.equal(binding.locked, true);
+    assert.deepEqual(binding.also, ['ghost', 'work']);
     assert.deepEqual(binding.alsoLocked, ['work']);
+  });
+
+  test('the old primary is DEMOTED, not dropped — end to end, and named in the preview', () => {
+    // The defect Roland's question surfaced: `--repair-binding --primary X`
+    // kept the secondaries and made the OLD PRIMARY vanish, unnamed, under a
+    // sentence promising a repair loses nothing.
+    // A THIRD vault, so the demotion is measured on its own rather than
+    // tangled with a promotion.
+    const f = fixture(
+      { vault: 'notes', also: ['work'], alsoWritable: ['work'] },
+      { remoteVaults: [{ name: 'remote', baseUrl: 'https://r/' }] },
+    );
+    const dry = runRepair(f.configPath, f.ws, '--primary', 'remote', '--dry-run');
+    assert.equal(dry.status, 0, dry.stderr || dry.stdout);
+    assert.match(dry.stdout, /secondaries:\s+notes, work/, 'the demoted primary comes first');
+    assert.match(dry.stdout, /notes's PRIMARY role: it is KEPT, as a secondary with no tier/);
+    assert.doesNotMatch(dry.stdout, /cannot bind that name/, 'notes is perfectly bindable');
+    // AND the shared consequence sentence, which explains the access change
+    // rather than just naming the role change — in the dry-run's conditional.
+    assert.match(dry.stdout, /WOULD become a SECONDARY/);
+    assert.match(dry.stdout, /no write tier OF ITS OWN/);
+    assert.match(dry.stdout, /AND the config's global ones/);
+
+    const r = runRepair(f.configPath, f.ws, '--primary', 'remote', '--approved-plan-sha256', sealOf(dry.stdout));
+    assert.equal(r.status, 0, r.stderr || r.stdout);
+    const binding = readBinding(f.read(), f.ws);
+    assert.equal(binding.vault, 'remote');
+    assert.deepEqual(binding.also, ['notes', 'work']);
+    assert.deepEqual(binding.alsoWritable, ['work'], 'the other tiers survive');
+    assert.deepEqual(binding.alsoLocked, [], 'and the demoted primary arrives soft');
   });
 
   test('--repair-binding refuses to CREATE a binding, even with --primary', () => {

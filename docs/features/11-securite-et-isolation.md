@@ -121,6 +121,30 @@ La décision a explicitement **écarté** l'option qui aurait imposé de nommer 
 
 **Et conserver `locked: true` en changeant de principal DÉPLACE le verrou** sur un autre vault : ce n'est pas un booléen reporté, c'est une isolation qui change de cible. Le plan et le message le disent.
 
+### L'ancien principal est RÉTROGRADÉ, jamais perdu
+
+`also` ne contient jamais le principal. Lire « ce que l'entrée tient » dans `also` seul manquait donc le nom que l'entrée tient le plus fermement : réparer `{ vault: "notes", also: ["work"] }` vers un autre principal gardait `work` et faisait **disparaître** `notes` — sans que rien le nomme, puisque `notes` n'avait jamais été un secondaire à abandonner.
+
+L'ancien principal rejoint désormais `also`, **en tête**, sans palier propre — exactement ce que `lock_vault --persist` fait depuis toujours quand il inscrit un secondaire comme nouveau principal. Seul le mode `repair` agit ainsi ; `confirm_workspace_binding` remplace comme avant.
+
+**Et ce qui est annoncé est le fait LOCAL.** Un principal est toujours en lecture-écriture ; l'accès d'un secondaire se décide avec les listes de la liaison **et** les listes globales. Sans palier local ni règle globale, il est en lecture seule jusqu'à confirmation de chaque écriture — mais un `alsoWritable` global le rend écrivable, et un `alsoLocked` global le rend strict, où aucune confirmation n'autorise plus rien. Déduire le palier soft de l'absence de palier local, c'est précisément la confusion que `keep()` existe pour empêcher.
+
+Un ancien principal que le fichier ne sait plus lier est conservé lui aussi — un nom que l'entrée tient est gardé — et **signalé** : désactivé et absent reçoivent des remèdes opposés (réenregistrer ne lève rien pour un désactivé), et le texte dit ce que la conservation préserve vraiment : un rattachement **futur** par ce nom, pas une archive inerte.
+
+### Question 4(b), tranchée : non
+
+Un secondaire tenu en lecture seule **stricte** n'est jamais promu principal. La mesure qui a tranché : l'autoriser ne lèverait pas la protection une fois, cela l'**effacerait**.
+
+```
+DÉPART    vault=notes  also=["sci"]   alsoLocked=["sci"]
+ÉTAPE 1   vault=sci    also=["notes"] alsoLocked=[]        ← sci promu
+ÉTAPE 2   vault=notes  also=["sci"]   alsoLocked=[]        ← on revient
+```
+
+Mêmes noms, mêmes places, palier strict disparu, et aucun acte ne l'a jamais nommé. La raison est mécanique : un palier qualifie un *rôle de secondaire*, donc il part avec le rôle et ne revient pas avec lui.
+
+Promouvoir un secondaire **soft ou writable** reste permis : `lock_vault --persist` sur un secondaire fait exactement cela, et c'est une fonctionnalité voulue — « j'isole ma session sur mon vault de référence pendant que je travaille dessus ». Le chemin en deux actes pour lever un strict reste ouvert : effacer la liaison, puis la recréer. Il est visible, lui.
+
 ## Réparer depuis le terminal — `setup-vault.mjs --repair-binding`
 
 **Le besoin.** Une liaison que le routeur ne sait pas lire était diagnostiquée partout et réparable à un seul endroit : une session MCP dont le **serveur** a ce workspace pour répertoire de travail. Un opérateur au terminal recevait un appel qu'il ne pouvait pas passer. La décision du 2026-09-20 ouvre ce chemin (points 4a et 5).
@@ -138,7 +162,7 @@ setup-vault.mjs --repair-binding <workspace> ...  --approved-plan-sha256 <hash>
 
 **Le sceau est lié au WORKSPACE et au FICHIER de configuration**, pas à un vault. Une réparation de liaison n'agit sur aucun vault ; détourner l'identité de vault aurait laissé un plan prévisualisé pour un workspace confirmer une application sur un autre dès que les deux choisissent le même principal. Il couvre **ce que l'opération écrit** : le principal, les secondaires et leurs paliers locaux, le verrou, ce qui est abandonné, les entrées **alias** que l'écriture supprime (avec l'empreinte de leur contenu), les refus qu'elle retire, et les métadonnées de confirmation — `confirmedVia` et la **date**, en valeur. Conséquence à connaître : un sceau ne survit pas au passage de minuit, parce que l'écriture ne stamperait plus la même date.
 
-**Ce qu'elle ne fait jamais** : promouvoir en principal un secondaire tenu en lecture seule stricte (refusé dès le `--dry-run`, avant qu'un sceau existe — la question 4(b) reste ouverte et son statu quo intact) ; enregistrer, ouvrir ou joindre un vault ; toucher au `.env` du workspace ; et **créer** une liaison là où il n'y en a pas — c'est le travail d'`--attach`, qui écrit aussi l'indice `.env`, les réglages du plugin et le bloc CLAUDE.md qu'un workspace lié depuis ici n'aurait jamais.
+**Ce qu'elle ne fait jamais** : promouvoir en principal un secondaire tenu en lecture seule stricte (refusé dès le `--dry-run`, avant qu'un sceau existe — question 4(b), tranchée le 2026-09-21 : non) ; enregistrer, ouvrir ou joindre un vault ; toucher au `.env` du workspace ; et **créer** une liaison là où il n'y en a pas — c'est le travail d'`--attach`, qui écrit aussi l'indice `.env`, les réglages du plugin et le bloc CLAUDE.md qu'un workspace lié depuis ici n'aurait jamais.
 
 **Et elle n'affirme rien sur une session déjà démarrée.** Le routeur **surveille** sa configuration et tente un rechargement quand les changements se stabilisent : une session en cours peut donc prendre le changement sans redémarrer. Mais un rechargement qui échoue garde l'état précédent, et la surveillance peut être coupée (`--no-watch`) ou abandonnée après une erreur. Redémarrez la session si vous devez en être sûr.
 
