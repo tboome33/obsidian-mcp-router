@@ -385,6 +385,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks,
 | **Local REST API** | All tools | Community plugins → "Local REST API" by Adam Coddington |
 | **MCP Router Bridge** | `search_smart`, `execute_template`, click-to-open links (`build_open_link`, `open_in_obsidian`, the auto-emitted `clickToOpenUrl`) | Install from [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — registers the `/search/smart`, `/templates/execute` and `/open/*` REST routes that this router calls (`meta-audit-bridge-readiness` probes the latter). |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — the embeddings backend |
+| **Smart Lookup** | *nothing — human-facing only* | Community plugins → "Smart Lookup". Since Smart Connections 4.7 the search half ships as its own plugin: it answers a typed query, where Smart Connections answers "what resembles the note I have open". Both read the same `.smart-env` index, so `search_smart` needs **Smart Connections alone** — this row is here because the reference vault distributes Smart Lookup too, and its absence is not a router fault. |
 | **Templater** | `execute_template` | Community plugins → "Templater" by SilentVoid13 |
 
 You also need:
@@ -1642,6 +1643,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commandes + skills + agents + hooks,
 | **Local REST API** | Tous les outils | Community plugins → "Local REST API" par Adam Coddington |
 | **MCP Router Bridge** | `search_smart`, `execute_template`, liens click-to-open (`build_open_link`, `open_in_obsidian`, le `clickToOpenUrl` auto-émis) | À installer depuis [`tboome33/obsidian-mcp-router-bridge`](https://github.com/tboome33/obsidian-mcp-router-bridge) — enregistre les routes REST `/search/smart`, `/templates/execute` et `/open/*` que ce router appelle (`meta-audit-bridge-readiness` sonde ces dernières). |
 | **Smart Connections** | `search_smart` | Community plugins → "Smart Connections" — moteur d'embeddings |
+| **Smart Lookup** | *rien — pour l'humain seulement* | Community plugins → "Smart Lookup". Depuis Smart Connections 4.7, la moitié « recherche » est un plugin à part : elle répond à une question tapée, là où Smart Connections répond « qu'est-ce qui ressemble à la note ouverte ». Les deux lisent le même index `.smart-env`, donc `search_smart` n'a besoin que de **Smart Connections** — cette ligne existe parce que le vault de référence distribue aussi Smart Lookup, et que son absence n'est pas une panne du router. |
 | **Templater** | `execute_template` | Community plugins → "Templater" par SilentVoid13 |
 
 Il te faut aussi :
