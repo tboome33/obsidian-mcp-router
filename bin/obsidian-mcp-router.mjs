@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+// FIRST IMPORT, AND IT MUST STAY FIRST: this is the router server's launcher,
+// and its own static imports below evaluate BEFORE it loads src/index.mjs. So
+// the process is marked here too, ahead of all of them — the vault-disk probe
+// of the session hook refuses to run where the mark is set. src/index.mjs
+// carries the same first import for consumers that load it directly.
+import '../src/helpers/mark-server-process.mjs';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname, join } from 'node:path';

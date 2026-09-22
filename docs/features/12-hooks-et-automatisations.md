@@ -79,6 +79,39 @@ Opt-out : `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=true` ; diagnostic : `OBSIDIAN_RO
 
 **Ce que ça fait.** Une fois par 24 h, compare la version installée à celle publiée sur GitHub (un simple GET sur `raw.githubusercontent.com` — aucune télémétrie) et signale en début de session si une mise à jour existe. Opt-out : `OBSIDIAN_ROUTER_NO_UPDATE_CHECK=true`, ou automatiquement en déploiement multi-tenant (`OBSIDIAN_ROUTER_USER_ID` défini — l'admin gère les mises à jour centralement).
 
+## `workspace-briefing` — à quoi ce workspace est rattaché, et si ce vault peut répondre
+
+**Le besoin.** Deux questions se posent au démarrage de chaque session, et aucune ne se voyait. *À quel vault ce workspace écrit-il ?* Et : *ce vault est-il seulement capable de répondre à une recherche sémantique ?*
+
+**Ce que ça fait.** Il ouvre la session par quelques lignes : le ou les vaults liés, ce que le `.env` du projet a proposé et s'est vu refuser, le mode d'enrichissement, et les deux appels qui changent tout ça.
+
+Il signale en plus, **en lisant le disque des vaults liés**, les deux états où la recherche sémantique est morte sans que rien d'autre ne le dise :
+
+- **Smart Connections installé mais pas activé** — le dossier du plugin est là, une synchro a rapporté un succès, et Obsidian ne le charge jamais. C'est l'état qui *se lit comme fonctionnel* et ne l'est pas.
+- **Smart Connections activé mais index vide** — son magasin `.smart-env/multi` ne contient aucun fichier `.ajson`, ou n'existe pas encore. La sonde vérifie que ces fichiers sont présents, pas qu'ils sont valides ; elle ne peut pas distinguer un magasin jamais construit d'un magasin vidé, et ne prétend pas le faire.
+
+Lire le disque plutôt que passer par HTTP est ce qui fait marcher ce contrôle **Obsidian fermé** — et un vault qu'on n'a pas ouvert est précisément celui dont on ignore que la recherche est cassée. C'est aussi pourquoi il vit dans le hook et jamais dans le serveur : le serveur reste HTTP-only, et c'est **imposé**, pas supposé : le serveur marque son processus avant que la moindre autre partie de son code ne s'exécute, et la sonde refuse de lire le disque dans un processus marqué — ou dans un worker ou un processus enfant qu'il a lancé —, quelle que soit la façon dont elle a été chargée.
+
+Il reste **silencieux** quand le plugin est absent (un vault peut ne pas en vouloir), quand quelque chose est illisible — un refus d'accès, un lecteur réseau déconnecté, un fichier à la place d'un dossier (ne pas voir n'est pas un constat, et un magasin illisible n'est pas un magasin vide) — et il ne parle jamais de Smart Lookup, que le router n'appelle pas. Seuls les vaults *liés* sont sondés, avec un budget de temps dont le vault principal est exempté ; quand il signale quelque chose, il dit aussi combien de vaults liés n'ont pas pu être vérifiés.
+
+**Au moment de la liaison**, c'est le skill `bind-workspace` qui prend le relais : sa dernière étape fait un appel `search_smart` en lecture sur le vault principal — sans présumer qu'il est ouvert, puisque le skill peut lier un vault qu'il n'a jamais pingué ; si l'appel échoue pour une autre raison, rien n'est dit — et, si le bridge répond que Smart Connections n'est pas disponible, dit qu'il faut l'installer **et** l'activer. Il mentionne aussi Smart Lookup, une seule fois, comme une option.
+
+Opt-outs, **depuis l'hôte uniquement** — un fichier de projet ne peut pas couper le message qui parle de lui : `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING` pour tout le briefing, `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS` pour le seul contrôle sémantique.
+
+## Ce que le plugin active pour tout le monde — et pourquoi pas le reste
+
+Le plugin Claude Code active lui-même trois hooks, déclarés dans [`hooks/hooks.json`](../../hooks/hooks.json) : `hot-cache-load`, `workspace-briefing` et `decisions-recall`. Tous les autres restent **opt-in**.
+
+La règle d'admission est stricte, parce qu'un hook de plugin **n'a pas d'étape d'adhésion** : tout ce qui est listé là tourne chez chaque personne qui installe le plugin. N'y entrent donc que des hooks qui sont en lecture seule, ne font aucun appel réseau, ne sortent jamais en code 2 (ce qui bloquerait le tour de l'utilisateur), et dont on a vérifié qu'ils sont muets pour quelqu'un qui n'a aucun vault configuré.
+
+Le briefing est entré dans cet ensemble avec le lot « registre de liaisons ». C'est lui qui rend visible la liaison workspace→vault, et l'import unique des indications `.env` existantes n'est défendable que parce qu'une liaison mal importée s'annonce à chaque démarrage de session. Livrer l'import à tout le monde et le briefing à quelques-uns, ce serait livrer la confiance sans le contrôle.
+
+Les autres hooks restent opt-in, via `node scripts/setup-vault.mjs --install-hooks`, parce qu'ils committent dans git, écrivent des transcriptions de session dans un vault, bloquent des tours ou appellent le réseau. L'ensemble opt-in complet est dans [`hooks/hooks.example.json`](../../hooks/hooks.example.json).
+
+> ℹ️ **Pourquoi `hooks.json` ne porte aucun commentaire.** Cette justification vivait auparavant dans une clé `_comment` du fichier lui-même. Le chargeur de hooks de Claude Code n'accepte que la clé `hooks` et affichait `unknown key "_comment" ignored` à chaque démarrage de session. Un test vérifie désormais que le fichier ne porte que `hooks`.
+>
+> Et une précision qui y figurait : `${CLAUDE_PLUGIN_ROOT}` n'est développé par Claude Code **que** dans les fichiers de composants du plugin. Il ne l'est **pas** dans `~/.claude/settings.json` — c'est pourquoi `hooks.example.json` garde le marqueur `<router-repo>` à la place.
+
 ## Installer, vérifier, débrancher
 
 - **Installation** : automatique au bootstrap d'un vault (`setup-vault.mjs`). Famille de flags `--install-hooks` pour équiper un setup existant ; `--hooks-status` pour vérifier ce qui est branché ; `--no-hooks` pour s'en passer.

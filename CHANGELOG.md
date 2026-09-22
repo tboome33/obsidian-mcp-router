@@ -21,17 +21,49 @@ one moment it is least useful.
 The session briefing now says it up front, for the vaults this workspace is bound to. It speaks for
 exactly two states, both read from the vault's own disk:
 
-- **installed but not enabled** — the plugin folder is there, a plugin sync reported success, and
+- **installed but not enabled** — the plugin's manifest is there, a plugin sync reported success, and
   Obsidian never loads it, so nothing will ever be indexed. This is the state that reads as working
   and is not.
-- **enabled but never indexed** — the store holds zero pages.
+- **enabled but its index is empty** — the store directory holds no `*.ajson` file, or does not exist
+  yet. The probe checks that such files are present, not that they are valid; it cannot tell a store
+  that was never built from one that was cleared, and does not claim to.
+
+Anything the probe cannot read — a permission refusal, a disconnected mount, a file where a directory
+belongs — is reported to nobody. An unreadable store is **not** an empty one: calling it empty would
+tell the user to wait for an indexing that may already have happened.
 
 Reading disk rather than HTTP is what makes this work **with Obsidian closed**, which is the point: a
 vault you have not opened is exactly the one whose broken semantic tier you cannot probe over HTTP,
 and exactly the one you are least likely to know about. It therefore lives in the hook
-(`hooks/workspace-briefing.mjs`), never in a tool — the server stays HTTP-only, and
-`confirm_workspace_binding`'s exemption from `tests/no-vault-disk.test.mjs` stays true. A test pins
-that no tool imports the probe.
+(`hooks/workspace-briefing.mjs`), never in the server, which stays HTTP-only, so
+`confirm_workspace_binding`'s exemption from `tests/no-vault-disk.test.mjs` stays true — and this is
+ENFORCED, not inferred. The FIRST import of both server entry points — the launcher
+`bin/obsidian-mcp-router.mjs`, whose own imports run before it loads the index, and `src/index.mjs` —
+is a side-effect module that marks the process as the router server before any other part of the
+server graph evaluates — a global keyed by
+a registered Symbol, and an environment variable that the worker threads and child processes the
+server creates inherit (`src/helpers/server-process.mjs`). Every exported function of the probe that
+can reach the disk throws before its first filesystem call where the mark is set, however the probe
+got loaded. An import that never executes reads nothing; one that executes fails loudly. Tests check
+it at run time: each server module is recorded as it starts running — through the index and through
+the real launcher — and must already see the mark; a spy on the synchronous `node:fs` API, named ESM
+exports included, proves zero reads before the refusal; a worker and a child of the marked process are
+refused; the real hook's module graph is recorded and must contain neither the server module nor the
+mark. Not covered, and said so in the module: a worker or child created before the mark, or spawned
+with an emptied environment.
+
+Three review rounds tried to prove "the server never loads the probe" by reading source text instead,
+and each found an import form the text scan could not see: a helper importing it through a tool, a
+`./probe.mjs?query` specifier, a comment between `import` and `(`. That approach is gone; the
+run-time refusal does not depend on how the import is written.
+
+**At binding time**, the `bind-workspace` wizard now ends with one read-only `search_smart` call on the
+primary. If the bridge refuses it because Smart Connections is not available, the wizard says the
+plugin must be installed **and** enabled — both, because that refusal was measured for a plugin that
+was installed but switched off, and a missing one cannot be told apart from here. It also mentions Smart Lookup once per run, as an offer. This goes over HTTP and
+assumes nothing about whether the vault is open: the wizard can bind a vault it never pinged, so if the
+call fails for any other reason, nothing is said. A remote vault gets no later disk check either — the
+briefing cannot read its disk.
 
 What it deliberately does **not** say: a vault with no Smart Connections at all is silent (a vault may
 legitimately not want it, and a reminder that fires on a choice is one you learn to skip — which
@@ -45,7 +77,22 @@ Bounded by design: only the bound vaults are probed, never the whole registry, a
 stops the walk. Measured across 28 vaults on 2026-09-22 — 110 ms for the 27 on local disks, 1023 ms
 for the single one on a cold mapped network drive. The workspace's **primary** vault is exempt from
 the budget: a budget that can silence the vault the session is actually about is worse than a slow
-one. Opt out with `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=true`.
+one. The budget runs on a monotonic clock and latches once spent, so a wall-clock correction cannot
+restart it; it bounds how many reads are STARTED, not how long one read on a network drive can
+block. When something is reported, the block also says how many bound vaults went unchecked; when
+nothing is, it stays silent even if some were. Opt out with `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=true`
+— from the host only: the hook reads it before the workspace `.env` is loaded, and the key is refused
+from that file anyway, so a project cannot silence the notice about its own vault.
+
+### The plugin's `hooks.json` carries only `hooks`
+
+Launching `claude` in a terminal printed `obsidian-router: hooks.json: unknown key "_comment" ignored`
+at every session start. Claude Code's plugin hook loader accepts the `hooks` key and nothing else, and
+the file carried a 23-line `_comment` explaining which hooks the plugin activates for everyone. The
+warning was harmless — the key was ignored and the hooks loaded — but it was noise on every launch, and
+the comment pointed readers at a documentation file that has never existed. The rationale now lives
+in `docs/features/12-hooks-et-automatisations.md`, and a test fails if `hooks/hooks.json` grows any
+other top-level key again.
 
 ### A binding repair keeps what the entry held, because the code keeps it
 

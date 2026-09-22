@@ -355,9 +355,13 @@ export function composeBriefing({
     // AFTER the actions line, deliberately: this is a report about the bound
     // vault's capability, not about the binding itself, and it is the only
     // block that asks the reader to go and do something in Obsidian. It is
-    // composed elsewhere (`semantic-readiness-fs`) and passed in as text —
-    // this module must stay free of disk access, since it is imported by the
-    // server's own binding tool as well as by the hook.
+    // composed elsewhere (`semantic-readiness-fs`) and passed in as text, so
+    // this module stays a pure composer with no disk access. (An earlier
+    // version of this comment justified that by saying the server's binding
+    // tool imports this module too. It does not — only the hook does; measured
+    // 2026-09-22. The rule stands on its own: disk reads live in the `-fs`
+    // module, whose absence from the server's import graph is pinned by
+    // tests/semantic-readiness.test.mjs.)
     typeof semanticReadiness === 'string' && semanticReadiness.trim() ? semanticReadiness : null,
   ].filter(Boolean);
 

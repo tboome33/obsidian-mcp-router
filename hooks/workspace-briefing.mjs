@@ -177,8 +177,8 @@ function build() {
   if (!SEMANTIC_CHECK_OFF) {
     const names = binding ? [binding.vault, ...(binding.also || [])] : [];
     // The repo's own slug resolver, not a second one: see probeBoundVaults.
-    const { entries } = probeBoundVaults(names, (name) => resolveVaultBySlug(cfg, name));
-    semanticReadiness = semanticReadinessLine(entries);
+    const { entries, skipped } = probeBoundVaults(names, (name) => resolveVaultBySlug(cfg, name));
+    semanticReadiness = semanticReadinessLine(entries, { skipped });
   }
 
   return composeBriefing({

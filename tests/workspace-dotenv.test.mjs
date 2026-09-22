@@ -412,8 +412,15 @@ describe('GUARD — every workspace .env loader in the tree goes through applyWo
       else if (load > read) late.push(`${rel}: reads an opt-out (offset ${read}) before loading the workspace .env (offset ${load})`);
     }
     assert.ok(checked >= 10, `expected the opt-out-reading hooks to be found (found ${checked})`);
+    // What THIS line proves: every declared host-only opt-out is read by some
+    // hook. It cannot prove the converse — its regex is built from the declared
+    // names, so an undeclared one is invisible to it. The converse is held by
+    // the general rule below: an undeclared NO_* read before the .env loads is
+    // reported in `late`. (An earlier message claimed both for this line; and
+    // counting NAMES rather than files, which this line now does, no longer
+    // rejects two hooks reading the same opt-out — a relaxation, stated here.)
     assert.deepEqual([...hostOnlySeen].sort(), [...HOST_ONLY_OPTOUTS].sort(),
-      'every host-only opt-out has a hook that reads it, and no hook reads one that is not declared');
+      'every declared host-only opt-out must be read by at least one hook');
     assert.deepEqual(late, []);
     assert.deepEqual(early, []);
   });

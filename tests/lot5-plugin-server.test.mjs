@@ -326,6 +326,19 @@ describe('plugin manifests', () => {
     );
   });
 
+  test('hooks/hooks.json carries ONLY the `hooks` key — Claude Code rejects anything else, out loud', () => {
+    // Claude Code's plugin hook loader accepts `hooks` and nothing else. The
+    // file used to carry a 23-line `_comment` rationale, and every session start
+    // in a terminal printed `obsidian-router: hooks.json: unknown key "_comment"
+    // ignored` — harmless to behaviour, but noise the user saw on every launch,
+    // and the comment itself pointed at a documentation file that did not
+    // exist. The rationale now lives in docs/features/12-hooks-et-automatisations.md.
+    // A key added here for documentation is a warning shipped to every user.
+    const manifest = readJson('hooks/hooks.json');
+    assert.deepEqual(Object.keys(manifest), ['hooks'],
+      'hooks/hooks.json must have exactly one top-level key, `hooks` — put rationale in docs/, not in the manifest');
+  });
+
   test('hooks/hooks.json ships only read-only, no-op-without-vault hooks', () => {
     // Plugin hooks are active for EVERY installer with no opt-in step, so
     // anything that commits to git, writes session transcripts into a vault,

@@ -4,6 +4,12 @@
  * Boots an MCP stdio server that exposes a unified tool surface over multiple
  * Obsidian vaults (local or remote), routed via the Local REST API plugin.
  */
+// FIRST IMPORT, AND IT MUST STAY FIRST: it marks this process as the router
+// server before any other module of the server graph evaluates. Code that
+// must never run inside the server — the session hook's vault-disk probe —
+// refuses where the mark is set. See src/helpers/mark-server-process.mjs;
+// tests/semantic-readiness.test.mjs checks the order module by module.
+import './helpers/mark-server-process.mjs';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {

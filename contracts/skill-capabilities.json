@@ -69,7 +69,8 @@
       "summary": "Deterministic wizard: detects the open vaults, binds the one the user names as the workspace's primary, then runs the secondary-vault flow (detect, confirm, one write tier per vault).",
       "reads": [
         "router:config",
-        "vault:listing"
+        "vault:listing",
+        "vault:search"
       ],
       "writes": [
         "router:config"
@@ -77,9 +78,12 @@
       "tools": [
         "list_vaults",
         "confirm_workspace_binding",
-        "set_secondary_vault_mode"
+        "set_secondary_vault_mode",
+        "search_smart"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "build_search_index"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": false,
@@ -90,7 +94,7 @@
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. The only mutation is the workspace binding and its per-secondary tiers, written into the user's own router config through the two tools; nothing is opened, the user opens what they choose."
+        "reason": "No harness executes a skill. The only mutation is the workspace binding and its per-secondary tiers, written into the user's own router config through the two tools; nothing is opened, the user opens what they choose. Step 10 adds ONE read-only search_smart call on the primary, over HTTP, whose outcome alone decides whether to tell the user Smart Connections must be installed and enabled; obsidianPlugins stays empty on purpose, because detecting that plugin's ABSENCE is the point of the call and the wizard must run without it."
       }
     },
     "build-search-index": {

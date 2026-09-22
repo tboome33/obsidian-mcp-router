@@ -19,7 +19,7 @@ A deterministic script. Every step has ONE canonical prompt (below, in English) 
 
 **The model this implements — the user's own words, and nothing else.** A workspace has ONE primary vault, always read-write. It may have secondary vaults, each in one of three modes: **read-only strict** (`locked`), **read-only with writes on request** (`soft`, the default — a write must carry `confirmSecondaryWrite: true`, set only after the user said yes), **read-write** (`writable`). Outside workspaces, only the vaults in `openVaults` answer, everywhere.
 
-Tools: `list_vaults` (detect what is open), `confirm_workspace_binding` (bind), `set_secondary_vault_mode` (one call per secondary).
+Tools: `list_vaults` (detect what is open), `confirm_workspace_binding` (bind), `set_secondary_vault_mode` (one call per secondary), `search_smart` (one read-only probe of the primary, Step 10).
 
 ## Step 1 — where we are
 
@@ -109,6 +109,18 @@ A vault that was ALREADY a secondary is not re-asked by the detect flow: its cur
 ## Step 9 — summary
 
 One table: vault | role (primary / secondary) | mode (read-write for the primary; strict / on request / read-write for a secondary). Then one sentence: recorded in the user's own router config, for this workspace only, so it never travels with a git clone — the same vault can have another mode in another project; `set_secondary_vault_mode` changes a mode later, `confirm_workspace_binding` changes the primary or the list, `confirm_workspace_binding({ clear: true })` removes the binding.
+
+## Step 10 — can the primary answer a semantic search?
+
+The binding is done; this step changes nothing, it tells the user one thing they would otherwise learn the first time a search quietly falls back to keywords. `search_smart` computes no embeddings of its own — it reads the index the **Smart Connections** plugin builds inside the vault — so a vault can be bound, open and writable and still have no semantic search at all.
+
+One call, over HTTP: `search_smart({ vault: "<primary>", query: "semantic search readiness", limit: 1, tier: "semantic" })`. Whether the primary is open right now is NOT known at this point: it may have been seen open by an earlier step, or bound without ever being pinged (an `awaitingDeclaration` candidate, or a run that only configured secondaries), or closed since. Do not assume either way — if the call fails, the "anything else" branch below applies. If `search_smart` is not available in this session at all, skip this step silently. Only the call's OUTCOME matters; never show its results.
+
+- **It returns results** → say nothing about Smart Connections.
+- **It fails with an error whose text contains `Smart Connections plugin is not available`** — the exact phrase measured 2026-09-22 in the tool error the model receives: `[<vault>] HTTP 503 Service Unavailable on /search/smart: { "error": "Smart Connections plugin is not available", "hint": "Install and enable Smart Connections in this vault, …" }` → say, once: *"Semantic search does not work in `<primary>` yet: Smart Connections must be installed and enabled in Obsidian (Settings → Community plugins). Until then a search here can only use the keyword index, and only if `build_search_index` has been run."* Say **installed and enabled**, both: that phrase was measured for a plugin installed but switched off, and a missing plugin cannot be told apart from here.
+- **Anything else** — zero results, another error, a timeout → say nothing, do not diagnose. For a LOCAL vault, the session briefing reads the vault's disk at every start and reports a plugin that is installed-but-disabled or an empty index. A REMOTE vault has no such later check — the briefing cannot read its disk — so nothing will be said about it; that is accepted, not an oversight to paper over with a guess.
+
+Then, once per run of this wizard, whatever the outcome — as an offer, never a requirement: *"Optional, for you rather than for the router: Smart Lookup is the search half of Smart Connections, split into its own plugin at version 4.7. It answers a question you type, where Smart Connections answers 'what resembles the note I have open'. It reuses the same index. The router never calls it."* Nothing records that it was said, so a later run of this wizard says it again; the session briefing never mentions it.
 
 ## Never
 
