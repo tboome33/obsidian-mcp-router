@@ -260,7 +260,7 @@ Plus one Obsidian-specific reference skill (no slash command — knowledge surfa
 - `doc-propagation-checker` — flags docs drifting from shipped code
 - `vault-doc-startup-check` — surfaces vault & doc health at session start
 - `check-router-update` — 24h GitHub version check
-- `workspace-briefing` — opens each session with a few lines saying which vault(s) this workspace is bound to (one, several, or all), what its `.env` proposed and was refused, the auto-enrichment mode and its range, and the two calls that change any of it. Read-only, pings nothing (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **from the host only** — a project file may not switch off the report about itself)
+- `workspace-briefing` — opens each session with a few lines saying which vault(s) this workspace is bound to (one, several, or all), what its `.env` proposed and was refused, the auto-enrichment mode and its range, and the two calls that change any of it. It also reports, from the bound vaults' own disk (so it works with Obsidian closed), when Smart Connections is installed-but-not-enabled or enabled-but-never-indexed — the two states in which `search_smart` silently degrades to BM25 and `find_twin_pages` cannot answer at all (opt-out `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS`). Read-only, pings nothing (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **from the host only** — a project file may not switch off the report about itself)
 
 The hooks ship in [`hooks/`](./hooks/); `setup-vault.mjs` wires them automatically at bootstrap.
 
@@ -678,7 +678,7 @@ Installing the plugin activates exactly three hooks, with no opt-in step, becaus
 | --- | --- | --- |
 | `hot-cache-load` | On session start, prints your vault's `wiki-meta/hot.md` into the session context. Read-only. | `OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD=1` |
 | `decisions-recall` | On a prompt that matches a settled decision page, cites it. Read-only. | `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=1` |
-| `workspace-briefing` | On session start, says which vault(s) this workspace is bound to and how to change it. Read-only, no network. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **from the host only** |
+| `workspace-briefing` | On session start, says which vault(s) this workspace is bound to and how to change it, and flags a bound vault whose Smart Connections is installed-but-disabled or never indexed. Read-only, no network. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **from the host only**; `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=1` for the semantic check alone |
 
 All three are silent no-ops if no vault is configured. `workspace-briefing` ships here rather than opt-in on purpose: it is the disclosure that makes the binding registry visible, and a binding the router imported from a project's `.env` is only safe to import because it announces itself at the start of every session. Its opt-out is the one the workspace `.env` cannot set — a file that could silence the report about itself would be the hole this whole feature closes. **The other eight hooks stay opt-in** via `node scripts/setup-vault.mjs --install-hooks`, because they commit to git, write session transcripts into a vault, block the end of a turn, or call the network — none of which is a defensible default for someone who just installed a plugin. `--hooks-status` shows which are wired, which come from the plugin, and warns if any is doing both (which would fire it twice per event).
 
@@ -1600,7 +1600,7 @@ Plus un skill de référence Obsidian (sans slash command — surfacé quand d'a
 - `doc-propagation-checker` — signale les docs qui dérivent du code shippé
 - `vault-doc-startup-check` — surface la santé vault & docs au démarrage de session
 - `check-router-update` — check de version GitHub toutes les 24h
-- `workspace-briefing` — ouvre chaque session par quelques lignes : à quel(s) vault(s) ce workspace est rattaché (un, plusieurs, ou tous), ce que son `.env` a proposé et s'est vu refuser, le mode d'enrichissement et sa plage, et les deux appels qui changent tout ça. Lecture seule, ne pingue rien (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **depuis l'hôte uniquement** — un fichier de projet ne coupe pas le message qui parle de lui)
+- `workspace-briefing` — ouvre chaque session par quelques lignes : à quel(s) vault(s) ce workspace est rattaché (un, plusieurs, ou tous), ce que son `.env` a proposé et s'est vu refuser, le mode d'enrichissement et sa plage, et les deux appels qui changent tout ça. Il signale aussi, en lisant le disque des vaults liés (donc Obsidian fermé), un Smart Connections installé-mais-désactivé ou activé-mais-jamais-indexé — les deux états où `search_smart` retombe silencieusement sur BM25 et où `find_twin_pages` ne peut plus répondre du tout (opt-out `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS`). Lecture seule, ne pingue rien (opt-out `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING`, **depuis l'hôte uniquement** — un fichier de projet ne coupe pas le message qui parle de lui)
 
 Les hooks vivent dans [`hooks/`](./hooks/) ; `setup-vault.mjs` les câble automatiquement au bootstrap.
 
@@ -1940,7 +1940,7 @@ Installer le plugin active exactement trois hooks, sans étape d'activation, par
 | --- | --- | --- |
 | `hot-cache-load` | Au démarrage de session, injecte le `wiki-meta/hot.md` du vault dans le contexte. Lecture seule. | `OBSIDIAN_ROUTER_NO_HOT_CACHE_LOAD=1` |
 | `decisions-recall` | Sur un prompt qui recoupe une décision actée, la cite. Lecture seule. | `OBSIDIAN_ROUTER_NO_DECISIONS_RECALL=1` |
-| `workspace-briefing` | Au démarrage de session, dit à quel(s) vault(s) ce workspace est rattaché et comment en changer. Lecture seule, sans réseau. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **depuis l'hôte uniquement** |
+| `workspace-briefing` | Au démarrage de session, dit à quel(s) vault(s) ce workspace est rattaché et comment en changer, et signale un vault lié dont Smart Connections est installé-mais-désactivé ou jamais indexé. Lecture seule, sans réseau. | `OBSIDIAN_ROUTER_NO_BINDING_BRIEFING=1` — **depuis l'hôte uniquement** ; `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=1` pour le seul contrôle sémantique |
 
 Les trois sont des no-op silencieux sans vault configuré. `workspace-briefing` est ici plutôt qu'en opt-in par construction : c'est lui qui rend visible le registre de liaisons, et une liaison que le router a importée depuis le `.env` d'un projet n'est sûre à importer que parce qu'elle s'annonce au début de chaque session. Son opt-out est le seul que le `.env` du workspace ne peut pas poser — un fichier capable de couper le message qui parle de lui serait exactement le trou que cette fonctionnalité ferme. **Les huit autres hooks restent opt-in** via `node scripts/setup-vault.mjs --install-hooks` : ils commitent dans git, écrivent les transcriptions de session dans un vault, bloquent la fin d'un tour ou appellent le réseau — rien de tout cela n'est un défaut défendable pour quelqu'un qui vient d'installer un plugin. `--hooks-status` montre lesquels sont câblés, lesquels viennent du plugin, et alerte si l'un fait les deux (il se déclencherait deux fois par événement).
 

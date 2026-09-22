@@ -10,6 +10,43 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A vault whose semantic search will not answer says so before you ask it anything
+
+`search_smart` computes no embeddings of its own — it reads the store Smart Connections builds under
+`<vault>/.smart-env/`. So a vault can be reachable, writable and perfectly healthy in every report
+the router produced, and still have no semantic search at all. Until now you learned that by asking a
+question and getting a labelled BM25 degrade back: detection at the moment of the loss, which is the
+one moment it is least useful.
+
+The session briefing now says it up front, for the vaults this workspace is bound to. It speaks for
+exactly two states, both read from the vault's own disk:
+
+- **installed but not enabled** — the plugin folder is there, a plugin sync reported success, and
+  Obsidian never loads it, so nothing will ever be indexed. This is the state that reads as working
+  and is not.
+- **enabled but never indexed** — the store holds zero pages.
+
+Reading disk rather than HTTP is what makes this work **with Obsidian closed**, which is the point: a
+vault you have not opened is exactly the one whose broken semantic tier you cannot probe over HTTP,
+and exactly the one you are least likely to know about. It therefore lives in the hook
+(`hooks/workspace-briefing.mjs`), never in a tool — the server stays HTTP-only, and
+`confirm_workspace_binding`'s exemption from `tests/no-vault-disk.test.mjs` stays true. A test pins
+that no tool imports the probe.
+
+What it deliberately does **not** say: a vault with no Smart Connections at all is silent (a vault may
+legitimately not want it, and a reminder that fires on a choice is one you learn to skip — which
+costs you the two that matter), a vault whose disk cannot be read is silent (not seeing is not a
+finding, and a disconnected network mount answers exactly like a vault with no plugins), and Smart
+Lookup is never mentioned. Smart Lookup — the search half of Smart Connections, split into its own
+plugin at 4.7 — is a convenience for the person at the keyboard; the router never calls it, so
+ranking it beside a missing capability would be a false dependency.
+
+Bounded by design: only the bound vaults are probed, never the whole registry, and a time budget
+stops the walk. Measured across 28 vaults on 2026-09-22 — 110 ms for the 27 on local disks, 1023 ms
+for the single one on a cold mapped network drive. The workspace's **primary** vault is exempt from
+the budget: a budget that can silence the vault the session is actually about is worse than a slow
+one. Opt out with `OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS=true`.
+
 ### A binding repair keeps what the entry held, because the code keeps it
 
 Until now, "repairing a workspace binding loses nothing" was a property of a *sentence*. When the

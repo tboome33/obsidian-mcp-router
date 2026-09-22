@@ -61,6 +61,8 @@ import { readBinding, readRefusals, classifyBindingHint } from '../src/helpers/w
 import { composeBriefing } from '../src/helpers/binding-briefing.mjs';
 import { canonicalizeMode } from '../src/helpers/auto-enrich-mode.mjs';
 import { workspaceDotenvRefusals, dotenvRefusalHint, workspaceBindingProposal } from '../src/helpers/workspace-dotenv.mjs';
+import { probeBoundVaults, semanticReadinessLine } from '../src/helpers/semantic-readiness-fs.mjs';
+import { resolveVaultBySlug } from '../src/helpers/vault-slug.mjs';
 
 // ---- Resolve cwd from stdin or env ----------------------------------
 // Read BEFORE the dotenv load: the file to read is this workspace's, and the
@@ -97,6 +99,15 @@ const TRUTHY = new Set(['true', '1', 'yes', 'on']);
 if (TRUTHY.has(String(process.env.OBSIDIAN_ROUTER_NO_BINDING_BRIEFING || '').toLowerCase())) {
   process.exit(0);
 }
+
+// READ BEFORE THE WORKSPACE .env IS LOADED, and that ordering is the guard, not
+// a detail. This opt-out is host-only for the same reason the one above is: a
+// project file able to set it could propose a vault AND silence the notice that
+// the vault's semantic search is dead. Reading it here means the file has not
+// touched the environment yet, so only the host can have set it.
+const SEMANTIC_CHECK_OFF = TRUTHY.has(
+  String(process.env.OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS || '').toLowerCase(),
+);
 
 // Loading the workspace file is also what lets `envKeyOrigin` answer at all:
 // the loader's record of what came from the file is what separates "this
@@ -152,11 +163,30 @@ function build() {
   const modeRefused = workspaceDotenvRefusals(process.env)
     .find((r) => r.key === 'OBSIDIAN_ROUTER_AUTO_ENRICH') || null;
 
+  // IS THE SEMANTIC TIER ACTUALLY GOING TO ANSWER? Read from the bound vaults'
+  // own disk, which is the only way to know while Obsidian is closed — and a
+  // vault you have not opened is exactly the one whose broken semantic tier you
+  // would otherwise discover by asking it a question and getting a degrade.
+  //
+  // Only the BOUND vaults are probed, never the whole registry: the cost is
+  // per-vault disk I/O, and it was measured at 1023 ms for a single vault on a
+  // cold mapped network drive against 110 ms for 27 local ones (2026-09-22).
+  // An opt-out of its own, because a user who has decided a vault does not need
+  // semantic search should be able to say so once.
+  let semanticReadiness = null;
+  if (!SEMANTIC_CHECK_OFF) {
+    const names = binding ? [binding.vault, ...(binding.also || [])] : [];
+    // The repo's own slug resolver, not a second one: see probeBoundVaults.
+    const { entries } = probeBoundVaults(names, (name) => resolveVaultBySlug(cfg, name));
+    semanticReadiness = semanticReadinessLine(entries);
+  }
+
   return composeBriefing({
     binding,
     hint,
     mode,
     modeRefused,
+    semanticReadiness,
     registeredCount: registered.size,
     isRegistered: (name) => registered.has(String(name)),
     // The hook cannot see what the SERVER's start-up imported — it is a

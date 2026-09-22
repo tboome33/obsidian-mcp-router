@@ -139,6 +139,15 @@ const HOST_ONLY_OPTOUTS = [
   // enumerated opt-out is a per-session convenience; this one guards a
   // disclosure, so it is taken from the host only.
   'OBSIDIAN_ROUTER_NO_BINDING_BRIEFING',
+  // The semantic-readiness report rides inside that same briefing, and it is a
+  // disclosure of the same kind one level down: that the vault this workspace
+  // routes to cannot actually answer a semantic query. A project file able to
+  // set this could propose a vault AND silence the notice that the vault's
+  // search is dead — the degrade would then be visible nowhere, since
+  // `search_smart` itself only reports it to whoever asks. Convenience lost
+  // from a workspace .env is a smaller cost than a disclosure silenced by the
+  // thing it describes, so this one is taken from the host only too.
+  'OBSIDIAN_ROUTER_NO_SEMANTIC_READINESS',
 ];
 
 describe('classifyWorkspaceDotenvKey — the policy', () => {
@@ -363,29 +372,39 @@ describe('GUARD — every workspace .env loader in the tree goes through applyWo
     const late = [];
     const early = [];
     let checked = 0;
-    let hostOnlyChecked = 0;
     // A host-only opt-out must be read where the workspace file cannot have
     // touched the environment yet. The policy module refuses the key by name
     // as well, so this is the second of two independent reasons — and the one
     // that survives somebody adding the name to the accepted list.
     const HOST_ONLY_RE = new RegExp(`process\\.env\\.(?:${HOST_ONLY_OPTOUTS.join('|')})\\b`);
+    // NAMES, not files. Two host-only opt-outs can live in the SAME hook — the
+    // briefing reads both — and counting files then reports one, which reads as
+    // "an opt-out nobody implements" for a name that is implemented right
+    // beside the other. What must be covered is each NAME.
+    const hostOnlySeen = new Set();
     for (const file of walk(path.join(ROOT, 'hooks'))) {
       const rel = path.relative(ROOT, file).replace(/\\/g, '/');
       const code = blankStringsAndComments(fs.readFileSync(file, 'utf8'));
       const load = code.search(/\b(?:loadWorkspaceDotenv|applyWorkspaceDotenv)\s*\(/);
 
-      const hostOnly = code.search(HOST_ONLY_RE);
-      if (hostOnly >= 0) {
-        hostOnlyChecked += 1;
+      // EVERY occurrence is checked, not the first. With two names in one file,
+      // testing only the earliest would let the second be read after the load —
+      // the exact hole this invariant exists to close.
+      for (const m of code.matchAll(new RegExp(HOST_ONLY_RE.source, 'g'))) {
+        hostOnlySeen.add(m[0].replace('process.env.', ''));
         if (load < 0) {
           early.push(`${rel}: reads a host-only opt-out and never loads the workspace .env at all`);
-        } else if (load < hostOnly) {
-          early.push(`${rel}: reads a host-only opt-out (offset ${hostOnly}) AFTER loading the workspace .env (offset ${load})`);
+        } else if (load < m.index) {
+          early.push(`${rel}: reads ${m[0]} (offset ${m.index}) AFTER loading the workspace .env (offset ${load})`);
         }
       }
 
       // The general rule, applied to every OTHER opt-out this file reads.
-      const read = code.replace(HOST_ONLY_RE, (m) => ' '.repeat(m.length))
+      // THE BLANKING IS GLOBAL. Without the `g` it removed only the FIRST
+      // host-only read, so a file carrying two of them had its second one
+      // judged by the general rule — which demands the opposite ordering, and
+      // therefore reported a correctly-placed host-only read as a violation.
+      const read = code.replace(new RegExp(HOST_ONLY_RE.source, 'g'), (m) => ' '.repeat(m.length))
         .search(/process\.env\.OBSIDIAN_ROUTER_NO_/);
       if (read < 0) continue;
       checked += 1;
@@ -393,7 +412,8 @@ describe('GUARD — every workspace .env loader in the tree goes through applyWo
       else if (load > read) late.push(`${rel}: reads an opt-out (offset ${read}) before loading the workspace .env (offset ${load})`);
     }
     assert.ok(checked >= 10, `expected the opt-out-reading hooks to be found (found ${checked})`);
-    assert.equal(hostOnlyChecked, HOST_ONLY_OPTOUTS.length, 'every host-only opt-out has a hook that reads it');
+    assert.deepEqual([...hostOnlySeen].sort(), [...HOST_ONLY_OPTOUTS].sort(),
+      'every host-only opt-out has a hook that reads it, and no hook reads one that is not declared');
     assert.deepEqual(late, []);
     assert.deepEqual(early, []);
   });

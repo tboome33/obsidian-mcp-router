@@ -339,6 +339,7 @@ export function composeBriefing({
   registeredCount = 0,
   isRegistered = null,
   imported = null,
+  semanticReadiness = null,
 } = {}) {
   if (!Number.isInteger(registeredCount) || registeredCount <= 0) return null;
 
@@ -351,6 +352,13 @@ export function composeBriefing({
     hintLine(hint, binding),
     modeLine(mode, modeRefused),
     actionsLine(),
+    // AFTER the actions line, deliberately: this is a report about the bound
+    // vault's capability, not about the binding itself, and it is the only
+    // block that asks the reader to go and do something in Obsidian. It is
+    // composed elsewhere (`semantic-readiness-fs`) and passed in as text —
+    // this module must stay free of disk access, since it is imported by the
+    // server's own binding tool as well as by the hook.
+    typeof semanticReadiness === 'string' && semanticReadiness.trim() ? semanticReadiness : null,
   ].filter(Boolean);
 
   return lines.join('\n');
