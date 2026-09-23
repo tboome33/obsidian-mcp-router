@@ -262,7 +262,9 @@ test('extractPptxAssets defaults to a fresh temp directory when no outDir is giv
 
   const res = extractPptxAssets({ filePath: deck });
 
-  assert.ok(res.outDir.startsWith(os.tmpdir()), 'output must land under the temp root');
+  // The manifest names the pinned REAL directory; os.tmpdir() may be an 8.3
+  // short-name spelling (the CI runner's temp directory is one).
+  assert.ok(res.outDir.startsWith(fs.realpathSync.native(os.tmpdir())), 'output must land under the temp root');
   assert.notStrictEqual(res.outDir, dir);
   assert.strictEqual(res.assetCount, 2);
 
@@ -1827,7 +1829,7 @@ test('E2E: with no outdir the images go to a temp directory, and a shared primar
   const res = await rt.extract({});
   assert.ok(!res.refused, `a temp-dir extraction was refused: ${res.text}`);
   const manifest = JSON.parse(res.text);
-  assert.ok(manifest.outDir.startsWith(os.tmpdir()));
+  assert.ok(manifest.outDir.startsWith(fs.realpathSync.native(os.tmpdir())), 'the pinned real temp directory');
   fs.rmSync(manifest.outDir, { recursive: true, force: true });
 });
 

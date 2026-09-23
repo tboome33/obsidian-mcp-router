@@ -16,6 +16,7 @@ import fs from 'node:fs';
 
 import { _internals } from '../src/index.mjs';
 import { WRITE_TARGET_FIELDS } from '../src/helpers/write-targets.mjs';
+import { realPathWithMissingTail } from '../src/helpers/real-path.mjs';
 
 const {
   requiresAlsoTierCheck, ALSO_TIER_EXEMPT_TOOL_NAMES, WRITE_TOOL_NAMES, toolActuallyWrote,
@@ -84,9 +85,12 @@ describe('assertAssetOutputDirWritable', () => {
       // ...and refused when the REAL directory turns out to be in the locked vault.
       const reads = [];
       const ctx = assetOutputDirContext(tool, args, reg({ alsoLocked: ['ref'] }), () => { reads.push(1); return SOLO; });
-      assert.throws(() => ctx.authorizeOutputDir(inside), /locked read-only/, tool);
+      // The context only ever receives a PINNED, REAL path — what the pin
+      // hands it — so the test hands it one too. `os.tmpdir()` may be an 8.3
+      // short-name spelling (the CI runner's temp directory is one), which is not.
+      assert.throws(() => ctx.authorizeOutputDir(realPathWithMissingTail(inside)), /locked read-only/, tool);
       assert.equal(reads.length, 1, 'the shared-vault config is read at authorisation time');
-      assert.doesNotThrow(() => ctx.authorizeOutputDir(args[field]));
+      assert.doesNotThrow(() => ctx.authorizeOutputDir(realPathWithMissingTail(args[field])));
     }
   });
 
@@ -94,7 +98,8 @@ describe('assertAssetOutputDirWritable', () => {
     // A second resolution, unpinned, could be answered through a swap and
     // approve a different directory than the one the handler pinned (Codex,
     // round P1). The vault roots and the temp root are still resolved.
-    const pinned = path.join(os.tmpdir(), 'index-internals-pinned-as-given', 'assets');
+    // Real, as the pin hands it (os.tmpdir() may be an 8.3 spelling).
+    const pinned = realPathWithMissingTail(path.join(os.tmpdir(), 'index-internals-pinned-as-given', 'assets'));
     const seen = [];
     const saved = fs.realpathSync.native;
     fs.realpathSync.native = function spy(p, ...rest) { seen.push(String(p)); return saved.call(this, p, ...rest); };
