@@ -348,11 +348,14 @@ export async function pptxToMarkdown(_registry, { filepath } = {}) {
  * vault. The dispatcher gates that directory by the vault containing it
  * (reachability, write tier, shared-vault `createOnly`) before this runs.
  */
-export async function pptxExtractAssets(_registry, { filepath, outdir, createOnly, max_assets, max_total_bytes } = {}) {
+export async function pptxExtractAssets(_registry, { filepath, outdir, createOnly, max_assets, max_total_bytes } = {}, context = {}) {
   assertString(filepath, 'filepath');
   return extractPptxAssets({
     filePath: filepath,
     outDir: outdir,
+    // The dispatcher's containment gate, run again on the REAL directory the
+    // module pins — `context` comes from the dispatcher, never from arguments.
+    authorizeOutDir: context?.authorizeOutputDir ?? null,
     ...(createOnly === undefined ? {} : { createOnly }),
     ...(max_assets === undefined ? {} : { maxAssets: max_assets }),
     ...(max_total_bytes === undefined ? {} : { maxTotalBytes: max_total_bytes }),

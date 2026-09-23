@@ -442,7 +442,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>pptx_extract_assets</td>
-    <td><strong>Deck images to disk</strong>, no Python (a PPTX is a ZIP): each embedded image written once, with the slide positions that show it (short of any part reported in <code>skipped</code>) — the bytes <code>pptx_to_markdown</code> cannot return. A <em>write tool</em>: an <code>outdir</code> inside a vault meets that vault's tier, and <code>createOnly: true</code> on a shared one.</td>
+    <td><strong>Deck images to disk</strong>, no Python (a PPTX is a ZIP): each embedded image written once, with the slide positions that show it (short of any part reported in <code>skipped</code>) — the bytes <code>pptx_to_markdown</code> cannot return. A <em>write tool</em>: an <code>outdir</code> inside a vault meets that vault's tier, and <code>createOnly: true</code> on a shared one; outside every vault, only the temp directory is allowed.</td>
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>

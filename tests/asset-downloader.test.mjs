@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import {
   extractImageUrls,
@@ -1085,4 +1088,100 @@ test('downloadAssets forwards createOnly to every downloadOne', async () => {
   });
   assert.equal(writes.length, 2);
   assert.ok(writes.every((w) => w.opts && w.opts.flag === 'wx'));
+});
+
+// -----------------------------------------------------------------------------
+// The PRODUCTION path — no `_writeFn`: the directory is pinned and every file is
+// placed through a temporary (helpers/pinned-output-dir.mjs). Real disk, own
+// temporary directory; the fetch is stubbed, so no network.
+// -----------------------------------------------------------------------------
+
+function realScratch(t) {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'asset-dl-pinned-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  return dir;
+}
+
+test('production path: a LIVE link at the URL-derived name is replaced, and its target keeps its bytes', async (t) => {
+  // The plain `fs.writeFile` this path used to be opened the link and wrote
+  // THROUGH it: a link planted in the output directory redirected the write.
+  const dir = realScratch(t);
+  const out = path.join(dir, 'out');
+  fs.mkdirSync(out);
+  const victim = path.join(dir, 'victim.txt');
+  fs.writeFileSync(victim, 'VICTIM');
+  try { fs.symlinkSync(victim, path.join(out, 'a.png'), 'file'); }
+  catch (e) { t.skip(`cannot create a file symlink here: ${e.code}`); return; }
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 7), contentType: 'image/png' } });
+  const r = await downloadAssets(['https://x.io/a.png'], out, { _fetchFn: stub });
+  assert.equal(r.downloaded.length, 1, JSON.stringify(r));
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'VICTIM');
+  assert.ok(!fs.lstatSync(path.join(out, 'a.png')).isSymbolicLink());
+  assert.deepEqual(fs.readdirSync(out).filter((n) => n.startsWith('.router-')), [], 'no anchor or temporary left behind');
+});
+
+test('production path, createOnly: a DANGLING link at the name creates nothing where it points', async (t) => {
+  const dir = realScratch(t);
+  const out = path.join(dir, 'out');
+  fs.mkdirSync(out);
+  const target = path.join(dir, 'created-through-the-link.png');
+  try { fs.symlinkSync(target, path.join(out, 'a.png'), 'file'); }
+  catch (e) { t.skip(`cannot create a file symlink here: ${e.code}`); return; }
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 7), contentType: 'image/png' } });
+  const r = await downloadAssets(['https://x.io/a.png'], out, { _fetchFn: stub, createOnly: true });
+  assert.equal(fs.existsSync(target), false, 'nothing was created through the link');
+  assert.equal(r.downloaded.length, 1);
+  assert.notEqual(r.downloaded[0].savedAs, 'a.png', 'the link holds the name; the hash fallback is used');
+  assert.equal(r.downloaded[0].renamedFrom, 'a.png');
+});
+
+test('downloadOne on its own (no sink, no test writer) pins the directory too: a dangling link at the name creates nothing', async (t) => {
+  const dir = realScratch(t);
+  const out = path.join(dir, 'out');
+  fs.mkdirSync(out);
+  const target = path.join(dir, 'created-through-the-link.png');
+  try { fs.symlinkSync(target, path.join(out, 'a.png'), 'file'); }
+  catch (e) { t.skip(`cannot create a file symlink here: ${e.code}`); return; }
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 7), contentType: 'image/png' } });
+  const r = await downloadOne('https://x.io/a.png', out, { _fetchFn: stub, createOnly: true });
+  assert.equal(r.ok, true);
+  assert.equal(fs.existsSync(target), false, 'nothing was created through the link');
+  assert.notEqual(r.savedAs, 'a.png');
+});
+
+test('production path, createOnly: a content-hash name held by OTHER bytes is "name-taken", not alreadyPresent — and nothing is overwritten', async (t) => {
+  const dir = realScratch(t);
+  const out = path.join(dir, 'out');
+  fs.mkdirSync(out);
+  const buffer = Buffer.alloc(2048, 7);
+  const hashed = pickAssetFilename('https://x.io/a.png', buffer, 'image/png', new Set(['a.png']));
+  fs.writeFileSync(path.join(out, 'a.png'), 'somebody else');
+  fs.writeFileSync(path.join(out, hashed), 'edited by hand');
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer, contentType: 'image/png' } });
+  const r = await downloadAssets(['https://x.io/a.png'], out, { _fetchFn: stub, createOnly: true });
+  assert.equal(r.downloaded.length, 0, JSON.stringify(r));
+  assert.deepEqual(r.skipped.map((s) => s.reason), ['name-taken']);
+  assert.equal(r.urlMap.size, 0, 'the page is not rewritten to a file that is not the image');
+  assert.equal(fs.readFileSync(path.join(out, hashed), 'utf8'), 'edited by hand');
+
+  // Control: the same bytes under the hash name ARE the asset.
+  fs.writeFileSync(path.join(out, hashed), buffer);
+  const again = await downloadAssets(['https://x.io/a.png'], out, { _fetchFn: stub, createOnly: true });
+  assert.equal(again.downloaded.length, 1);
+  assert.equal(again.downloaded[0].alreadyPresent, true);
+});
+
+test('production path: the authorisation is asked about the real directory, and a refusal writes nothing', async (t) => {
+  const dir = realScratch(t);
+  const out = path.join(dir, 'out');
+  const stub = makeStubFetch({ 'https://x.io/a.png': { buffer: Buffer.alloc(2048, 7), contentType: 'image/png' } });
+  const seen = [];
+  await downloadAssets(['https://x.io/a.png'], out, { _fetchFn: stub, authorizeOutDir: (p) => seen.push(p) });
+  assert.deepEqual(seen, [out]);
+  const refusedDir = path.join(dir, 'refused');
+  await assert.rejects(
+    () => downloadAssets(['https://x.io/a.png'], refusedDir, { _fetchFn: stub, authorizeOutDir: () => { throw new Error('NOT HERE'); } }),
+    /NOT HERE/,
+  );
+  assert.equal(fs.existsSync(refusedDir), false);
 });

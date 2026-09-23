@@ -32,6 +32,7 @@ import {
   MAX_SOURCE_BYTES,
   MAX_RELS_MEMBERS,
 } from '../src/markdownify/pptx-assets.mjs';
+import { pptxExtractAssets } from '../src/tools/convert.mjs';
 
 const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'obsidian-mcp-router.mjs');
 const IMAGE_REL ='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
@@ -522,8 +523,9 @@ test('caller-supplied caps are clamped to the module ceilings, never raised', ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('a pre-existing symlink at an output name is replaced, not followed', () => {
+test('a pre-existing symlink at an output name is replaced, not followed', (t) => {
   const dir = tmpdir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const deck = path.join(dir, 'deck.pptx');
   fs.writeFileSync(deck, buildDeck());
   const out = path.join(dir, 'out');
@@ -531,23 +533,103 @@ test('a pre-existing symlink at an output name is replaced, not followed', () =>
 
   const victim = path.join(dir, 'victim.txt');
   fs.writeFileSync(victim, 'precious');
-  let linked = true;
-  try {
-    fs.symlinkSync(victim, path.join(out, 'slide1-1.png'));
-  } catch {
-    linked = false; // Windows without developer mode refuses to create one
-  }
+  // Windows without developer mode refuses to create one: SAID, not passed.
+  try { fs.symlinkSync(victim, path.join(out, 'slide1-1.png')); }
+  catch (e) { t.skip(`cannot create a file symlink here: ${e.code} — the no-follow write was not exercised`); return; }
 
   const res = extractPptxAssets({ filePath: deck, outDir: out });
   assert.strictEqual(res.assetCount, 2);
-  if (linked) {
-    assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious', 'the link target must be untouched');
-    assert.ok(!fs.lstatSync(path.join(out, 'slide1-1.png')).isSymbolicLink());
-  } else {
-    assert.ok(true, 'symlink creation unavailable on this host — the no-follow write was not exercised');
-  }
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'precious', 'the link target must be untouched');
+  assert.ok(!fs.lstatSync(path.join(out, 'slide1-1.png')).isSymbolicLink());
+});
 
-  fs.rmSync(dir, { recursive: true, force: true });
+test('the dispatcher authorisation reaches the pin: asked about the REAL outdir, through the module and through the MCP wrapper', async (t) => {
+  const dir = fs.realpathSync.native(tmpdir());
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const deck = path.join(dir, 'deck.pptx');
+  fs.writeFileSync(deck, buildDeck());
+
+  const seen = [];
+  extractPptxAssets({ filePath: deck, outDir: path.join(dir, 'a'), authorizeOutDir: (p) => seen.push(p) });
+  assert.deepEqual(seen, [path.join(dir, 'a')]);
+
+  const viaWrapper = [];
+  await pptxExtractAssets(null, { filepath: deck, outdir: path.join(dir, 'b') }, { authorizeOutputDir: (p) => viaWrapper.push(p) });
+  assert.deepEqual(viaWrapper, [path.join(dir, 'b')]);
+
+  assert.throws(
+    () => extractPptxAssets({ filePath: deck, outDir: path.join(dir, 'refused'), authorizeOutDir: () => { throw new Error('NOT HERE'); } }),
+    /NOT HERE/,
+  );
+  assert.equal(fs.existsSync(path.join(dir, 'refused')), false, 'a refusal creates nothing');
+});
+
+test('the internal pin options cannot be reached through MCP arguments', async (t) => {
+  // `pinStrategy` and `nativeHelper` exist for tests; an MCP caller naming
+  // them must reach nothing — a bogus strategy would throw "unknown pin
+  // strategy" if it travelled.
+  const dir = fs.realpathSync.native(tmpdir());
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const deck = path.join(dir, 'deck.pptx');
+  fs.writeFileSync(deck, buildDeck());
+  const res = await pptxExtractAssets(
+    null,
+    { filepath: deck, outdir: path.join(dir, 'out'), pinStrategy: 'bogus', nativeHelper: null, strategy: 'bogus', authorizeOutDir: () => { throw new Error('forged'); } },
+    { authorizeOutputDir: () => {} },
+  );
+  assert.equal(res.assetCount, 2);
+});
+
+test('through an ALIAS, the manifest names the pinned real directory — where the files are', (t) => {
+  const dir = fs.realpathSync.native(tmpdir());
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const deck = path.join(dir, 'deck.pptx');
+  fs.writeFileSync(deck, buildDeck());
+  const real = path.join(dir, 'real');
+  fs.mkdirSync(real);
+  try { fs.symlinkSync(real, path.join(dir, 'alias'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (e) { t.skip(`cannot create a directory link: ${e.code}`); return; }
+  const res = extractPptxAssets({ filePath: deck, outDir: path.join(dir, 'alias', 'out') });
+  assert.equal(res.outDir, path.join(real, 'out'));
+  for (const a of res.assets) assert.equal(path.dirname(a.path), path.join(real, 'out'));
+});
+
+test('with no outdir, a REFUSED authorisation leaves no temp directory behind (it used to be mkdtemp\'d first)', (t) => {
+  const dir = tmpdir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const deck = path.join(dir, 'deck.pptx');
+  fs.writeFileSync(deck, buildDeck());
+  const before = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('pptx-assets-')));
+  const seen = [];
+  assert.throws(
+    () => extractPptxAssets({ filePath: deck, authorizeOutDir: (p) => { seen.push(p); throw new Error('NOT HERE'); } }),
+    /NOT HERE/,
+  );
+  assert.equal(seen.length, 1);
+  assert.equal(path.basename(seen[0]).startsWith('pptx-assets-'), true, 'the temp directory about to be created is what was judged');
+  const created = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('pptx-assets-') && !before.has(n));
+  assert.deepEqual(created, [], 'nothing was created before the refusal');
+});
+
+test('createOnly: a DANGLING link at an output name creates nothing where it points (wx followed it on Windows)', (t) => {
+  // Measured 2026-09-23 on NTFS: `writeFileSync(name, bytes, { flag: 'wx' })`
+  // over a dangling file symlink CREATED the link's target. The pinned writer
+  // places by hard link from a temporary, which never follows the name.
+  const dir = tmpdir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const deck = path.join(dir, 'deck.pptx');
+  fs.writeFileSync(deck, buildDeck());
+  const out = path.join(dir, 'out');
+  fs.mkdirSync(out);
+  const target = path.join(dir, 'created-through-the-link.png');
+  try { fs.symlinkSync(target, path.join(out, 'slide1-1.png'), 'file'); }
+  catch (e) { t.skip(`cannot create a file symlink here: ${e.code}`); return; }
+
+  const res = extractPptxAssets({ filePath: deck, outDir: out, createOnly: true });
+  assert.strictEqual(fs.existsSync(target), false, 'nothing was created through the link');
+  const png = res.assets.find((a) => a.ext === 'png');
+  assert.match(png.name, /^slide1-[0-9a-f]{16}\.png$/, 'the link holds the name; the hashed name is used');
+  assert.ok(fs.lstatSync(path.join(out, 'slide1-1.png')).isSymbolicLink(), 'the link itself is left alone');
 });
 
 test('a source file over the ceiling is refused before it is read', () => {
@@ -1635,11 +1717,12 @@ function startRouterWithTwoLocalVaults({ tiers = { alsoLocked: ['ref'] }, shared
     waiters.set(id, (m) => { clearTimeout(timer); resolve(m); });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
   });
-  const extract = async (args) => {
-    const res = await call('tools/call', { name: 'pptx_extract_assets', arguments: { filepath: deck, ...args } });
+  const tool = async (name, args) => {
+    const res = await call('tools/call', { name, arguments: args });
     const text = res.result?.content?.[0]?.text ?? JSON.stringify(res.error ?? res.result);
     return { refused: Boolean(res.error || res.result?.isError), text };
   };
+  const extract = (args) => tool('pptx_extract_assets', { filepath: deck, ...args });
   const start = async () => {
     await call('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'pptx-e2e', version: '0' } });
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
@@ -1653,8 +1736,43 @@ function startRouterWithTwoLocalVaults({ tiers = { alsoLocked: ['ref'] }, shared
     await exited;
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
-  return { dir, work, ref, start, extract, stop };
+  return { dir, work, ref, start, extract, tool, stop };
 }
+
+test('E2E: an outdir outside every vault and outside the temp directory is refused, and not created', async (t) => {
+  const rt = startRouterWithTwoLocalVaults();
+  t.after(rt.stop);
+  await rt.start();
+  // A sibling of the temp directory: shares its parent, is not inside it.
+  const outdir = path.join(path.dirname(os.tmpdir()), `pptx-e2e-not-temp-${process.pid}-${Date.now()}`);
+  const res = await rt.extract({ outdir });
+  assert.ok(res.refused, `expected a refusal, got: ${res.text}`);
+  assert.match(res.text, /must be inside a registered vault or inside the system temporary directory/);
+  assert.equal(fs.existsSync(outdir), false);
+});
+
+test('E2E: download_page_assets goes through the dispatcher with its authorisation — writes to the primary, refused in a locked vault', async (t) => {
+  // The asset writers refuse to run without the dispatcher's output-directory
+  // authorisation; a dispatcher that stopped handing it over would turn this
+  // call into a refusal. No network: `html` with no image, so the handler
+  // pins the directory and downloads nothing.
+  const rt = startRouterWithTwoLocalVaults();
+  t.after(rt.stop);
+  await rt.start();
+  const good = path.join(rt.work, 'wiki', '.assets', 'page');
+  fs.mkdirSync(path.dirname(good), { recursive: true });
+  const ok = await rt.tool('download_page_assets', { html: '<p>no image</p>', baseUrl: 'https://example.test/', outputDir: good });
+  assert.ok(!ok.refused, `primary write refused: ${ok.text}`);
+  assert.ok(fs.statSync(good).isDirectory(), 'the pinned directory was created');
+  assert.deepEqual(fs.readdirSync(good), [], 'and nothing left behind: no anchor, no temporary');
+
+  const locked = path.join(rt.ref, 'wiki', '.assets', 'page');
+  fs.mkdirSync(path.dirname(locked), { recursive: true });
+  const no = await rt.tool('download_page_assets', { html: '<p>no image</p>', baseUrl: 'https://example.test/', outputDir: locked, confirmSecondaryWrite: true });
+  assert.ok(no.refused, `expected a refusal, got: ${no.text}`);
+  assert.match(no.text, /locked read-only/);
+  assert.equal(fs.existsSync(locked), false);
+});
 
 test('E2E: an outdir inside an alsoLocked secondary is refused and nothing is written there', async (t) => {
   const rt = startRouterWithTwoLocalVaults();

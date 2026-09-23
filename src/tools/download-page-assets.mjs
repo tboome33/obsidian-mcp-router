@@ -105,7 +105,7 @@ export const TOOL_DEFINITION = {
       confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
       createOnly: {
         type: 'boolean',
-        description: 'When true, every asset is written create-only (the `wx` open flag): an asset whose URL-derived name already exists falls through to its content-hash name, and one whose content-hash name already exists is reported as alreadyPresent, never overwritten. This is the asset analogue of write_file\'s ifNew, and it is REQUIRED when outputDir sits inside a vault list_vaults reports as writesRequireIfMatch: true. Default: false (an existing name is overwritten, as before).',
+        description: 'When true, every asset is written create-only (never overwriting anything, a link included): an asset whose URL-derived name already exists falls through to its content-hash name; one whose content-hash name already holds the SAME bytes is reported as alreadyPresent, and one whose content-hash name holds anything else is reported in skipped with reason "name-taken" — never overwritten. This is the asset analogue of write_file\'s ifNew, and it is REQUIRED when outputDir sits inside a vault list_vaults reports as writesRequireIfMatch: true. Default: false (an existing name is overwritten, as before).',
       },
       defuddleFirst: {
         type: 'boolean',
@@ -173,7 +173,7 @@ const DEFAULTS = {
  *   maxAssets?: number,
  * }} args
  */
-export async function handleDownloadPageAssets(args = {}) {
+export async function handleDownloadPageAssets(args = {}, context = {}) {
   const {
     url,
     html,
@@ -326,6 +326,9 @@ export async function handleDownloadPageAssets(args = {}) {
     minHeight,
     concurrency,
     createOnly,
+    // The dispatcher's gate, run again on the REAL directory pinned just
+    // before the first write. `context` comes from the dispatcher only.
+    authorizeOutDir: context?.authorizeOutputDir ?? null,
   });
 
   // Serialize the Map for MCP transport (JSON has no Map type).

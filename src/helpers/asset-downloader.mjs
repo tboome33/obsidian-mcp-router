@@ -60,6 +60,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 import { safeFetchBinary } from './safe-fetch-binary.mjs';
+import { openPinnedOutputDir } from './pinned-output-dir.mjs';
 // `decodeImageDimensions` is defined below (alongside the other pure
 // helpers); imported via re-reference rather than a circular import.
 
@@ -610,6 +611,9 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
  *     Only triggers when dimensions could be decoded — unknown formats
  *     (BMP, TIFF, ICO, AVIF) are kept ("can't verify → keep").
  *   - `{ ok: false, sourceUrl, reason: 'fetch-error', message }`
+ *   - `{ ok: false, sourceUrl, reason: 'name-taken' }`        — createOnly:
+ *     the URL name AND the content-hash name are both held by something that
+ *     is not these bytes; nothing was written, nothing is linked
  *
  * @param {string} url
  * @param {string} outputDir — must be absolute
@@ -624,6 +628,20 @@ export function pickAssetFilename(url, buffer, contentType, usedNames = new Set(
  * @param {Function} [opts._decodeDimsFn]              — injection seam for tests
  */
 export async function downloadOne(url, outputDir, opts = {}) {
+  if (!path.isAbsolute(outputDir)) {
+    throw new Error(`downloadOne: outputDir must be absolute, got ${outputDir}`);
+  }
+  // No sink and no test writer: pin the (existing) directory for this one
+  // call, so that no path through this function writes by opening the
+  // destination name (see helpers/pinned-output-dir.mjs).
+  if (opts.sink === undefined && opts._writeFn === undefined) {
+    const pinned = openPinnedOutputDir(outputDir, { createMissing: false });
+    try {
+      return await downloadOne(url, outputDir, { ...opts, sink: pinned });
+    } finally {
+      pinned.close();
+    }
+  }
   const {
     minBytes = 1024,
     maxBytes = 10 * 1024 * 1024,
@@ -632,13 +650,10 @@ export async function downloadOne(url, outputDir, opts = {}) {
     createOnly = false,
     usedNames = new Set(),
     _fetchFn = safeFetchBinary,
-    _writeFn = fs.writeFile,
+    _writeFn,
     _decodeDimsFn = decodeImageDimensions,
   } = opts;
-
-  if (!path.isAbsolute(outputDir)) {
-    throw new Error(`downloadOne: outputDir must be absolute, got ${outputDir}`);
-  }
+  const sink = opts.sink ?? sinkFromWriteFn(outputDir, _writeFn);
 
   let fetched;
   try {
@@ -676,10 +691,12 @@ export async function downloadOne(url, outputDir, opts = {}) {
 
   const filename = pickAssetFilename(url, buffer, contentType, usedNames);
   usedNames.add(filename);
-  const fullPath = path.join(outputDir, filename);
 
   if (!createOnly) {
-    await _writeFn(fullPath, buffer);
+    // Replaces a file or a LINK at the name — the link itself, never its
+    // target. The plain `fs.writeFile` this used to be opened a symlink
+    // already sitting at the name and overwrote whatever it pointed to.
+    await sink.replace(filename, buffer);
     const result = { ok: true, sourceUrl: url, savedAs: filename, bytes: buffer.length };
     if (dimensions) result.dimensions = dimensions;
     return result;
@@ -696,15 +713,10 @@ export async function downloadOne(url, outputDir, opts = {}) {
   // THAT name means the identical bytes are already there, which is reported
   // as `alreadyPresent`, not treated as a failure. Nothing is ever overwritten.
   // (Fable 5.1 round.)
-  const attempt = async (name) => {
-    try {
-      await _writeFn(path.join(outputDir, name), buffer, { flag: 'wx' });
-      return 'written';
-    } catch (err) {
-      if (err && err.code === 'EEXIST') return 'exists';
-      throw err;
-    }
-  };
+  // `wx` alone is not "create HERE": on Windows it follows a dangling link at
+  // the name and creates the link's target (measured, 2026-09-23). The pinned
+  // sink places by hard link from a temporary instead.
+  const attempt = async (name) => ((await sink.createNoReplace(name, buffer)) === 'created' ? 'written' : 'exists');
   const base = { sourceUrl: url, bytes: buffer.length, ...(dimensions ? { dimensions } : {}) };
   if ((await attempt(filename)) === 'written') return { ok: true, savedAs: filename, ...base };
   // Force the hash fallback by declaring the URL name taken.
@@ -713,7 +725,36 @@ export async function downloadOne(url, outputDir, opts = {}) {
   if ((await attempt(hashed)) === 'written') {
     return { ok: true, savedAs: hashed, renamedFrom: filename, ...base };
   }
+  // The hash name is taken. It is the asset only if it HOLDS these bytes, as
+  // a regular file: a hand-edited file, a directory or a link under that name
+  // was reported as the downloaded image, and the page linked to it (Codex,
+  // round P1). The pinned sink compares; the unit-test seam has no disk to
+  // compare against and keeps the old answer.
+  if (typeof sink.holdsSameBytes === 'function' && !sink.holdsSameBytes(hashed, buffer)) {
+    return { ok: false, sourceUrl: url, reason: 'name-taken', bytes: buffer.length, ...(dimensions ? { dimensions } : {}) };
+  }
   return { ok: true, savedAs: hashed, alreadyPresent: true, ...base };
+}
+
+/**
+ * The TEST seam's writer (`_writeFn`) behind the sink interface the pinned
+ * directory offers, with the calls the unit tests have always observed: a
+ * plain write for replace, `{ flag: 'wx' }` for create-only. Production never
+ * passes `_writeFn`, so production never comes through here.
+ */
+function sinkFromWriteFn(outputDir, writeFn) {
+  return {
+    replace: (name, bytes) => writeFn(path.join(outputDir, name), bytes),
+    createNoReplace: async (name, bytes) => {
+      try {
+        await writeFn(path.join(outputDir, name), bytes, { flag: 'wx' });
+        return 'created';
+      } catch (err) {
+        if (err && err.code === 'EEXIST') return 'exists';
+        throw err;
+      }
+    },
+  };
 }
 
 /**
@@ -747,6 +788,11 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
     minWidth = 0,
     minHeight = 0,
     createOnly = false,
+    // The dispatcher's containment gate, run on the REAL directory pinned
+    // below, just before the first write. Not an MCP argument.
+    authorizeOutDir = null,
+    // Tests only (the platform's own strategy otherwise).
+    pinStrategy = undefined,
     _fetchFn,
     _writeFn,
     _mkdirFn = fs.mkdir,
@@ -793,18 +839,41 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
     throw e;
   }
 
-  await _mkdirFn(outputDir, { recursive: true });
+  // PRODUCTION pins the directory (creating the leaf if missing) and writes
+  // only inside it — helpers/pinned-output-dir.mjs, shared with
+  // pptx_extract_assets. The `_writeFn` seam is the unit tests' in-memory
+  // path, which keeps the old mkdir + stat checks it was written against.
+  let pinned = null;
+  if (_writeFn === undefined) {
+    pinned = openPinnedOutputDir(outputDir, {
+      authorize: authorizeOutDir,
+      ...(pinStrategy === undefined ? {} : { strategy: pinStrategy }),
+    });
+  } else {
+    await _mkdirFn(outputDir, { recursive: true });
 
-  // Belt-and-suspenders: stat the resulting path. `mkdir -p` on an
-  // existing FILE throws EEXIST, but on an existing SYMLINK-to-file the
-  // behaviour is platform-dependent (some Node versions silently treat
-  // the symlink target as the "directory"). Explicit isDirectory()
-  // check catches both.
-  const outStat = await _statFn(outputDir);
-  if (!outStat.isDirectory()) {
-    throw new Error(`downloadAssets: outputDir exists but is not a directory: ${outputDir}`);
+    // Belt-and-suspenders: stat the resulting path. `mkdir -p` on an
+    // existing FILE throws EEXIST, but on an existing SYMLINK-to-file the
+    // behaviour is platform-dependent (some Node versions silently treat
+    // the symlink target as the "directory"). Explicit isDirectory()
+    // check catches both.
+    const outStat = await _statFn(outputDir);
+    if (!outStat.isDirectory()) {
+      throw new Error(`downloadAssets: outputDir exists but is not a directory: ${outputDir}`);
+    }
   }
+  try {
+    return await downloadAllInto(urls, outputDir, pinned ?? sinkFromWriteFn(outputDir, _writeFn), {
+      concurrency, minBytes, maxBytes, minWidth, minHeight, createOnly, _fetchFn, _decodeDimsFn,
+    });
+  } finally {
+    pinned?.close();
+  }
+}
 
+async function downloadAllInto(urls, outputDir, sink, {
+  concurrency, minBytes, maxBytes, minWidth, minHeight, createOnly, _fetchFn, _decodeDimsFn,
+}) {
   const usedNames = new Set();
   const downloaded = [];
   const skipped = [];
@@ -824,8 +893,8 @@ export async function downloadAssets(urls, outputDir, opts = {}) {
         minHeight,
         createOnly,
         usedNames,
+        sink,
         _fetchFn,
-        _writeFn,
         ...(_decodeDimsFn ? { _decodeDimsFn } : {}),
       });
       if (r.ok) {

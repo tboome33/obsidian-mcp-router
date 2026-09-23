@@ -29,7 +29,7 @@ It's a multi-vault router, not a workflow tool — domain-agnostic. The Karpathy
 
 The companion plugin **[obsidian-mcp-router-bridge](https://github.com/tboome33/obsidian-mcp-router-bridge)** adds two REST routes to Local REST API for semantic search (Smart Connections) and Templater execution. PR submitted to the community plugins marketplace ([#12599](https://github.com/obsidianmd/obsidian-releases/pull/12599)) — manual install until it lands.
 
-Apache 2.0, no telemetry, no native binary, CI matrix on Linux + Windows × Node 20 + 22 (88/88 tests green). Bilingual docs (EN + FR).
+Apache 2.0, no telemetry, one native helper (koffi, used on Windows only, to pin asset output directories), CI matrix on Linux + Windows × Node 20 + 22 (88/88 tests green). Bilingual docs (EN + FR).
 
 Feedback / PRs / use-case reports very welcome. Especially curious to hear if anyone tries the auto-enrichment in non-dev contexts (research, journaling, family planning) — I've designed it to be domain-neutral but real-world testing on diverse use cases is the only way to know.
 

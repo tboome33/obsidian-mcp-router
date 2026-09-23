@@ -167,9 +167,12 @@ export function vaultContainingPath(fsPath, registry) {
  * @param {{ vaults?: Array<{ name: string, path?: string }> }} registry
  * @returns {object[]} the vault entries, possibly empty
  */
-export function vaultsContainingPath(fsPath, registry) {
+export function vaultsContainingPath(fsPath, registry, { childIsReal = false } = {}) {
   if (typeof fsPath !== 'string' || fsPath.trim() === '') return [];
-  const child = normalizePathForCompare(realOrResolved(fsPath));
+  // `childIsReal`: the caller has PINNED this path and proven it real (see
+  // helpers/pinned-output-dir.mjs). Resolving it again, unpinned, could be
+  // answered through a swap and judge a different directory (Codex, round P1).
+  const child = normalizePathForCompare(childIsReal ? path.resolve(fsPath) : realOrResolved(fsPath));
   const vaults = registry && Array.isArray(registry.vaults) ? registry.vaults : [];
   const found = [];
   for (const v of vaults) {

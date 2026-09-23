@@ -20,7 +20,7 @@ import { WRITE_TARGET_FIELDS } from '../src/helpers/write-targets.mjs';
 const {
   requiresAlsoTierCheck, ALSO_TIER_EXEMPT_TOOL_NAMES, WRITE_TOOL_NAMES, toolActuallyWrote,
   automaticWriteAllowed, queuedMaintenanceBlocked, assertAssetOutputDirWritable,
-  ASSET_OUTPUT_DIR_FIELDS, TOOLS, preconditionState,
+  ASSET_OUTPUT_DIR_FIELDS, TOOLS, preconditionState, assetOutputDirContext, TOOL_HANDLERS,
 } = _internals;
 
 /**
@@ -57,9 +57,88 @@ describe('assertAssetOutputDirWritable', () => {
     },
   };
 
-  test('an outputDir outside every registered vault is left alone (null, no throw)', () => {
+  test('an outputDir outside every registered vault but inside the temp directory is allowed (null, no throw)', () => {
     assert.equal(assertAssetOutputDirWritable({ outputDir: path.join(os.tmpdir(), 'index-internals-elsewhere') }, reg(), SOLO), null);
+    assert.equal(assertAssetOutputDirWritable({ outputDir: os.tmpdir() }, reg(), SOLO), null);
+    // Nothing named: left to the handler, which refuses it with its own message.
     assert.equal(assertAssetOutputDirWritable({}, reg(), SOLO), null);
+  });
+
+  test('an output directory outside every registered vault AND outside the temp directory is refused — both asset writers', () => {
+    // A sibling of the temp directory: shares its parent, is not inside it.
+    const outside = path.join(path.dirname(os.tmpdir()), `index-internals-not-temp-${process.pid}`, 'assets');
+    for (const [tool, field] of Object.entries(ASSET_OUTPUT_DIR_FIELDS)) {
+      assert.throws(
+        () => assertAssetOutputDirWritable({ [field]: outside }, reg(), SOLO, tool),
+        (err) => err.message.startsWith(`${tool}: ${field} must be inside a registered vault or inside the system temporary directory`),
+        tool,
+      );
+    }
+  });
+
+  test('the handler context re-runs THIS gate on the directory the handler pins — per tool, with its own field', () => {
+    for (const [tool, field] of Object.entries(ASSET_OUTPUT_DIR_FIELDS)) {
+      // Judged allowed on the argument (the primary)...
+      const args = { [field]: path.join(os.tmpdir(), 'index-internals-Work', 'wiki', '.assets') };
+      assert.equal(assertAssetOutputDirWritable(args, reg({ alsoLocked: ['ref'] }), SOLO, tool)?.name, 'work');
+      // ...and refused when the REAL directory turns out to be in the locked vault.
+      const reads = [];
+      const ctx = assetOutputDirContext(tool, args, reg({ alsoLocked: ['ref'] }), () => { reads.push(1); return SOLO; });
+      assert.throws(() => ctx.authorizeOutputDir(inside), /locked read-only/, tool);
+      assert.equal(reads.length, 1, 'the shared-vault config is read at authorisation time');
+      assert.doesNotThrow(() => ctx.authorizeOutputDir(args[field]));
+    }
+  });
+
+  test('the handler context judges the pinned path AS GIVEN — it never resolves that path again', () => {
+    // A second resolution, unpinned, could be answered through a swap and
+    // approve a different directory than the one the handler pinned (Codex,
+    // round P1). The vault roots and the temp root are still resolved.
+    const pinned = path.join(os.tmpdir(), 'index-internals-pinned-as-given', 'assets');
+    const seen = [];
+    const saved = fs.realpathSync.native;
+    fs.realpathSync.native = function spy(p, ...rest) { seen.push(String(p)); return saved.call(this, p, ...rest); };
+    try {
+      for (const [tool, field] of Object.entries(ASSET_OUTPUT_DIR_FIELDS)) {
+        const ctx = assetOutputDirContext(tool, { [field]: pinned }, reg(), () => SOLO);
+        ctx.authorizeOutputDir(pinned);
+      }
+    } finally {
+      fs.realpathSync.native = saved;
+    }
+    assert.ok(seen.length > 0, 'the instrument moved: the roots were resolved');
+    // The segment is unique to the pinned path: no vault root or temp root has it.
+    assert.deepEqual(seen.filter((p) => p.includes('index-internals-pinned-as-given')), [],
+      'the pinned path was never handed to realpath');
+  });
+
+  test('the asset writers refuse to run without the dispatcher context — no ungated write if the wiring breaks', async () => {
+    const r = reg();
+    await assert.rejects(
+      async () => TOOL_HANDLERS.download_page_assets(r, { html: '<p/>', baseUrl: 'https://x.test/', outputDir: path.join(os.tmpdir(), 'never') }),
+      /without the dispatcher's output-directory authorisation/,
+    );
+    await assert.rejects(
+      async () => TOOL_HANDLERS.pptx_extract_assets(r, { filepath: path.join(os.tmpdir(), 'never.pptx') }),
+      /without the dispatcher's output-directory authorisation/,
+    );
+  });
+
+  test('a temp directory that IS a filesystem root cannot serve as the exception', () => {
+    const saved = { TMP: process.env.TMP, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR };
+    const root = path.parse(os.tmpdir()).root;
+    try {
+      process.env.TMP = root;
+      process.env.TEMP = root;
+      process.env.TMPDIR = root;
+      assert.equal(path.parse(os.tmpdir()).root, os.tmpdir(), 'precondition: the override made the temp directory a root');
+      assert.throws(
+        () => assertAssetOutputDirWritable({ outputDir: path.join(root, 'anything') }, reg(), SOLO),
+        /a filesystem root, so it cannot serve/,
+      );
+    } finally {
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    }
   });
 
   test('inside the PRIMARY: allowed', () => {

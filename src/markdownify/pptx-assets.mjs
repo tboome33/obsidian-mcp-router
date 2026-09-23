@@ -27,7 +27,7 @@
  * zip-bomb bounds: `src/helpers/deterministic-zip.mjs`, written for the
  * export gate. It was verified against a PowerPoint-produced archive (72
  * entries, STORE and DEFLATE both present) with local-header verification
- * left ON. Reusing it keeps the dependency list at five.
+ * left ON. Reusing it adds no dependency for the zip itself.
  *
  * ── POSITION, not file number (review finding, measured) ─────────────────
  *
@@ -56,20 +56,19 @@
  * An image that lives only in a slide LAYOUT or MASTER (a logo repeated on
  * every slide) is not a slide relationship and is not extracted.
  *
- * The output directory is judged by PATH, and written by path. A second local
- * process that swaps that directory, one of its ancestors or an output name
- * for a link BETWEEN the dispatcher's check and the write can redirect the
- * write (review rounds 1 and 3). This is not closed, and it is safe to leave
- * open ONLY UNDER AN ASSUMPTION: whoever can rename entries in the output
- * tree can also write the vault it would redirect into — the single-user
- * desktop case this router is built for, where the router runs as the user
- * and the router's tiers (`alsoLocked`, soft, shared) constrain the AGENT,
- * not the user's other processes. Where the router runs under a MORE
- * privileged account than someone able to rename entries in the output tree
- * (a service account writing into a shared staging directory), the race is a
- * real escalation (review round 4): do not point `outdir` at a tree a less
- * privileged principal can modify. Closing it would need directory-handle
- * relative I/O that Node does not offer portably.
+ * ── The output directory is PINNED, not merely checked ───────────────────
+ *
+ * The first version judged the output directory by path and wrote by path:
+ * a second local process swapping that directory, one of its ancestors or an
+ * output name for a link between the check and the write redirected the
+ * write (review rounds 1 and 3, four P1 findings). It was declared rather
+ * than fixed, then fixed on Roland's decision (2026-09-23): the directory is
+ * pinned before the first write and authorised on its REAL path, and every
+ * file is placed through a temporary, never by opening the destination name
+ * — `helpers/pinned-output-dir.mjs`, shared with `download_page_assets`.
+ * Closed on Windows and Linux; on macOS and the BSDs, where Node exposes no
+ * way to pin a directory, the directory swap stays open (a link at an output
+ * NAME is refused everywhere). That module's header has the measurements.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -77,6 +76,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import { readZipDirectory, readZipEntryContent } from '../helpers/deterministic-zip.mjs';
+import { openPinnedOutputDir } from '../helpers/pinned-output-dir.mjs';
 import { expandHome, assertPathAllowed } from './utils.mjs';
 
 /* ---------------------------------------------------------------------- *
@@ -751,83 +751,19 @@ function readRegularFileBounded(file, ceiling) {
 }
 
 /**
- * Write bytes to `dest` without following a symlink that may already sit
- * there. `writeFileSync` alone would open the link's TARGET and truncate it,
- * which turns "write inside an allowed directory" into "write anywhere a
- * pre-existing link points". Removing the entry first (rm does not follow a
- * link) and creating exclusively closes that.
- */
-function writeFileNoFollow(dest, bytes, createOnly) {
-  // createOnly leaves whatever is already there alone and reports it. Without
-  // it, the existing entry is removed first — `rm` does not follow a link, so
-  // a symlink planted in outdir is replaced rather than written through.
-  if (!createOnly) fs.rmSync(dest, { force: true });
-  fs.writeFileSync(dest, bytes, { flag: 'wx' });
-}
-
-/**
- * Does `dest` already hold exactly `bytes`, as a REGULAR file? `lstat`, so a
- * symlink is never followed and never counts as a match; a size mismatch
- * answers without reading. Used only on the createOnly path, after `wx` said
- * the name is taken: a re-ingest into a shared vault finds its own previous
- * output there, and must report it as the asset rather than lose it.
- */
-function holdsSameBytes(dest, bytes) {
-  // lstat first: a link or anything but a regular file is never a match.
-  let st;
-  try { st = fs.lstatSync(dest); } catch { return false; }
-  if (!st.isFile() || st.size !== bytes.length) return false;
-  // Then compare THROUGH A DESCRIPTOR, never by pathname: between the lstat
-  // and a `readFileSync`, the entry could be swapped for a link, a FIFO (a
-  // blocking open) or a huge file (an unbounded read) — Codex, round 2.
-  // O_NONBLOCK keeps a FIFO from blocking the open, the fstat of what was
-  // actually opened decides, and the read is bounded by the length being
-  // compared. O_NOFOLLOW refuses a link swapped in after the lstat — on POSIX
-  // only: Node exposes no such flag on Windows, where that race stays open.
-  // It needs a second local process able to write in the output directory,
-  // which could write the same files directly; the router's tiers constrain
-  // the agent, not other processes (see the module header).
-  const { O_RDONLY, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = fs.constants;
-  let fd;
-  try { fd = fs.openSync(dest, O_RDONLY | O_NOFOLLOW | O_NONBLOCK); } catch { return false; }
-  try {
-    const opened = fs.fstatSync(fd);
-    if (!opened.isFile() || opened.size !== bytes.length) return false;
-    const seen = Buffer.alloc(bytes.length);
-    let off = 0;
-    while (off < seen.length) {
-      const n = fs.readSync(fd, seen, off, seen.length - off, off);
-      if (n === 0) return false;
-      off += n;
-    }
-    return seen.equals(bytes);
-  } catch {
-    return false;
-  } finally {
-    // A comparison answers true or false; a failed close must not turn it into
-    // a thrown error that aborts the run (Codex, round 3).
-    try { fs.closeSync(fd); } catch { /* the descriptor is gone either way */ }
-  }
-}
-
-/**
  * Create-only placement, the same contract as `download_page_assets`'
  * `createOnly`: the constructed name first; if it is taken by the SAME bytes,
  * that file IS the asset (`alreadyPresent`); if it is taken by different
  * bytes (a human edited the picture, or another deck's image sits there), the
- * content-hash name is tried the same way. Nothing is ever overwritten.
+ * content-hash name is tried the same way. Nothing is ever overwritten, and a
+ * link at either name is never written through: `out` places every file by
+ * hard link from a temporary (helpers/pinned-output-dir.mjs).
  * Returns `{ name, alreadyPresent }`, or null when both names hold other bytes.
  */
-function placeCreateOnly(target, name, hashedName, bytes) {
+function placeCreateOnly(out, name, hashedName, bytes) {
   for (const candidate of [name, hashedName]) {
-    const dest = path.join(target, candidate);
-    try {
-      fs.writeFileSync(dest, bytes, { flag: 'wx' });
-      return { name: candidate, alreadyPresent: false };
-    } catch (err) {
-      if (!err || err.code !== 'EEXIST') throw err;
-      if (holdsSameBytes(dest, bytes)) return { name: candidate, alreadyPresent: true };
-    }
+    if (out.createNoReplace(candidate, bytes) === 'created') return { name: candidate, alreadyPresent: false };
+    if (out.holdsSameBytes(candidate, bytes)) return { name: candidate, alreadyPresent: true };
   }
   return null;
 }
@@ -857,6 +793,12 @@ export function extractPptxAssets({
   // Not an MCP argument: the tool schema does not declare it. It lets a test
   // LOWER the fixed inflation bound to fixture size; it can never raise it.
   maxInflateBytes = MAX_INFLATE_BYTES,
+  // Not an MCP argument either: the dispatcher's containment gate, handed in
+  // so that it judges the REAL directory about to be pinned — the one the
+  // files will land in — and not only the string it was given earlier.
+  authorizeOutDir = null,
+  // Tests only (the platform's own strategy otherwise).
+  pinStrategy = undefined,
 } = {}) {
   if (typeof createOnly !== 'boolean') {
     throw new Error(`createOnly must be a boolean, got ${typeof createOnly}`);
@@ -880,21 +822,43 @@ export function extractPptxAssets({
   const buf = readRegularFileBounded(src, MAX_SOURCE_BYTES);
 
   let target = resolveOutDirArg(outDir);
+  const pinOptions = {
+    authorize: authorizeOutDir,
+    ...(pinStrategy === undefined ? {} : { strategy: pinStrategy }),
+  };
+  let out;
   if (target) {
     // The read gate applies to the WRITE side too. Without this, a sandboxed
     // host that carefully limits what may be read would still hand an
     // arbitrary-write primitive to any caller that named an outdir.
     assertPathAllowed(target);
-    fs.mkdirSync(target, { recursive: true });
+    // PINNED before the first write: from here on, a rename of the directory
+    // or of an ancestor cannot move the writes elsewhere (review rounds 1 and
+    // 3; helpers/pinned-output-dir.mjs says how, per platform).
+    out = openPinnedOutputDir(target, pinOptions);
   } else {
     // Deliberately NOT gated by MD_ALLOWED_PATHS: this directory is created
     // by us, is not caller-controlled, and matches what every sibling
     // converter in src/tools/convert.mjs already does with os.tmpdir(). A
     // reviewer flagged it as an escape; it is a fresh mkdtemp, not a path an
-    // archive or a caller can steer.
-    target = fs.mkdtempSync(path.join(os.tmpdir(), 'pptx-assets-'));
+    // archive or a caller can steer. Pinned and authorised like any other,
+    // and CREATED through the pin: `mkdtempSync` created it by path first,
+    // before any authorisation — under a swapped ancestor, somewhere else
+    // (Codex, round P1). The random name is ours; the pin creates it.
+    target = path.join(os.tmpdir(), `pptx-assets-${crypto.randomBytes(8).toString('hex')}`);
+    out = openPinnedOutputDir(target, pinOptions);
   }
+  try {
+    // The manifest names the PINNED directory, not the spelling asked for:
+    // through an alias the two differ, and the pinned one is where the files
+    // are (Codex, round P2).
+    return extractInto(out, out.path, { buf, src, createOnly, assetCap, byteCap, inflateBudget });
+  } finally {
+    out.close();
+  }
+}
 
+function extractInto(out, target, { buf, src, createOnly, assetCap, byteCap, inflateBudget }) {
   let dir;
   try {
     dir = readZipDirectory(buf);
@@ -1125,7 +1089,7 @@ export function extractPptxAssets({
     let name = null;
     let alreadyPresent = false;
     if (createOnly) {
-      name = [constructed, hashed].find((c) => holdsSameBytes(path.join(target, c), bytes)) ?? null;
+      name = [constructed, hashed].find((c) => out.holdsSameBytes(c, bytes)) ?? null;
       alreadyPresent = name !== null;
     }
 
@@ -1150,7 +1114,7 @@ export function extractPptxAssets({
         // there is overwritten. The constructed name, else the content-hash
         // name, each created exclusively; a name that turned out to hold the
         // same bytes after all (a concurrent writer) is the asset.
-        const placed = placeCreateOnly(target, constructed, hashed, bytes);
+        const placed = placeCreateOnly(out, constructed, hashed, bytes);
         if (!placed) {
           refuse(`name taken by different content, left untouched (createOnly): ${constructed}`);
           continue;
@@ -1158,7 +1122,9 @@ export function extractPptxAssets({
         ({ name, alreadyPresent } = placed);
       } else {
         name = constructed;
-        writeFileNoFollow(path.join(target, name), bytes, false);
+        // Replaces a file or a link at the name — the link itself, never its
+        // target — through a temporary and a rename.
+        out.replace(name, bytes);
       }
       if (!alreadyPresent) {
         writtenCount += 1;

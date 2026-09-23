@@ -9,6 +9,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
 
 import {
   TOOL_NAME,
@@ -32,7 +33,10 @@ describe('download-page-assets — TOOL_DEFINITION shape', () => {
   test('declares createOnly — the precondition the shared-vault gate demands of this tool (Fable 5.1 round)', () => {
     const p = TOOL_DEFINITION.inputSchema.properties.createOnly;
     assert.equal(p?.type, 'boolean');
-    assert.match(p.description, /wx/);
+    // The mechanism is no longer `wx` at the name (it followed a dangling link
+    // on Windows); what a caller needs is the contract and the refusal name.
+    assert.match(p.description, /never overwriting anything, a link included/);
+    assert.match(p.description, /name-taken/);
     assert.match(p.description, /writesRequireIfMatch/);
   });
 
@@ -346,5 +350,38 @@ describe('download-page-assets — v0.14.7 defuddle-first + relevance filter', (
     // Both fields must always be present (consistent JSON shape).
     assert.equal(typeof r.defuddled, 'boolean');
     assert.equal(typeof r.afterRelevanceFilter, 'number');
+  });
+});
+
+describe('download-page-assets — the dispatcher authorisation reaches the pinned directory', () => {
+  test('context.authorizeOutputDir is asked about the real output directory, and a refusal writes nothing', async () => {
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dpa-auth-')));
+    try {
+      const seen = [];
+      const outputDir = path.join(base, 'out');
+      await handleDownloadPageAssets({ html: '<p>no image</p>', baseUrl: 'https://x.test/', outputDir }, { authorizeOutputDir: (p) => seen.push(p) });
+      assert.deepEqual(seen, [outputDir]);
+      const refused = path.join(base, 'refused');
+      await assert.rejects(
+        () => handleDownloadPageAssets({ html: '<p>no image</p>', baseUrl: 'https://x.test/', outputDir: refused }, { authorizeOutputDir: () => { throw new Error('NOT HERE'); } }),
+        /NOT HERE/,
+      );
+      assert.equal(fs.existsSync(refused), false);
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('the internal pin options cannot be reached through MCP arguments', async () => {
+    const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'dpa-opts-')));
+    try {
+      const r = await handleDownloadPageAssets(
+        { html: '<p>no image</p>', baseUrl: 'https://x.test/', outputDir: path.join(base, 'out'), pinStrategy: 'bogus', nativeHelper: null, authorizeOutDir: () => { throw new Error('forged'); }, _writeFn: () => { throw new Error('forged seam'); } },
+        { authorizeOutputDir: () => {} },
+      );
+      assert.ok(r, 'a bogus strategy, a forged gate or a forged seam would have thrown');
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
   });
 });

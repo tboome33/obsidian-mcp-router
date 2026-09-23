@@ -25,6 +25,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadRegistry, resolveConfigPath } from './registry.mjs';
 import { authoritativeLockedVault } from './helpers/workspace-bindings.mjs';
+import { realPathWithMissingTail } from './helpers/real-path.mjs';
 import { classifyError } from './error-classify.mjs';
 import { registerResourceHandlers } from './resources.mjs';
 import {
@@ -1237,8 +1238,23 @@ const TOOLS = [
  *
  * Handler signature is uniform: (reg, args) => Promise<result>. `list_vaults`
  * ignores args; every other tool reads from it. The uniformity lets the
- * dispatcher be a one-liner.
+ * dispatcher be a one-liner. The asset writers (ASSET_OUTPUT_DIR_FIELDS) also
+ * take a third argument the DISPATCHER builds — never the caller.
  */
+
+/**
+ * The asset writers refuse to run without the dispatcher's output-directory
+ * authorisation. Without this, a dispatcher that stopped passing it would
+ * still write — gated only on the path it judged before the directory could
+ * change — and every test would stay green.
+ */
+function requireOutputDirContext(context, toolName) {
+  if (!context || typeof context.authorizeOutputDir !== 'function') {
+    throw new Error(`${toolName}: internal error — called without the dispatcher's output-directory authorisation; refusing to write`);
+  }
+  return context;
+}
+
 const TOOL_HANDLERS = {
   // The second argument is the config AS IT IS ON DISK — `list_vaults` reports
   // which vaults require a write precondition, and that count lives in other
@@ -1278,8 +1294,9 @@ const TOOL_HANDLERS = {
   pptx_to_markdown: (reg, args) => pptxToMarkdown(reg, args),
   // Companion to the line above: image BYTES, which markitdown cannot
   // return. No Python. It WRITES files through `outdir`, which may sit in a
-  // vault — gated by containment before this runs (ASSET_OUTPUT_DIR_FIELDS).
-  pptx_extract_assets: (reg, args) => pptxExtractAssets(reg, args),
+  // vault — gated by containment before this runs (ASSET_OUTPUT_DIR_FIELDS),
+  // and again, through `context`, on the real directory it pins.
+  pptx_extract_assets: (reg, args, context) => pptxExtractAssets(reg, args, requireOutputDirContext(context, 'pptx_extract_assets')),
   image_to_markdown: (reg, args) => imageToMarkdown(reg, args),
   audio_to_markdown: (reg, args) => audioToMarkdown(reg, args),
   youtube_to_markdown: (reg, args) => youtubeToMarkdown(reg, args),
@@ -1291,7 +1308,7 @@ const TOOL_HANDLERS = {
   // v0.13.3 Phase C — linked-sources proposer for recursive ingestion.
   propose_linked_sources: (_reg, args) => handleProposeLinkedSources(args),
   // v0.14.x Phase E — page asset downloader (image preservation in vault).
-  download_page_assets: (_reg, args) => handleDownloadPageAssets(args),
+  download_page_assets: (_reg, args, context) => handleDownloadPageAssets(args, requireOutputDirContext(context, 'download_page_assets')),
   // v0.14.8 — click-to-open URL builder (read-only, no vault I/O beyond
   // the per-vault data.json port lookup).
   build_open_link: (reg, args) => buildOpenLinkTool(reg, args),
@@ -1727,7 +1744,8 @@ const ASSET_OUTPUT_DIR_RESOLVERS = Object.freeze({
  * guards apply to it exactly as they would to a REST write: the vault must be
  * reachable from this workspace, its write tier must allow it, and a shared
  * vault needs the tool's precondition. A directory outside every registered
- * vault is left to `MD_ALLOWED_PATHS`, as before.
+ * vault is refused unless it is inside the system temporary directory
+ * (`assertInsideTempDir`); `MD_ALLOWED_PATHS`, when set, narrows further.
  *
  * EVERY vault containing the directory is asked, not the first one found:
  * vault folders can nest, and a path inside a locked vault B nested in a
@@ -1735,13 +1753,61 @@ const ASSET_OUTPUT_DIR_RESOLVERS = Object.freeze({
  *
  * Pure apart from `path.resolve`; exported for tests through `_internals`.
  */
-function assertAssetOutputDirWritable(args, reg, sharedConfig = null, toolName = 'download_page_assets') {
+/**
+ * What the dispatcher hands an asset writer as its third argument: the SAME
+ * gate as `assertAssetOutputDirWritable`, asked again about the real directory
+ * the handler has just pinned (helpers/pinned-output-dir.mjs). The shared-vault
+ * configuration is re-read at that moment, through `readSharedConfig`. The
+ * directory it receives is PINNED and proven real, so it is judged as given
+ * (`childIsReal`): resolving it again, unpinned, could be answered through a
+ * swap and approve a different directory than the one pinned (Codex, round P1).
+ */
+function assetOutputDirContext(toolName, args, reg, readSharedConfig) {
+  const field = ASSET_OUTPUT_DIR_FIELDS[toolName];
+  return {
+    authorizeOutputDir: (realDir) => {
+      assertAssetOutputDirWritable({ ...args, [field]: realDir }, reg, readSharedConfig(), toolName, { childIsReal: true });
+    },
+  };
+}
+
+function assertInsideTempDir(dir, toolName, field, { childIsReal = false } = {}) {
+  const tmpRoot = realPathWithMissingTail(os.tmpdir());
+  // A temp directory that IS a filesystem root (TMP=C:\) would make "inside
+  // the temp directory" mean "anywhere on that drive".
+  const isRoot = path.parse(tmpRoot).root === tmpRoot;
+  const inside = !isRoot && typeof dir === 'string' && dir.trim() !== '' && (() => {
+    const real = childIsReal ? path.resolve(dir) : realPathWithMissingTail(dir);
+    const rel = path.relative(tmpRoot, real);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  })();
+  if (!inside) {
+    throw new Error(
+      `${toolName}: ${field} must be inside a registered vault or inside the system temporary directory `
+      + `(${tmpRoot}${isRoot ? ' — a filesystem root, so it cannot serve' : ''}); got ${JSON.stringify(String(dir ?? ''))}. `
+      + 'These tools put files into a vault; anywhere else on the disk is refused.',
+    );
+  }
+}
+
+function assertAssetOutputDirWritable(args, reg, sharedConfig = null, toolName = 'download_page_assets', { childIsReal = false } = {}) {
   const field = Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, toolName) ? ASSET_OUTPUT_DIR_FIELDS[toolName] : null;
   if (!field) throw new Error(`assertAssetOutputDirWritable: "${toolName}" is not an asset-writing tool`);
   const named = args?.[field];
   const dir = Object.hasOwn(ASSET_OUTPUT_DIR_RESOLVERS, toolName) ? ASSET_OUTPUT_DIR_RESOLVERS[toolName](named) : named;
-  const owners = vaultsContainingPath(dir, reg);
-  if (owners.length === 0) return null;
+  // Nothing named: the HANDLER refuses it, with its own message ("outputDir
+  // is required"). `pptx_extract_assets` never gets here without a directory —
+  // its resolver answers the temp root for "none".
+  if (typeof dir !== 'string' || dir.trim() === '') return null;
+  const owners = vaultsContainingPath(dir, reg, { childIsReal });
+  if (owners.length === 0) {
+    // OUTSIDE EVERY REGISTERED VAULT: only the system temporary directory
+    // (Roland, 2026-09-23). These tools exist to put files in a vault; an
+    // output directory anywhere else on the disk was a general-purpose write
+    // primitive, bounded only by MD_ALLOWED_PATHS when that is set at all.
+    assertInsideTempDir(dir, toolName, field, { childIsReal });
+    return null;
+  }
   // Three passes, each over every owner, in this order on purpose: a vault
   // this workspace cannot REACH, or one whose write tier forbids it, must hear
   // that first — "this vault is shared" would be a confusing thing to tell
@@ -3220,11 +3286,18 @@ export async function startServer({ configPath, watch = true } = {}) {
       }
       // The write tools that reach a vault through the FILESYSTEM rather than a
       // `vault` argument — gated by where their output directory points instead.
+      // Twice: here, on the argument, so a refusal comes before any work; and
+      // inside the handler, on the REAL directory it pins just before the first
+      // write (`authorizeOutputDir`), because a path judged here can name a
+      // different directory by the time the files land (review rounds 1 and 3).
+      // `context` is built here and never from arguments.
+      let handlerContext;
       if (Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, name)) {
         assertAssetOutputDirWritable(args, reg, sharedVaultConfig(), name);
+        handlerContext = assetOutputDirContext(name, args, reg, sharedVaultConfig);
       }
 
-      const result = await handler(reg, args);
+      const result = await handler(reg, args, handlerContext);
 
       // `list_vaults` IS the session health check, and it is the one tool that
       // names no vault — so it gets its own rule rather than the schema-derived
@@ -3649,6 +3722,7 @@ export const _internals = {
   queuedMaintenanceBlocked,
   assertAssetOutputDirWritable,
   ASSET_OUTPUT_DIR_FIELDS,
+  assetOutputDirContext,
   // Phase 4 — the shared-vault precondition. Re-exported from
   // helpers/vault-sharing.mjs through THIS object so the partition test can
   // ask one question of one module: "is every member of WRITE_TOOL_NAMES

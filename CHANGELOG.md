@@ -10,6 +10,93 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### The two asset writers: the output directory is pinned, and must be a vault or the temp directory
+
+`pptx_extract_assets` and `download_page_assets` write files into a directory the caller names.
+Its gate judged a PATH, and the files were then written through that path again — so a local
+process able to rename entries in the output tree could put a link where the directory (or a
+parent) was, between the check and the write, and redirect the write into a vault declared
+read-only, or anywhere. The review of `pptx_extract_assets` reported it four times (one class);
+the previous section declared it under a single-user assumption. It is now fixed, for both tools,
+by one shared module (`src/helpers/pinned-output-dir.mjs`):
+
+- **The directory is pinned, its location PROVEN, and only then authorised and written.** On
+  Windows, a fresh `.router-pin-<hex>` probe directory is created in it and held with share mode 0
+  and delete-on-close: while it is held, no other process can remove it or rename the directory or
+  any parent, and the directory stays listable (Obsidian). Then Windows is asked, **from the
+  handle**, where the held probe is (`GetFinalPathNameByHandleW` on libuv's `uv_get_osfhandle`) —
+  it must be `<dir>\<probe>`. Two earlier designs answered from PATHS and were broken in review: "same
+  object?" then "same path?" as two lookups (a swap and a swap back between them passed both), then
+  a secret file name that a process watching the swapped tree could learn and counterfeit (Codex
+  rounds P1 and P2). The comparison is exact — case folding accepted `OUT` for `out` in an NTFS
+  directory with case sensitivity on, where they are two directories (round P3). **The pin requires
+  the volume to answer "NTFS"**: the same handle says which filesystem holds the probe, and any
+  other answer — NTFS is the only filesystem its guarantees were measured on — is refused (round
+  P4). The answer is a name, not a certificate (a third-party driver can give it), so the guarantee
+  assumes a trusted filesystem stack (round P5). Measured: C:, I:, D:
+  and the vaults here are NTFS; the Google Drive volume M: reports FAT32, so an output directory
+  there is refused on Windows. No exclusive access to the directory itself is needed, so a vault
+  ROOT Obsidian keeps open, the temp directory and a process's working directory can all be pinned.
+- **What the guarantee covers**: where the BYTES land — never outside the authorised directory,
+  never written through a link (two EMPTY creations outside it remain possible and are disclosed
+  below and above: a probe under an active swap, a file at a dangling link in the no-hard-link
+  fallback). Not the integrity of files INSIDE that directory against another program
+  that can write there (it could swap a temporary of ours before it is placed, or write any file
+  under any name directly): nothing it did not already have (round P4, argued rather than fixed —
+  closing it needs handle-level link and rename, which Node does not offer). Missing
+  levels are created one at a time, each under the pin of its parent. On Linux, every operation
+  goes through `/proc/self/fd/<fd>/…`, so a rename of the path changes nothing. **macOS and the
+  BSDs have no pin** (Node exposes no primitive for it): the directory is verified once and the
+  swap race stays open there.
+- **New dependency: `koffi` 3.3.1** (MIT, an FFI; exact version), Roland's decision (2026-09-23) —
+  the only way to ask Windows where a handle is from Node. Loaded on Windows only, on first use;
+  without it (or on a runtime that does not export `uv_get_osfhandle`), the asset writers refuse to
+  write on Windows rather than pin without proof. Its platform binaries come as optional packages
+  (`@koromix/koffi-<platform>`); the bundle carries the one for the platform it was built on.
+- **The containment gate runs again inside the handler, on the pinned path, as given**: after the
+  existing ancestor is pinned and proven, before any missing level is created, and without
+  resolving the path again (a second, unpinned resolution could be answered through a swap and
+  approve another directory — Codex round P1). The handlers refuse to run without that
+  authorisation, so a dispatcher that stopped passing it would fail every call instead of writing
+  ungated. `pptx_extract_assets` with no `outdir` now creates its temp directory THROUGH the pin
+  (it used `mkdtemp` first, before any authorisation).
+- **No file is ever placed by opening its destination name.** Measured on NTFS: an exclusive
+  create (`wx`) over a DANGLING link at the name creates the link's TARGET — so `createOnly` could
+  be steered to create a file anywhere, with no race at all. And `download_page_assets` without
+  `createOnly` wrote with a plain `fs.writeFile`, which follows a LIVE link and overwrites its
+  target. Every file is now written to a temporary with an unguessable name in the pinned directory,
+  then placed by hard link (create-only: `EEXIST` on anything at the name, link or not, and nothing
+  created where a link points) or by rename (replace: the link itself is replaced, its target keeps
+  its bytes). A filesystem that refuses the hard link falls back to an exclusive create AT the
+  name, checked to be the regular file there before a byte is written: never an overwrite (the
+  first fallback, check-then-rename, could replace a file another writer created in between —
+  Codex round P1). On a filesystem with links but no hard links (ReFS), a dangling link at the name
+  can still get an EMPTY file created where it points: detected, refused, nothing written there.
+- **`holdsSameBytes` compares the object `lstat` saw**, by device and inode, after the open: a file
+  swapped for another between the two is not a match on Windows, where no `O_NOFOLLOW` exists (a
+  link swapped in that leads back to the very same file reads as that file).
+- **`download_page_assets` with `createOnly` no longer reports a content-hash name held by other
+  bytes as `alreadyPresent`**: it compares, and reports `name-taken` in `skipped` — the page keeps
+  the remote URL instead of linking to a file that is not the image.
+- **An output directory outside every registered vault is refused unless it is inside the system
+  temporary directory** (Roland's decision, 2026-09-23), for both tools. They exist to put files in
+  a vault; anywhere else was a general-purpose write primitive bounded only by `MD_ALLOWED_PATHS`
+  when that is set. A temp directory that is itself a filesystem root cannot serve.
+- Under an active swap of an ancestor during the probe, an EMPTY `.router-pin-<hex>` directory can
+  be left where the swap pointed (the probe is then refused and nothing else is created). A crash
+  can leave `.router-tmp-*` dot-files behind; Obsidian does not index dot-files.
+- Out of scope, flagged: `provision_vault` also writes to a caller-named path on disk, with its own
+  gate, and does not use the pinned writer.
+
+### `list_vaults`' description catches up with the binding lot
+
+Rounds 16 and 17 of the binding lot (`d2be72f`, `403cb96`) changed what `disabled[]` reports — a
+vault disabled SINCE start-up, one the file no longer disables ("awaits a restart"), an entry the
+loader refused for an identity mismatch — and when a secondary is addressable by name (once this
+session has loaded it, and no lock is in force). The tool description still said the old thing.
+The binding session wrote the two sentences on 2026-09-19 and held them back while the
+`pptx_extract_assets` work was uncommitted in the same file; they are committed on their own.
+
 ### `pptx_extract_assets` — a deck's pictures reach the vault, under the slide that shows them
 
 `pptx_to_markdown` keeps a deck's text, tables and notes, and loses its pictures: markitdown writes
@@ -58,12 +145,8 @@ nothing named by the archive reaches the disk. `wiki-ingest --save-assets` now u
   running order falls back to file numbers with its cause in `orderFallbackReason`, and every
   other bound leaves an entry in `skipped`. These bound inflated bytes, not the process's peak
   memory, which also holds the source buffer and one image being compared.
-- Known gaps, stated: images that live only in a slide layout or master are not extracted; and the
-  output directory is judged and written by path, so another process able to swap it (or a parent)
-  for a link between check and write could redirect the write. On the single-user desktop the router
-  is built for, that process could already write there directly; where the router runs under a
-  MORE privileged account than someone able to rename entries in the output tree, it is a real
-  escalation — do not point `outdir` at a tree a less privileged account can modify.
+- Known gap, stated: images that live only in a slide layout or master are not extracted. (The
+  output-directory race this entry first declared is closed — see the section above.)
 
 Two fixes in helpers `download_page_assets` shares, found by the adversarial review of this tool
 and applied to both:

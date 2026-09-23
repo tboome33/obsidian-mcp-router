@@ -2197,6 +2197,7 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
       resolveVault: () => vault, vaults: [vault], defaultVault: 'v',
       configPath: path.join(scratch, 'router-config.json'),
     };
+    const DISPATCHER_CONTEXT = { authorizeOutputDir: () => {} };
     // Above /vault/, or a literal dot segment still in the URL. A tool POSTing
     // to its OWN route (`/templates/execute`, which carries paths in the body)
     // is not an escape — the first version of this check flagged it and would
@@ -2244,7 +2245,11 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
             seen.length = 0;
             let thrown = null;
             const args = { vault: 'v', ...build(schema.type === 'array' ? [value] : value) };
-            try { await handler(registry, args); } catch (e) { thrown = e; }
+            // The third argument is what the DISPATCHER hands the asset writers
+            // (their output-directory authorisation, which they refuse to run
+            // without). Allow-all here: this guard asks where a handler SENDS a
+            // hostile value, not whether the gate would have stopped it first.
+            try { await handler(registry, args, DISPATCHER_CONTEXT); } catch (e) { thrown = e; }
             return { urls: seen.slice(), err: thrown };
           };
 
