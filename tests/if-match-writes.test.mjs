@@ -518,10 +518,17 @@ describe('the shared-vault gate\'s promise: satisfying it really does protect', 
     // declares no precondition at all.
     // Excluded by name, each with its reason: `write_bundle` is a composite
     // that runs these very handlers (its own suite covers it);
-    // `execute_template` and `download_page_assets` are satisfiable by a
-    // precondition that is not `ifMatch` (`createFile`, create-only at the
-    // bridge; `createOnly`, the `wx` flag) and are proved in their own suites.
-    const NOT_IF_MATCH = new Set(['write_bundle', 'execute_template', 'download_page_assets']);
+    // `execute_template`, `download_page_assets` and `pptx_extract_assets` are
+    // satisfiable by a precondition that is not `ifMatch` (`createFile`,
+    // create-only at the bridge; `createOnly`, the `wx` flag — the last two
+    // write batches of BINARY files, which no ifMatch content hash describes)
+    // and are proved in their own suites.
+    const NOT_IF_MATCH = new Set([
+      'write_bundle',
+      'execute_template',
+      'download_page_assets',
+      'pptx_extract_assets',
+    ]);
     const expected = [..._internals.WRITE_TOOL_NAMES].filter((n) => !IF_MATCH_EXEMPT.has(n) && !NOT_IF_MATCH.has(n));
     assert.deepEqual(
       expected.filter((n) => !(n in CASES)), [],

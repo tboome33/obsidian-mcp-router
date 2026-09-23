@@ -49,6 +49,30 @@ La conversion est déléguée à `markitdown` (l'outil open source de Microsoft)
 
 **À savoir.** Chaque page rendue est une image facturée dans le contexte du modèle : des plafonds durs (nombre de pages, 12 Mo par image, 24 Mo au total) bornent le coût, et un fichier hors limites est refusé **avant** d'être chargé en mémoire. Les dépendances vivent dans le même `.venv-docling` que Docling — si vous avez activé Docling, `pdf_to_images` marche déjà ; sinon l'outil donne la consigne d'installation. Ne modifie aucun vault.
 
+## `pptx_extract_assets` — garder les images d'une présentation
+
+**Le besoin.** `pptx_to_markdown` lit une présentation fidèlement pour le texte — titres, tableaux, notes de l'orateur — mais il ne rend pas les **images**. À leur place, il écrit une référence qui ne pointe vers aucun fichier : `![logo.png](Picture2.jpg)`. Pire, deux images différentes de deux diapositives peuvent recevoir la même cible, parce que ce nom est un numéro de forme dans la diapositive et pas une identité, et l'extension est inventée (un PNG devient `.jpg`). Une présentation ingérée avec ce seul outil laisse donc des liens d'image morts dans le vault.
+
+**Ce que ça fait.** Ouvre le `.pptx` comme ce qu'il est — une archive ZIP — avec le lecteur du router, **sans Python**, et écrit chaque image embarquée dans un dossier, avec la liste des diapositives qui l'affichent. Trois règles font la valeur du résultat :
+
+- **Les numéros de diapositive sont des positions d'affichage**, lues dans l'ordre de la présentation, c'est-à-dire la même numérotation que les commentaires `<!-- Slide number: N -->` que produit `pptx_to_markdown`. Pas le numéro du fichier `slideN.xml`, qui diverge dès qu'on réordonne les diapositives. Si la présentation n'a pas d'ordre lisible, l'outil retombe sur les numéros de fichier **et le dit** (`orderSource: "file-number"`).
+- **Une image utilisée sur plusieurs diapositives est écrite une seule fois**, même si l'archive la stocke deux fois : la déduplication se fait sur le contenu (empreinte SHA-256), pas sur le nom. Seule réserve : une partie que l'outil n'a pas lue (signalée dans `skipped`) pouvait être une diapositive de plus pour une image déjà listée.
+- **Les noms de fichiers sont construits** (`slide<N>-<i>.<ext>`) et l'extension vient des premiers octets du fichier. Aucun nom venu de l'archive n'atteint le disque ; un contenu non reconnu est écarté avec sa raison, jamais écrit sous une extension devinée.
+
+Le résultat est un manifeste : pour chaque image `name`, `path`, `slides`, `bytes`, `ext`, `sha256`, plus `skipped` (ce qui n'a pas pu être extrait, avec la raison).
+
+**Comment l'utiliser.** Presque toujours à travers l'ingestion, avec `--save-assets` :
+
+> « ingère cette présentation avec ses images » — la skill `wiki-ingest` appelle `pptx_to_markdown` pour le texte, `pptx_extract_assets` pour les images, supprime les références mortes et insère chaque image sous sa diapositive.
+
+**À savoir.**
+
+- **C'est un outil d'écriture.** Sans `outdir`, les images vont dans un dossier temporaire ; mais l'ingestion vise `<vault>/wiki/.assets/<slug>/`, c'est-à-dire **l'intérieur d'un vault**. Il est donc masqué par `OBSIDIAN_ROUTER_READONLY`, et un `outdir` situé dans un vault subit les règles de ce vault, exactement comme `download_page_assets` : un vault inaccessible depuis ce workspace est refusé, un secondaire verrouillé aussi (sans exception), un secondaire « souple » demande `confirmSecondaryWrite`, et un **vault partagé** demande `createOnly: true`. Si des dossiers de vaults sont imbriqués, chacun est consulté.
+- **`createOnly: true` n'écrase jamais rien.** Une ré-ingestion retrouve ses propres fichiers : ils reviennent dans le manifeste avec `alreadyPresent: true`, sous le même nom. Un nom occupé par un autre contenu (une image retouchée à la main) est laissé tel quel, et l'image part sous un nom dérivé de son empreinte.
+- **Bornes** : 512 Mio par fichier source (un fichier ordinaire uniquement), 200 images et 256 Mio écrits par défaut (`max_assets`, `max_total_bytes`, jamais relevés au-delà), 512 Mio décompressés au plus par appel (toutes lectures comprises), 16 Mio par partie XML, et 2000 diapositives parcourues au plus. Aucune n'est silencieuse, mais elles ne parlent pas toutes au même endroit : un fichier source trop gros ou qui n'est pas un fichier ordinaire **refuse l'appel** ; un ordre de présentation illisible fait repasser aux numéros de fichier avec `orderSource: "file-number"` et sa cause dans `orderFallbackReason` ; tout le reste laisse une entrée dans `skipped`. Ces bornes limitent les octets décompressés, pas la mémoire de pointe du processus.
+- **Limite connue** : une image qui n'existe que dans une mise en page ou un masque (un logo répété sur toutes les diapositives) n'est pas une image de diapositive et n'est pas extraite. De même, l'original intact qu'Office garde à côté d'une image retouchée par un effet artistique (relation `hdphoto`) n'est pas extrait — l'image retouchée, celle qui s'affiche, l'est.
+- **Limite connue, assumée sous une condition** : le dossier de sortie est vérifié par son chemin, puis écrit par son chemin. Un **autre programme** qui remplacerait ce dossier (ou un dossier parent) par un lien entre la vérification et l'écriture pourrait rediriger l'écriture. Dans le cas pour lequel le router est fait — un poste, un utilisateur, le router lancé en son nom — ce programme a déjà le droit d'écrire là où il redirigerait : les paliers du router encadrent ce que l'**agent** écrit, pas les autres programmes de l'utilisateur. La condition compte : si le router tourne sous un compte **plus privilégié** que quelqu'un qui peut renommer des entrées dans le dossier de sortie (compte de service, dossier de dépôt partagé), cette course devient une élévation de privilège. Ne pointez pas `outdir` vers un dossier qu'un compte moins privilégié peut modifier.
+
 ## Dépendances et variables d'environnement
 
 Le résumé des prérequis et des points de réglage de toute la famille :
@@ -73,7 +97,7 @@ Le résumé des prérequis et des points de réglage de toute la famille :
 
 | Variable | Rôle |
 |---|---|
-| `MD_ALLOWED_PATHS` | Liste de répertoires (séparés par `:` en POSIX, `;` sous Windows) que les outils de conversion ont le droit de lire. Non défini = tout chemin absolu est permis ; défini = tout chemin hors liste est refusé. Le bac à sable de la famille. |
+| `MD_ALLOWED_PATHS` | Liste de répertoires (séparés par `:` en POSIX, `;` sous Windows) que les outils de conversion ont le droit de lire — et, pour `pptx_extract_assets` et `download_page_assets`, où ils ont le droit d'écrire (sauf le dossier temporaire neuf que `pptx_extract_assets` crée lui-même quand on ne lui donne pas d'`outdir`). Non défini = tout chemin absolu est permis ; défini = tout chemin hors liste est refusé. Un chemin qui n'existe pas encore est jugé à travers son plus proche parent existant, liens résolus : un dossier à créer sous un lien qui sort de la liste est refusé. Le bac à sable de la famille. |
 | `MD_SHARE_DIR` | Alias historique mono-répertoire de `MD_ALLOWED_PATHS` (compatibilité markdownify-mcp). |
 | `MARKITDOWN_PATH` / `DOCLING_PATH` / `PDF_IMAGES_PYTHON` | Chemins explicites vers les exécutables quand on n'utilise pas les venvs embarqués. |
 | `OBSIDIAN_ROUTER_ENABLE_DOCLING` | `1` avant install = active le backend Docling. |

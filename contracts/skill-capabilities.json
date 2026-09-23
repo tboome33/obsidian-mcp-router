@@ -56,13 +56,13 @@
       "requires": {
         "shell": false,
         "network": true,
-        "python": false,
+        "python": true,
         "obsidianPlugins": [],
         "binaries": []
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. Two specifics the reader should know. First, the network access is NOT via a router tool but via the host's WebSearch/WebFetch, so no router-side policy sees it. Second, this entry's reads/writes/writeMode are the DELEGATION CLOSURE, not what this page does itself: the vault writes all happen inside wiki-ingest, which is `destructive` (it moves files, and write_bundle has no move step), so the closure is what a permission engine must grant to run autoresearch at all. The validator enforces that dominance rather than trusting the prose. Since v0.69.0 the page also calls find_boundary_pages (C10) in step 0, and only when the user named no topic: it is read-only and adds nothing to the write closure, but it is a real call, not a mention."
+        "reason": "No harness executes a skill. Two specifics the reader should know. First, the network access is NOT via a router tool but via the host's WebSearch/WebFetch, so no router-side policy sees it. Second, this entry's reads/writes/writeMode are the DELEGATION CLOSURE, not what this page does itself: the vault writes all happen inside wiki-ingest, which is `destructive` (it moves files, and write_bundle has no move step), so the closure is what a permission engine must grant to run autoresearch at all. The validator enforces that dominance rather than trusting the prose. Since v0.69.0 the page also calls find_boundary_pages (C10) in step 0, and only when the user named no topic: it is read-only and adds nothing to the write closure, but it is a real call, not a mention. requires.python became true by INHERITANCE: autoresearch delegates to wiki-ingest, which gained a binary-document path through markitdown. autoresearch itself shells out to no Python."
       }
     },
     "bind-workspace": {
@@ -1064,6 +1064,7 @@
       ],
       "tools": [
         "append_to_file",
+        "docx_to_markdown",
         "download_page_assets",
         "extract_page_metadata",
         "filter_relevant_blocks",
@@ -1073,13 +1074,17 @@
         "merge_frontmatter",
         "move_file",
         "patch_file",
+        "pdf_to_markdown",
+        "pptx_extract_assets",
+        "pptx_to_markdown",
         "propose_linked_sources",
         "record_source",
         "search",
         "search_smart",
         "webpage_to_markdown",
         "write_bundle",
-        "write_file"
+        "write_file",
+        "xlsx_to_markdown"
       ],
       "toolsMentionedNotCalled": [],
       "delegatesTo": [
@@ -1089,13 +1094,13 @@
       "requires": {
         "shell": false,
         "network": true,
-        "python": false,
+        "python": true,
         "obsidianPlugins": [],
         "binaries": []
       },
       "verification": {
         "status": "declared",
-        "reason": "No harness executes a skill. The BATCH path runs inside agents/wiki-ingest.md, whose tool allowlist the harness does enforce — but the ordinary in-process path is bound by nothing, so no tier above `declared` would be true for the skill as a whole. `destructive` rather than `transactional`: it calls move_file, and write_bundle has no move step, so that call sits outside the rollback. list_files, merge_frontmatter, search and search_smart are declared because that agent grants them, even though the page never names them — the agent-allowlist cross-check surfaced the gap."
+        "reason": "No harness executes a skill. The BATCH path runs inside agents/wiki-ingest.md, whose tool allowlist the harness does enforce — but the ordinary in-process path is bound by nothing, so no tier above `declared` would be true for the skill as a whole. `destructive` rather than `transactional`: it calls move_file, and write_bundle has no move step, so that call sits outside the rollback. list_files, merge_frontmatter, search and search_smart are declared because that agent grants them, even though the page never names them — the agent-allowlist cross-check surfaced the gap. requires.python became true when the skill gained a binary-document path: pptx_to_markdown and its siblings shell out to markitdown. The flag is per-skill and has no per-branch granularity, so it now overstates the URL path, which needs no Python at all — an overstatement the validator prefers to the understatement it refused. pptx_extract_assets does NOT contribute to it: a PPTX is a ZIP and it uses the router's own reader."
       }
     },
     "wiki-lint": {

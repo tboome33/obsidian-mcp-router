@@ -484,6 +484,7 @@ describe('THE PARTITION — no write tool can be silently ungated', () => {
     ['write_bundle', { fields: ['steps.ifMatch', 'steps.ifNew', 'approvedPlanSha256', 'expect'], carried: { steps: [{ op: 'write', path: 'a.md', ifMatch: 'a'.repeat(64) }] } }],
     ['execute_template', { fields: ['createFile'], carried: { createFile: true, targetPath: 'x.md' } }],
     ['download_page_assets', { fields: ['createOnly'], carried: { outputDir: '/x', createOnly: true } }],
+    ['pptx_extract_assets', { fields: ['createOnly'], carried: { outdir: '/x', createOnly: true } }],
   ]);
 
   test('every write tool is exempt or satisfiable — exactly one of the two', () => {

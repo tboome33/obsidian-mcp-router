@@ -10,6 +10,76 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### `pptx_extract_assets` — a deck's pictures reach the vault, under the slide that shows them
+
+`pptx_to_markdown` keeps a deck's text, tables and notes, and loses its pictures: markitdown writes
+`![logo.png](Picture2.jpg)`, a target that names no file — two different pictures can even share
+one, and the extension is invented. A deck ingested with it alone left dangling image links.
+
+The new tool reads the `.pptx` as the ZIP it is, with the router's own reader — **no Python** — and
+writes each embedded image once, with the **slide positions** that show it: the running order of
+the presentation, the same numbering as markitdown's `<!-- Slide number: N -->` comments, not the
+`slideN.xml` file number (they diverge as soon as a deck is reordered). Pictures are deduplicated by
+content, output names are constructed (`slide<N>-<i>.<ext>`) and extensions come from magic bytes;
+nothing named by the archive reaches the disk. `wiki-ingest --save-assets` now uses it for a local
+`.pptx`: text from `pptx_to_markdown`, pictures from this tool, each inserted under its slide.
+
+- **It is a write tool.** The skill aims `outdir` at `<vault>/wiki/.assets/<slug>/`, so the tool is
+  in `WRITE_TOOL_NAMES` (hidden by `OBSIDIAN_ROUTER_READONLY`) and an `outdir` inside a vault meets
+  that vault's gates exactly as `download_page_assets` does: unreachable refused, `alsoLocked`
+  refused, soft tier needs `confirmSecondaryWrite`, a shared vault needs `createOnly: true`. With no
+  `outdir` it writes under the OS temp root, and that root is what is checked.
+- **`createOnly: true` never overwrites, and a re-ingest keeps its links**: files already holding
+  the same bytes come back in the manifest with `alreadyPresent: true` under the same name; a name
+  another picture now occupies falls through to a content-hash name; only when that name too holds
+  other bytes is the picture reported in `skipped` instead.
+- **The three XML parts are read by a small forward tokenizer**, not by regular expressions over
+  raw text: six review rounds found six ways the regexes read what no XML parser reads (a
+  relationship inside a comment, a slide list inside a processing instruction, an `r:id` inside
+  another attribute's value, a Unicode prefix stopping the scan, entities decoded twice, a UTF-16
+  part read as UTF-8) and one quadratic rescan. It reads UTF-8 and UTF-16 strictly, resolves
+  element and attribute prefixes by scope, and turns into a REPORTED loss: a DTD, an unterminated
+  construct, a mismatched or unmatched end tag, a second root or none, an element never closed, a
+  duplicate attribute, a literal `<` in a value and an undeclared entity reference. Slides are
+  found by the part the running order names (not only `slide<N>.xml`), through internal
+  relationships of the slide type only, and scanned in slide order; a list entry that resolves to
+  no part, to a part absent from the archive, or to a part already listed is reported, and so is
+  an image target refused as absolute, outside `ppt/` or over length. Both Transitional and Strict
+  OOXML namespaces are recognised; relationship types and `TargetMode` are compared exactly; a
+  relationships part must have a `Relationships` root in the package-relationships namespace (or
+  none); a duplicate relationship `Id` in the presentation, or a foreign-namespace
+  `presentation` root, falls back to file numbers with the reason; a listed slide with no
+  relationships part is reported as an uncertainty ("could not be checked for pictures"). Every
+  piece of archive text quoted in a reason or a `member` field is escaped and cut to a bound.
+- **Every bound is said, none is silent**: 512 MiB source (regular files only), 200 images and
+  256 MiB written by default, a fixed 512 MiB inflation budget per call that every read is charged
+  against (XML parts, failed attempts and duplicates included), 16 MiB per XML part, 2000 slides
+  scanned. None is silent: an oversized or non-regular source refuses the call, an unreadable
+  running order falls back to file numbers with its cause in `orderFallbackReason`, and every
+  other bound leaves an entry in `skipped`. These bound inflated bytes, not the process's peak
+  memory, which also holds the source buffer and one image being compared.
+- Known gaps, stated: images that live only in a slide layout or master are not extracted; and the
+  output directory is judged and written by path, so another process able to swap it (or a parent)
+  for a link between check and write could redirect the write. On the single-user desktop the router
+  is built for, that process could already write there directly; where the router runs under a
+  MORE privileged account than someone able to rename entries in the output tree, it is a real
+  escalation — do not point `outdir` at a tree a less privileged account can modify.
+
+Two fixes in helpers `download_page_assets` shares, found by the adversarial review of this tool
+and applied to both:
+
+- **`MD_ALLOWED_PATHS` judged a path that does not exist yet by its spelling.** An output directory
+  to be created under a link leading out of the sandbox passed as inside it. The candidate and the
+  sandbox roots are now both resolved through their nearest existing ancestor, links folded.
+- **The asset-directory gate asked only the first vault containing the path.** With vault folders
+  nested — a locked vault inside a writable one — the order of the registry decided whether the lock
+  was consulted. Every containing vault is now asked.
+
+The wiki-ingest skill's asset links were also wrong for both procedures (URL and deck):
+`.assets/<slug>/<file>` is not where the files are; the link is now `wiki/.assets/<slug>/<file>`.
+And the read-only write-tool lists in the README and quick-reference said 15 tools; there are 17
+(`pptx_extract_assets`, and `register_remote_vault`, which the lists had missed).
+
 ### A vault whose semantic search will not answer says so before you ask it anything
 
 `search_smart` computes no embeddings of its own — it reads the store Smart Connections builds under

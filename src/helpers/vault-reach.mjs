@@ -149,15 +149,37 @@ export function isVaultReachable(vaultName, registry) {
  * @returns {object|null} the vault entry, or null when no registered vault contains the path
  */
 export function vaultContainingPath(fsPath, registry) {
-  if (typeof fsPath !== 'string' || fsPath.trim() === '') return null;
+  return vaultsContainingPath(fsPath, registry)[0] ?? null;
+}
+
+/**
+ * EVERY registered vault whose folder contains `fsPath`, deepest first.
+ *
+ * One answer is not enough when vault folders nest: with primary A at
+ * `/vaults/A` and an `alsoLocked` secondary B at `/vaults/A/B`, a path inside
+ * B is inside A too, and the first version returned whichever came first in
+ * the registry — A, writable — so the lock on B was never consulted. A write
+ * guard must ask every vault it lands in (Codex, round 1 on
+ * pptx_extract_assets). Deepest first, so a caller that needs ONE owner (the
+ * vault the file belongs to) takes the innermost.
+ *
+ * @param {unknown} fsPath
+ * @param {{ vaults?: Array<{ name: string, path?: string }> }} registry
+ * @returns {object[]} the vault entries, possibly empty
+ */
+export function vaultsContainingPath(fsPath, registry) {
+  if (typeof fsPath !== 'string' || fsPath.trim() === '') return [];
   const child = normalizePathForCompare(realOrResolved(fsPath));
   const vaults = registry && Array.isArray(registry.vaults) ? registry.vaults : [];
+  const found = [];
   for (const v of vaults) {
     if (!v || typeof v.path !== 'string' || v.path === '') continue;
     const root = normalizePathForCompare(realOrResolved(v.path));
-    if (child === root || child.startsWith(`${root}\\`) || child.startsWith(`${root}/`)) return v;
+    if (child === root || child.startsWith(`${root}\\`) || child.startsWith(`${root}/`)) {
+      found.push({ vault: v, depth: root.length });
+    }
   }
-  return null;
+  return found.sort((a, b) => b.depth - a.depth).map((f) => f.vault);
 }
 
 /**

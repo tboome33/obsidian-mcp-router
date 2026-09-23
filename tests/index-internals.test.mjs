@@ -15,10 +15,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 import { _internals } from '../src/index.mjs';
+import { WRITE_TARGET_FIELDS } from '../src/helpers/write-targets.mjs';
 
 const {
   requiresAlsoTierCheck, ALSO_TIER_EXEMPT_TOOL_NAMES, WRITE_TOOL_NAMES, toolActuallyWrote,
   automaticWriteAllowed, queuedMaintenanceBlocked, assertAssetOutputDirWritable,
+  ASSET_OUTPUT_DIR_FIELDS, TOOLS, preconditionState,
 } = _internals;
 
 /**
@@ -158,12 +160,136 @@ describe('assertAssetOutputDirWritable', () => {
   });
 });
 
+/**
+ * THE CLASS, swept over its producers rather than asserted per tool.
+ * `pptx_extract_assets` joined WRITE_TOOL_NAMES alone: the dispatcher's
+ * vault-argument gate then resolved the session's DEFAULT vault for a tool
+ * that has no `vault` argument, and checked the primary's tier while the
+ * files landed wherever `outdir` pointed — an alsoLocked secondary included.
+ * Every write tool that names no vault is now required to be exempt from that
+ * gate AND, unless it only registers a vault, gated by the containment of its
+ * output directory.
+ */
+describe('write tools with no `vault` argument — every one gated by where it writes', () => {
+  const schemaOf = (name) => TOOLS.find((t) => t.name === name)?.inputSchema?.properties ?? {};
+  // They create a registry ENTRY; they do not write into an existing vault's folder.
+  const REGISTERS_A_VAULT = new Set(['provision_vault', 'register_remote_vault']);
+
+  test('a write tool whose schema declares no `vault` is exempt from the vault-argument gate', () => {
+    const noVault = [...WRITE_TOOL_NAMES].filter((n) => !('vault' in schemaOf(n)));
+    assert.ok(noVault.length >= 4, `the sweep found only ${noVault.length} producer(s): ${noVault.join(', ')}`);
+    for (const n of noVault) {
+      assert.ok(ALSO_TIER_EXEMPT_TOOL_NAMES.has(n), `"${n}" names no vault, so the vault gate would check the DEFAULT vault instead of its target`);
+    }
+  });
+
+  test('every exempt tool either registers a vault or is gated by its output directory', () => {
+    for (const n of ALSO_TIER_EXEMPT_TOOL_NAMES) {
+      assert.ok(
+        REGISTERS_A_VAULT.has(n) || Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, n),
+        `"${n}" is exempt from the vault gate and gated by nothing else`,
+      );
+    }
+  });
+
+  for (const [tool, field] of Object.entries(ASSET_OUTPUT_DIR_FIELDS)) {
+    test(`${tool}: its "${field}" is declared, gated inside a locked vault, and ignored under any other name`, () => {
+      const props = schemaOf(tool);
+      for (const k of [field, 'confirmSecondaryWrite', 'createOnly']) {
+        assert.ok(k in props, `${tool} must declare \`${k}\``);
+      }
+      assert.deepEqual(WRITE_TARGET_FIELDS[tool], [field], 'the audit attribution names the same field');
+      assert.equal(preconditionState(tool, { createOnly: true }), 'carried');
+      assert.equal(preconditionState(tool, {}), 'missing');
+
+      const lockedRoot = path.join(os.tmpdir(), `index-internals-sweep-${tool}`);
+      const r = {
+        vaults: [
+          { name: 'work', type: 'local', path: path.join(os.tmpdir(), 'index-internals-sweep-work') },
+          { name: 'ref', type: 'local', path: lockedRoot },
+        ],
+        workspaceBinding: { vault: 'work', also: ['ref'] },
+        alsoWritable: [],
+        alsoLocked: ['ref'],
+      };
+      const solo = { workspaceBindings: { 'i:\\only': { vault: 'work', also: ['ref'] } } };
+      const inside = path.join(lockedRoot, 'wiki', '.assets', 'deck');
+      assert.throws(
+        () => assertAssetOutputDirWritable({ [field]: inside }, r, solo, tool),
+        /locked read-only/,
+      );
+      // The field is read by NAME: the other tool's spelling points nowhere.
+      const other = field === 'outdir' ? 'outputDir' : 'outdir';
+      assert.equal(assertAssetOutputDirWritable({ [other]: inside }, r, solo, tool), null);
+    });
+  }
+
+  test('NESTED vaults: a locked vault inside a writable one is consulted, whatever the registry order', () => {
+    const outer = path.join(os.tmpdir(), 'index-internals-nest-A');
+    const inner = path.join(outer, 'B');
+    const solo = { workspaceBindings: { 'i:\\only': { vault: 'a', also: ['b'] } } };
+    const entries = [
+      { name: 'a', type: 'local', path: outer },
+      { name: 'b', type: 'local', path: inner },
+    ];
+    for (const vaults of [entries, [...entries].reverse()]) {
+      const r = { vaults, workspaceBinding: { vault: 'a', also: ['b'] }, alsoWritable: [], alsoLocked: ['b'] };
+      for (const [tool, field] of Object.entries(ASSET_OUTPUT_DIR_FIELDS)) {
+        assert.throws(
+          () => assertAssetOutputDirWritable({ [field]: path.join(inner, 'wiki', '.assets') }, r, solo, tool),
+          /locked read-only/,
+          `${tool}: registry order ${vaults.map((v) => v.name).join(',')}`,
+        );
+        // Beside B, inside A only: allowed, and A is the owner.
+        assert.equal(assertAssetOutputDirWritable({ [field]: path.join(outer, 'wiki') }, r, solo, tool)?.name, 'a');
+        // B writable: allowed, and the owner reported is the INNERMOST vault.
+        const rw = { ...r, alsoLocked: [], alsoWritable: ['b'] };
+        assert.equal(assertAssetOutputDirWritable({ [field]: path.join(inner, 'wiki') }, rw, solo, tool)?.name, 'b');
+      }
+    }
+  });
+
+  test('pptx_extract_assets with NO outdir is gated on the temp root it will write under', () => {
+    const r = {
+      vaults: [{ name: 'tmpvault', type: 'local', path: os.tmpdir() }],
+      workspaceBinding: { vault: 'work', also: ['tmpvault'] },
+      alsoWritable: [],
+      alsoLocked: ['tmpvault'],
+    };
+    const solo = { workspaceBindings: { 'i:\\only': { vault: 'work', also: ['tmpvault'] } } };
+    assert.throws(() => assertAssetOutputDirWritable({}, r, solo, 'pptx_extract_assets'), /locked read-only/);
+    // download_page_assets has no default directory: nothing named, nothing gated here.
+    assert.equal(assertAssetOutputDirWritable({}, r, solo, 'download_page_assets'), null);
+    // A BLANK outdir is "none" for the handler, so it is for the gate too.
+    assert.throws(() => assertAssetOutputDirWritable({ outdir: '   ' }, r, solo, 'pptx_extract_assets'), /locked read-only/);
+  });
+
+  test('the gate expands ~ exactly as the handler does, so it judges the directory really written', () => {
+    const homeVault = path.join(os.homedir(), 'index-internals-home-vault');
+    const r = {
+      vaults: [{ name: 'hv', type: 'local', path: homeVault }],
+      workspaceBinding: { vault: 'work', also: ['hv'] },
+      alsoWritable: [],
+      alsoLocked: ['hv'],
+    };
+    const solo = { workspaceBindings: { 'i:\\only': { vault: 'work', also: ['hv'] } } };
+    assert.throws(
+      () => assertAssetOutputDirWritable({ outdir: '~/index-internals-home-vault/wiki/.assets' }, r, solo, 'pptx_extract_assets'),
+      /locked read-only/,
+    );
+  });
+
+  test('a tool that is not an asset writer is refused by the helper, never silently gated as one', () => {
+    assert.throws(() => assertAssetOutputDirWritable({}, { vaults: [] }, {}, 'write_file'), /not an asset-writing tool/);
+  });
+});
+
 describe('ALSO_TIER_EXEMPT_TOOL_NAMES', () => {
-  test('is a Set of the 3 tools that never address an already-registered vault as their write target', () => {
+  test('is a Set of the 4 tools that never address an already-registered vault through a `vault` argument', () => {
     assert.ok(ALSO_TIER_EXEMPT_TOOL_NAMES instanceof Set);
     assert.deepEqual(
       [...ALSO_TIER_EXEMPT_TOOL_NAMES].sort(),
-      ['download_page_assets', 'provision_vault', 'register_remote_vault'],
+      ['download_page_assets', 'pptx_extract_assets', 'provision_vault', 'register_remote_vault'],
     );
   });
 

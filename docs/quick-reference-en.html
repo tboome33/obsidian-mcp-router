@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 53 MCP tools · 49 skills)<br>
+  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 54 MCP tools · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -257,7 +257,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td>Multi-tenant: truthy (<code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>) hides the <strong>15</strong> write tools — write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, build_wiki_graph, provision_vault, write_bundle, record_source, refresh_okf_projections, build_search_index — filtered from ListTools AND refused at call time.</td>
+    <td>Multi-tenant: truthy (<code>1</code>/<code>true</code>/<code>yes</code>/<code>on</code>) hides the <strong>17</strong> write tools — write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, refresh_okf_projections, build_search_index — filtered from ListTools AND refused at call time.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
@@ -405,7 +405,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <div class="page-break"></div>
 
-<h2>The 53 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
+<h2>The 54 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
 
 <table class="config">
   <tr>
@@ -439,6 +439,10 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <tr>
     <td>pdf_to_markdown_docling · pdf_to_images</td>
     <td><strong>High-fidelity PDF</strong> (opt-in Docling): layout + table-structure recognition. <code>pdf_to_images</code> renders pages to PNG so the model can <em>see</em> them (capped pages/bytes).</td>
+  </tr>
+  <tr>
+    <td>pptx_extract_assets</td>
+    <td><strong>Deck images to disk</strong>, no Python (a PPTX is a ZIP): each embedded image written once, with the slide positions that show it (short of any part reported in <code>skipped</code>) — the bytes <code>pptx_to_markdown</code> cannot return. A <em>write tool</em>: an <code>outdir</code> inside a vault meets that vault's tier, and <code>createOnly: true</code> on a shared one.</td>
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>

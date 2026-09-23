@@ -18,6 +18,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 // The audit line's truncation notice carries a digest of the ORIGINAL path, so
 // two long paths sharing a prefix and a length cannot collapse to one line.
@@ -65,8 +66,10 @@ import {
   docxToMarkdown,
   xlsxToMarkdown,
   pptxToMarkdown,
+  pptxExtractAssets,
   gitRepoToMarkdown,
 } from './tools/convert.mjs';
+import { resolveOutDirArg } from './markdownify/pptx-assets.mjs';
 import {
   TOOL_DEFINITION as EXTRACT_PAGE_METADATA_TOOL_DEFINITION,
   handleExtractPageMetadata,
@@ -164,7 +167,7 @@ import { sanitizeResponse, safeForMessage, NO_TRUNCATION } from './helpers/sanit
 // ways. See helpers/write-targets.mjs.
 import { writeTargets, isRecoveryCall } from './helpers/write-targets.mjs';
 import {
-  alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
+  alsoWriteTierFor, assertVaultWritable, isVaultReachable, vaultsContainingPath, CONFIRM_SECONDARY_WRITE_PROP,
 } from './helpers/vault-reach.mjs';
 import { renderProposalLines } from './helpers/binding-proposal.mjs';
 // Phase 4 of portee-ergonomie-refus-roadmap (decision ergonomie-creation-
@@ -730,6 +733,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'pptx_extract_assets',
+    description:
+      "Extract the EMBEDDED IMAGES of a local PPTX to files on disk, with the slide POSITION each one belongs to (the running order from `p:sldIdLst`, not the `slideN.xml` file number — reorder a deck and the two diverge). The COMPLEMENT of `pptx_to_markdown`: that tool returns text, tables and notes but only an alt-text reference for pictures, so a deck ingested with it alone leaves dangling image links. Needs no Python (a PPTX is a ZIP, read with the router's own reader). Writes to a temp directory unless `outdir` is given — and the ingestion skill points `outdir` at the vault's `wiki/.assets/<slug>/` folder, so it IS a write tool and read-only deployments hide it. Returns a manifest of {name, path, slides, bytes, ext, sha256} for a vault-write tool to consume. An image used by several slides is written ONCE and lists them all (unless `skipped` names a part that was not read — it may have been one more of its slides). When the running order cannot be read, `orderSource` is `file-number` and `orderFallbackReason` says why. Output names are constructed (`slide<N>-<i>.<ext>`) and the extension comes from magic bytes, never from the archive. Images that live only in a slide LAYOUT or MASTER are not slide relationships and are not extracted.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filepath: { type: 'string', description: 'Absolute path of the PPTX file to read.' },
+        outdir: {
+          type: 'string',
+          description:
+            'Directory to write the images into. Defaults to a fresh temp directory. Subject to MD_ALLOWED_PATHS when that sandbox is configured. When it sits INSIDE a registered vault\'s folder (the wiki-ingest convention `<vault>/wiki/.assets/<slug>/`), that vault\'s reachability and write tier apply exactly as for a REST write — a soft-tier secondary of this workspace needs confirmSecondaryWrite, an alsoLocked one is refused, and a shared one needs createOnly.',
+        },
+        confirmSecondaryWrite: CONFIRM_SECONDARY_WRITE_PROP,
+        createOnly: {
+          type: 'boolean',
+          description:
+            'Never overwrite (the `wx` open flag): when an output name already holds the SAME bytes, that file is the asset and is listed with `alreadyPresent: true`; when it holds other bytes, the image falls through to its content-hash name (`slide<N>-<sha256 prefix>.<ext>`); when that too holds other bytes, the image is reported in `skipped` and nothing is touched. Required on a SHARED vault, where it is the write precondition for this tool (the analogue of `ifMatch`).',
+        },
+        max_assets: { type: 'number', description: 'Maximum number of images to write (default 200).' },
+        max_total_bytes: { type: 'number', description: 'Maximum total bytes to write (default 268435456).' },
+      },
+      required: ['filepath'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'image_to_markdown',
     description:
       'Convert a local image to markdown (metadata + OCR-derived description) via `markitdown[all]`. Requires the `[all]` extras — image OCR fails on the slim install.',
@@ -1247,6 +1276,10 @@ const TOOL_HANDLERS = {
   docx_to_markdown: (reg, args) => docxToMarkdown(reg, args),
   xlsx_to_markdown: (reg, args) => xlsxToMarkdown(reg, args),
   pptx_to_markdown: (reg, args) => pptxToMarkdown(reg, args),
+  // Companion to the line above: image BYTES, which markitdown cannot
+  // return. No Python. It WRITES files through `outdir`, which may sit in a
+  // vault — gated by containment before this runs (ASSET_OUTPUT_DIR_FIELDS).
+  pptx_extract_assets: (reg, args) => pptxExtractAssets(reg, args),
   image_to_markdown: (reg, args) => imageToMarkdown(reg, args),
   audio_to_markdown: (reg, args) => audioToMarkdown(reg, args),
   youtube_to_markdown: (reg, args) => youtubeToMarkdown(reg, args),
@@ -1448,6 +1481,11 @@ const WRITE_TOOL_NAMES = new Set([
   // v0.14.x Phase E — writes binary asset files to disk (in vault `.assets/`
   // under MD_ALLOWED_PATHS sandbox). Read-only deployments must hide it.
   'download_page_assets',
+  // Same axis as the line above, and the review that caught its absence was
+  // right: skills/wiki-ingest/SKILL.md points `outdir` at
+  // `<vault>/wiki/.assets/<slug>/`, so this DOES write binary files into a
+  // vault. Leaving it out meant a read-only deployment kept writing.
+  'pptx_extract_assets',
   // Roadmap item #1 (understand-anything) — writes the knowledge-graph JSON
   // to wiki-meta/graph/ + .understand-anything/. Read-only must hide it.
   'build_wiki_graph',
@@ -1490,11 +1528,20 @@ const WRITE_TOOL_NAMES = new Set([
  *     convention), so the dispatcher gates it separately by PATH CONTAINMENT
  *     — see `assertAssetOutputDirWritable`. Review round 3 found the first
  *     version of this comment ("never to a registered vault at all") false.
+ *   - `pptx_extract_assets` — the same door for the same reason: it writes a
+ *     deck's images under a caller-supplied `outdir`, which the same skill
+ *     aims at the same `.assets/` folder. Every tool in
+ *     `ASSET_OUTPUT_DIR_FIELDS` belongs here, and is gated by containment.
  *
  * Exported for testing so the exemption stays visible rather than living only
  * inside `requiresAlsoTierCheck`'s closure.
  */
-const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set(['provision_vault', 'register_remote_vault', 'download_page_assets']);
+const ALSO_TIER_EXEMPT_TOOL_NAMES = new Set([
+  'provision_vault',
+  'register_remote_vault',
+  'download_page_assets',
+  'pptx_extract_assets',
+]);
 
 /**
  * Does THIS call need the also-tier write-gate check before its handler
@@ -1578,9 +1625,9 @@ function requiresAlsoTierCheck(toolName, args) {
  * writes to a vault whose own refusal message promises "no exceptions,
  * ever". Caught by TWO independent Codex review passes on the same diff.
  *
- * `ALSO_TIER_EXEMPT_TOOL_NAMES` is added back in: those three tools
- * (`provision_vault`, `register_remote_vault`, `download_page_assets`) DO
- * write, `requiresAlsoTierCheck` just doesn't need to gate them by vault
+ * `ALSO_TIER_EXEMPT_TOOL_NAMES` is added back in: those tools
+ * (`provision_vault`, `register_remote_vault`, `download_page_assets`,
+ * `pptx_extract_assets`) DO write, `requiresAlsoTierCheck` just doesn't need to gate them by vault
  * write-tier (they don't address an existing registered vault's content the
  * way every other write tool does) — this predicate must keep treating them
  * as writes, exactly as before this fix, or audit/projections would silently
@@ -1642,52 +1689,88 @@ function queuedMaintenanceBlocked(vaultName, reg, { unsolicited = false } = {}) 
 }
 
 /**
- * `download_page_assets` writes files under `args.outputDir` on the local
- * disk. When that directory sits inside a registered LOCAL vault's folder,
- * it is a write to that vault by another door — the same door
- * `wiki-ingest --save-assets` uses on purpose — and both guards apply to it
- * exactly as they would to a REST write: the vault must be reachable from
- * this workspace, and its write tier must allow it. A directory outside every
- * registered vault is left to `MD_ALLOWED_PATHS`, as before.
+ * The write tools that reach a vault through the FILESYSTEM, each with the
+ * argument that names its output directory. Every one of them is in
+ * `ALSO_TIER_EXEMPT_TOOL_NAMES` — the vault-argument gate would resolve the
+ * session's DEFAULT vault, which is not where they write — and is gated
+ * instead by `assertAssetOutputDirWritable` on the vault that CONTAINS that
+ * directory. `pptx_extract_assets` shipped first in WRITE_TOOL_NAMES alone:
+ * the dispatcher then checked the primary's tier while the files landed in
+ * whatever vault `outdir` named, an `alsoLocked` secondary included.
+ */
+const ASSET_OUTPUT_DIR_FIELDS = Object.freeze({
+  download_page_assets: 'outputDir',
+  pptx_extract_assets: 'outdir',
+});
+
+/**
+ * HOW each asset writer reads its directory argument, when it reads it in a
+ * way the plain string does not say. The gate must judge the directory the
+ * HANDLER will write to, so it asks the handler's own resolver rather than
+ * re-deriving it: a first version expanded neither `~` nor a blank string the
+ * way the handler did, and judged a different directory (Codex, round 2).
+ * `pptx_extract_assets` with no `outdir` writes under the OS temp root, which
+ * is therefore what is checked — a `TMPDIR` inside a registered vault would
+ * otherwise be an ungated write into it (Codex, round 1).
+ * `download_page_assets` has no entry: its handler requires an absolute
+ * `outputDir` and uses the string as given.
+ */
+const ASSET_OUTPUT_DIR_RESOLVERS = Object.freeze({
+  pptx_extract_assets: (value) => resolveOutDirArg(value) ?? os.tmpdir(),
+});
+
+/**
+ * An asset-writing tool (see `ASSET_OUTPUT_DIR_FIELDS`) writes files under a
+ * caller-named directory on the local disk. When that directory sits inside a
+ * registered LOCAL vault's folder, it is a write to that vault by another
+ * door — the same door `wiki-ingest --save-assets` uses on purpose — and the
+ * guards apply to it exactly as they would to a REST write: the vault must be
+ * reachable from this workspace, its write tier must allow it, and a shared
+ * vault needs the tool's precondition. A directory outside every registered
+ * vault is left to `MD_ALLOWED_PATHS`, as before.
+ *
+ * EVERY vault containing the directory is asked, not the first one found:
+ * vault folders can nest, and a path inside a locked vault B nested in a
+ * writable vault A is inside A too (Codex, round 1). Returns the innermost.
  *
  * Pure apart from `path.resolve`; exported for tests through `_internals`.
  */
-function assertAssetOutputDirWritable(args, reg, sharedConfig = null) {
-  const owner = vaultContainingPath(args?.outputDir, reg);
-  if (!owner) return null;
-  if (!isVaultReachable(owner.name, reg)) {
-    throw new Error(
-      `download_page_assets: outputDir is inside vault "${owner.name}", which is registered but not `
-      + 'reachable from this workspace (vaultReach: "declared" is active, and this workspace\'s '
-      + 'binding does not name it, nor is it in `openVaults`). Bind this workspace to it with '
-      + 'confirm_workspace_binding, add it to `openVaults`, or choose an outputDir elsewhere.',
-    );
+function assertAssetOutputDirWritable(args, reg, sharedConfig = null, toolName = 'download_page_assets') {
+  const field = Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, toolName) ? ASSET_OUTPUT_DIR_FIELDS[toolName] : null;
+  if (!field) throw new Error(`assertAssetOutputDirWritable: "${toolName}" is not an asset-writing tool`);
+  const named = args?.[field];
+  const dir = Object.hasOwn(ASSET_OUTPUT_DIR_RESOLVERS, toolName) ? ASSET_OUTPUT_DIR_RESOLVERS[toolName](named) : named;
+  const owners = vaultsContainingPath(dir, reg);
+  if (owners.length === 0) return null;
+  // Three passes, each over every owner, in this order on purpose: a vault
+  // this workspace cannot REACH, or one whose write tier forbids it, must hear
+  // that first — "this vault is shared" would be a confusing thing to tell
+  // someone about a vault they may not name at all.
+  for (const owner of owners) {
+    if (!isVaultReachable(owner.name, reg)) {
+      throw new Error(
+        `${toolName}: ${field} is inside vault "${owner.name}", which is registered but not `
+        + 'reachable from this workspace (vaultReach: "declared" is active, and this workspace\'s '
+        + 'binding does not name it, nor is it in `openVaults`). Bind this workspace to it with '
+        + `confirm_workspace_binding, add it to \`openVaults\`, or choose an ${field} elsewhere.`,
+      );
+    }
   }
-  assertVaultWritable(owner, reg, { confirmed: args.confirmSecondaryWrite === true, toolName: 'download_page_assets' });
-  // AND IT IS REFUSED OUTRIGHT ON A SHARED VAULT (Phase 4; Codex round on
-  // 23bbbaa). This tool declares no per-file precondition and cannot: it writes
-  // a batch of binary files. It is not harmless either — `downloadOne` writes
-  // with a plain fs.writeFile and its collision set covers only the current
-  // batch, so an asset already on disk under the same name is overwritten. On a
-  // vault several workspaces share, that is exactly the silent clobber this
-  // phase exists to stop, through the one door that has no `ifMatch` to offer.
-  //
-  // LAST of the three, deliberately: a vault this workspace cannot REACH, or
-  // one whose write tier forbids it, must hear that first — those are the more
-  // fundamental refusals, and "this vault is shared" would be a confusing thing
-  // to tell someone about a vault they may not name at all.
-  //
-  // `sharedConfig` omitted means the binding registry could not be read, which
-  // `sharingRequirement` reports as UNKNOWN and treats as shared. That is the
-  // fail-closed direction on purpose; the one production caller always passes
-  // the reader's answer.
-  // The SAME gate the REST writers meet, with the tool's own precondition:
-  // `createOnly: true`. The previous round refused this tool outright on a
-  // shared vault and pointed at `write_file` — a remedy that cannot carry a
-  // PNG, so asset saving had become impossible on every shared vault, the
-  // workspace's own primary included. (Fable 5.1 round.)
-  assertSharedVaultPrecondition(owner, reg, 'download_page_assets', args, sharedConfig);
-  return owner;
+  for (const owner of owners) {
+    assertVaultWritable(owner, reg, { confirmed: args?.confirmSecondaryWrite === true, toolName });
+  }
+  // The SAME shared-vault gate the REST writers meet, with the tool's own
+  // precondition: `createOnly: true` (create-exclusive, never overwrite). An
+  // earlier round refused this door outright on a shared vault, which made
+  // asset saving impossible on every shared vault; the precondition replaced
+  // that refusal (Fable 5.1 round). `sharedConfig` omitted means the binding
+  // registry could not be read, which `sharingRequirement` treats as shared —
+  // fail-closed on purpose; the production caller always passes the reader's
+  // answer.
+  for (const owner of owners) {
+    assertSharedVaultPrecondition(owner, reg, toolName, args ?? {}, sharedConfig);
+  }
+  return owners[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -3135,9 +3218,11 @@ export async function startServer({ configPath, watch = true } = {}) {
         // up disagreeing. See helpers/vault-sharing.mjs for the whole rule.
         assertSharedVaultPrecondition(target, reg, name, args, sharedVaultConfig());
       }
-      // The one write tool that reaches a vault through the FILESYSTEM rather
-      // than a `vault` argument — gated by where `outputDir` points instead.
-      if (name === 'download_page_assets') assertAssetOutputDirWritable(args, reg, sharedVaultConfig());
+      // The write tools that reach a vault through the FILESYSTEM rather than a
+      // `vault` argument — gated by where their output directory points instead.
+      if (Object.hasOwn(ASSET_OUTPUT_DIR_FIELDS, name)) {
+        assertAssetOutputDirWritable(args, reg, sharedVaultConfig(), name);
+      }
 
       const result = await handler(reg, args);
 
@@ -3188,7 +3273,7 @@ export async function startServer({ configPath, watch = true } = {}) {
         try {
           const auditVault = reg.resolveVault(args.vault);
           // The audit line is itself a write to `auditVault`, and for the
-          // three tools that carry no `vault` argument that vault is whatever
+          // exempt tools that carry no `vault` argument that vault is whatever
           // the SESSION resolves by default — the locked vault under
           // `lock_vault`, which may be a soft or `alsoLocked` secondary. The
           // tier rule applies here exactly as it does to the repair passes
@@ -3563,6 +3648,7 @@ export const _internals = {
   automaticWriteAllowed,
   queuedMaintenanceBlocked,
   assertAssetOutputDirWritable,
+  ASSET_OUTPUT_DIR_FIELDS,
   // Phase 4 — the shared-vault precondition. Re-exported from
   // helpers/vault-sharing.mjs through THIS object so the partition test can
   // ask one question of one module: "is every member of WRITE_TOOL_NAMES

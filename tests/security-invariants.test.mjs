@@ -634,6 +634,7 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       record_source: 'writes only the fixed source-ledger path',
       refresh_okf_projections: 'writes only planner-derived projection paths',
       download_page_assets: 'caller-supplied outputDir, sandboxed by MD_ALLOWED_PATHS — NOTE: assertPathAllowed is a no-op when that env var is unset, tracked separately',
+      pptx_extract_assets: 'caller-supplied outdir, sandboxed by MD_ALLOWED_PATHS on the write side as well as the read side (tests/pptx-assets.test.mjs drives both) — same NOTE as download_page_assets: assertPathAllowed is a no-op when that env var is unset. Output FILE names never come from the archive: they are constructed slide<pos>-<i>.<ext>, and each write removes a pre-existing entry before creating exclusively, so a symlink planted in outdir cannot redirect it',
       provision_vault: 'caller-supplied absolute path, gated by allowOutsideRoots (fail-closed)',
       register_remote_vault: 'writes only the fixed config.json path, never a caller-supplied filesystem path; the caller-supplied fields (baseUrl/apiKey/name) become JSON values inside it, not a write TARGET',
     };
@@ -2411,6 +2412,14 @@ describe('GUARD: every string path argument of every tool is DRIVEN, or NAMED wi
       ['docx_to_markdown.filepath', 'an absolute FS path outside the vault by design; the refusal that names it needs the optional markitdown binary'],
       ['xlsx_to_markdown.filepath', 'an absolute FS path outside the vault by design; the refusal that names it needs the optional markitdown binary'],
       ['pptx_to_markdown.filepath', 'an absolute FS path outside the vault by design; the refusal that names it needs the optional markitdown binary'],
+      // pptx_extract_assets takes no vault path at all: `outdir` names where a
+      // deck's images land, an absolute host path BY DESIGN, gated by
+      // MD_ALLOWED_PATHS and by the containment gate of the vault it lands in —
+      // both driven in tests/pptx-assets.test.mjs rather than at this wire.
+      // Its `filepath` is NOT in this list: the wire probe reaches the handler,
+      // whose refusal names the path, so this guard drives it — the guard
+      // itself reported the row as stale.
+      ['pptx_extract_assets.outdir', 'an absolute HOST output directory by design; same MD_ALLOWED_PATHS gate, driven in pptx-assets.test.mjs'],
       ['image_to_markdown.filepath', 'an absolute FS path outside the vault by design; the refusal that names it needs the optional markitdown binary'],
       ['audio_to_markdown.filepath', 'an absolute FS path outside the vault by design; the refusal that names it needs the optional markitdown binary'],
       // `record_source` validates its `id` URL before every other field, and the

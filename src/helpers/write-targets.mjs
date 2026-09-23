@@ -45,6 +45,7 @@
 export const WRITE_TARGET_FIELDS = {
   move_file: ['to', 'from'],
   download_page_assets: ['outputDir'],
+  pptx_extract_assets: ['outdir'],
 };
 
 /** Tools whose target field is just `path`. */

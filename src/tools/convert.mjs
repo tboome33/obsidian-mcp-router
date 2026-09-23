@@ -19,6 +19,11 @@
  *     captions — which is itself an executable this package does not install.
  *   - `git_repo_to_markdown` uses repomix (Node, a normal npm dependency) and
  *     `pdf_to_markdown_docling` uses Docling. Neither touches markitdown.
+ *   - `pptx_extract_assets` touches neither: a .pptx is a ZIP, and the reader
+ *     is `src/helpers/deterministic-zip.mjs`, already in this repository for
+ *     the export gate. It therefore works on a machine with no Python at all
+ *     — which is the point, since it exists to recover the image bytes
+ *     `pptx_to_markdown` cannot return.
  *
  * Why these handlers don't take a `vault` argument:
  *   They're not vault-routed. The conversion happens on the router host,
@@ -26,15 +31,24 @@
  *   to keep the handler signature uniform with the rest of `TOOL_HANDLERS`,
  *   but it's unused.
  *
- * Why they're not in `WRITE_TOOL_NAMES` (src/index.mjs):
+ * Why the CONVERTERS are not in `WRITE_TOOL_NAMES` (src/index.mjs):
  *   They never mutate vault state. They only read local files (gated by
  *   `MD_ALLOWED_PATHS` when set) and write to `os.tmpdir()` for URL inputs.
  *   So `OBSIDIAN_ROUTER_READONLY` keeps them exposed — read-only deployments
  *   stay useful for ingestion.
+ *
+ *   `pptx_extract_assets` is the EXCEPTION and IS in that set. It writes
+ *   binary files through a caller-supplied `outdir`, and skills/wiki-ingest
+ *   aims that path at `<vault>/wiki/.assets/`, so a read-only deployment must
+ *   hide it exactly as it hides `download_page_assets`. A review caught the
+ *   first version claiming otherwise in three places at once — the tool
+ *   description, this comment and the no-vault-disk exemption — while the
+ *   skill it shipped with wrote into a vault.
  */
 import { toMarkdown, fromRepo } from '../markdownify/markitdown.mjs';
 import { toMarkdownDocling } from '../markdownify/docling.mjs';
 import { pdfToImages } from '../markdownify/pdf-images.mjs';
+import { extractPptxAssets } from '../markdownify/pptx-assets.mjs';
 import { fetchYoutubeTranscriptViaYtdlp, isYoutubeVideoUrl } from '../markdownify/youtube-fallback.mjs';
 import { convertMathmlBlocksInHtml } from '../helpers/latex-preserver.mjs';
 import { bm25FilterBlocks, MAX_DROP_FRACTION } from '../helpers/bm25-filter.mjs';
@@ -319,6 +333,30 @@ export async function xlsxToMarkdown(_registry, { filepath } = {}) {
 
 export async function pptxToMarkdown(_registry, { filepath } = {}) {
   return convertFile(filepath);
+}
+
+/**
+ * Extract a deck's embedded images to disk. The COMPLEMENT of
+ * `pptx_to_markdown`, not a variant of it: that one returns text and loses
+ * the image bytes (markitdown emits an alt-text reference to a file that
+ * does not exist); this one returns the bytes and ignores the text.
+ *
+ * Unlike its siblings in this file it does not touch markitdown, so it works
+ * on a machine with no Python at all — a .pptx is a ZIP and the reader is
+ * already in this repository. It DOES write files: to a temp directory unless
+ * the caller names `outdir`, and the ingestion skill names one inside the
+ * vault. The dispatcher gates that directory by the vault containing it
+ * (reachability, write tier, shared-vault `createOnly`) before this runs.
+ */
+export async function pptxExtractAssets(_registry, { filepath, outdir, createOnly, max_assets, max_total_bytes } = {}) {
+  assertString(filepath, 'filepath');
+  return extractPptxAssets({
+    filePath: filepath,
+    outDir: outdir,
+    ...(createOnly === undefined ? {} : { createOnly }),
+    ...(max_assets === undefined ? {} : { maxAssets: max_assets }),
+    ...(max_total_bytes === undefined ? {} : { maxTotalBytes: max_total_bytes }),
+  });
 }
 
 /* ---------- Git-repo via repomix ---------- */

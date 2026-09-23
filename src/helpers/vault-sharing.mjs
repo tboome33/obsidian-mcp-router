@@ -354,6 +354,13 @@ export function preconditionState(toolName, args = {}) {
   // cannot carry a PNG. (Fable 5.1 round.)
   if (toolName === 'download_page_assets') return args.createOnly === true ? 'carried' : 'missing';
 
+  // `pptx_extract_assets` writes the same kind of batch — binary images no
+  // other tool can carry — so it takes the same precondition, spelled the same
+  // way. A review added it to WRITE_TOOL_NAMES and this gate immediately asked
+  // which of the two halves it belonged to; satisfiable beats exempt, because
+  // an exemption would let a re-ingest overwrite a picture on a shared vault.
+  if (toolName === 'pptx_extract_assets') return args.createOnly === true ? 'carried' : 'missing';
+
   // A DELETE THAT IS NOT CONFIRMED WRITES NOTHING. `delete_file` refuses
   // without `confirm: true`, but `requiresAlsoTierCheck` only exempts the
   // `preview` form, so this gate ran first and answered "you need ifMatch" to a
@@ -460,6 +467,10 @@ const PRECONDITION_HINT = {
     'pass `createOnly: true` — every asset is then written create-only (`wx`), an existing name '
     + 'falls through to the content-hash name, and an asset already there is reported, never '
     + 'overwritten',
+  pptx_extract_assets:
+    'pass `createOnly: true` — every image is then written create-only (`wx`), a name taken by '
+    + 'other bytes falls through to the content-hash name, and an image already there is listed '
+    + 'with `alreadyPresent: true`, never overwritten',
 };
 const DEFAULT_PRECONDITION_HINT =
   'pass `ifMatch` (the contentSha256 a get_file returned) so the change is refused with a 409 '

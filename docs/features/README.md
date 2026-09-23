@@ -27,7 +27,7 @@ Presque tout ce que fait le router est accessible par trois chemins équivalents
 | 2 | [Lecture et recherche](02-lecture-et-recherche.md) | Explorer et lire les vaults : liste des vaults et fichiers, lecture de notes, recherche plein texte et recherche sémantique. |
 | 3 | [Écriture et édition](03-ecriture-et-edition.md) | Créer, compléter, éditer chirurgicalement, déplacer et supprimer des notes ; gérer le frontmatter. |
 | 4 | [Templates et contenu Obsidian](04-templates-et-contenu-obsidian.md) | Exécuter des templates Templater, créer des canvas visuels et des bases de données (.base), le markdown « façon Obsidian ». |
-| 5 | [Conversion de documents](05-conversion-de-documents.md) | Transformer PDF, Word, Excel, PowerPoint, images, audio… en markdown ; rendre visuellement les pages d'un PDF. |
+| 5 | [Conversion de documents](05-conversion-de-documents.md) | Transformer PDF, Word, Excel, PowerPoint, images, audio… en markdown ; rendre visuellement les pages d'un PDF ; extraire les images d'une présentation, rattachées à leurs diapositives. |
 | 6 | [Ingestion web](06-ingestion-web.md) | Ramener le web dans le vault : pages web, vidéos YouTube, dépôts git, nettoyage du bruit, métadonnées, images. |
 | 7 | [Wiki et gestion de connaissances](07-wiki-gestion-de-connaissances.md) | Le wiki auto-entretenu « style Karpathy » : scaffolding, ingestion, interrogation, sauvegarde de conversations, recherche autonome, auto-enrichissement. |
 | 8 | [Graphe de connaissances](08-graphe-de-connaissances.md) | Construire et interroger le graphe du wiki : communautés, visites guidées, voisins d'une page, chemin entre deux pages. |

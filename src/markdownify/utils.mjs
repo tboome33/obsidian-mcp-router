@@ -20,6 +20,7 @@ import { isRunnableFile } from '../helpers/conversion-readiness.mjs';
 import dns from 'node:dns/promises';
 import { URL } from 'node:url';
 import { absolutizeExecutableOverride } from '../helpers/subprocess-env.mjs';
+import { realPathWithMissingTail } from '../helpers/real-path.mjs';
 
 /**
  * Expand a leading `~` to the user's home directory.
@@ -204,22 +205,24 @@ export function assertPathAllowed(filePath) {
   // let an attacker drop a symlink inside `MD_ALLOWED_PATHS` that points at
   // `~/.ssh/id_rsa` (or anywhere) — markitdown follows links transparently
   // and would happily extract the target. `fs.realpathSync` collapses every
-  // symlink/junction to its on-disk target. If the path doesn't exist yet,
-  // fall back to the lexical resolution (the file open downstream will fail
-  // with ENOENT, which is the correct UX — better than a confusing "allowed
-  // directories" error on a typo). Codex P2 finding during /review+ pass 1.
-  const expanded = expandHome(filePath);
-  let resolved;
-  try {
-    resolved = fs.realpathSync(expanded);
-  } catch {
-    resolved = path.normalize(path.resolve(expanded));
-  }
+  // symlink/junction to its on-disk target. Codex P2 finding during /review+
+  // pass 1.
+  //
+  // A path that does not exist YET is resolved through its nearest existing
+  // ancestor, never lexically. The lexical fallback kept a symlink's own
+  // spelling, so `<allowed>/link/new-dir` — `link` pointing outside the
+  // sandbox, `new-dir` about to be created by an asset writer — passed as
+  // "inside <allowed>" and the files landed outside it (Codex, round 1 on
+  // pptx_extract_assets). A typo'd input file still resolves inside its
+  // allowed root and still fails downstream with ENOENT, as before.
+  const resolved = path.normalize(realPathWithMissingTail(expandHome(filePath)));
   // Resolve symlinks on the allowed roots too — otherwise a sandbox root
   // that is itself a symlink wouldn't match the realpath of an inner file.
-  const resolvedRoots = allowed.map((dir) => {
-    try { return fs.realpathSync(dir); } catch { return dir; }
-  });
+  // The roots through the SAME resolver as the candidate. A root that does
+  // not exist yet under an existing alias kept its lexical spelling while the
+  // candidate beneath it resolved through the alias, and a legitimate path
+  // inside the sandbox was refused (Codex, round 2).
+  const resolvedRoots = allowed.map((dir) => path.normalize(realPathWithMissingTail(dir)));
   if (!resolvedRoots.some((dir) => isWithinDirectory(resolved, dir))) {
     throw new Error(
       `Path "${filePath}" is outside the allowed directories. ` +

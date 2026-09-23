@@ -600,6 +600,12 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
     pdf_to_markdown: 'spawns a converter binary — local-machine axis',
     pdf_to_markdown_docling: 'spawns a converter binary — local-machine axis',
     pptx_to_markdown: 'spawns a converter binary — local-machine axis',
+    // NOT a converter-binary exemption, and the difference is the point: this
+    // tool spawns nothing. It reads a local ZIP with the router's own reader
+    // and writes image files to the HOST filesystem. Same axis as
+    // download_page_assets — host bytes, not the vault REST surface — so the
+    // bench that measures vault-disk coupling has nothing to say about it.
+    pptx_extract_assets: 'reads a local ZIP and writes image files through an argument path — local-machine axis, same as download_page_assets (and, like it, in WRITE_TOOL_NAMES: the ingestion skill aims that path at the vault)',
     webpage_to_markdown: 'spawns a converter binary — local-machine axis',
     xlsx_to_markdown: 'spawns a converter binary — local-machine axis',
     youtube_to_markdown: 'spawns a converter binary — local-machine axis',

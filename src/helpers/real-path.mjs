@@ -5,14 +5,17 @@
  * ---------------------------------------------------------------------------
  * WHY THIS EXISTS, AND WHY IT IS NOT `realpathSync` WITH A try/catch
  * ---------------------------------------------------------------------------
- * Two guards in this repository ask the same question — "which real directory
- * is this string actually pointing at?" — and both must keep answering it for a
+ * Three guards in this repository ask the same question — "which real directory
+ * is this string actually pointing at?" — and all must keep answering it for a
  * path that has not been created yet:
  *
  *   - the ASSET CONTAINMENT check (`helpers/vault-reach.mjs`), deciding whether
  *     an `outputDir` a tool is about to create lands inside a vault;
  *   - the DOTENV LOCK KEY (`helpers/dotenv-writer.mjs`), so two spellings of
- *     one file take one lock.
+ *     one file take one lock;
+ *   - the MD_ALLOWED_PATHS sandbox (`markdownify/utils.mjs`
+ *     `assertPathAllowed`), which had the same lexical fallback and let an
+ *     output directory created under a symlink escape the sandbox.
  *
  * Both used a `realpathSync` with a fallback to the LEXICAL `path.resolve` when
  * it threw. That fallback is where the hole was: a junction `alias` pointing at

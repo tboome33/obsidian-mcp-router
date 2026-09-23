@@ -83,7 +83,7 @@ describe('WRITE_TOOL_NAMES', () => {
     }
   });
 
-  test('contains the 16 documented write tools', () => {
+  test('contains the 17 documented write tools', () => {
     const expected = [
       'write_file',
       'append_to_file',
@@ -95,6 +95,9 @@ describe('WRITE_TOOL_NAMES', () => {
       'execute_template',
       // v0.14.x Phase E — writes binary asset files to disk.
       'download_page_assets',
+      // Same axis: writes a deck's binary images through a caller-supplied
+      // outdir that the ingestion skill aims at the vault's .assets/ folder.
+      'pptx_extract_assets',
       // understand-anything #1 — writes the knowledge-graph JSON (canonical
       // wiki-meta/graph/ + derived .understand-anything/ copy).
       'build_wiki_graph',

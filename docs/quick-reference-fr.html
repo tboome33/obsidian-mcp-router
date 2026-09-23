@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.95.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 53 outils MCP · 49 skills)<br>
+  <div class="meta">v0.95.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 54 outils MCP · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -255,7 +255,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_READONLY</td>
-    <td>Multi-tenant : valeur truthy (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) désactive les <strong>15 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, build_wiki_graph, provision_vault, write_bundle, record_source, refresh_okf_projections, build_search_index) — filtrés de ListTools ET refusés à l'appel.</td>
+    <td>Multi-tenant : valeur truthy (<code>true</code>/<code>1</code>/<code>yes</code>/<code>on</code>) désactive les <strong>17 outils d'écriture</strong> (write_file, append_to_file, patch_file, set_frontmatter, merge_frontmatter, move_file, delete_file, execute_template, download_page_assets, pptx_extract_assets, build_wiki_graph, provision_vault, register_remote_vault, write_bundle, record_source, refresh_okf_projections, build_search_index) — filtrés de ListTools ET refusés à l'appel.</td>
   </tr>
   <tr>
     <td>OBSIDIAN_ROUTER_USER_ID</td>
@@ -403,7 +403,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 53 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 54 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>
@@ -437,6 +437,10 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr>
     <td>pdf_to_markdown_docling · pdf_to_images</td>
     <td><strong>PDF haute fidélité</strong> (Docling opt-in) : mise en page + structure de tableaux. <code>pdf_to_images</code> rend les pages en PNG pour que le modèle les <em>voie</em> (pages/octets plafonnés).</td>
+  </tr>
+  <tr>
+    <td>pptx_extract_assets</td>
+    <td><strong>Images d'un deck sur disque</strong>, sans Python (un PPTX est un ZIP) : chaque image embarquée écrite une fois, avec les positions des diapositives qui l'affichent (hors parties signalées dans <code>skipped</code>) — les octets que <code>pptx_to_markdown</code> ne peut pas rendre. <em>Outil d'écriture</em> : un <code>outdir</code> dans un vault subit le palier de ce vault, et <code>createOnly: true</code> sur un vault partagé.</td>
   </tr>
   <tr>
     <td>youtube/bing_search/webpage_to_markdown · git_repo_to_markdown</td>
