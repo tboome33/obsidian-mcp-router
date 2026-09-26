@@ -10,6 +10,18 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### `set_frontmatter` works again on vaults running Local REST API 5.x
+
+Observed 2026-09-26: on a vault whose plugin had moved to 5.1.0, every `set_frontmatter` (and
+every `patch_file` on a frontmatter or block target) failed with `400
+PatchHeaderTargetingRequiresExplicitVersion` — 5.x refuses a header-targeted PATCH that does not
+say which format it means. The router now sends `Markdown-Patch-Version: 1` on that PATCH
+(`src/rest-client.mjs`, the one place that builds it; heading targets are patched router-side and
+never reach it). Measured on the plugin bundles: 4.0.2 never reads the header (0 occurrences —
+ignored, 13 of the 15 local vaults found), and 5.1.0 documents `1` as "everything behaves exactly
+as before"; `2` would give the same headers a different meaning. Deprecated in 5.x and removed
+in 6.0: before then, the PATCH must move to URL-path targeting gated on the plugin version.
+
 ### A vault's conventions reach the session that writes into it — and a template sync stops giving vaults a second set
 
 Reported from a real night (2026-09-25): a session on the Hermes VM, in a code workspace, wrote

@@ -77,6 +77,25 @@ before(async () => {
       return;
     }
     if (req.method === 'PATCH' && url.startsWith('/vault/')) {
+      // Local REST API 5.x (measured on 5.1.0's bundle, 2026-09-26): a PATCH
+      // that targets by header must say which format it means, and `2` gives
+      // the same headers a different meaning (raw-content mode). 4.0.2 never
+      // reads the header. `behaviour.patchPlugin` picks which one answers.
+      if (behaviour.patchPlugin === '5.1.0' && req.headers['target-type'] !== undefined) {
+        const v = req.headers['markdown-patch-version'];
+        if (v !== '1' && v !== '2') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ errorCode: 'PatchHeaderTargetingRequiresExplicitVersion', message: "Header-based PATCH targeting is ambiguous between the two patch formats, so it requires an explicit 'Markdown-Patch-Version' header" }));
+          return;
+        }
+        if (v === '2') {
+          // Not the format the router's headers are written for: recorded, so
+          // a test can tell "landed under the legacy engine" from "landed at all".
+          recorded.patchMode = 'raw-content';
+        } else {
+          recorded.patchMode = 'legacy-v1';
+        }
+      }
       recorded.corePatch = { url, body };
       res.writeHead(200, { 'Content-Type': 'text/markdown' });
       res.end('');
@@ -632,6 +651,48 @@ describe('create-only writes are enforced in the router, not by a header the ser
     const h = recorded.requests.find((q) => q.method === 'PATCH').headers;
     assert.equal(h['reject-if-content-preexists'], 'true');
     assert.equal(h['apply-if-content-preexists'], undefined, 'the dead header is gone from PATCH');
+  });
+});
+
+describe('PATCH names its format — Local REST API 5.x refuses an ambiguous header-targeted PATCH', () => {
+  // Observed 2026-09-26 on a vault running plugin 5.1.0: every set_frontmatter
+  // failed with `400 PatchHeaderTargetingRequiresExplicitVersion`, while the
+  // 4.0.2 vaults kept working. The fake server answers as either version.
+  test('against 5.1.0, set_frontmatter lands under the legacy (v1) engine', async () => {
+    behaviour.patchPlugin = '5.1.0';
+    behaviour.get = { status: 200, body: '---\nstatus: proposed\n---\n' };
+    await setFrontmatterTool(realRegistry(), {
+      path: 'a.md', key: 'status', value: 'accepted', ifMatch: contentSha256('---\nstatus: proposed\n---\n'),
+    });
+    assert.ok(recorded.corePatch, 'the PATCH was accepted');
+    assert.equal(recorded.patchMode, 'legacy-v1', 'under the format its headers are written for — not raw-content mode');
+  });
+
+  test('against 5.1.0, a block patch lands too — every header-targeted PATCH goes through one builder', async () => {
+    behaviour.patchPlugin = '5.1.0';
+    behaviour.get = { status: 200, body: 'x ^b1\n' };
+    await patchFileTool(realRegistry(), { path: 'a.md', operation: 'append', targetType: 'block', target: 'b1', content: 'c', ifMatch: contentSha256('x ^b1\n') });
+    assert.equal(recorded.patchMode, 'legacy-v1');
+  });
+
+  test('against 4.0.2 (the header is unknown there and ignored), the same PATCH still lands', async () => {
+    behaviour.patchPlugin = '4.0.2';
+    behaviour.get = { status: 200, body: '---\nstatus: proposed\n---\n' };
+    await setFrontmatterTool(realRegistry(), {
+      path: 'a.md', key: 'status', value: 'accepted', ifMatch: contentSha256('---\nstatus: proposed\n---\n'),
+    });
+    assert.ok(recorded.corePatch);
+    assert.equal(recorded.requests.find((q) => q.method === 'PATCH').headers['markdown-patch-version'], '1');
+  });
+
+  test('the positive control: a PATCH without the header IS refused by the 5.1.0 stand-in', async () => {
+    // Without this, the two tests above would pass against a stand-in that
+    // accepts everything — "lands" would prove nothing about the header.
+    behaviour.patchPlugin = '5.1.0';
+    const r = await fetch(`${baseUrl}/vault/a.md`, { method: 'PATCH', headers: { 'Target-Type': 'frontmatter', Target: 'status', Operation: 'replace' }, body: 'x' });
+    assert.equal(r.status, 400);
+    assert.equal((await r.json()).errorCode, 'PatchHeaderTargetingRequiresExplicitVersion');
+    assert.equal(recorded.corePatch, null);
   });
 });
 
