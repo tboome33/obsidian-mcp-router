@@ -10,6 +10,16 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+## [0.96.0] — 2026-09-26 — a vault's rules reach whoever writes into it, and each vault says which language it speaks
+
+Everything merged since v0.95.0, fifteen days of it. The thread through the largest part: a
+vault's conventions now reach the session that writes into it (a brief on the first write, the
+decision pages checked as they land, `audit_vault_conventions`), a template sync stops giving
+vaults a second conventions file, and the `languages` convention replaces `bilingual` — each
+vault declares its languages. Also: `set_frontmatter` works again against Local REST API 5.x, the
+hot-cache guard judges only the current run, the two asset writers pin their output directory,
+and `pptx_extract_assets` brings a deck's pictures into the vault.
+
 ### `set_frontmatter` works again on vaults running Local REST API 5.x
 
 Observed 2026-09-26: on a vault whose plugin had moved to 5.1.0, every `set_frontmatter` (and
