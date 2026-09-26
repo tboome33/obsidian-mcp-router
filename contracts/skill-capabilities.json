@@ -169,12 +169,15 @@
       ],
       "tools": [
         "append_to_file",
+        "audit_vault_conventions",
         "get_file",
         "list_files",
         "list_vaults",
         "write_file"
       ],
-      "toolsMentionedNotCalled": [],
+      "toolsMentionedNotCalled": [
+        "move_file"
+      ],
       "writeMode": "mutating",
       "requires": {
         "shell": false,
@@ -1119,6 +1122,7 @@
       ],
       "tools": [
         "audit_sources",
+        "audit_vault_conventions",
         "find_boundary_pages",
         "find_twin_pages",
         "get_file",
@@ -1130,6 +1134,7 @@
         "set_frontmatter"
       ],
       "toolsMentionedNotCalled": [
+        "move_file",
         "record_source",
         "search_smart"
       ],

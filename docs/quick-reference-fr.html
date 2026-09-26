@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— référence rapide</span></h1>
-  <div class="meta">v0.95.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 54 outils MCP · 49 skills)<br>
+  <div class="meta">v0.95.0 · serveur MCP Obsidian multi-vault + plugin Claude Code qui embarque <strong>et lance</strong> le serveur (54 slash commands · 55 outils MCP · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -403,7 +403,7 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
 
 <div class="page-break"></div>
 
-<h2>Les 54 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
+<h2>Les 55 outils MCP <span class="count">— ce que Claude appelle réellement sous le capot</span></h2>
 
 <table class="config">
   <tr>
@@ -469,6 +469,10 @@ PLUGIN CLAUDE CODE (obsidian-router) — commands + skills + agents + hooks</pre
   <tr>
     <td>record_source · audit_sources</td>
     <td><strong>Registre des sources.</strong> Consigne la provenance du contenu ingéré (URL, hash, date) ; audite les sources d'un vault (dérive, trous).</td>
+  </tr>
+  <tr>
+    <td>audit_vault_conventions</td>
+    <td><strong>Audit des conventions.</strong> Les conventions sous lesquelles un vault est réellement : le fichier que le router retient (ou les deux entre lesquels il ne peut pas choisir), les recommandées absentes, les copies du modèle et les sauvegardes héritées — chaque constat avec une réparation à approuver, jamais appliquée seule.</td>
   </tr>
   <tr>
     <td>build_open_link · open_in_obsidian · get_view_link</td>

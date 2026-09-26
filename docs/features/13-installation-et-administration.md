@@ -143,7 +143,7 @@ Le script qui sous-tend le wizard est utilisable directement, avec des sous-comm
 | Convention | Ce qu'elle impose |
 |---|---|
 | `source-type` | Chaque page déclare l'origine de son contenu (source primaire, inféré…). |
-| `bilingual` | Pages substantielles FR + EN. |
+| `languages` | Les langues du vault, déclarées par vault (`fr` ; `fr, en`…) : une seule → tout dans cette langue, quelle que soit la conversation ; plusieurs → une section par langue. Remplace `bilingual` (retirée le 2026-09-26, encore reconnue pour la migration). |
 | `heading-hierarchy` | Hiérarchie de titres propre (pas de sauts de niveaux). |
 | `claim-citations` | Les affirmations citent leurs sources. |
 | `roadmap-discipline` | Roadmaps dans le vault, checkboxes cochées au ship, jamais de texte barré sur les items livrés. |
