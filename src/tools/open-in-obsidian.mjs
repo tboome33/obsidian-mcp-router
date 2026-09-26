@@ -133,7 +133,7 @@ export async function openInObsidianTool(registry, args = {}) {
   // write. A persistently black-holed agent thus costs the full timeout here, but this path is
   // on-demand + infrequent and falls through to the bridge on failure (review+ 159adac).
   if ((process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL || '').trim()) {
-    const data = await fetchViewLink({ vaultName: vault.name, note: safePath, throwOnError: false });
+    const data = await fetchViewLink({ vaultName: vault.name, note: safePath, vault, throwOnError: false });
     if (data && data.url) {
       return ({
         vault: vault.name,

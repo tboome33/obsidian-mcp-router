@@ -3454,7 +3454,12 @@ export async function startServer({ configPath, watch = true } = {}) {
           // statement about tools, and anything the dispatcher ADDS afterwards
           // is outside it. This is the only such site today; a second one would
           // need the same treatment, or the rule needs to move down here.
-          Object.assign(result, sanitizeResponse(await viewLinkForWrite({ vaultName: result.vault, note })));
+          // The descriptor rides along for the view-agent's vault hints
+          // (`rest`, `obsidian_name`). A plain lookup, not resolveVault: the
+          // write already resolved this vault, and a link must not re-run the
+          // reachability guard or throw after the write succeeded.
+          const vault = reg.vaults.find((v) => v.name === result.vault);
+          Object.assign(result, sanitizeResponse(await viewLinkForWrite({ vaultName: result.vault, note, vault })));
         }
       }
 

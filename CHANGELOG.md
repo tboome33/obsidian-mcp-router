@@ -10,6 +10,22 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### View links: the router sends the vault hints `rest` and `obsidian_name`
+
+A view-link provider can now serve a vault nobody declared to it. Every `GET /view` carries two
+optional hints from the provider contract (view-agent repo, `docs/CONTRACT.md`, "Vault hints"):
+`rest`, the origin of the vault's `baseUrl` rebuilt as `scheme://host:port` (never the API key,
+never `user:pass@`, never a path or query; a missing port is sent explicitly as the scheme
+default; only http and https), and `obsidian_name`, the vault's label inside Obsidian. A local
+vault's label is its folder name. A remote vault's label cannot be derived, so `remoteVaults[]`
+entries and `VAULT_*` variables accept a new optional field, `obsidianName`: a non-blank string of
+at most 255 characters, with no control character and no `/` or `\`. An invalid value is dropped
+with a warning and the vault still loads. The three callers — the write-time `viewLink`,
+`get_view_link` and `open_in_obsidian` — all pass the hints; a provider that ignores them sees
+the same request as before. Symptom fixed: `view-agent-direct` answered `400 unknown vault` for
+the desktop vault `router`, so writes into it carried no `viewLink`. On that router, declare
+`"obsidianName"` on the `router` entry for the fix to take effect.
+
 ### Hot-cache guard: judges only the current run, and sees `scripts/vault-edit.mjs`
 
 `hooks/hot-cache-update-prompt.mjs` raised the same false alarm on five turns in a row on
