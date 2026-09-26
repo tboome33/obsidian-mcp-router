@@ -26,6 +26,51 @@
  */
 
 import { buildSmartLink, smartLinkEnabled } from './smart-link.mjs';
+import { obsidianNameFor } from './obsidian-name.mjs';
+
+const DEFAULT_PORT_BY_SCHEME = { 'http:': '80', 'https:': '443' };
+
+/**
+ * The optional "vault hints" of the /view contract (view-agent repo,
+ * docs/CONTRACT.md § Vault hints) for a resolved vault descriptor. They let a
+ * provider serve a vault nobody declared to it — a container on its own host,
+ * or a desktop Obsidian on a WireGuard peer — by classifying it from what the
+ * router already knows.
+ *
+ * `rest` is REBUILT from the parsed URL's scheme, host and port, never copied
+ * from `baseUrl`: whatever else `baseUrl` holds — userinfo, a path, a query, a
+ * fragment — stays behind by construction rather than by a strip that could
+ * miss one. The port is always explicit (the provider requires one), so a
+ * `baseUrl` without a port sends its scheme's default. Only http and https are
+ * sent: the provider maps the scheme onto that fixed choice. Nothing here ever
+ * reads `apiKey` or `extraHeaders`.
+ *
+ * `obsidian_name` is the vault's label inside Obsidian (see obsidian-name.mjs).
+ *
+ * Each hint is independent and omitted when unknown or unparsable — a missing
+ * hint degrades to today's behaviour, it never blocks the link.
+ * @param {object} [vault]  a registry descriptor
+ * @returns {{rest?: string, obsidian_name?: string}}
+ */
+export function vaultHints(vault) {
+  const hints = {};
+  if (!vault || typeof vault !== 'object') return hints;
+  if (typeof vault.baseUrl === 'string' && vault.baseUrl) {
+    let u = null;
+    try {
+      u = new URL(vault.baseUrl);
+    } catch {
+      /* unparsable → no rest hint */
+    }
+    const defaultPort = u ? DEFAULT_PORT_BY_SCHEME[u.protocol] : undefined;
+    if (u && defaultPort && u.hostname) {
+      hints.rest = `${u.protocol}//${u.hostname}:${u.port || defaultPort}`;
+    }
+  }
+  const obsidianName = obsidianNameFor(vault);
+  if (obsidianName) hints.obsidian_name = obsidianName;
+  return hints;
+}
 
 // First call per vault waits on a cloudflared cold-start (~15s); reused tunnels are
 // near-instant. The eager auto-injection blocks the write up to this long ONLY when the
@@ -62,6 +107,8 @@ export function __resetViewLinkCircuit() {
  * @param {object}  opts
  * @param {string}  opts.vaultName               canonical vault name (caller already resolved it)
  * @param {string} [opts.note]                   optional vault-relative note path to navigate to
+ * @param {object} [opts.vault]                  the resolved descriptor — source of the optional
+ *                                               `rest` / `obsidian_name` hints (see vaultHints)
  * @param {boolean}[opts.throwOnError=true]      throw on any failure vs. return null
  * @param {number} [opts.timeoutMs]              fetch timeout override
  * @returns {Promise<object|null>}               parsed view-agent JSON ({ url, idle_timeout_s, … }) or null
@@ -69,6 +116,7 @@ export function __resetViewLinkCircuit() {
 export async function fetchViewLink({
   vaultName,
   note,
+  vault,
   throwOnError = true,
   timeoutMs = DEFAULT_VIEW_TIMEOUT_MS,
 } = {}) {
@@ -104,6 +152,11 @@ export async function fetchViewLink({
   }
   url.searchParams.set('vault', vaultName);
   if (note) url.searchParams.set('note', note);
+  // Hints describe `vault`; a descriptor for another vault than the one named
+  // on the wire would label one vault with another's REST origin — send none.
+  const hints = vault && vault.name === vaultName ? vaultHints(vault) : {};
+  if (hints.rest) url.searchParams.set('rest', hints.rest);
+  if (hints.obsidian_name) url.searchParams.set('obsidian_name', hints.obsidian_name);
 
   const headers = {};
   const token = (process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN || '').trim();
@@ -111,11 +164,25 @@ export async function fetchViewLink({
 
   let res;
   try {
-    res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    // redirect: 'manual' — the contract has no redirects, and following one
+    // would replay X-View-Token (a custom header, which fetch does not strip
+    // across origins) and the vault hints to wherever `Location` points.
+    res = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     return fail(
       `view-agent unreachable at ${agentBase} (${err?.message || err}). ` +
         'Check the view-agent service is running and reachable over WireGuard.',
+    );
+  }
+
+  if (res.status >= 300 && res.status < 400) {
+    // Not followed (see above). A per-provider misconfiguration, not a health
+    // failure: it does not trip the eager circuit-breaker.
+    await res.body?.cancel().catch(() => {});
+    return fail(
+      `view-agent answered a redirect (${res.status}) for vault "${vaultName}" — refused: ` +
+        'the /view contract has none, and following it would send the token elsewhere.',
+      { transient: false },
     );
   }
 
@@ -170,9 +237,10 @@ export function noteForWriteResult(result) {
  * @param {object} opts
  * @param {string} opts.vaultName   resolved (canonical) vault name from the write result
  * @param {string} opts.note        written note path
+ * @param {object} [opts.vault]     the resolved descriptor, for the view-agent's vault hints
  * @returns {Promise<{viewLink?: string, viewLinkKind?: 'smart'|'agent', viewLinkError?: string}>}
  */
-export async function viewLinkForWrite({ vaultName, note } = {}) {
+export async function viewLinkForWrite({ vaultName, note, vault } = {}) {
   // Not enough to build a link, or housekeeping/scaffold write → emit nothing, silently.
   if (!vaultName || typeof vaultName !== 'string' || !note || typeof note !== 'string') return {};
   if (note.startsWith('wiki-meta/')) return {};
@@ -208,6 +276,7 @@ export async function viewLinkForWrite({ vaultName, note } = {}) {
     const data = await fetchViewLink({
       vaultName,
       note,
+      vault,
       throwOnError: true,
       timeoutMs: EAGER_VIEW_TIMEOUT_MS,
     });

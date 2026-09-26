@@ -10,6 +10,24 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### View links: the router sends the vault hints `rest` and `obsidian_name`
+
+A view-link provider can now serve a vault nobody declared to it. Every `GET /view` carries two
+optional hints from the provider contract (view-agent repo, `docs/CONTRACT.md`, "Vault hints"):
+`rest`, the vault's `baseUrl` rebuilt from its scheme, host and port only (no `user:pass@`,
+path, query or fragment can come along, and the API key is never read; a missing port is sent
+explicitly as the scheme default; only http and https), and `obsidian_name`, the vault's label inside Obsidian. A local
+vault's label is its folder name. A remote vault's label cannot be derived, so `remoteVaults[]`
+entries and `VAULT_*` variables accept a new optional field, `obsidianName`: a non-blank string of
+at most 255 UTF-16 code units, with no control character and no `/` or `\` (`null` counts as
+absent). Any other invalid value is dropped with a warning and the vault still loads. Also fixed
+in passing: the view-agent transport no longer follows a redirect, which would have replayed
+`X-View-Token` to wherever `Location` pointed; a 3xx is now reported as an error. The three callers — the write-time `viewLink`,
+`get_view_link` and `open_in_obsidian` — all pass the hints; a provider that ignores them sees
+the same request as before. Symptom fixed: `view-agent-direct` answered `400 unknown vault` for
+the desktop vault `router`, so writes into it carried no `viewLink`. On that router, declare
+`"obsidianName"` on the `router` entry for the fix to take effect.
+
 ## [0.96.0] — 2026-09-26 — a vault's rules reach whoever writes into it, and each vault says which language it speaks
 
 Everything merged since v0.95.0, fifteen days of it. The thread through the largest part: a

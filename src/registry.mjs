@@ -8,7 +8,7 @@
  *
  * 1. portRegistry  → local vaults (legacy + current). Resolves API key by reading
  *                    each vault's .obsidian/plugins/obsidian-local-rest-api/data.json.
- * 2. remoteVaults  → explicit { name, baseUrl, apiKey, tlsInsecure?, timeoutMs? } entries.
+ * 2. remoteVaults  → explicit { name, baseUrl, apiKey, tlsInsecure?, timeoutMs?, obsidianName? } entries.
  * 3. VAULT_* env   → one env var per vault (VAULT_<NAME>=<JSON>), editable straight
  *                    from the MCPHub dashboard. Same descriptor shape as a
  *                    remoteVaults entry; merged as a 3rd source that OVERRIDES any
@@ -42,6 +42,7 @@ import {
   summarizePortCollisions,
 } from './helpers/port-registry.mjs';
 import { isWindowsPath, normalizePathForCompare } from './helpers/vault-path-identity.mjs';
+import { pathBasename, isValidObsidianName, OBSIDIAN_NAME_MAX_LENGTH } from './helpers/obsidian-name.mjs';
 import {
   configuredDefaultVault,
   defaultNameFromPath,
@@ -442,6 +443,10 @@ export async function loadRegistry({ configPath } = {}) {
       // `gen-remote-config.mjs` therefore requires `--with-click-to-open`
       // rather than adding this wherever it finds a port. v0.79.0, lot 2.
       insecurePort: asPort(r.insecurePort),
+      // OPTIONAL: the vault's label inside Obsidian, sent to the view-link
+      // provider as the `obsidian_name` hint. A local vault's label is its
+      // folder name; a remote one's cannot be derived here, so it is declared.
+      obsidianName: declaredObsidianName(r.obsidianName, `remoteVault "${safeForMessage(r.name, 80)}"`),
     });
   }
 
@@ -1320,29 +1325,27 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
 // `_internals` below, so existing tests reach it by the same name.
 
 /**
- * Path basename with EXACT case preserved — used to derive `obsidianName`
- * for `obsidian://open?vault=<name>` URIs.
- *
- * Why a separate helper from `defaultNameFromPath`:
- *  - `defaultNameFromPath` lowercases + strips leading dot to produce a
- *    router slug (`.template` → `template`, `Roland` → `roland`). Slugs
- *    are stable identifiers across portRegistry/vaultNames maps.
- *  - `pathBasename` preserves the on-disk casing because Obsidian's URI
- *    handler is case-sensitive about the vault label: `obsidian://open?vault=Roland`
- *    works, `obsidian://open?vault=roland` may not match the registered
- *    vault title in the Obsidian config (depends on platform / how the
- *    vault was first opened).
- *
- * Returns the empty string for falsy input — matches `defaultNameFromPath`.
- *
- * Cross-platform detection identical to `defaultNameFromPath`: Windows-style
- * paths route to `path.win32.basename` regardless of runtime, so a CI matrix
- * on Linux reading a Windows-paths config still produces the right result.
+ * A remote vault's declared `obsidianName`, or undefined. Absent stays absent,
+ * and JSON `null` means absent too (documented), silently; any other value that fails `isValidObsidianName` is DROPPED with a warning and the
+ * vault still loads — the same non-fatal treatment as the other optional
+ * fields. The warning describes the value (type, length), never echoes it: a
+ * label with control characters would carry them into the log.
  */
-function pathBasename(p) {
-  if (!p || typeof p !== 'string') return '';
-  return (isWindowsPath(p) ? path.win32 : path.posix).basename(p);
+function declaredObsidianName(value, where, warn = (m) => console.error(`[registry] ${m}`)) {
+  if (value === undefined || value === null) return undefined;
+  if (isValidObsidianName(value)) return value;
+  warn(
+    `${where}: obsidianName ignored — it must be a non-blank string of at most `
+      + `${OBSIDIAN_NAME_MAX_LENGTH} characters, with no control character and no / or \\ `
+      + `(got ${typeof value === 'string' ? `a string of ${value.length} characters` : typeof value}).`,
+  );
+  return undefined;
 }
+
+// `pathBasename` moved to src/helpers/obsidian-name.mjs, next to the rule that
+// validates the label it produces: the view-link transport needs both, and
+// importing this module for them would drag the whole loader in. Imported at
+// the top of this file and still re-exported below under the same name.
 
 /**
  * Normalize a path for equality comparison, robust across OSes.
@@ -1550,7 +1553,7 @@ const RESERVED_VAULT_ENV_KEYS = new Set(['VAULT_PATH']);
  *
  * Required: name, baseUrl, apiKey (apiKey = the BARE token; the router adds
  * `Authorization: Bearer ` itself). Optional: description, tlsInsecure,
- * timeoutMs, extraHeaders. (The former per-vault `wireguard` boolean is GONE —
+ * timeoutMs, extraHeaders, insecurePort, obsidianName. (The former per-vault `wireguard` boolean is GONE —
  * WireGuard is now a deployment-wide invariant enforced globally via
  * OBSIDIAN_ROUTER_ENFORCE_WG_OR_LOOPBACK in loadRegistry; a leftover `wireguard` key
  * in the JSON is simply ignored.) On MCPHub the descriptor reduces to the 3
@@ -1663,6 +1666,8 @@ function parseEnvVaults(env = {}) {
       // Parity with remoteVaults — see the note there. Optional, and declaring
       // it asserts that readers sit at the machine running this vault's Obsidian.
       insecurePort: asPort(parsed.insecurePort),
+      // Parity with remoteVaults — see the note there.
+      obsidianName: declaredObsidianName(parsed.obsidianName, key, warn),
     };
 
     envVaults.push(descriptor);

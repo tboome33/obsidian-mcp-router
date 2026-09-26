@@ -103,6 +103,25 @@ The port number itself is not a secret: it is not an authentication credential, 
 
 One more consequence: `build_open_link` normally *verifies* a path against the local disk and corrects or refuses a wrong one. It cannot do that for a vault with no disk, so its result carries **`pathVerified: false`** and a `verification` sentence. The URL is well-formed; it is not proof the file exists.
 
+### Optional — `obsidianName`, the vault's label inside Obsidian
+
+When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), every `GET /view` the router sends carries two optional *vault hints* defined by the provider contract (`docs/CONTRACT.md`, section "Vault hints", in [obsidian-mcp-router-view-agent](https://github.com/tboome33/obsidian-mcp-router-view-agent)):
+
+| Parameter | Value |
+|---|---|
+| `rest` | The origin of `baseUrl`, rebuilt from its scheme, host and port only — so no `user:pass@`, path, query or fragment can come along, and the API key and `extraHeaders` are never read to build it. A `baseUrl` without a port sends its scheme's default port explicitly. Only `http` and `https` are sent. |
+| `obsidian_name` | The label `obsidian://open?vault=` expects. Local vault: the folder name. Remote vault: the `obsidianName` field below, or nothing. |
+
+They let a provider such as `view-agent-direct` serve a vault nobody declared to it: a container on its own host, or a desktop Obsidian on a WireGuard peer. A provider that does not know them ignores them.
+
+A remote vault's label cannot be derived from its `baseUrl`, and it usually differs from the router's name for it. Declare it:
+
+```json
+{ "name": "router", "baseUrl": "http://10.8.0.10:27163", "apiKey": "…", "obsidianName": "opsidian-mcp-router et bridge" }
+```
+
+It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character and no `/` or `\`. `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
+
 ## `find_twin_pages` on a remote vault (v0.82.0)
 
 `find_twin_pages` compares every page against every other by cosine, using the vectors Smart Connections keeps in `<vault>/.smart-env/multi/`. That is a **dot-directory the Local REST API does not serve** — and not by oversight: measured on a real vault, Obsidian's own `vault.getFiles()` returns zero entries under `.smart-env`, so nothing in the core API can see it.

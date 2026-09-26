@@ -51,7 +51,7 @@ export async function getViewLinkTool(registry, args = {}) {
   const safeNote = note == null || note === '' ? null : canonicalVaultPath(note, 'note');
 
   // Explicit call → surface a clear error if anything fails (throwOnError defaults true).
-  const data = await fetchViewLink({ vaultName: vault.name, note: safeNote });
+  const data = await fetchViewLink({ vaultName: vault.name, note: safeNote, vault });
 
   return ({
     vault: vault.name,
