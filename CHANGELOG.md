@@ -166,6 +166,57 @@ measuring them changed one and added a fourth.
   that desktop plugins are available there. The heartbeat is the fallback: the session is now
   told.
 
+### Hot-cache guard: judges only the current run, and sees `scripts/vault-edit.mjs`
+
+`hooks/hot-cache-update-prompt.mjs` raised the same false alarm on five turns in a row on
+2026-09-23. Two assumptions had stopped being true:
+
+- **A resumed session is not one run.** A resume appends to the same transcript, so the guard
+  re-read writes from earlier days and claimed them again. Measured: session 886414b9 spans
+  20/09, 21/09 and 23/09 in one file, and the guard demanded, on the 23rd, a hot refresh for Kiviri
+  Stack, whose last note dates from the 21st. The guard now judges only what follows the last
+  SessionStart marker (`startup` / `resume` / `clear`, not `compact`, not an async response), found
+  by position in the file. Entries whose `uuid` was already seen are copies of old history and are
+  ignored: Claude Code re-appends such copies, and 2 of 403 local transcripts end on a copied
+  marker. With no marker the guard does not block; when the whole transcript shows a vault it would
+  have claimed, it says so (`systemMessage`, a documented Stop-hook field, not observed live). The
+  marker is written for any SessionStart hook, which is installed separately from this guard: 20 of
+  403 local sessions ran the guard without one. A run cut off before its Stop hook and then resumed
+  is forgiven its notes, by design.
+- **The route the repo prescribes for shared vaults was invisible.** A `Bash` call running
+  `node scripts/vault-edit.mjs --vault V --path P` now counts as a write, a note or a hot refresh,
+  when three things hold: the command mentions the script exactly once; that mention is a call with
+  `node` as the command (after `VAR=` prefixes and `if`/`while`/`do`…; node's options skipped; not
+  `-e`/`-p`; also inside `"$( … )"` or backticks); and in the output the script's LAST
+  size-and-precondition line is followed directly by `écrit — casMode:`. A `no change:` run is not
+  a write: re-running an unchanged spec after the guard blocked is the very slip it catches.
+  `is_error` is not read on this route: every measured call is piped through `tail`, which hides the
+  script's exit code, and Claude Code sets `is_error` when a command chained AFTER the write fails.
+  Heredoc bodies, comments and single-quoted strings are not calls. A substitution the parser cannot
+  read (an apostrophe in a `"$(cat <<'EOF' …)"` commit message) stays plain text instead of making
+  the whole command unreadable. That is not airtight: its body is then read as double-quoted text,
+  so a `"` in it can still hide a call written after it. Measured on 22 238 real Bash commands: 46
+  would hide a call written after them, 2 of the 51 commit heredocs among them; most of the rest are
+  Windows paths ending in `\"`, which bash itself reads as an escaped quote. `--dry-run` writes nothing. With `--config` or
+  `OBSIDIAN_ROUTER_CONFIG` in the command, the vault is not attributed. Census on the local
+  transcripts (2026-09-24): the 31 calls that printed a write are all counted. Not seen: the
+  PowerShell tool, launchers such as `env`, `timeout`, `npx`, `exec`, a `$VAR` in `--vault` /
+  `--path`, `let x=1<<3`, output truncated to a preview, and a call in a command whose text also
+  MENTIONS the script elsewhere (a commit message naming `vault-edit.mjs`): any second mention
+  credits nothing. A note missed that way, written after the last hot refresh, lets the turn end. Out of scope, because this guard defends against forgetting,
+  not against an agent that forges output: caller text built to spell the script's success lines,
+  and an older genuine output replayed from a log after a failed call.
+
+Five rounds of adversarial review (Claude and Codex in rounds 1-4, Claude in round 5) found holes in
+the first version, then in each round's repairs; round 5 found no behavioural defect, only a false
+sentence, now corrected. Each fix has its own witness, and rules that no test could ever distinguish
+were removed rather than kept unproven. 49 mutations, one per rule, each reddened exactly its
+declared tests (three declarations were corrected after their first run). Left open: a
+request/result pair split by a resume (not reproduced). Parallel tool calls whose write order would
+differ from their request order were measured instead of guarded (2026-09-26, 440 transcripts): for
+writes, results never came back out of request order — 0 of 553 pairs targeting a hot.md or a
+wiki/ note, while 181 batches of reads did — so no rule was added.
+
 ### The two asset writers: the output directory is pinned, and must be a vault or the temp directory
 
 `pptx_extract_assets` and `download_page_assets` write files into a directory the caller names.

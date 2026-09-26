@@ -20,7 +20,7 @@ La philosophie, apprise à l'usage : **une convention seule ne règle pas un pro
 
 **Le besoin.** Le hot.md n'a de valeur que s'il est tenu à jour — or « pense à rafraîchir le cache » est exactement le genre de consigne qu'un modèle oublie en fin de session.
 
-**Ce que ça fait.** Garde déterministe : si la session a écrit une note `wiki/`, le hook **bloque la fin du tour** (exit 2) tant que `wiki-meta/hot.md` n'a pas été rafraîchi. Par vault, borné à la session courante. Opt-out : `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`.
+**Ce que ça fait.** Garde déterministe : si la session a écrit une note `wiki/`, le hook **bloque la fin du tour** (exit 2) tant que `wiki-meta/hot.md` n'a pas été rafraîchi. Par vault, borné au run courant : depuis le démarrage ou la dernière reprise de la session, pas depuis sa création. Sans marqueur de démarrage dans le transcript (Claude Code l'écrit pour n'importe quel hook SessionStart, installé à part de cette garde), il ne bloque pas, et il le signale quand un vault aurait été réclamé. Une écriture faite par `scripts/vault-edit.mjs` lancé via Bash compte quand la commande ne mentionne le script qu'une fois, le lance par `node` (y compris dans `$( … )` ou entre accents graves), et que sa sortie montre l'écriture — même si une commande enchaînée après échoue ; un « no change » n'en est pas une. Le même script lancé depuis PowerShell, derrière `env`/`timeout`/`npx`/`exec`, ou avec un `$VAR` dans `--vault`/`--path`, n'est pas vu ; une note manquée ainsi, écrite après le dernier rafraîchissement, laisse passer le tour. Hors périmètre : une sortie forgée exprès, ou un ancien journal relu après un appel qui a échoué. Opt-out : `OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD`.
 
 ## `wiki-autocommit` — le wiki sous git, sans y penser
 

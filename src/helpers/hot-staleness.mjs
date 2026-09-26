@@ -31,6 +31,13 @@
  *   - PER-VAULT: each vault judged independently (a session can touch
  *     several). A vault whose root can't be resolved is SKIPPED (fail-open),
  *     never blocked.
+ *   - PER-RUN: a resumed session appends to the same transcript, so the file
+ *     can hold several runs, days apart. The caller hands `findStaleVaults`
+ *     only the current run, cut by `currentRunTranscript`. When that function
+ *     finds no run-start marker, the caller must fail open.
+ *   - THE SHELL ROUTE: a `Bash` call running `scripts/vault-edit.mjs` is a
+ *     write when the call holds exactly one invocation and its output shows
+ *     that it wrote. See `parseVaultEditInvocations` and `vaultEditCallWrote`.
  *   - OUTCOME-AWARE: a request is not an effect. A `tool_use` counts only when
  *     the `tool_result` that answers it exists and is not an error — and for
  *     `write_bundle`, which reports failure by RETURNING `ok:false` instead of
@@ -122,6 +129,610 @@ export function isTrackedWriteTool(name) {
   if (!name || typeof name !== 'string') return false;
   if (BUILTIN_WRITE_TOOLS.has(name)) return true;
   return MCP_TRACKED_RE.test(name);
+}
+
+// ---------------------------------------------------------------------------
+// The run bound — which part of the transcript is THIS run's
+// ---------------------------------------------------------------------------
+
+/**
+ * A transcript is not one run of work. A resumed session appends to the SAME
+ * file, so the transcript of a session reopened three times holds three runs,
+ * possibly days apart. MEASURED 2026-09-23 on session 886414b9: 1113 entries
+ * dated 20/09, 1443 on 21/09, 308 on 23/09, one file. Reading all of it made
+ * the guard demand, on the 23rd, a hot refresh for a vault whose last note was
+ * written on the 21st — and whose hot.md had been refreshed a minute later.
+ *
+ * WHERE A RUN STARTS. Claude Code records every SessionStart hook it runs as a
+ * transcript `attachment` with `hookEvent: 'SessionStart'` and a `hookName`
+ * spelling the source: `SessionStart:startup`, `SessionStart:resume`,
+ * `SessionStart:clear`, `SessionStart:compact`. On 886414b9 there is one
+ * `resume` marker at each reopening, including the one on 23/09.
+ *
+ * A MARKER IS NOT GUARANTEED where this guard runs. The router's plugin
+ * installs the SessionStart hook, but this Stop guard is installed separately
+ * (`hooks/hooks.example.json`), so one can be present without the other.
+ * MEASURED (review round 1): 49 of 403 local transcripts have no marker, and
+ * in 20 of those 49 this guard ran (5 of them it blocked).
+ *
+ * The bound is the POSITION of the last marker in the file, not its timestamp.
+ * The timestamps are not in file order: the resume marker on 20/09 is stamped
+ * 14:05:24, and the queue entry written just before it is stamped 14:06:07.
+ *
+ * Two marker kinds are deliberately NOT boundaries:
+ *   - `compact`: compaction happens INSIDE a run. The notes written just before
+ *     an auto-compaction are exactly the ones whose hot refresh is still owed.
+ *   - `async_hook_response`: an async hook answers whenever it finishes, which
+ *     can be after the run's first writes. Taking it as the start would push
+ *     the bound past those writes.
+ *
+ * Returns the text AFTER the last run-start marker, or `null` when the
+ * transcript has none. `null` means "the run cannot be bounded", and the
+ * caller must then FAIL OPEN: blocking with a window it cannot justify would
+ * bring back the false alarm this bound exists to remove. Because the 20
+ * sessions above show that failing open switches off a guard that used to
+ * work, the caller must also SAY so, not pass in silence.
+ *
+ * Other bounds that were considered and rejected:
+ *   - a field of the Stop hook's input. It carries `session_id` and
+ *     `transcript_path`, not a run start, and `session_id` stays the same
+ *     across a resume (measured: the same id on all three days of 886414b9);
+ *   - a gap in time between two entries. Resumes on 886414b9 follow gaps of
+ *     1310 and 2580 minutes, but also gaps of 70, 87 and 135 minutes inside a
+ *     single day. Any threshold would be a setting that someone tuned, not a
+ *     fact the transcript records.
+ */
+const RUN_START_HOOK_RE = /^SessionStart:(startup|resume|clear)$/;
+
+export function isRunStartMarker(entry) {
+  if (!entry || entry.type !== 'attachment') return false;
+  const a = entry.attachment;
+  if (!a || a.hookEvent !== 'SessionStart') return false;
+  if (a.type === 'async_hook_response') return false;
+  return RUN_START_HOOK_RE.test(String(a.hookName || ''));
+}
+
+/*
+ * COPIES OF OLD HISTORY ARE NOT THE CURRENT RUN. Claude Code can append a
+ * second copy of earlier entries to the same file. MEASURED (review round 1):
+ * session 8602edea holds 2200 entries whose `uuid` already appeared earlier,
+ * among them 6 old markers, and its last marker is such a copy. 2 of 403
+ * transcripts are in this state. Taking the last marker by position alone
+ * judged those copies and left out the real current run. So:
+ *   - an entry whose `uuid` was already seen is a copy and is dropped;
+ *   - the bound is the last marker that is NOT a copy.
+ * An entry without a `uuid` is kept as it is.
+ *
+ * There is no text pre-filter: every line is parsed anyway, and JSON may spell
+ * any character of the marker as an escape. The parsed value is judged.
+ */
+export function currentRunTranscript(jsonlText) {
+  if (!jsonlText || typeof jsonlText !== 'string') return null;
+  const lines = jsonlText.split('\n');
+  const seen = new Set();
+  const firstSeen = new Array(lines.length).fill(true);
+  let bound = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const uuid = entry && typeof entry.uuid === 'string' ? entry.uuid : null;
+    if (uuid) {
+      if (seen.has(uuid)) { firstSeen[i] = false; continue; }
+      seen.add(uuid);
+    }
+    if (isRunStartMarker(entry)) bound = i;
+  }
+  if (bound < 0) return null;
+  const out = [];
+  for (let i = bound + 1; i < lines.length; i += 1) if (firstSeen[i]) out.push(lines[i]);
+  return out.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// scripts/vault-edit.mjs — the write route the repository itself prescribes
+// ---------------------------------------------------------------------------
+
+/**
+ * In a SHARED vault, AGENTS.md and the vault's hot.md tell the agent to write
+ * through `scripts/vault-edit.mjs`, which runs in a `Bash` tool call. The guard
+ * only knew MCP and built-in tool names, so it could not see that route in
+ * either direction: a hot refresh made through it did not count, and neither did
+ * a note. OBSERVED 2026-09-23: the router's own vault stayed in the complaint
+ * while its hot.md was refreshed this way, and left it as soon as a write went
+ * through the MCP tool. The file on disk had been correct the whole time.
+ *
+ * Only `Bash`. MEASURED 2026-09-24 over the local transcripts: every Bash call
+ * that printed a vault-edit write (31 that day) is recognised; none of the
+ * calls ran in `PowerShell`, so a call from the PowerShell tool is not seen.
+ * (The total of calls that merely MENTION the script grows with every session
+ * that reads it, so it is not given here.)
+ *
+ * THREAT MODEL. This guard defends against FORGETTING the hot refresh, not
+ * against an agent that lies: any agent can clear it by writing a trivial
+ * hot.md. So the rules below close the shapes a normal session produces by
+ * accident. An input built on purpose to forge the script's output (an edit
+ * anchor or an argument that spells the success lines) is out of scope.
+ */
+const VAULT_EDIT_SHELL_TOOLS = new Set(['Bash']);
+const VAULT_EDIT_SCRIPT_RE = /(?:^|[\\/])vault-edit\.mjs$/;
+const NODE_BIN_RE = /(?:^|[\\/])node(?:\.exe)?$/i;
+
+/**
+ * How the script says it wrote. It prints two lines in a row, both formatted
+ * by the script itself: the size-and-precondition line, then the success line
+ * once `writeFileIfMatch` has returned.
+ *
+ * WHY `is_error` IS NOT ENOUGH HERE. Every real invocation measured is piped
+ * (`2>&1 | tail -N`), so the exit status the transcript records is `tail`'s.
+ * A refusal (`refused: edits[3].to must be a single line`) came back with
+ * `is_error: false`.
+ *
+ * THE RULE: the LAST size-and-precondition line of the output must be followed
+ * immediately by the success line. Why the last one (review rounds 1 and 2):
+ *   - The script ECHOES caller text before its own size line: the first 100
+ *     characters of each replaced span, which may hold newlines and so may
+ *     hold lines that look like the pair, or like a refusal. Echoes always
+ *     come BEFORE the script's real size line, so the last size line is the
+ *     script's own. A rule that looked at every line was fooled both ways: an
+ *     echoed `refused:` vetoed a real write, an echoed pair doubled the count.
+ *   - On a failure after the size line (409, network error, stack trace), the
+ *     line after the real size line is the failure, not the success line.
+ *   - Output printed AFTER the success line, by commands chained after the
+ *     call, does not matter. MEASURED: 20 of the 31 real writes are followed by
+ *     such verification output (word counts, sizes), so requiring the pair to
+ *     end the output would miss them.
+ * Out of scope (see THREAT MODEL): a failure BEFORE the size line, such as an
+ * edit refused for a missing anchor, whose own quoted caller text spells the
+ * pair. Closing that needs the producer to name the path on its success line.
+ * Also out of scope, because it is not attributable without a producer
+ * receipt: a failed call whose command replays an older, genuine output (a log
+ * written by `tee` in an earlier call and read back here).
+ * A truncation (`tail -1`, or a Bash result so large that Claude Code keeps
+ * only a preview) that cuts the size line off makes the call count as nothing.
+ * A MISSED write is not harmless: a missed note written after the last hot
+ * refresh lets the turn end as if the vault were fresh. Misses are listed so
+ * they are known, not because they are safe.
+ */
+const VAULT_EDIT_SIZE_LINE_RE = /^\d+ → \d+ caractères, précondition [0-9a-f]{12}…$/;
+const VAULT_EDIT_WROTE_LINE_RE = /^écrit — casMode: \S+$/;
+
+export function isVaultEditShellTool(name) {
+  return typeof name === 'string' && VAULT_EDIT_SHELL_TOOLS.has(name);
+}
+
+/**
+ * Split a shell command into simple commands, each a list of words, applying
+ * the quoting rules bash applies. Returns `null` when a quote is left open:
+ * such a command is not understood, so it is not counted.
+ *
+ * What is handled, because each would otherwise make text look like a call:
+ *   - single quotes (literal), double quotes (`\` escapes `"` `\` `$` and a
+ *     backtick), an unquoted `\`, and a `\` before a newline, which continues
+ *     the line;
+ *   - `#` at the start of a word begins a comment, so a commented-out call is
+ *     not a call;
+ *   - `;`, `&`, `|`, `(`, `)` and newlines end a simple command;
+ *   - redirections: `2>&1` produces no word, `> file` and `>| file` drop
+ *     `file`, and a here-string `<<< word` drops `word`;
+ *   - a HEREDOC body (`<<EOF` … `EOF`, `<<-` strips leading tabs) is data, not
+ *     commands: it is skipped up to its delimiter line (review round 1: its
+ *     lines were parsed as commands, so a body that merely spelled a call
+ *     counted as one, and an apostrophe in a body hid the real call after it).
+ *     A heredoc whose delimiter cannot be read makes the command not understood.
+ *     Known miss: an UNQUOTED heredoc body can itself run `$( … )`; it is
+ *     skipped as data all the same.
+ *   - command substitution runs its content, so that content is tokenized as
+ *     commands of its own: `$( … )` inside double quotes, and backticks
+ *     anywhere. (An unquoted `$( … )` needs nothing: its parentheses already
+ *     separate commands.)
+ *   - arithmetic `$(( … ))` / `(( … ))` is one word. Known misses: `let x=1<<3`
+ *     (read as a heredoc), and `((cd x && node …) && …)`, which bash reads as
+ *     two subshells but this reads as arithmetic.
+ * A quoted string stays ONE word. So `echo "node scripts/vault-edit.mjs"` has
+ * no word equal to the script path.
+ */
+function shellSimpleCommands(command) {
+  const src = String(command || '');
+  const commands = [];
+  let words = [];
+  let word = '';
+  let inWord = false; // a word has started (even if it is an empty quoted string)
+  let quotedInWord = false;
+  let dropNextWord = false;
+  const heredocs = []; // pending { delim, stripTabs }, read at the next newline
+
+  const endWord = () => {
+    if (inWord) {
+      if (dropNextWord) dropNextWord = false;
+      else words.push(word);
+    }
+    word = '';
+    inWord = false;
+    quotedInWord = false;
+  };
+  const endCommand = () => {
+    endWord();
+    if (words.length) commands.push(words);
+    words = [];
+  };
+
+  // COMMAND SUBSTITUTION RUNS COMMANDS (review round 3): in
+  // `out="$(node …vault-edit.mjs …)"` the call really executes. Its text is
+  // tokenized as commands of its own and added to the list; the enclosing
+  // word keeps the raw text. `closeParen` returns the index of the `)` that
+  // closes a `$(` whose content starts at `from`, skipping quoted text.
+  const closeParen = (from) => {
+    let depth = 1;
+    let k = from;
+    while (k < src.length) {
+      const c = src[k];
+      if (c === '\\') { k += 2; continue; }
+      if (c === '\'') {
+        const q = src.indexOf('\'', k + 1);
+        if (q === -1) return -1;
+        k = q + 1;
+        continue;
+      }
+      if (c === '"') {
+        k += 1;
+        while (k < src.length && src[k] !== '"') k += src[k] === '\\' ? 2 : 1;
+        if (k >= src.length) return -1;
+        k += 1;
+        continue;
+      }
+      if (c === '(') depth += 1;
+      else if (c === ')') { depth -= 1; if (depth === 0) return k; }
+      k += 1;
+    }
+    return -1;
+  };
+  const closeBacktick = (from) => {
+    let k = from;
+    while (k < src.length && src[k] !== '`') k += src[k] === '\\' ? 2 : 1;
+    return k < src.length ? k : -1;
+  };
+  // Tokenize a substitution's content and add its commands. `false` = the
+  // content is not understood: the CALLER then keeps the substitution as
+  // plain text, as before this rule existed, instead of failing the whole
+  // command (review round 4: `git commit -m "$(cat <<'EOF' … don't … EOF)"`
+  // hid a real call written next to it, because the apostrophe of the body
+  // was read as a quote). Measured on 22 238 real Bash commands against the
+  // fatal version: 0 calls lost, 19 more recognised. It is NOT a guarantee
+  // that only calls inside the substitution can be hidden (review round 5):
+  // kept as text, a heredoc body is then read as double-quoted text, so a `"`
+  // in it ends the string early. 2 of 51 real commit heredocs do that.
+  const substitute = (inner) => {
+    const sub = shellSimpleCommands(inner);
+    if (!sub) return false;
+    commands.push(...sub);
+    return true;
+  };
+
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    // An UNQUOTED `$( … )` needs no branch: its parentheses already end the
+    // simple commands around the call inside, which is then recognised.
+    if (ch === '`') {
+      const end = closeBacktick(i + 1);
+      if (end !== -1 && substitute(src.slice(i + 1, end))) {
+        word += src.slice(i, end + 1);
+        inWord = true;
+        i = end + 1;
+        continue;
+      }
+      // Not understood: the backtick falls through as an ordinary character.
+    }
+    // Arithmetic `$(( … ))` / `(( … ))`: its `<<` is a shift, not a heredoc.
+    // Kept as part of the current word, up to the matching parenthesis.
+    if ((ch === '$' && src[i + 1] === '(' && src[i + 2] === '(') || (ch === '(' && src[i + 1] === '(' && !inWord)) {
+      let j = ch === '$' ? i + 1 : i;
+      let depth = 0;
+      do {
+        if (src[j] === '(') depth += 1;
+        else if (src[j] === ')') depth -= 1;
+        j += 1;
+      } while (j < src.length && depth > 0);
+      if (depth > 0) return null;
+      word += src.slice(i, j);
+      inWord = true;
+      i = j;
+      continue;
+    }
+    // ANSI-C quoting `$'…'`: a backslash escapes the next character, so
+    // `$'it\'s'` does not leave a quote open.
+    if (ch === '$' && src[i + 1] === '\'') {
+      let j = i + 2;
+      while (j < src.length && src[j] !== '\'') j += src[j] === '\\' ? 2 : 1;
+      if (j >= src.length) return null;
+      word += src.slice(i + 2, j);
+      inWord = true;
+      quotedInWord = true;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '\'') {
+      const close = src.indexOf('\'', i + 1);
+      if (close === -1) return null;
+      word += src.slice(i + 1, close);
+      inWord = true;
+      quotedInWord = true;
+      i = close + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      let closed = false;
+      while (j < src.length) {
+        const c = src[j];
+        if (c === '\\' && j + 1 < src.length) {
+          const n = src[j + 1];
+          if (n === '\n') { j += 2; continue; }
+          if (n === '"' || n === '\\' || n === '$' || n === '`') { word += n; j += 2; continue; }
+          word += c;
+          j += 1;
+          continue;
+        }
+        if (c === '"') { closed = true; break; }
+        // A substitution inside double quotes still runs its commands.
+        if (c === '$' && src[j + 1] === '(' && src[j + 2] !== '(') {
+          const end = closeParen(j + 2);
+          if (end !== -1 && substitute(src.slice(j + 2, end))) {
+            word += src.slice(j, end + 1);
+            j = end + 1;
+            continue;
+          }
+          // Not understood: kept as text (see `substitute`).
+        }
+        if (c === '`') {
+          const end = closeBacktick(j + 1);
+          if (end !== -1 && substitute(src.slice(j + 1, end))) {
+            word += src.slice(j, end + 1);
+            j = end + 1;
+            continue;
+          }
+        }
+        word += c;
+        j += 1;
+      }
+      if (!closed) return null;
+      inWord = true;
+      quotedInWord = true;
+      i = j + 1;
+      continue;
+    }
+    if (ch === '\\') {
+      if (src[i + 1] === '\n') { i += 2; continue; }
+      if (i + 1 < src.length) { word += src[i + 1]; inWord = true; }
+      i += 2;
+      continue;
+    }
+    if (ch === '#' && !inWord) {
+      const nl = src.indexOf('\n', i);
+      i = nl === -1 ? src.length : nl;
+      continue;
+    }
+    if (ch === '<' && src[i + 1] === '<' && src[i + 2] !== '<') {
+      // Heredoc: read the delimiter now, skip the body at the next newline.
+      if (inWord && !quotedInWord && /^\d+$/.test(word)) { word = ''; inWord = false; }
+      endWord();
+      let j = i + 2;
+      const stripTabs = src[j] === '-';
+      if (stripTabs) j += 1;
+      while (src[j] === ' ' || src[j] === '\t') j += 1;
+      let delim = '';
+      while (j < src.length && !/[\s;&|()<>]/.test(src[j])) {
+        const c = src[j];
+        if (c === '\'' || c === '"') {
+          const close = src.indexOf(c, j + 1);
+          if (close === -1) return null;
+          delim += src.slice(j + 1, close);
+          j = close + 1;
+          continue;
+        }
+        if (c === '\\') { delim += src[j + 1] || ''; j += 2; continue; }
+        delim += c;
+        j += 1;
+      }
+      if (!delim) return null;
+      heredocs.push({ delim, stripTabs });
+      i = j;
+      continue;
+    }
+    if (ch === '>' || ch === '<' || (ch === '&' && src[i + 1] === '>')) {
+      // A file-descriptor number glued to the operator (`2>`) is not a word.
+      if (inWord && !quotedInWord && /^\d+$/.test(word)) { word = ''; inWord = false; }
+      endWord();
+      let j = i;
+      while (j < src.length && (src[j] === '>' || src[j] === '<' || src[j] === '&')) {
+        if (src[j] === '&' && j > i && /[\d-]/.test(src[j + 1] || '')) break;
+        j += 1;
+      }
+      if (src[j] === '|' && src[j - 1] === '>') j += 1; // `>|`: clobber, not a pipe
+      if (src[j] === '&') {
+        j += 1;
+        while (j < src.length && /[\d-]/.test(src[j])) j += 1; // `>&1`: no target word
+      } else {
+        dropNextWord = true; // `> file` / `<<< word`: the next word is the target
+      }
+      i = j;
+      continue;
+    }
+    if (ch === '\n' && heredocs.length) {
+      endCommand();
+      dropNextWord = false;
+      let j = i + 1;
+      // As bash does, a body whose delimiter line never comes runs to the end
+      // of the input. (A shift like `$((1<<3))` never gets here: the
+      // arithmetic branch above keeps it out of the heredoc path.)
+      for (const { delim, stripTabs } of heredocs) {
+        while (j < src.length) {
+          const nl = src.indexOf('\n', j);
+          const end = nl === -1 ? src.length : nl;
+          let bodyLine = src.slice(j, end).replace(/\r$/, '');
+          if (stripTabs) bodyLine = bodyLine.replace(/^\t+/, '');
+          j = end + 1;
+          if (bodyLine === delim) break;
+        }
+      }
+      heredocs.length = 0;
+      i = j;
+      continue;
+    }
+    if (ch === ';' || ch === '&' || ch === '|' || ch === '(' || ch === ')' || ch === '\n') {
+      endCommand();
+      dropNextWord = false;
+      i += 1;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r') {
+      endWord();
+      i += 1;
+      continue;
+    }
+    word += ch;
+    inWord = true;
+    i += 1;
+  }
+  endCommand();
+  return commands;
+}
+
+/**
+ * Every `node …/vault-edit.mjs …` invocation in a shell command, in order, as
+ * `{ vault, path, dryRun }`. The script's arguments are read with the script's
+ * own rules (`parseArgv`): `--dry-run` is a switch, every other `--key` takes
+ * the next word, and the last value given wins. A missing `--vault` or
+ * `--path` leaves that field undefined. The call is still an invocation, and
+ * `classifyToolUse` skips a target it cannot resolve.
+ *
+ * An invocation is a simple command whose COMMAND WORD is `node` (after any
+ * `VAR=value` prefixes), whose node options are skipped, and whose first
+ * operand is the script. So none of these is one (review round 1):
+ *   - the path read by another program (`sed -n … vault-edit.mjs`, `ls`), or
+ *     passed as an argument (`printf '%s' node scripts/vault-edit.mjs`);
+ *   - `node -e` / `-p` / `--eval` / `--print`: node runs the SOURCE TEXT, and a
+ *     script path inside it is only text;
+ *   - a call inside a quoted string, a comment or a heredoc body.
+ * Node options that take a separate value (`--require x`, `--import x`, …) are
+ * skipped together with their value.
+ *
+ * `--config` makes the script resolve `--vault` in ANOTHER registry, which the
+ * guard cannot read. Such an invocation still counts as an invocation, but its
+ * vault is left undefined, so `classifyToolUse` skips it rather than crediting
+ * a same-named vault of the default registry.
+ * A `$VAR` in `--vault` or `--path` is not expanded: the literal is kept, and a
+ * vault spelled `$V` does not resolve, so the target is skipped.
+ */
+const NODE_EVAL_OPT_RE = /^(?:-[A-Za-z]*[ep][A-Za-z]*|--eval(?:=.*)?|--print(?:=.*)?)$/;
+const NODE_VALUE_OPTS = new Set([
+  '-r', '--require', '--import', '--loader', '--experimental-loader',
+  '--input-type', '-C', '--conditions', '--env-file', '--title', '--disable-warning',
+]);
+const ENV_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// Reserved words that can stand before a command in the same simple command
+// (`for …; do node …`, `if node …; then …`, `while node …`). Skipped, so the
+// call behind them is recognised. A launcher that is NOT listed here (`env`,
+// `timeout`, `npx`, `bash -c` …) leaves the call unrecognised, and the
+// one-mention rule in `vaultEditCallWrote` then credits nothing in that Bash
+// call: an unrecognised call could otherwise lend its output to a recognised one.
+const SHELL_PREFIX_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', 'time']);
+
+function vaultEditArgsOf(words) {
+  let k = 0;
+  while (k < words.length && (ENV_ASSIGNMENT_RE.test(words[k]) || SHELL_PREFIX_WORDS.has(words[k]))) k += 1;
+  if (!NODE_BIN_RE.test(words[k] || '')) return null;
+  let j = k + 1;
+  while (j < words.length && words[j].startsWith('-')) {
+    const opt = words[j];
+    if (NODE_EVAL_OPT_RE.test(opt)) return null;
+    j += NODE_VALUE_OPTS.has(opt) ? 2 : 1;
+  }
+  if (!VAULT_EDIT_SCRIPT_RE.test(words[j] || '')) return null;
+  return words.slice(j + 1);
+}
+
+export function parseVaultEditInvocations(command) {
+  const commands = shellSimpleCommands(command);
+  if (!commands) return [];
+  // The registry can also come from the environment (`OBSIDIAN_ROUTER_CONFIG=…
+  // node …`, or an `export` earlier in the command). Any mention of it in the
+  // command makes the vault unattributable, like `--config` (review round 2).
+  const envRegistry = String(command).includes('OBSIDIAN_ROUTER_CONFIG');
+  const out = [];
+  for (const words of commands) {
+    const args = vaultEditArgsOf(words);
+    if (!args) continue;
+    const inv = { vault: undefined, path: undefined, dryRun: false };
+    let otherRegistry = false;
+    for (let a = 0; a < args.length; a += 1) {
+      const arg = args[a];
+      if (arg === '--dry-run') { inv.dryRun = true; continue; }
+      if (!arg.startsWith('--')) continue;
+      const value = args[a + 1];
+      if (value === undefined || value.startsWith('--')) continue;
+      a += 1;
+      if (arg === '--vault') inv.vault = value;
+      else if (arg === '--path') inv.path = value;
+      else if (arg === '--config') otherRegistry = true;
+    }
+    if (otherRegistry || envRegistry) inv.vault = undefined;
+    out.push(inv);
+  }
+  return out;
+}
+
+/**
+ * Did the vault-edit invocation of this Bash call actually write?
+ *
+ * EXACTLY ONE RECOGNISED INVOCATION, AND THE COMMAND TEXT MENTIONS
+ * `vault-edit.mjs` EXACTLY ONCE, or nothing is credited. The output is one
+ * stream, so it cannot say which of two calls wrote, nor which ran first
+ * (`a & b`, `(sleep 2; a) & b`; review round 1). Counting only RECOGNISED
+ * calls was not enough (review round 2): in
+ * `timeout 60 node …vault-edit.mjs --path wiki/n.md …; node …vault-edit.mjs
+ * --path wiki-meta/hot.md --spec typo.json`, the first call is not recognised
+ * (its launcher is `timeout`), writes, and prints the success lines; the
+ * second is recognised, fails, and was credited with the first one's output.
+ * Counting the raw mentions closes that: any second mention, recognised or
+ * not, credits nothing. MEASURED: all 31 real writes mention the script
+ * exactly once. The price is a miss, never an invented write.
+ *
+ * `command` is the raw command text. It is optional so that existing callers
+ * that pass only the parse keep working, but then the mention rule cannot run
+ * and nothing is credited.
+ */
+export function vaultEditCallWrote(invocations, outcome, command) {
+  // `invocations.length !== 1` is implied by the one-mention rule below (each
+  // recognised call is a mention); kept as the explicit statement of intent.
+  if (!Array.isArray(invocations) || invocations.length !== 1) return false;
+  if (typeof command !== 'string' || command.split('vault-edit.mjs').length - 1 !== 1) return false;
+  // `is_error` is NOT read on this route (review round 3). Claude Code sets it
+  // when ANY command of the Bash call exits non-zero — a `grep -c` finding
+  // nothing after the write, for instance (measured: 91 chained checks among
+  // 717 error results out of 22 646 Bash results). The script prints its lines
+  // only after the write returned and prints nothing after them, so a failure
+  // that comes later cannot undo the write. A failure of the script itself
+  // never prints them.
+  if (!outcome) return false;
+  const lines = String(outcome.text || '').split('\n').map((l) => l.replace(/\r$/, ''));
+  let lastSize = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (VAULT_EDIT_SIZE_LINE_RE.test(lines[i])) lastSize = i;
+  }
+  // "no change: … nothing written" is NOT credited (review round 4, after one
+  // round of crediting it). The script says outright that it wrote nothing,
+  // and with vault-edit the new text lives in a spec file: re-running the
+  // same command after the guard blocked, without updating that file, is the
+  // very slip this guard exists to catch. Counting it would clear a hot.md
+  // that never took the new note in, and would make an unchanged note a debt.
+  return lastSize >= 0 && VAULT_EDIT_WROTE_LINE_RE.test(lines[lastSize + 1] || '');
 }
 
 /**
@@ -349,10 +960,17 @@ export function extractWriteToolUses(jsonlText) {
     const chunks = Array.isArray(msg.content) ? msg.content : [];
     for (const c of chunks) {
       if (!c || c.type !== 'tool_use') continue;
-      if (!isTrackedWriteTool(c.name)) continue;
       // The pairing key. A block with no usable id can never be shown to have
       // succeeded, so it falls under the same rule as a missing result.
       const id = typeof c.id === 'string' && c.id ? c.id : null;
+      if (isVaultEditShellTool(c.name)) {
+        if (!id) continue;
+        const invocations = parseVaultEditInvocations(c.input && c.input.command);
+        if (!vaultEditCallWrote(invocations, outcomes.get(id), c.input && c.input.command)) continue;
+        out.push({ id, toolName: c.name, input: c.input, invocations });
+        continue;
+      }
+      if (!isTrackedWriteTool(c.name)) continue;
       if (!id) continue;
       const outcome = outcomes.get(id);
       if (!resultAppliedWrite(c.name, outcome)) continue;
@@ -469,6 +1087,24 @@ export function pathKind(relPath, { contentPrefix = 'wiki/', hotPath = 'wiki-met
  */
 export function classifyToolUse(toolUse, ctx = {}) {
   const isWin = !!ctx.isWin;
+
+  // A vault-edit Bash call: one target per invocation, each naming its own
+  // vault, resolved exactly as an MCP call's explicit `vault` is. A `--dry-run`
+  // writes nothing, so it is `other` whatever path it names.
+  if (isVaultEditShellTool(toolUse && toolUse.toolName)) {
+    const invocations = Array.isArray(toolUse.invocations)
+      ? toolUse.invocations
+      : parseVaultEditInvocations(toolUse.input && toolUse.input.command);
+    return invocations.map((inv) => {
+      const rootRaw = inv.vault && typeof ctx.slugToRoot === 'function' ? ctx.slugToRoot(inv.vault) || null : null;
+      return {
+        vaultKey: rootRaw ? normAbs(rootRaw, isWin) : null,
+        vaultRootRaw: rootRaw,
+        kind: inv.dryRun ? 'other' : pathKind(inv.path, ctx),
+      };
+    });
+  }
+
   const { absolutePaths, relPaths, vaultSlug } = targetsFromToolUse(toolUse);
   const roots = (ctx.vaultRoots || []).map((r) => ({ raw: r, norm: normAbs(r, isWin) }));
   const results = [];
@@ -544,6 +1180,16 @@ export function findStaleVaults(jsonlText, ctx = {}) {
   // what showed the claim had never been tested. `classifyToolUse` returns
   // targets in step order, so counting per target restores the real sequence —
   // and now makes the equality genuinely unreachable.
+  // REQUEST ORDER STANDS IN FOR WRITE ORDER, and that was measured, not assumed
+  // (2026-09-26, 440 local transcripts). Calls issued together in ONE assistant
+  // message could in principle run concurrently, so a hot refresh requested
+  // after a note could land first. Their results, written in completion order,
+  // never came back out of request order for writes: 0 of 553 pairs where both
+  // calls target a hot.md or a wiki/ note, 0 of 1 290 MCP-write pairs, 0 of
+  // 10 639 Write/Edit pairs. The same instrument does see concurrency where it
+  // exists (181 batches of reads or read-only Bash come back out of order), so
+  // the zero is a measurement, not a blind spot. No batch rule was added; if
+  // write calls ever start running concurrently, this is where it goes.
   let idx = 0;
   for (const tu of toolUses) {
     for (const { vaultKey, vaultRootRaw, kind } of classifyToolUse(tu, ctx)) {
