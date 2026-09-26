@@ -46,6 +46,7 @@ const BIN = path.join(REPO, 'bin', 'obsidian-mcp-router.mjs');
 const SECRET_KEY = ['marker', 'apikey', 'vault', 'hints'].join('-');
 const SECRET_HEADER = ['marker', 'extraheader', 'vault', 'hints'].join('-');
 const CTRL = String.fromCharCode(7);
+const AGENT_LINK = 'http://10.8.0.1:27200/go?v=x&s=sig';
 
 // ---------------------------------------------------------------------------
 // A stand-in view-agent that records every request.
@@ -60,7 +61,7 @@ before(async () => {
   agent = http.createServer((req, res) => {
     seen.push({ url: req.url, headers: req.headers });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ url: 'http://10.8.0.1:27200/go?v=x&s=sig' }));
+    res.end(JSON.stringify({ url: AGENT_LINK }));
   });
   await new Promise((r) => agent.listen(0, '127.0.0.1', r));
   agentUrl = `http://127.0.0.1:${agent.address().port}`;
@@ -123,6 +124,31 @@ describe('rest — the origin and nothing else', () => {
 
   test('an IPv6 host keeps its brackets', () => {
     assert.equal(vaultHints(remote({ baseUrl: 'https://[::1]:27124' })).rest, 'https://[::1]:27124');
+  });
+
+  test('odd baseUrls: the hint is an origin with an explicit port, or nothing', () => {
+    const ORIGIN = /^https?:\/\/[^/@?#\s]+:\d+$/;
+    const odd = [
+      'HTTP://User:Pw@10.8.0.10:27163/A?b#c',
+      'http://a\\b@10.8.0.10:27163/x',
+      'http:10.8.0.10:27163/x',
+      '  http://10.8.0.10:27163/x  ',
+      'http://%31%30.8.0.10:27163/%2F?x=@',
+      'https://xn--bcher-kva.example./path',
+      'https://bücher.example:8443/p?q',
+      'http://[fe80::1%25eth0]:27163/',
+      'http://u@[::1]:27163/p',
+      'http://10.8.0.10:27163@evil.example/p',
+      'http://evil.example#@10.8.0.10:27163',
+    ];
+    for (const b of odd) {
+      const r = vaultHints(remote({ baseUrl: b })).rest;
+      if (r === undefined) continue; // the parser refused it: no hint, which is allowed
+      assert.match(r, ORIGIN, `${JSON.stringify(b)} → ${JSON.stringify(r)}`);
+      assert.ok(!/user|pw|@/i.test(r), `${JSON.stringify(b)} leaked userinfo into ${r}`);
+    }
+    // Where the host really is, the hint says so — not the part a reader might mistake for it.
+    assert.equal(vaultHints(remote({ baseUrl: 'http://10.8.0.10:27163@evil.example/p' })).rest, 'http://evil.example:80');
   });
 
   test('a scheme other than http/https sends no rest hint', () => {
@@ -229,6 +255,42 @@ describe('fetchViewLink — the hints on the wire', () => {
     assert.deepEqual([...lastQuery().keys()], ['vault']);
   });
 
+  test('a redirect is refused, never followed — the token and the hints stay with the provider', async () => {
+    // A second server stands where a redirect would lead, and records anything that arrives.
+    const elsewhere = [];
+    const collector = http.createServer((req, res) => {
+      elsewhere.push({ url: req.url, headers: req.headers });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ url: 'http://collector/stolen' }));
+    });
+    await new Promise((r) => collector.listen(0, '127.0.0.1', r));
+    const target = `http://127.0.0.1:${collector.address().port}/view`;
+    const redirecting = http.createServer((req, res) => {
+      seen.push({ url: req.url, headers: req.headers });
+      res.writeHead(302, { Location: target });
+      res.end();
+    });
+    await new Promise((r) => redirecting.listen(0, '127.0.0.1', r));
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_URL = `http://127.0.0.1:${redirecting.address().port}`;
+    process.env.OBSIDIAN_ROUTER_VIEW_AGENT_TOKEN = 'view-token';
+    try {
+      await assert.rejects(
+        () => fetchViewLink({ vaultName: 'router', note: 'a.md', vault: remote({ obsidianName: 'Router Vault' }) }),
+        (err) => /redirect \(302\)/.test(err.message) && err.viewAgentTransient === false,
+      );
+      assert.equal(elsewhere.length, 0, `the redirect was followed: ${JSON.stringify(elsewhere)}`);
+      // The eager path reports it and stays up — and the breaker stays closed.
+      for (let i = 0; i < 4; i++) {
+        const r = await viewLinkForWrite({ vaultName: 'router', note: 'a.md', vault: remote() });
+        assert.match(r.viewLinkError || '', /redirect/);
+      }
+      assert.equal(elsewhere.length, 0);
+    } finally {
+      await new Promise((r) => redirecting.close(r));
+      await new Promise((r) => collector.close(r));
+    }
+  });
+
   test('viewLinkForWrite hands the descriptor through', async () => {
     const r = await viewLinkForWrite({ vaultName: 'router', note: 'wiki/a.md', vault: remote({ obsidianName: 'Router Vault' }) });
     assert.ok(r.viewLink, JSON.stringify(r));
@@ -281,14 +343,18 @@ describe('registry — obsidianName is loaded, validated, and never fatal', () =
       VAULT_A: JSON.stringify({ name: 'a', baseUrl: 'http://10.8.0.10:1', apiKey: 'k', obsidianName: 'Vault A' }),
       VAULT_B: JSON.stringify({ name: 'b', baseUrl: 'http://10.8.0.10:2', apiKey: 'k', obsidianName: `x${CTRL}y` }),
       VAULT_C: JSON.stringify({ name: 'c', baseUrl: 'http://10.8.0.10:3', apiKey: 'k' }),
+      // JSON null is documented as "absent": no label, and no warning either.
+      VAULT_D: JSON.stringify({ name: 'd', baseUrl: 'http://10.8.0.10:4', apiKey: 'k', obsidianName: null }),
     };
     const { result, stderr } = await quietly(() => _internals.parseEnvVaults(env));
     const byName = Object.fromEntries(result.envVaults.map((v) => [v.name, v]));
-    assert.deepEqual(Object.keys(byName).sort(), ['a', 'b', 'c']);
+    assert.deepEqual(Object.keys(byName).sort(), ['a', 'b', 'c', 'd']);
     assert.equal(byName.a.obsidianName, 'Vault A');
     assert.equal(byName.b.obsidianName, undefined);
     assert.equal(byName.c.obsidianName, undefined);
+    assert.equal(byName.d.obsidianName, undefined);
     assert.match(stderr, /VAULT_B: obsidianName ignored/);
+    assert.equal((stderr.match(/obsidianName ignored/g) || []).length, 1, stderr);
     assert.ok(!stderr.includes(CTRL), 'the warning echoed the rejected value');
   });
 
@@ -296,6 +362,13 @@ describe('registry — obsidianName is loaded, validated, and never fatal', () =
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-hints-reg-'));
     const saved = {};
     for (const k of Object.keys(process.env)) if (/^VAULT_/.test(k)) { saved[k] = process.env[k]; delete process.env[k]; }
+    // Anything the loader resolves under a home directory lands in the temp dir.
+    const HOME_KEYS = ['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'];
+    const savedHome = Object.fromEntries(HOME_KEYS.map((k) => [k, process.env[k]]));
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    process.env.HOMEDRIVE = '';
+    process.env.HOMEPATH = '';
     try {
       const configPath = path.join(dir, 'config.json');
       fs.writeFileSync(configPath, JSON.stringify({
@@ -316,6 +389,10 @@ describe('registry — obsidianName is loaded, validated, and never fatal', () =
       assert.equal(vaultHints(good).obsidian_name, 'opsidian-mcp-router et bridge');
     } finally {
       Object.assign(process.env, saved);
+      for (const [k, v] of Object.entries(savedHome)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -376,6 +453,14 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // Track termination FROM THE START: a router that dies before answering
+    // must fail the pending call at once, and the cleanup below must not wait
+    // for an 'exit' event that has already fired.
+    let exitInfo = null;
+    const exited = new Promise((resolve) => {
+      child.once('exit', (code, signal) => { exitInfo = { code, signal }; resolve(); });
+      child.once('error', (err) => { exitInfo = { error: err.message }; resolve(); });
+    });
     let stdout = '';
     let stderr = '';
     const waiters = new Map();
@@ -397,7 +482,9 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
     });
     const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
     const call = (id, method, params) => new Promise((resolve, reject) => {
+      if (exitInfo) { reject(new Error(`router already exited ${JSON.stringify(exitInfo)}\n${stderr}`)); return; }
       const t = setTimeout(() => reject(new Error(`timed out on ${method}\n${stderr}`)), 20000);
+      exited.then(() => { clearTimeout(t); reject(new Error(`router exited ${JSON.stringify(exitInfo)} during ${method}\n${stderr}`)); });
       waiters.set(id, (m) => { clearTimeout(t); resolve(m); });
       send({ jsonrpc: '2.0', id, method, params });
     });
@@ -408,8 +495,13 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
       const res = await call(2, 'tools/call', { name: 'write_file', arguments: { vault: 'probe', path: 'wiki/e2e.md', content: '# hi\n' } });
       assert.ok(!res.error, `write failed: ${JSON.stringify(res.error)}\n${stderr}`);
       assert.ok(vaultSeen.some((l) => l.startsWith('PUT /vault/wiki/e2e.md')), `no PUT: ${vaultSeen.join(', ')}`);
+      // The LINK itself, not a mention of it: `viewLinkError` would match /viewLink/.
+      assert.notEqual(res.result.isError, true, `the tool reported an error: ${JSON.stringify(res.result)}`);
       const text = res.result.content.map((c) => c.text || '').join('');
-      assert.match(text, /viewLink/, `the write result carries no viewLink:\n${text}\n${stderr}`);
+      const payload = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+      assert.equal(payload.viewLinkError, undefined, `viewLinkError: ${payload.viewLinkError}\n${stderr}`);
+      assert.equal(payload.viewLinkKind, 'agent');
+      assert.equal(payload.viewLink, AGENT_LINK);
 
       const q = lastQuery();
       assert.equal(q.get('vault'), 'probe');
@@ -420,8 +512,7 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
       assert.ok(!(decodeURIComponent(hit.url) + JSON.stringify(hit.headers)).includes(SECRET_KEY), 'the API key reached the view-agent');
     } finally {
       // Wait for the exit: on Windows the child holds its cwd until it is gone.
-      const exited = new Promise((r) => child.once('exit', r));
-      child.kill();
+      if (!exitInfo) child.kill();
       await exited;
       await new Promise((r) => fakeVault.close(r));
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }

@@ -1325,8 +1325,8 @@ function importDotenvHintOnce(config, cfgPath, vaults) {
 // `_internals` below, so existing tests reach it by the same name.
 
 /**
- * A remote vault's declared `obsidianName`, or undefined. Absent stays absent;
- * a value that fails `isValidObsidianName` is DROPPED with a warning and the
+ * A remote vault's declared `obsidianName`, or undefined. Absent stays absent,
+ * and JSON `null` means absent too (documented), silently; any other value that fails `isValidObsidianName` is DROPPED with a warning and the
  * vault still loads — the same non-fatal treatment as the other optional
  * fields. The warning describes the value (type, length), never echoes it: a
  * label with control characters would carry them into the log.

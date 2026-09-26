@@ -3492,7 +3492,9 @@ export async function startServer({ configPath, watch = true } = {}) {
           // The descriptor rides along for the view-agent's vault hints
           // (`rest`, `obsidian_name`). A plain lookup, not resolveVault: the
           // write already resolved this vault, and a link must not re-run the
-          // reachability guard or throw after the write succeeded.
+          // reachability guard or throw after the write succeeded. Same
+          // first-match `find` resolveVault itself uses, so a duplicated name
+          // yields the very descriptor the write went to.
           const vault = reg.vaults.find((v) => v.name === result.vault);
           Object.assign(result, sanitizeResponse(await viewLinkForWrite({ vaultName: result.vault, note, vault })));
         }

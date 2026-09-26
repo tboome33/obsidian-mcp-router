@@ -109,7 +109,7 @@ When a view-link provider is configured (`OBSIDIAN_ROUTER_VIEW_AGENT_URL`), ever
 
 | Parameter | Value |
 |---|---|
-| `rest` | The origin of `baseUrl`, rebuilt as `scheme://host:port` — never the API key, never `user:pass@`, never a path or query. A `baseUrl` without a port sends its scheme's default port explicitly. Only `http` and `https` are sent. |
+| `rest` | The origin of `baseUrl`, rebuilt from its scheme, host and port only — so no `user:pass@`, path, query or fragment can come along, and the API key and `extraHeaders` are never read to build it. A `baseUrl` without a port sends its scheme's default port explicitly. Only `http` and `https` are sent. |
 | `obsidian_name` | The label `obsidian://open?vault=` expects. Local vault: the folder name. Remote vault: the `obsidianName` field below, or nothing. |
 
 They let a provider such as `view-agent-direct` serve a vault nobody declared to it: a container on its own host, or a desktop Obsidian on a WireGuard peer. A provider that does not know them ignores them.
@@ -120,7 +120,7 @@ A remote vault's label cannot be derived from its `baseUrl`, and it usually diff
 { "name": "router", "baseUrl": "http://10.8.0.10:27163", "apiKey": "…", "obsidianName": "opsidian-mcp-router et bridge" }
 ```
 
-It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters, with no control character and no `/` or `\`. An invalid value is dropped with a warning on stderr and the vault still loads. The same field is accepted in a `VAULT_*` variable.
+It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character and no `/` or `\`. `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
 
 ## `find_twin_pages` on a remote vault (v0.82.0)
 

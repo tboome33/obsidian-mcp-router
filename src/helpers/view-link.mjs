@@ -164,11 +164,25 @@ export async function fetchViewLink({
 
   let res;
   try {
-    res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    // redirect: 'manual' — the contract has no redirects, and following one
+    // would replay X-View-Token (a custom header, which fetch does not strip
+    // across origins) and the vault hints to wherever `Location` points.
+    res = await fetch(url, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     return fail(
       `view-agent unreachable at ${agentBase} (${err?.message || err}). ` +
         'Check the view-agent service is running and reachable over WireGuard.',
+    );
+  }
+
+  if (res.status >= 300 && res.status < 400) {
+    // Not followed (see above). A per-provider misconfiguration, not a health
+    // failure: it does not trip the eager circuit-breaker.
+    await res.body?.cancel().catch(() => {});
+    return fail(
+      `view-agent answered a redirect (${res.status}) for vault "${vaultName}" — refused: ` +
+        'the /view contract has none, and following it would send the token elsewhere.',
+      { transient: false },
     );
   }
 
