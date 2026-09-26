@@ -19,7 +19,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import http from 'node:http';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -31,7 +32,11 @@ import {
   targetsFromToolUse,
   pathKind,
   findStaleVaults,
+  classifyToolUse,
+  currentRunTranscript,
+  parseVaultEditInvocations,
 } from '../src/helpers/hot-staleness.mjs';
+import { homeSafeEnv } from './_home-safe-spawn.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -145,6 +150,54 @@ function textLine(text) {
 function jsonl(...lines) {
   return lines.join('\n') + '\n';
 }
+
+/**
+ * The run-start marker, keys copied from a measured transcript: Claude Code
+ * records each SessionStart hook it ran as an `attachment` whose `hookName`
+ * spells the source (`SessionStart:startup` / `resume` / `clear` / `compact`).
+ * `type` is `hook_success` for a synchronous hook, `async_hook_response` for an
+ * async one.
+ */
+function sessionStartLine(source, { type = 'hook_success' } = {}) {
+  return JSON.stringify({
+    type: 'attachment',
+    attachment: {
+      type, hookName: `SessionStart:${source}`, hookEvent: 'SessionStart',
+      toolUseID: `ss_${source}_${nextToolUseId()}`, content: '',
+    },
+  });
+}
+
+/**
+ * Stamp a `uuid` on every JSON line of a fixture (a `toolUseLine` is two lines:
+ * each gets its own suffix). Real entries carry one, and Claude Code can append
+ * a second copy of old entries with the SAME uuids.
+ */
+function withUuid(lines, uuid) {
+  return lines.split('\n').map((l, k) => JSON.stringify({ ...JSON.parse(l), uuid: `${uuid}-${k}` })).join('\n');
+}
+
+/**
+ * A `Bash` call and its answer. The result content is a bare STRING, which is
+ * the shape measured for Bash results (the router's own tools answer with an
+ * array of text blocks). `output` is what the command printed. Real vault-edit
+ * calls are piped through `tail`, so `is_error` stays false even on a refusal.
+ */
+function bashLine(command, output, { isError = false } = {}) {
+  const id = nextToolUseId();
+  return useLine(id, 'Bash', { command, description: 'fixture' }) + '\n' + JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ tool_use_id: id, type: 'tool_result', content: output, is_error: isError }] },
+  });
+}
+
+/** A vault-edit command in the shape measured on real transcripts. */
+function vaultEditCommand(vault, relPath, { dryRun = false } = {}) {
+  return `cd "I:/repo" && node scripts/vault-edit.mjs --vault "${vault}" --path "${relPath}" `
+    + `--spec "C:/tmp/spec.json"${dryRun ? ' --dry-run' : ''} 2>&1 | tail -4`;
+}
+// The script's last lines on a write, copied from a real run (tail -2).
+const VE_WROTE = '3276 → 3519 caractères, précondition 163433d43598…\nécrit — casMode: atomic';
 
 const CTX = {
   vaultRoots: ['/vaults/A', '/vaults/B'],
@@ -918,14 +971,462 @@ describe('findStaleVaults', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Defect A — the run bound (a resumed session's transcript holds several runs)
+// ---------------------------------------------------------------------------
+
+describe('currentRunTranscript — only the current run is judged (defect A)', () => {
+  const W = 'mcp__obsidian-router__write_file';
+  const staleOfRun = (t) => findStaleVaults(currentRunTranscript(t), CTX).stale.map((s) => s.vaultKey);
+
+  test('A1: a vault written only in an EARLIER run is not claimed', () => {
+    const t = jsonl(
+      sessionStartLine('startup'),
+      toolUseLine(W, { path: 'wiki/old-note.md', vault: 'b' }), // run 1: note in B, never refreshed
+      sessionStartLine('resume'),
+      toolUseLine(W, { path: 'wiki/new-note.md', vault: 'a' }), // run 2: note in A, refreshed
+      toolUseLine(W, { path: 'wiki-meta/hot.md', vault: 'a' }),
+    );
+    // Control: the SAME fixture read whole still claims B, so the fixture can
+    // tell the two behaviours apart.
+    assert.deepEqual(findStaleVaults(t, CTX).stale.map((s) => s.vaultKey), ['/vaults/B']);
+    assert.deepEqual(staleOfRun(t), []);
+  });
+
+  test('A2: a vault written in the CURRENT run without a refresh is still claimed', () => {
+    const t = jsonl(
+      sessionStartLine('startup'),
+      toolUseLine(W, { path: 'wiki-meta/hot.md', vault: 'a' }), // run 1 refresh
+      sessionStartLine('resume'),
+      toolUseLine(W, { path: 'wiki/new-note.md', vault: 'a' }), // run 2 note, no refresh
+    );
+    assert.deepEqual(staleOfRun(t), ['/vaults/A']);
+  });
+
+  test('A3: no run-start marker → no bound (null), so nothing can be claimed', () => {
+    const t = jsonl(toolUseLine(W, { path: 'wiki/note.md', vault: 'a' }));
+    assert.equal(currentRunTranscript(t), null);
+    assert.equal(currentRunTranscript(''), null);
+    assert.equal(currentRunTranscript(undefined), null);
+  });
+
+  test('the LAST marker wins, when there are several', () => {
+    const t = jsonl(
+      sessionStartLine('startup'),
+      toolUseLine(W, { path: 'wiki/one.md', vault: 'a' }),
+      sessionStartLine('resume'),
+      toolUseLine(W, { path: 'wiki/two.md', vault: 'b' }),
+      sessionStartLine('resume'),
+      toolUseLine(W, { path: 'wiki/three.md', vault: 'a' }),
+    );
+    assert.deepEqual(staleOfRun(t), ['/vaults/A']);
+    assert.deepEqual([...findStaleVaults(currentRunTranscript(t), CTX).byVault.keys()], ['/vaults/A']);
+  });
+
+  test('a re-appended COPY of old history is not the current run (dedup by uuid)', () => {
+    // Measured on session 8602edea: 2200 entries re-appended with uuids already
+    // seen, the last marker among them. The real current run must be judged.
+    const startup = withUuid(sessionStartLine('startup'), 'u1');
+    const noteA = withUuid(toolUseLine(W, { path: 'wiki/a.md', vault: 'a' }), 'u2');
+    const hotA = withUuid(toolUseLine(W, { path: 'wiki-meta/hot.md', vault: 'a' }), 'u3');
+    const resume = withUuid(sessionStartLine('resume'), 'u4');
+    const noteB = withUuid(toolUseLine(W, { path: 'wiki/b.md', vault: 'b' }), 'u5');
+    const t = jsonl(startup, noteA, hotA, resume, noteB, startup, noteA); // last two: copies
+    assert.deepEqual(staleOfRun(t), ['/vaults/B']);
+  });
+
+  test('a marker whose colon is JSON-escaped is still a marker (the value is judged, not the text)', () => {
+    const escaped = sessionStartLine('resume').replace('SessionStart:resume', 'SessionStart' + '\\' + 'u003aresume');
+    assert.ok(!escaped.includes('SessionStart:'), 'the fixture really is escaped');
+    assert.equal(JSON.parse(escaped).attachment.hookName, 'SessionStart:resume');
+    const t = jsonl(sessionStartLine('startup'), toolUseLine(W, { path: 'wiki/old.md', vault: 'b' }), escaped);
+    assert.deepEqual(staleOfRun(t), []);
+  });
+
+  test('a marker whose NAME is fully JSON-escaped is still a marker (no text pre-filter)', () => {
+    const escaped = sessionStartLine('resume').replace(/SessionStart/g, '\\' + 'u0053essionStart');
+    assert.ok(!escaped.includes('SessionStart'), 'the fixture really is escaped');
+    assert.equal(JSON.parse(escaped).attachment.hookName, 'SessionStart:resume');
+    const t = jsonl(sessionStartLine('startup'), toolUseLine(W, { path: 'wiki/old.md', vault: 'b' }), escaped);
+    assert.deepEqual(staleOfRun(t), []);
+  });
+
+  test('a COMPACTION is not a run boundary: a note written just before it is still owed', () => {
+    const t = jsonl(
+      sessionStartLine('startup'),
+      toolUseLine(W, { path: 'wiki/before-compact.md', vault: 'a' }),
+      sessionStartLine('compact'),
+    );
+    assert.deepEqual(staleOfRun(t), ['/vaults/A']);
+  });
+
+  test('an ASYNC SessionStart response is not a run boundary (it can arrive after the first writes)', () => {
+    const t = jsonl(
+      sessionStartLine('startup'),
+      toolUseLine(W, { path: 'wiki/early.md', vault: 'a' }),
+      sessionStartLine('startup', { type: 'async_hook_response' }),
+    );
+    assert.deepEqual(staleOfRun(t), ['/vaults/A']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defect B — scripts/vault-edit.mjs, run through Bash
+// ---------------------------------------------------------------------------
+
+describe('vault-edit.mjs through Bash is a write (defect B)', () => {
+  const W = 'mcp__obsidian-router__write_file';
+  const kinds = (line) => extractWriteToolUses(line).flatMap((tu) => classifyToolUse(tu, CTX).map((c) => [c.vaultKey, c.kind]));
+
+  test('parses the measured command shape: cd && node … | tail', () => {
+    assert.deepEqual(parseVaultEditInvocations(vaultEditCommand('kiviri stack', 'wiki-meta/hot.md')),
+      [{ vault: 'kiviri stack', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('B1: a hot.md refresh through vault-edit is classified hot, and clears the vault', () => {
+    const refresh = bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), VE_WROTE);
+    assert.deepEqual(kinds(refresh), [['/vaults/A', 'hot']]);
+    const t = jsonl(toolUseLine(W, { path: 'wiki/note.md', vault: 'a' }), refresh);
+    assert.deepEqual(findStaleVaults(t, CTX).stale, []);
+  });
+
+  test('B2: a wiki/ note written through vault-edit is classified content, and makes the vault stale', () => {
+    const note = bashLine(vaultEditCommand('a', 'wiki/x/note.md'), VE_WROTE);
+    assert.deepEqual(kinds(note), [['/vaults/A', 'content']]);
+    assert.deepEqual(findStaleVaults(jsonl(note), CTX).stale.map((s) => s.vaultKey), ['/vaults/A']);
+  });
+
+  test('B3: a --dry-run is classified other, even when its output claims a write', () => {
+    // The output is deliberately the SUCCESS output. The dry-run rule has to
+    // decide on its own, not lean on the output check.
+    const dry = bashLine(vaultEditCommand('a', 'wiki/x/note.md', { dryRun: true }), VE_WROTE);
+    assert.deepEqual(kinds(dry), [['/vaults/A', 'other']]);
+    assert.deepEqual(findStaleVaults(jsonl(dry), CTX).stale, []);
+    const t = jsonl(toolUseLine(W, { path: 'wiki/note.md', vault: 'a' }),
+      bashLine(vaultEditCommand('a', 'wiki-meta/hot.md', { dryRun: true }), VE_WROTE));
+    assert.deepEqual(findStaleVaults(t, CTX).stale.map((s) => s.vaultKey), ['/vaults/A']);
+  });
+
+  test('a REFUSAL piped through tail (is_error false) is not a write', () => {
+    // Measured: `refused: edits[3].to must be a single line` came back with
+    // is_error false, because the exit status the transcript records is tail's.
+    const t = jsonl(toolUseLine(W, { path: 'wiki/note.md', vault: 'a' }),
+      bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), 'refused: edits[3].to must be a single line'));
+    assert.deepEqual(findStaleVaults(t, CTX).stale.map((s) => s.vaultKey), ['/vaults/A']);
+    // Nor is a dry-run's own output. ("no change" is not a write either: see
+    // its own test.)
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), '--dry-run : rien écrit')), []);
+  });
+
+  test('is_error set by a LATER command does not undo a write the script reported', () => {
+    // Claude Code marks the whole Bash call as an error when any command of
+    // it exits non-zero: here a `grep -c` finding nothing after the write.
+    const cmd = `${vaultEditCommand('a', 'wiki-meta/hot.md')}; grep -c needle x.md`;
+    assert.deepEqual(kinds(bashLine(cmd, `Exit code 1\n${VE_WROTE}\n0`, { isError: true })), [['/vaults/A', 'hot']]);
+  });
+
+  test('a call that failed and printed no success lines is not a write', () => {
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki/n.md'), 'Exit code 1\nTypeError: fetch failed', { isError: true })), []);
+  });
+
+  test('"no change" is NOT a write: re-running an unchanged spec after a block is the slip the guard catches', () => {
+    const out = 'no change: wiki-meta/hot.md already has this content — nothing written';
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), []);
+  });
+
+  test('a commit message heredoc with an apostrophe inside "$( )" does not hide the call next to it', () => {
+    const cmd = `${vaultEditCommand('a', 'wiki/n.md')}; git commit -m "$(cat <<'EOF'\nFix the user's note.\nEOF\n)"`;
+    assert.deepEqual(parseVaultEditInvocations(cmd), [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a stray unquoted backtick is a character, not a reason to drop the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo a`b; node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a stray backtick inside double quotes is a character, not a reason to drop the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo "a`b"; node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a "$( )" that closes but whose content does not parse stays text, and the call next to it survives', () => {
+    // `$'x\'` is an ANSI-C string left open: closeParen finds the `)`, the
+    // content does not parse. The other fallback arm (cannot close) is the
+    // commit-heredoc test.
+    assert.deepEqual(parseVaultEditInvocations('echo "$(echo $\'x\\\')"; node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('an escaped `)` inside "$( )" does not close the substitution early', () => {
+    assert.deepEqual(parseVaultEditInvocations('out="$(echo \\) ; node scripts/vault-edit.mjs --vault a --path wiki/n.md)"'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('the script path read by ANOTHER program is not an invocation', () => {
+    for (const cmd of ['sed -n \'1,60p\' scripts/vault-edit.mjs', 'ls scripts/vault-edit.mjs && cat scripts/vault-edit.mjs']) {
+      assert.deepEqual(parseVaultEditInvocations(cmd), [], cmd);
+    }
+  });
+
+  test('a COMMENTED-OUT invocation is not an invocation', () => {
+    assert.deepEqual(parseVaultEditInvocations('true # node scripts/vault-edit.mjs --vault a --path wiki/n.md'), []);
+    assert.deepEqual(parseVaultEditInvocations('# node scripts/vault-edit.mjs --vault a --path wiki/n.md'), []);
+  });
+
+  test('an apostrophe inside a COMMENT does not hide the real call after it', () => {
+    // Without comment handling, `l'édition` opens a quote that never closes and
+    // the whole command is not understood. Since the command-word rule, this
+    // is the case that depends on the comment rule alone.
+    assert.deepEqual(parseVaultEditInvocations('# on refait l\'édition du hot\nnode scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md'),
+      [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a QUOTED string is one word, so a call spelled inside it is not a call', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo "node scripts/vault-edit.mjs --vault a --path wiki/n.md"'), []);
+  });
+
+  test('an unbalanced quote is not understood, so nothing is counted', () => {
+    assert.deepEqual(parseVaultEditInvocations('node scripts/vault-edit.mjs --vault "a --path wiki/n.md'), []);
+  });
+
+  test('two invocations in ONE Bash call count as nothing, even when both wrote', () => {
+    // Neither the output nor the command text can say which ran first
+    // (`a & b`, `(sleep 2; a) & b`), so none is credited.
+    const cmd = `${vaultEditCommand('a', 'wiki/n.md')}; ${vaultEditCommand('a', 'wiki-meta/hot.md')}`;
+    assert.equal(parseVaultEditInvocations(cmd).length, 2);
+    assert.deepEqual(extractWriteToolUses(bashLine(cmd, `${VE_WROTE}\n${VE_WROTE}`)), []);
+  });
+
+  test('two invocations with ONE write printed: the write cannot be attributed → nothing counts', () => {
+    const cmd = `${vaultEditCommand('a', 'wiki/n.md')}; ${vaultEditCommand('a', 'wiki-meta/hot.md')}`;
+    const out = `${VE_WROTE}\nno change: wiki-meta/hot.md already has this content — nothing written`;
+    assert.deepEqual(extractWriteToolUses(bashLine(cmd, out)), []);
+  });
+
+  test('a for-loop over `$p`: the path is not expanded, so no note is claimed (a miss, not an invention)', () => {
+    const cmd = 'for p in wiki/a.md wiki/b.md; do node scripts/vault-edit.mjs --vault a --path "$p" --spec s.json; done';
+    assert.deepEqual(parseVaultEditInvocations(cmd), [{ vault: 'a', path: '$p', dryRun: false }]);
+    assert.deepEqual(findStaleVaults(jsonl(bashLine(cmd, `${VE_WROTE}\n${VE_WROTE}`)), CTX).stale, []);
+  });
+
+  test('success evidence is the script\'s two-line PAIR: an echoed success line alone is not a second write', () => {
+    // A real write echoes the replaced spans. When the new text holds a line
+    // that starts like the success line, the old one-line rule counted 2 for
+    // 1 call and dropped a real write.
+    const echoed = '  edits[0]\n    -  avant\n    +  exemple :\nécrit — casMode: atomic\n' + VE_WROTE;
+    assert.deepEqual(kinds(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), echoed)), [['/vaults/A', 'hot']]);
+  });
+
+  test('a REFUSAL that quotes the success line (its missing anchor) is not a write', () => {
+    const forged = 'refused: edits[0]: "\nécrit — casMode: atomic\n" matched 0 times, expected exactly 1';
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), forged)), []);
+  });
+
+  test('a failure AFTER the real size line (409) is not a write, even when an echo spelled the pair before it', () => {
+    const out = `  edits[0]\n    -  avant\n    +  x\n${VE_WROTE}\n1 → 2 caractères, précondition 0123456789ab…\n`
+      + 'refusé (409) : wiki-meta/hot.md a changé depuis la lecture. Rien n\'a été écrit.';
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), []);
+  });
+
+  test('a failure with NO refusal line after the real size line is not a write (network error)', () => {
+    const out = `  edits[0]\n    +  x\n${VE_WROTE}\n1 → 2 caractères, précondition 0123456789ab…\nTypeError: fetch failed`;
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), []);
+  });
+
+  test('an echoed `refused:` line does not veto a REAL write', () => {
+    const out = `  edits[0]\n    -  avant\n    +  x\nrefused: exemple documenté\n${VE_WROTE}`;
+    assert.deepEqual(kinds(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), [['/vaults/A', 'hot']]);
+  });
+
+  test('output printed AFTER the success line (verification commands) does not matter', () => {
+    // 20 of the 31 real writes measured are followed by such output.
+    const cmd = `${vaultEditCommand('a', 'wiki-meta/hot.md')}; echo "mots : $(wc -w < x)"`;
+    assert.deepEqual(kinds(bashLine(cmd, `${VE_WROTE}\nmots apres : 499 / 500`)), [['/vaults/A', 'hot']]);
+  });
+
+  test('the size line must carry a 12-hex precondition', () => {
+    const out = '3276 → 3519 caractères, précondition XYZ…\nécrit — casMode: atomic';
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), []);
+  });
+
+  test('CRLF output is read like LF output', () => {
+    assert.deepEqual(kinds(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), VE_WROTE.replace(/\n/g, '\r\n') + '\r\n')),
+      [['/vaults/A', 'hot']]);
+  });
+
+  test('a second MENTION of the script credits nothing, even when it is not a recognised call', () => {
+    // The `timeout` call is not recognised, writes, and prints the pair; the
+    // recognised call fails. Its output must not be credited to the hot refresh.
+    const cmd = 'timeout 60 node scripts/vault-edit.mjs --vault a --path wiki/n.md --spec n.json; '
+      + 'node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec typo.json';
+    assert.equal(parseVaultEditInvocations(cmd).length, 1);
+    assert.deepEqual(extractWriteToolUses(bashLine(cmd, `${VE_WROTE}\ncannot read spec typo.json: ENOENT`)), []);
+  });
+
+  test('OBSIDIAN_ROUTER_CONFIG in the command: another registry, so the vault is not attributed', () => {
+    const cmd = 'OBSIDIAN_ROUTER_CONFIG=/tmp/other.json node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json';
+    assert.deepEqual(parseVaultEditInvocations(cmd), [{ vault: undefined, path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a call behind `if` / `while` is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('if node scripts/vault-edit.mjs --vault a --path wiki/n.md --spec s.json; then echo ok; fi'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a call behind `while` is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('while node scripts/vault-edit.mjs --vault a --path wiki/n.md --spec s.json; do sleep 1; done'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a call behind `until` is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('until node scripts/vault-edit.mjs --vault a --path wiki/n.md --spec s.json; do sleep 1; done'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a call inside `$( )` within DOUBLE quotes runs, so it is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('out="$(node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json)"; printf \'%s\\n\' "$out"'),
+      [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a call inside an unquoted `$( )` is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo $(node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json)'),
+      [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a call inside BACKTICKS within double quotes is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('out="`node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json`"'),
+      [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a call inside BACKTICKS is recognised', () => {
+    assert.deepEqual(parseVaultEditInvocations('out=`node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json`'),
+      [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+  });
+
+  test('a bare arithmetic command `(( … ))` with a shift is not a heredoc', () => {
+    assert.deepEqual(parseVaultEditInvocations('(( x = 1<<3 ))\nnode scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a heredoc feeding the call itself, with no closing delimiter, keeps the call', () => {
+    // bash runs the body to the end of the input; the call is on the line
+    // that opens the heredoc, so it runs.
+    assert.deepEqual(parseVaultEditInvocations('node scripts/vault-edit.mjs --vault a --path wiki/n.md --spec /dev/stdin <<EOF\n{"edits":[]}'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a shift inside `$(( ))` is not a heredoc', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo $((1<<3))\nnode scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('ANSI-C quoting `$\'…\'` with an escaped quote does not leave a quote open', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo $\'it\\\'s\'; node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a heredoc whose delimiter never comes runs to the end of the input, as in bash', () => {
+    assert.deepEqual(parseVaultEditInvocations('cat <<EOF\nnode scripts/vault-edit.mjs --vault a --path wiki/n.md'), []);
+  });
+
+  test('the success line must FOLLOW the size line directly, not appear later in the output', () => {
+    // A failure right after the real size line, then a success line printed by
+    // a later command (a log read back, a grep): not a write.
+    const out = '1 → 2 caractères, précondition 0123456789ab…\nError: boom\nécrit — casMode: atomic';
+    assert.deepEqual(extractWriteToolUses(bashLine(vaultEditCommand('a', 'wiki-meta/hot.md'), out)), []);
+  });
+
+  test('a heredoc delimiter line ending in CR is still the delimiter', () => {
+    assert.deepEqual(parseVaultEditInvocations('cat <<EOF\r\nx\r\nEOF\r\nnode scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('`<<<` is a here-string, not a heredoc', () => {
+    assert.deepEqual(parseVaultEditInvocations('cat <<< hello; node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('a file-descriptor redirection before node (`2>/dev/null node …`) keeps node as the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('2>/dev/null node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('node -p alone (short print flag) is not an invocation', () => {
+    assert.deepEqual(parseVaultEditInvocations('node -p \'//scripts/vault-edit.mjs\' --vault a --path wiki-meta/hot.md'), []);
+  });
+
+  test('a HEREDOC body is data: a call spelled inside it is not a call', () => {
+    const body = 'cat > /tmp/x.md <<\'EOF\'\nnode scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json\nEOF';
+    assert.deepEqual(parseVaultEditInvocations(body), []);
+  });
+
+  test('a heredoc with an apostrophe in its body does not hide the real call after it', () => {
+    const cmd = 'cat > /tmp/hot.md <<\'EOF\'\n# Hot\nL\'audit est fait.\nEOF\n'
+      + 'node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md --spec s.json 2>&1 | tail -3';
+    assert.deepEqual(parseVaultEditInvocations(cmd), [{ vault: 'a', path: 'wiki-meta/hot.md', dryRun: false }]);
+    const tabbed = 'cat <<-END\n\tnode scripts/vault-edit.mjs --vault a --path wiki/n.md\n\tEND\nnode scripts/vault-edit.mjs --vault a --path wiki/m.md';
+    assert.deepEqual(parseVaultEditInvocations(tabbed), [{ vault: 'a', path: 'wiki/m.md', dryRun: false }]);
+  });
+
+  test('node must be the COMMAND: an argument spelled `node` is not an invocation', () => {
+    assert.deepEqual(parseVaultEditInvocations('printf \'%s\\n\' node scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md'), []);
+  });
+
+  test('node -e / -p runs source TEXT: a script path in it is not an invocation', () => {
+    for (const cmd of [
+      'node -e \'//scripts/vault-edit.mjs\' -- --vault a --path wiki-meta/hot.md',
+      'node --input-type=module -e x scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md',
+      'node -p 1 scripts/vault-edit.mjs --vault a --path wiki-meta/hot.md',
+    ]) {
+      assert.deepEqual(parseVaultEditInvocations(cmd), [], cmd);
+    }
+  });
+
+  test('node options are skipped, including those that take a value, and VAR= prefixes', () => {
+    const want = [{ vault: 'a', path: 'wiki/n.md', dryRun: false }];
+    assert.deepEqual(parseVaultEditInvocations('node --require ./noop.cjs scripts/vault-edit.mjs --vault a --path wiki/n.md'), want);
+    assert.deepEqual(parseVaultEditInvocations('FOO=1 node --no-warnings scripts/vault-edit.mjs --vault a --path wiki/n.md'), want);
+    assert.deepEqual(parseVaultEditInvocations('node --disable-warning ExperimentalWarning scripts/vault-edit.mjs --vault a --path wiki/n.md'), want);
+  });
+
+  test('`>|` is a clobber redirection, not a pipe: its target cannot start a phantom call', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo x >| node scripts/vault-edit.mjs --vault a --path wiki/n.md'), []);
+  });
+
+  test('a redirection TARGET is not a word: a leading `> file` keeps node as the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('> /tmp/o.txt node scripts/vault-edit.mjs --vault a --path wiki/n.md'),
+      [{ vault: 'a', path: 'wiki/n.md', dryRun: false }]);
+  });
+
+  test('--config: another registry names the vault, so the target is skipped, not attributed', () => {
+    const cmd = 'node scripts/vault-edit.mjs --config other.json --vault a --path wiki/n.md --spec s.json';
+    assert.deepEqual(parseVaultEditInvocations(cmd), [{ vault: undefined, path: 'wiki/n.md', dryRun: false }]);
+    assert.deepEqual(findStaleVaults(jsonl(bashLine(cmd, VE_WROTE)), CTX).stale, []);
+  });
+
+  test('a `;` inside DOUBLE quotes does not split the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo "a; node scripts/vault-edit.mjs --vault a --path wiki/n.md"'), []);
+  });
+
+  test('a `;` inside SINGLE quotes does not split the command', () => {
+    assert.deepEqual(parseVaultEditInvocations('echo \'a; node scripts/vault-edit.mjs --vault a --path wiki/n.md\''), []);
+  });
+
+  test('an unknown vault is skipped, never claimed (fail-open, as for MCP)', () => {
+    assert.deepEqual(findStaleVaults(jsonl(bashLine(vaultEditCommand('nope', 'wiki/n.md'), VE_WROTE)), CTX).stale, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Hook end-to-end (subprocess)
 // ---------------------------------------------------------------------------
 
 describe('hot-cache-update-prompt hook (subprocess)', () => {
-  let workDir, vaultPath, configPath, transcriptPath, projectDir;
+  let workDir, vaultPath, configPath, transcriptPath, projectDir, homeDir;
 
   before(() => {
     workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hot-guard-'));
+    homeDir = path.join(workDir, 'home');
+    fs.mkdirSync(homeDir, { recursive: true });
     vaultPath = path.join(workDir, 'fake-vault');
     fs.mkdirSync(path.join(vaultPath, 'wiki'), { recursive: true });
     fs.mkdirSync(path.join(vaultPath, 'wiki-meta'), { recursive: true });
@@ -941,17 +1442,18 @@ describe('hot-cache-update-prompt hook (subprocess)', () => {
 
   after(() => fs.rmSync(workDir, { recursive: true, force: true }));
 
-  function run(transcriptLines, { stopHookActive = false, env = {} } = {}) {
-    fs.writeFileSync(transcriptPath, transcriptLines.join('\n') + '\n');
+  // A real transcript starts with the run-start marker (the router installs its
+  // own SessionStart hook), so the fixtures do too by default. Without one, the
+  // guard cannot bound the run and fails open, which `{ marker: false }` tests.
+  // The child gets a throwaway home, as every test child must.
+  function run(transcriptLines, { stopHookActive = false, env = {}, marker = true } = {}) {
+    const lines = marker ? [sessionStartLine('startup'), ...transcriptLines] : transcriptLines;
+    fs.writeFileSync(transcriptPath, lines.join('\n') + '\n');
     const stdin = JSON.stringify({ hook_event_name: 'Stop', transcript_path: transcriptPath, stop_hook_active: stopHookActive });
-    const cleanEnv = { ...process.env };
-    delete cleanEnv.OBSIDIAN_ROUTER_DEFAULT_VAULT;
-    delete cleanEnv.OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD;
-    return spawnSync(process.execPath, [HOOK_PATH], {
-      input: stdin,
-      encoding: 'utf8',
-      env: { ...cleanEnv, OBSIDIAN_ROUTER_CONFIG: configPath, CLAUDE_PROJECT_DIR: projectDir, ...env },
-    });
+    const childEnv = homeSafeEnv(homeDir, { OBSIDIAN_ROUTER_CONFIG: configPath, CLAUDE_PROJECT_DIR: projectDir, ...env });
+    delete childEnv.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    if (!('OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD' in env)) delete childEnv.OBSIDIAN_ROUTER_NO_HOT_CACHE_GUARD;
+    return spawnSync(process.execPath, [HOOK_PATH], { input: stdin, encoding: 'utf8', env: childEnv });
   }
 
   test('blocks (exit 2) when wiki/ note written but hot.md not refreshed', () => {
@@ -1015,15 +1517,176 @@ describe('hot-cache-update-prompt hook (subprocess)', () => {
     assert.equal(r.status, 0, r.stderr);
   });
 
+  const NOTE = (p = 'wiki/note.md') => toolUseLine('mcp__obsidian-router__write_file', { path: p, vault: 'fake-vault' });
+  const HOT = () => toolUseLine('mcp__obsidian-router__write_file', { path: 'wiki-meta/hot.md', vault: 'fake-vault' });
+
+  test('A1: a note written only before the RESUME does not block', () => {
+    // Control first: without the resume marker, the same note blocks.
+    assert.equal(run([NOTE()]).status, 2);
+    const r = run([NOTE(), sessionStartLine('resume')]);
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('A2: a note written after the resume, not refreshed, still blocks', () => {
+    const r = run([HOT(), sessionStartLine('resume'), NOTE()]);
+    assert.equal(r.status, 2, r.stderr);
+    assert.match(r.stderr, /fake-vault/);
+  });
+
+  test('A3: no run-start marker at all → exit 0, even with an unrefreshed note', () => {
+    const r = run([NOTE()], { marker: false });
+    assert.equal(r.status, 0, r.stderr);
+  });
+
+  test('A3 is not SILENT: without a marker, a vault it would have claimed is named (systemMessage)', () => {
+    // 20 of 403 measured sessions ran this guard without a marker; failing open
+    // there must be visible, or the guard is switched off unnoticed.
+    const r = run([NOTE()], { marker: false });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(JSON.parse(r.stdout.trim()).systemMessage, /fake-vault/);
+  });
+
+  test('A3 without a marker stays QUIET when nothing would have been claimed', () => {
+    const quiet = run([NOTE(), HOT()], { marker: false });
+    assert.equal(quiet.status, 0, quiet.stderr);
+    assert.equal(quiet.stdout, '');
+  });
+
+  test('B: a hot refresh through vault-edit clears; a note through it blocks; a dry-run does neither', () => {
+    const cmd = (p, o) => vaultEditCommand('fake-vault', p, o);
+    assert.equal(run([NOTE(), bashLine(cmd('wiki-meta/hot.md'), VE_WROTE)]).status, 0);
+    const blocked = run([bashLine(cmd('wiki/n.md'), VE_WROTE)]);
+    assert.equal(blocked.status, 2, blocked.stderr);
+    assert.match(blocked.stderr, /fake-vault/);
+    assert.equal(run([bashLine(cmd('wiki/n.md', { dryRun: true }), VE_WROTE)]).status, 0);
+  });
+
+  test('C1: the size check still blocks on an oversized hot.md of a vault touched in this run, only this run', () => {
+    const hotPath = path.join(vaultPath, 'wiki-meta', 'hot.md');
+    fs.writeFileSync(hotPath, `# Hot\n\n${'mot '.repeat(20000)}\n`);
+    try {
+      const r = run([NOTE(), HOT()]); // fresh, but oversized
+      assert.equal(r.status, 2, r.stderr);
+      assert.match(r.stderr, /HORS LIMITE/);
+      assert.doesNotMatch(r.stderr, /Tu as écrit des notes/);
+      // The same vault touched only in an earlier run is not this run's debt.
+      const old = run([NOTE(), HOT(), sessionStartLine('resume')]);
+      assert.equal(old.status, 0, old.stderr);
+    } finally {
+      fs.rmSync(hotPath, { force: true });
+    }
+  });
+
   test('no transcript path → exit 0 (fail-open)', () => {
     const stdin = JSON.stringify({ hook_event_name: 'Stop' });
-    const cleanEnv = { ...process.env };
-    delete cleanEnv.OBSIDIAN_ROUTER_DEFAULT_VAULT;
-    const r = spawnSync(process.execPath, [HOOK_PATH], {
-      input: stdin,
-      encoding: 'utf8',
-      env: { ...cleanEnv, OBSIDIAN_ROUTER_CONFIG: configPath, CLAUDE_PROJECT_DIR: projectDir },
-    });
+    const childEnv = homeSafeEnv(homeDir, { OBSIDIAN_ROUTER_CONFIG: configPath, CLAUDE_PROJECT_DIR: projectDir });
+    delete childEnv.OBSIDIAN_ROUTER_DEFAULT_VAULT;
+    const r = spawnSync(process.execPath, [HOOK_PATH], { input: stdin, encoding: 'utf8', env: childEnv });
     assert.equal(r.status, 0, r.stderr);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defect B against the REAL script — its real output, not a copy of it
+// ---------------------------------------------------------------------------
+
+/**
+ * The guard decides a vault-edit call wrote by reading the script's own success
+ * line. A fixture that copies that line proves only the copy. Here the real
+ * `scripts/vault-edit.mjs` runs against a stand-in vault (an old bridge: no
+ * `/vault-cas/` route, so the write takes the GET-compare fallback), and what it
+ * printed, cut the way `2>&1 | tail -4` cuts it, becomes the tool result.
+ */
+describe('vault-edit.mjs, real run → the guard reads its real output', () => {
+  const REPO = path.resolve(__dirname, '..');
+  const SCRIPT = path.join(REPO, 'scripts', 'vault-edit.mjs');
+  const NOTE_PATH = 'wiki/x/note.md';
+  let dir, server, store, configPath, homeDir;
+
+  before(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hot-guard-ve-'));
+    homeDir = path.join(dir, 'home');
+    fs.mkdirSync(homeDir);
+    store = new Map([[NOTE_PATH, 'avant\n'], ['wiki-meta/hot.md', '# Hot\n\navant\n']]);
+    server = http.createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const url = decodeURIComponent(req.url);
+        if (url === '/') { res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"status":"OK"}'); return; }
+        if (!url.startsWith('/vault/')) { res.writeHead(404).end('not found'); return; }
+        const rel = url.slice('/vault/'.length);
+        if (req.method === 'PUT') { store.set(rel, body); res.writeHead(204).end(); return; }
+        if (!store.has(rel)) { res.writeHead(404).end('not found'); return; }
+        res.writeHead(200, { 'Content-Type': 'text/markdown' }).end(store.get(rel));
+      });
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    configPath = path.join(dir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      portRegistry: {},
+      remoteVaults: [{ name: 'fake', baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: 'k', timeoutMs: 5000 }],
+    }));
+  });
+
+  after(async () => {
+    await new Promise((r) => server.close(r));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Run the real script; return the command as a transcript would show it, and `2>&1 | tail -4`. */
+  function vaultEdit(relPath, edits, { dryRun = false } = {}) {
+    const spec = path.join(dir, `spec-${nextToolUseId()}.json`);
+    fs.writeFileSync(spec, JSON.stringify({ edits }));
+    const args = ['--vault', 'fake', '--path', relPath, '--spec', spec, ...(dryRun ? ['--dry-run'] : [])];
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, [SCRIPT, ...args], {
+        cwd: REPO, env: homeSafeEnv(homeDir, { OBSIDIAN_ROUTER_CONFIG: configPath }),
+      });
+      let both = '';
+      child.stdout.on('data', (c) => { both += c; });
+      child.stderr.on('data', (c) => { both += c; });
+      child.on('close', (code) => resolve({
+        code,
+        command: `node scripts/vault-edit.mjs ${args.map((a) => JSON.stringify(a)).join(' ')} 2>&1 | tail -4`,
+        output: both.trimEnd().split('\n').slice(-4).join('\n'),
+      }));
+    });
+  }
+
+  const ctx = { vaultRoots: ['/vaults/F'], slugToRoot: (s) => (s === 'fake' ? '/vaults/F' : null), defaultRoot: null, isWin: false };
+  const staleOf = (...lines) => findStaleVaults(jsonl(...lines), ctx).stale.map((s) => s.vaultKey);
+
+  test('a real note write counts as content; a real hot write then clears the vault', async () => {
+    const note = await vaultEdit(NOTE_PATH, [{ kind: 'unique', from: 'avant', to: 'note-v1' }]);
+    assert.equal(note.code, 0, note.output);
+    assert.equal(store.get(NOTE_PATH), 'note-v1\n'); // it really wrote
+    const noteLine = bashLine(note.command, note.output);
+    assert.deepEqual(staleOf(noteLine), ['/vaults/F']);
+
+    const hot = await vaultEdit('wiki-meta/hot.md', [{ kind: 'unique', from: 'avant', to: 'hot-v1' }]);
+    assert.equal(hot.code, 0, hot.output);
+    assert.deepEqual(staleOf(noteLine, bashLine(hot.command, hot.output)), []);
+  });
+
+  test('a real --dry-run and a real refusal write nothing, and neither clears the vault', async () => {
+    const note = await vaultEdit(NOTE_PATH, [{ kind: 'unique', from: 'note-v1', to: 'note-v2' }]);
+    assert.equal(note.code, 0, note.output);
+    const noteLine = bashLine(note.command, note.output);
+    // Control: the note alone makes the vault stale. Without it, "still stale"
+    // below could not be told apart from "the note was never counted".
+    assert.deepEqual(staleOf(noteLine), ['/vaults/F']);
+
+    const before = store.get('wiki-meta/hot.md');
+    const dry = await vaultEdit('wiki-meta/hot.md', [{ kind: 'unique', from: 'hot-v1', to: 'hot-v2' }], { dryRun: true });
+    assert.equal(dry.code, 0, dry.output);
+    const refused = await vaultEdit('wiki-meta/hot.md', [{ kind: 'unique', from: 'absent-anchor', to: 'x' }]);
+    assert.equal(refused.code, 1, refused.output);
+    assert.equal(store.get('wiki-meta/hot.md'), before); // nothing was written
+
+    // Piped through tail, both come back with is_error false, as measured.
+    assert.deepEqual(staleOf(noteLine, bashLine(dry.command, dry.output)), ['/vaults/F']);
+    assert.deepEqual(staleOf(noteLine, bashLine(refused.command, refused.output)), ['/vaults/F']);
   });
 });

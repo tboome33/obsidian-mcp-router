@@ -23,8 +23,27 @@
  *     session or a manual Obsidian edit — neither of which THIS Claude can
  *     fix — producing false blocks. Roland runs concurrent sessions on the
  *     same vaults, so this matters. Scanning the transcript counts only what
- *     this session actually wrote.
+ *     this session wrote.
  *   - no git dependency → also works in non-git vaults.
+ *
+ * ONLY THE CURRENT RUN. This header once said the scan counted "only what this
+ * session actually wrote". That was false for a resumed session. A resume
+ * appends to the same transcript, so the file holds every run of the session,
+ * days apart. The guard then demanded, on 2026-09-23, a hot refresh for notes
+ * written on the 21st. The transcript is now cut at the last run-start marker
+ * (`currentRunTranscript`). When there is no marker, the run cannot be bounded
+ * and the guard lets the turn end rather than block on a window it cannot
+ * justify. When the whole transcript shows a vault it would have claimed, it
+ * says so on stdout (`systemMessage`), because a missing marker would
+ * otherwise switch the guard off unnoticed.
+ *
+ * Known residual of the bound: a run cut off before its Stop hook ran (killed,
+ * interrupted) and then resumed is forgiven its notes. By design: the bound
+ * cannot tell an interrupted run from a finished one.
+ *
+ * Writes made through `scripts/vault-edit.mjs` in a `Bash` call (the route
+ * AGENTS.md prescribes for shared vaults) count, both as notes and as hot
+ * refreshes. The same script run from the PowerShell tool is NOT seen.
  *
  * Trigger = a write to `wiki/<...>` (a NOTE). Pure scaffold edits
  * (`wiki-meta/catalog.md`, `journal.md`, `overview.md`) do NOT trigger — they are
@@ -58,7 +77,7 @@ import {
   detectVaultContext,
 } from './_helpers/workspace-vault.mjs';
 import { registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
-import { findStaleVaults } from '../src/helpers/hot-staleness.mjs';
+import { findStaleVaults, currentRunTranscript } from '../src/helpers/hot-staleness.mjs';
 import { hotStatus, tokensToWords } from '../src/helpers/hot-size.mjs';
 
 const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
@@ -105,6 +124,11 @@ try {
   process.exit(0);
 }
 
+// Only the current run is judged, for BOTH checks below. A vault touched only
+// in an earlier run of a resumed session is not this run's debt. `null` = no
+// run-start marker, so no bound: handled once the vault context is built.
+const runJsonl = currentRunTranscript(jsonl);
+
 // ---- Build the vault-resolution context from the router config --------
 const isWin = process.platform === 'win32';
 const cfg = readRouterConfig(); // null on any error — handled below
@@ -124,6 +148,47 @@ try {
   /* fail-open */
 }
 
+const ctx = {
+  vaultRoots,
+  slugToRoot: (slug) => {
+    try {
+      return resolveVaultBySlug(cfg, slug);
+    } catch {
+      return null;
+    }
+  },
+  defaultRoot,
+  isWin,
+};
+
+// ---- No marker: do not block, and say so when it matters ---------------
+// The marker is written by Claude Code for ANY SessionStart hook that runs;
+// this guard is installed separately from those, so it can run without one.
+// MEASURED: 20 of 403 local sessions ran the guard with no marker. Failing
+// open there in silence would switch the guard off unnoticed, so it SAYS so —
+// but only when the whole transcript shows a vault it would have claimed, not
+// on every turn. `systemMessage` on stdout is Claude Code's documented way for
+// a Stop hook to show a line without blocking (documented, not observed live);
+// stderr carries the same text.
+if (runJsonl === null) {
+  try {
+    const whole = findStaleVaults(jsonl, ctx);
+    if (whole && whole.stale && whole.stale.length > 0) {
+      const names = whole.stale.map((s) => path.basename(s.vaultRoot)).join(', ');
+      const notice =
+        `[obsidian-mcp-router/hot-cache-guard] non vérifié : ${names} semble(nt) à rafraîchir (hot.md), ` +
+        'mais aucun marqueur SessionStart ne borne le run courant, donc la garde ne bloque pas. ' +
+        `EN — not checked: ${names} look(s) stale (hot.md), but no SessionStart marker bounds the ` +
+        'current run, so the guard does not block. Any SessionStart hook writes the marker.';
+      process.stdout.write(JSON.stringify({ systemMessage: notice }) + '\n');
+      process.stderr.write(notice + '\n');
+    }
+  } catch {
+    /* never throw from the notice */
+  }
+  process.exit(0);
+}
+
 // ---- Decide ------------------------------------------------------------
 // Two independent violations, both scoped to vaults THIS session touched:
 //   - STALE: wiki/ note written, hot.md not refreshed afterwards (v0.25.0).
@@ -137,18 +202,7 @@ try {
 let stale = [];
 const oversized = [];
 try {
-  const result = findStaleVaults(jsonl, {
-    vaultRoots,
-    slugToRoot: (slug) => {
-      try {
-        return resolveVaultBySlug(cfg, slug);
-      } catch {
-        return null;
-      }
-    },
-    defaultRoot,
-    isWin,
-  });
+  const result = findStaleVaults(runJsonl, ctx);
   stale = (result && result.stale) || [];
 
   const touched = result && result.byVault ? [...result.byVault.keys()] : [];
@@ -179,17 +233,17 @@ if (stale.length > 0) {
   lines.push('');
   lines.push(
     `FR — Tu as écrit des notes sous \`wiki/\` dans ${stale.length} vault(s) (${names}) ` +
-      'sans rafraîchir leur `wiki-meta/hot.md` cette session.',
+      'sans rafraîchir leur `wiki-meta/hot.md` depuis le début (ou la reprise) de cette session.',
   );
   lines.push('Le `hot` est un CACHE D\'ÉTAT, pas un journal : RÉÉCRIS-le pour refléter l\'état courant —');
   lines.push('ne te contente pas d\'empiler une entrée de plus.');
   lines.push('  • mets à jour les faits récents (remplace ce qui est périmé, fusionne les doublons) ;');
   lines.push('  • garde le fichier sous sa limite (≤ ~900 tokens ≈ ~500 mots par défaut) ;');
-  lines.push('  • écris dans `wiki-meta/hot.md` du vault concerné (write_file ou patch_file).');
+  lines.push('  • écris dans `wiki-meta/hot.md` du vault concerné (write_file, patch_file, ou scripts/vault-edit.mjs lancé via Bash).');
   lines.push('');
   lines.push(
     `EN — You wrote notes under \`wiki/\` in ${stale.length} vault(s) (${names}) ` +
-      'without refreshing their `wiki-meta/hot.md` this session.',
+      'without refreshing their `wiki-meta/hot.md` since this session started or was resumed.',
   );
   lines.push('The hot is a STATE cache, not a journal: REWRITE it to reflect the current state —');
   lines.push('replace stale facts and keep the file under its limit (≤ ~900 tokens ≈ ~500 words by default).');
