@@ -127,28 +127,27 @@ describe('rest — the origin and nothing else', () => {
   });
 
   test('odd baseUrls: the hint is an origin with an explicit port, or nothing', () => {
-    const ORIGIN = /^https?:\/\/[^/@?#\s]+:\d+$/;
+    // Every input pinned to its EXACT result, so a regression that silently
+    // drops a hint fails here too. Where the host really is, the hint says so
+    // — not the part a reader might mistake for it (the two evil.example rows).
+    const BS = String.fromCharCode(92);
     const odd = [
-      'HTTP://User:Pw@10.8.0.10:27163/A?b#c',
-      'http://a\\b@10.8.0.10:27163/x',
-      'http:10.8.0.10:27163/x',
-      '  http://10.8.0.10:27163/x  ',
-      'http://%31%30.8.0.10:27163/%2F?x=@',
-      'https://xn--bcher-kva.example./path',
-      'https://bücher.example:8443/p?q',
-      'http://[fe80::1%25eth0]:27163/',
-      'http://u@[::1]:27163/p',
-      'http://10.8.0.10:27163@evil.example/p',
-      'http://evil.example#@10.8.0.10:27163',
+      ['HTTP://User:Pw@10.8.0.10:27163/A?b#c', 'http://10.8.0.10:27163'],
+      // WHATWG reads a backslash as "/" in http(s): the host is "a", the rest is path.
+      [`http://a${BS}b@10.8.0.10:27163/x`, 'http://a:80'],
+      ['http:10.8.0.10:27163/x', 'http://10.8.0.10:27163'],
+      ['  http://10.8.0.10:27163/x  ', 'http://10.8.0.10:27163'],
+      ['http://%31%30.8.0.10:27163/%2F?x=@', 'http://10.8.0.10:27163'],
+      ['https://xn--bcher-kva.example./path', 'https://xn--bcher-kva.example.:443'],
+      ['https://bücher.example:8443/p?q', 'https://xn--bcher-kva.example:8443'],
+      ['http://[fe80::1%25eth0]:27163/', undefined], // zone id: refused by the parser → no hint
+      ['http://u@[::1]:27163/p', 'http://[::1]:27163'],
+      ['http://10.8.0.10:27163@evil.example/p', 'http://evil.example:80'],
+      ['http://evil.example#@10.8.0.10:27163', 'http://evil.example:80'],
     ];
-    for (const b of odd) {
-      const r = vaultHints(remote({ baseUrl: b })).rest;
-      if (r === undefined) continue; // the parser refused it: no hint, which is allowed
-      assert.match(r, ORIGIN, `${JSON.stringify(b)} → ${JSON.stringify(r)}`);
-      assert.ok(!/user|pw|@/i.test(r), `${JSON.stringify(b)} leaked userinfo into ${r}`);
+    for (const [b, expected] of odd) {
+      assert.equal(vaultHints(remote({ baseUrl: b })).rest, expected, JSON.stringify(b));
     }
-    // Where the host really is, the hint says so — not the part a reader might mistake for it.
-    assert.equal(vaultHints(remote({ baseUrl: 'http://10.8.0.10:27163@evil.example/p' })).rest, 'http://evil.example:80');
   });
 
   test('a scheme other than http/https sends no rest hint', () => {
@@ -189,7 +188,10 @@ describe('obsidian_name — the label inside Obsidian', () => {
   });
 
   test('an invalid label is not sent, even one the loader never saw', () => {
-    for (const bad of ['', '   ', `a${CTRL}b`, 'a/b', 'a\\b', 'x'.repeat(256), 5]) {
+    const DEL = String.fromCharCode(0x7f);
+    const C1 = String.fromCharCode(0x85);
+    const NUL = String.fromCharCode(0);
+    for (const bad of ['', '   ', `a${CTRL}b`, `a${DEL}b`, `a${C1}b`, `a${NUL}b`, 'a/b', 'a\\b', 'x'.repeat(256), 5]) {
       assert.equal(vaultHints(remote({ obsidianName: bad })).obsidian_name, undefined, `sent ${JSON.stringify(bad)}`);
     }
     // a derived basename passes the same gate
@@ -202,6 +204,9 @@ describe('obsidian_name — the label inside Obsidian', () => {
     assert.equal(isValidObsidianName('opsidian-mcp-router et bridge'), true);
     assert.equal(isValidObsidianName('selarl cabinet dentaire galzy r.'), true);
     assert.equal(isValidObsidianName('la méthode licares'), true);
+    // The control range ends at U+009F: U+00A0 (no-break space) is a legal label character.
+    assert.equal(isValidObsidianName(`a${String.fromCharCode(0x9f)}b`), false);
+    assert.equal(isValidObsidianName(`a${String.fromCharCode(0xa0)}b`), true);
   });
 });
 
@@ -461,6 +466,12 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
       child.once('exit', (code, signal) => { exitInfo = { code, signal }; resolve(); });
       child.once('error', (err) => { exitInfo = { error: err.message }; resolve(); });
     });
+    // A child that dies mid-write makes stdin emit EPIPE on ITS OWN emitter,
+    // which the child's 'error' listener does not see. Unhandled, that error
+    // would crash the test runner; recorded, the pending call fails through
+    // the 'exit' path above with the router's stderr attached.
+    let stdinError = null;
+    child.stdin.on('error', (err) => { stdinError = err.code || err.message; });
     let stdout = '';
     let stderr = '';
     const waiters = new Map();
@@ -484,7 +495,7 @@ describe('E2E: a note write sends the hints to the view-agent', () => {
     const call = (id, method, params) => new Promise((resolve, reject) => {
       if (exitInfo) { reject(new Error(`router already exited ${JSON.stringify(exitInfo)}\n${stderr}`)); return; }
       const t = setTimeout(() => reject(new Error(`timed out on ${method}\n${stderr}`)), 20000);
-      exited.then(() => { clearTimeout(t); reject(new Error(`router exited ${JSON.stringify(exitInfo)} during ${method}\n${stderr}`)); });
+      exited.then(() => { clearTimeout(t); reject(new Error(`router exited ${JSON.stringify({ ...exitInfo, stdinError })} during ${method}\n${stderr}`)); });
       waiters.set(id, (m) => { clearTimeout(t); resolve(m); });
       send({ jsonrpc: '2.0', id, method, params });
     });
