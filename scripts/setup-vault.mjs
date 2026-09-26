@@ -72,6 +72,7 @@ import {
   describeEncodingTwins,
   classifyProvisioningTwins,
 } from '../src/helpers/copy-tree.mjs';
+import { existingConventionsFiles, makeRootDocsFilter } from '../src/helpers/root-docs-filter.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -2620,7 +2621,10 @@ export function buildWorkspaceVaultsBlock({ primary, secondaries = [] }) {
   lines.push('*Managed by `obsidian-mcp-router --attach`. Edits inside this block are overwritten on re-attach; write your own notes outside it.*');
   lines.push('');
   lines.push(`- **Primary — \`${primary.slug}\`** (${primary.path})`);
-  lines.push('  Auto-loaded at session start (its `wiki-meta/hot.md`), and the target of every router call made **without** a `vault:` argument.');
+  // No promise the router cannot keep: hot.md reaches the session only if the
+  // plugin's hooks run, and on 2026-09-25 a remote session ran with none while
+  // this line said "auto-loaded". `list_vaults` now measures it.
+  lines.push('  The target of every router call made **without** a `vault:` argument. Its `wiki-meta/hot.md` is injected at session start by the plugin\'s `hot-cache-load` hook — **when the hooks run**: `list_vaults` → `sessionHooks.status` says whether they did; if not, read hot.md yourself.');
   if (secondaries.length > 0) {
     lines.push('');
     for (const s of secondaries) {
@@ -2630,6 +2634,11 @@ export function buildWorkspaceVaultsBlock({ primary, secondaries = [] }) {
     lines.push('');
     lines.push('> ⚠️ **The trap**: the router binds ONE vault per workspace. Omitting `vault:` does not raise an error — it silently reads and writes the primary. When you mean a secondary, name it.');
   }
+  lines.push('');
+  // Nothing loads a vault's conventions file into a session opened HERE, in
+  // the workspace — neither Claude Code (it reads this directory's CLAUDE.md
+  // and its parents) nor any hook. The router presents them at the first write.
+  lines.push('**Each vault has its own conventions** (page types, required frontmatter, decision-page contract), in its own conventions file — which is NOT loaded into this session. The first router write into a vault returns them (`vaultConventions` in the result): read the file it names before writing substantive pages there. `audit_vault_conventions` shows them on demand.');
   lines.push(WS_BLOCK_END);
   return lines.join('\n');
 }
@@ -3147,21 +3156,43 @@ function scaffoldWikiMeta(vaultPath, wikiOpts = {}) {
 // list is a union across source shapes.
 const ROOT_FILES_TO_CLONE = ['README.md', 'Documentation', '.claude'];
 
+// `Documentation/` also holds the reference vault's CONVENTIONS FILE and the
+// backups of its edits. Neither may land in a vault that has its own
+// conventions file, and a backup never lands anywhere — see
+// src/helpers/root-docs-filter.mjs for the 2026-09-22 sync that did both to 13
+// vaults. The target's conventions are measured ONCE, before anything is copied.
+//
+// Under --force a directory is MERGED, never wiped first: the earlier rmSync
+// took the vault's own conventions file and its own backups with it.
 function cloneRootDocs(referenceVault, targetVault, force, skipItems = []) {
+  const targetConventions = existingConventionsFiles(targetVault, fs.existsSync);
   for (const item of ROOT_FILES_TO_CLONE) {
     if (skipItems.includes(item)) continue;
     const src = path.join(referenceVault, item);
     const dst = path.join(targetVault, item);
     if (!fs.existsSync(src)) continue;
     if (fs.existsSync(dst) && !force) continue;
-    if (fs.existsSync(dst)) fs.rmSync(dst, { recursive: true, force: true });
+    const skipped = [];
+    const filter = makeRootDocsFilter({ referenceVault, targetConventions, onSkip: (e) => skipped.push(e) });
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     if (fs.statSync(src).isDirectory()) {
-      copyTreeSync(src, dst);
-    } else {
+      // Count the FILES the filter let through: a folder whose every entry was
+      // left out (a protected conventions file, backups) must not read "Cloned".
+      let copied = 0;
+      copyTreeSync(src, dst, {
+        filter: (p) => {
+          const pass = filter(p);
+          if (pass) { try { if (fs.statSync(p).isFile()) copied += 1; } catch { /* the copy will report it */ } }
+          return pass;
+        },
+      });
+      if (copied > 0) ok(`Cloned ${item} from reference vault (${copied} file${copied === 1 ? '' : 's'})`);
+      else info(`Nothing to clone from ${item}: every entry was left out`);
+    } else if (filter(src)) {
       fs.copyFileSync(src, dst);
+      ok(`Cloned ${item} from reference vault`);
     }
-    ok(`Cloned ${item} from reference vault`);
+    for (const s of skipped) info(`  left out ${s.relative}: ${s.reason}`);
   }
 }
 
@@ -4183,10 +4214,14 @@ async function setupVault(vaultPath, opts = {}) {
   // this only fires for a from-vault source that keeps one at the root. Never
   // copies content, workspace.json, or credential data.json (those are handled
   // by the plugin clone loop, which regenerates the REST API port + key).
+  // Only into a vault with NO conventions file at any candidate location —
+  // measured after cloneRootDocs, which may just have delivered one — and never
+  // over an existing one, --force or not: two conventions files leave the
+  // vault ambiguous (src/helpers/root-docs-filter.mjs).
   if (sourceKind === 'from-vault') {
     const srcClaude = path.join(sourceVault, 'CLAUDE.md');
     const dstClaude = path.join(abs, 'CLAUDE.md');
-    if (fs.existsSync(srcClaude) && (opts.force || !fs.existsSync(dstClaude))) {
+    if (fs.existsSync(srcClaude) && existingConventionsFiles(abs, fs.existsSync).length === 0) {
       fs.copyFileSync(srcClaude, dstClaude);
       ok('Copied CLAUDE.md from source vault');
     }

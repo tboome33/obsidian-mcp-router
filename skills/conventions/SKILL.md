@@ -60,6 +60,22 @@ There is no single path. The fleet audit that produced `CLAUDE_MD_CANDIDATES` fo
 
 So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it.
 
+### `audit` — which conventions a vault is REALLY under, and what to repair
+
+Call `audit_vault_conventions({ vault })` (read-only, works on remote vaults) — or, for every local vault at once, `node <router-clone>/scripts/conventions-audit.mjs` (read-only; remote vaults come back `skipped`, never "clean"). Each vault gets `ok` / `attention` / `broken` and findings, each with the repair to PROPOSE:
+
+| finding | what it means | repair — only after the user says yes |
+|---|---|---|
+| `ambiguous-conventions-file` | two or more candidate files; the router reads none | when exactly one is a verbatim copy of the template's file: rename THAT copy — hand the `move_file` step the audit gives (it carries `ifMatch`; the new name ends `.from-template-<date>`, so it is reversible) to `/obsidian-router:manage-move`, which owns moves and their partial-failure report. This skill does not move files itself. Otherwise ask which file holds the vault's rules. |
+| `missing-recommended` | recommended conventions absent from the file in force | `install <id>` from the CURRENT snippet (preview + backup as usual). Never restore a section from a `.bak` file — it may be stale. Absent may be the owner's choice: offer, do not push. |
+| `inherited-backups` | `CLAUDE.md.bak-*` files with the same NAME and the same BYTES as one of the reference vault's own backups | nothing to repair. They are almost certainly the TEMPLATE's history, copied in by a sync, so they say nothing about this vault's past: a convention present in them and absent from the current file is not evidence of a loss. A backup that holds the template's text under a name of its own is the vault's OWN history (it edited a template-born file) — the audit does not call it inherited. |
+| `no-conventions-file` | no candidate at all | the picker (`pick`); the first install creates the root file. |
+| `reference-unknown` | the reference vault could not be read | "template copy" and "inherited" are UNKNOWN, not false — say so. |
+
+**Never read a backup beside a conventions file as that vault's history without the audit.** On 2026-09-26 a session did exactly that on Kiviri-OS and reported four conventions "lost on 2026-09-11": the backups were the reference vault's, copied in with its `Documentation/` folder, and the vault had simply been born with the template's four-convention file (decision `conventions-livrees-par-le-modele`). The same sync (2026-09-22) gave 13 local vaults a SECOND conventions file beside their own; since this release a template sync no longer copies a conventions file into a vault that has one, nor any backup anywhere.
+
+**Repairs are one vault at a time, each shown and approved.** No `--all`, no silent pass: the fleet report lists, the human decides per vault.
+
 Mapping (initial library shipped with this skill):
 
 | Snippet file | Convention id | Identifying H2 heading |

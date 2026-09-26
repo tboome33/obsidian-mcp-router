@@ -10,6 +10,97 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### A vault's conventions reach the session that writes into it — and a template sync stops giving vaults a second set
+
+Reported from a real night (2026-09-25): a session on the Hermes VM, in a code workspace, wrote
+decision pages into its secondary vault Kiviri-OS without `status`, the required sections or
+`source_type` — it never knew the vault's conventions existed. The diagnosis named three causes;
+measuring them changed one and added a fourth.
+
+- **"Kiviri-OS lost four conventions" was a misreading, and the misreading is now impossible to
+  make silently.** The three `CLAUDE.md.bak-*` files beside its conventions file were byte-for-byte
+  the reference vault's — its history, copied in with `Documentation/` — and the vault had been
+  born with the template's four-convention file (decision `conventions-livrees-par-le-modele`).
+  The real defect: the 2026-09-22 template sync copied the reference vault's conventions file and
+  backups into every vault. Measured on 2026-09-26: 13 of 27 local vaults ended with TWO
+  conventions files (their own, plus the template's), which the router refuses to choose between.
+- **A template sync no longer copies a backup anywhere, nor a conventions file into a vault that
+  has one** (`src/helpers/root-docs-filter.mjs`, used by `cloneRootDocs` and the `--from-vault`
+  root copy; candidate names compared case-folded where the filesystem folds case). A vault with
+  no conventions file still receives the template's when it receives `Documentation/` — a vault
+  that already has a `Documentation/` folder is left as it is without `--force`, as before. Under
+  `--force` a folder is merged, never deleted first — the old `rmSync` took the vault's own
+  conventions file and backups with it (a side effect: a file the template later deletes now
+  stays in the vaults). Each entry left out is printed with its reason.
+- **New read-only tool `audit_vault_conventions`** (55 tools) and fleet script
+  `scripts/conventions-audit.mjs`: the conventions file the router resolves (or the two it cannot
+  choose between), the recommended conventions absent, which files are template copies and which
+  backups are inherited — each finding with its repair (a `move_file` that renames the template
+  copy, with its `ifMatch`, proposed only when exactly one copy sits beside exactly one file of the
+  vault's own; or `conventions install` from the CURRENT snippet, never from a backup). Nothing is
+  ever applied: the repairs are proposed vault by vault. A backup counts as inherited only when
+  its NAME and its BYTES match one of the reference vault's own — bytes alone called
+  `La méthode LICARES`'s own `bak-bilingual` inherited on the first real run. A reference vault
+  that cannot be read in full makes "template copy" and "inherited" UNKNOWN, never false. The
+  audit states byte identity, never history: "not evidence of a loss", not "never installed".
+- **The first write into a vault carries its conventions.** Nothing loads a vault's conventions
+  file into a session that writes into it from a code workspace, nor into a session opened in a
+  template-born vault (the file is under `Documentation/`). The first `write_file` / `patch_file`
+  / `append_to_file` / `write_bundle` / `set_frontmatter` / `merge_frontmatter` of the session into
+  a vault now returns `vaultConventions`: the file to read, the conventions it carries, the
+  recommended ones missing, and the decision-page contract. It arrives WITH that first write,
+  i.e. after it — a first bundle is written before the rules are seen. Once per vault per server
+  process (one session, for the plugin); a call that wrote nothing (a skipped patch, a merge that
+  applied no key) does not spend it. The whole addition shares one 5 s deadline — checked before
+  each REST request, so a late answer does not go on to issue more — reads no backup, and says
+  `pageChecksSkipped` for pages it could not read back in time or past the 10-page cap of a call.
+- **Decision pages are checked as they are written** (`src/helpers/write-time-page-checks.mjs`):
+  `status` present and in the enumeration, `scope`, the Context / Decision / Consequences /
+  Alternatives sections, `description`, and `source_type` (a warning where the vault carries the
+  source-type convention). Never blocking — the page is written, the findings come back as
+  `pageChecks`. A section counts when one label of the heading IS its name (`## Décision ·
+  Decision`, `## 2. Decision`), never when a label merely contains the word (`## Decision
+  context`). Bundles are checked on what their pages say after the last step, read back; appends
+  are not checked (they cannot remove a field, and would cost a whole-page download each). ATX
+  headings only.
+- **A session opened in a vault is told where its conventions are.** `hot-cache-load` adds one
+  line naming the conventions file when Claude Code does not load it itself (anything but a root
+  `CLAUDE.md` in the vault), or saying there are two. Chosen over a root `CLAUDE.md` importing the
+  real one, which would itself be a second conventions file.
+- **`list_vaults` says whether this session's hooks ran** (`sessionHooks`): `hot-cache-load` and
+  `decisions-recall` each leave a heartbeat file (one per hook — a shared file lost updates)
+  beside the router config, keyed by the workspace's real path, and the server reads it back —
+  `observed` (the hook ran; not proof hot.md existed), `absent-from-plugin` (the running copy has
+  no `hooks/hooks.json`: the Hermes VM case), `not-yet-observed`, `not-observed` — which asserts
+  "hot.md was NOT injected" only when no run is on record at all; with an earlier run (a server
+  restarted mid-session) it says the injection is UNKNOWN. The verdict names the
+  `workspace` it is about: a server started by the host outside a workspace cannot see a
+  session's hooks. `workspace-briefing` deliberately leaves none: it is pinned to write no file.
+- **`list_vaults` says which code answers** (`routerBuild`): the plugin installs from `main`, so
+  "0.95.0" named 64 commits. A fingerprint of the server and hook files (`bin/`, `src/`, `hooks/`,
+  `package.json`, `plugin.json` — not the skills' text; git blob ids, line endings normalised, OS
+  clutter ignored) names their tree, and `scripts/identify-build.mjs <fingerprint>` names the
+  commit. The first run named the plugin copy on this machine as `a56fd2f` (2026-09-14), where
+  `installed_plugins.json` recorded `50ae7bd`. `gitHead` is added when the copy is a git checkout
+  or worktree.
+- The `--attach` CLAUDE.md block no longer promises that hot.md is "auto-loaded at session
+  start": it says the hook does it when hooks run, points at `sessionHooks`, and says a vault's
+  conventions reach the session through the first write.
+- Skills `conventions` (new `audit` section), `wiki-lint` (Check S), `meta-status` (build and
+  hooks lines, both surfaces), `meta-sync-template` (what a sync never copies) updated.
+- Tests: `tests/vault-conventions-reach.test.mjs`, `tests/vault-conventions-e2e.test.mjs` (real
+  server over stdio against a loopback REST stand-in), `tests/conventions-audit-cli.test.mjs`,
+  `tests/root-docs-sync-conventions.test.mjs` (real `setup-vault.mjs --sync-plugins`). The fixture
+  `tests/fixtures/kiviri-os-documentation/` is the four real files Kiviri-OS carried, with private
+  identifiers replaced. Subprocess guard: +1 exempt spawn (`identify-build.mjs` runs git).
+- Review: three adversarial rounds (Claude reviewer + Codex ×3) found 11, then 8, then 2 defects,
+  every one repaired with a witness; 35 mutations, one rule each, each killed by its declared
+  witness with the declared-green suites green.
+- Not changed, and said so: why the remote-session copy of the plugin arrives without `hooks/`
+  is outside this repository — the local copy has it; the documentation of SSH sessions says only
+  that desktop plugins are available there. The heartbeat is the fallback: the session is now
+  told.
+
 ### The two asset writers: the output directory is pinned, and must be a vault or the temp directory
 
 `pptx_extract_assets` and `download_page_assets` write files into a directory the caller names.

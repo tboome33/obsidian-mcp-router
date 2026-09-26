@@ -355,6 +355,25 @@ describe('setup-vault.mjs --from-vault (config-only copy + security)', () => {
     assert.ok(fs.existsSync(path.join(target, 'wiki-meta', 'catalog.md')), 'fresh wiki-meta scaffolded');
   });
 
+  test('a source holding TWO conventions files gives the new vault ONE — never a second', () => {
+    // 2026-09-26: the root-docs clone brought Documentation/CLAUDE.md, then the
+    // --from-vault root copy added CLAUDE.md beside it — two conventions files,
+    // which resolveClaudeMd refuses to choose between. The root copy now only
+    // lands in a vault with no conventions file at all.
+    const dual = path.join(workDir, 'DualSource');
+    fs.cpSync(source, dual, { recursive: true });
+    fs.mkdirSync(path.join(dual, 'Documentation'), { recursive: true });
+    fs.writeFileSync(path.join(dual, 'Documentation', 'CLAUDE.md'), '# Documentation conventions');
+    fs.writeFileSync(path.join(dual, 'Documentation', 'CLAUDE.md.bak-2026-09-11'), '# history of the SOURCE');
+    const target = path.join(workDir, 'FromDual');
+    const r = run([target, '--from-vault', dual]);
+    assert.equal(r.status, 0, r.stderr);
+    const present = ['CLAUDE.md', 'wiki-meta/CLAUDE.md', 'Documentation/CLAUDE.md']
+      .filter((rel) => fs.existsSync(path.join(target, ...rel.split('/'))));
+    assert.equal(present.length, 1, `exactly one conventions file, got ${JSON.stringify(present)}`);
+    assert.equal(fs.existsSync(path.join(target, 'Documentation', 'CLAUDE.md.bak-2026-09-11')), false, 'the source\'s backup is not the new vault\'s history');
+  });
+
   test('--from-vault without --with-folder-tree does NOT recreate the wiki tree', () => {
     const target = path.join(workDir, 'CopiedNoTree');
     const r = run([target, '--from-vault', source]);

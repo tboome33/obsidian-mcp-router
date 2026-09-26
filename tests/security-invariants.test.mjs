@@ -739,6 +739,9 @@ describe('GUARD: every write tool runs caller paths through the containment guar
       'get-file.mjs', 'get-frontmatter.mjs', 'get-page-neighbors.mjs',
       'get-wiki-context-pack.mjs', 'get-view-link.mjs', 'list-files.mjs',
       'list-vaults.mjs', 'search.mjs', 'search-smart.mjs', 'wiki-path.mjs',
+      // Reads conventions files over REST (list + get) for the audit tool and
+      // for the brief attached to a write; never issues a PUT/POST/PATCH/DELETE.
+      'vault-conventions.mjs',
       'find-boundary-pages.mjs', 'filter-relevant-blocks.mjs', 'build-open-link.mjs',
       'open-in-obsidian.mjs', 'convert.mjs', 'extract-page-metadata.mjs',
       // These three were filed as writers on the strength of their names; each

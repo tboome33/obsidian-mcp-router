@@ -1017,6 +1017,11 @@ describe('list_vaults carries it — the surface meta-status already reads', () 
       // that could not be read. Added here deliberately: a drift is the answer
       // to a vault that "went offline" with nobody having closed it.
       'portDiagnostics',
+      // 2026-09-26 — WHICH code answers (a fingerprint of its files, not the
+      // version string that named 64 commits) and whether this session's
+      // plugin hooks ran. Added here deliberately.
+      'routerBuild',
+      'sessionHooks',
       'vaults',
       'workspaceBinding',
       // Phase 5 of portee-ergonomie-refus-roadmap (decision refus-d-une-
@@ -1139,6 +1144,8 @@ describe('command / skill parity — the rule must not live in one of the two', 
   // reason. A rule you can delete while its test stays green is not tested.
   const META_STATUS_RULES = [
     [/conversionToolbox/, 'reads the field'],
+    [/routerBuild.{0,400}identify-build\.mjs/s, 'names the build by its fingerprint, and how to turn it into a commit'],
+    [/absent-from-plugin.{0,300}Never\s+say "hot\.md is loaded"/s, 'reports missing hooks instead of assuming hot.md arrived'],
     [/via.{0,40}bundled-venv.{0,40}env-override.{0,40}path/, 'enumerates the three `via` values'],
     [/toolsAffected.{0,60}toolsDegraded/, 'points at both authoritative lists'],
     [/do not raise it unprompted at session start/i, 'forbids nagging at session start'],

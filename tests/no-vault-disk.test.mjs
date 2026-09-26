@@ -634,7 +634,10 @@ describe('every tool is classified: exercised by the bench, or exempt with a rea
   // a NEW tool cannot appear without someone deciding which bucket it is in.
   // It is a forcing function against silent drift, not evidence about these 21.
   const NOT_EXERCISED_HERE = new Set([
-    'audit_sources', 'build_search_index', 'build_wiki_graph',
+    // audit_vault_conventions reads a vault's conventions files over REST only;
+    // that path runs against a loopback REST stand-in in
+    // vault-conventions-e2e.test.mjs. Not measured by THIS bench.
+    'audit_sources', 'audit_vault_conventions', 'build_search_index', 'build_wiki_graph',
     'build_wiki_tour', 'delete_file', 'execute_template', 'find_boundary_pages',
     'get_page_neighbors', 'get_wiki_context_pack', 'lock_vault', 'merge_frontmatter',
     'move_file', 'patch_file', 'record_source', 'refresh_okf_projections',

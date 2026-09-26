@@ -66,6 +66,7 @@ import {
   selectRelevant,
   formatRecallBlock,
 } from './_helpers/decisions-recall-core.mjs';
+import { recordHookHeartbeat } from '../src/helpers/hooks-heartbeat.mjs';
 
 // The workspace .env is loaded BEFORE the first opt-out check — from the
 // project directory the host names, since stdin (and its cwd) is not read
@@ -85,6 +86,8 @@ try { input = JSON.parse(stdinRaw || '{}'); } catch { process.exit(0); }
 
 const prompt = typeof input.prompt === 'string' ? input.prompt : '';
 const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+// Heartbeat for list_vaults (src/helpers/hooks-heartbeat.mjs); never throws.
+recordHookHeartbeat({ hook: 'decisions-recall', cwd });
 
 // Same substantive-prompt gate as wiki-query-first-nudge: a decision recall
 // on "oui" or "/save" is pure noise.

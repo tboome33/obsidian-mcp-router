@@ -152,6 +152,19 @@ describe('buildWorkspaceVaultsBlock', () => {
     assert.doesNotMatch(b, /The trap/);
   });
 
+  test('promises no load the router cannot guarantee, and says where the conventions come from', () => {
+    // 2026-09-25: a remote session ran with no plugin hook while this block
+    // said "Auto-loaded at session start". The block now conditions it on the
+    // hooks, points at the measurement, and says the vault's conventions are
+    // NOT in the session until the first write returns them.
+    const b = buildWorkspaceVaultsBlock({ primary });
+    assert.doesNotMatch(b, /Auto-loaded at session start/);
+    assert.match(b, /when the hooks run/);
+    assert.match(b, /sessionHooks\.status/);
+    assert.match(b, /NOT loaded into this session/);
+    assert.match(b, /vaultConventions/);
+  });
+
   test('secondaries are named with the exact vault: call that reaches them', () => {
     const b = buildWorkspaceVaultsBlock({
       primary,

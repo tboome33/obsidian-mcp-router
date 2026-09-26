@@ -123,6 +123,12 @@ import {
   TOOL_DEFINITION as WRITE_BUNDLE_TOOL_DEFINITION,
   writeBundleTool,
 } from './tools/write-bundle.mjs';
+import {
+  TOOL_DEFINITION as AUDIT_VAULT_CONVENTIONS_TOOL_DEFINITION,
+  auditVaultConventionsTool,
+  createConventionsBriefing,
+} from './tools/vault-conventions.mjs';
+import { referenceVaultPath } from './helpers/vault-slug.mjs';
 // The vault paths three write tools target without ever naming them in an
 // argument — see FIXED_AUDIT_TARGETS.
 import { SEARCH_INDEX_PATH } from './helpers/bm25-index.mjs';
@@ -1072,6 +1078,9 @@ const TOOLS = [
   BUILD_SEARCH_INDEX_TOOL_DEFINITION,
   RECORD_SOURCE_TOOL_DEFINITION,
   AUDIT_SOURCES_TOOL_DEFINITION,
+  // Which conventions a vault is really under — read-only, over REST, so it
+  // reaches remote vaults too. Excluded from WRITE_TOOL_NAMES.
+  AUDIT_VAULT_CONVENTIONS_TOOL_DEFINITION,
   // C2 — journaled multi-file bundle with rollback. WRITES (it runs the other
   // write tools, plus its own journal under wiki-meta/) → WRITE_TOOL_NAMES.
   WRITE_BUNDLE_TOOL_DEFINITION,
@@ -1325,6 +1334,9 @@ const TOOL_HANDLERS = {
   // C6 — source ledger: forward-fill register + read-only independence audit.
   record_source: (reg, args) => recordSourceTool(reg, args),
   audit_sources: (reg, args) => auditSourcesTool(reg, args),
+  audit_vault_conventions: (reg, args) => auditVaultConventionsTool(reg, args, {
+    referenceVaultName: () => referenceVaultNameIn(reg, sharedVaultConfig()),
+  }),
   // C2 — journaled multi-file bundle (all-or-nothing apply + rollback).
   write_bundle: (reg, args) => writeBundleTool(reg, args),
   refresh_okf_projections: (reg, args) => refreshOkfProjectionsTool(reg, args),
@@ -1946,6 +1958,29 @@ let bindingsReader = null;
 function sharedVaultConfig() {
   return bindingsReader ? bindingsReader.current() : null;
 }
+
+/**
+ * The REGISTERED vault whose path is the configured reference vault, or null.
+ * The reference is a path in the config, not a name; `audit_vault_conventions`
+ * reads it over REST like any vault, so it needs the name the registry knows
+ * it by. Compared case-insensitively on Windows and macOS, exactly otherwise.
+ */
+function referenceVaultNameIn(reg, cfg) {
+  const ref = referenceVaultPath(cfg);
+  if (!ref) return null;
+  const norm = (p) => {
+    const r = path.resolve(p);
+    return process.platform === 'linux' ? r : r.toLowerCase();
+  };
+  const want = norm(ref);
+  const hit = (Array.isArray(reg?.vaults) ? reg.vaults : []).find((v) => typeof v?.path === 'string' && norm(v.path) === want);
+  return hit ? hit.name : null;
+}
+
+// Presents a vault's conventions the first time this session writes into it,
+// and checks decision pages as they are written. One per server process: the
+// "once per vault" memory is the session's. See tools/vault-conventions.mjs.
+const conventionsBriefing = createConventionsBriefing();
 
 const projectionsScheduler = createProjectionsScheduler({
   refresh: maintainVault,
@@ -3456,6 +3491,22 @@ export async function startServer({ configPath, watch = true } = {}) {
           // need the same treatment, or the rule needs to move down here.
           Object.assign(result, sanitizeResponse(await viewLinkForWrite({ vaultName: result.vault, note })));
         }
+      }
+
+      // THE VAULT'S CONVENTIONS, WHERE A WRITER CANNOT MISS THEM. Nothing loads
+      // a vault's conventions file into a session that writes into it from
+      // elsewhere (tools/vault-conventions.mjs). So the first write of the
+      // session into a vault carries a brief of them, and every write of a
+      // decision page carries the checks its contract fails. `toolActuallyWrote`
+      // for the same reason as the audit line above: a preview wrote nothing.
+      // Sanitised here, like the view link: these fields are added after the
+      // tool sanitised its own result, and the brief quotes vault headings.
+      // Never allowed to fail the write that triggered it.
+      if (toolActuallyWrote(name, args) && result && typeof result === 'object' && !Array.isArray(result)) {
+        try {
+          const extra = await conventionsBriefing.forWrite(reg, name, args, result);
+          if (extra) Object.assign(result, sanitizeResponse(extra));
+        } catch { /* the write succeeded; a brief that could not be built is not its failure */ }
       }
 
       return await wrapResult(Promise.resolve(result));

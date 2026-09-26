@@ -165,7 +165,7 @@
 
 <div class="header">
   <h1>obsidian-mcp-router <span class="subtitle">— quick reference</span></h1>
-  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 54 MCP tools · 49 skills)<br>
+  <div class="meta">v0.95.0 · multi-vault Obsidian MCP server, shipped by its Claude Code plugin — one install = everything (54 slash commands · 55 MCP tools · 49 skills)<br>
   <a href="https://github.com/tboome33/obsidian-mcp-router">github.com/tboome33/obsidian-mcp-router</a></div>
 </div>
 
@@ -405,7 +405,7 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
 
 <div class="page-break"></div>
 
-<h2>The 54 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
+<h2>The 55 MCP tools <span class="count">— what Claude actually calls under the hood</span></h2>
 
 <table class="config">
   <tr>
@@ -471,6 +471,10 @@ CLAUDE CODE PLUGIN (obsidian-router) — commands + skills + agents + hooks
   <tr>
     <td>record_source · audit_sources</td>
     <td><strong>Source ledger.</strong> Record where ingested content came from (URL, hash, date); audit a vault's sources for drift and gaps.</td>
+  </tr>
+  <tr>
+    <td>audit_vault_conventions</td>
+    <td><strong>Conventions audit.</strong> Which conventions a vault is really under: the file the router resolves (or the two it cannot choose between), the recommended ones missing, template copies and inherited backups — each finding with a repair to approve, never applied on its own.</td>
   </tr>
   <tr>
     <td>build_open_link · open_in_obsidian · get_view_link</td>
