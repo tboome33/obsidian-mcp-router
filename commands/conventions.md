@@ -1,5 +1,5 @@
 ---
-description: Install / remove / check status of CLAUDE.md conventions across vaults (source-type, bilingual, heading-hierarchy, auto-enrichment, ...). Calls the conventions skill.
+description: Install / remove / check status of CLAUDE.md conventions across vaults (source-type, languages, heading-hierarchy, auto-enrichment, ...). Calls the conventions skill.
 ---
 
 Invoke the `conventions` skill to manage CLAUDE.md conventions in one or more Obsidian vaults.
@@ -9,8 +9,9 @@ Sub-commands:
 - `install <id> [on <vault>] [--all]` — append a convention's snippet to the target vault(s)' CLAUDE.md
 - `remove <id> [on <vault>] [--all] [confirm:true]` — strip a convention's section from the target vault(s)' CLAUDE.md
 - `sync-all-vaults <id>` — convenience alias for `install <id> --all`
+- `migrate-bilingual [on <vault>]` — replace the retired `bilingual` convention with `languages` (the value is asked; preview, backup and `ifMatch` write, one vault at a time)
 
-Convention ids ship in `skills/conventions/snippets/<id>.md`. Initial library: `source-type`, `bilingual`, `heading-hierarchy`, `auto-enrichment`.
+Convention ids ship in `skills/conventions/snippets/<id>.md`. Initial library: `source-type`, `bilingual`, `heading-hierarchy`, `auto-enrichment`. Since 2026-09-26 `bilingual` is retired (`skills/conventions/retired/`, recognised and removable, never installed) and `languages` — which carries the vault's own list of languages — takes its place.
 
 ## ⚠️ Safety on `remove` (v0.8.12, NIT-4 + IMP-4)
 

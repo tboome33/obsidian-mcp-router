@@ -32,6 +32,19 @@
  *   reference-unknown            the reference vault's fingerprints could not
  *                                be read, so "inherited" and "template copy"
  *                                are UNKNOWN, not false. Said, never implied.
+ *   bilingual-to-migrate         the file still carries the RETIRED `bilingual`
+ *                                convention. The repair is the migration:
+ *                                install `languages` with the value the owner
+ *                                chooses, then remove `bilingual` — both
+ *                                through the conventions skill, with preview
+ *                                and backup. Never automatic: the owner chose
+ *                                `fr` for ten of the thirteen vaults that carry
+ *                                it, so "bilingual means fr, en" is not a rule.
+ *   languages-value-unreadable   `languages` is installed but its value line is
+ *                                missing, doubled, or not a list of ISO 639-1
+ *                                codes — nothing checks this vault's language.
+ *
+ * `languages` in the result is the declared value (`["fr","en"]`) or null.
  *
  * Nothing here writes, and nothing here decides: `findings[].repair` describes
  * a step for a human to approve. Pure — the caller reads, this function judges.
@@ -39,6 +52,9 @@
 import crypto from 'node:crypto';
 
 import { resolveClaudeMd, detectConventions } from './claude-md-conventions.mjs';
+import {
+  BILINGUAL_EQUIVALENT, LANGUAGES_CONVENTION_ID, RETIRED_BILINGUAL_ID, readVaultLanguages,
+} from './convention-languages.mjs';
 
 /**
  * The conventions the `meta-attach-vault` picker pre-checks when absent
@@ -47,6 +63,10 @@ import { resolveClaudeMd, detectConventions } from './claude-md-conventions.mjs'
  * `description-frontmatter` is listed in the picker too, but as a writing
  * guide, not a behaviour — its absence changes nothing enforced (the field is
  * required by the lint either way), so it is not reported as missing here.
+ *
+ * `languages` took `bilingual`'s place on 2026-09-26 (decision
+ * `convention-languages-remplace-bilingual` §8): it is recommended, and asked
+ * with `fr` as the default value, where `bilingual` was a pre-checked box.
  */
 export const RECOMMENDED_CONVENTION_IDS = Object.freeze([
   'roadmap-discipline',
@@ -54,7 +74,7 @@ export const RECOMMENDED_CONVENTION_IDS = Object.freeze([
   'wiki-query-first',
   'path-disambiguation',
   'source-type',
-  'bilingual',
+  LANGUAGES_CONVENTION_ID,
   'heading-hierarchy',
   'auto-enrichment',
 ]);
@@ -120,7 +140,10 @@ export function auditVaultConventions({
   const refBackupSet = new Set(refKnown ? [...(referenceBackups ?? [])] : []);
   const catalogueIds = new Set((catalogue ?? []).map((c) => c.id));
 
+  // Kept aside rather than echoed: the result lists files, not their text.
+  const contentOf = new Map();
   const files = (Array.isArray(candidates) ? candidates : []).map((c) => {
+    contentOf.set(c.path, typeof c.content === 'string' ? c.content : '');
     const sha256 = c.sha256 || sha256Text(c.content);
     const conventions = detectConventions(c.content ?? '', catalogue ?? [])
       .filter((d) => d.installed)
@@ -230,8 +253,61 @@ export function auditVaultConventions({
             ? 'Its bytes are a version of the template\'s own file (the template ships four conventions since 2026-09-11). Whether this vault ever carried the absent ones cannot be told from here: offer them, do not conclude a loss.'
             : 'Absent is a fact, not a verdict: the owner may have declined them.'),
         repair: {
-          summary: 'Offer them through the conventions picker (preview, backup, then install from the CURRENT snippet — never restored from a backup).',
-          steps: missingRecommended.map((id) => ({ command: `/obsidian-router:conventions install ${id} on ${vault}` })),
+          summary: 'Offer them through the conventions picker (preview, backup, then install from the CURRENT snippet — never restored from a backup). languages needs a value: ask the owner for this vault.',
+          // No `install languages` step (a) for a vault still carrying
+          // `bilingual` — the migration finding proposes it together with the
+          // removal, and proposing it here too offered it twice (round 1) —
+          // nor (b) beside an ambiguity: which file is in force comes first,
+          // and installing into one of two files leaves bilingual behind with
+          // no migration proposed (round 2, which caught the round-1 repair
+          // keeping the step precisely WHEN ambiguous).
+          steps: missingRecommended
+            .filter((id) => !(id === LANGUAGES_CONVENTION_ID && (resolved.ambiguous || effective.conventions.includes(RETIRED_BILINGUAL_ID))))
+            .map((id) => ({ command: `/obsidian-router:conventions install ${id} on ${vault}` })),
+        },
+      });
+    }
+  }
+
+  // The languages the vault declares, read from the file in force — and the
+  // retired convention it may still carry. Only when ONE file is in force:
+  // with two, `effective` may be the file a repair WOULD keep, and a value read
+  // from it was turned into a "write in <lang>" instruction beside "the router
+  // cannot tell which file is in force" (review finding). "Which file" comes
+  // first; the ambiguity finding already says so.
+  let languages = null;
+  if (effective && !resolved.ambiguous) {
+    const declared = readVaultLanguages(contentOf.get(effective.path) ?? '');
+    languages = declared.languages;
+    if (declared.installed && declared.problem) {
+      findings.push({
+        kind: 'languages-value-unreadable',
+        severity: 'warning',
+        message: `${effective.path} carries the languages convention, but its value cannot be read (${declared.problem}: ${declared.detail}). Until it is, nothing checks which language this vault's pages are written in.`,
+        repair: {
+          summary: 'Show the owner the section, ask which languages the vault uses (ISO 639-1 codes, primary first), and correct the single `**Languages of this vault: …**` line — with a backup, through the conventions skill.',
+          steps: [],
+        },
+      });
+    }
+    if (effective.conventions.includes(RETIRED_BILINGUAL_ID)) {
+      const hasLanguages = declared.installed;
+      findings.push({
+        kind: 'bilingual-to-migrate',
+        severity: 'warning',
+        message:
+          `${effective.path} still carries the retired bilingual convention, replaced by languages on 2026-09-26. ` +
+          (hasLanguages
+            ? `It already carries languages (${declared.languages ? declared.languages.join(', ') : 'value unreadable'}): only the removal of bilingual remains.`
+            : `bilingual meant ${BILINGUAL_EQUIVALENT.join(', ')}; the owner decides the value — it is not always that one.`),
+        repair: {
+          summary: hasLanguages
+            ? 'Remove bilingual through the conventions skill (verbatim preview, sidecar backup, verifyRemoval) after the owner says yes.'
+            : 'Ask the owner for the languages of this vault, install languages with that value, then remove bilingual — one vault at a time, with preview and backup, after the owner says yes.',
+          steps: [
+            ...(hasLanguages ? [] : [{ command: `/obsidian-router:conventions install ${LANGUAGES_CONVENTION_ID} on ${vault}` }]),
+            { command: `/obsidian-router:conventions remove ${RETIRED_BILINGUAL_ID} on ${vault}` },
+          ],
         },
       });
     }
@@ -249,6 +325,7 @@ export function auditVaultConventions({
     candidates: files,
     backups: inherited,
     missingRecommended,
+    languages,
     findings,
   };
 }

@@ -22,6 +22,59 @@ ignored, 13 of the 15 local vaults found), and 5.1.0 documents `1` as "everythin
 as before"; `2` would give the same headers a different meaning. Deprecated in 5.x and removed
 in 6.0: before then, the PATCH must move to URL-path targeting gated on the plugin version.
 
+### Each vault declares its languages — the `languages` convention replaces `bilingual`
+
+Decision `convention-languages-remplace-bilingual` (accepted 2026-09-26). `bilingual` answered
+"which languages" and "how to lay them out" with one switch, and its absence answered neither: a
+vault without it was not "in French", it was in whatever language the conversation was in.
+
+- **New convention `languages`** (`skills/conventions/snippets/languages.md`) — the first one with a
+  value of its own: one line, `**Languages of this vault: fr, en**`, an ordered list of ISO 639-1
+  codes, the first being the primary language. One language: every page in it, whatever the
+  conversation. Several: one `## ` section per language, in order, with the layout `bilingual`
+  taught. Helpers in `src/helpers/convention-languages.mjs`: parse, read (four named problems —
+  missing, doubled, invalid value, duplicated section), render (refuses to install the raw
+  placeholder), mask.
+- **`bilingual` is retired, not deleted**: moved to `skills/conventions/retired/`, so the picker (which
+  globs `snippets/`) no longer offers it while the server catalogue still RECOGNISES it — a vault
+  that carries it is reported, not silently "not installed". A convention present in both folders
+  is a load error.
+- **Audit and brief**: `RECOMMENDED_CONVENTION_IDS` lists `languages` instead of `bilingual`;
+  `audit_vault_conventions` returns `languages` (the declared list or `null`) and two new findings,
+  `bilingual-to-migrate` and `languages-value-unreadable`; when a readable value is in force, the
+  first-write brief carries `languages` and a one-sentence `writeIn` instruction, plus
+  `conventionsToRepair`. No `install languages` step is proposed for a vault that carries
+  `bilingual` (the migration proposes it) or that has two conventions files. The CLI
+  `scripts/conventions-audit.mjs` prints the value per vault (`unknown (two conventions files)`,
+  `unreadable` or `not declared` when there is none to print).
+- **Write-time checks, never blocking**, on EVERY page of a vault that declares its languages (not
+  only decision pages): a `language:` code outside the list (warning), no `language:` (info), and
+  in a multi-language vault a page of 500+ words without one section per language or with them out
+  of order (warning). Navigation files and the conventions file are exempt; a language the router
+  cannot recognise a section for is reported as unchecked, never as present.
+- **The drift detector compares the rule, never the value**: a valid value is masked before the
+  comparison, so two vaults with different languages are both in step. A doubled or invalid value
+  line is not masked and still reads as drift — and so does the raw snippet appended unfilled
+  (`<languages>` in place of a value), which is byte-identical to the snippet yet declares nothing.
+- **What is and is not the value**: only a prose line counts — a value line inside a fenced
+  block, an HTML comment or an Obsidian `%% %%` comment is an example, not the value. The fence
+  and HTML-comment rules are the heading scanner's own: `src/helpers/markdown-headings.mjs` now
+  exports `classifyLines`, which `scanHeadings` walks too (differential fuzz against the previous
+  scanner: 0 differences over 200,000 generated documents). A value is read, and a `writeIn`
+  instruction given, only when ONE conventions file is in force — never beside two. The value
+  must be a current ISO 639-1 code (183).
+- **What is a language section**: a flag alone or followed by the language's name, or a label
+  naming the language; never a bare code (`## IT`), a flag in front of a topic, or a one-word name
+  qualified by something else (`## English (grammar lesson)`). Recognised for fr, en, es, de, it,
+  pt, nl; other languages are reported unchecked. Known limits, documented in the code: the
+  scanner does not know `%%` comments (headings inside them still count), and an HTML comment
+  opener is recognised at column 0 only.
+- **Menu and skills**: `meta-attach-vault` asks "Langues du vault ?" (`fr` by default) instead of a
+  `bilingual` box; the `conventions` skill documents the value, the retired folder and a
+  `migrate-bilingual` procedure (measure, ask, show, back up, `removeConvention` + `verifyRemoval`,
+  `ifMatch` write, re-audit — one vault at a time); `wiki-lint` Check S reports the value and the
+  two new findings.
+
 ### A vault's conventions reach the session that writes into it — and a template sync stops giving vaults a second set
 
 Reported from a real night (2026-09-25): a session on the Hermes VM, in a code workspace, wrote

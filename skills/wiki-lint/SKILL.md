@@ -332,6 +332,11 @@ Check Q compares a section that is THERE with its snippet. It cannot see a vault
 - `missing-recommended` → WARNING, with the `conventions install <id>` lines. A template-born vault lacks four by design since 2026-09-11: offer them, and never report them as "lost" — nothing the audit reads can prove a vault once carried them.
 - `inherited-backups` → INFO. Say plainly that these backups are the reference vault's, so no conclusion about this vault may be drawn from them — the misreading that produced this check.
 - `reference-unknown` → say "unknown", never "no".
+- `bilingual-to-migrate` → WARNING. The vault still carries the retired `bilingual` convention (replaced by `languages` on 2026-09-26). Propose `/obsidian-router:conventions migrate-bilingual on <vault>`; never assume the value — the owner chooses it.
+- `languages-value-unreadable` → WARNING. `languages` is installed but its value line cannot be read: nothing checks the language of this vault's pages.
+- Report the audit's `languages` value in the summary (`languages: fr, en` or `not declared`). **A value that differs between two vaults is never drift**: Check Q masks a valid value before comparing, and this lint must not suggest aligning one vault's languages on another's.
+
+With a declared value, also flag in the pages you already scan (WARNING, same rules the router applies at write time): a `language:` code outside the vault's list, and — in a vault with several languages — a page of 500 words or more without one `## ` section per language (recognised by its flag or its name, e.g. `## 🇫🇷 Version française`), or with them out of the declared order. Navigation files (`catalog`, `hot`, `journal`, `overview`, indexes) are exempt.
 
 For the whole local fleet in one pass, the router clone ships `scripts/conventions-audit.mjs` for a maintainer (read-only; `--json` for machines) — not something this skill runs. Repairs stay per vault, each shown and approved.
 

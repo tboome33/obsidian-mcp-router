@@ -124,6 +124,72 @@ function atxText(raw) {
 }
 
 /**
+ * Every line of `text`, classified by the ONE set of rules this module owns
+ * for "is this line prose at all": frontmatter, a fenced block (its opener,
+ * its body and its closer), an HTML comment (its opener and its body), or
+ * prose. `scanHeadings` walks it; so does any other reader that must not see
+ * a line inside a fence or a comment (the `languages` value line was the
+ * second, and a review round found it had grown a SECOND fence rule that
+ * disagreed with this one on three inputs — a backtick in an info string, a
+ * closer followed by a non-breaking space, and comments).
+ *
+ * @param {string} text
+ * @returns {Generator<{line: string, lineNo: number, lineStart: number,
+ *   boundedEnd: number, last: boolean,
+ *   kind: 'frontmatter'|'fence-open'|'fence'|'comment-open'|'comment'|'prose'}>}
+ *   `line` has its `\r` terminator stripped; offsets are into `text`.
+ */
+export function* classifyLines(text) {
+  if (typeof text !== 'string') return;
+  const fmEnd = frontmatterEnd(text);
+  let fenceChar = null;
+  let fenceLen = 0;
+  let inComment = false;
+  let offset = 0;
+  let lineNo = 0;
+  while (offset <= text.length) {
+    const nl = text.indexOf('\n', offset);
+    const lineEnd = nl === -1 ? text.length : nl;
+    const rawLine = text.slice(offset, lineEnd);
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    lineNo += 1;
+    const lineStart = offset;
+    const nextOffset = nl === -1 ? text.length + 1 : nl + 1;
+    const boundedEnd = nextOffset > text.length ? text.length : nextOffset;
+    const last = nl === -1;
+    let kind;
+    if (lineStart < fmEnd) {
+      kind = 'frontmatter';
+    } else if (fenceChar !== null) {
+      const closer = FENCE.exec(line);
+      if (closer && closer[1][0] === fenceChar && closer[1].length >= fenceLen && /^[ \t]*$/.test(closer[2])) {
+        fenceChar = null;
+        fenceLen = 0;
+      }
+      kind = 'fence';
+    } else if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      kind = 'comment';
+    } else {
+      const fence = FENCE.exec(line);
+      if (fence && !(fence[1][0] === '`' && fence[2].includes('`'))) {
+        fenceChar = fence[1][0];
+        fenceLen = fence[1].length;
+        kind = 'fence-open';
+      } else if (/^<!--/.test(line)) {
+        if (!line.includes('-->')) inComment = true;
+        kind = 'comment-open';
+      } else {
+        kind = 'prose';
+      }
+    }
+    yield { line, lineNo, lineStart, boundedEnd, last, kind };
+    offset = nextOffset;
+    if (last) break;
+  }
+}
+
+/**
  * Every heading in `text` that is not inside a fenced code block, an HTML
  * comment, or the document's YAML frontmatter.
  *
@@ -169,75 +235,18 @@ export function scanHeadings(text) {
   if (typeof text !== 'string') return [];
 
   const headings = [];
-  const fmEnd = frontmatterEnd(text);
-  let fenceChar = null;
-  let fenceLen = 0;
-  let inComment = false;
-  let offset = 0;
-  let lineNo = 0;
   /** The paragraph currently open, or null. */
   let para = null;
 
-  while (offset <= text.length) {
-    const nl = text.indexOf('\n', offset);
-    const lineEnd = nl === -1 ? text.length : nl;
-    const rawLine = text.slice(offset, lineEnd);
-    // A CRLF document must not hand `\r` to the heading text, and must not lose
-    // it from the offsets either — the cut has to be byte-exact. A LONE `\r`
-    // terminator is stripped too; the pre-extraction scanner did not, so a
-    // classic-Mac line ending hid a heading from it. Widened on purpose, with
-    // its own witness.
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    lineNo += 1;
-    const lineStart = offset;
-    const nextOffset = nl === -1 ? text.length + 1 : nl + 1;
-    const boundedEnd = nextOffset > text.length ? text.length : nextOffset;
-    const advance = () => { offset = nextOffset; };
-    const done = () => nl === -1;
-
-    if (lineStart < fmEnd) {
+  for (const { line, lineNo, lineStart, boundedEnd, kind } of classifyLines(text)) {
+    // Frontmatter, a fence opener and a comment opener close any paragraph; a
+    // fence or comment BODY leaves it as it was — exactly the pre-extraction
+    // behaviour, which the witnesses in markdown-headings.test.mjs pin.
+    if (kind === 'frontmatter' || kind === 'fence-open' || kind === 'comment-open') {
       para = null;
-      advance();
-      if (done()) break;
       continue;
     }
-
-    if (fenceChar !== null) {
-      const closer = FENCE.exec(line);
-      if (closer && closer[1][0] === fenceChar && closer[1].length >= fenceLen && /^[ \t]*$/.test(closer[2])) {
-        fenceChar = null;
-        fenceLen = 0;
-      }
-      advance();
-      if (done()) break;
-      continue;
-    }
-
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      advance();
-      if (done()) break;
-      continue;
-    }
-
-    const fence = FENCE.exec(line);
-    if (fence && !(fence[1][0] === '`' && fence[2].includes('`'))) {
-      fenceChar = fence[1][0];
-      fenceLen = fence[1].length;
-      para = null;
-      advance();
-      if (done()) break;
-      continue;
-    }
-
-    if (/^<!--/.test(line)) {
-      if (!line.includes('-->')) inComment = true;
-      para = null;
-      advance();
-      if (done()) break;
-      continue;
-    }
-
+    if (kind !== 'prose') continue;
     if (SETEXT_UNDERLINE.test(line)) {
       // With no paragraph above it, this is a thematic break (or a stray rule),
       // and it must not become a paragraph line either — otherwise a second
@@ -255,8 +264,6 @@ export function scanHeadings(text) {
         });
       }
       para = null;
-      advance();
-      if (done()) break;
       continue;
     }
 
@@ -279,8 +286,6 @@ export function scanHeadings(text) {
         end: boundedEnd,
       });
       para = null;
-      advance();
-      if (done()) break;
       continue;
     }
 
@@ -299,8 +304,6 @@ export function scanHeadings(text) {
       };
     }
 
-    advance();
-    if (done()) break;
   }
 
   return headings;

@@ -30,8 +30,8 @@ const CONVENTIONS = fs.readFileSync(path.join(REPO, 'tests', 'fixtures', 'kiviri
 const tmpDirs = [];
 after(() => { for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
 
-async function startFakeVault() {
-  const files = { 'Documentation/CLAUDE.md': CONVENTIONS };
+async function startFakeVault(initial = { 'Documentation/CLAUDE.md': CONVENTIONS }) {
+  const files = { ...initial };
   const seen = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -162,13 +162,46 @@ describe('E2E: the first write into a vault carries its conventions', () => {
 
       const audit = await rt.tool('audit_vault_conventions', { vault: 'probe' });
       assert.equal(audit.conventionsFile, 'Documentation/CLAUDE.md');
-      assert.deepEqual(audit.missingRecommended.sort(), ['auto-enrichment', 'bilingual', 'heading-hierarchy', 'source-type']);
+      assert.deepEqual(audit.missingRecommended.sort(), ['auto-enrichment', 'heading-hierarchy', 'languages', 'source-type']);
       assert.equal(audit.reference.status, 'not-configured');
 
       const lv = await rt.tool('list_vaults', {});
       assert.match(lv.routerBuild?.fingerprint ?? '', /^[0-9a-f]{16}$/, JSON.stringify(lv.routerBuild));
       assert.equal(lv.routerBuild.hooksManifest, true, 'this checkout has hooks/hooks.json');
       assert.ok(['not-yet-observed', 'not-observed'].includes(lv.sessionHooks?.status), `no hook ran in this test: ${JSON.stringify(lv.sessionHooks)}`);
+    } finally {
+      rt.kill();
+      await vault.close();
+    }
+  });
+
+  test('a vault that declares its languages: the brief says them, a page outside them is warned, bilingual is named to migrate', async () => {
+    // Decision `convention-languages-remplace-bilingual`. The conventions file
+    // is the shipped snippet, filled the way an install fills it, plus the
+    // retired bilingual section a not-yet-migrated vault still carries.
+    const snippet = fs.readFileSync(path.join(REPO, 'skills', 'conventions', 'snippets', 'languages.md'), 'utf8').replace(/\r\n/g, '\n');
+    const bilingual = fs.readFileSync(path.join(REPO, 'skills', 'conventions', 'retired', 'bilingual.md'), 'utf8').replace(/\r\n/g, '\n');
+    const filled = snippet.replace('**Languages of this vault: <languages>**', '**Languages of this vault: fr**');
+    assert.notEqual(filled, snippet, 'the fixture must hold a value');
+    const vault = await startFakeVault({ 'CLAUDE.md': `# Conventions\n\n${filled}\n${bilingual}` });
+    const rt = startRouter(vault.port);
+    try {
+      await rt.init();
+      const first = await rt.tool('write_file', {
+        vault: 'probe',
+        path: 'wiki/note.md',
+        content: '---\ntype: concept\nlanguage: [en]\n---\n\n# Note\n\nWritten in English.\n',
+      });
+      assert.ok(vault.files['wiki/note.md'], 'the write happened — the checks never block it');
+      assert.deepEqual(first.vaultConventions?.languages, ['fr'], JSON.stringify(first.vaultConventions));
+      assert.match(first.vaultConventions.writeIn, /Write every page in `fr`/);
+      assert.deepEqual(first.vaultConventions.conventionsToRepair?.map((x) => x.kind), ['bilingual-to-migrate']);
+      const rules = first.pageChecks?.[0]?.findings?.map((f) => f.rule) ?? [];
+      assert.ok(rules.includes('language-outside-vault-list'), `got ${rules}`);
+
+      const audit = await rt.tool('audit_vault_conventions', { vault: 'probe' });
+      assert.deepEqual(audit.languages, ['fr']);
+      assert.ok(audit.findings.some((f) => f.kind === 'bilingual-to-migrate'));
     } finally {
       rt.kill();
       await vault.close();

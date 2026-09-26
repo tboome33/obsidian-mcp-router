@@ -113,7 +113,7 @@ describe('the Kiviri-OS reproduction: inherited backups are not a loss', () => {
     assert.equal(a.ambiguous, false);
     assert.equal(a.candidates[0].templateCopy, true);
     assert.deepEqual(a.backups.map((b) => b.inherited), [true, true, true]);
-    assert.deepEqual(a.missingRecommended.sort(), ['auto-enrichment', 'bilingual', 'heading-hierarchy', 'source-type']);
+    assert.deepEqual(a.missingRecommended.sort(), ['auto-enrichment', 'heading-hierarchy', 'languages', 'source-type']);
     const kinds = a.findings.map((f) => f.kind).sort();
     assert.deepEqual(kinds, ['inherited-backups', 'missing-recommended']);
     const missing = a.findings.find((f) => f.kind === 'missing-recommended');
@@ -168,8 +168,13 @@ describe('the Kiviri-OS reproduction: inherited backups are not a loss', () => {
         ifMatch: sha256Text(read('CLAUDE.md')),
       },
     }]);
-    // Measured against the file the repair KEEPS: the vault's own eight.
-    assert.deepEqual(a.missingRecommended, []);
+    // Measured against the file the repair KEEPS: the vault's own eight — the
+    // pre-2026-09-26 set, so `bilingual` where `languages` is now recommended.
+    // The retired convention is NOT reported for migration yet, and no value
+    // is read: while two files exist, none is in force (review finding).
+    assert.deepEqual(a.missingRecommended, ['languages']);
+    assert.ok(!a.findings.some((x) => x.kind === 'bilingual-to-migrate'));
+    assert.equal(a.languages, null);
   });
 
   test('a template copy beside TWO files of the vault\'s own: no rename, since it would not repair', () => {

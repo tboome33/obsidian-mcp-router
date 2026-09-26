@@ -36,7 +36,7 @@ If it warns `no-articles-in-scope` / `no-tour-steps`, tell the user the scope is
 For each skeleton step, write:
 - A **clear step title** (refine the default if needed).
 - A **2-4 sentence description**: what this step covers, *why it matters*, and how it connects to the previous step — building a coherent "what is this → how it works" arc. Ground it in the `nodes[].summary` provided; don't invent.
-- Follow the vault's language convention (bilingual FR+EN if the vault is bilingual — see its `CLAUDE`).
+- Follow the vault's language convention — the `languages` value in its conventions file (one language: everything in it; several: one section per language, in order). A vault that still carries the retired `bilingual` convention (not yet migrated) is governed by that section's own text — French then English — until its owner migrates it; the migration value is theirs to choose and may differ.
 - Optionally a `languageLesson`-style aside for domain concepts, if useful.
 
 Keep it 5-15 steps. Each step highlights 1-5 nodes (the skeleton already caps this).

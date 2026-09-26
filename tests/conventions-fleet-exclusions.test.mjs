@@ -596,7 +596,7 @@ describe('the --fleet wiring', () => {
     fs.mkdirSync(path.join(vault, 'Documentation'), { recursive: true });
     fs.writeFileSync(
       path.join(vault, 'Documentation', 'CLAUDE.md'),
-      '# Rules\n\n## Bilingual convention (FR + EN, FR primary)\n\ndrifted on purpose\n',
+      '# Rules\n\n## Languages convention (declared per vault)\n\ndrifted on purpose\n',
     );
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [vault]: { port: 1 } } }));
@@ -807,7 +807,7 @@ describe('the --fleet wiring', () => {
         entries: [{
           vault: 'vault-one',
           file: 'wiki-meta/CLAUDE.md',
-          convention: 'bilingual',
+          convention: 'languages',
           snippetSha256: SHA_A,
           targetSha256: SHA_B,
           reason: 'points at a location this vault does not use',

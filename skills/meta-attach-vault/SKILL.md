@@ -209,7 +209,7 @@ Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, s
 - **wiki-query-first** — consulter le wiki AVANT de répondre à une question de fond
 - **path-disambiguation** — ne jamais confondre le path du workspace et celui du vault
 - **source-type** — tracer d'où vient une page (`source_type:` en frontmatter)
-- **bilingual** — toute page substantielle en FR + EN, FR d'abord
+- **languages** — la ou les langues des pages de ce vault (une seule : tout dans cette langue ; plusieurs : une section par langue) — *la valeur est demandée juste après*
 - **heading-hierarchy** — structure de titres imposée, et contrat de frontmatter sur les pages de décision
 - **auto-enrichment** — Claude propose de sauvegarder les décisions et résultats au fil de la conversation (il demande toujours avant d'écrire), et marque une pause quand tu changes de sujet
 - **description-frontmatter** — *comment bien écrire* la phrase `description:` (le champ, lui, est requis de toute façon)
@@ -217,6 +217,12 @@ Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, s
 `description-frontmatter` n'est **pas** un choix de comportement comme les sept autres, et son étiquette doit le dire **avant** que l'utilisateur coche ou décoche, pas après. Ce qu'il installe, c'est le **guide de rédaction** : quoi dire, quelle longueur, comment citer la valeur. Le **champ lui-même est exigé indépendamment** — le lint du wiki signale chaque page sans `description` depuis la v0.59.2, la régénération des projections OKF les reporte, et les index publient la phrase telle quelle. Cette exigence-là part avec chaque vault scaffoldé, dans le gabarit, sans passer par ce menu.
 
 Donc : décocher cette case ne rend rien optionnel, et ne retire rien d'un vault qui la porte déjà — ça renonce seulement au guide. Dis-le dans ces termes. Mesuré le 2026-09-11 : **aucun des 16 vaults inspectés ayant un fichier de conventions ne contenait cette section**, alors que le lint s'appliquait à leurs pages.
+
+**`languages` is the one option with a value** (decision [[convention-languages-remplace-bilingual]], 2026-09-26 — it replaced the pre-checked `bilingual` box). When it lands in the `install` bucket, ask ONE more question before installing it:
+
+> Langues du vault ? (codes ISO 639-1, la langue principale d'abord — `fr` par défaut ; par exemple `fr`, `fr, en`, `en`)
+
+An empty answer is `fr`. Install it with that value (`/obsidian-router:conventions install languages` renders the snippet with it — never the raw snippet, whose `<languages>` placeholder declares nothing). A value `parseLanguagesValue` refuses (`français`, `fr-FR`) is asked again, never guessed. When the vault ALREADY carries `languages`, show its current value beside the option (`— déjà en place : fr, en`) and do not ask again. A vault that still carries the retired `bilingual` shows it as *« bilingual — retirée, à migrer vers languages »*: it is not in the menu (the picker globs `snippets/`, and `bilingual` lives in `retired/`), so offer the migration (`/obsidian-router:conventions migrate-bilingual`) instead of a checkbox — and never read its absence from the menu as a removal the user asked for.
 
 **The `auto-enrichment` line** above is deliberate and was corrected on 2026-09-11: *"règles d'enrichissement automatique (4 modes)"* warned the user of nothing. The convention grants no write permission — the mode defaults to `ClaudeAsk`, which always asks — but it DOES change the shape of every conversation, and that is what the description has to say.
 
@@ -235,7 +241,7 @@ Print `plan.plan` before acting — it counts intentions. Show progress per conv
 
 **If the picker was skipped, NAME what is missing.** Impatience, a non-interactive run, a user who says "plus tard" — the flow can reach the recap without the question ever being answered. The recap must then list the conventions that are not installed and the command that adds them:
 
-> Conventions non installées : `bilingual`, `heading-hierarchy`, `auto-enrichment` — `/obsidian-router:conventions install <id>` quand tu veux.
+> Conventions non installées : `languages`, `heading-hierarchy`, `auto-enrichment` — `/obsidian-router:conventions install <id>` quand tu veux.
 
 A missing feature that is *named* is a choice deferred; a missing feature that is silent is a feature that will never exist for its owner. That is the failure mode the whole decision is built against (decision [[conventions-livrees-par-le-modele]] §4), and it is the one case the pre-checking cannot cover on its own.
 

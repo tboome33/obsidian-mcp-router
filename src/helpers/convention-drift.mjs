@@ -48,6 +48,7 @@
 import { createHash } from 'node:crypto';
 
 import { findConventionSection } from './claude-md-conventions.mjs';
+import { LANGUAGES_CONVENTION_ID, hasUnfilledPlaceholder, maskLanguagesValue } from './convention-languages.mjs';
 
 /** The rule name every finding from this module carries. */
 export const DRIFT_RULE = 'convention-drift';
@@ -238,7 +239,30 @@ export function compareConvention(snippet, content) {
     };
   }
 
-  const targetSha256 = conventionFingerprint(found.text);
+  // A PARAMETERISED convention carries a value of its own in every vault (form
+  // B of decision `exclusions-de-propagation-des-conventions`: a line that
+  // speaks of THIS vault). Its valid value is put back to the snippet's
+  // placeholder before comparing, so two vaults with different languages are
+  // both in step with the library. Only a valid, single value is masked — see
+  // `maskLanguagesValue` — so a damaged value line still reads as drift.
+  const targetText = snippet?.id === LANGUAGES_CONVENTION_ID ? maskLanguagesValue(found.text) : found.text;
+  const targetSha256 = conventionFingerprint(targetText);
+  // The one way a languages section can be byte-identical to its snippet and
+  // still wrong: the raw snippet was appended, placeholder and all. That
+  // section declares no language, so it is reported as a one-line drift —
+  // the line that must carry the vault's value (review finding).
+  const unfilled = snippet?.id === LANGUAGES_CONVENTION_ID && hasUnfilledPlaceholder(found.text);
+  if (targetSha256 === snippetSha256 && unfilled) {
+    return {
+      status: DRIFT_STATUS.DRIFT,
+      driftLines: 1,
+      exact: true,
+      snippetSha256,
+      targetSha256,
+      line: found.line ?? null,
+      occurrences: 1,
+    };
+  }
   if (targetSha256 === snippetSha256) {
     return {
       status: DRIFT_STATUS.IDENTICAL,
@@ -252,7 +276,7 @@ export function compareConvention(snippet, content) {
   }
 
   const { count, exact } = countDriftLines(
-    normaliseConventionLines(found.text),
+    normaliseConventionLines(targetText),
     normaliseConventionLines(snippetText),
   );
   return {

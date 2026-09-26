@@ -28,7 +28,10 @@
  * Flags:
  *   --vault <name|path>  restrict to one vault
  *   --config <path>      router config (default: the per-user location)
- *   --snippets <dir>     snippet library (default: this repo's)
+ *   --snippets <dir>     snippet library (default: this repo's); the RETIRED
+ *                        conventions are read from its sibling `retired/`
+ *                        folder, whichever library is given — so a custom
+ *                        library brings its own retirements, or none
  *   --json               one JSON document instead of the table
  */
 import fs from 'node:fs';
@@ -38,6 +41,7 @@ import { fileURLToPath } from 'node:url';
 
 import { CLAUDE_MD_CANDIDATES } from '../src/helpers/claude-md-conventions.mjs';
 import { auditVaultConventions, backupKey } from '../src/helpers/conventions-audit.mjs';
+import { loadConventionCatalogue } from '../src/helpers/convention-catalogue.mjs';
 import { isBackupName } from '../src/helpers/root-docs-filter.mjs';
 import { configuredVaultName, referenceVaultPath, registeredVaultPaths } from '../src/helpers/vault-slug.mjs';
 import { loadSnippetLibrary } from './conventions-drift.mjs';
@@ -158,7 +162,16 @@ function main() {
     if (snippets.length === 0) console.error(`✗ no convention snippets loaded from ${snippetsDir}`);
     process.exit(1);
   }
-  const catalogue = snippets.map((s) => ({ id: s.id, heading: s.heading }));
+  // Plus the RETIRED conventions beside the library (`../retired/`): offered
+  // nowhere, but a vault that still carries one must be reported "to migrate",
+  // not "not installed".
+  const retiredDir = path.join(path.dirname(snippetsDir), 'retired');
+  const withRetired = loadConventionCatalogue(snippetsDir, { retiredDir });
+  if (withRetired.errors.length > 0) {
+    for (const e of withRetired.errors) console.error(`✗ ${e}`);
+    process.exit(1);
+  }
+  const catalogue = withRetired.catalogue;
 
   const configPath = opts.config
     ? path.resolve(opts.config)
@@ -222,6 +235,15 @@ function main() {
   for (const r of rows) {
     const file = r.skipped ? r.skipped : (r.ambiguous ? `${r.candidates.length} files: ${r.candidates.map((c) => c.path).join(' + ')}` : (r.conventionsFile ?? 'no conventions file'));
     console.log(`  ${LABEL[r.verdict] ?? r.verdict} ${String(r.vault).padEnd(34)} ${file}`);
+    if (!r.skipped) {
+      // "not declared" only when it is known: an ambiguous vault or an
+      // unreadable value HAS a declaration nobody can read (review round 2).
+      const unreadable = (r.findings ?? []).some((f) => f.kind === 'languages-value-unreadable');
+      const shown = Array.isArray(r.languages) ? r.languages.join(', ')
+        : r.ambiguous ? 'unknown (two conventions files)'
+          : unreadable ? 'unreadable' : 'not declared';
+      console.log(`      languages: ${shown}`);
+    }
     for (const f of r.findings ?? []) {
       if (f.severity === 'info' && f.kind === 'reference-unknown') continue;
       console.log(`      - [${f.kind}] ${f.message}`);

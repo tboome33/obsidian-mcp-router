@@ -27,7 +27,7 @@ import { checkWrittenPage } from '../helpers/write-time-page-checks.mjs';
 export const TOOL_DEFINITION = {
   name: 'audit_vault_conventions',
   description:
-    "READ-ONLY. Which conventions a vault is really under: the conventions file the router resolves (or the two it cannot choose between), the conventions it carries, the recommended ones it lacks, which files are verbatim copies of the reference (template) vault's, and which CLAUDE.md.bak-* backups are the template's history rather than this vault's. Works on remote vaults (over REST). Each finding carries a repair step (a move_file with its ifMatch, or a conventions-skill install from the CURRENT snippet) to PROPOSE to the user — never apply one without their go-ahead. A backup that holds a convention the current file lacks is NOT evidence of a loss when the audit marks it inherited.",
+    "READ-ONLY. Which conventions a vault is really under: the conventions file the router resolves (or the two it cannot choose between), the conventions it carries, the languages it declares (`languages`: e.g. [\"fr\",\"en\"], or null), a retired `bilingual` still to migrate, the recommended ones it lacks, which files are verbatim copies of the reference (template) vault's, and which CLAUDE.md.bak-* backups are the template's history rather than this vault's. Works on remote vaults (over REST). Each finding carries a repair step (a move_file with its ifMatch, or a conventions-skill install from the CURRENT snippet) to PROPOSE to the user — never apply one without their go-ahead. A backup that holds a convention the current file lacks is NOT evidence of a loss when the audit marks it inherited.",
   inputSchema: {
     type: 'object',
     properties: {
@@ -161,6 +161,20 @@ export function buildConventionsBrief(audit) {
     missingRecommended: audit.missingRecommended.filter((id) => RECOMMENDED_CONVENTION_IDS.includes(id)),
     decisionPages: DECISION_CONTRACT,
   };
+  // The one convention a writer cannot follow without its VALUE: which
+  // language(s) to write in. Said in the brief itself, because the writer may
+  // never open the conventions file the brief points at.
+  // Never beside an ambiguity: with two conventions files there is no value
+  // in force to instruct from (review finding — the audit guards this too,
+  // and the brief does not rely on it).
+  if (!audit.ambiguous && Array.isArray(audit.languages) && audit.languages.length > 0) {
+    brief.languages = audit.languages;
+    brief.writeIn = audit.languages.length === 1
+      ? `Write every page in \`${audit.languages[0]}\`, whatever the language of the conversation; put \`language: [${audit.languages[0]}]\` in the frontmatter.`
+      : `Write every substantive page with one \`## \` section per language, in this order: ${audit.languages.join(', ')} (\`${audit.languages[0]}\` is primary: title and description). Put \`language: [${audit.languages.join(', ')}]\` in the frontmatter.`;
+  }
+  const toMigrate = (audit.findings ?? []).filter((f) => f.kind === 'bilingual-to-migrate' || f.kind === 'languages-value-unreadable');
+  if (toMigrate.length > 0) brief.conventionsToRepair = toMigrate.map((f) => ({ kind: f.kind, message: f.message }));
   if (audit.ambiguous) {
     brief.ambiguous = audit.candidates.map((c) => ({ path: c.path, conventions: c.conventions }));
     brief.read = `This vault has ${audit.candidates.length} conventions files and the router cannot tell which is in force: read them (get_file) and ask the user before writing substantive pages. audit_vault_conventions proposes the repair.`;
@@ -274,6 +288,9 @@ export function createConventionsBriefing(deps = {}) {
       const vaultHasSourceType = audit
         ? (audit.ambiguous ? null : (audit.candidates.find((c) => c.path === audit.conventionsFile)?.conventions.includes('source-type') ?? false))
         : null;
+      // Only a value the audit READ from the file in force: an ambiguous pair,
+      // an unreadable value or a vault without the convention checks nothing.
+      const vaultLanguages = audit && !audit.ambiguous && Array.isArray(audit.languages) ? audit.languages : null;
       const checks = [];
       const skipped = [];
       const touched = pagesTouched(name, args);
@@ -286,7 +303,7 @@ export function createConventionsBriefing(deps = {}) {
           if (Date.now() - started >= deadlineMs) { skipped.push(page.path); continue; }
           try { content = asText(await withDeadline(read(vault, page.path), remaining(), `reading ${page.path}`)); } catch { skipped.push(page.path); continue; }
         }
-        const r = checkWrittenPage({ path: page.path, content, vaultHasSourceType });
+        const r = checkWrittenPage({ path: page.path, content, vaultHasSourceType, vaultLanguages });
         if (r.checked && r.findings.length > 0) checks.push({ path: page.path, type: r.type, findings: r.findings });
       }
       if (checks.length > 0) {
