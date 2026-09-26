@@ -118,6 +118,19 @@ Produces a one-shot diagnostic of the multi-vault Obsidian router. Run it when t
    stick across sessions, and then let it go. Repeating the offer is the pressure this
    feature exists to avoid.
 
+4b. **Report which router build answers, and whether this session's hooks ran** — the
+   `routerBuild` and `sessionHooks` fields of the same response. Two lines:
+
+   - `Router build: <version> · fingerprint <fingerprint>` — the version string alone
+     names every commit since the last release (the plugin installs from `main`); the
+     fingerprint names the server and hook code (not the skills' text), and the repository script `scripts/identify-build.mjs`, given it in a
+     clone names the commit. Add `· git <gitHead>` when present.
+   - `sessionHooks.status`: `observed` → `Hooks: ran`. `absent-from-plugin` → ⚠️ quote the
+     `message` verbatim: this copy of the plugin has no hooks/hooks.json, so hot.md, the
+     decisions recall and the briefing never reached this session. `not-observed` → ⚠️
+     quote the `message` verbatim. `not-yet-observed` → say it is too early to tell. Never
+     say "hot.md is loaded" when the status is not `observed`.
+
 5. End with one of two endings:
 
 - **All healthy**:

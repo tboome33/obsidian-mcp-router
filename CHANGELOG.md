@@ -26,6 +26,172 @@ the same request as before. Symptom fixed: `view-agent-direct` answered `400 unk
 the desktop vault `router`, so writes into it carried no `viewLink`. On that router, declare
 `"obsidianName"` on the `router` entry for the fix to take effect.
 
+## [0.96.0] — 2026-09-26 — a vault's rules reach whoever writes into it, and each vault says which language it speaks
+
+Everything merged since v0.95.0, fifteen days of it. The thread through the largest part: a
+vault's conventions now reach the session that writes into it (a brief on the first write, the
+decision pages checked as they land, `audit_vault_conventions`), a template sync stops giving
+vaults a second conventions file, and the `languages` convention replaces `bilingual` — each
+vault declares its languages. Also: `set_frontmatter` works again against Local REST API 5.x, the
+hot-cache guard judges only the current run, the two asset writers pin their output directory,
+and `pptx_extract_assets` brings a deck's pictures into the vault.
+
+### `set_frontmatter` works again on vaults running Local REST API 5.x
+
+Observed 2026-09-26: on a vault whose plugin had moved to 5.1.0, every `set_frontmatter` (and
+every `patch_file` on a frontmatter or block target) failed with `400
+PatchHeaderTargetingRequiresExplicitVersion` — 5.x refuses a header-targeted PATCH that does not
+say which format it means. The router now sends `Markdown-Patch-Version: 1` on that PATCH
+(`src/rest-client.mjs`, the one place that builds it; heading targets are patched router-side and
+never reach it). Measured on the plugin bundles: 4.0.2 never reads the header (0 occurrences —
+ignored, 13 of the 15 local vaults found), and 5.1.0 documents `1` as "everything behaves exactly
+as before"; `2` would give the same headers a different meaning. Deprecated in 5.x and removed
+in 6.0: before then, the PATCH must move to URL-path targeting gated on the plugin version.
+
+### Each vault declares its languages — the `languages` convention replaces `bilingual`
+
+Decision `convention-languages-remplace-bilingual` (accepted 2026-09-26). `bilingual` answered
+"which languages" and "how to lay them out" with one switch, and its absence answered neither: a
+vault without it was not "in French", it was in whatever language the conversation was in.
+
+- **New convention `languages`** (`skills/conventions/snippets/languages.md`) — the first one with a
+  value of its own: one line, `**Languages of this vault: fr, en**`, an ordered list of ISO 639-1
+  codes, the first being the primary language. One language: every page in it, whatever the
+  conversation. Several: one `## ` section per language, in order, with the layout `bilingual`
+  taught. Helpers in `src/helpers/convention-languages.mjs`: parse, read (four named problems —
+  missing, doubled, invalid value, duplicated section), render (refuses to install the raw
+  placeholder), mask.
+- **`bilingual` is retired, not deleted**: moved to `skills/conventions/retired/`, so the picker (which
+  globs `snippets/`) no longer offers it while the server catalogue still RECOGNISES it — a vault
+  that carries it is reported, not silently "not installed". A convention present in both folders
+  is a load error.
+- **Audit and brief**: `RECOMMENDED_CONVENTION_IDS` lists `languages` instead of `bilingual`;
+  `audit_vault_conventions` returns `languages` (the declared list or `null`) and two new findings,
+  `bilingual-to-migrate` and `languages-value-unreadable`; when a readable value is in force, the
+  first-write brief carries `languages` and a one-sentence `writeIn` instruction, plus
+  `conventionsToRepair`. No `install languages` step is proposed for a vault that carries
+  `bilingual` (the migration proposes it) or that has two conventions files. The CLI
+  `scripts/conventions-audit.mjs` prints the value per vault (`unknown (two conventions files)`,
+  `unreadable` or `not declared` when there is none to print).
+- **Write-time checks, never blocking**, on EVERY page of a vault that declares its languages (not
+  only decision pages): a `language:` code outside the list (warning), no `language:` (info), and
+  in a multi-language vault a page of 500+ words without one section per language or with them out
+  of order (warning). Navigation files and the conventions file are exempt; a language the router
+  cannot recognise a section for is reported as unchecked, never as present.
+- **The drift detector compares the rule, never the value**: a valid value is masked before the
+  comparison, so two vaults with different languages are both in step. A doubled or invalid value
+  line is not masked and still reads as drift — and so does the raw snippet appended unfilled
+  (`<languages>` in place of a value), which is byte-identical to the snippet yet declares nothing.
+- **What is and is not the value**: only a prose line counts — a value line inside a fenced
+  block, an HTML comment or an Obsidian `%% %%` comment is an example, not the value. The fence
+  and HTML-comment rules are the heading scanner's own: `src/helpers/markdown-headings.mjs` now
+  exports `classifyLines`, which `scanHeadings` walks too (differential fuzz against the previous
+  scanner: 0 differences over 200,000 generated documents). A value is read, and a `writeIn`
+  instruction given, only when ONE conventions file is in force — never beside two. The value
+  must be a current ISO 639-1 code (183).
+- **What is a language section**: a flag alone or followed by the language's name, or a label
+  naming the language; never a bare code (`## IT`), a flag in front of a topic, or a one-word name
+  qualified by something else (`## English (grammar lesson)`). Recognised for fr, en, es, de, it,
+  pt, nl; other languages are reported unchecked. Known limits, documented in the code: the
+  scanner does not know `%%` comments (headings inside them still count), and an HTML comment
+  opener is recognised at column 0 only.
+- **Menu and skills**: `meta-attach-vault` asks "Langues du vault ?" (`fr` by default) instead of a
+  `bilingual` box; the `conventions` skill documents the value, the retired folder and a
+  `migrate-bilingual` procedure (measure, ask, show, back up, `removeConvention` + `verifyRemoval`,
+  `ifMatch` write, re-audit — one vault at a time); `wiki-lint` Check S reports the value and the
+  two new findings.
+
+### A vault's conventions reach the session that writes into it — and a template sync stops giving vaults a second set
+
+Reported from a real night (2026-09-25): a session on the Hermes VM, in a code workspace, wrote
+decision pages into its secondary vault Kiviri-OS without `status`, the required sections or
+`source_type` — it never knew the vault's conventions existed. The diagnosis named three causes;
+measuring them changed one and added a fourth.
+
+- **"Kiviri-OS lost four conventions" was a misreading, and the misreading is now impossible to
+  make silently.** The three `CLAUDE.md.bak-*` files beside its conventions file were byte-for-byte
+  the reference vault's — its history, copied in with `Documentation/` — and the vault had been
+  born with the template's four-convention file (decision `conventions-livrees-par-le-modele`).
+  The real defect: the 2026-09-22 template sync copied the reference vault's conventions file and
+  backups into every vault. Measured on 2026-09-26: 13 of 27 local vaults ended with TWO
+  conventions files (their own, plus the template's), which the router refuses to choose between.
+- **A template sync no longer copies a backup anywhere, nor a conventions file into a vault that
+  has one** (`src/helpers/root-docs-filter.mjs`, used by `cloneRootDocs` and the `--from-vault`
+  root copy; candidate names compared case-folded where the filesystem folds case). A vault with
+  no conventions file still receives the template's when it receives `Documentation/` — a vault
+  that already has a `Documentation/` folder is left as it is without `--force`, as before. Under
+  `--force` a folder is merged, never deleted first — the old `rmSync` took the vault's own
+  conventions file and backups with it (a side effect: a file the template later deletes now
+  stays in the vaults). Each entry left out is printed with its reason.
+- **New read-only tool `audit_vault_conventions`** (55 tools) and fleet script
+  `scripts/conventions-audit.mjs`: the conventions file the router resolves (or the two it cannot
+  choose between), the recommended conventions absent, which files are template copies and which
+  backups are inherited — each finding with its repair (a `move_file` that renames the template
+  copy, with its `ifMatch`, proposed only when exactly one copy sits beside exactly one file of the
+  vault's own; or `conventions install` from the CURRENT snippet, never from a backup). Nothing is
+  ever applied: the repairs are proposed vault by vault. A backup counts as inherited only when
+  its NAME and its BYTES match one of the reference vault's own — bytes alone called
+  `La méthode LICARES`'s own `bak-bilingual` inherited on the first real run. A reference vault
+  that cannot be read in full makes "template copy" and "inherited" UNKNOWN, never false. The
+  audit states byte identity, never history: "not evidence of a loss", not "never installed".
+- **The first write into a vault carries its conventions.** Nothing loads a vault's conventions
+  file into a session that writes into it from a code workspace, nor into a session opened in a
+  template-born vault (the file is under `Documentation/`). The first `write_file` / `patch_file`
+  / `append_to_file` / `write_bundle` / `set_frontmatter` / `merge_frontmatter` of the session into
+  a vault now returns `vaultConventions`: the file to read, the conventions it carries, the
+  recommended ones missing, and the decision-page contract. It arrives WITH that first write,
+  i.e. after it — a first bundle is written before the rules are seen. Once per vault per server
+  process (one session, for the plugin); a call that wrote nothing (a skipped patch, a merge that
+  applied no key) does not spend it. The whole addition shares one 5 s deadline — checked before
+  each REST request, so a late answer does not go on to issue more — reads no backup, and says
+  `pageChecksSkipped` for pages it could not read back in time or past the 10-page cap of a call.
+- **Decision pages are checked as they are written** (`src/helpers/write-time-page-checks.mjs`):
+  `status` present and in the enumeration, `scope`, the Context / Decision / Consequences /
+  Alternatives sections, `description`, and `source_type` (a warning where the vault carries the
+  source-type convention). Never blocking — the page is written, the findings come back as
+  `pageChecks`. A section counts when one label of the heading IS its name (`## Décision ·
+  Decision`, `## 2. Decision`), never when a label merely contains the word (`## Decision
+  context`). Bundles are checked on what their pages say after the last step, read back; appends
+  are not checked (they cannot remove a field, and would cost a whole-page download each). ATX
+  headings only.
+- **A session opened in a vault is told where its conventions are.** `hot-cache-load` adds one
+  line naming the conventions file when Claude Code does not load it itself (anything but a root
+  `CLAUDE.md` in the vault), or saying there are two. Chosen over a root `CLAUDE.md` importing the
+  real one, which would itself be a second conventions file.
+- **`list_vaults` says whether this session's hooks ran** (`sessionHooks`): `hot-cache-load` and
+  `decisions-recall` each leave a heartbeat file (one per hook — a shared file lost updates)
+  beside the router config, keyed by the workspace's real path, and the server reads it back —
+  `observed` (the hook ran; not proof hot.md existed), `absent-from-plugin` (the running copy has
+  no `hooks/hooks.json`: the Hermes VM case), `not-yet-observed`, `not-observed` — which asserts
+  "hot.md was NOT injected" only when no run is on record at all; with an earlier run (a server
+  restarted mid-session) it says the injection is UNKNOWN. The verdict names the
+  `workspace` it is about: a server started by the host outside a workspace cannot see a
+  session's hooks. `workspace-briefing` deliberately leaves none: it is pinned to write no file.
+- **`list_vaults` says which code answers** (`routerBuild`): the plugin installs from `main`, so
+  "0.95.0" named 64 commits. A fingerprint of the server and hook files (`bin/`, `src/`, `hooks/`,
+  `package.json`, `plugin.json` — not the skills' text; git blob ids, line endings normalised, OS
+  clutter ignored) names their tree, and `scripts/identify-build.mjs <fingerprint>` names the
+  commit. The first run named the plugin copy on this machine as `a56fd2f` (2026-09-14), where
+  `installed_plugins.json` recorded `50ae7bd`. `gitHead` is added when the copy is a git checkout
+  or worktree.
+- The `--attach` CLAUDE.md block no longer promises that hot.md is "auto-loaded at session
+  start": it says the hook does it when hooks run, points at `sessionHooks`, and says a vault's
+  conventions reach the session through the first write.
+- Skills `conventions` (new `audit` section), `wiki-lint` (Check S), `meta-status` (build and
+  hooks lines, both surfaces), `meta-sync-template` (what a sync never copies) updated.
+- Tests: `tests/vault-conventions-reach.test.mjs`, `tests/vault-conventions-e2e.test.mjs` (real
+  server over stdio against a loopback REST stand-in), `tests/conventions-audit-cli.test.mjs`,
+  `tests/root-docs-sync-conventions.test.mjs` (real `setup-vault.mjs --sync-plugins`). The fixture
+  `tests/fixtures/kiviri-os-documentation/` is the four real files Kiviri-OS carried, with private
+  identifiers replaced. Subprocess guard: +1 exempt spawn (`identify-build.mjs` runs git).
+- Review: three adversarial rounds (Claude reviewer + Codex ×3) found 11, then 8, then 2 defects,
+  every one repaired with a witness; 35 mutations, one rule each, each killed by its declared
+  witness with the declared-green suites green.
+- Not changed, and said so: why the remote-session copy of the plugin arrives without `hooks/`
+  is outside this repository — the local copy has it; the documentation of SSH sessions says only
+  that desktop plugins are available there. The heartbeat is the fallback: the session is now
+  told.
+
 ### Hot-cache guard: judges only the current run, and sees `scripts/vault-edit.mjs`
 
 `hooks/hot-cache-update-prompt.mjs` raised the same false alarm on five turns in a row on

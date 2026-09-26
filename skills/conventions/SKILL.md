@@ -1,6 +1,6 @@
 ---
 name: conventions
-description: Manage CLAUDE.md conventions across Obsidian vaults — install, remove, check status, or propagate conventions like source-type / bilingual / heading-hierarchy / auto-enrichment. Triggers (EN) `install source-type convention on smile`, `list conventions on this vault`, `what conventions are installed`, `sync source-type to all vaults`, `remove bilingual convention from vault X`. Triggers (FR) `installe la convention source-type sur smile`, `liste les conventions disponibles`, `quelles conventions sont actives sur ce vault`, `propage la convention source-type à tous les vaults`, `retire la convention bilingue du vault X`.
+description: Manage CLAUDE.md conventions across Obsidian vaults — install, remove, check status, migrate, or propagate conventions like source-type / languages / heading-hierarchy / auto-enrichment. Triggers (EN) `install source-type convention on smile`, `list conventions on this vault`, `what conventions are installed`, `sync source-type to all vaults`, `remove bilingual convention from vault X`, `set this vault's languages to fr, en`, `migrate bilingual to languages on X`. Triggers (FR) `installe la convention source-type sur smile`, `liste les conventions disponibles`, `quelles conventions sont actives sur ce vault`, `propage la convention source-type à tous les vaults`, `retire la convention bilingue du vault X`, `les langues de ce vault sont fr, en`, `migre bilingual vers languages sur X`.
 ---
 
 # conventions
@@ -41,7 +41,7 @@ import {
 
 Two rules the helper enforces and a hand-rolled check does not:
 
-1. **Fence-aware.** A `## ` line inside a fenced code block is an example, not a heading. The `bilingual` and `path-disambiguation` snippets both DISPLAY `## ` lines inside a ```` ```markdown ```` block. A `content.includes("## <heading>")` test reports a convention that is merely quoted as installed; a cut that stops at "the next `## `" stops inside the example, leaves two thirds of the section behind, and severs the fence — which swallows the rest of the document at render time. That happened on a real vault on 2026-09-11.
+1. **Fence-aware.** A `## ` line inside a fenced code block is an example, not a heading. The `languages` and `path-disambiguation` snippets (and the retired `bilingual`) all DISPLAY `## ` lines inside a ```` ```markdown ```` block. A `content.includes("## <heading>")` test reports a convention that is merely quoted as installed; a cut that stops at "the next `## `" stops inside the example, leaves two thirds of the section behind, and severs the fence — which swallows the rest of the document at render time. That happened on a real vault on 2026-09-11.
 2. **Exact identity, never resemblance.** `## Bilingual convention (FR + EN, FR primary) — mes ajouts` is the USER's section, not the convention. A prefix or substring match calls it installed, and `remove` then deletes their writing. Matching is exact after trimming and stripping ATX closing hashes (`## Foo ##` is `Foo`), at column 0, **and at the identity's own level**: a `# ` H1 spelled like a convention is a document title, and treating it as the convention makes its "section" run to the end of the file.
 
 A convention's section runs from its heading to the next heading **of the same level or higher** — its own `###` subsections belong to it, and an `#` H1 below ends it. Identity is narrow, the boundary is wide: a heading the user indented, or wrote setext-style (underlined with `===`), still stops the cut. A missed boundary deletes more than the convention.
@@ -60,12 +60,32 @@ There is no single path. The fleet audit that produced `CLAUDE_MD_CANDIDATES` fo
 
 So: probe the candidates (one `list_files` on the vault root, plus `wiki-meta/` and `Documentation/` if present), pass what exists to `resolveClaudeMd`, and use its answer for `install`, `remove` AND `list`. When two candidates exist it returns `ambiguous: true` **and `path: null`** — there is nothing to act on by design; name the files in `present` to the user and let them choose. If nothing exists, create at `createAt` (the vault root) and say where you put it.
 
+### `audit` — which conventions a vault is REALLY under, and what to repair
+
+Call `audit_vault_conventions({ vault })` (read-only, works on remote vaults) — or, for every local vault at once, `node <router-clone>/scripts/conventions-audit.mjs` (read-only; remote vaults come back `skipped`, never "clean"). Each vault gets `ok` / `attention` / `broken` and findings, each with the repair to PROPOSE:
+
+| finding | what it means | repair — only after the user says yes |
+|---|---|---|
+| `ambiguous-conventions-file` | two or more candidate files; the router reads none | when exactly one is a verbatim copy of the template's file: rename THAT copy — hand the `move_file` step the audit gives (it carries `ifMatch`; the new name ends `.from-template-<date>`, so it is reversible) to `/obsidian-router:manage-move`, which owns moves and their partial-failure report. This skill does not move files itself. Otherwise ask which file holds the vault's rules. |
+| `missing-recommended` | recommended conventions absent from the file in force | `install <id>` from the CURRENT snippet (preview + backup as usual). Never restore a section from a `.bak` file — it may be stale. Absent may be the owner's choice: offer, do not push. |
+| `inherited-backups` | `CLAUDE.md.bak-*` files with the same NAME and the same BYTES as one of the reference vault's own backups | nothing to repair. They are almost certainly the TEMPLATE's history, copied in by a sync, so they say nothing about this vault's past: a convention present in them and absent from the current file is not evidence of a loss. A backup that holds the template's text under a name of its own is the vault's OWN history (it edited a template-born file) — the audit does not call it inherited. |
+| `no-conventions-file` | no candidate at all | the picker (`pick`); the first install creates the root file. |
+| `reference-unknown` | the reference vault could not be read | "template copy" and "inherited" are UNKNOWN, not false — say so. |
+| `bilingual-to-migrate` | the file still carries the RETIRED `bilingual` convention | the migration below (`migrate-bilingual`): ask the owner the value, install `languages`, remove `bilingual`. Never assume `fr, en` — on 2026-09-26 the owner chose `fr` for ten of the thirteen vaults that carried it. |
+| `languages-value-unreadable` | `languages` is installed but its value line is missing, doubled, or not ISO 639-1 codes | show the section, ask the owner, correct the one `**Languages of this vault: …**` line (backup first). |
+
+The audit also returns `languages` — the declared list (`["fr","en"]`) or `null`. Report it in every status: it is the one convention whose value differs per vault.
+
+**Never read a backup beside a conventions file as that vault's history without the audit.** On 2026-09-26 a session did exactly that on Kiviri-OS and reported four conventions "lost on 2026-09-11": the backups were the reference vault's, copied in with its `Documentation/` folder, and the vault had simply been born with the template's four-convention file (decision `conventions-livrees-par-le-modele`). The same sync (2026-09-22) gave 13 local vaults a SECOND conventions file beside their own; since this release a template sync no longer copies a conventions file into a vault that has one, nor any backup anywhere.
+
+**Repairs are one vault at a time, each shown and approved.** No `--all`, no silent pass: the fleet report lists, the human decides per vault.
+
 Mapping (initial library shipped with this skill):
 
 | Snippet file | Convention id | Identifying H2 heading |
 |---|---|---|
 | `source-type.md` | `source-type` | `## Source provenance — \`source_type\` frontmatter` |
-| `bilingual.md` | `bilingual` | `## Bilingual convention (FR + EN, FR primary)` |
+| `languages.md` | `languages` | `## Languages convention (declared per vault)` — carries a VALUE, see below |
 | `heading-hierarchy.md` | `heading-hierarchy` | `## Note structure — headings hierarchy (mandatory)` |
 | `auto-enrichment.md` | `auto-enrichment` | `## Auto-enrichment (4 modes — \`ClaudeAsk\` / \`Hybrid\` / \`FullAuto\` / \`off\`)` |
 | `roadmap-discipline.md` | `roadmap-discipline` | `## Roadmap discipline — création + maintenance dans le vault courant` |
@@ -79,6 +99,39 @@ Mapping (initial library shipped with this skill):
 | `temporal-validity.md` | `temporal-validity` | `## Temporal validity — \`valid_from\` / \`valid_through\` frontmatter` |
 
 (Other snippets may exist — always `Glob` the snippets dir to get the live list, don't hardcode beyond a fallback.)
+
+### Retired conventions — recognised, never offered
+
+`<plugin-root>/skills/conventions/retired/` holds conventions the library no longer offers. Today: `bilingual.md` (`## Bilingual convention (FR + EN, FR primary)`), replaced by `languages` on 2026-09-26 (decision `convention-languages-remplace-bilingual`). Never `install` a retired convention, never show it in the picker (the picker globs `snippets/` only). Keep using its heading to DETECT it and to REMOVE it: `remove bilingual` reads `retired/bilingual.md` for the heading, exactly like any other remove. The audit reports a vault that still carries it as `bilingual-to-migrate`.
+
+### `languages` — the one convention with a value
+
+The `languages` section carries one line that belongs to the vault: `**Languages of this vault: fr, en**` — an ordered list of ISO 639-1 codes, the first being the primary language. The snippet carries `<languages>` there. Everything that touches it goes through `<plugin-root>/src/helpers/convention-languages.mjs`:
+
+```javascript
+import {
+  parseLanguagesValue, renderLanguagesSection, readVaultLanguages,
+} from '<plugin-root>/src/helpers/convention-languages.mjs';
+```
+
+- **To install**, ask the owner the value first (default `fr`), then append `renderLanguagesSection(snippetText, value).text` — never the raw snippet. It refuses a value that is not ISO 639-1 codes; relay its `error` and ask again. Installing the raw snippet would install a convention that declares no language (the drift check reports that state as a one-line drift).
+- **Never on several vaults at once with one answer.** `install languages --all` and `sync-all-vaults languages` are refused: the value is a property of each vault, so it is asked **per vault**, and each vault is installed on its own answer. One answer copied into every vault is exactly the "propagate a value that speaks of one vault" mistake the drift masking exists to avoid.
+- **To read** a vault's value, `readVaultLanguages(content)`; its `problem` (`missing-value`, `ambiguous-value`, `invalid-value`, `duplicate-section`) says which repair to propose.
+- **To change** a value, show the section, back the file up, and replace that one line — nothing else in the section.
+- **Different values in different vaults are not drift.** The drift detector masks a valid value before comparing; never "reconcile" one vault's value to another's, and never overwrite it with the placeholder.
+
+### `migrate-bilingual [on <vault>]` — written one vault at a time
+
+Each vault is measured, shown and written on its own. The owner may approve several vaults in one answer, but only after each one's plan has been shown; the writes still happen one vault at a time, each with its own backup and `ifMatch`.
+
+1. **Measure**: `audit_vault_conventions({ vault })`. If it reports `ambiguous-conventions-file`, STOP for this vault — which file is in force comes first. Then `get_file` the file in force and keep its `contentSha256`. Note the two facts the next steps branch on: is `languages` **already installed** (`readVaultLanguages(content).installed`), and is `bilingual` present?
+2. **Ask the value** (`fr`, `fr, en`, …) — **only if `languages` is not installed yet**, and unless the owner has already given it for this vault in THIS conversation. If `languages` is installed with a readable value, keep it: the migration is then only the removal of `bilingual`. If it is installed with an unreadable value, stop and repair that first (`languages-value-unreadable`).
+3. **Show the plan**: the `languages` section that will be added (rendered, with the value) — or "already in place: <value>" — and, if `bilingual` is present, the EXACT text that will be removed, verbatim, not abbreviated. Wait for the owner's yes for this vault.
+4. **Back up** the whole file beside it: `write_file` to `<file>.bak-languages-<YYYY-MM-DD-HHmmss>` with `ifNew: true`. If the backup fails, STOP for this vault.
+5. **Compute** the new content with the helpers: `removeConvention(content, bilingualHeading)` when `bilingual` is present, checked with `verifyRemoval` (nothing else may move); then append `renderLanguagesSection(...).text` **only when `languages` was not installed** — appending it to a file that already carries it creates a second section and makes the value unreadable (`duplicate-section`). Write with `write_file` and `ifMatch` set to the `contentSha256` read at step 1.
+6. **Re-read and re-audit**: exactly one `languages` section with the right value, `bilingual` absent, every other convention byte-identical.
+
+The vault must be open: the router goes through the REST API, never the disk. A closed vault is postponed, not bypassed. Backups stay in place.
 
 ## Steps
 
@@ -106,7 +159,7 @@ Example output:
 
 Vault: smile
 - ✅ source-type          (installed)
-- ❌ bilingual            (not installed)
+- ❌ languages            (not installed)
 - ✅ heading-hierarchy    (installed)
 - ❌ auto-enrichment      (not installed)
 ```
@@ -123,14 +176,15 @@ For multi-vault status, render one row per vault with checkmark columns.
 3. For each target vault:
    - Resolve its conventions file and read it via `get_file`
    - `isConventionInstalled(content, heading)` → if true, SKIP and report "already in place"
-   - If false, `append_to_file` with the snippet content, prefixed by `\n` to ensure section separation
+   - If false, `append_to_file` with the snippet content, prefixed by `\n` to ensure section separation — for `languages`, the RENDERED content with the vault's value (`renderLanguagesSection`, see above), never the raw snippet
+   - A retired convention (`retired/<id>.md`) is never installed: say it is retired and name what replaced it
 4. Report a summary: `N installed, M already in place, K failed`.
 
 **Say "already in place", never "installed", for a skip.** Reported per file, "already installed" reads as a benign detail; reported as a total, it reads as "your configuration was applied". A run that installed nothing must say so in the first line — a user who picked six conventions and got six no-ops believes they configured a vault that was already configured for them.
 
 ### `remove <convention-id> [on <vault>] [--all]` — strip a convention
 
-1. Same snippet resolution as install.
+1. Same snippet resolution as install — falling back to `retired/<convention-id>.md` for a retired convention (`remove bilingual` is the migration's second half).
 2. Same vault resolution.
 3. For each target vault:
    - Resolve its conventions file and read it via `get_file`.
@@ -185,7 +239,7 @@ A picker that has not read the target is a picker that lies. Before showing anyt
 
 **The `remove` bucket is the whole point, and it is an INTENTION, not an action.** Unchecking is ambiguous — it can mean "do not install this" as easily as "delete what is there" — so resolve it by asking, never by guessing in either direction:
 
-> Ces conventions sont **déjà présentes** dans le fichier de conventions du vault (`Documentation/CLAUDE.md`) et tu ne les as pas cochées : `bilingual`, `auto-enrichment`. Je retire leurs sections de ce fichier ? (elles restent en place si tu dis non)
+> Ces conventions sont **déjà présentes** dans le fichier de conventions du vault (`Documentation/CLAUDE.md`) et tu ne les as pas cochées : `languages`, `auto-enrichment`. Je retire leurs sections de ce fichier ? (elles restent en place si tu dis non)
 
 On a yes, go through `remove` in full — verbatim preview, sidecar backup and `verifyRemoval` included. On a no, say that **their sections stay in this file**. What must never happen again is the third possibility: saying nothing, and leaving a rule the user believes they turned off governing the vault. `auto-enrichment` governs automatic saves.
 

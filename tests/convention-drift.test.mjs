@@ -50,6 +50,7 @@ import {
   statusLabel,
   summariseTarget,
 } from '../scripts/conventions-drift.mjs';
+import { renderLanguagesSection } from '../src/helpers/convention-languages.mjs';
 
 // Built, never embedded: a raw control byte in source is invisible to a
 // reader and to every assertion, and this repository has shipped three of
@@ -793,11 +794,22 @@ describe('the snippet library, as shipped', () => {
     // The end-to-end shape of the whole check, over the real library: install a
     // snippet verbatim and the detector must call it identical. A detector that
     // cannot do this reports every vault in the fleet as drifted.
+    //
+    // `languages` is installed RENDERED, never verbatim: its snippet carries a
+    // placeholder where each vault writes its own value. So it round-trips
+    // with a value in place — and its verbatim form must NOT read as
+    // identical, since that section declares no language.
     const { snippets } = loadSnippetLibrary(path.join(REPO, ...DEFAULT_SNIPPETS_DIR.split('/')));
+    assert.ok(snippets.some((s) => s.id === 'languages'), 'the parameterised convention must be in the sweep');
     for (const s of snippets) {
-      const file = `# Vault rules\n\n${s.text}\n## Afterwards\n\nsomething else\n`;
+      const installed = s.id === 'languages' ? renderLanguagesSection(s.text, ['fr', 'en']).text : s.text;
+      const file = `# Vault rules\n\n${installed}\n## Afterwards\n\nsomething else\n`;
       const result = compareConvention(s, file);
       assert.equal(result.status, DRIFT_STATUS.IDENTICAL, `${s.id} did not round-trip`);
+      if (s.id === 'languages') {
+        const raw = compareConvention(s, `# Vault rules\n\n${s.text}\n## Afterwards\n\nx\n`);
+        assert.equal(raw.status, DRIFT_STATUS.DRIFT, 'the unfilled placeholder is a drift, not an install');
+      }
     }
   });
 });
@@ -986,7 +998,7 @@ describe('the fleet report never writes', () => {
     const vault = path.join(root, 'vault-one');
     fs.mkdirSync(path.join(vault, 'Documentation'), { recursive: true });
     const claudeMd = path.join(vault, 'Documentation', 'CLAUDE.md');
-    fs.writeFileSync(claudeMd, '# Rules\n\n## Bilingual convention (FR + EN, FR primary)\n\ndrifted on purpose\n');
+    fs.writeFileSync(claudeMd, '# Rules\n\n## Languages convention (declared per vault)\n\ndrifted on purpose\n');
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [vault]: { port: 1 } } }));
 
@@ -1014,8 +1026,8 @@ describe('the fleet report never writes', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet2-'));
     const vault = path.join(root, 'two-files');
     fs.mkdirSync(path.join(vault, 'Documentation'), { recursive: true });
-    fs.writeFileSync(path.join(vault, 'CLAUDE.md'), '## Bilingual convention (FR + EN, FR primary)\n\nA\n');
-    fs.writeFileSync(path.join(vault, 'Documentation', 'CLAUDE.md'), '## Bilingual convention (FR + EN, FR primary)\n\nB\n');
+    fs.writeFileSync(path.join(vault, 'CLAUDE.md'), '## Languages convention (declared per vault)\n\nA\n');
+    fs.writeFileSync(path.join(vault, 'Documentation', 'CLAUDE.md'), '## Languages convention (declared per vault)\n\nB\n');
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [vault]: { port: 1 } } }));
 
@@ -1039,7 +1051,7 @@ describe('the fleet report never writes', () => {
     const other = path.join(root, 'other');
     fs.mkdirSync(ref, { recursive: true });
     fs.mkdirSync(other, { recursive: true });
-    fs.writeFileSync(path.join(ref, 'CLAUDE.md'), '## Bilingual convention (FR + EN, FR primary)\n\ndrifted\n');
+    fs.writeFileSync(path.join(ref, 'CLAUDE.md'), '## Languages convention (declared per vault)\n\ndrifted\n');
     fs.writeFileSync(path.join(other, 'CLAUDE.md'), '# nothing\n');
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ referenceVault: ref, portRegistry: { [other]: { port: 1 } } }));
@@ -1178,7 +1190,7 @@ describe('the fleet report never writes', () => {
     const vault = path.join(root, 'v');
     fs.mkdirSync(vault, { recursive: true });
     const file = path.join(vault, 'CLAUDE.md');
-    fs.writeFileSync(file, '## Bilingual convention (FR + EN, FR primary)\n\ndrifted\n');
+    fs.writeFileSync(file, '## Languages convention (declared per vault)\n\ndrifted\n');
     fs.chmodSync(file, 0o000);
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [vault]: { port: 1 } } }));
@@ -1200,7 +1212,7 @@ describe('the fleet report never writes', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet3-'));
     const vault = path.join(root, 'v');
     fs.mkdirSync(vault, { recursive: true });
-    fs.writeFileSync(path.join(vault, 'CLAUDE.md'), '## Bilingual convention (FR + EN, FR primary)\n\ndrifted\n');
+    fs.writeFileSync(path.join(vault, 'CLAUDE.md'), '## Languages convention (declared per vault)\n\ndrifted\n');
     const configPath = path.join(root, 'config.json');
     fs.writeFileSync(configPath, JSON.stringify({ portRegistry: { [vault]: { port: 1 } } }));
     // execFileSync throws on a non-zero exit; reaching the assertion is the test.

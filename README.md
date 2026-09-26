@@ -6,7 +6,7 @@
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.95.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.96.0-blueviolet.svg" alt="version"></a>
 </p>
 
 # obsidian-mcp-router
@@ -41,7 +41,7 @@ What you get:
 | Vault provisioning | `plan_vault`, `provision_vault` — defaults-first vault-creation wizard engine; `register_remote_vault` records an already-running remote vault (URL + key) straight from a conversation |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port of [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Also `pptx_extract_assets` (a deck's embedded images to disk, per slide — no Python), `pdf_to_images` (render PDF pages to PNG the model can *see*) and `filter_relevant_blocks` (BM25 relevance filter over already-acquired markdown). |
 | Web/page metadata | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Wiki maintenance & sources | `write_bundle` (journaled multi-file bundle — all-or-nothing apply with rollback), `refresh_okf_projections` (regenerate the generated OKF navigation), `build_search_index` (local BM25 search tier, works on every vault), `record_source` / `audit_sources` (provenance ledger for ingested content) |
+| Wiki maintenance & sources | `write_bundle` (journaled multi-file bundle — all-or-nothing apply with rollback), `refresh_okf_projections` (regenerate the generated OKF navigation), `build_search_index` (local BM25 search tier, works on every vault), `record_source` / `audit_sources` (provenance ledger for ingested content), `audit_vault_conventions` (which conventions a vault is really under — ambiguous files, missing recommended ones, template copies; read-only, repairs proposed never applied) |
 | Context & graph | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian`, `get_view_link` |
 | Cross-vault | every tool accepts `vault: "*"` for fan-out |
 
@@ -210,7 +210,7 @@ Both write to **your own router config**, for this workspace only — never into
 | `/obsidian-router:meta-sync-template` | Propagate the reference vault's plugins/snippets/docs to one or more vaults (interactive picker) | *"sync the template to all vaults"*, *"push reference plugins to X"* / *"synchronise le template vers tous les vaults"*, *"pousse les plugins de référence vers X"* |
 | `/obsidian-router:sync-from-github` | Update one vault or the whole fleet directly from the GitHub skeleton (plugins, themes, snippets, docs) — no local dev repo needed. Same guards as `--sync-plugins` plus hardened archive extraction | *"sync my vaults from github"*, *"update the fleet from github"* / *"synchronise mes vaults depuis github"*, *"mets à jour la flotte depuis github"* |
 | `/obsidian-router:meta-audit-bridge-readiness` | Audit click-to-open readiness across vaults (bridge ≥0.2.0, REST API ≥4.0.0, insecure HTTP, live `/open` probe) | *"audit bridge readiness"*, *"is click-to-open ready"* / *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* |
-| `/obsidian-router:conventions` | Install / remove / status / propagate CLAUDE.md conventions (source-type, bilingual, heading-hierarchy, ...) across vaults | *"install source-type convention on X"*, *"list conventions"* / *"installe la convention source-type sur X"*, *"liste les conventions"* |
+| `/obsidian-router:conventions` | Install / remove / status / propagate CLAUDE.md conventions (source-type, languages, heading-hierarchy, ...) across vaults | *"install source-type convention on X"*, *"list conventions"* / *"installe la convention source-type sur X"*, *"liste les conventions"* |
 
 ### 📚 24 knowledge-management commands (Karpathy-style LLM-wiki)
 
@@ -1374,7 +1374,7 @@ Apache 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE). No usage restric
   <a href="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml"><img src="https://github.com/tboome33/obsidian-mcp-router/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%E2%89%A520.19.0-brightgreen.svg" alt="node"></a>
-  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.95.0-blueviolet.svg" alt="version"></a>
+  <a href="./CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.96.0-blueviolet.svg" alt="version"></a>
 </p>
 
 > Serveur MCP qui aiguille les appels d'outils Claude vers **plusieurs** vaults Obsidian — locaux ou distants — via le plugin [Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api).
@@ -1405,7 +1405,7 @@ Ce que tu obtiens :
 | Provisionnement de vault | `plan_vault`, `provision_vault` — moteur du wizard de création de vault (défauts d'abord) ; `register_remote_vault` enregistre depuis une conversation un vault distant déjà en service (URL + clé) |
 | Conversion | `pdf_to_markdown`, `docx_to_markdown`, `xlsx_to_markdown`, `pptx_to_markdown`, `image_to_markdown`, `audio_to_markdown`, `youtube_to_markdown`, `bing_search_to_markdown`, `webpage_to_markdown`, `git_repo_to_markdown`, plus `pdf_to_markdown_docling` (opt-in high-fidelity PDF via [Docling](https://github.com/docling-project/docling), MIT) — port de [zcaceres/markdownify-mcp](https://github.com/zcaceres/markdownify-mcp) (MIT). Aussi `pptx_extract_assets` (les images embarquées d'un deck sur disque, par diapositive — sans Python), `pdf_to_images` (rend les pages d'un PDF en PNG que le modèle peut *voir*) et `filter_relevant_blocks` (filtre de pertinence BM25 sur du markdown déjà acquis). |
 | Métadonnées web/page | `extract_page_metadata`, `propose_linked_sources`, `download_page_assets` |
-| Maintenance du wiki & sources | `write_bundle` (bundle multi-fichiers journalisé — application tout-ou-rien avec rollback), `refresh_okf_projections` (régénère la navigation OKF générée), `build_search_index` (index BM25 local, marche sur tous les vaults), `record_source` / `audit_sources` (registre de provenance du contenu ingéré) |
+| Maintenance du wiki & sources | `write_bundle` (bundle multi-fichiers journalisé — application tout-ou-rien avec rollback), `refresh_okf_projections` (régénère la navigation OKF générée), `build_search_index` (index BM25 local, marche sur tous les vaults), `record_source` / `audit_sources` (registre de provenance du contenu ingéré), `audit_vault_conventions` (les conventions sous lesquelles un vault est réellement — fichiers en double, recommandées absentes, copies du modèle ; lecture seule, réparations proposées jamais appliquées) |
 | Contexte & graphe | `get_wiki_context_pack`, `build_wiki_graph`, `build_wiki_tour`, `get_page_neighbors`, `wiki_path`, `find_boundary_pages`, `find_twin_pages`, `build_open_link`, `open_in_obsidian`, `get_view_link` |
 | Cross-vault | tous les outils acceptent `vault: "*"` pour fan-out |
 
@@ -1552,7 +1552,7 @@ Les deux écrivent dans **ta propre config du router**, pour ce workspace unique
 | `/obsidian-router:meta-sync-template` | Propage les plugins/snippets/docs du vault de référence vers un ou plusieurs vaults (picker interactif) | *"synchronise le template vers tous les vaults"*, *"pousse les plugins de référence vers X"* / *"sync the template to all vaults"*, *"push reference plugins to X"* |
 | `/obsidian-router:sync-from-github` | Met à jour un vault ou toute la flotte directement depuis le squelette GitHub (plugins, thèmes, snippets, docs) — sans repo de développement local. Mêmes gardes que `--sync-plugins` plus extraction d'archive durcie | *"synchronise mes vaults depuis github"*, *"mets à jour la flotte depuis github"* / *"sync my vaults from github"*, *"update the fleet from github"* |
 | `/obsidian-router:meta-audit-bridge-readiness` | Audite la disponibilité du click-to-open sur les vaults (bridge ≥0.2.0, REST API ≥4.0.0, HTTP insecure, probe live `/open`) | *"audite la disponibilité du bridge"*, *"le click-to-open est-il prêt"* / *"audit bridge readiness"*, *"is click-to-open ready"* |
-| `/obsidian-router:conventions` | Installe / retire / statut / propage les conventions CLAUDE.md (source-type, bilingual, heading-hierarchy, ...) sur les vaults | *"installe la convention source-type sur X"*, *"liste les conventions"* / *"install source-type convention on X"*, *"list conventions"* |
+| `/obsidian-router:conventions` | Installe / retire / statut / propage les conventions CLAUDE.md (source-type, languages, heading-hierarchy, ...) sur les vaults | *"installe la convention source-type sur X"*, *"liste les conventions"* / *"install source-type convention on X"*, *"list conventions"* |
 
 #### 📚 24 commandes de gestion de connaissances (LLM-wiki façon Karpathy)
 

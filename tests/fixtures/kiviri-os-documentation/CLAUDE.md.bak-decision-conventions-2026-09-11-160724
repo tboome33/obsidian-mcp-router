@@ -1,0 +1,551 @@
+---
+type: wiki-claude
+mode: personal
+created: 2026-05-03
+updated: 2026-05-03
+---
+
+# Navigation rules for Claude
+
+This vault is a Karpathy-style **LLM wiki** in **personal mode**. Treat it as a living second-brain.
+
+The wiki lives entirely under the `wiki/` subdirectory. The four scaffolding files are at `wiki-meta/catalog.md`, `wiki-meta/journal.md`, `wiki-meta/hot.md`, `wiki-meta/overview.md`. Page folders described below are also under `wiki/` (e.g. `wiki/People/`, `wiki/Concepts/`, etc.).
+
+## Read order at session start
+
+1. `wiki-meta/hot.md` — recent-context cache, fastest recovery.
+2. `wiki-meta/catalog.md` — full catalog when you need to navigate.
+3. Specific pages under `wiki/<folder>/<slug>.md` — drill into whatever the user is asking about.
+4. `wiki-meta/journal.md` — only when the user asks "what changed recently".
+
+Use the `obsidian-router` MCP for all reads/writes (`mcp__obsidian-router__get_file`, `mcp__obsidian-router__write_file`, etc.). Native `Read`/`Write` only work when the project IS the vault — the router-prefixed tools are multi-vault and cross-project safe.
+
+## Folder conventions (all under `wiki/`)
+- `wiki/People/` — one file per person. Frontmatter: `type: person`, optional `relationship`, `since`, `tags`.
+- `wiki/Concepts/` — one file per idea/framework. Frontmatter: `type: concept`, `tags`.
+- `wiki/Decisions/` — one file per decision. Frontmatter: `type: decision`, `date`, `status`.
+- `wiki/Refs/` — external sources. Frontmatter: `type: reference`, `url`, `author`, `accessed`.
+- `wiki/Projects/` — personal threads. Frontmatter: `type: project`, `status`.
+
+Session notes are NOT a `wiki/` area. They live in `wiki-meta/Sessions/`, one file per session, written automatically by the router: `wiki/` holds the knowledge, `wiki-meta/` holds the record of the sessions that produced it. Never create `wiki/Sessions/`.
+
+## Writing pages
+
+- Path always starts with `wiki/`.
+- Always include frontmatter (`type`, `created`, `updated`, plus type-specific fields).
+- Cross-link liberally with `[[wikilinks]]`. Resolution is from the vault root, so `[[hot]]` from a page under `wiki/Concepts/` will NOT find `wiki-meta/hot.md` — use `[[wiki/hot]]` or rely on Obsidian's name resolution which handles unique filenames.
+- Add the page to `wiki-meta/catalog.md` under the right section.
+- Append a one-line entry to `wiki-meta/journal.md`.
+- Refresh `wiki-meta/hot.md` if the page is significant.
+
+## Note structure — headings hierarchy (mandatory)
+
+Every wiki page MUST have a proper heading hierarchy so the **Outline** plugin can navigate it. Without this, the Outline panel is empty and long notes become unscannable.
+
+- **Exactly one `# H1`** at the top — matches the note's `title:` frontmatter (or a clean rephrasing of the filename).
+- **`## H2`** for main sections (Context, Notes, Interactions, See also, etc.).
+- **`### H3`** for sub-sections inside an H2 (only when needed).
+- **Never skip levels** (no H3 without H2 above).
+- **Length rule**: any note > 200 words MUST have at least 2 `## H2` sections.
+
+### Type-specific minimums
+
+| Type | Required `## H2` sections |
+|---|---|
+| `session` | `## Prompt`, `## What happened`, `## Outcome`, optional `## See also` |
+| `answer` | `## Question`, `## Answer`, optional `## See also` |
+| `decision` | `## Context`, `## Decision`, `## Consequences`, optional `## Alternatives` |
+| `person` | `## Context`, `## Notes`, `## Interactions` |
+| `concept` | `## Definition`, `## Why it matters`, `## Related` |
+| `reference` | `## Summary`, `## Key takeaways`, `## Source` |
+| `project` | `## Goal`, `## Status`, `## Open questions`, optional `## Log` |
+
+If the content is too thin for 2 H2 sections, file it as a one-liner in `wiki/facts.md` instead of creating a flat standalone page.
+
+## Skills to use
+
+- `wiki-ingest` — file external sources (URLs, articles, pasted text).
+- `save` — file the current conversation as a session/decision/answer.
+- `wiki-query` — answer questions grounded in this vault only (no web).
+- `autoresearch` — web-fed research loop (asks confirmation, costs tokens).
+- `wiki-lint` — health-check (orphans, dead links, drift).
+- `wiki-fold` — roll up `wiki-meta/journal.md` entries into a fold page.
+
+## Don't
+
+- Don't write pages outside the `wiki/` subdirectory. The whole stack assumes the prefix.
+- Don't invent facts. If something isn't in the wiki, say so.
+- Don't write pages without updating `wiki-meta/catalog.md` and `wiki-meta/journal.md`.
+- Don't bypass the type frontmatter — it's how queries find things.
+
+## Source provenance — `source_type` frontmatter (mandatory for substantive pages, since 2026-05-18 v0.8.8)
+
+Every substantive page MUST declare where its content came from. Without this, a reader (you, me, future-Claude, or a wiki-query consumer) cannot tell whether an assertion is a verbatim citation, a reasonable inference from a source, or pure synthesis by Claude. That gap silently erodes trust in the whole wiki.
+
+Three values, vocabulary borrowed from graphify's `EXTRACTED / INFERRED / AMBIGUOUS` taxonomy :
+
+| Value | Meaning | When to use |
+|---|---|---|
+| `extracted` | Verbatim or near-quote from a source (a user statement, an article, a pasted document). Maximum reliability — reader can trust the wording came from outside. | `wiki-ingest` source pages; user-quoted statements; literal citations. |
+| `inferred` | Claude derived this by reading the source/conversation, but it isn't written verbatim. Medium reliability — a reasonable interpretation that someone else might have phrased differently. | Most `answer` notes; most `wiki-ingest` entity/concept pages spawned from a source; summaries. |
+| `claude_synthesized` | Pure synthesis by Claude with no direct textual basis. Low reliability for "what does the source say?" but full agency on "what does Claude think?". | `idea` notes proposed by Claude; framings/restatings; opinion pieces. |
+
+### Where to declare it
+
+- **Frontmatter level** (covers the whole page) : `source_type: extracted | inferred | claude_synthesized`. Required on every page of type `source`, `answer`, `decision`, `decision-input`, `reference`, `reference-deep-dive`, `technique`, `idea`. Optional but encouraged on `session`, `concept`, `entity`.
+- **Inline callout** (covers a specific paragraph, overrides the page-level default) : `> [!extracted]`, `> [!inferred]`, `> [!claude_synthesized]`. Use when a single page mixes provenance.
+
+### Rule of thumb when in doubt
+
+Prefer the more conservative tag. `claude_synthesized` over `inferred`, `inferred` over `extracted`. False humility is cheap; false confidence corrodes the wiki.
+
+### How skills use it
+
+- **`wiki-ingest`** writes `source_type: extracted` on source pages and `source_type: inferred` or `claude_synthesized` on spawned entity/concept pages depending on how directly the source supported them.
+- **`save`** writes the dominant `source_type` based on what's being saved.
+- **`wiki-query`** includes provenance in its citations : *"per [[my-note]] (extracted)"* vs *"per [[my-note]] (synthesized)"*. Pre-v0.8.8 pages without the field render as `(unmarked)`.
+
+## Auto-enrichment (4 modes — `ClaudeAsk` / `Hybrid` / `FullAuto` / `off`)
+
+Proactive save suggestions during conversations bound to this vault. Domain-agnostic — works for development, personal life, research, family planning, anything.
+
+### Reading the current mode
+
+Call `mcp__obsidian-router__list_vaults` once at session start (or at the first auto-enrichment-relevant moment). The response field `autoEnrichMode` is one of:
+
+- `"ClaudeAsk"` — propose, user always confirms (the safe default)
+- `"Hybrid"` — auto-save type-safe items, ask on high-stakes
+- `"FullAuto"` — auto-save everything (with safety nets, see below)
+- `"off"` — no auto-suggestions; manual `/save` only
+
+The mode can change mid-session via `/obsidian-router:auto-mode <Mode>`. Re-check `list_vaults` if the user invokes that command — apply the new mode from that point forward.
+
+### Activation conditions
+
+Even when the mode is non-`off`, auto-enrichment is active ONLY when BOTH are true:
+
+1. **The current Claude session is bound to this vault** — workspace `.env` contains `VAULT_PATH` matching this vault's path, OR `OBSIDIAN_ROUTER_DEFAULT_VAULT` matches this vault's name, OR the user explicitly opted in this session ("track this in <vault>", "prends des notes dans mon vault"), OR the conversation runs inside a Claude Desktop Project bound to this vault.
+
+2. **The user has not turned tracking off** for this session ("no tracking", "pas de notes cette fois", "skip wiki").
+
+If either condition fails → ignore this entire section. Make NO save proposals, regardless of the mode value.
+
+If `autoEnrichMode === "off"` → also ignore this section entirely. The user has explicitly disabled the proactive layer; only respond to manual `/save`, `/wiki-ingest`, etc.
+
+### Three triggers
+
+#### Trigger 1 — Validation (light, inline pin)
+
+Recognize when the user explicitly validates a decision, preference, rule, or architectural choice.
+
+**Signals**:
+- Words: *"oui"*, *"yes"*, *"OK"*, *"valide"*, *"j'approuve"*, *"go"*, *"parfait"*, *"exactement"*, *"agreed"*, *"right"*, *"✓"*
+- Numbered patterns: *"Décision 1: X / Décision 2: Y"*, *"1. ... 2. ..."*
+- Choice with reasoning: *"on part sur X parce que Y"*, *"I'll go with X because Y"*
+
+Valid types for validation pins: `decision`, `preference`, `rule`, `adr`.
+
+**Action by mode**:
+- `ClaudeAsk` and `Hybrid`: append a discrete inline marker AT THE END of your next response, on its own line: `🔖 [pin: <type>/"<one-line summary>"]`. Markers accumulate until Trigger 2 or 3.
+- `FullAuto`: pin AND immediately auto-save IF the type is `decision` or `preference` and the content passes the sensitivity filter. For `rule` and `adr`, still pin and accumulate (these have higher stakes — defer to the digest where the user can review the wording even in FullAuto).
+
+DO NOT interrupt the user with a question. Pinning is silent.
+
+#### Trigger 2 — Result obtained (digest at the natural transition)
+
+Recognize when an action sequence has succeeded.
+
+**Signals**:
+- A git commit + push completed (you yourself just produced "Pushed to ...")
+- A test suite went green
+- A deploy / publish / build succeeded
+- A file was created / updated successfully
+- The user expressed explicit satisfaction at a delivered result (*"ça marche"*, *"nickel"*, *"perfect"*, *"yes that's right"*) AFTER an action sequence (not after a simple Q&A)
+
+**Action by mode**:
+
+`ClaudeAsk` — co-locate the digest with your natural "what's next?" prompt with a numbered candidate list, wait for the user's selection ("all", "none", numbers, or "skip") before any save action.
+
+`Hybrid` — auto-save the type-safe items (`fact`, `url`, `preference`), ask on the high-stakes ones (`decision`, `adr`, `rule`, `technique`, `session`).
+
+`FullAuto` — auto-save everything **except items flagged by the sensitivity filter** (see "Sensitivity filter" below — applies in EVERY mode including FullAuto, downgrades flagged items to ask). After auto-saving the safe items, surface the audit summary.
+
+`off` — never propose, never auto-save. Skip this trigger entirely.
+
+### Save destinations (all modes)
+
+When a save fires (whether by user confirmation or auto-execute):
+- `decision` / `adr` / `rule` → `wiki/decisions/<slug>.md`, `wiki/adr/<slug>.md`, or `wiki/rules/<slug>.md`
+- `technique` → `wiki/techniques/<slug>.md`
+- `fact` → append to `wiki/facts.md`, or create `wiki/facts/<topic>.md` for substantial facts
+- `preference` → append to `wiki/preferences.md`
+- `url` → invoke `/obsidian-router:wiki-ingest <url>`
+
+After every save (auto or confirmed), append a 1-line entry to `wiki-meta/journal.md`. For auto-saves, prefix the entry with `[auto-save]` so the user can filter.
+
+#### Trigger 3 — Topic switch (mandatory checkpoint)
+
+Recognize when the user pivots to a new topic without closing the previous one. Words like *"autre question"*, *"sinon"*, *"by the way"*, *"passons à"*, *"et maintenant"*, *"ah au fait"*, *"anyway"*.
+
+`ClaudeAsk` and `Hybrid` — DO NOT respond directly to the new topic yet. Pause first, propose saves, wait for user. This pause is **mandatory** even if no markers were accumulated — it serves as a graceful checkpoint.
+
+`FullAuto` — auto-save everything pending **except items flagged by the sensitivity filter**. Then proceed to the new topic in the SAME response.
+
+`off` — proceed directly to the new topic, no checkpoint.
+
+### Sensitivity filter (NEVER auto-save, applies to ALL modes including FullAuto)
+
+If the conversation contains any of these markers, treat the content as **sensitive** and downgrade to "ask" (require explicit user confirmation):
+- Client / customer / patient names (especially when associated with financial or medical context)
+- Personal identifiers — full names + DOB, SSN, passport numbers, IBAN, account numbers
+- Credentials — API keys, tokens, passwords, JWT, .env values pasted verbatim
+- Financial details — sums, contract values, salary, P&L
+- Medical info — diagnoses, prescriptions, lab results
+- Private third-party content — emails / DMs from a person who didn't consent to being archived
+
+### NEVER propose saves at all if
+
+- The current sub-topic is **not ripe** — tests not green, doubt unresolved, work in flight
+- You are in **active brainstorming / exploration / drafting mode** — the user is thinking out loud, the content is still moving
+
+When in doubt, do NOT propose. Wiki noise (false positives) is worse than missed saves (false negatives) — the user can always invoke `/save` manually later.
+
+### Hard cap (FullAuto only)
+
+In `FullAuto` mode, auto-save up to **5 items per session**. After the 5th auto-save, switch your behavior to `ClaudeAsk` for the rest of the session and inform the user.
+
+### Rate limit (all modes)
+
+- Validation pins (Trigger 1): unlimited (lightweight, inline, no interruption)
+- Digests (Triggers 2 and 3): max 1 every 8 turns of the conversation
+
+
+## Bilingual convention (FR + EN, FR primary)
+
+The user works in both French and English. Every substantive page in this vault MUST be bilingual, with **French first, English second**. This matches the router project DNA (README, skill triggers, slash command descriptions are all FR + EN).
+
+### Page layout
+
+```markdown
+---
+frontmatter (include `language: [fr, en]` and `tags: [..., bilingual]`)
+---
+
+# Title (kept in the language most natural — usually French for native FR concepts, English for technical proper nouns like "graphify")
+
+> *🇫🇷 Version française ci-dessous · [🇬🇧 English version below](#-english-version)*
+
+---
+
+## 🇫🇷 Version française
+
+[Full French content — every section]
+
+---
+
+## 🇬🇧 English version
+
+[Full English content — every section, mirroring the French structure]
+```
+
+### Rules
+
+- **Both sections complete** — no "see git history" shortcuts, no "FR only" cheats. The reader of one section should never need to scroll to the other to get the full picture.
+- **Section heading levels match** between FR and EN. If the FR has `### Architecture`, the EN has `### Architecture` (or its English equivalent). Don't shift levels between languages.
+- **Technical identifiers stay verbatim** in both versions: `nx.compose`, NetworkX, tree-sitter, `_score_nodes`, file paths, code blocks, JSON schemas. Don't translate them.
+- **Quoted prose** (from external sources) stays in the original language; add a brief translated gloss inline if needed.
+- **Wikilinks** are language-neutral (page titles are usually English/technical); they work identically from both sections.
+- **Internal anchors**: `#-version-française` and `#-english-version` headers use the leading-emoji `## 🇫🇷` / `## 🇬🇧` convention. Obsidian/markdown anchor-slugging produces `#-version-française` and `#-english-version` respectively.
+
+### Short pages (under ~500 words)
+
+For very short pages (entity stubs, single-fact captures), FR + EN can be inlined as parallel bullet lists or short paragraphs instead of two full sections. Use the two-section layout once content grows past one screen.
+
+### Navigation files (`index.md`, `hot.md`, `log.md`, `overview.md`)
+
+These don't need full two-section layout. Instead:
+- Frontmatter and structural section headers stay in English for stability.
+- Each entry's description line is bilingual: `FR description · EN description` or two short lines.
+- `log.md` entries use a bilingual summary: title in English (stable), one-line FR + EN body.
+
+### When the user writes only in one language
+
+Default to following the user's language for the current turn, but always file new wiki pages bilingually. If the conversation was 100 % English, the FR section is still written (faithful translation). If 100 % French, the EN section is still written.
+
+
+## Default vault health check at session start
+
+Cette règle dit à Claude de **vérifier au début de chaque session** si le vault Obsidian par défaut est ouvert et réactif (Local REST API joignable). Si non, surface un **message en langage naturel** avec un **lien cliquable** pour ouvrir Obsidian en un click — au lieu d'attendre qu'un tool call vault-related plante avec une erreur cryptique.
+
+### Pourquoi cette règle existe
+
+Sans elle, le scénario typique est : l'user lance Claude Code, demande *"crée une note dans wiki/X.md"*, Claude appelle `write_file` sans `vault:` → le router résout vers le default vault → le default vault est offline (Obsidian fermé) → erreur `ECONNREFUSED` cryptique. L'user ne sait pas que le problème est "ouvre Obsidian", il croit que Claude est cassé.
+
+Avec la règle : Claude ping le default vault dès qu'il en sait l'identité, et **avant** de tenter le moindre tool call vault-related, surface un warning compréhensible avec une option "ouvre Obsidian maintenant".
+
+### Procédure obligatoire (session start)
+
+1. **Au tout début de la session** (ou la première fois qu'un tool call vault-related est envisagé), call `list_vaults` une fois.
+2. **Lire le champ top-level `defaultVaultStatus`** dans la réponse. C'est un objet avec :
+   ```
+   {
+     "name": "owner",                 // slug router (lowercase)
+     "obsidianName": "Owner",          // basename exact case → pour URI
+     "type": "local",
+     "online": false,                   // ← LE flag critique
+     "error": "ECONNREFUSED ...",       // null si online
+     "missingApiKey": false,
+     "openUri": "obsidian://open?vault=Owner",  // ← lien cliquable
+     "path": "D:\\Vaults\\Owner"
+   }
+   ```
+   Si `defaultVaultStatus` est `null` → pas de default vault configuré, ignorer cette règle (laisse les tool calls explicites avec `vault:` se débrouiller).
+
+3. **Si `defaultVaultStatus.online === true`** → silence, on continue normalement. Ne PAS spammer l'user avec un message "tout va bien".
+
+4. **Si `defaultVaultStatus.online === false`** → composer un message en langage naturel **AVANT** tout autre tool call vault-related. Template :
+
+   > **⚠️ Le vault Obsidian par défaut (`<obsidianName>`) n'est pas joignable.**
+   >
+   > Ça veut dire que si je dois lire ou écrire des notes (dans le wiki, journaliser quelque chose, sauvegarder un résumé…), ça va échouer avec une erreur réseau cryptique. Concrètement :
+   >
+   > - **Obsidian est probablement fermé** sur ta machine, OU
+   > - **Le plugin Local REST API est désactivé**, OU
+   > - **Le port a changé** (rare, mais possible après un reboot)
+   >
+   > **Trois options pour avancer** :
+   >
+   > 1. **Ouvrir Obsidian maintenant** → [clique pour ouvrir `<obsidianName>`](`<openUri>`) *(ça lance Obsidian sur ce vault précis ; le warning disparaîtra au prochain appel)*
+   > 2. **Bosser sur un autre vault** → dis-moi lequel (*"on bosse sur smile aujourd'hui"*) et je passerai `vault: smile` à chaque appel
+   > 3. **Ignorer** si on ne touche pas aux notes cette session — pas de souci, mais je te repreviendrai si je dois tenter une écriture
+
+   Adapter le ton à la langue de l'user (FR/EN), garder la structure (3 options, lien cliquable en option 1).
+
+5. **Si `defaultVaultStatus.missingApiKey === true`** (vault accessible mais pas de clé API) → variante du message :
+
+   > **⚠️ Le vault `<obsidianName>` est accessible mais sans clé API.**
+   >
+   > Local REST API est installé mais pas configuré (ou la clé n'a pas été lue par le router). Re-run `node scripts/setup-vault.mjs <path>` du router, ou ouvre Obsidian → Settings → Local REST API → copy l'API key.
+   >
+   > En attendant : [ouvrir Obsidian](`<openUri>`) pour vérifier le plugin.
+
+6. **NE PAS continuer aux autres tool calls vault-related** tant que l'user n'a pas explicitement acknowledged. Si l'user a dit *"continue quand même"* ou *"travaille en read-only sur smile"*, c'est ok — sinon attendre.
+
+### Format du lien
+
+Utiliser un **markdown link standard** : `[label](obsidian://open?vault=<encoded>)`. Claude Code rend ce link cliquable et le dispatche au browser → l'OS handler ouvre Obsidian. **Ne pas wrapper** en backticks (sinon ça devient du code inline non-cliquable). **Ne pas** essayer de rendre l'URI lui-même cliquable sans markdown link — selon le client Claude, l'URI brut peut ne pas être détecté.
+
+### Re-check après acknowledgment
+
+Si l'user clique le lien et dit *"voilà, c'est ouvert"*, OU si l'user répond *"continue"* après un délai, refaire un `list_vaults` discret pour confirmer `online: true` avant le prochain write tool call. Si toujours offline, re-poser la question (peut-être un autre problème : port changé, plugin crashé).
+
+### Anti-patterns
+
+- ❌ Lancer des `write_file` / `patch_file` directement sans avoir vérifié `defaultVaultStatus.online` → erreur réseau cryptique pour l'user
+- ❌ Surfacer le warning en jargon technique (*"ping failed, ECONNREFUSED to 127.0.0.1:27124"*) → l'user ne sait pas que ça veut dire "ouvre Obsidian"
+- ❌ Boucler des retries silencieusement quand le vault est offline → délai pour rien, l'user voit "claude réfléchit" pendant 30s
+- ❌ Spammer le warning à chaque tool call vault-related — un seul affichage au début + après une tentative ratée explicite suffit
+- ❌ Composer le lien `obsidian://` à la main au lieu d'utiliser `defaultVaultStatus.openUri` (le routeur l'a déjà construit + URL-encodé correctement)
+
+### Source
+
+Convention shippée en v0.10.0 du router (2026-05-21) à la demande de Owner : *"il faudrait un moyen d'alerter lors d'une session que le vault par défaut n'est pas ouvert"* + *"tu pourrais donner une explication en un language plus naturel, on ne comprend pas trop ce qui va se passer si le vault par défaut n'est pas ouvert. Ensuite est ce qu'il n'existe pas un moyen de l'ouvrir depuis un lien avec claude ?"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user pour application par défaut sans installation per-vault. Voir aussi `wiki/obsidian-mcp-router/router-ux-improvements-roadmap.md` Phase 1.
+
+
+## Roadmap discipline — création + maintenance dans le vault courant
+
+Cette règle s'applique à toutes les roadmaps de ce vault (`wiki/**/*-roadmap.md`). Elle existe pour éviter le drift entre "ce qui est fait" (commits sur le projet) et "ce que la doc dit" (cases cochées dans la roadmap).
+
+### 1. Quand l'user demande une roadmap
+
+Triggers : *"fais-moi une roadmap pour X"*, *"écris la roadmap de Y"*, *"plan phasé pour Z"*, équivalents EN.
+
+Procédure obligatoire :
+
+1. **Identifier le vault courant** (via `list_vaults` + `defaultVault`, ou `OBSIDIAN_ROUTER_LOCKED`, ou contexte du cwd).
+2. **Créer la roadmap DANS ce vault** — jamais dans `~/.claude/plans/`, jamais inline-chat sans persistance, jamais dans un repo de code séparé.
+3. **Path conventionnel** : `wiki/<projet>/<projet>-roadmap.md` (vault project-based) OU `wiki/Projects/<projet>-roadmap.md` (vault personal-mode) selon la convention de folders du vault.
+4. **Frontmatter minimal** : `type: roadmap`, `project: <slug>`, `status: active`, `created: <YYYY-MM-DD>`, `updated: <YYYY-MM-DD>`, `source_type: inferred` (si la convention `source-type` est installée).
+5. **Structure minimale** :
+   - H1 avec titre projet
+   - Section "Légende" (✅ livré · 🚧 planifié · 🔮 idée)
+   - Phases en H2, items en checkbox `- [ ]`
+   - Phases déjà livrées préfixées `✅ · livré <date> (v<version>)` au H2
+   - Section finale "Ordre d'attaque recommandé" pointant la prochaine étape
+6. **Append au `wiki-meta/journal.md`** : `## <date> — roadmap <projet> créée`.
+
+### 2. Quand du code/doc est shippé qui ferme un checkbox
+
+À chaque commit/ship qui implémente un item :
+
+1. **Toggle** le `- [ ]` en `- [x]` avec note de fin (commit SHA, test count, fichiers touchés).
+2. **Update le header de phase** : ajouter `✅ · livré <YYYY-MM-DD> (v<X.Y.Z>)` au H2 si toute la phase est livrée.
+3. **Refresh `updated:`** dans le frontmatter.
+4. **Update "Ordre d'attaque recommandé"** si la prochaine étape change.
+5. **Append au `wiki-meta/journal.md`** une ligne bilingue traçant l'update.
+
+### 2bis. Lisibilité — JAMAIS de strikethrough sur les items livrés
+
+Quand un item est livré, le seul changement visuel autorisé est :
+- `- [ ]` → `- [x]` (la case cochée suffit comme signal de complétion)
+- Optionnellement une note de fin en italique sur la ligne suivante (date, commit, fichiers)
+
+**INTERDIT** :
+- ❌ Wrapper le texte de l'item dans `~~...~~` (strikethrough markdown)
+- ❌ Wrapper le H2 d'une phase livrée dans `~~...~~`
+- ❌ Wrapper la note de fin dans `~~...~~`
+- ❌ Tout autre formatage qui dégrade la lisibilité du texte historique
+
+**Raison** : une roadmap se relit constamment pour comprendre l'historique du projet. Le texte rayé est pénible à lire (surtout en bloc), perd les keywords scannables visuellement, et brise le grep/Ctrl+F côté humain. La checkbox cochée `- [x]` est déjà 100% suffisante pour signaler "fait" — c'est la convention markdown universelle.
+
+**À appliquer aussi rétroactivement** : si tu tombes sur une roadmap existante qui contient du `~~strikethrough~~` sur des items cochés, propose de nettoyer en passant. Ne le fais pas en silence sur une autre tâche — mentionne-le et laisse l'user trancher si le scope du nettoyage est ok pour la session courante.
+
+### 3. Pre-flight check avant d'annoncer "Phase X done"
+
+Avant de répondre au user avec "Phase X terminée" / "shipping complet" :
+
+1. Re-read la roadmap via `get_file`.
+2. Vérifier que tous les checkboxes couverts sont `- [x]`.
+3. Vérifier que le header de phase porte `✅` + date + version.
+4. Si quoi que ce soit reste `- [ ]` → corriger PUIS annoncer.
+
+### Anti-patterns
+
+- ❌ Roadmap inline chat sans persistance vault
+- ❌ Roadmap dans `~/.claude/plans/` ou dossier non-vault
+- ❌ Ship code sans toucher roadmap (drift silencieux)
+- ❌ Update partielle (H2 sans cocher les `- [ ]` détaillés)
+- ❌ Oublier `updated:` dans le frontmatter
+- ❌ Annoncer "Phase X done" sans pre-flight check
+- ❌ Rayer le texte des items livrés avec `~~...~~` (cf. section 2bis — la checkbox cochée suffit, le strikethrough tue la lisibilité historique)
+
+### Source
+
+Convention shippée en v0.9.1 du router (2026-05-21) à la demande explicite de Owner après observation de drift répété entre code shippé et roadmaps non mises à jour. Section 2bis (no-strikethrough) ajoutée en v0.10.1 (2026-05-21) après *"quand dans une roadmap tu marques que section est déjà réalisée, est ce que tu peux seulement faire un check sur la case à cocher mais ne pas rayer tout le texte sans quoi on a du mal à relire"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user pour application par défaut sans installation per-vault.
+
+
+## Wiki-query-first reflex — check the vault BEFORE answering
+
+Cette règle dit à Claude que **dans une session où le workspace est un vault Obsidian** (présence de `wiki-meta/catalog.md`), il doit **chercher dans le wiki avant de composer sa réponse** à toute question substantielle. L'historique de discussions, décisions, références, sessions est dans le vault — répondre sans le consulter gaspille ce capital et risque de contredire/dupliquer ce qui existe déjà.
+
+This rule tells Claude that **in a session where the workspace IS an Obsidian vault** (presence of `wiki-meta/catalog.md`), it must **search the wiki before composing its answer** to any substantive question. The history of discussions, decisions, references, sessions lives in the vault — answering without consulting it wastes that capital and risks contradicting/duplicating what already exists.
+
+### Trigger
+
+Toute question substantielle de l'user dans une session **vault-bound** dans l'un des 2 modes :
+
+- **cwd-is-vault** : le workspace lui-même EST un vault Obsidian (cwd contient `wiki-meta/catalog.md`).
+- **workspace-bound** (v0.11.6+) : le workspace est un projet code/dev ASSOCIÉ à un vault via `OBSIDIAN_ROUTER_DEFAULT_VAULT="<slug>"` dans le `.env` du workspace. Setup une fois via : `node <router-repo>/scripts/setup-vault.mjs --link-workspace <workspace-path> <vault-slug>`.
+
+Une question est "substantielle" si elle dépasse le suivi trivial (oui/non/ok/merci/continue/lettre seule), n'est pas une slash command (`/...`), et n'est pas un fix typo / control reply.
+
+### Les 4 entry points canoniques du vault
+
+Quel que soit le mode, le vault expose 4 fichiers canoniques sous `wiki-meta/` (jamais sous `wiki/`, qui ne contient que les pages de connaissance) :
+
+- **`wiki-meta/hot.md`** — cache de contexte récent, déjà chargé au session start via le hook `hot-cache-load` (en cwd-is-vault) ou via `hot-cache-load` workspace-bound (en associated mode, préfixé d'un marqueur indiquant la provenance).
+- **`wiki-meta/catalog.md`** — catalogue complet des pages organisées par dossier/projet. Le point d'entrée principal pour scanner ce qui existe.
+- **`wiki-meta/overview.md`** — résumé exécutif du vault (scope, conventions, état actuel).
+- **`wiki-meta/journal.md`** — historique append-only des opérations. Utile pour répondre à "qu'est-ce qui a changé récemment ?".
+
+### Procédure obligatoire — pre-answer flow
+
+1. **Catalog scan** : lire `wiki-meta/catalog.md`. En **cwd-is-vault**, via `Read("wiki-meta/catalog.md")` (filesystem direct). En **workspace-bound**, via `mcp__obsidian-router__get_file({ vault: "<slug>", path: "wiki-meta/catalog.md" })` — le cwd n'a pas de `wiki/`, seul le vault associé en a un.
+2. **Direct read** : si une page semble pertinente, la lire avec la même mécanique (`Read` ou `get_file` selon le mode).
+3. **Semantic search** : pour des sujets fit-by-meaning, lancer `mcp__obsidian-router__search_smart`. En **cwd-is-vault** omit `vault:` (utilise le default = cwd). En **workspace-bound** passer `vault: "<slug>"` explicite pour cibler le vault associé.
+4. **Cite + enrich** : référencer les notes trouvées dans la réponse en utilisant le format click-to-open (`[label](http://127.0.0.1:<insecurePort>/open/<URL-encoded-path>)` — voir la convention `Obsidian vault links` du CLAUDE.md global). Bâtir la réponse au-dessus du contexte existant plutôt que from scratch.
+
+### Skip-conditions (légitimes — pas besoin de wiki-query)
+
+- Prompt trivial (oui / non / merci / continue / single letter answer à une AskUserQuestion / typo fix)
+- Slash command (`/save`, `/wiki-query`, etc. — la skill gère elle-même son scope)
+- Workspace n'est **ni** un vault (pas de `wiki-meta/catalog.md` local) **ni** associé à un vault (pas de liaison workspace-bound) — un workspace de code lié à un vault n'a PAS de catalogue local et doit quand même interroger son vault associé
+- L'user explicitement dit *"sans chercher dans le vault, réponds-moi directement à X"* ou équivalent
+
+### Anti-patterns
+- ❌ Répondre à *"comment fait-on X"* en pure inference sans vérifier `wiki/Refs/X-howto.md` qui pourrait avoir la procédure verbatim
+- ❌ Composer une recommandation architecturale sans lire `wiki/Decisions/` qui contient peut-être déjà cette décision et ses trade-offs
+- ❌ Démarrer une nouvelle session sur un projet sans relire `wiki-meta/hot.md` (déjà chargé par `hot-cache-load` hook si activé) ET les notes de session récentes dans `wiki-meta/Sessions/` — jamais `wiki/Sessions/`, qui n'est pas une aire du wiki
+- ❌ Skip la check parce que "ça prend du temps" — typiquement un `get_file` + un `search_smart` coûte ~3 secondes vs des minutes de rework si on rate du contexte existant
+
+### Mécanisme technique
+
+Le hook `wiki-query-first-nudge.mjs` (UserPromptSubmit, v0.11.5+) injecte automatiquement un rappel dans le contexte de Claude au moment où l'user submit son prompt, SI le workspace est un vault (cwd-is-vault) OU si workspace-bound via `OBSIDIAN_ROUTER_DEFAULT_VAULT` (v0.11.6+), ET si le prompt est substantiel. Le hook `hot-cache-load.mjs` (SessionStart, v0.11.6+) charge automatiquement le `wiki-meta/hot.md` du vault associé en mode workspace-bound. Defense-in-depth contre l'oubli — la règle est dans le contexte (via cette convention installable + le `~/.claude/CLAUDE.md` global), mais le hook garantit que le trigger fire au bon moment, hors LLM attention loop.
+
+**Setup pour le mode workspace-bound** :
+```bash
+cd <router-repo>
+node scripts/setup-vault.mjs --link-workspace <workspace-path> "<vault-slug>"
+# → écrit OBSIDIAN_ROUTER_DEFAULT_VAULT="<vault-slug>" dans <workspace-path>/.env
+```
+
+Pour retirer le lien :
+```bash
+node scripts/setup-vault.mjs --unlink-workspace <workspace-path>
+```
+
+Opt-out per-session : `OBSIDIAN_ROUTER_NO_WIKI_QUERY_FIRST=true`.
+
+### Exemple concret (audit trail)
+
+Owner 2026-05-23 a observé : dans une session sur le vault DEDIBOX, il a demandé *"je veux créer une connexion RDP depuis mon pc maison vers mon pc cabinet via WireGuard"*. Claude a lu `roadmap_dedibox.md` mais a manqué `wiki/Refs/dedibox-rdp-pc-cabinet.md` qui contenait EXACTEMENT la procédure pour ce scénario (peer WG 192.0.2.20, RDP via Dedibox comme bastion, install steps). Owner a dû le pointer manuellement : *"tu es allé consulter ceci `obsidian://open?vault=DEDIBOX&file=wiki%2FRefs%2Fdedibox-rdp-pc-cabinet`?"*. Le wiki-query-first reflex aurait catch ce cas — un `search_smart` sur "RDP cabinet WireGuard" aurait surfacé la note immédiatement.
+
+### Notes opérationnelles
+
+- **Coût** : un cycle de pre-answer investigation = ~1-3 tool calls (`get_file` `wiki-meta/catalog.md` souvent déjà chargé par `hot-cache-load` → `search_smart` 1 fois → `get_file` 0-1 fois sur la note candidate). Latence ajoutée ~2-5s avant la première réponse de Claude. Acceptable vs le coût d'une réponse qui rate du contexte.
+- **Granularité** : la procédure ne dit PAS de re-search à chaque follow-up du même thread (Claude garde le contexte cross-turn dans son context window). C'est uniquement au DÉBUT d'une nouvelle thématique qu'on cherche.
+- **Defense-in-depth** : cette convention vit en 3 endroits — (a) cette installation per-vault via `/obsidian-router:conventions install wiki-query-first`, (b) la section globale dans `~/.claude/CLAUDE.md`, (c) le hook `wiki-query-first-nudge` v0.11.5+. Couches redondantes intentionnellement.
+
+### Historique
+
+Ajoutée 2026-05-23 (router v0.11.5) après l'observation Owner citée ci-dessus. Pattern reconnu : c'est le 3e cas de "Claude oublie une règle de contexte au moment de l'application" (après vault-link-linter v0.11.3 pour les liens cliquables et doc-propagation-checker v0.11.4 pour les docs post-commit). Le pattern de fix est maintenant codifié : (1) convention installable, (2) section globale CLAUDE.md, (3) hook déterministe sur l'event approprié (Stop / PostToolUse / UserPromptSubmit selon le moment du trigger).
+
+
+## Workspace-bound path disambiguation — NEVER mix cwd path with vault subpath
+
+Cette convention s'applique aux **sessions Claude Code en mode workspace-bound** sur ce vault (cwd = projet code/dev associé via `OBSIDIAN_ROUTER_DEFAULT_VAULT`). Elle existe parce que **le cwd et le vault ont souvent le même basename** (exemple : workspace `<...>/DEDIBOX` ↔ vault `<...>/DEDIBOX`) et concaténer le path du cwd avec un sous-chemin qui n'existe QUE dans le vault (`wiki/`, `wiki-meta/`) produit un path filesystem inexistant.
+
+### Le piège typique
+
+```
+Workspace cwd  : <parent-cwd>/<NAME>           ← repo code/dev
+Vault root     : <parent-vault>/<NAME>          ← Obsidian notes
+                          ↑↑↑↑↑↑↑
+                          Même basename sous deux parents différents.
+
+❌ INCORRECT : <parent-cwd>/<NAME>/wiki/Stack/host.md
+               (mix : cwd + sous-chemin qui n'existe QUE dans le vault → 404)
+✅ CORRECT   : <parent-vault>/<NAME>/wiki/Stack/host.md
+               (vrai path absolu du fichier dans le vault)
+```
+
+### Procédure mentale obligatoire avant de générer un path absolu
+
+1. **Identifier le scope** : ce fichier appartient au **vault** (notes Obsidian) ou au **repo code** (workspace cwd) ?
+2. **Si vault** → préfixe la racine du vault telle que retournée par `mcp__obsidian-router__list_vaults` (champ `path`), PUIS le sous-chemin `wiki/...` ou `wiki-meta/...`. JAMAIS préfixer avec le cwd.
+3. **Si repo code** → préfixe le cwd, et ne pas mettre de sous-dossier `wiki/` ou `wiki-meta/` (qui n'existent que dans le vault).
+4. **Dans le doute, NE PAS générer le path filesystem** → préférer dans cet ordre :
+   - **Wikilink Obsidian** `[[basename]]` (résolu par basename à travers le vault, survit aux renames)
+   - **Lien click-to-open** `[label](http://127.0.0.1:<insecurePort>/open/<url-encoded-vault-relative-path>)`
+   - Path filesystem uniquement si explicitement demandé ET après vérification stricte
+
+### Anti-patterns
+
+- ❌ Concaténer naïvement `${cwd}` + `/wiki/...` ou `${cwd}\wiki\...` quand le cwd est un repo code/dev
+- ❌ Confondre "le workspace s'appelle X" avec "le vault est dans le workspace" — ils peuvent vivre à des endroits totalement différents
+- ❌ Générer un path filesystem absolu avant d'avoir vérifié laquelle des 2 racines est la bonne
+- ❌ Mélanger `/` et `\` dans le même path (techniquement valide sous Windows mais visuellement louche → souvent symptôme d'une concaténation foireuse)
+- ❌ Ignorer le bloc PATH RESOLUTION RULES injecté par le hook `wiki-query-first-nudge` au prompt-submit
+
+### Mécanisme déterministe
+
+Le hook `hooks/wiki-query-first-nudge.mjs` (v0.10.2+) injecte automatiquement à chaque prompt en mode workspace-bound un bloc `PATH RESOLUTION RULES` qui contient :
+- Les 2 racines absolues réelles résolues dynamiquement (cwd path + vault path)
+- L'exemple WRONG/RIGHT avec les vrais paths du contexte courant
+- L'ordre de préférence (wikilink → click-to-open → filesystem)
+
+Cette convention sert de doublon visible dans le `CLAUDE.md` du vault pour les contributeurs qui ouvriraient ce vault sans avoir le hook actif. Une copie est aussi dans le global `~/.claude/CLAUDE.md` de l'utilisateur principal pour application par défaut à toutes les sessions.
+
+### Source
+
+Convention shippée en v0.10.2 du router (2026-05-23) à la demande explicite de Owner après *"avant tu m'as créé ce lien : `C:\Work\PROJECT/Stack/host.md` !!!!!!! lui c'est de la merde"* puis *"c'est insupportable que tu ignores des regles, je ne veux plus que ça arrive, trouve moi une solution perenne pour tous les vaults"*. La même règle vit aussi dans le `~/.claude/CLAUDE.md` global de l'user (section "Workspace-bound path disambiguation") et est injectée déterministiquement par le hook au prompt-submit.
