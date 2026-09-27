@@ -404,6 +404,91 @@ describe('registry — obsidianName is loaded, validated, and never fatal', () =
 });
 
 // ---------------------------------------------------------------------------
+// Never looser than the view-agent. `normalize_hints` (view-agent-direct.py)
+// answers 400 to the WHOLE /view request for a label that fails its rule, and
+// it checks the hints before classifying — so a label it refuses also costs
+// the `rest` hint that would have found a container vault. Two kinds of label
+// used to pass here and fail there.
+// ---------------------------------------------------------------------------
+
+describe('obsidian_name — the router never sends a label the view-agent refuses', () => {
+  // The agent: `_printable(name, 255) and name == name.strip()`.
+  const PADDED = [' notes', 'notes ', '\tnotes', `notes${String.fromCharCode(0xa0)}`, `${String.fromCharCode(0x2003)}notes`];
+  // Not text: URLSearchParams would send U+FFFD, a different name from the configured one.
+  const LONE_SURROGATES = [
+    `notes${String.fromCharCode(0xd800)}`,
+    `${String.fromCharCode(0xdc00)}notes`,
+    `no${String.fromCharCode(0xd800)}tes`,
+    String.fromCharCode(0xdbff),
+    // Reversed pair: two surrogates, but not a pair.
+    `${String.fromCharCode(0xdc00)}${String.fromCharCode(0xd800)}`,
+  ];
+
+  test('a label with leading or trailing whitespace is refused', () => {
+    for (const bad of PADDED) assert.equal(isValidObsidianName(bad), false, JSON.stringify(bad));
+    // Interior spaces are ordinary label characters.
+    assert.equal(isValidObsidianName('my notes'), true);
+  });
+
+  test('"surrounding whitespace" is exactly what Python strip() removes — no more, no less', () => {
+    // CPython 3.12: every i with (chr(i) + 'a').strip() != chr(i) + 'a'.
+    const PY_STRIP = [
+      0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+      0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+      0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+    ];
+    for (const cp of PY_STRIP) {
+      const c = String.fromCharCode(cp);
+      assert.equal(isValidObsidianName(`${c}notes`), false, `leading U+${cp.toString(16)}`);
+      assert.equal(isValidObsidianName(`notes${c}`), false, `trailing U+${cp.toString(16)}`);
+    }
+    // U+FEFF: JS trim() strips it, Python strip() keeps it, so the agent accepts
+    // it — refusing it here would drop a label for nothing.
+    const BOM = String.fromCharCode(0xfeff);
+    assert.equal(isValidObsidianName(`${BOM}notes`), true);
+    assert.equal(isValidObsidianName(`notes${BOM}`), true);
+    assert.equal(isValidObsidianName(BOM), true);
+    assert.equal(isValidObsidianName(`${BOM}${BOM}`), true);
+    // Whitespace-only and empty labels stay refused.
+    for (const blank of ['', ' ', '   ', '\t', String.fromCharCode(0x3000)]) {
+      assert.equal(isValidObsidianName(blank), false, JSON.stringify(blank));
+    }
+  });
+
+  test('a lone surrogate is refused, a paired one (an emoji) is kept', () => {
+    for (const bad of LONE_SURROGATES) assert.equal(isValidObsidianName(bad), false, JSON.stringify(bad));
+    assert.equal(isValidObsidianName('notes \u{1F4DD}'), true);
+    // A valid pair at either edge: the edge check reads a surrogate, never whitespace.
+    assert.equal(isValidObsidianName('\u{1F4DD} notes'), true);
+    assert.equal(isValidObsidianName('\u{1F4DD}'), true);
+  });
+
+  test('neither reaches the wire as obsidian_name, declared or derived — and rest survives', () => {
+    for (const bad of [...PADDED, ...LONE_SURROGATES]) {
+      const hints = vaultHints(remote({ baseUrl: 'http://192.0.2.10:27124', obsidianName: bad }));
+      assert.equal(hints.obsidian_name, undefined, `sent ${JSON.stringify(bad)}`);
+      assert.equal(hints.rest, 'http://192.0.2.10:27124');
+    }
+    assert.equal(vaultHints({ name: 'v', path: '/srv/vaults/notes ' }).obsidian_name, undefined);
+  });
+
+  test('the loader drops them with a warning, and keeps the vault', async () => {
+    const env = {
+      VAULT_PADDED: JSON.stringify({ name: 'padded', baseUrl: 'http://192.0.2.10:1', apiKey: 'k', obsidianName: 'notes ' }),
+      VAULT_LONE: JSON.stringify({ name: 'lone', baseUrl: 'http://192.0.2.10:2', apiKey: 'k', obsidianName: LONE_SURROGATES[0] }),
+    };
+    const { result, stderr } = await quietly(() => _internals.parseEnvVaults(env));
+    const byName = Object.fromEntries(result.envVaults.map((v) => [v.name, v]));
+    assert.deepEqual(Object.keys(byName).sort(), ['lone', 'padded']);
+    assert.equal(byName.padded.obsidianName, undefined);
+    assert.equal(byName.lone.obsidianName, undefined);
+    assert.match(stderr, /VAULT_PADDED: obsidianName ignored/);
+    assert.match(stderr, /VAULT_LONE: obsidianName ignored/);
+    assert.match(stderr, /no leading or trailing whitespace and no unpaired surrogate/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The write-time injection, through the real server
 // ---------------------------------------------------------------------------
 

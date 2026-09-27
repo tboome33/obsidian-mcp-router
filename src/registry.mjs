@@ -1336,7 +1336,8 @@ function declaredObsidianName(value, where, warn = (m) => console.error(`[regist
   if (isValidObsidianName(value)) return value;
   warn(
     `${where}: obsidianName ignored — it must be a non-blank string of at most `
-      + `${OBSIDIAN_NAME_MAX_LENGTH} characters, with no control character and no / or \\ `
+      + `${OBSIDIAN_NAME_MAX_LENGTH} characters, with no control character, no / or \\, `
+      + 'no leading or trailing whitespace and no unpaired surrogate '
       + `(got ${typeof value === 'string' ? `a string of ${value.length} characters` : typeof value}).`,
   );
   return undefined;
