@@ -232,17 +232,20 @@ describe('apply', () => {
 
   // The window the pre-loop check does not cover: the link lands on
   // `plugins/` WHILE an asset is downloading — after the check, before the
-  // first write. The per-plugin re-check, made right before the staging
-  // directory is created, is what refuses here; without it the staging
-  // directory and its files go through the link.
-  test(`\`.obsidian/plugins\` becomes a ${linkType} DURING the download: nothing is staged through it`, async () => {
+  // first write. The per-plugin re-check made right BEFORE the staging
+  // directory is created is what refuses here. The link points at a FILE:
+  // without that check, the first write (mkdir of the staging directory
+  // through the link) fails with the OS's own error, not with the refusal —
+  // so the assertion on the message isolates the pre-staging check from the
+  // one before the renames (measured: with only the first removed → red).
+  test(`\`.obsidian/plugins\` becomes a link DURING the download: refused before the first write, by the refusal's own message`, async () => {
     const { root, vault, config } = makeVault({ enabled: ['templater-obsidian'] });
     const gh = fakeGitHub(standardFleet());
     const dry = await run(['testvault', '--dry-run'], { transport: gh.transport, config });
     const seal = sealOf(dry.out);
     assert.ok(seal, dry.out);
-    const outside = path.join(root, 'elsewhere');
-    fs.mkdirSync(outside);
+    const target = path.join(root, 'elsewhere.bin');
+    fs.writeFileSync(target, 'sentinel');
     const pluginsDir = path.join(vault, '.obsidian', 'plugins');
     let swapped = false;
     // main.js is fetched by the apply loop only (the plan rebuild fetches the
@@ -251,15 +254,15 @@ describe('apply', () => {
       if (!swapped && /\/releases\/download\/.*\/main\.js$/.test(url)) {
         swapped = true;
         fs.rmSync(pluginsDir, { recursive: true, force: true });
-        fs.symlinkSync(outside, pluginsDir, linkType);
+        fs.symlinkSync(target, pluginsDir, 'file');
       }
       return gh.transport(url, o);
     };
     const r = await run(['testvault', '--approved-plan-sha256', seal], { transport: swapping, config });
     assert.ok(swapped, 'the fixture never swapped the directory');
     assert.equal(r.code, 1, r.out);
-    assert.match(r.err, /not a plain directory/);
-    assert.deepEqual(fs.readdirSync(outside), [], 'a staging directory or a file went through the link');
+    assert.match(r.err, /templater-obsidian.*not a plain directory/, r.err);
+    assert.equal(fs.readFileSync(target, 'utf8'), 'sentinel', 'the link target was touched');
   });
 
   test(`\`community-plugins.json\` that is a link is not written through`, () => {

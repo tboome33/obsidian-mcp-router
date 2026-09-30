@@ -34,7 +34,10 @@ import { _internals } from '../src/index.mjs';
 const VAULT = { name: 'v', baseUrl: 'http://unused.invalid' };
 const registry = { resolveVault: () => VAULT };
 
-const snippet = (id) => fs.readFileSync(path.join(SNIPPETS_DIR, `${id}.md`), 'utf8');
+// Read as the loader reads it — LF, no BOM — so a checkout with CRLF (the
+// Windows CI runner's autocrlf) compares text with text, not text with `\r`.
+const asLf = (t) => (t.charCodeAt(0) === 0xfeff ? t.slice(1) : t).replace(/\r\n?/g, '\n');
+const snippet = (id) => asLf(fs.readFileSync(path.join(SNIPPETS_DIR, `${id}.md`), 'utf8'));
 const headingOf = (id) => snippet(id).split('\n', 1)[0];
 
 /**
@@ -378,7 +381,7 @@ describe('install_conventions — registration and classification', () => {
 // ---------------------------------------------------------------------------
 
 describe('install_conventions — the languages value, and retired conventions', () => {
-  const retiredText = (id) => fs.readFileSync(path.join(RETIRED_DIR, `${id}.md`), 'utf8');
+  const retiredText = (id) => asLf(fs.readFileSync(path.join(RETIRED_DIR, `${id}.md`), 'utf8'));
   const VALUE_LINE = '**Languages of this vault: fr, en**';
 
   test('`languages` without a value is refused before any I/O', async () => {

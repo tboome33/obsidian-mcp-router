@@ -172,6 +172,7 @@ import {
   resolvePluginProfile,
   existingSlugs,
   knownVaultRoots,
+  sameRegisteredPath,
 } from './vault-plan.mjs';
 import { pinProvisionTarget } from '../src/helpers/pin-provision-target.mjs';
 
@@ -4042,7 +4043,8 @@ async function setupVault(vaultPath, opts = {}) {
     const customSlug = wizard.name.toLowerCase();
     if (customSlug !== defaultNameFromPath(abs)) {
       const slugs = existingSlugs(cfg);
-      if (slugs.has(customSlug) && path.resolve(slugs.get(customSlug)) !== abs) {
+      // Real paths, not spellings: the registry holds what the pin resolved.
+      if (slugs.has(customSlug) && !sameRegisteredPath(slugs.get(customSlug), abs)) {
         fail(`Slug "${customSlug}" already maps to ${slugs.get(customSlug)}.\n` +
           `   Pass a distinct --name so the router can disambiguate the two vaults.`);
       }

@@ -110,7 +110,10 @@ export function resolveYtdlpPath() {
  * and yt-dlp looks it up on PATH itself.
  */
 export function jsRuntimeArg(execPath = process.execPath) {
-  const base = typeof execPath === 'string' ? path.basename(execPath) : '';
+  // Both separators, whatever the platform: `path.basename` on POSIX leaves
+  // a Windows path whole, and a Windows execPath handed from a config or a
+  // test is still a node binary.
+  const base = typeof execPath === 'string' ? execPath.split(/[\\/]/).pop() : '';
   return /^node(\.exe)?$/i.test(base) ? `node:${execPath}` : 'node';
 }
 

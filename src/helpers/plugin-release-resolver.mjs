@@ -90,6 +90,8 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 export function displayUrl(raw) {
   try {
     const u = new URL(String(raw));
+    // Only an http(s) path is a path: a `data:` URL's "path" IS its payload.
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return `(${u.protocol} URL)`;
     return `${u.origin}${u.pathname}${u.search ? '?…' : ''}`;
   } catch {
     // Not parseable, so nothing in it can be told apart from a secret

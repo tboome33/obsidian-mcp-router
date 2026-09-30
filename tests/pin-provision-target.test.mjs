@@ -173,6 +173,17 @@ test('win32: a file that cannot be opened to count its names is refused (the cou
   const deny = spawnSync('icacls', [locked, '/deny', `${who}:(R)`], { encoding: 'utf8' });
   if (deny.status !== 0) { t.skip(`icacls could not deny read here: ${deny.stderr || deny.stdout}`); return; }
   try {
+    // The deny must actually bite for THIS token before it can prove anything:
+    // on an elevated runner (GitHub's windows-latest runs as an administrator
+    // with backup privileges) the ACL is not a lock, and the file opens. That
+    // is a measurement that could not be made, said as such — not a pass.
+    let opened = null;
+    try { opened = fs.openSync(locked, 'r'); } catch { opened = null; }
+    if (opened !== null) {
+      fs.closeSync(opened);
+      t.skip('the read deny did not take effect for this account (elevated / backup-privileged token) — the handle-count refusal cannot be measured here');
+      return;
+    }
     assert.throws(() => pinProvisionTarget(target, { roots: [root] }), /locked\.md could not be opened/);
   } finally {
     spawnSync('icacls', [locked, '/remove:d', who]);

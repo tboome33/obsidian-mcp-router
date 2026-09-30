@@ -80,6 +80,9 @@ describe('host allowlist — every request AND every redirect hop', () => {
     assert.doesNotMatch(displayUrl('not a url ?token=SECRET'), /SECRET/);
     // Unparseable: nothing in it can be told apart from a secret, so none of it is shown.
     assert.equal(displayUrl('https://alice:SECRET@[invalid'), '(malformed URL)');
+    // A data: URL parses, and its "path" is its payload: only http(s) paths are shown.
+    assert.equal(displayUrl('data:text/plain,SECRET'), '(data: URL)');
+    assert.equal(displayUrl('ftp://h/SECRET'), '(ftp: URL)');
     assert.throws(() => assertAllowedUrl('https://alice:SECRET@[invalid'), (err) => err.code === 'bad_url' && !/SECRET/.test(err.message));
 
     // A Location header that does not resolve is a controlled refusal, not a

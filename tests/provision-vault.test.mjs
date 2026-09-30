@@ -136,7 +136,9 @@ describe('provision_vault tool', () => {
     }));
     const res = await provisionVaultTool({ configPath: cfgWithRoot }, { name: 'Tartenpion' });
     assert.equal(res.ok, true, JSON.stringify(res));
-    assert.equal(path.resolve(res.path), path.join(vaultsRootDir, 'tartenpion'));
+    // The REAL path: the pin resolves it, and the Windows runner's temp dir is
+    // an 8.3 spelling (`RUNNER~1`) that the lexical join would keep.
+    assert.equal(path.resolve(res.path), path.join(fs.realpathSync.native(vaultsRootDir), 'tartenpion'));
     assert.ok(fs.existsSync(path.join(vaultsRootDir, 'tartenpion', '.env')));
   });
 

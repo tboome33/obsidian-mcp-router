@@ -180,12 +180,13 @@ function readDiskText(io, root, rel) {
     // THIS directory. Not compared. The real path of the note must stay under
     // the real path of the root — every component, not only the last.
     if (io.lstatSync(abs).isSymbolicLink()) return null;
-    if (typeof io.realpathSync === 'function') {
-      const realRoot = io.realpathSync(rootResolved);
-      const realAbs = io.realpathSync(abs);
-      const sep = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
-      if (realAbs !== realRoot && !realAbs.startsWith(sep)) return null;
-    }
+    // An adapter that cannot tell the real path cannot vouch for containment:
+    // no comparison then, rather than an unconfined read.
+    if (typeof io.realpathSync !== 'function') return null;
+    const realRoot = io.realpathSync(rootResolved);
+    const realAbs = io.realpathSync(abs);
+    const sep = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
+    if (realAbs !== realRoot && !realAbs.startsWith(sep)) return null;
     return new TextDecoder('utf-8').decode(io.readFileSync(abs));
   } catch (err) {
     if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'EISDIR')) return null;

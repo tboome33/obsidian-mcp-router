@@ -211,6 +211,22 @@ export function copyableVaults(cfg = {}) {
 }
 
 /**
+ * "The same registered path?" — judged on REAL paths, not spellings. The
+ * registry holds the real path the pin resolved (a long name); the caller may
+ * compose the same folder from an 8.3 spelling (`RUNNER~1`, the Windows CI
+ * runner's temp dir), a different case, or a link. A textual `!==` called
+ * those two different vaults and refused the legitimate re-run under the same
+ * name. A path that does not exist yet is resolved as far as it exists.
+ */
+export function sameRegisteredPath(a, b) {
+  const real = (p) => {
+    try { return realPathWithMissingTail(p); } catch { return path.resolve(String(p)); }
+  };
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  return fold(real(a)) === fold(real(b));
+}
+
+/**
  * Build the complete, resolved provisioning plan (read-only). This is what
  * `--dry-run [--json]` prints and what `provision_vault` executes.
  */
@@ -220,9 +236,9 @@ export function buildProvisionPlan({ vaultPath, opts = {}, cfg = {}, requiredPlu
   const name = opts.name || defaultNameFromPath(abs);
   const slug = (opts.name ? opts.name : defaultNameFromPath(abs)).toLowerCase();
 
-  // Slug collision (against a DIFFERENT registered path).
+  // Slug collision (against a DIFFERENT registered path — real paths compared).
   const slugs = existingSlugs(cfg);
-  if (slugs.has(slug) && path.resolve(slugs.get(slug)) !== abs) {
+  if (slugs.has(slug) && !sameRegisteredPath(slugs.get(slug), abs)) {
     warnings.push({
       code: 'slug-collision',
       message: `Slug "${slug}" already maps to ${slugs.get(slug)}. Pass a distinct --name, or the router will not be able to disambiguate the two vaults.`,

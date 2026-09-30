@@ -59,6 +59,16 @@ work after it was merged onto v0.96.0. What they found, and what changed:
   redirect whose `Location` does not resolve is a controlled refusal; the note `--attach
   --local-path` compares is refused when its REAL path (every component) leaves the directory.
   Said plainly in the module: the link check narrows the window, it is not a lock.
+- Third pass and the first CI run of this work (it had never left the machine that wrote it):
+  the `--name` slug-collision guard (`buildProvisionPlan`, `setup-vault --provision`) compares
+  REAL paths, not spellings — the registry holds the path the pin resolved, and the Windows
+  runner composes the same folder from an 8.3 temp dir (`RUNNER~1`), so the legitimate re-run
+  under the same name was refused there; `jsRuntimeArg` recognises a node binary whatever the
+  path separator; the conventions tests read snippets as the loader does (LF) so a CRLF checkout
+  compares text with text; the Windows handle-count test skips, and says why, when the ACL deny
+  does not bite for an elevated token; `displayUrl` shows a path only for http(s) (a `data:`
+  URL's path is its payload); a note is not compared when the disk adapter cannot tell its real
+  path.
 
 ### `install_conventions` knows the conventions that changed under it — `languages` takes a value, `bilingual` is retired
 
