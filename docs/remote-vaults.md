@@ -149,7 +149,7 @@ A remote vault's label cannot be derived from its `baseUrl`, and it usually diff
 { "name": "router", "baseUrl": "http://10.8.0.10:27163", "apiKey": "…", "obsidianName": "opsidian-mcp-router et bridge" }
 ```
 
-It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character and no `/` or `\`. `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
+It must be the vault's folder name exactly as Obsidian shows it: a non-blank string of at most 255 characters (UTF-16 code units), with no control character, no `/` or `\`, no leading or trailing whitespace and no unpaired surrogate (the view-agent refuses a padded label, and would receive U+FFFD in place of a lone surrogate). `null` counts as absent. Any other invalid value is dropped with a warning on stderr and the vault still loads. It is a label, not a secret: it travels in the request URL. The same field is accepted in a `VAULT_*` variable.
 
 ## `find_twin_pages` on a remote vault (v0.82.0)
 
