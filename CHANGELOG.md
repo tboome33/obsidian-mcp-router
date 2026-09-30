@@ -25,8 +25,9 @@ work after it was merged onto v0.96.0. What they found, and what changed:
   router config's JSON error no longer quotes the parser's message either (it can hold a slice of
   the file, which holds API keys); yt-dlp's stderr is masked for the proxy URL before it is quoted.
 - `--attach`'s final state: the recommended conventions are an OFFER, not a gate. A vault with all
-  its plugin code, its wiki and its conventions file is `ready yes` even when the owner declined a
-  recommended convention (listed under `optional`, no longer a `next step` a wizard would loop on).
+  its plugin code and its wiki is `ready yes` even when the owner declined a recommended
+  convention, or has no conventions file yet (listed under `optional`, no longer a `next step` a
+  wizard would loop on).
   What does gate it now: a `languages` section that declares nothing (the placeholder, an
   unreadable value) is a blocking step. The install step names the missing ids with `--only`,
   since the installer's own candidates (required + enabled) would never select an expected plugin
@@ -50,6 +51,14 @@ work after it was merged onto v0.96.0. What they found, and what changed:
 - The wiki and attach pickers name `languages` (not the retired `bilingual`), hide retired
   entries, and pass the value the owner gave; the sync report's suggested command carries
   `--dry-run`, without which the command refuses to run.
+- Second pass, on the repairs themselves: the per-plugin link check runs right before the FIRST
+  write (the staging directory), not only before the renames — a link landing on `plugins/` while
+  an asset downloads is refused with nothing staged through it (measured: with that check removed,
+  the test goes red); a release asset URL that points outside its release is reported through
+  `displayUrl` too; an unparseable URL shows as `(malformed URL)`, never a slice of the input; a
+  redirect whose `Location` does not resolve is a controlled refusal; the note `--attach
+  --local-path` compares is refused when its REAL path (every component) leaves the directory.
+  Said plainly in the module: the link check narrows the window, it is not a lock.
 
 ### `install_conventions` knows the conventions that changed under it — `languages` takes a value, `bilingual` is retired
 

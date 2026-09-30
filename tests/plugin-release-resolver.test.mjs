@@ -78,6 +78,17 @@ describe('host allowlist — every request AND every redirect hop', () => {
     assert.equal(displayUrl(signed), 'https://objects.githubusercontent.com/o/r/main.js?…');
     assert.equal(displayUrl('https://u:pw@github.com/x?y=1#z'), 'https://github.com/x?…');
     assert.doesNotMatch(displayUrl('not a url ?token=SECRET'), /SECRET/);
+    // Unparseable: nothing in it can be told apart from a secret, so none of it is shown.
+    assert.equal(displayUrl('https://alice:SECRET@[invalid'), '(malformed URL)');
+    assert.throws(() => assertAllowedUrl('https://alice:SECRET@[invalid'), (err) => err.code === 'bad_url' && !/SECRET/.test(err.message));
+
+    // A Location header that does not resolve is a controlled refusal, not a
+    // native TypeError carrying the raw input.
+    const badLoc = fakeGitHub({ 'https://github.com/a': { status: 302, headers: { location: 'https://x:SECRET@[bad' } } });
+    let loc = null;
+    try { await createGuardedFetch({ transport: badLoc.transport })('https://github.com/a'); } catch (err) { loc = err; }
+    assert.equal(loc?.code, 'bad_redirect');
+    assert.doesNotMatch(JSON.stringify({ m: loc.message, u: loc.url, i: loc.input, c: String(loc.cause ?? '') }), /SECRET/);
 
     const gh = fakeGitHub({
       'https://github.com/o/r/releases/download/v1/main.js': { status: 302, headers: { location: signed } },

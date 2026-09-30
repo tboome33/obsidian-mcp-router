@@ -364,6 +364,9 @@ below is the whole job; each step's output says whether the next one is needed.
    already existed, run it now. It installs with ONE `install_conventions` call.
 5. **Re-run step 1's command** (same arguments — it is idempotent) and report its final state. The
    attach is finished when it prints `ready       yes`; until then, name what is still missing.
+   A `ready yes` may be followed by an **`optional`** block (the conventions picker, when the owner
+   declined a recommended convention or has not chosen yet): that is an offer to repeat once, not a
+   step that keeps the attach open — say it, and stop.
 
 ---
 

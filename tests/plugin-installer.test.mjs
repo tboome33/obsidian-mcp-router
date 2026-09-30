@@ -213,6 +213,55 @@ describe('apply', () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(vault, '.obsidian', 'community-plugins.json'), 'utf8')), ['templater-obsidian']);
   });
 
+  test(`one plugin's own folder \`.obsidian/plugins/<id>\` is a ${linkType}: that plugin fails, the link's target stays empty, the others install`, async () => {
+    const { root, vault, config } = makeVault({ enabled: ['obsidian-style-settings', 'templater-obsidian'] });
+    const gh = fakeGitHub(standardFleet());
+    const dry = await run(['testvault', '--dry-run'], { transport: gh.transport, config });
+    const seal = sealOf(dry.out);
+    assert.ok(seal, dry.out);
+    const outside = path.join(root, 'elsewhere');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, path.join(vault, '.obsidian', 'plugins', 'templater-obsidian'), linkType);
+    const r = await run(['testvault', '--approved-plan-sha256', seal], { transport: gh.transport, config });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.err, /templater-obsidian.*not a plain directory/);
+    assert.deepEqual(fs.readdirSync(outside), [], 'a write went through the link');
+    assert.ok(fs.existsSync(pluginFile(vault, 'obsidian-style-settings', 'main.js')), 'the other plugin was not installed');
+    assert.ok(!fs.readdirSync(path.join(vault, '.obsidian', 'plugins')).some((n) => n.startsWith('.install-')), 'a staging directory was left behind');
+  });
+
+  // The window the pre-loop check does not cover: the link lands on
+  // `plugins/` WHILE an asset is downloading — after the check, before the
+  // first write. The per-plugin re-check, made right before the staging
+  // directory is created, is what refuses here; without it the staging
+  // directory and its files go through the link.
+  test(`\`.obsidian/plugins\` becomes a ${linkType} DURING the download: nothing is staged through it`, async () => {
+    const { root, vault, config } = makeVault({ enabled: ['templater-obsidian'] });
+    const gh = fakeGitHub(standardFleet());
+    const dry = await run(['testvault', '--dry-run'], { transport: gh.transport, config });
+    const seal = sealOf(dry.out);
+    assert.ok(seal, dry.out);
+    const outside = path.join(root, 'elsewhere');
+    fs.mkdirSync(outside);
+    const pluginsDir = path.join(vault, '.obsidian', 'plugins');
+    let swapped = false;
+    // main.js is fetched by the apply loop only (the plan rebuild fetches the
+    // manifest): swapping on it lands INSIDE the loop, after the pre-loop check.
+    const swapping = async (url, o) => {
+      if (!swapped && /\/releases\/download\/.*\/main\.js$/.test(url)) {
+        swapped = true;
+        fs.rmSync(pluginsDir, { recursive: true, force: true });
+        fs.symlinkSync(outside, pluginsDir, linkType);
+      }
+      return gh.transport(url, o);
+    };
+    const r = await run(['testvault', '--approved-plan-sha256', seal], { transport: swapping, config });
+    assert.ok(swapped, 'the fixture never swapped the directory');
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.err, /not a plain directory/);
+    assert.deepEqual(fs.readdirSync(outside), [], 'a staging directory or a file went through the link');
+  });
+
   test(`\`community-plugins.json\` that is a link is not written through`, () => {
     const { root, vault } = makeVault({ enabled: [] });
     const target = path.join(root, 'elsewhere.json');

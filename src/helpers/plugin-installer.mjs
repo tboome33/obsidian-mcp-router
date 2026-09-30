@@ -125,6 +125,14 @@ function hasMainJs(fs, dir) {
  * vault, so the check starts under the root. A segment that does not exist
  * yet ends the check: it will be created, as a plain directory.
  *
+ * WHAT THIS IS NOT: a lock. It is checked by path, before the downloads and
+ * again right before this plugin's renames, which narrows the window in
+ * which a link could be swapped in to a few milliseconds — it does not close
+ * it (that would take directory handles this code does not use). The vault
+ * is the user's own disk; a writer racing this command on it is outside
+ * what the seal and this check defend against, and that limit is said here
+ * rather than implied away — the same honesty as the plugin-cache purge.
+ *
  * @throws {Error} naming the offending path, before anything is written
  */
 export function assertPlainDirChain(fs, vaultPath, segments) {
@@ -377,10 +385,6 @@ export async function applyInstallPlan({ vaultPath, plan, fetch, fs = nodeFs, fo
     }
     const stage = path.join(pluginsDir, `.install-${p.id}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     try {
-      // Re-checked right before this plugin's writes: the chain may have
-      // changed while the previous plugin was downloading.
-      assertPlainDirChain(fs, vaultPath, ['.obsidian', 'plugins', p.id]);
-      fs.mkdirSync(pluginsDir, { recursive: true });
       const files = new Map();
       if (!p._manifest) throw new Error('the plan carries no verified manifest — re-run the dry run');
       verifyManifest(p._manifest, p.id);
@@ -390,9 +394,15 @@ export async function applyInstallPlan({ vaultPath, plan, fetch, fs = nodeFs, fo
         if (a.name === 'main.js') verifyMainJs(buf, p.id);
         files.set(a.name, buf);
       }
+      // Re-checked right before this plugin's FIRST write — the staging
+      // directory — because the downloads above took time, and again before
+      // the renames. Nothing is staged, let alone installed, through a link.
+      assertPlainDirChain(fs, vaultPath, ['.obsidian', 'plugins', p.id]);
+      fs.mkdirSync(pluginsDir, { recursive: true });
       fs.mkdirSync(stage);
       for (const [name, buf] of files) fs.writeFileSync(path.join(stage, name), buf);
 
+      assertPlainDirChain(fs, vaultPath, ['.obsidian', 'plugins', p.id]);
       let destStat = null;
       try { destStat = fs.lstatSync(dest); } catch { destStat = null; }
       if (destStat && (destStat.isSymbolicLink() || !destStat.isDirectory())) {

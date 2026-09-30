@@ -175,9 +175,17 @@ function readDiskText(io, root, rel) {
   const within = abs === rootResolved || abs.startsWith(rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep);
   if (!within) return null;
   try {
-    // A note that is a link points outside the directory being judged: the
-    // text it would yield says nothing about THIS directory. Not compared.
+    // A note that is a link, or sits under a linked directory, points outside
+    // the directory being judged: the text it would yield says nothing about
+    // THIS directory. Not compared. The real path of the note must stay under
+    // the real path of the root — every component, not only the last.
     if (io.lstatSync(abs).isSymbolicLink()) return null;
+    if (typeof io.realpathSync === 'function') {
+      const realRoot = io.realpathSync(rootResolved);
+      const realAbs = io.realpathSync(abs);
+      const sep = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
+      if (realAbs !== realRoot && !realAbs.startsWith(sep)) return null;
+    }
     return new TextDecoder('utf-8').decode(io.readFileSync(abs));
   } catch (err) {
     if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'EISDIR')) return null;

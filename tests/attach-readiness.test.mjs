@@ -181,6 +181,15 @@ describe('assessAttachReadiness — wiki and conventions', () => {
     assert.match(formatReadiness(r).join('\n'), /languages: unreadable \(invalid-value\)/);
   });
 
+  test('`languages` doubled (two sections) is unreadable too — blocking, named as duplicate-section', () => {
+    const doubled = `${conventionsText(RECOMMENDED_CONVENTIONS)}\n${renderLanguagesSection(CATALOGUE.find((c) => c.id === 'languages').text, ['en']).text}`;
+    const vault = makeVault({ plugins: ALL_CODE, enabled: EXPECTED, files: { 'CLAUDE.md': doubled } });
+    const r = assess({ diskPath: vault, wiki: WIKI_OK });
+    assert.equal(r.conventions.languages.problem, 'duplicate-section');
+    assert.equal(r.ready, false);
+    assert.match(r.nextSteps[0], /Set the languages value/);
+  });
+
   test('`languages` with a readable value is reported on the conventions line', () => {
     const vault = makeVault({ plugins: ALL_CODE, enabled: EXPECTED, files: ALL_CONVENTIONS });
     const r = assess({ diskPath: vault, wiki: WIKI_OK });

@@ -189,7 +189,7 @@ function renderLanguagesSnippet(args, ids, requested, byId, dryRun) {
   }
   // Named but not shipped by this library: it reports as `unknown` (or
   // `retired`), and the value has nothing to render into.
-  const wanted = named && requested.includes(LANGUAGES_CONVENTION_ID) && byId.has(LANGUAGES_CONVENTION_ID);
+  const wanted = named && requested.includes(LANGUAGES_CONVENTION_ID);
   if (!wanted) return null;
   if (args.languages === undefined) {
     if (dryRun) return null;

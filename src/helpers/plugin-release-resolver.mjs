@@ -92,7 +92,9 @@ export function displayUrl(raw) {
     const u = new URL(String(raw));
     return `${u.origin}${u.pathname}${u.search ? '?…' : ''}`;
   } catch {
-    return String(raw).slice(0, 200).replace(/\?.*$/, '?…');
+    // Not parseable, so nothing in it can be told apart from a secret
+    // (`https://alice:SECRET@[invalid` is one): a constant, never a slice.
+    return '(malformed URL)';
   }
 }
 
@@ -212,7 +214,15 @@ export function createGuardedFetch({
         if (!location) throw new PluginFetchError(`HTTP ${status} without a Location header: ${displayUrl(current)}`, { code: 'bad_redirect', url: displayUrl(current) });
         if (hop >= maxRedirects) throw new PluginFetchError(`Too many redirects (> ${maxRedirects}) from ${displayUrl(url)}`, { code: 'too_many_redirects', url: displayUrl(url) });
         // Resolved against the hop that sent it, then judged like a first URL.
-        current = assertAllowedUrl(new URL(String(location), current).href, hosts).href;
+        // A Location that does not resolve is refused as a controlled error:
+        // the native TypeError carries the raw input in its own properties.
+        let resolved;
+        try {
+          resolved = new URL(String(location), current).href;
+        } catch {
+          throw new PluginFetchError(`HTTP ${status} with an unusable Location header from ${displayUrl(current)}`, { code: 'bad_redirect', url: displayUrl(current) });
+        }
+        current = assertAllowedUrl(resolved, hosts).href;
         continue;
       }
       if (status !== 200) {
@@ -340,7 +350,7 @@ export function selectPluginAssets(release) {
     try { u = new URL(a.url); } catch { u = null; }
     if (!u || u.protocol !== 'https:' || u.hostname.toLowerCase() !== 'github.com' || !u.pathname.toLowerCase().startsWith(prefix)) {
       throw new PluginFetchError(
-        `${spec.name} of ${release.resolvedRepo} points outside that release (${String(a.url).slice(0, 200)})`,
+        `${spec.name} of ${release.resolvedRepo} points outside that release (${displayUrl(a.url)})`,
         { code: 'foreign_asset_url' },
       );
     }
