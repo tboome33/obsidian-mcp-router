@@ -10,6 +10,17 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+
+## [0.97.0] — 2026-09-30 — a remote vault attaches and ends verified, and a review pass that found what the first CI run would have
+
+Everything merged since v0.96.0, four days of it, in one pull request (#5) plus two small ones
+(#3, #4). The largest part is work of 2026-09-26 that had never left the machine that wrote it —
+83 files, seven entries below — committed as-is, merged onto v0.96.0, reconciled with the
+`languages` convention and the retired `bilingual`, then reviewed twice by two reviewers and run
+on CI for the first time (13 red tests, 12 of them Windows-only, all fixed here). Also: the view
+links send the vault hints `rest` and `obsidian_name` (#3) and never a label the view-agent
+refuses (#4). The catalogue holds **56 MCP tools** (55 at v0.96.0: `install_conventions` is new).
+
 ### Review pass on the attach work: writes stay inside the vault, messages keep their secrets, and "ready" stops meaning "accepted every suggestion"
 
 Two reviewers (a Code Reviewer agent on the tree, codex on the diff) went over the attach-remote
