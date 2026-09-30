@@ -175,6 +175,9 @@ function readDiskText(io, root, rel) {
   const within = abs === rootResolved || abs.startsWith(rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep);
   if (!within) return null;
   try {
+    // A note that is a link points outside the directory being judged: the
+    // text it would yield says nothing about THIS directory. Not compared.
+    if (io.lstatSync(abs).isSymbolicLink()) return null;
     return new TextDecoder('utf-8').decode(io.readFileSync(abs));
   } catch (err) {
     if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR' || err.code === 'EISDIR')) return null;

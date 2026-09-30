@@ -10,6 +10,47 @@ For per-version detail (architecture decisions, alternatives considered, deferre
 > stub *after* the `[Unreleased]` body, so content left here is stranded rather than folded in —
 > the way v0.36.1's entry was filed under Docling for a month.
 
+### Review pass on the attach work: writes stay inside the vault, messages keep their secrets, and "ready" stops meaning "accepted every suggestion"
+
+Two reviewers (a Code Reviewer agent on the tree, codex on the diff) went over the attach-remote
+work after it was merged onto v0.96.0. What they found, and what changed:
+
+- `--install-plugins` refuses to write through a link. The chain `.obsidian/` → `plugins/` → `<id>/`
+  must be plain directories: a symlink or a Windows junction anywhere in it (planted between the
+  dry run and the apply — the window the seal does not cover, since the seal binds the lexical
+  path) now stops the whole apply before a byte is staged, and `community-plugins.json` is not
+  written when it or `.obsidian/` is a link. The CLI reports it as a refusal (exit 1), not a crash.
+- No URL in a plugin-download message carries its query or userinfo any more: a release asset
+  redirects to a CDN URL whose query is a signed token, and those messages reach reports. The
+  router config's JSON error no longer quotes the parser's message either (it can hold a slice of
+  the file, which holds API keys); yt-dlp's stderr is masked for the proxy URL before it is quoted.
+- `--attach`'s final state: the recommended conventions are an OFFER, not a gate. A vault with all
+  its plugin code, its wiki and its conventions file is `ready yes` even when the owner declined a
+  recommended convention (listed under `optional`, no longer a `next step` a wizard would loop on).
+  What does gate it now: a `languages` section that declares nothing (the placeholder, an
+  unreadable value) is a blocking step. The install step names the missing ids with `--only`,
+  since the installer's own candidates (required + enabled) would never select an expected plugin
+  the vault has not enabled yet — the same step, forever.
+- The plugin CLIs build a remote vault's endpoint from `remoteVaultDescriptor` — the one mapping
+  the server and `--attach` use — instead of a second hand-written one (which had already lost
+  `timeoutMs`); a relative `localPath` is refused there as the registry refuses it, instead of
+  being resolved against whatever directory the terminal was in. `--attach --local-path` does not
+  read a note that is a symlink when comparing the directory with the vault.
+- `install_conventions`: an id present in both `snippets/` and `retired/` is retired (never
+  installed); a `languages` value given for a library that does not ship `languages` reports
+  `unknown` instead of "not among the ids"; every result carries `satisfied` — `false` when an id
+  named was unknown or retired, so "verified" (what could be installed was) is not read as
+  "everything asked for was installed". The tool's snippet loader is `loadConventionSnippets`,
+  no longer a second `loadConventionCatalogue` beside the helper's.
+- Pinned by test: the files in `src/` that read a remote vault's `diskPath` are exactly three
+  (`registry.mjs`, `helpers/embedding-staleness.mjs`, `helpers/vault-slug.mjs`); a fourth fails
+  `tests/no-vault-disk.test.mjs`. Documented, not changed: with `localPath`, the session journal
+  hooks write to that directory directly (not over REST) — `docs/remote-vaults.md` says what that
+  means for a container running as another user.
+- The wiki and attach pickers name `languages` (not the retired `bilingual`), hide retired
+  entries, and pass the value the owner gave; the sync report's suggested command carries
+  `--dry-run`, without which the command refuses to run.
+
 ### `install_conventions` knows the conventions that changed under it — `languages` takes a value, `bilingual` is retired
 
 The installer below was written before v0.96.0 retired `bilingual` and made `languages` a

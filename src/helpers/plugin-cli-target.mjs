@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveVaultBySlug, registeredVaultPaths, vaultSlug, knownVaultSlugs } from './vault-slug.mjs';
 import { sameVaultPath } from './vault-path-identity.mjs';
+import { remoteVaultDescriptor } from '../registry.mjs';
 
 export function defaultConfigPath(env = process.env) {
   return env.OBSIDIAN_ROUTER_CONFIG
@@ -44,7 +45,10 @@ export function loadRouterConfig({ configPath, env = process.env, fs = nodeFs } 
     if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('not a JSON object');
     return { cfg, configPath: p };
   } catch (err) {
-    return { cfg: null, configPath: p, error: `the router config at ${p} is not valid (${err.message})` };
+    // Never the parser's message: since Node 20 it quotes the text around the
+    // error, and this file holds API keys. The position is enough to look.
+    const at = /at position \d+/.exec(String(err && err.message))?.[0];
+    return { cfg: null, configPath: p, error: `the router config at ${p} is not valid JSON${at ? ` (syntax error ${at})` : ''}` };
   }
 }
 
@@ -61,11 +65,18 @@ function remoteEntries(cfg) {
 }
 
 function remoteTarget(r, fs) {
+  // The SAME descriptor the server and --attach build from a remoteVaults
+  // entry (registry.mjs) — a second hand-written mapping is how a field
+  // (timeoutMs, once) gets lost. Only the transport part travels here.
+  const d = typeof r.baseUrl === 'string' && typeof r.apiKey === 'string'
+    ? remoteVaultDescriptor(r)
+    : { baseUrl: null, apiKey: null, tlsInsecure: r.tlsInsecure === true, extraHeaders: undefined, timeoutMs: 10000 };
   const endpoint = {
-    baseUrl: typeof r.baseUrl === 'string' ? r.baseUrl.replace(/\/$/, '') : null,
-    apiKey: typeof r.apiKey === 'string' ? r.apiKey : null,
-    tlsInsecure: r.tlsInsecure === true,
-    extraHeaders: r.extraHeaders && typeof r.extraHeaders === 'object' ? { ...r.extraHeaders } : undefined,
+    baseUrl: d.baseUrl ?? null,
+    apiKey: d.apiKey ?? null,
+    tlsInsecure: d.tlsInsecure === true,
+    extraHeaders: d.extraHeaders,
+    timeoutMs: d.timeoutMs,
   };
   const local = typeof r.localPath === 'string' && r.localPath.trim() ? r.localPath : null;
   if (!local) {
@@ -77,6 +88,16 @@ function remoteTarget(r, fs) {
         + '(.obsidian/plugins, community-plugins.json) and a remote registration gives it no folder to reach. '
         + `Add "localPath" (the vault's folder as seen from this machine) to its remoteVaults entry, `
         + 'or run the command on the machine that hosts the vault, against its path.',
+    };
+  }
+  // The registry ignores a relative localPath with a warning; resolving one
+  // here against the CWD would make the same entry name a different folder
+  // in every terminal. Same rule, same refusal.
+  if (!path.isAbsolute(local)) {
+    return {
+      ok: false,
+      code: 'local_path_not_absolute',
+      error: `Vault "${r.name}" declares a localPath that is not an absolute path — the router ignores it; make it absolute in its remoteVaults entry.`,
     };
   }
   const vaultPath = path.resolve(local);

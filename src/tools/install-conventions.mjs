@@ -129,7 +129,7 @@ function asText(res) {
  * id then reports as unknown rather than installing something unidentifiable.
  * Text is normalised to LF with one trailing newline and no BOM.
  */
-export function loadConventionCatalogue(dir = SNIPPETS_DIR) {
+export function loadConventionSnippets(dir = SNIPPETS_DIR) {
   const entries = fs.readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isFile() && e.name.endsWith('.md'))
     .map((e) => e.name.slice(0, -3))
@@ -161,7 +161,7 @@ export function loadConventionCatalogue(dir = SNIPPETS_DIR) {
 export function loadRetiredCatalogue(dir = RETIRED_DIR) {
   let entries;
   try {
-    entries = loadConventionCatalogue(dir);
+    entries = loadConventionSnippets(dir);
   } catch (err) {
     if (err?.code === 'ENOENT') return [];
     throw err;
@@ -179,14 +179,17 @@ export function loadRetiredCatalogue(dir = RETIRED_DIR) {
  * value belongs to the vault and is asked of its owner; defaulting it to
  * anything would declare a language nobody chose.
  */
-function renderLanguagesSnippet(args, requested, byId, dryRun) {
-  const wanted = requested.includes(LANGUAGES_CONVENTION_ID);
-  if (args.languages !== undefined && !wanted) {
+function renderLanguagesSnippet(args, ids, requested, byId, dryRun) {
+  const named = ids.includes(LANGUAGES_CONVENTION_ID);
+  if (args.languages !== undefined && !named) {
     throw validationError(
       'install_conventions: a `languages` value was given but `languages` is not among the ids — '
       + 'nothing was read or written. Name it in `ids` to install it, or drop the value.',
     );
   }
+  // Named but not shipped by this library: it reports as `unknown` (or
+  // `retired`), and the value has nothing to render into.
+  const wanted = named && requested.includes(LANGUAGES_CONVENTION_ID) && byId.has(LANGUAGES_CONVENTION_ID);
   if (!wanted) return null;
   if (args.languages === undefined) {
     if (dryRun) return null;
@@ -291,23 +294,25 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
     listFilesIn: _deps.listFilesIn || defaultRestClient.listFilesIn,
     writeFile: _deps.writeFile || defaultRestClient.writeFile,
     writeFileIfMatch: _deps.writeFileIfMatch || defaultRestClient.writeFileIfMatch,
-    loadCatalogue: _deps.loadCatalogue || (() => loadConventionCatalogue()),
+    loadCatalogue: _deps.loadCatalogue || (() => loadConventionSnippets()),
     loadRetired: _deps.loadRetired || (() => loadRetiredCatalogue()),
   };
   const dryRun = args.dryRun === true;
   const ids = validateIds(args.ids, dryRun);
 
-  const catalogue = deps.loadCatalogue();
-  const byId = new Map(catalogue.map((c) => [c.id, c]));
   // Recognised, never offered: a retired id is reported, not installed, and
   // its heading still counts in `detection` (a vault to migrate is visible).
-  const retiredCatalogue = deps.loadRetired().filter((c) => !byId.has(c.id));
+  // An id present in BOTH folders is retired — the safe reading of a state
+  // the catalogue helper already reports as an error.
+  const retiredCatalogue = deps.loadRetired();
   const retiredById = new Map(retiredCatalogue.map((c) => [c.id, c]));
+  const catalogue = deps.loadCatalogue().filter((c) => !retiredById.has(c.id));
+  const byId = new Map(catalogue.map((c) => [c.id, c]));
   const identities = [...catalogue, ...retiredCatalogue];
   const unknown = ids.filter((id) => !byId.has(id) && !retiredById.has(id));
   const retired = ids.filter((id) => retiredById.has(id));
   const requested = ids.filter((id) => byId.has(id));
-  const languagesSnippet = renderLanguagesSnippet(args, requested, byId, dryRun);
+  const languagesSnippet = renderLanguagesSnippet(args, ids, requested, byId, dryRun);
 
   const vault = registry.resolveVault(args.vault);
 
@@ -349,6 +354,11 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
     retired,
     alreadyPresent,
     duplicates,
+    // `verified` speaks of the conventions the library could install; this
+    // says whether EVERY id the caller named was one of them. A run that
+    // installed two of three and dropped an unknown one is verified, not
+    // satisfied — a summary must not read the first as the second.
+    satisfied: unknown.length === 0 && retired.length === 0,
   };
 
   if (dryRun) {
@@ -385,7 +395,12 @@ export async function installConventionsTool(registry, args = {}, _deps = {}) {
 
   // The `languages` snippet is appended RENDERED — its value line holds the
   // owner's value, never the library's placeholder.
-  const snippets = toInstall.map((id) => (id === LANGUAGES_CONVENTION_ID && languagesSnippet ? languagesSnippet : byId.get(id)));
+  if (toInstall.includes(LANGUAGES_CONVENTION_ID) && !languagesSnippet) {
+    // Unreachable by construction (a real install of `languages` rendered it
+    // above, or was refused); kept as a hard stop rather than a belief.
+    throw validationError('install_conventions: the `languages` section was not rendered — nothing was written.');
+  }
+  const snippets = toInstall.map((id) => (id === LANGUAGES_CONVENTION_ID ? languagesSnippet : byId.get(id)));
   const next = buildContent(original, snippets);
 
   // PRE-WRITE CHECK: refuse a content in which a requested convention would not

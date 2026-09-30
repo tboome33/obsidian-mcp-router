@@ -203,7 +203,7 @@ In the other direction there is no such danger: pre-checking an absent conventio
 
 **Why the absent ones arrive checked** (decision [[conventions-livrees-par-le-modele]] §2): the reference template stopped shipping the stylistic conventions, and a feature nobody knows about is a feature nobody ever enables. The user must act to **refuse**, not to **discover**. If they validate without changing anything, they get the same result as before the decision — the difference is that it was shown to them.
 
-**Display the whole library, not a subset.** Show every convention in the dryRun's `catalogue` (split over several `AskUserQuestion` questions if one cannot hold them all); the collection you display IS the collection you plan with. Planning with a wider list than you displayed puts a convention the user never saw into the `remove` bucket, and the confirmation then says "you did not check these" about a checkbox that never existed.
+**Display the whole library, not a subset.** Show every convention in the dryRun's `catalogue` that is not flagged `retired: true` (a retired one is recognised, never offered — see 1A.5's `bilingual` note; split over several `AskUserQuestion` questions if one cannot hold them all); the collection you display IS the collection you plan with. Planning with a wider list than you displayed puts a convention the user never saw into the `remove` bucket, and the confirmation then says "you did not check these" about a checkbox that never existed.
 
 Use `AskUserQuestion` with `multiSelect: true`. Pre-check per the table above, suffix a detected one with `— déjà en place`, and give each option a description that says what it DOES. The recommended set — the nine below — and the wording that survived review:
 

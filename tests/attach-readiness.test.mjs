@@ -24,7 +24,8 @@ import {
   formatReadiness,
   RECOMMENDED_CONVENTIONS,
 } from '../scripts/attach-readiness.mjs';
-import { loadConventionCatalogue } from '../src/tools/install-conventions.mjs';
+import { loadConventionSnippets } from '../src/tools/install-conventions.mjs';
+import { renderLanguagesSection } from '../src/helpers/convention-languages.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LRA = 'obsidian-local-rest-api';
@@ -35,12 +36,21 @@ let root;
 before(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'attach-readiness-')); });
 after(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
-const CATALOGUE = loadConventionCatalogue();
-/** A conventions file carrying exactly `ids`, in the library's own text. */
-function conventionsText(ids) {
+const CATALOGUE = loadConventionSnippets();
+/**
+ * A conventions file carrying exactly `ids`, in the library's own text —
+ * `languages` RENDERED with a value (`fr`), as an install writes it; the raw
+ * snippet holds the placeholder, which is the unreadable state tested apart.
+ */
+function conventionsText(ids, { rawLanguages = false } = {}) {
   return ['# Vault conventions', '', ...ids.map((id) => {
     const c = CATALOGUE.find((x) => x.id === id);
     assert.ok(c, `the library ships ${id}`);
+    if (id === 'languages' && !rawLanguages) {
+      const r = renderLanguagesSection(c.text, ['fr']);
+      assert.ok(r.ok, r.error);
+      return r.text;
+    }
     return c.text;
   })].join('\n');
 }
@@ -105,7 +115,7 @@ describe('assessAttachReadiness — plugins on disk', () => {
     const r = assess({ diskPath: vault, wiki: WIKI_OK });
     assert.equal(r.nextSteps.length, 2, r.nextSteps.join('\n'));
     assert.match(r.nextSteps[0], /Install the missing plugin code \(2: mcp-router-bridge, templater-obsidian\)/);
-    assert.match(r.nextSteps[0], /obsidian-mcp-router --install-plugins "Box" --dry-run/);
+    assert.match(r.nextSteps[0], /obsidian-mcp-router --install-plugins "Box" --dry-run --only mcp-router-bridge,templater-obsidian/);
     assert.match(r.nextSteps[0], /--approved-plan-sha256/);
     assert.match(r.nextSteps[1], /Reload Obsidian/);
     assert.match(r.nextSteps[1], /obsidian-mcp-router --plugin-health "Box"/);
@@ -139,7 +149,7 @@ describe('assessAttachReadiness — wiki and conventions', () => {
     assert.ok(!r.nextSteps.some((s) => /\/obsidian-router:conventions pick/.test(s)), 'no picker step before the wiki exists');
   });
 
-  test('conventions missing from the recommended set: the picker step lists exactly those', () => {
+  test('conventions missing from the recommended set: the picker step lists exactly those — and is OPTIONAL, so the vault is ready', () => {
     const present = ['roadmap-discipline', 'wiki-query-first'];
     const vault = makeVault({ plugins: ALL_CODE, enabled: EXPECTED, files: { 'CLAUDE.md': conventionsText(present) } });
     const r = assess({ diskPath: vault, wiki: WIKI_OK });
@@ -149,7 +159,33 @@ describe('assessAttachReadiness — wiki and conventions', () => {
     assert.equal(r.nextSteps.length, 1, r.nextSteps.join('\n'));
     assert.match(r.nextSteps[0], /\/obsidian-router:conventions pick/);
     assert.ok(r.nextSteps[0].includes(`pre-checked: ${missing.join(', ')};`), r.nextSteps[0]);
+    // A recommended convention is an offer the owner may decline: it does not
+    // gate `ready`, or a wizard that re-runs "until ready" never ends.
+    assert.deepEqual(r.optional, r.nextSteps);
+    assert.equal(r.ready, true);
+    const lines = formatReadiness(r).join('\n');
+    assert.match(lines, /^ {2}ready {7}yes — plugins and wiki verified; recommended conventions still absent \(optional\)/m);
+    assert.match(lines, /^ {2}optional\n {4}1\. Choose the conventions/m);
+    assert.doesNotMatch(lines, /next steps/);
+  });
+
+  test('`languages` installed with the placeholder (a raw snippet) is a BLOCKING step — the value is what the convention is', () => {
+    const vault = makeVault({ plugins: ALL_CODE, enabled: EXPECTED, files: { 'CLAUDE.md': conventionsText(RECOMMENDED_CONVENTIONS, { rawLanguages: true }) } });
+    const r = assess({ diskPath: vault, wiki: WIKI_OK });
+    assert.equal(r.conventions.languages.installed, true);
+    assert.equal(r.conventions.languages.problem, 'invalid-value');
     assert.equal(r.ready, false);
+    assert.equal(r.nextSteps.length, 1, r.nextSteps.join('\n'));
+    assert.match(r.nextSteps[0], /Set the languages value in CLAUDE\.md/);
+    assert.deepEqual(r.optional, []);
+    assert.match(formatReadiness(r).join('\n'), /languages: unreadable \(invalid-value\)/);
+  });
+
+  test('`languages` with a readable value is reported on the conventions line', () => {
+    const vault = makeVault({ plugins: ALL_CODE, enabled: EXPECTED, files: ALL_CONVENTIONS });
+    const r = assess({ diskPath: vault, wiki: WIKI_OK });
+    assert.deepEqual(r.conventions.languages.languages, ['fr']);
+    assert.match(formatReadiness(r).join('\n'), /recommended still absent: 0 · languages: fr$/m);
   });
 
   test('two CLAUDE.md candidates: a dedicated step, and no picker step', () => {

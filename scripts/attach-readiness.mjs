@@ -37,7 +37,8 @@ import { fileURLToPath } from 'node:url';
 
 import { inspectVaultPlugins, loadExpectedPlugins } from '../src/helpers/plugin-inventory.mjs';
 import { CLAUDE_MD_CANDIDATES, resolveClaudeMd, detectConventions } from '../src/helpers/claude-md-conventions.mjs';
-import { loadConventionCatalogue } from '../src/tools/install-conventions.mjs';
+import { readVaultLanguages } from '../src/helpers/convention-languages.mjs';
+import { loadConventionSnippets } from '../src/tools/install-conventions.mjs';
 
 const SKELETON_COMMUNITY_PLUGINS = fileURLToPath(
   new URL('../templates/reference-vault-skeleton/.obsidian/community-plugins.json', import.meta.url),
@@ -69,15 +70,26 @@ function q(name) {
 
 /**
  * Conventions detected in the vault's conventions file, read from disk.
- * @returns {{available:true, file:string|null, ambiguous:boolean, installed:string[], missingRecommended:string[]}}
+ *
+ * `languages` is the one convention with a value, so "installed" is not
+ * enough for it: a section still holding the library's placeholder, or a
+ * value the router cannot read, declares nothing — `languages` reports what
+ * `readVaultLanguages` found (`problem` names the repair).
+ *
+ * @returns {{available:true, file:string|null, ambiguous:boolean, installed:string[], missingRecommended:string[],
+ *   languages: {installed:boolean, languages:string[]|null, problem:string|null, detail:string|null}}}
  */
-export function readConventionsFromDisk(diskPath, { fs = nodeFs, catalogue = loadConventionCatalogue() } = {}) {
+export function readConventionsFromDisk(diskPath, { fs = nodeFs, catalogue = loadConventionSnippets() } = {}) {
   const existing = CLAUDE_MD_CANDIDATES.filter((rel) => {
     try { return fs.statSync(path.join(diskPath, ...rel.split('/'))).isFile(); } catch { return false; }
   });
   const resolved = resolveClaudeMd(existing);
   if (resolved.ambiguous) {
-    return { available: true, file: null, ambiguous: true, installed: [], missingRecommended: [...RECOMMENDED_CONVENTIONS] };
+    return {
+      available: true, file: null, ambiguous: true, installed: [],
+      missingRecommended: [...RECOMMENDED_CONVENTIONS],
+      languages: { installed: false, languages: null, problem: null, detail: null },
+    };
   }
   let content = '';
   if (resolved.path) {
@@ -85,12 +97,14 @@ export function readConventionsFromDisk(diskPath, { fs = nodeFs, catalogue = loa
   }
   const installed = detectConventions(content, catalogue).filter((d) => d.installed).map((d) => d.id);
   const have = new Set(installed);
+  const { installed: langInstalled, languages, problem, detail } = readVaultLanguages(content);
   return {
     available: true,
     file: resolved.path,
     ambiguous: false,
     installed,
     missingRecommended: RECOMMENDED_CONVENTIONS.filter((id) => !have.has(id)),
+    languages: { installed: langInstalled, languages, problem, detail },
   };
 }
 
@@ -101,11 +115,16 @@ export function readConventionsFromDisk(diskPath, { fs = nodeFs, catalogue = loa
  * @param {string|null} args.diskPath the vault folder this machine can read, or null
  * @param {{catalog:boolean|null, hot:boolean|null}} args.wiki  from attach
  * @param {object} [deps] fs, catalogue, expected — injected by tests
- * @returns {{plugins:object, conventions:object, nextSteps:string[], ready:boolean}}
+ * @returns {{plugins:object, conventions:object, nextSteps:string[], optional:string[], ready:boolean}}
+ *   `nextSteps` is every step in order, the blocking ones first; `optional`
+ *   is the tail of it that does not gate `ready` — today the conventions
+ *   picker, since a recommended convention is an offer the owner may decline,
+ *   and a wizard that loops until it is accepted is not a wizard.
  */
 export function assessAttachReadiness({ vault, kind, diskPath, wiki }, deps = {}) {
   const fs = deps.fs ?? nodeFs;
   const steps = [];
+  const optional = [];
   let plugins = { available: false };
   let conventions = { available: false };
   const wikiStep = 'Create the wiki: /obsidian-router:wiki in Claude Code, in this workspace (it then offers the conventions picker).';
@@ -142,9 +161,12 @@ export function assessAttachReadiness({ vault, kind, diskPath, wiki }, deps = {}
       bridge: inv.bridge,
     };
     if (inv.missing.length > 0) {
+      // `--only` names them: the installer's own candidates are the REQUIRED
+      // plugins plus the ids the vault already enables, and an expected plugin
+      // that is neither would never be selected — the same step, forever.
       steps.push(
         `Install the missing plugin code (${inv.missing.length}: ${inv.missing.join(', ')}): `
-        + `obsidian-mcp-router --install-plugins ${q(vault)} --dry-run, then re-run with the --approved-plan-sha256 it prints.`,
+        + `obsidian-mcp-router --install-plugins ${q(vault)} --dry-run --only ${inv.missing.join(',')}, then re-run with the --approved-plan-sha256 it prints.`,
       );
     }
     if (inv.missing.length > 0 || inv.enabledWithoutCode.length > 0) {
@@ -163,18 +185,29 @@ export function assessAttachReadiness({ vault, kind, diskPath, wiki }, deps = {}
   if (conventions.available) {
     if (conventions.ambiguous) {
       steps.push('Two conventions files exist (CLAUDE.md candidates): keep one, then run /obsidian-router:conventions pick.');
-    } else if (conventions.missingRecommended.length > 0 && wiki?.catalog !== false) {
-      steps.push(
-        `Choose the conventions: /obsidian-router:conventions pick (pre-checked: ${conventions.missingRecommended.join(', ')}; `
-        + 'installed in one guarded write by install_conventions).',
-      );
+    } else {
+      if (conventions.languages.installed && conventions.languages.problem) {
+        // Installed but declaring nothing: blocking, because every language
+        // check downstream reads that one line, and the placeholder is the
+        // state the installer exists to prevent.
+        steps.push(
+          `Set the languages value in ${conventions.file}: ${conventions.languages.detail} `
+          + '(/obsidian-router:conventions — languages-value-unreadable: show the section, ask the owner, correct the one value line).',
+        );
+      }
+      if (conventions.missingRecommended.length > 0 && wiki?.catalog !== false) {
+        optional.push(
+          `Choose the conventions: /obsidian-router:conventions pick (pre-checked: ${conventions.missingRecommended.join(', ')}; `
+          + 'installed in one guarded write by install_conventions).',
+        );
+      }
     }
   } else if (wiki?.catalog !== false) {
-    steps.push('Check the conventions: /obsidian-router:conventions pick (reads the vault over REST).');
+    optional.push('Check the conventions: /obsidian-router:conventions pick (reads the vault over REST).');
   }
 
   const ready = steps.length === 0 && plugins.available && conventions.available && wiki?.catalog === true;
-  return { plugins, conventions, nextSteps: steps, ready };
+  return { plugins, conventions, nextSteps: [...steps, ...optional], optional, ready };
 }
 
 /**
@@ -195,15 +228,23 @@ export function formatReadiness(r) {
   const c = r.conventions;
   if (c.available) {
     const file = c.ambiguous ? 'two candidate files' : (c.file ?? 'no conventions file yet');
-    lines.push(`  conventions ${c.installed.length} installed (${file}) · recommended still absent: ${c.missingRecommended.length}`);
+    const lang = c.languages?.installed
+      ? (c.languages.problem ? ` · languages: unreadable (${c.languages.problem})` : ` · languages: ${c.languages.languages.join(', ')}`)
+      : '';
+    lines.push(`  conventions ${c.installed.length} installed (${file}) · recommended still absent: ${c.missingRecommended.length}${lang}`);
   } else {
     lines.push('  conventions unknown (no disk to read)');
   }
-  if (r.ready) {
+  const optional = r.optional ?? [];
+  if (r.ready && optional.length === 0) {
     lines.push('  ready       yes — plugins, wiki and conventions verified');
+  } else if (r.ready) {
+    lines.push('  ready       yes — plugins and wiki verified; recommended conventions still absent (optional)');
+    lines.push('  optional');
+    optional.forEach((s, i) => lines.push(`    ${i + 1}. ${s}`));
   } else {
     lines.push('  next steps');
-    r.nextSteps.forEach((s, i) => lines.push(`    ${i + 1}. ${s}`));
+    r.nextSteps.forEach((s, i) => lines.push(`    ${i + 1}. ${s}${optional.includes(s) ? ' (optional)' : ''}`));
   }
   return lines;
 }

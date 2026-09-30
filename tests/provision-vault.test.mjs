@@ -194,14 +194,27 @@ describe('provision_vault — the target is pinned and judged on its real path (
     fs.writeFileSync(cfg, JSON.stringify({ referenceVault: ref, portRegistry: {}, portStart: 27850 }));
     const home = path.join(work, 'home');
     fs.mkdirSync(home);
-    saved = { cfg: process.env.OBSIDIAN_ROUTER_CONFIG, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    saved = {
+      cfg: process.env.OBSIDIAN_ROUTER_CONFIG,
+      HOME: process.env.HOME,
+      USERPROFILE: process.env.USERPROFILE,
+      HOMEDRIVE: process.env.HOMEDRIVE,
+      HOMEPATH: process.env.HOMEPATH,
+    };
     process.env.OBSIDIAN_ROUTER_CONFIG = cfg;
     process.env.HOME = home;
     process.env.USERPROFILE = home;
+    // All four, as the repository's test rules ask: on Windows a home can be
+    // derived from HOMEDRIVE + HOMEPATH when USERPROFILE is not consulted.
+    process.env.HOMEDRIVE = '';
+    process.env.HOMEPATH = home;
   });
 
   after(() => {
-    for (const [k, v] of [['OBSIDIAN_ROUTER_CONFIG', saved.cfg], ['HOME', saved.HOME], ['USERPROFILE', saved.USERPROFILE]]) {
+    for (const [k, v] of [
+      ['OBSIDIAN_ROUTER_CONFIG', saved.cfg], ['HOME', saved.HOME], ['USERPROFILE', saved.USERPROFILE],
+      ['HOMEDRIVE', saved.HOMEDRIVE], ['HOMEPATH', saved.HOMEPATH],
+    ]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

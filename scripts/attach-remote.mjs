@@ -231,7 +231,7 @@ export function hotSentence(hot) {
   const target = 'the target of every router call made **without** a `vault:` argument.';
   const measured = 'by the plugin\'s `hot-cache-load` hook — **when the hooks run**: `list_vaults` → `sessionHooks.status` says whether they did; if not, read it with `get_file`';
   if (!hot) {
-    return `  The target of every router call made **without** a \`vault:\` argument. Its \`wiki-meta/hot.md\` is injected at session start ${measured}.`;
+    return `  The target of every router call made **without** a \`vault:\` argument. Its \`wiki-meta/hot.md\`, if it exists, is injected at session start ${measured}.`;
   }
   if (hot.loadable && hot.exists === true) {
     return `  Auto-loaded at session start (its \`wiki-meta/hot.md\`) ${measured}. It is ${target}`;

@@ -137,9 +137,14 @@ export function projectPluginSync({ entries, targetEnabledBefore, hasCodeBefore 
   };
 }
 
-/** The one-command alternative to installing marketplace plugins by hand. */
+/**
+ * The one-command alternative to installing marketplace plugins by hand — as
+ * the dry run, since the command refuses to write without the seal a dry run
+ * prints (scripts/install-plugins.mjs): a line without `--dry-run` is a line
+ * that fails when pasted.
+ */
 export function installPluginsCommand(vaultPath) {
-  return `obsidian-mcp-router --install-plugins "${vaultPath}"`;
+  return `obsidian-mcp-router --install-plugins "${vaultPath}" --dry-run`;
 }
 
 /**

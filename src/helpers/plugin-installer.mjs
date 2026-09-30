@@ -114,6 +114,35 @@ export function readCommunityPlugins(vaultPath, { fs = nodeFs } = {}) {
 function hasMainJs(fs, dir) {
   try { return fs.statSync(path.join(dir, 'main.js')).isFile(); } catch { return false; }
 }
+
+/**
+ * The chain vault → .obsidian → plugins must be PLAIN directories. A link
+ * anywhere in it (a symlink, a Windows junction) sends every write below to
+ * wherever the link points — and the seal, bound to the lexical path, would
+ * not notice a link swapped in between the preview and the apply. The vault
+ * root itself may well be reached through a mount or a link (a share, a
+ * container volume): that is the user's setup, not a redirection INSIDE the
+ * vault, so the check starts under the root. A segment that does not exist
+ * yet ends the check: it will be created, as a plain directory.
+ *
+ * @throws {Error} naming the offending path, before anything is written
+ */
+export function assertPlainDirChain(fs, vaultPath, segments) {
+  let dir = vaultPath;
+  for (const seg of segments) {
+    dir = path.join(dir, seg);
+    let st;
+    try {
+      st = fs.lstatSync(dir);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') return;
+      throw err;
+    }
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new Error(`${dir} is not a plain directory (a link, or a file) — refusing to write through it`);
+    }
+  }
+}
 function exists(fs, p) {
   try { fs.lstatSync(p); return true; } catch { return false; }
 }
@@ -333,6 +362,9 @@ function rmQuiet(fs, p) {
 export async function applyInstallPlan({ vaultPath, plan, fetch, fs = nodeFs, force = plan.force }) {
   assertNotServerProcess('applyInstallPlan');
   const pluginsDir = pluginsDirOf(vaultPath);
+  // Checked ONCE here, and again per plugin below for `<id>` itself: nothing
+  // is downloaded or staged through a link.
+  assertPlainDirChain(fs, vaultPath, ['.obsidian', 'plugins']);
   const installed = [];
   const failed = [];
   for (const p of plan.install) {
@@ -345,6 +377,9 @@ export async function applyInstallPlan({ vaultPath, plan, fetch, fs = nodeFs, fo
     }
     const stage = path.join(pluginsDir, `.install-${p.id}-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
     try {
+      // Re-checked right before this plugin's writes: the chain may have
+      // changed while the previous plugin was downloading.
+      assertPlainDirChain(fs, vaultPath, ['.obsidian', 'plugins', p.id]);
       fs.mkdirSync(pluginsDir, { recursive: true });
       const files = new Map();
       if (!p._manifest) throw new Error('the plan carries no verified manifest — re-run the dry run');
@@ -391,6 +426,18 @@ export async function applyInstallPlan({ vaultPath, plan, fetch, fs = nodeFs, fo
  */
 export function ensureCommunityPluginsListed(vaultPath, ids, { fs = nodeFs } = {}) {
   assertNotServerProcess('ensureCommunityPluginsListed');
+  // The list is written through `.obsidian/` too, and the file itself must be
+  // a file: a link there would carry the atomic write somewhere else.
+  try {
+    assertPlainDirChain(fs, vaultPath, ['.obsidian']);
+    let st = null;
+    try { st = fs.lstatSync(communityFileOf(vaultPath)); } catch { st = null; }
+    if (st && (st.isSymbolicLink() || !st.isFile())) {
+      throw new Error(`${communityFileOf(vaultPath)} is not a plain file — refusing to write through it`);
+    }
+  } catch (err) {
+    return { added: [], state: 'refused', error: err.message };
+  }
   const current = readCommunityPlugins(vaultPath, { fs });
   if (current.state === 'invalid') return { added: [], state: 'invalid', error: current.error };
   const list = [...current.ids];

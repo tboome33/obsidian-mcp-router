@@ -17,7 +17,7 @@ import path from 'node:path';
 
 import {
   installConventionsTool,
-  loadConventionCatalogue,
+  loadConventionSnippets,
   loadRetiredCatalogue,
   SNIPPETS_DIR,
   CONVENTION_ID_RE,
@@ -174,6 +174,11 @@ describe('install_conventions — the write', () => {
     assert.deepEqual(res.unknown, ['no-such-convention']);
     assert.deepEqual(res.installed, ['log-discipline']);
     assert.equal(res.verified, true);
+    // Verified is not satisfied: one id named was not installable. A summary
+    // must not read the first as the second.
+    assert.equal(res.satisfied, false);
+    const ok = await installConventionsTool(registry, { ids: ['source-type'] }, v.deps);
+    assert.equal(ok.satisfied, true);
   });
 
   for (const hostile of ['../CLAUDE', '..', 'a/b', 'a\\b', 'Source-Type', 'log-discipline.md', '', ' log-discipline', '-x']) {
@@ -311,7 +316,7 @@ describe('install_conventions — dryRun and state', () => {
   });
 
   test('the catalogue is the package library: every snippet, heading = its first line', () => {
-    const cat = loadConventionCatalogue();
+    const cat = loadConventionSnippets();
     const files = fs.readdirSync(SNIPPETS_DIR).filter((f) => f.endsWith('.md'));
     assert.equal(cat.length, files.length, `${cat.length}/${files.length} snippets loaded`);
     for (const c of cat) {
@@ -326,7 +331,7 @@ describe('install_conventions — dryRun and state', () => {
       fs.writeFileSync(path.join(dir, 'good.md'), '## Good\n\nbody\n');
       fs.writeFileSync(path.join(dir, 'bad.md'), 'no heading here\n');
       fs.writeFileSync(path.join(dir, 'Upper.md'), '## Upper\n');
-      assert.deepEqual(loadConventionCatalogue(dir).map((c) => c.id), ['good']);
+      assert.deepEqual(loadConventionSnippets(dir).map((c) => c.id), ['good']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -360,7 +365,7 @@ describe('install_conventions — registration and classification', () => {
   });
 
   test('detectConventions sees the library headings exactly as the tool reports them', () => {
-    const cat = loadConventionCatalogue();
+    const cat = loadConventionSnippets();
     const all = cat.map((c) => c.text).join('\n');
     assert.ok(detectConventions(all, cat).every((d) => d.installed && !d.duplicate));
   });
@@ -447,6 +452,7 @@ describe('install_conventions — the languages value, and retired conventions',
     assert.deepEqual(res.unknown, []);
     assert.deepEqual(res.installed, ['source-type']);
     assert.equal(res.verified, true);
+    assert.equal(res.satisfied, false);
     const after = v.store.get('CLAUDE.md');
     assert.equal(findConventionSection(after, retiredText('bilingual').split('\n', 1)[0]).found, false);
   });
@@ -460,6 +466,45 @@ describe('install_conventions — the languages value, and retired conventions',
     assert.ok(res.catalogue.filter((c) => !c.retired).every((c) => c.retired === undefined));
     assert.equal(res.detection.find((d) => d.id === 'bilingual')?.installed, true);
     assert.equal(res.detection.find((d) => d.id === 'source-type')?.installed, false);
+  });
+
+  test('an id in BOTH folders is retired — never installed, whatever snippets/ says', async () => {
+    const lib = fs.mkdtempSync(path.join(os.tmpdir(), 'install-conventions-'));
+    try {
+      fs.writeFileSync(path.join(lib, 'twice.md'), '## Twice\n\noffered copy\n');
+      const retiredDir = path.join(lib, 'retired');
+      fs.mkdirSync(retiredDir);
+      fs.writeFileSync(path.join(retiredDir, 'twice.md'), '## Twice\n\nretired copy\n');
+      const v = fakeVault({ 'CLAUDE.md': PREAMBLE });
+      const res = await installConventionsTool(registry, { ids: ['twice'] }, {
+        ...v.deps,
+        loadCatalogue: () => loadConventionSnippets(lib),
+        loadRetired: () => loadRetiredCatalogue(retiredDir),
+      });
+      assert.deepEqual(res.retired, ['twice']);
+      assert.deepEqual(res.installed, []);
+      assert.equal(v.writes().length, 0);
+    } finally {
+      fs.rmSync(lib, { recursive: true, force: true });
+    }
+  });
+
+  test('a `languages` value for a library that does not ship `languages` reports unknown, not "not among the ids"', async () => {
+    const lib = fs.mkdtempSync(path.join(os.tmpdir(), 'install-conventions-'));
+    try {
+      fs.writeFileSync(path.join(lib, 'other.md'), '## Other\n\nbody\n');
+      const v = fakeVault({ 'CLAUDE.md': PREAMBLE });
+      const res = await installConventionsTool(registry, { ids: ['languages', 'other'], languages: ['fr'] }, {
+        ...v.deps,
+        loadCatalogue: () => loadConventionSnippets(lib),
+        loadRetired: () => [],
+      });
+      assert.deepEqual(res.unknown, ['languages']);
+      assert.deepEqual(res.installed, ['other']);
+      assert.equal(res.satisfied, false);
+    } finally {
+      fs.rmSync(lib, { recursive: true, force: true });
+    }
   });
 
   test('the retired folder is read like the library, and an absent folder is an empty one', () => {

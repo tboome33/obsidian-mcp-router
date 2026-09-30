@@ -17,6 +17,7 @@ import {
   verifyManifest,
   verifyMainJs,
   repoFromGithubUrl,
+  displayUrl,
 } from '../src/helpers/plugin-release-resolver.mjs';
 import { fakeGitHub, standardFleet, releaseRoutes, manifestOf, REGISTRY_URL as FIXTURE_REGISTRY_URL } from './fixtures/plugin-github-fake.mjs';
 
@@ -67,6 +68,33 @@ describe('host allowlist — every request AND every redirect hop', () => {
     const gh = fakeGitHub({ 'https://github.com/big': { status: 200, body: Buffer.alloc(100) } });
     const fetch = createGuardedFetch({ transport: gh.transport });
     await assert.rejects(fetch('https://github.com/big', { maxBytes: 99 }), { code: 'too_large' });
+  });
+
+  // A release asset redirects to a CDN URL whose query IS a signed token; the
+  // messages travel into reports. So a URL in a message is origin + path only.
+  test('an error message never carries a URL\'s query or userinfo', async () => {
+    const SECRET = 'X-Amz-Signature=deadbeefSECRET';
+    const signed = `https://objects.githubusercontent.com/o/r/main.js?${SECRET}`;
+    assert.equal(displayUrl(signed), 'https://objects.githubusercontent.com/o/r/main.js?…');
+    assert.equal(displayUrl('https://u:pw@github.com/x?y=1#z'), 'https://github.com/x?…');
+    assert.doesNotMatch(displayUrl('not a url ?token=SECRET'), /SECRET/);
+
+    const gh = fakeGitHub({
+      'https://github.com/o/r/releases/download/v1/main.js': { status: 302, headers: { location: signed } },
+      [signed]: { status: 500, body: 'boom' },
+    });
+    const fetch = createGuardedFetch({ transport: gh.transport });
+    let caught = null;
+    try { await fetch('https://github.com/o/r/releases/download/v1/main.js'); } catch (err) { caught = err; }
+    assert.ok(caught, 'expected a refusal');
+    assert.equal(caught.code, 'http_status');
+    assert.doesNotMatch(caught.message, /SECRET/);
+    assert.doesNotMatch(String(caught.url), /SECRET/);
+    assert.match(caught.message, /objects\.githubusercontent\.com\/o\/r\/main\.js/);
+
+    const big = fakeGitHub({ [signed]: { status: 200, body: Buffer.alloc(100) } });
+    const fetch2 = createGuardedFetch({ transport: big.transport });
+    await assert.rejects(fetch2(signed, { maxBytes: 99 }), (err) => err.code === 'too_large' && !/SECRET/.test(err.message) && !/SECRET/.test(String(err.url)));
   });
 });
 

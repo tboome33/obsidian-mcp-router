@@ -82,6 +82,20 @@ export const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9._-]*$/;
 /** owner/repo, GitHub's own character set. */
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 
+/**
+ * A URL as a message may show it: origin and path only. Never the query — a
+ * release asset redirects to a CDN URL whose query IS a signed token — and
+ * never userinfo. The messages travel into reports and logs.
+ */
+export function displayUrl(raw) {
+  try {
+    const u = new URL(String(raw));
+    return `${u.origin}${u.pathname}${u.search ? '?…' : ''}`;
+  } catch {
+    return String(raw).slice(0, 200).replace(/\?.*$/, '?…');
+  }
+}
+
 /** Raised for any refusal of this module: a host, a scheme, a size, a mismatch. */
 export class PluginFetchError extends Error {
   constructor(message, { code = 'fetch_refused', url } = {}) {
@@ -105,22 +119,22 @@ export function assertAllowedUrl(raw, hosts = GITHUB_HOSTS) {
   try {
     u = new URL(raw);
   } catch {
-    throw new PluginFetchError(`Refusing a malformed URL: ${String(raw).slice(0, 200)}`, { code: 'bad_url' });
+    throw new PluginFetchError(`Refusing a malformed URL: ${displayUrl(raw)}`, { code: 'bad_url' });
   }
   if (u.protocol !== 'https:') {
-    throw new PluginFetchError(`Refusing a non-HTTPS URL: ${u.href}`, { code: 'not_https', url: u.href });
+    throw new PluginFetchError(`Refusing a non-HTTPS URL: ${displayUrl(u.href)}`, { code: 'not_https', url: displayUrl(u.href) });
   }
   if (u.username || u.password) {
     throw new PluginFetchError(`Refusing a URL that carries credentials (host ${u.hostname})`, { code: 'credentials_in_url' });
   }
   if (u.port && u.port !== '443') {
-    throw new PluginFetchError(`Refusing a non-default port: ${u.host}`, { code: 'bad_port', url: u.href });
+    throw new PluginFetchError(`Refusing a non-default port: ${u.host}`, { code: 'bad_port', url: displayUrl(u.href) });
   }
   const host = u.hostname.toLowerCase();
   if (!hosts.includes(host)) {
     throw new PluginFetchError(
       `Refusing host "${host}" — plugin downloads may only reach ${hosts.join(', ')}`,
-      { code: 'host_not_allowed', url: u.href },
+      { code: 'host_not_allowed', url: displayUrl(u.href) },
     );
   }
   return u;
@@ -144,7 +158,7 @@ export function httpsTransport(url, { headers = {}, timeoutMs = DEFAULT_TIMEOUT_
       if (maxBytes && Number.isFinite(declared) && declared > maxBytes) {
         res.resume();
         req.destroy();
-        reject(new PluginFetchError(`${url}: ${declared} bytes declared, cap is ${maxBytes}`, { code: 'too_large', url }));
+        reject(new PluginFetchError(`${displayUrl(url)}: ${declared} bytes declared, cap is ${maxBytes}`, { code: 'too_large', url: displayUrl(url) }));
         return;
       }
       const chunks = [];
@@ -152,7 +166,7 @@ export function httpsTransport(url, { headers = {}, timeoutMs = DEFAULT_TIMEOUT_
       res.on('data', (chunk) => {
         received += chunk.length;
         if (maxBytes && received > maxBytes) {
-          req.destroy(new PluginFetchError(`${url}: body exceeds the ${maxBytes}-byte cap`, { code: 'too_large', url }));
+          req.destroy(new PluginFetchError(`${displayUrl(url)}: body exceeds the ${maxBytes}-byte cap`, { code: 'too_large', url: displayUrl(url) }));
           return;
         }
         chunks.push(chunk);
@@ -160,7 +174,7 @@ export function httpsTransport(url, { headers = {}, timeoutMs = DEFAULT_TIMEOUT_
       res.on('end', () => resolve({ status, headers: res.headers, body: Buffer.concat(chunks) }));
       res.on('error', reject);
     });
-    req.setTimeout(timeoutMs, () => req.destroy(new PluginFetchError(`Timeout after ${timeoutMs} ms: ${url}`, { code: 'timeout', url })));
+    req.setTimeout(timeoutMs, () => req.destroy(new PluginFetchError(`Timeout after ${timeoutMs} ms: ${displayUrl(url)}`, { code: 'timeout', url: displayUrl(url) })));
     req.on('error', reject);
   });
 }
@@ -195,8 +209,8 @@ export function createGuardedFetch({
       const status = Number(res && res.status);
       if (status >= 300 && status < 400) {
         const location = res.headers && (res.headers.location ?? res.headers.Location);
-        if (!location) throw new PluginFetchError(`HTTP ${status} without a Location header: ${current}`, { code: 'bad_redirect', url: current });
-        if (hop >= maxRedirects) throw new PluginFetchError(`Too many redirects (> ${maxRedirects}) from ${url}`, { code: 'too_many_redirects', url });
+        if (!location) throw new PluginFetchError(`HTTP ${status} without a Location header: ${displayUrl(current)}`, { code: 'bad_redirect', url: displayUrl(current) });
+        if (hop >= maxRedirects) throw new PluginFetchError(`Too many redirects (> ${maxRedirects}) from ${displayUrl(url)}`, { code: 'too_many_redirects', url: displayUrl(url) });
         // Resolved against the hop that sent it, then judged like a first URL.
         current = assertAllowedUrl(new URL(String(location), current).href, hosts).href;
         continue;
@@ -206,13 +220,13 @@ export function createGuardedFetch({
         // 403/429 there is almost always that, and saying so saves a hunt.
         const limited = (status === 403 || status === 429) && new URL(current).hostname === 'api.github.com';
         throw new PluginFetchError(
-          `HTTP ${status} for ${current}${limited ? ' (GitHub API rate limit? unauthenticated calls get 60 an hour — retry later)' : ''}`,
-          { code: 'http_status', url: current },
+          `HTTP ${status} for ${displayUrl(current)}${limited ? ' (GitHub API rate limit? unauthenticated calls get 60 an hour — retry later)' : ''}`,
+          { code: 'http_status', url: displayUrl(current) },
         );
       }
       const body = Buffer.isBuffer(res.body) ? res.body : Buffer.from(res.body ?? '');
       if (body.length > maxBytes) {
-        throw new PluginFetchError(`${current}: ${body.length} bytes, cap is ${maxBytes}`, { code: 'too_large', url: current });
+        throw new PluginFetchError(`${displayUrl(current)}: ${body.length} bytes, cap is ${maxBytes}`, { code: 'too_large', url: displayUrl(current) });
       }
       return { status, body, finalUrl: current, chain };
     }

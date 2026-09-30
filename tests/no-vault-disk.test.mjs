@@ -888,3 +888,34 @@ describe('the permission model is armed, and says so whether it is or not', () =
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// diskPath — a remote vault's directory, when its files also sit here. Its
+// READERS are a short, deliberate list (src/registry.mjs, the comment above
+// remoteVaultDescriptor): a reader that stats pages and the search index, and
+// nothing that reads or writes a NOTE. A list that lives only in a comment
+// drifts; this one is measured. Adding a reader means adding it here, on
+// purpose, with the reason the comment asks for.
+// ---------------------------------------------------------------------------
+
+describe('diskPath — the set of files in src/ that name it is pinned', () => {
+  test('exactly the declared readers, no more', () => {
+    const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src');
+    const found = [];
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.isFile() && e.name.endsWith('.mjs') && /\bdiskPath\b/.test(fs.readFileSync(p, 'utf8'))) {
+          found.push(path.relative(root, p).split(path.sep).join('/'));
+        }
+      }
+    };
+    walk(root);
+    assert.deepEqual(found.sort(), [
+      'helpers/embedding-staleness.mjs',
+      'helpers/vault-slug.mjs',
+      'registry.mjs',
+    ]);
+  });
+});

@@ -531,7 +531,11 @@ export async function fetchYoutubeTranscriptViaYtdlp(url, opts = {}) {
       .filter(Boolean);
     const subFile = pickSubtitleFile(files, langPrefs.length ? langPrefs : ['en']);
     if (!subFile) {
-      const stderr = execErr ? String(execErr.stderr || execErr.message || '') : '';
+      // yt-dlp's stderr (and a spawn error's message, which quotes the
+      // command line) can carry the proxy URL, credentials included: masked
+      // before any of it reaches an error message.
+      let stderr = execErr ? String(execErr.stderr || execErr.message || '') : '';
+      if (settings.proxy && stderr.includes(settings.proxy)) stderr = stderr.split(settings.proxy).join(redactProxy(settings.proxy));
       if (YOUTUBE_BLOCKED.test(stderr)) throw new Error(blockedMessage(url, settings, stderr));
       const oldNote = ranWithoutJsRuntime
         ? ' (this yt-dlp predates --js-runtimes, i.e. is older than 2025.11.12 — upgrade it: current YouTube needs its JavaScript challenge solver)'

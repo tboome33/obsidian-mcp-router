@@ -190,12 +190,20 @@ export async function runInstallPlugins(argv, deps = {}) {
     out('Nothing to install — the approved plan installs no plugin.');
     return 0;
   }
-  const res = await applyInstallPlan({ vaultPath: target.vaultPath, plan, fetch, fs, force: a.force });
+  let res;
+  try {
+    res = await applyInstallPlan({ vaultPath: target.vaultPath, plan, fetch, fs, force: a.force });
+  } catch (e) {
+    // A refusal that stops the WHOLE apply before any write — a link inside
+    // the vault's `.obsidian/plugins` chain — is a reported exit, not a crash.
+    err(`install-plugins: refused — ${e?.message || e}`);
+    return 1;
+  }
   for (const i of res.installed) {
     out(`✓ ${i.id} ${i.version} — ${i.files.join(', ')}${i.dataJsonKept ? ' (data.json kept untouched)' : ''}`);
   }
   for (const f of res.failed) err(`✗ ${f.id}: ${f.reason}`);
-  if (res.communityPlugins.state === 'invalid') {
+  if (res.communityPlugins.state === 'invalid' || res.communityPlugins.state === 'refused') {
     err(`! community-plugins.json was left as it is: ${res.communityPlugins.error}`);
   } else if (res.communityPlugins.added.length) {
     out(`Added to community-plugins.json: ${res.communityPlugins.added.join(', ')}`);
@@ -204,7 +212,7 @@ export async function runInstallPlugins(argv, deps = {}) {
     out('');
     for (const line of postInstallChecklist({ vaultArg: a.target, installedIds: res.installed.map((i) => i.id) })) out(line);
   }
-  return res.failed.length || res.communityPlugins.state === 'invalid' ? 1 : 0;
+  return res.failed.length || res.communityPlugins.state !== 'ok' && res.communityPlugins.state !== 'absent' ? 1 : 0;
 }
 
 const IS_ENTRYPOINT = (() => {

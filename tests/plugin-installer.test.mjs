@@ -187,6 +187,44 @@ describe('apply', () => {
     assert.equal(r.code, 1);
     assert.equal(fs.existsSync(pluginFile(b.vault, 'templater-obsidian', 'main.js')), false);
   });
+
+  // A link INSIDE the vault (a junction on Windows, a symlink elsewhere) sends
+  // every write below it wherever the link points, and the seal — bound to
+  // the lexical path — would not notice one swapped in after the preview.
+  // Planted between the dry run and the apply, exactly the window the seal
+  // does not cover.
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  test(`\`.obsidian/plugins\` replaced by a ${linkType} after the dry run: the apply refuses, and nothing lands where the link points`, async () => {
+    const { root, vault, config } = makeVault({ enabled: ['templater-obsidian'] });
+    const gh = fakeGitHub(standardFleet());
+    const dry = await run(['testvault', '--dry-run'], { transport: gh.transport, config });
+    const seal = sealOf(dry.out);
+    assert.ok(seal, dry.out);
+    const outside = path.join(root, 'elsewhere');
+    fs.mkdirSync(outside);
+    const pluginsDir = path.join(vault, '.obsidian', 'plugins');
+    fs.rmSync(pluginsDir, { recursive: true, force: true });
+    fs.symlinkSync(outside, pluginsDir, linkType);
+    assert.ok(fs.lstatSync(pluginsDir).isSymbolicLink(), 'the fixture did not plant a link');
+    const r = await run(['testvault', '--approved-plan-sha256', seal], { transport: gh.transport, config });
+    assert.notEqual(r.code, 0, r.out);
+    assert.match(`${r.out}\n${r.err}`, /not a plain directory/);
+    assert.deepEqual(fs.readdirSync(outside), [], 'a write went through the link');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(vault, '.obsidian', 'community-plugins.json'), 'utf8')), ['templater-obsidian']);
+  });
+
+  test(`\`community-plugins.json\` that is a link is not written through`, () => {
+    const { root, vault } = makeVault({ enabled: [] });
+    const target = path.join(root, 'elsewhere.json');
+    fs.writeFileSync(target, '[]');
+    const file = path.join(vault, '.obsidian', 'community-plugins.json');
+    fs.rmSync(file);
+    fs.symlinkSync(target, file, 'file');
+    const r = ensureCommunityPluginsListed(vault, ['templater-obsidian']);
+    assert.equal(r.state, 'refused');
+    assert.deepEqual(r.added, []);
+    assert.equal(fs.readFileSync(target, 'utf8'), '[]', 'the link target was rewritten');
+  });
 });
 
 describe('targets and preconditions', () => {
